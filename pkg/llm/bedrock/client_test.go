@@ -435,6 +435,188 @@ func TestClient_CalculateCost(t *testing.T) {
 	}
 }
 
+// TestClient_CalculateCost_ModelPricing verifies that each model variant gets
+// the correct per-token pricing. This is the regression test for Bug 1c where
+// strings.Contains("opus-4-5", "opus-4") caused Opus 4.5/4.6 to be priced at
+// Opus 4.1 rates (3x overpriced), and Haiku used stale $0.8/$4.0 pricing.
+func TestClient_CalculateCost_ModelPricing(t *testing.T) {
+	const tokens = 1_000_000 // use 1M tokens for easy mental math
+
+	tests := []struct {
+		name         string
+		modelID      string
+		inputTokens  int
+		outputTokens int
+		wantCost     float64
+	}{
+		// --- Opus 4.1 (most expensive) ---
+		{
+			name:         "opus 4.1 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-1-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0, // $15 + $75
+		},
+		// --- Opus 4.5 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.5 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.6 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4 bare (no sub-version) ---
+		{
+			name:         "opus 4 bare",
+			modelID:      "anthropic.claude-opus-4-20250514-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Haiku 4 ---
+		{
+			name:         "haiku 4 cross-region",
+			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     6.0, // $1 + $5
+		},
+		// --- Sonnet 4 ---
+		{
+			name:         "sonnet 4.5 cross-region",
+			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+		// --- Unknown model falls back to Sonnet ---
+		{
+			name:         "unknown model defaults to sonnet pricing",
+			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{modelID: tt.modelID}
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			assert.InDelta(t, tt.wantCost, got, 0.001,
+				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
+		})
+	}
+}
+
+// TestSDKClient_CalculateCost_ModelPricing verifies pricing for the SDK client
+// (which also handles cache pricing). Same model-matching logic as Client.
+func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
+	const tokens = 1_000_000
+
+	tests := []struct {
+		name                string
+		modelID             string
+		inputTokens         int
+		outputTokens        int
+		cacheReadTokens     int
+		cacheCreationTokens int
+		wantCost            float64
+	}{
+		// --- Opus 4.1 (most expensive) ---
+		{
+			name:         "opus 4.1 no cache",
+			modelID:      "us.anthropic.claude-opus-4-1-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0, // $15 + $75
+		},
+		// --- Opus 4.5 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.5 no cache",
+			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.6 no cache",
+			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Haiku 4 ---
+		{
+			name:         "haiku 4 no cache",
+			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     6.0, // $1 + $5
+		},
+		// --- Sonnet 4 ---
+		{
+			name:         "sonnet 4.5 no cache",
+			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+		// --- Cache pricing with Sonnet ---
+		{
+			name:                "sonnet 4.5 with cache",
+			modelID:             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     500_000,
+			cacheCreationTokens: 200_000,
+			// base: $3 + $15 = $18
+			// cache write: 200K * $3 * 1.25 / 1M = $0.75
+			// cache read:  500K * $3 * 0.10 / 1M = $0.15
+			wantCost: 18.90,
+		},
+		// --- Cache pricing with Opus 4.5 ---
+		{
+			name:                "opus 4.5 with cache",
+			modelID:             "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     500_000,
+			cacheCreationTokens: 200_000,
+			// base: $5 + $25 = $30
+			// cache write: 200K * $5 * 1.25 / 1M = $1.25
+			// cache read:  500K * $5 * 0.10 / 1M = $0.25
+			wantCost: 31.50,
+		},
+		// --- Unknown model defaults to Sonnet ---
+		{
+			name:         "unknown model defaults to sonnet",
+			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &SDKClient{modelID: tt.modelID}
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, tt.cacheCreationTokens)
+			assert.InDelta(t, tt.wantCost, got, 0.001,
+				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
+		})
+	}
+}
+
 func TestClient_ImplementsInterface(t *testing.T) {
 	var _ types.LLMProvider = (*Client)(nil)
 }
@@ -836,4 +1018,102 @@ func TestBedrockStreamChunk_ToolInputDelta_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, input)
 	assert.Empty(t, input)
+}
+
+func TestNewClient_BearerTokenAuth(t *testing.T) {
+	// Test that bearer token config creates a client without requiring
+	// any other AWS credentials (no AccessKeyID, SecretAccessKey, Profile).
+	cfg := Config{
+		Region:      "us-west-2",
+		BearerToken: "test-bearer-token-value",
+		ModelID:     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, "us-west-2", client.region)
+	assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID)
+	assert.Equal(t, "bedrock", client.Name())
+}
+
+func TestNewClient_BearerTokenAuth_Defaults(t *testing.T) {
+	// Bearer token with all defaults — only the token is needed.
+	// Region defaults to us-west-2, model defaults to Sonnet 4.5.
+	cfg := Config{
+		BearerToken: "my-sso-token",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, DefaultBedrockRegion, client.region)
+	assert.Equal(t, DefaultBedrockModelID, client.modelID)
+	assert.Equal(t, DefaultBedrockMaxTokens, client.maxTokens)
+}
+
+func TestNewClient_BearerTokenAuth_OverridesEnv(t *testing.T) {
+	// Programmatic bearer token takes priority over env var because
+	// functional options run after resolveEnvBearerToken().
+	// We can't easily verify which token wins at the SDK level without
+	// making a real API call, but we verify the client is created.
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "env-token")
+
+	cfg := Config{
+		Region:      "us-east-1",
+		BearerToken: "programmatic-token",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, "us-east-1", client.region)
+}
+
+func TestNewSDKClient_BearerTokenAuth(t *testing.T) {
+	// Test that SDKClient bearer token config works without other credentials.
+	cfg := Config{
+		Region:      "eu-central-1",
+		BearerToken: "sdk-bearer-token",
+		ModelID:     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+	}
+
+	client, err := NewSDKClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, "eu-central-1", client.region)
+	assert.Equal(t, "bedrock-sdk", client.Name())
+}
+
+func TestConfig_BearerTokenField(t *testing.T) {
+	// Verify BearerToken is a distinct auth path — setting it should not
+	// require AccessKeyID/SecretAccessKey/Profile.
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "bearer token only",
+			cfg:  Config{BearerToken: "token-1"},
+		},
+		{
+			name: "bearer token with region override",
+			cfg:  Config{BearerToken: "token-2", Region: "ap-northeast-1"},
+		},
+		{
+			name: "bearer token with model override",
+			cfg:  Config{BearerToken: "token-3", ModelID: "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(tt.cfg)
+			require.NoError(t, err, "NewClient should succeed with bearer token and no other credentials")
+			require.NotNil(t, client)
+		})
+	}
 }

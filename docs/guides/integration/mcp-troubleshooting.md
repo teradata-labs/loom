@@ -1,7 +1,8 @@
 
 # MCP Troubleshooting
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+**Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -33,9 +34,9 @@ looms serve > /tmp/looms.log 2>&1 &
 grep "MCP server started" /tmp/looms.log
 ```
 
-**Expected output:**
+**Expected output** (structured zap log with fields from logger context):
 ```
-MCP server started: server="vantage", command="/path/to/vantage-mcp", pid=12345
+MCP server started: command="/path/to/vantage-mcp", args=[], pid=12345, env_vars=["TD_USER","TD_DEFAULT_HOST"], server="vantage"
 ```
 
 **If missing:**
@@ -77,15 +78,15 @@ go build -tags fts5 -o bin/looms ./cmd/looms
 
 **Symptom:**
 ```
-MCP server started: tool_count=17
-Agent loaded: tool_count=0
+MCP server registered: server="vantage", tools="all", tools_added=17, total_tools=17
+Agent loaded successfully: name="my-agent", tool_count=0
 ```
 
 **Causes:**
 
-1. **ToolFilter.All=false** - Default rejects all tools
-2. **Missing MCP tool registration** - Agent YAML missing `tools.mcp`
-3. **MCP server disabled** - `Enabled=false` in config
+1. **ToolFilter.All=false** - Default in `manager.ToolFilter` rejects all tools (YAML config auto-sets `All: true`; this mainly affects programmatic/gRPC usage)
+2. **Missing MCP tool registration** - Agent YAML missing `tools.mcp` section
+3. **MCP server disabled** - `enabled: false` explicitly set in config
 
 **Solution 1: Set ToolFilter.All=true**
 
@@ -104,11 +105,13 @@ mcpConfig.Servers[serverName] = manager.ServerConfig{
 **Solution 2: Add MCP tools to agent config**
 
 ```yaml
-# $LOOM_DATA_DIR/agents/my-agent.yaml
-tools:
-  mcp:
-    - server: "vantage"
-      tools: ["*"]
+# $LOOM_DATA_DIR/agents/my-agent.yaml (legacy format, under agent: key)
+agent:
+  # ...other fields...
+  tools:
+    mcp:
+      - server: "vantage"
+        tools: ["*"]  # Or empty list [] to register all tools
 ```
 
 ### MCP Server Not Enabled
@@ -118,16 +121,21 @@ tools:
 Skipping disabled server: server="vantage"
 ```
 
+**Note:** This log is emitted at **debug** level. Set `logging.level: debug`
+in looms.yaml to see it. Servers listed in `mcp.servers` default to
+`enabled: true` unless explicitly set to `enabled: false`. This message means
+the server was explicitly disabled.
+
 **Solution:**
 
-In YAML config:
+Remove `enabled: false` or set it to `true` in YAML config:
 ```yaml
 mcp:
   servers:
     vantage:
       command: /path/to/mcp-server
       transport: stdio
-      enabled: true  # Add this
+      enabled: true  # Or simply remove the line (defaults to true)
 ```
 
 ### macOS Kills Copied Binaries
@@ -183,7 +191,7 @@ just build
 # $LOOM_DATA_DIR/looms.yaml
 server:
   host: "0.0.0.0"
-  port: 9090
+  port: 60051  # Default gRPC port
 
 llm:
   provider: anthropic
@@ -193,15 +201,16 @@ mcp:
     vantage:
       command: ~/.local/bin/vantage-mcp
       transport: stdio
+      # enabled defaults to true for servers listed in config
       env:
         TD_USER: your_username
         TD_DEFAULT_HOST: your_host
 ```
 
-### Agent with All MCP Tools
+### Agent with All MCP Tools (Legacy Format)
 
 ```yaml
-# $LOOM_DATA_DIR/agents/my-agent.yaml
+# $LOOM_DATA_DIR/agents/my-agent.yaml (legacy format with agent: top-level key)
 agent:
   name: "my-agent"
   description: "Teradata SQL agent"
@@ -213,12 +222,15 @@ agent:
   tools:
     mcp:
       - server: "vantage"
-        tools: ["*"]  # All tools
+        tools: ["*"]  # All tools (empty list also registers all)
 
   behavior:
     max_iterations: 25
     timeout_seconds: 300
 ```
+
+> Both legacy (`agent:`) and k8s-style (`apiVersion`/`kind`/`metadata`/`spec`)
+> YAML formats are supported. See `examples/reference/agents/` for k8s-style examples.
 
 
 ## Getting Help
@@ -231,7 +243,7 @@ agent:
 
 **Common mistakes:**
 - Forgetting `-tags fts5` when building
-- Not setting ToolFilter.All=true
+- Not setting `ToolFilter.All=true` when adding MCP servers via gRPC API (YAML configs default to `All: true`)
 - Using relative paths for MCP server commands
 - Using `cp` to install binaries on macOS (use `ln -s`)
-- Missing `tools.mcp` in agent YAML
+- Missing `tools.mcp` section in agent YAML (legacy format)

@@ -1,0 +1,308 @@
+# === METADATA START ===
+name: regression_evaluator
+title: "Regression Model Evaluator"
+description: |
+  Evaluate regression model performance using TD_RegressionEvaluator. Computes a configurable
+  set of error and fit metrics (MAE, MSE, RMSE, R-squared, Adjusted R-squared, and more)
+  from observed vs. predicted values. Returns results in wide format with one column per metric.
+
+  TD_RegressionEvaluator is ideal for:
+  - Computing standard regression error metrics (MAE, MSE, RMSE)
+  - Measuring model fit with R-squared and Adjusted R-squared
+  - Comparing multiple regression models on the same test set
+  - Validating regression model accuracy before deployment
+
+category: model_evaluation
+difficulty: intermediate
+teradata_function: TD_RegressionEvaluator
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - model_evaluation
+  - analytics
+  - reporting
+use_cases:
+  # --- Use Case 1: Error Metrics ---
+  - Computing MAE, MSE, and RMSE for regression model accuracy
+
+  # --- Use Case 2: Goodness of Fit ---
+  - Measuring R-squared and Adjusted R-squared for model fit quality
+
+  # --- Use Case 3: Model Comparison ---
+  - Comparing regression models by error metrics on identical test data
+
+  # --- Use Case 4: Forecast Validation ---
+  - Validating time series or demand forecast accuracy
+
+  # --- Use Case 5: Residual Analysis ---
+  - Checking prediction error magnitude and bias via MPE and MAPE
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the predictions table"
+    example: "ml_project"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must have actual and predicted value columns
+    required: true
+    description: "Table containing actual and predicted numeric values"
+    example: "price_predictions"
+
+  # --- Parameter 3: Observation Column ---
+  - name: observation_column
+    type: string
+    # LLM-HINT: Column with actual/ground-truth numeric values
+    required: true
+    description: "Column containing actual observed numeric values"
+    example: "actual_price"
+
+  # --- Parameter 4: Prediction Column ---
+  - name: prediction_column
+    type: string
+    # LLM-HINT: Column with model-predicted numeric values
+    required: true
+    description: "Column containing model-predicted numeric values"
+    example: "predicted_price"
+
+  # --- Parameter 5: Metrics ---
+  - name: metrics
+    type: array[string]
+    # LLM-HINT: Available: MAE, MSE, MSLE, MAPE, MPE, RMSE, RMSLE, R2, AR2, EV, ME, MPD, MGD, FSTAT
+    required: false
+    description: "List of metrics to compute. If omitted, all metrics are returned"
+    example: '["MAE", "MSE", "RMSE", "R2", "AR2"]'
+
+  # --- Parameter 6: Num Independent Variables ---
+  - name: num_independent_variables
+    type: integer
+    # LLM-HINT: Required when AR2 is requested; number of features used in the model
+    required: false
+    description: "Number of independent variables in the model. Required for Adjusted R-squared (AR2)"
+    example: "5"
+
+  # --- Parameter 7: Degrees of Freedom ---
+  - name: degrees_of_freedom
+    type: string
+    # LLM-HINT: Required when FSTAT is requested; two comma-separated integers (df1, df2)
+    required: false
+    description: "Degrees of freedom for F-test (df1, df2). Required when using FSTAT metric"
+    example: "5, 94"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === STANDARD_METRICS TEMPLATE ===
+  # LLM-HINT: Core regression metrics: MAE, MSE, RMSE, R2; use as default evaluation
+  standard_metrics:
+    description: "Compute standard regression metrics: MAE, MSE, RMSE, and R-squared"
+    sql: |
+      -- Standard regression evaluation metrics
+      -- Output: one row with columns MAE, MSE, RMSE, R2
+      SELECT * FROM TD_RegressionEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column}}')
+          Metrics('MAE','MSE','RMSE','R2')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column
+
+  # === FULL_METRICS_WITH_AR2 TEMPLATE ===
+  # LLM-HINT: Full suite including Adjusted R2; requires NumOfIndependentVariables; AR2 penalizes excess features
+  full_metrics_with_ar2:
+    description: "Full evaluation including Adjusted R-squared to penalize overfitting"
+    sql: |
+      -- Full regression evaluation with Adjusted R-squared
+      -- AR2 penalizes models with too many features relative to predictive power
+      SELECT * FROM TD_RegressionEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column}}')
+          Metrics('MAE','MSE','RMSE','R2','AR2','MAPE','EV')
+          NumOfIndependentVariables({{num_independent_variables}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column
+      - num_independent_variables
+
+  # === MODEL_COMPARISON TEMPLATE ===
+  # LLM-HINT: Compare two models side by side on the same test data; useful for A/B model selection
+  model_comparison:
+    description: "Compare two regression models on the same test data"
+    sql: |
+      -- Model A evaluation
+      SELECT 'Model_A' AS model_name, * FROM TD_RegressionEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column_a}}')
+          Metrics('MAE','MSE','RMSE','R2')
+      ) AS t
+
+      UNION ALL
+
+      -- Model B evaluation
+      SELECT 'Model_B' AS model_name, * FROM TD_RegressionEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column_b}}')
+          Metrics('MAE','MSE','RMSE','R2')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column_a
+      - prediction_column_b
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: House Price Prediction ---
+  - name: "House Price Regression Evaluation"
+    description: "Evaluate a house price prediction model using standard metrics"
+    parameters:
+      database: "real_estate"
+      table: "price_test_predictions"
+      observation_column: "actual_price"
+      prediction_column: "predicted_price"
+      metrics: ["MAE", "MSE", "RMSE", "R2", "AR2"]
+      num_independent_variables: 8
+    expected_result: |
+      Regression metrics (wide format, one row):
+
+        MAE      |     MSE       |   RMSE    |   R2    |   AR2
+      -----------+---------------+-----------+---------+---------
+       12450.32  | 287654321.50  | 16960.37  | 0.8923  | 0.8876
+
+      Interpretation:
+      - MAE: On average, predictions are off by $12,450
+      - RMSE: Root mean squared error of $16,960 (penalizes large errors more)
+      - R2: Model explains 89.2% of price variance
+      - AR2: Adjusted for 8 features, still 88.8% - minimal overfitting
+
+  # --- Example 2: Demand Forecasting ---
+  - name: "Demand Forecast Evaluation"
+    description: "Validate demand forecast accuracy with percentage-based metrics"
+    parameters:
+      database: "supply_chain"
+      table: "demand_forecast_results"
+      observation_column: "actual_demand"
+      prediction_column: "forecasted_demand"
+      metrics: ["MAE", "RMSE", "MAPE", "MPE"]
+    expected_result: |
+      Forecast accuracy metrics:
+
+        MAE    |  RMSE   |  MAPE  |   MPE
+      ---------+---------+--------+--------
+       145.20  | 198.50  | 0.0823 | -0.0120
+
+      Interpretation:
+      - MAPE: 8.2% mean absolute percentage error (good for demand forecasting)
+      - MPE: -1.2% mean percentage error (slight underforecasting bias)
+      - Use MAPE for business reporting; use RMSE for model comparison
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: AR2 without NumOfIndependentVariables ---
+  - error: "AR2 metric requested but NumOfIndependentVariables not specified"
+    cause: "Adjusted R-squared requires the number of features to penalize model complexity"
+    solution: "Add NumOfIndependentVariables(n) where n is the number of features used in the model"
+
+  # --- Error 2: FSTAT without DegreesOfFreedom ---
+  - error: "FSTAT metric requested but DegreesOfFreedom not specified"
+    cause: "F-test requires DegreesOfFreedom(df1, df2) parameters"
+    solution: "Add DegreesOfFreedom(p, n-p-1) where p = number of predictors, n = number of observations"
+
+  # --- Error 3: Zero or Negative Values with Log Metrics ---
+  - error: "MSLE or RMSLE fails with error"
+    cause: "Log-based metrics require strictly positive values in both observation and prediction columns"
+    solution: "Filter out zero and negative values, or use MAE/RMSE instead. Log metrics are suited for right-skewed distributions"
+
+  # --- Error 4: MAPE with Zero Observations ---
+  - error: "MAPE returns infinity or extremely large value"
+    cause: "MAPE divides by actual values; rows where actual = 0 produce division by zero"
+    solution: "Filter out rows where observation_column = 0 before computing MAPE, or use MAE as an alternative"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Regression Evaluation Best Practices
+
+  ### 1. Choose Metrics Based on Your Use Case
+  - **MAE**: Interpretable in original units; good for business reporting
+  - **RMSE**: Penalizes large errors more; good for optimization
+  - **MAPE**: Percentage-based; useful when scale varies across predictions
+  - **R2**: Overall model fit; 1.0 = perfect, 0.0 = no better than mean
+  - **AR2**: Use over R2 when comparing models with different feature counts
+
+  ### 2. Always Use Adjusted R-Squared for Model Selection
+  ```sql
+  -- Compare models with different feature counts
+  -- AR2 penalizes unnecessary features
+  Metrics('R2','AR2')
+  NumOfIndependentVariables(n)
+  ```
+  - R2 always increases with more features, even useless ones
+  - AR2 decreases when features don't add predictive value
+
+  ### 3. Evaluate on Holdout Test Data
+  - Never evaluate on training data
+  - Use TD_TrainTestSplit to create consistent holdout sets
+  - R2 on training data is always optimistic
+
+  ### 4. Check for Bias with MPE
+  - MPE (Mean Percentage Error) reveals systematic over/under-prediction
+  - MPE near 0 = unbiased model
+  - Negative MPE = systematic underprediction
+  - Positive MPE = systematic overprediction
+
+  ### 5. Use Multiple Metrics Together
+  - No single metric tells the full story
+  - Standard set: MAE + RMSE + R2 + AR2
+  - For forecasting: add MAPE and MPE
+  - Compare MAE vs RMSE: large difference means outlier predictions
+
+  ### 6. Context Matters for Thresholds
+  - R2 > 0.9 is great for physical measurements
+  - R2 > 0.7 may be excellent for behavioral predictions
+  - MAPE < 10% is generally good for demand forecasting
+  - Always compare to a baseline (e.g., predict the mean)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Train/Test Split ---
+  - train_test_split
+
+  # --- Pattern 2: Classification Evaluator ---
+  - classification_evaluator
+
+  # --- Pattern 3: SHAP Explainability ---
+  - shap_explainability
+
+  # --- Pattern 4: GLM ---
+  - glm
+
+  # --- Pattern 5: XGBoost ---
+  - xgboost
+# === RELATED_PATTERNS END ===

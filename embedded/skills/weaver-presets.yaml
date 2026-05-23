@@ -1,0 +1,149 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: weaver-presets
+  title: Agent Preset Scaffolding
+  description: Curated single-agent presets the weaver applies via agent_management apply_preset.
+  domain: meta-agent
+  version: "1.0.0"
+  author: loom-core
+  labels:
+    surface: weaver
+trigger:
+  slash_commands:
+    - /preset
+    - /presets
+  keywords:
+    - preset
+    - personal assistant
+    - research analyst
+    - teradata analyst
+    - creative writer
+    - ui specialist
+    - task automator
+    - quick chat
+    - coordinator
+    - "single agent"
+  mode: HYBRID
+  min_confidence: 0.65
+prompt:
+  instructions: |
+    Use a preset whenever the user asks for a single agent in a common
+    role. Presets fill tools, limits, temperature, thinking, memory,
+    and workload profile. The user still supplies a name and system
+    prompt — those two never come from the preset.
+
+    ## Flow
+    1. Call agent_management with {"action": "presets"} to list the
+       available presets and their default tool sets.
+    2. Pick the preset whose intent matches the user. If nothing fits,
+       fall back to the weaver-from-scratch skill.
+    3. Call agent_management with apply_preset, passing the preset name,
+       the user-chosen agent name, and the system prompt you've drafted.
+    4. Confirm with the user — show the agent name + preset and ask if
+       they want adjustments.
+
+    ## Preset cheatsheet
+    - **personal_assistant** — always-on assistant. Unlimited turns,
+      web + http + file + parse tools, deep thinking, long-term graph memory.
+    - **research_analyst** — web research with citations. 200k context,
+      systematic synthesis, parse_document for PDFs / docx.
+    - **teradata_analyst** — SQL on Teradata. TD ROM, data-intensive
+      profile, create_ui_app for dashboards. Unlimited query-result inspection.
+    - **creative_writer** — long-form writing. Temperature 1.0, strong
+      graph memory for continuity, file_read + file_write for drafts.
+    - **ui_specialist** — dashboards and visualizations. create_ui_app
+      + web tools for reference + file_read.
+    - **task_automator** — agentic workhorse. shell_execute + file_*,
+      sub-agent delegation, manage_ephemeral_agents, agent_management,
+      output-token circuit breaker disabled for long-running runs.
+    - **quick_chat** — lightweight Q&A. No tools, short history window,
+      thinking disabled. Cheapest preset.
+    - **coordinator** — decomposes work and delegates to sub-agents.
+      task_board + manage_ephemeral_agents. Does no work directly.
+
+    ## Required parameters for apply_preset
+    - preset: one of the names above (snake_case)
+    - name: the user-chosen agent name (kebab-case recommended)
+    - system_prompt: a focused, role-specific prompt (no "You are an
+      expert..." role-play — give direct instructions)
+    - active_provider (optional): named pool entry like "claude-haiku"
+      if the user wants a specific model
+
+    ## What to avoid
+    - Do NOT list auto-injected tools in the preset call (workspace,
+      query_tool_result, send_message, publish, shared_memory_*) — the
+      preset's tool list is exactly what the agent gets; auto-injection
+      adds the rest at runtime.
+    - Do NOT pass an empty system_prompt — the apply_preset action will
+      reject it. Always draft a prompt before calling.
+    - Do NOT mix apply_preset with manual tools overrides on the same
+      call; if the user wants a different tool set, use create_agent
+      instead and build the agent from scratch.
+  constraints:
+    - 'Always call agent_management with action=presets first when the user is browsing or unsure.'
+    - 'Always confirm preset choice with the user before apply_preset.'
+    - 'One apply_preset call per agent — do not loop over presets.'
+  output_format: |
+    On preset listing: a short summary per preset (name + one-line
+    description) and a recommendation tailored to the user's intent.
+    On apply: a single confirmation line citing agent name + preset.
+  examples:
+    - user_input: "Make me a personal assistant that helps with daily tasks"
+      expected_output: |
+        Call agent_management:
+        {"action": "apply_preset", "preset": "personal_assistant",
+         "name": "my-assistant",
+         "system_prompt": "Help the user manage daily tasks, answer questions, and find information efficiently."}
+      explanation: Preset fits the intent; name is user-friendly; prompt is task-oriented (no role-play).
+    - user_input: "I want a SQL analyst for our Teradata warehouse"
+      expected_output: |
+        {"action": "apply_preset", "preset": "teradata_analyst",
+         "name": "td-warehouse-analyst",
+         "system_prompt": "Answer questions about the Teradata warehouse by writing and executing SQL. Always cite the exact query and result. Highlight trends, anomalies, and key takeaways."}
+      explanation: TD preset includes the ROM and data-intensive profile required for SQL work.
+tools:
+  required_tools:
+    - agent_management
+  preferred_order:
+    - agent_management
+pattern_refs: []
+skill_refs: []
+max_prompt_tokens: 2200
+sticky: true
+parent_index_path: meta-agent/weaver/presets
+emit_tasks: true
+task_template:
+  root_title: Apply Agent Preset
+  max_tasks: 5
+  ephemeral_on_deactivate: false
+  steps:
+    - title: Confirm preset choice with user
+      objective: Verify the chosen preset is the best fit for the user's stated intent.
+      acceptance_criteria: User has explicitly approved the preset OR the message already specifies "apply directly".
+      category: decision
+      priority: P1
+    - title: Draft the agent's system prompt
+      objective: Write a direct, task-oriented system prompt (no role-prompting).
+      acceptance_criteria: Prompt is 1-4 paragraphs, action-focused, contains no "you are an expert..." framing.
+      category: writing
+      priority: P1
+      depends_on: [0]
+    - title: Apply the preset via agent_management
+      objective: Call agent_management with action=apply_preset, name, system_prompt.
+      acceptance_criteria: Tool returns success=true, agent YAML lands in agents/ dir, no validation errors.
+      category: implementation
+      priority: P1
+      depends_on: [1]
+    - title: Verify the agent loaded
+      objective: Confirm the new agent appears via agent_management list and read.
+      acceptance_criteria: read returns the freshly-written YAML and the preset label is set.
+      category: review
+      priority: P2
+      depends_on: [2]
+    - title: Brief the user on what was built
+      objective: Summarise preset + tools + key limits + how to use the agent.
+      acceptance_criteria: Reply includes agent name, preset id, tool list, and an example invocation.
+      category: writing
+      priority: P2
+      depends_on: [3]

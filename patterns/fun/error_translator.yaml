@@ -31,6 +31,8 @@ tags: [errors, debugging, translation, learning, fun]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - debugging
 use_cases:
   - Translate cryptic compiler errors
   - Understand runtime exceptions

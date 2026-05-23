@@ -67,7 +67,7 @@ spec:
   # Communication pattern documentation (advisory only - not enforced by runtime)
   #
   # The "hub-and-spoke" pattern emerges naturally through Loom's tri-modal communication:
-  # - Message Queue: send_message/receive_message for direct agent-to-agent communication
+  # - Message Queue: send_message for direct agent-to-agent communication (responses auto-delivered)
   # - Broadcast Bus: publish/subscribe for topic-based messaging (not used in this workflow)
   # - Shared Memory: shared_memory_write/read for shared state (not used in this workflow)
   #

@@ -24,9 +24,11 @@ import (
 	"github.com/teradata-labs/loom/internal/pgxdriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 )
 
 // Backend implements backend.StorageBackend using PostgreSQL with pgx.
@@ -40,6 +42,8 @@ type Backend struct {
 	artifactStore     *ArtifactStore
 	resultStore       *ResultStore
 	humanRequestStore *HumanRequestStore
+	taskStore         *TaskStore
+	graphMemoryStore  *GraphMemoryStore
 	migrator          *Migrator
 	tracer            observability.Tracer
 	logger            *zap.Logger
@@ -73,6 +77,8 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		return nil, fmt.Errorf("failed to create migrator: %w", err)
 	}
 
+	tc := agent.GetTokenCounter()
+
 	return &Backend{
 		pool:              pool,
 		sessionStore:      NewSessionStore(pool, tracer, logger.Named("session")),
@@ -80,6 +86,8 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		artifactStore:     NewArtifactStore(pool, tracer),
 		resultStore:       NewResultStore(pool, tracer),
 		humanRequestStore: NewHumanRequestStore(pool, tracer),
+		taskStore:         NewTaskStore(pool, tracer),
+		graphMemoryStore:  NewGraphMemoryStore(pool, tc, tracer),
 		migrator:          migrator,
 		tracer:            tracer,
 		logger:            logger,
@@ -109,6 +117,16 @@ func (b *Backend) ResultStore() storage.ResultStore {
 // HumanRequestStore returns the PostgreSQL human request store implementation.
 func (b *Backend) HumanRequestStore() shuttle.HumanRequestStore {
 	return b.humanRequestStore
+}
+
+// TaskStore implements backend.TaskStoreProvider.
+func (b *Backend) TaskStore() task.TaskStore {
+	return b.taskStore
+}
+
+// GraphMemoryStore implements backend.GraphMemoryProvider.
+func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
+	return b.graphMemoryStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.

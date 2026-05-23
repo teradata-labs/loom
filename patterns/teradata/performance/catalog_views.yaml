@@ -1,0 +1,484 @@
+# === METADATA START ===
+name: catalog_views
+title: "Teradata Catalog Views (DBC.*)"
+description: |
+  Templates for querying DBC.* system views for metadata discovery in Teradata.
+  DBC views expose the data dictionary: databases, tables, columns, indexes,
+  table sizes, statistics, and session information.
+
+  **Always use the V (view) variants** (e.g., DBC.TablesV, not DBC.Tables).
+  The V variants enforce access control properly.
+
+  Common catalog views covered:
+  - DBC.DatabasesV — list databases and users
+  - DBC.TablesV — list tables, views, and their properties
+  - DBC.ColumnsV — describe table columns and data types
+  - DBC.IndicesV — list indexes on a table
+  - DBC.TableSizeV — check table storage sizes
+  - DBC.DiskSpaceV — database space summary
+  - DBC.StatsV — view collected statistics
+  - DBC.SessionInfoV — current session information
+  - DBC.UserRightsV — access rights for users
+
+category: performance
+difficulty: beginner
+teradata_function: DBC Views
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
+use_cases:
+  # --- Use Case 1: List Databases ---
+  - List all accessible databases and distinguish databases from users
+
+  # --- Use Case 2: List Tables ---
+  - List tables and views in a database with their types and timestamps
+
+  # --- Use Case 3: Describe Columns ---
+  - Describe column names, types, lengths, and nullability for a table
+
+  # --- Use Case 4: Search for Tables or Columns ---
+  - Search across databases for tables or columns matching a name pattern
+
+  # --- Use Case 5: Check Table Sizes ---
+  - Check current and peak storage sizes for tables in a database
+
+  # --- Use Case 6: View Statistics ---
+  - View collected statistics on a table including collection timestamps
+
+  # --- Use Case 7: Session Information ---
+  - Get current session details including user, database, and spool limits
+
+  # --- Use Case 8: Check Access Rights ---
+  - View what privileges the current user has on databases and tables
+
+  # --- Use Case 9: Index Discovery ---
+  - List primary, secondary, and unique indexes on a table
+
+  # --- Use Case 10: Space Monitoring ---
+  - Monitor database space usage and identify databases nearing capacity
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in WHERE DatabaseName = '{{database}}'
+    required: false
+    description: "Database to query metadata for (omit to search across all databases)"
+    example: "sales_db"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in WHERE TableName = '{{table}}'
+    required: false
+    description: "Table name to describe or search for"
+    example: "orders"
+
+  # --- Parameter 3: Column ---
+  - name: column
+    type: string
+    # LLM-HINT: Maps to {{column}} in WHERE ColumnName = '{{column}}'
+    required: false
+    description: "Column name to search for across tables"
+    example: "customer_id"
+
+  # --- Parameter 4: Search Pattern ---
+  - name: search_pattern
+    type: string
+    # LLM-HINT: SQL LIKE pattern; maps to WHERE name LIKE '{{search_pattern}}'
+    required: false
+    description: "LIKE pattern for searching table or column names"
+    example: "%customer%"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === LIST_DATABASES TEMPLATE ===
+  # LLM-HINT: Lists all accessible databases; DBKind 'D' = database, 'U' = user
+  list_databases:
+    description: "List all accessible databases and users"
+    sql: |
+      SELECT DatabaseName, DBKind, CommentString
+      FROM DBC.DatabasesV
+      ORDER BY DatabaseName;
+      -- DBKind: 'D' = database, 'U' = user
+    required_parameters: []
+
+  # === LIST_TABLES TEMPLATE ===
+  # LLM-HINT: Lists tables/views in a database; TableKind codes identify object type
+  list_tables:
+    description: "List all tables and views in a database"
+    sql: |
+      SELECT TableName, TableKind, CreateTimeStamp, LastAlterTimeStamp
+      FROM DBC.TablesV
+      WHERE DatabaseName = '{{database}}'
+      ORDER BY TableKind, TableName;
+      -- TableKind: 'T'=table, 'V'=view, 'O'=NoPI table, 'Q'=queue, 'E'=error table, 'I'=join index
+    required_parameters:
+      - database
+
+  # === SEARCH_TABLES TEMPLATE ===
+  # LLM-HINT: Search for tables by name pattern across all databases
+  search_tables:
+    description: "Search for tables matching a name pattern across databases"
+    sql: |
+      SELECT DatabaseName, TableName, TableKind
+      FROM DBC.TablesV
+      WHERE TableName LIKE '{{search_pattern}}'
+      ORDER BY DatabaseName, TableName;
+    required_parameters:
+      - search_pattern
+
+  # === DESCRIBE_COLUMNS TEMPLATE ===
+  # LLM-HINT: Full column metadata for a table; ordered by ColumnId (ordinal position)
+  describe_columns:
+    description: "Describe all columns for a table with types, lengths, and nullability"
+    sql: |
+      SELECT ColumnId, ColumnName, ColumnType, ColumnLength,
+             Nullable, DefaultValue, ColumnFormat, CommentString
+      FROM DBC.ColumnsV
+      WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+      ORDER BY ColumnId;
+    required_parameters:
+      - database
+      - table
+
+  # === SEARCH_COLUMNS TEMPLATE ===
+  # LLM-HINT: Find all tables containing a specific column name
+  search_columns:
+    description: "Find tables that contain a specific column"
+    sql: |
+      SELECT DatabaseName, TableName, ColumnName, ColumnType
+      FROM DBC.ColumnsV
+      WHERE ColumnName = '{{column}}'
+      ORDER BY DatabaseName, TableName;
+    required_parameters:
+      - column
+
+  # === SEARCH_COLUMNS_PATTERN TEMPLATE ===
+  # LLM-HINT: Find columns matching a LIKE pattern across all databases
+  search_columns_pattern:
+    description: "Find columns matching a name pattern across all databases"
+    sql: |
+      SELECT DatabaseName, TableName, ColumnName, ColumnType
+      FROM DBC.ColumnsV
+      WHERE ColumnName LIKE '{{search_pattern}}'
+      ORDER BY DatabaseName, TableName;
+    required_parameters:
+      - search_pattern
+
+  # === TABLE_SIZES TEMPLATE ===
+  # LLM-HINT: Storage sizes from DBC.TableSizeV; aggregated per table in MB
+  table_sizes:
+    description: "Check table sizes in a database (from collected stats, no full scan)"
+    sql: |
+      SELECT TableName,
+             SUM(CurrentPerm) / 1024 / 1024 AS size_mb,
+             SUM(PeakPerm) / 1024 / 1024 AS peak_mb
+      FROM DBC.TableSizeV
+      WHERE DatabaseName = '{{database}}'
+      GROUP BY TableName
+      ORDER BY size_mb DESC;
+    required_parameters:
+      - database
+
+  # === DATABASE_SPACE TEMPLATE ===
+  # LLM-HINT: Database-level space summary from DBC.DiskSpaceV; identifies near-capacity databases
+  database_space:
+    description: "Database space summary showing max, used, and available space"
+    sql: |
+      SELECT DatabaseName,
+             SUM(MaxPerm) / 1024 / 1024 / 1024 AS max_gb,
+             SUM(CurrentPerm) / 1024 / 1024 / 1024 AS used_gb,
+             (SUM(MaxPerm) - SUM(CurrentPerm)) / 1024 / 1024 / 1024 AS free_gb,
+             CAST(SUM(CurrentPerm) * 100.0 / NULLIFZERO(SUM(MaxPerm)) AS DECIMAL(5,2)) AS pct_used
+      FROM DBC.DiskSpaceV
+      GROUP BY DatabaseName
+      ORDER BY used_gb DESC;
+    required_parameters: []
+
+  # === VIEW_STATISTICS TEMPLATE ===
+  # LLM-HINT: Shows collected statistics on a table; check LastCollectTimeStamp for staleness
+  view_statistics:
+    description: "View collected statistics on a table"
+    sql: |
+      SELECT ColumnName, StatsType, LastCollectTimeStamp, SampleSize
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+      ORDER BY ColumnName;
+    required_parameters:
+      - database
+      - table
+
+  # === TABLE_INDEXES TEMPLATE ===
+  # LLM-HINT: Lists all indexes on a table; IndexType codes identify index type
+  table_indexes:
+    description: "List indexes on a table with type and column details"
+    sql: |
+      SELECT IndexName, IndexType, UniqueFlag, ColumnName, ColumnPosition
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+      ORDER BY IndexType, ColumnPosition;
+      -- IndexType: 'P'=primary, 'S'=secondary, 'U'=unique, 'J'=join index
+    required_parameters:
+      - database
+      - table
+
+  # === SESSION_INFO TEMPLATE ===
+  # LLM-HINT: Current session details; useful for debugging spool limits and user context
+  session_info:
+    description: "Get current session information"
+    sql: |
+      SELECT *
+      FROM DBC.SessionInfoV
+      WHERE SessionNo = SESSION;
+    required_parameters: []
+
+  # === USER_RIGHTS TEMPLATE ===
+  # LLM-HINT: Check what the current user can do on a database or table
+  user_rights:
+    description: "View access rights for the current user"
+    sql: |
+      SELECT AccessRight, DatabaseName, TableName
+      FROM DBC.UserRightsV
+      WHERE UserName = USER
+      ORDER BY DatabaseName, TableName;
+    required_parameters: []
+
+  # === VIEW_DEFINITION TEMPLATE ===
+  # LLM-HINT: Get the DDL/SQL text of a view
+  view_definition:
+    description: "Get the SQL definition of a view"
+    sql: |
+      SELECT RequestText
+      FROM DBC.TablesV
+      WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}';
+    required_parameters:
+      - database
+      - table
+
+  # === FULL_TABLE_INFO TEMPLATE ===
+  # LLM-HINT: Joins DBC.ColumnsV with DBC.TablesV for a combined schema view
+  full_table_info:
+    description: "Fully qualified table info combining columns and table metadata"
+    sql: |
+      SELECT
+        c.DatabaseName,
+        c.TableName,
+        t.TableKind,
+        c.ColumnId,
+        c.ColumnName,
+        c.ColumnType,
+        c.ColumnLength,
+        c.Nullable
+      FROM DBC.ColumnsV c
+      JOIN DBC.TablesV t
+        ON t.DatabaseName = c.DatabaseName AND t.TableName = c.TableName
+      WHERE c.DatabaseName = '{{database}}'
+      ORDER BY c.TableName, c.ColumnId;
+    required_parameters:
+      - database
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Explore a New Database ---
+  - name: "Explore tables in a database"
+    description: "List all tables and views in the sales database"
+    parameters:
+      database: "sales"
+    expected_result: |
+      TableName          TableKind  CreateTimeStamp
+      customers          T          2024-01-15 10:00:00
+      orders             T          2024-01-15 10:05:00
+      order_items        T          2024-01-15 10:10:00
+      customer_summary   V          2024-02-01 09:00:00
+      staging_loads      O          2024-03-01 08:00:00
+
+      5 objects: 3 tables, 1 view, 1 NoPI table
+
+  # --- Example 2: Describe Table Schema ---
+  - name: "Describe columns of orders table"
+    description: "Get column names, types, and nullability for orders"
+    parameters:
+      database: "sales"
+      table: "orders"
+    expected_result: |
+      ColumnId  ColumnName    ColumnType  ColumnLength  Nullable
+      1         order_id      I           4             N
+      2         customer_id   I           4             N
+      3         order_date    DA          4             N
+      4         status        CV          20            Y
+      5         total_amount  D           8             N
+
+  # --- Example 3: Find Tables Containing a Column ---
+  - name: "Find all tables with customer_id column"
+    description: "Search for customer_id across all databases"
+    parameters:
+      column: "customer_id"
+    expected_result: |
+      DatabaseName  TableName     ColumnName    ColumnType
+      sales         orders        customer_id   I
+      sales         customers     customer_id   I
+      crm           contacts      customer_id   I
+      warehouse     fact_sales    customer_id   I
+
+      Found in 4 tables across 3 databases.
+
+  # --- Example 4: Check Table Sizes ---
+  - name: "Check storage sizes in sales database"
+    description: "Find the largest tables by current storage"
+    parameters:
+      database: "sales"
+    expected_result: |
+      TableName      size_mb    peak_mb
+      orders         12,450     15,200
+      order_items    8,320      9,100
+      customers      450        520
+      staging_loads  0          1,200
+
+  # --- Example 5: Check Statistics Freshness ---
+  - name: "View statistics on orders table"
+    description: "Check which columns have statistics and when they were collected"
+    parameters:
+      database: "sales"
+      table: "orders"
+    expected_result: |
+      ColumnName    StatsType  LastCollectTimeStamp     SampleSize
+      order_id      C          2024-03-15 02:00:00      50000000
+      customer_id   C          2024-03-15 02:00:00      50000000
+      order_date    C          2024-02-01 02:00:00      45000000
+      status        (none)     (none)                   (none)
+
+      3 of 5 columns have stats. order_date stats are 6 weeks old.
+      status column has no statistics — collect if used in WHERE clauses.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Using Base Tables Instead of Views ---
+  - error: "Access denied on DBC.Tables"
+    cause: "Queried the base DBC table (DBC.Tables) instead of the view variant (DBC.TablesV)"
+    solution: "Always use the V suffix: DBC.TablesV, DBC.ColumnsV, DBC.DatabasesV, etc. The V variants enforce row-level access control."
+
+  # --- Error 2: Case Sensitivity ---
+  - error: "No rows returned for known table"
+    cause: "Teradata stores names in uppercase by default. Query used lowercase in WHERE clause."
+    solution: "Use UPPER() or match the exact case stored in the dictionary: WHERE UPPER(TableName) = UPPER('myTable')"
+
+  # --- Error 3: Permission Denied ---
+  - error: "User does not have SELECT access to DBC view"
+    cause: "User lacks privileges on the requested DBC view"
+    solution: "Request SELECT access on the specific DBC view from DBA. Most read-only DBC views (TablesV, ColumnsV) are typically granted to all users."
+
+  # --- Error 4: TableSizeV Shows Zero ---
+  - error: "DBC.TableSizeV returns 0 for CurrentPerm"
+    cause: "Table is empty or statistics have not been collected"
+    solution: "Verify the table has rows with SELECT COUNT(*). For newly created empty tables, CurrentPerm will be 0 until data is loaded."
+
+  # --- Error 5: StatsV Missing Entries ---
+  - error: "DBC.StatsV returns no rows for a table"
+    cause: "No statistics have been collected on the table"
+    solution: "Run COLLECT STATISTICS on the table. See statistics_collection pattern for guidance on which columns to collect."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Catalog Views Best Practices
+
+  ### 1. Always Use V (View) Variants
+  Use DBC.TablesV, DBC.ColumnsV, DBC.DatabasesV — never the base tables.
+  The V variants enforce row-level security and only return objects you
+  have permission to see.
+
+  ### 2. Filter by DatabaseName When Possible
+  DBC views span all databases. Without a DatabaseName filter, queries
+  scan the entire dictionary:
+  ```sql
+  -- Good: scoped to one database
+  SELECT * FROM DBC.TablesV WHERE DatabaseName = 'sales';
+
+  -- Slow: scans all databases
+  SELECT * FROM DBC.TablesV WHERE TableName LIKE '%order%';
+  ```
+
+  ### 3. Understand TableKind Codes
+  Common TableKind values in DBC.TablesV:
+  - T = regular table
+  - V = view
+  - O = NoPI table
+  - Q = queue table
+  - E = error table
+  - I = join index
+
+  ### 4. Use TRIM() on Name Columns
+  DBC name columns are fixed-width CHAR. TRIM trailing spaces for
+  clean output:
+  ```sql
+  SELECT TRIM(DatabaseName) AS db, TRIM(TableName) AS tbl
+  FROM DBC.TablesV WHERE DatabaseName = 'sales';
+  ```
+
+  ### 5. Combine Views for Full Picture
+  Join DBC views for complete metadata:
+  ```sql
+  -- Columns + table type in one query
+  SELECT c.ColumnName, c.ColumnType, t.TableKind
+  FROM DBC.ColumnsV c
+  JOIN DBC.TablesV t ON t.DatabaseName = c.DatabaseName
+    AND t.TableName = c.TableName
+  WHERE c.DatabaseName = 'sales';
+  ```
+
+  ### 6. Monitor Space Proactively
+  Set up regular checks for databases approaching capacity:
+  ```sql
+  SELECT DatabaseName,
+         CAST(SUM(CurrentPerm)*100.0/NULLIFZERO(SUM(MaxPerm)) AS DECIMAL(5,2)) AS pct_used
+  FROM DBC.DiskSpaceV
+  GROUP BY DatabaseName
+  HAVING pct_used > 80
+  ORDER BY pct_used DESC;
+  ```
+
+  ### 7. Check Statistics Age Regularly
+  Stale statistics lead to bad query plans. Monitor with DBC.StatsV:
+  ```sql
+  SELECT DatabaseName, TableName, ColumnName,
+         CURRENT_TIMESTAMP - LastCollectTimeStamp AS age
+  FROM DBC.StatsV
+  WHERE CURRENT_TIMESTAMP - LastCollectTimeStamp > INTERVAL '7' DAY
+  ORDER BY age DESC;
+  ```
+
+  ### 8. Verify Table Type Before Operations
+  Some operations only work on base tables (e.g., COLLECT STATISTICS).
+  Check TableKind first:
+  ```sql
+  SELECT TableKind FROM DBC.TablesV
+  WHERE DatabaseName = 'db' AND TableName = 'name';
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Statistics Collection ---
+  - statistics_collection  # Collect stats after discovering tables via catalog views
+
+  # --- Pattern 2: Query Tuning ---
+  - query_tuning  # Use catalog views to check PI, types, and indexes for tuning
+
+  # --- Pattern 3: EXPLAIN Analysis ---
+  - explain_analysis  # Catalog views help verify table structure when reading EXPLAIN
+
+  # --- Pattern 4: PI Skew Detection ---
+  - pi_skew_detection  # Check indexes and distribution via catalog views
+
+  # --- Pattern 5: Spool Space Analysis ---
+  - spool_space_analysis  # Table sizes from catalog views inform spool estimates
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,342 @@
+# === METADATA START ===
+name: vector_normalize
+title: "Vector Normalization"
+description: |
+  Normalize vectors to unit length using TD_VectorNormalize. Unit-length normalization
+  (L2 normalization) is a CRITICAL prerequisite for cosine similarity search. On
+  unit-normalized vectors, cosine distance is equivalent to dot product distance,
+  which improves both accuracy and performance.
+
+  TD_VectorNormalize supports four normalization approaches:
+  - UNITVECTOR (L2 norm) - divide each element by the L2 norm of the vector
+  - FRACTION - each element as a fraction of the vector sum
+  - PERCENTAGE - each element as a percentage of the vector sum
+  - INDEX - normalize relative to a base column/value
+
+  Always normalize embeddings BEFORE:
+  - Computing cosine distances with TD_VectorDistance
+  - Building HNSW indexes with TD_HNSW (for cosine distance measure)
+  - Storing embeddings for later similarity search
+
+category: vector_search
+difficulty: beginner
+teradata_function: TD_VectorNormalize
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - vector_search
+  - similarity_search
+use_cases:
+  # --- Use Case 1: Cosine Similarity Prep ---
+  - Normalize embeddings to unit length before cosine similarity search
+
+  # --- Use Case 2: HNSW Index Prep ---
+  - Prepare vectors for HNSW index construction with cosine distance
+
+  # --- Use Case 3: Embedding Storage ---
+  - Normalize and store embeddings at ingestion time for consistent downstream search
+
+  # --- Use Case 4: Cross-Model Comparison ---
+  - Normalize embeddings from different models to comparable scales
+
+  # --- Use Case 5: Fractional Representation ---
+  - Express vector elements as fractions or percentages of the total
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the vector data"
+    example: "embeddings_db"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain a VECTOR or numeric columns
+    required: true
+    description: "Table containing vectors to normalize"
+    example: "document_embeddings"
+
+  # --- Parameter 3: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier; maps to IDColumns in TD_VectorNormalize
+    required: true
+    description: "Unique identifier column for each vector row"
+    example: "doc_id"
+
+  # --- Parameter 4: Vector Column ---
+  - name: vector_column
+    type: string
+    # LLM-HINT: Column containing the vector to normalize; supports VECTOR, Vector32, or individual numeric columns
+    required: true
+    description: "Column containing the vector to normalize (VECTOR type or numeric columns)"
+    example: "embedding"
+
+  # --- Parameter 5: Approach ---
+  - name: approach
+    type: string
+    # LLM-HINT: Normalization method; UNITVECTOR is default and required for cosine similarity
+    required: false
+    default: "UNITVECTOR"
+    description: "Normalization approach: UNITVECTOR (L2), FRACTION, PERCENTAGE, or INDEX"
+    example: "UNITVECTOR"
+
+  # --- Parameter 6: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Pass-through columns to include in output alongside the normalized vector
+    required: false
+    description: "Additional columns to pass through to the output"
+    example: '["doc_title", "doc_category"]'
+
+  # --- Parameter 7: Output Table ---
+  - name: output_table
+    type: string
+    # LLM-HINT: Target table name for storing normalized vectors; used in CREATE TABLE AS pattern
+    required: false
+    description: "Table name for persisting normalized vectors"
+    example: "document_embeddings_norm"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === UNIT_VECTOR_NORMALIZE TEMPLATE ===
+  # LLM-HINT: L2 normalization; CRITICAL prerequisite for cosine similarity and HNSW cosine indexes
+  unit_vector_normalize:
+    description: "Normalize vectors to unit length (L2 normalization) for cosine similarity"
+    sql: |
+      -- Normalize vectors to unit length
+      -- CRITICAL: Do this BEFORE cosine distance calculations or HNSW index builds
+      -- On unit vectors, cosine distance = 1 - dot_product, which is faster and more accurate
+      SELECT * FROM TD_VectorNormalize(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              IDColumns('{{id_column}}')
+              TargetColumns('{{vector_column}}')
+              Approach('UNITVECTOR')
+              -- Accumulate('{{accumulate_columns}}')  -- Uncomment to pass through additional columns
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - vector_column
+
+  # === PERSIST_NORMALIZED TEMPLATE ===
+  # LLM-HINT: Normalize and save to a new table; standard pattern for embedding ingestion pipelines
+  persist_normalized:
+    description: "Normalize vectors and persist to a new table for reuse"
+    sql: |
+      -- Normalize and store in a permanent table
+      -- Do this ONCE at embedding ingestion time, not at query time
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('{{id_column}}')
+                  TargetColumns('{{vector_column}}')
+                  Approach('UNITVECTOR')
+                  Accumulate('{{accumulate_columns}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - vector_column
+      - accumulate_columns
+      - output_table
+
+  # === FRACTION_NORMALIZE TEMPLATE ===
+  # LLM-HINT: Express each vector element as a fraction of the row total; useful for probability distributions
+  fraction_normalize:
+    description: "Normalize vectors so each element is a fraction of the total"
+    sql: |
+      -- Fraction normalization: each element = element / sum(all elements)
+      -- Useful for probability distributions or proportional analysis
+      SELECT * FROM TD_VectorNormalize(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              IDColumns('{{id_column}}')
+              TargetColumns('{{vector_column}}')
+              Approach('FRACTION')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - vector_column
+
+  # === INLINE_NORMALIZE TEMPLATE ===
+  # LLM-HINT: Normalize a query vector inline (e.g., in a CTE) before similarity search
+  inline_normalize:
+    description: "Normalize a query vector inline before similarity search"
+    sql: |
+      -- Normalize a query vector inline using a CTE
+      -- Use this pattern at search time: embed -> normalize -> search
+      WITH query_normalized AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON ({{query_subselect}}) AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('{{id_column}}')
+                  TargetColumns('{{vector_column}}')
+                  Approach('UNITVECTOR')
+          ) AS t
+      )
+      SELECT * FROM query_normalized;
+    required_parameters:
+      - query_subselect
+      - id_column
+      - vector_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Normalize Document Embeddings ---
+  - name: "Normalize Document Embeddings for Cosine Search"
+    description: "Normalize document embeddings to unit length and persist for cosine similarity search"
+    parameters:
+      database: "semantic_search"
+      table: "document_embeddings"
+      id_column: "doc_id"
+      vector_column: "embedding"
+      accumulate_columns: "doc_title"
+      output_table: "document_embeddings_norm"
+    expected_result: |
+      A new table document_embeddings_norm is created with:
+      - doc_id: original document identifier
+      - embedding: unit-normalized vector (L2 norm = 1.0)
+      - doc_title: passed through from original table
+
+      These normalized vectors can now be used with:
+      - TD_VectorDistance with DistanceMeasure('Cosine') for exact search
+      - TD_HNSW with DistanceMeasure('cosine') for approximate search
+
+  # --- Example 2: Inline Normalize Query Vector ---
+  - name: "Normalize Query Vector Before Search"
+    description: "Normalize a freshly-generated query embedding before searching an HNSW index"
+    parameters:
+      id_column: "query_id"
+      vector_column: "embedding"
+      query_subselect: "SELECT 1 AS query_id, Embeddings AS embedding FROM TD_SYSFNLIB.AI_TextEmbeddings(...)"
+    expected_result: |
+      A single-row result with the query embedding normalized to unit length.
+      This normalized query can then be passed to TD_HNSWPredict or TD_VectorDistance.
+
+  # --- Example 3: Fraction Normalization ---
+  - name: "Fraction Normalization for Feature Proportions"
+    description: "Express feature vector elements as proportions of row total"
+    parameters:
+      database: "analytics"
+      table: "spending_vectors"
+      id_column: "customer_id"
+      vector_column: "spending_by_category"
+      approach: "FRACTION"
+    expected_result: |
+      Each element of the spending vector is now a fraction of the customer's total spending.
+      Example: [100, 200, 300] becomes [0.167, 0.333, 0.500]
+      Sum of each normalized vector = 1.0
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Skipping Normalization ---
+  - error: "Cosine distances are inaccurate or unexpected"
+    cause: "Vectors were not normalized before cosine distance computation"
+    solution: "Always apply TD_VectorNormalize with Approach('UNITVECTOR') before using DistanceMeasure('Cosine') in TD_VectorDistance or building an HNSW index with DistanceMeasure('cosine')"
+
+  # --- Error 2: Wrong Approach ---
+  - error: "Normalized vectors do not have unit length"
+    cause: "Used FRACTION or PERCENTAGE instead of UNITVECTOR"
+    solution: "For cosine similarity, use Approach('UNITVECTOR') which divides by the L2 norm. FRACTION divides by the sum, which is not the same"
+
+  # --- Error 3: Normalizing at Query Time ---
+  - error: "Slow query performance for similarity search"
+    cause: "Normalizing the entire document table at every query"
+    solution: "Normalize document embeddings ONCE at ingestion time and store in a permanent table. Only normalize the query vector at search time"
+
+  # --- Error 4: Column Type Mismatch ---
+  - error: "TD_VectorNormalize fails on input column"
+    cause: "TargetColumns points to a non-numeric or unsupported column type"
+    solution: "TargetColumns must reference a VECTOR, Vector32, VARBYTE, or individual numeric columns. Use OutputFormat('VECTOR') when generating embeddings"
+
+  # --- Error 5: Missing IDColumns ---
+  - error: "IDColumns is required but not specified"
+    cause: "Omitted the IDColumns parameter"
+    solution: "IDColumns is required. Provide the unique row identifier column(s) for the input table"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## TD_VectorNormalize Best Practices
+
+  ### 1. Always Normalize Before Cosine Similarity
+  Cosine distance measures the angle between vectors, not magnitude. Normalizing to
+  unit length ensures cosine distance is computed correctly and efficiently.
+
+  ```sql
+  -- Correct pipeline: normalize THEN compute cosine distance
+  CREATE TABLE db.embeddings_norm AS (
+      SELECT * FROM TD_VectorNormalize(
+          ON db.embeddings AS InputTable PARTITION BY ANY
+          USING
+              IDColumns('id')
+              TargetColumns('embedding')
+              Approach('UNITVECTOR')
+      ) AS t
+  ) WITH DATA;
+  ```
+
+  ### 2. Normalize Once, Search Many Times
+  - Normalize document/item embeddings at ingestion time and store permanently
+  - Only normalize query vectors at search time (single vector, fast)
+  - Never re-normalize the entire corpus for each search query
+
+  ### 3. Use VECTOR Output Format
+  When generating embeddings with AI_TextEmbeddings or ONNXEmbeddings, always use
+  `OutputFormat('VECTOR')`. The VECTOR type integrates directly with TD_VectorNormalize,
+  TD_VectorDistance, and TD_HNSW without conversion.
+
+  ### 4. Normalization Before HNSW Index Build
+  If using DistanceMeasure('cosine') in TD_HNSW, normalize ALL input vectors first.
+  The HNSW index stores the vectors as-is; it does not normalize internally.
+
+  ### 5. Approach Selection Guide
+  | Approach | Formula | When to Use |
+  |----------|---------|-------------|
+  | UNITVECTOR | x / L2_norm(row) | Cosine similarity, HNSW indexing, embedding search |
+  | FRACTION | x / sum(row) | Probability distributions, proportional features |
+  | PERCENTAGE | x / sum(row) * 100 | Human-readable proportional output |
+  | INDEX | (x - B) / V | Custom base-relative normalization |
+
+  ### 6. Verify Normalization
+  After normalizing, verify vectors have unit length:
+  ```sql
+  -- L2 norm should be ~1.0 for all rows
+  SELECT id, SQRT(SUM(val * val)) AS l2_norm
+  FROM (
+      SELECT id, embedding
+      FROM db.embeddings_norm
+  ) t
+  -- For VECTOR columns, use TD_VectorDistance self-distance as a proxy check
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Vector Distance ---
+  - vector_distance
+
+  # --- Pattern 2: HNSW ---
+  - hnsw
+
+  # --- Pattern 3: Embeddings ---
+  - embeddings
+# === RELATED_PATTERNS END ===

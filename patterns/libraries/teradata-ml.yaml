@@ -113,3 +113,210 @@ spec:
         - classification
         - interpretable
         - teradata
+
+    - name: xgboost
+      description: "Gradient boosted decision tree ensembles using TD_XGBoost for classification and regression"
+      trigger_conditions:
+        - "user asks about xgboost or gradient boosting"
+        - "user asks about ensemble tree models"
+        - "user mentions boosted trees or boosting"
+        - "user asks about high-accuracy classification or regression"
+        - "user asks about feature importance ranking"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/xgboost.yaml
+
+        Key use cases:
+        - Churn prediction (binary classification)
+        - Multiclass classification (up to 500 classes)
+        - Regression with nonlinear relationships
+        - Fraud detection and demand forecasting
+        - Feature importance ranking
+      priority: 85
+      tags:
+        - ml
+        - xgboost
+        - ensemble
+        - classification
+        - regression
+        - teradata
+
+    - name: decision_forest
+      description: "Random forest ensembles using TD_DecisionForest with bagging for classification and regression"
+      trigger_conditions:
+        - "user asks about random forest"
+        - "user asks about decision forest or bagging"
+        - "user mentions ensemble classification"
+        - "user asks about high-dimensional feature handling"
+        - "user asks about bootstrap aggregating"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/decision_forest.yaml
+
+        Key use cases:
+        - Customer classification (high-value vs standard)
+        - Regression with nonlinear relationships
+        - Feature importance estimation via tree splits
+        - High-dimensional data without feature selection
+      priority: 80
+      tags:
+        - ml
+        - random-forest
+        - ensemble
+        - classification
+        - regression
+        - teradata
+
+    - name: glm
+      description: "Generalized Linear Models using TD_GLM for regression and binary classification with micromodeling support"
+      trigger_conditions:
+        - "user asks about generalized linear model or GLM"
+        - "user asks about micromodeling or per-segment models"
+        - "user mentions GLM with SGD optimization"
+        - "user asks about stepwise feature selection"
+        - "user asks about interpretable coefficient-based models"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/glm.yaml
+
+        Key use cases:
+        - Linear and logistic regression
+        - Interpretable models with coefficient weights
+        - Micromodeling (per-segment independent models)
+        - Stepwise feature selection
+        - Baseline models before ensemble methods
+      priority: 75
+      tags:
+        - ml
+        - glm
+        - regression
+        - classification
+        - micromodeling
+        - teradata
+
+    - name: svm
+      description: "Linear Support Vector Machine using TD_SVM for binary classification and regression with margin control"
+      trigger_conditions:
+        - "user asks about support vector machine or SVM"
+        - "user asks about margin-based classification"
+        - "user mentions high-dimensional text or genomics classification"
+        - "user asks about epsilon-insensitive regression"
+        - "user asks about regularization and margin control"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/svm.yaml
+
+        Key use cases:
+        - Binary classification with clear margin separation
+        - High-dimensional data (text classification, genomics)
+        - Regression with epsilon-insensitive loss
+        - Cases where regularization and margin control matter
+      priority: 75
+      tags:
+        - ml
+        - svm
+        - classification
+        - regression
+        - teradata
+
+    - name: naive_bayes
+      description: "Probabilistic Naive Bayes classifier using TD_NaiveBayes for fast multi-class classification"
+      trigger_conditions:
+        - "user asks about naive bayes classifier"
+        - "user asks about probabilistic classification"
+        - "user mentions fast baseline classification"
+        - "user asks about text classification with naive bayes"
+        - "user asks about lightweight real-time scoring"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/naive_bayes.yaml
+
+        Key use cases:
+        - Text classification (spam, sentiment, topic)
+        - Fast baseline classification
+        - High-dimensional sparse data
+        - Multi-class problems
+        - Real-time scoring (lightweight model)
+      priority: 70
+      tags:
+        - ml
+        - naive-bayes
+        - classification
+        - probabilistic
+        - teradata
+
+    - name: knn
+      description: "K-Nearest Neighbors using TD_KNN for lazy-learning classification, regression, and similarity lookup"
+      trigger_conditions:
+        - "user asks about k-nearest neighbors or KNN"
+        - "user asks about similarity lookup or nearest neighbor search"
+        - "user mentions lazy learning or instance-based learning"
+        - "user asks about classification without a training step"
+        - "user asks about quick prototyping with distance-based models"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/knn.yaml
+
+        Key use cases:
+        - Small to medium dataset classification
+        - Quick prototyping without a training step
+        - Nearest neighbor search and similarity lookup
+        - Classification and regression baselines
+      priority: 70
+      tags:
+        - ml
+        - knn
+        - classification
+        - regression
+        - similarity
+        - teradata
+
+    - name: anomaly_detection
+      description: "One-Class SVM anomaly detection using TD_OneClassSVM trained on normal data to flag outliers"
+      trigger_conditions:
+        - "user asks about anomaly detection or outlier detection"
+        - "user asks about one-class SVM"
+        - "user mentions fraud detection with scarce labeled data"
+        - "user asks about unsupervised anomaly scoring"
+        - "user asks about detecting abnormal behavior in sensor or network data"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/anomaly_detection.yaml
+
+        Key use cases:
+        - Network intrusion detection
+        - Fraud detection (rare or unavailable fraud labels)
+        - Manufacturing defect detection
+        - Sensor data anomaly monitoring
+        - Medical anomaly screening
+      priority: 80
+      tags:
+        - ml
+        - anomaly-detection
+        - one-class-svm
+        - unsupervised
+        - teradata
+
+    - name: ml_pipeline_patterns
+      description: "Reusable end-to-end ML pipeline templates combining preprocessing, training, and scoring"
+      trigger_conditions:
+        - "user asks about ML pipeline or end-to-end workflow"
+        - "user asks about production scoring pipeline"
+        - "user mentions CTE-based prediction pipeline"
+        - "user asks about class imbalance workflow with SMOTE"
+        - "user asks about micromodeling pipeline or per-partition training"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/ml_pipeline_patterns.yaml
+
+        Pipeline templates:
+        - CTE Prediction Pipeline: preprocessing + prediction in one query
+        - Class Imbalance Workflow: split, SMOTE train only, train, evaluate
+        - Micromodeling Pipeline: train and score per partition
+      priority: 85
+      tags:
+        - ml
+        - pipeline
+        - workflow
+        - production
+        - teradata

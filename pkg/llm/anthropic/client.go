@@ -472,18 +472,35 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 }
 
 // calculateCost estimates the cost in USD based on token usage.
-// Pricing as of 2025-01 for Claude claude-sonnet-4-6.
-// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+// Pricing varies by model family. Cache pricing derives from input price:
+// cache_write = 1.25x input, cache_read = 0.10x input.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// Claude claude-sonnet-4-6 pricing (2025-01):
-	// Input: $3 per million tokens
-	// Output: $15 per million tokens
-	// Cache write (creation): $3.75 per million tokens (1.25x input)
-	// Cache read: $0.30 per million tokens (0.10x input)
-	inputCost := float64(inputTokens) * 3.0 / 1_000_000
-	outputCost := float64(outputTokens) * 15.0 / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * 3.75 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * 0.30 / 1_000_000
+	// Determine per-million-token pricing based on model.
+	// IMPORTANT: check opus-4-1 BEFORE opus-4 since "opus-4-1" contains "opus-4".
+	var inputPricePerM, outputPricePerM float64
+	switch {
+	case strings.Contains(c.model, "opus-4-1"):
+		// Claude Opus 4.1: $15/$75
+		inputPricePerM = 15.0
+		outputPricePerM = 75.0
+	case strings.Contains(c.model, "opus-4"):
+		// Claude Opus 4.5, 4.6: $5/$25
+		inputPricePerM = 5.0
+		outputPricePerM = 25.0
+	case strings.Contains(c.model, "haiku"):
+		// Claude Haiku 4.5: $1/$5
+		inputPricePerM = 1.0
+		outputPricePerM = 5.0
+	default:
+		// Claude Sonnet 4.5, 4.6 and any unrecognized model: $3/$15
+		inputPricePerM = 3.0
+		outputPricePerM = 15.0
+	}
+
+	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
+	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
+	cacheWriteCost := float64(cacheCreationTokens) * (inputPricePerM * 1.25) / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * (inputPricePerM * 0.10) / 1_000_000
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 

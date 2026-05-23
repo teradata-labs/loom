@@ -1,0 +1,552 @@
+# === METADATA START ===
+name: model_scoring
+title: "BYOM Model Scoring"
+description: |
+  Score data in Teradata Vantage using externally trained models loaded via BYOM.
+  All scoring functions share a common two-table ON clause pattern:
+  InputTable (data to score) + ModelTable DIMENSION (model BLOB).
+
+  Covered scoring functions:
+  - PMMLPredict: Score with PMML models (.pmml)
+  - H2OPredict: Score with H2O MOJO models (open source and DAI)
+  - ONNXPredict: Score with ONNX models (.onnx) for tabular/numeric data
+
+  All functions require the Accumulate parameter. Output is either a json_report
+  column (default) or specific fields via ModelOutputFields.
+
+  Prerequisites: Models must be loaded into BLOB tables first. See the model_loading
+  pattern for table schema and loading instructions.
+
+category: byom
+difficulty: advanced
+teradata_function: PMMLPredict, H2OPredict, ONNXPredict
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - scoring
+  - ml_operations
+use_cases:
+  # --- Use Case 1: Batch Scoring ---
+  - Score an entire table of records against a trained model
+
+  # --- Use Case 2: Classification ---
+  - Predict class labels and probabilities for new data
+
+  # --- Use Case 3: Regression ---
+  - Predict continuous values (revenue, lifetime value, risk score)
+
+  # --- Use Case 4: Model Comparison ---
+  - Score the same data with multiple models to compare predictions
+
+  # --- Use Case 5: Explainability ---
+  - Get feature contributions and leaf node assignments (H2O DAI)
+
+  # --- Use Case 6: Real-Time Scoring ---
+  - Score individual records or small batches in operational workflows
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing data and model tables"
+    example: "ml_scoring"
+
+  # --- Parameter 2: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Table or view containing the data to score
+    required: true
+    description: "Table, view, or subquery containing the data to score"
+    example: "customer_features"
+
+  # --- Parameter 3: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: Table containing the model BLOB(s)
+    required: true
+    description: "Table containing the model BLOB(s)"
+    example: "pmml_models"
+
+  # --- Parameter 4: Model ID ---
+  - name: model_id
+    type: string
+    # LLM-HINT: model_id value to select from model table; omit if table has one row
+    required: false
+    description: "Model ID to select from model table. Omit if table contains a single model."
+    example: "iris_rf_model"
+
+  # --- Parameter 5: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable to pass through to output; use '*' for all
+    required: true
+    description: "InputTable columns to include in output. Use '*' for all columns."
+    example: '["customer_id", "segment"]'
+
+  # --- Parameter 6: Model Output Fields ---
+  - name: model_output_fields
+    type: array[string]
+    # LLM-HINT: Specific output fields as separate columns; suppresses json_report
+    required: false
+    description: "Specific model output fields to return as columns. Suppresses json_report when specified."
+    example: '["predicted_species", "probability_setosa", "probability_versicolor"]'
+
+  # --- Parameter 7: Model Type (H2O only) ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'DAI' or 'OpenSource'; only for H2OPredict
+    required: false
+    description: "H2O model type: 'DAI' for Driverless AI, 'OpenSource' for open source H2O"
+    example: "DAI"
+
+  # --- Parameter 8: Enable Options (H2O only) ---
+  - name: enable_options
+    type: array[string]
+    # LLM-HINT: Explainability: 'contributions', 'stageProbabilities', 'leafNodeAssignments'
+    required: false
+    description: "H2O explainability options: 'contributions', 'stageProbabilities', 'leafNodeAssignments'"
+    example: '["contributions"]'
+
+  # --- Parameter 9: Model Input Fields Map (ONNX only) ---
+  - name: model_input_fields_map
+    type: array[string]
+    # LLM-HINT: Maps InputTable columns to ONNX input tensors; syntax: 'tensor=col1,col2' or 'tensor=[1:4]'
+    required: false
+    description: "Maps InputTable columns to ONNX input tensor names. Use when column names don't match tensor names."
+    example: '["float_input=[1:4]"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === PMML_SCORE_JSON TEMPLATE ===
+  # LLM-HINT: Score with PMML model; returns json_report with all output fields
+  pmml_score_json:
+    description: "Score data with a PMML model, returning full JSON output"
+    sql: |
+      -- PMMLPredict with JSON output
+      -- Default schema is mldb; specify schema if installed elsewhere
+      SELECT * FROM PMMLPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id
+      - accumulate_columns_quoted
+
+  # === PMML_SCORE_FIELDS TEMPLATE ===
+  # LLM-HINT: Score with PMML model; returns specific output fields as columns
+  pmml_score_fields:
+    description: "Score data with a PMML model, returning specific output fields as columns"
+    sql: |
+      -- PMMLPredict with specific output fields
+      -- ModelOutputFields suppresses json_report and returns named columns
+      SELECT * FROM PMMLPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+              ModelOutputFields({{model_output_fields_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id
+      - accumulate_columns_quoted
+      - model_output_fields_quoted
+
+  # === H2O_SCORE_OPENSOURCE TEMPLATE ===
+  # LLM-HINT: Score with H2O open source MOJO model
+  h2o_score_opensource:
+    description: "Score data with an H2O open source MOJO model"
+    sql: |
+      -- H2OPredict with open source model
+      SELECT * FROM H2OPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+              ModelType('OpenSource')
+              ModelOutputFields({{model_output_fields_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - accumulate_columns_quoted
+      - model_output_fields_quoted
+
+  # === H2O_SCORE_DAI TEMPLATE ===
+  # LLM-HINT: Score with H2O DAI model; includes license column in ModelTable SELECT
+  h2o_score_dai:
+    description: "Score data with an H2O Driverless AI model (includes license)"
+    sql: |
+      -- H2OPredict with DAI model
+      -- Include license column in ModelTable SELECT (Option 2)
+      -- Or use a separate license table (Option 1 — see model_loading pattern)
+      SELECT * FROM H2OPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (SELECT model_id, model, license FROM {{database}}.{{model_table}}
+              WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+              ModelType('DAI')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id
+      - accumulate_columns_quoted
+
+  # === H2O_SCORE_DAI_CONTRIBUTIONS TEMPLATE ===
+  # LLM-HINT: Score with DAI model and get feature contributions for explainability
+  h2o_score_dai_contributions:
+    description: "Score with H2O DAI model including feature contributions (explainability)"
+    sql: |
+      -- H2OPredict with DAI model and feature contributions
+      SELECT * FROM H2OPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (SELECT model_id, model, license FROM {{database}}.{{model_table}}
+              WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+              ModelType('DAI')
+              EnableOptions('contributions')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id
+      - accumulate_columns_quoted
+
+  # === ONNX_SCORE TEMPLATE ===
+  # LLM-HINT: Score with ONNX model; use ModelInputFieldsMap for column-to-tensor mapping
+  onnx_score:
+    description: "Score data with an ONNX model"
+    sql: |
+      -- ONNXPredict
+      -- Use ModelInputFieldsMap when column names don't match tensor names
+      SELECT * FROM ONNXPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+              ModelInputFieldsMap({{model_input_fields_map_quoted}})
+              ModelOutputFields({{model_output_fields_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id
+      - accumulate_columns_quoted
+      - model_input_fields_map_quoted
+      - model_output_fields_quoted
+
+  # === ONNX_INSPECT TEMPLATE ===
+  # LLM-HINT: Inspect column-to-tensor mapping without running scoring
+  onnx_inspect:
+    description: "Inspect ONNX model column-to-tensor mapping without scoring"
+    sql: |
+      -- Inspect mode: shows expanded mapping string, no scoring
+      -- Use TOP 1 — one row is produced per AMP
+      SELECT TOP 1 * FROM ONNXPredict(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              Accumulate('*')
+              ShowModelInputFieldsMap('true')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+
+  # === BATCH_SCORE_WITH_COMPARISON TEMPLATE ===
+  # LLM-HINT: Score with two model versions and compare predictions side-by-side
+  batch_score_with_comparison:
+    description: "Score with two model versions and compare predictions"
+    sql: |
+      -- Compare predictions from two model versions
+      SELECT
+          a.{{id_column}},
+          a.prediction AS prediction_v1,
+          b.prediction AS prediction_v2,
+          CASE WHEN a.prediction = b.prediction THEN 'agree' ELSE 'disagree' END AS comparison
+      FROM (
+          SELECT * FROM PMMLPredict(
+              ON {{database}}.{{input_table}} AS InputTable
+              ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id_v1}}') AS ModelTable DIMENSION
+              USING Accumulate('{{id_column}}')
+          ) AS t
+      ) a
+      JOIN (
+          SELECT * FROM PMMLPredict(
+              ON {{database}}.{{input_table}} AS InputTable
+              ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id_v2}}') AS ModelTable DIMENSION
+              USING Accumulate('{{id_column}}')
+          ) AS t
+      ) b
+      ON a.{{id_column}} = b.{{id_column}};
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - model_id_v1
+      - model_id_v2
+      - id_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: PMML Classification ---
+  - name: "Iris Classification with PMML Random Forest"
+    description: "Score iris test data with a PMML random forest model"
+    parameters:
+      database: "ml_scoring"
+      input_table: "iris_test"
+      model_table: "pmml_models"
+      model_id: "iris_rf_model"
+      accumulate_columns: ["sample_id", "species_actual"]
+    expected_result: |
+      Output with json_report:
+        sample_id | species_actual | prediction | json_report
+        1         | setosa         | setosa     | {"predicted_species":"setosa","probability_setosa":0.97,...}
+        2         | versicolor     | versicolor | {"predicted_species":"versicolor","probability_versicolor":0.85,...}
+
+      Output with ModelOutputFields('predicted_species', 'probability_setosa'):
+        sample_id | species_actual | predicted_species | probability_setosa
+        1         | setosa         | setosa            | 0.97
+        2         | versicolor     | versicolor        | 0.02
+
+  # --- Example 2: H2O DAI Churn Prediction ---
+  - name: "Customer Churn Prediction with H2O DAI"
+    description: "Score customer data with an H2O DAI model including feature contributions"
+    parameters:
+      database: "ml_scoring"
+      input_table: "churn_test"
+      model_table: "h2o_models"
+      model_id: "pipeline_model"
+      accumulate_columns: ["customer_id", "actual_churn"]
+      model_type: "DAI"
+      enable_options: ["contributions"]
+    expected_result: |
+      Output with feature contributions:
+        customer_id | actual_churn | prediction | json_report
+        C001        | 1            | 1          | {"predict":1,"p0":0.15,"p1":0.85,"contributions":{"tenure":-0.3,"monthly_charges":0.4,...}}
+
+      The contributions field shows which features pushed the prediction
+      toward churn (positive) or retention (negative).
+
+  # --- Example 3: ONNX Scoring with Tensor Mapping ---
+  - name: "ONNX Model Scoring with Column-to-Tensor Mapping"
+    description: "Score iris data with ONNX model, mapping columns to input tensors"
+    parameters:
+      database: "ml_scoring"
+      input_table: "iris_test"
+      model_table: "onnx_models"
+      model_id: "iris_onnx"
+      accumulate_columns: ["sample_id"]
+      model_input_fields_map: ["float_input=[1:4]"]
+      model_output_fields: ["output_label", "output_probability"]
+    expected_result: |
+      Output:
+        sample_id | output_label | output_probability
+        1         | 0            | {"0":0.97,"1":0.02,"2":0.01}
+        2         | 1            | {"0":0.05,"1":0.88,"2":0.07}
+
+      The ModelInputFieldsMap('float_input=[1:4]') maps columns 1-4
+      of the InputTable to the ONNX model's 'float_input' tensor.
+
+  # --- Example 4: H2O Open Source Loan Risk ---
+  - name: "Loan Risk Scoring with H2O Open Source"
+    description: "Score loan applications with an H2O open source model"
+    parameters:
+      database: "lending"
+      input_table: "loan_applications"
+      model_table: "h2o_os_models"
+      accumulate_columns: ["application_id"]
+      model_output_fields: ["predict", "p0", "p1"]
+    expected_result: |
+      Output:
+        application_id | predict | p0   | p1
+        L001           | 0       | 0.82 | 0.18
+        L002           | 1       | 0.31 | 0.69
+        L003           | 0       | 0.95 | 0.05
+
+      predict: 0 = approved, 1 = rejected
+      p0: probability of class 0 (approved)
+      p1: probability of class 1 (rejected)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Accumulate ---
+  - error: "[Teradata] Missing required argument: Accumulate"
+    cause: "Accumulate is required for all BYOM scoring functions"
+    solution: "Add Accumulate('*') to include all InputTable columns, or list specific columns: Accumulate('col1', 'col2')"
+
+  # --- Error 2: Column Name Mismatch ---
+  - error: "PMMLPredict or H2OPredict returns NULL predictions"
+    cause: "InputTable column names do not match the feature names the model expects"
+    solution: "Column names must match model feature names (case-insensitive). Use column aliases in a subquery if needed."
+
+  # --- Error 3: ONNX Tensor Mapping ---
+  - error: "ONNXPredict returns errors about input tensor shape"
+    cause: "Column-to-tensor mapping does not match the model's expected input"
+    solution: "Use ShowModelInputFieldsMap('true') to see the expected mapping, then adjust ModelInputFieldsMap accordingly."
+
+  # --- Error 4: ModelTable Not DIMENSION ---
+  - error: "[Teradata] Syntax error on ModelTable clause"
+    cause: "Missing DIMENSION keyword on the ModelTable ON clause"
+    solution: "ModelTable must always be DIMENSION: ON db.model_table AS ModelTable DIMENSION"
+
+  # --- Error 5: dedicated/json_result Column Conflict ---
+  - error: "Column name conflict with PMMLPredict"
+    cause: "InputTable or ModelTable has a column named 'dedicated' or 'json_result'"
+    solution: "Rename or exclude columns named 'dedicated' or 'json_result' from InputTable and ModelTable."
+
+  # --- Error 6: H2O All-Zero Probabilities ---
+  - error: "H2OPredict returns all-zero class probabilities"
+    cause: "Cached model is stale or corrupt"
+    solution: "Set UseCache('false') to force a fresh model load. If the problem persists, reload the model file."
+
+  # --- Error 7: Stale Cache After Model Update ---
+  - error: "Predictions do not reflect updated model"
+    cause: "BYOM functions cache models for up to 7 days"
+    solution: "Add OverwriteCachedModel('model_name') to one query after updating. Do not use OverwriteCachedModel in concurrent queries (OOM risk)."
+
+  # --- Error 8: BLOB/CLOB in Accumulate ---
+  - error: "Accumulate does not support BLOB or CLOB columns"
+    cause: "InputTable has BLOB or CLOB columns included in Accumulate('*')"
+    solution: "List specific columns in Accumulate instead of '*', excluding BLOB and CLOB columns."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## BYOM Model Scoring Best Practices
+
+  ### 1. Choosing JSON vs. Named Output Fields
+  **json_report (default):**
+  - Returns all model output fields as a single JSON string
+  - Flexible — no need to know field names in advance
+  - Parse with JSON functions downstream
+  - Best for exploration and debugging
+
+  **ModelOutputFields (explicit):**
+  - Returns named columns with proper types
+  - Better for production pipelines — typed columns, no JSON parsing
+  - Must know exact output field names
+  - Complex fields (arrays, maps) returned as strings
+
+  ### 2. Accumulate Strategy
+  ```sql
+  -- Pass through all columns (simple but includes everything)
+  Accumulate('*')
+
+  -- Pass through specific columns (cleaner output)
+  Accumulate('customer_id', 'segment')
+  ```
+  - Use '*' during exploration
+  - Use specific columns in production for cleaner schemas
+  - Never include BLOB/CLOB columns in Accumulate
+
+  ### 3. Model Selection from Multi-Model Tables
+  **Always use WHERE clause:**
+  ```sql
+  -- Select specific model
+  ON (SELECT * FROM db.model_table WHERE model_id = 'my_model') AS ModelTable DIMENSION
+
+  -- Do NOT use the full table if it has multiple models
+  -- ON db.model_table AS ModelTable DIMENSION  -- WRONG if multiple models exist
+  ```
+
+  ### 4. PMMLPredict Specifics
+  - Default schema is mldb — specify alternate if installed elsewhere
+  - InputTable column names must match PMML model feature names (case-insensitive)
+  - Supported PMML types: Random Forest, Decision Tree, Regression, Neural Network,
+    Naive Bayes, SVM, k-NN, Cluster, Scorecard, Association Rules, Anomaly Detection
+
+  ### 5. H2OPredict Specifics
+  **Open source vs. DAI:**
+  - Open source: ModelType('OpenSource') — no license needed
+  - DAI: ModelType('DAI') — license required in ModelTable or separate table
+  - Keep DAI and open source models in separate tables
+
+  **Explainability (DAI only):**
+  ```sql
+  EnableOptions('contributions')            -- feature contributions per prediction
+  EnableOptions('stageProbabilities')        -- probability at each tree stage
+  EnableOptions('leafNodeAssignments')       -- leaf node placement per tree
+  ```
+
+  **Cache troubleshooting:**
+  - UseCache defaults to true (unlike other BYOM functions)
+  - Set UseCache('false') if observing all-zero probabilities
+  - Forces fresh model load from table
+
+  ### 6. ONNXPredict Specifics
+  **Column-to-tensor mapping:**
+  ```sql
+  -- Named columns
+  ModelInputFieldsMap('input_tensor=col1,col2,col3')
+
+  -- Index range (1-based)
+  ModelInputFieldsMap('float_input=[1:4]')
+
+  -- Multiple tensors
+  ModelInputFieldsMap('tensor_a=[1:4]', 'tensor_b=[5:8]')
+  ```
+
+  **Always verify mapping first:**
+  ```sql
+  SELECT TOP 1 * FROM ONNXPredict(
+      ON db.data AS InputTable
+      ON db.models AS ModelTable DIMENSION
+      USING Accumulate('*') ShowModelInputFieldsMap('true')
+  ) AS t;
+  ```
+
+  ### 7. Performance Optimization
+  - Model caching is automatic (7-day TTL) — first query loads, subsequent queries are fast
+  - Avoid OverwriteCachedModel unless you have actually updated the model
+  - For large input tables, consider scoring in batches
+  - Use DIMENSION on ModelTable — this broadcasts the model to all AMPs
+
+  ### 8. Model Comparison Pattern
+  Score the same data with multiple models and compare:
+  ```sql
+  -- Score with model v1 and v2, then compare
+  SELECT
+      v1.id, v1.prediction AS pred_v1, v2.prediction AS pred_v2,
+      CASE WHEN v1.prediction = v2.prediction THEN 'agree' ELSE 'disagree' END
+  FROM (score with v1) v1
+  JOIN (score with v2) v2 ON v1.id = v2.id;
+  ```
+  This is useful for A/B model testing and model version validation.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Model Loading ---
+  - model_loading
+
+  # --- Pattern 2: K-Means (in-database training) ---
+  - kmeans
+
+  # --- Pattern 3: Decision Tree (in-database training) ---
+  - decision_tree
+# === RELATED_PATTERNS END ===

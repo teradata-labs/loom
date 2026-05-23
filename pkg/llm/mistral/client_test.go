@@ -291,16 +291,48 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "mistral-small-latest",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.002490, // (1000 * 1.00 + 500 * 3.00) / 1M
-			wantMax:      0.002510,
+			wantMin:      0.000240, // (1000 * 0.10 + 500 * 0.30) / 1M
+			wantMax:      0.000260,
 		},
 		{
 			name:         "mistral-large-latest",
 			model:        "mistral-large-latest",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.009990, // (1000 * 4.00 + 500 * 12.00) / 1M
-			wantMax:      0.010010,
+			wantMin:      0.004990, // (1000 * 2.00 + 500 * 6.00) / 1M
+			wantMax:      0.005010,
+		},
+		{
+			name:         "magistral-medium-latest",
+			model:        "magistral-medium-latest",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.005990, // (1000 * 2.00 + 500 * 8.00) / 1M
+			wantMax:      0.006010,
+		},
+		{
+			name:         "magistral-small-latest",
+			model:        "magistral-small-latest",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.001240, // (1000 * 0.50 + 500 * 1.50) / 1M
+			wantMax:      0.001260,
+		},
+		{
+			name:         "codestral-latest",
+			model:        "codestral-latest",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.000740, // (1000 * 0.30 + 500 * 0.90) / 1M
+			wantMax:      0.000760,
+		},
+		{
+			name:         "devstral-medium-latest",
+			model:        "devstral-medium-latest",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.001240, // (1000 * 0.50 + 500 * 1.50) / 1M
+			wantMax:      0.001260,
 		},
 	}
 
@@ -360,11 +392,15 @@ func TestClient_ModelVariants(t *testing.T) {
 		"mistral-small-latest",
 		"mistral-medium-latest",
 		"mistral-large-latest",
-		"mistral-tiny-2312",  // Legacy
-		"mistral-small-2312", // Legacy
-		"mistral-small-2402", // Specific version
-		"mistral-large-2402", // Specific version
-		"mistral-large-2407", // Specific version
+		"mistral-tiny-2312",       // Legacy
+		"mistral-small-2312",      // Legacy
+		"mistral-small-2402",      // Specific version
+		"mistral-large-2402",      // Specific version
+		"mistral-large-2407",      // Specific version
+		"magistral-medium-latest", // Magistral medium
+		"magistral-small-latest",  // Magistral small
+		"codestral-latest",        // Codestral
+		"devstral-medium-latest",  // Devstral
 	}
 
 	for _, model := range models {

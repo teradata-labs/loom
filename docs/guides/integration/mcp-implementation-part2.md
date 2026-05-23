@@ -1,7 +1,8 @@
 
 # MCP Server Manager
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+**Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -10,6 +11,7 @@
 - [Server Lifecycle](#server-lifecycle)
 - [Health Monitoring](#health-monitoring)
 - [Tool Registration](#tool-registration)
+- [Server Inspection](#server-inspection)
 - [Error Handling](#error-handling)
 
 
@@ -23,7 +25,7 @@ The MCP Manager orchestrates multiple MCP server connections, handling startup, 
 ```go
 import "github.com/teradata-labs/loom/pkg/mcp/manager"
 
-cfg := &manager.Config{
+cfg := manager.Config{
     Servers: map[string]manager.ServerConfig{
         "filesystem": {
             Command:   "npx",
@@ -43,7 +45,10 @@ cfg := &manager.Config{
     },
 }
 
-mgr := manager.NewManager(cfg, logger)
+mgr, err := manager.NewManager(cfg, logger)
+if err != nil {
+    log.Fatalf("invalid config: %v", err)
+}
 ```
 
 
@@ -52,15 +57,18 @@ mgr := manager.NewManager(cfg, logger)
 ### Starting Servers
 
 ```go
-// Start all enabled servers
+// Start all enabled servers.
+// Returns an error only if ALL servers fail to start.
+// Partial failures are logged but do not return an error.
 err := mgr.Start(ctx)
 if err != nil {
-    log.Printf("Some servers failed to start: %v", err)
+    log.Fatalf("All servers failed to start: %v", err)
 }
 
 // Check which servers are running
-for name, status := range mgr.GetServerStatus() {
-    log.Printf("Server %s: %s", name, status)
+for _, info := range mgr.ListServers() {
+    log.Printf("Server %s: enabled=%t connected=%t transport=%s",
+        info.Name, info.Enabled, info.Connected, info.Transport)
 }
 ```
 
@@ -68,69 +76,70 @@ for name, status := range mgr.GetServerStatus() {
 
 ```go
 // Stop all servers gracefully
-mgr.Stop()
+if err := mgr.Stop(); err != nil {
+    log.Printf("Errors stopping servers: %v", err)
+}
 
-// Stop a specific server
-mgr.StopServer("filesystem")
+// Stop a specific server (keeps it in config)
+if err := mgr.StopServer("filesystem"); err != nil {
+    log.Printf("Failed to stop server: %v", err)
+}
 ```
 
-### Restarting a Server
+### Adding a Server Dynamically
 
 ```go
-// Restart a server (useful after errors)
-err := mgr.RestartServer(ctx, "filesystem")
+// Add and start a new server at runtime
+err := mgr.AddServer(ctx, "new-server", manager.ServerConfig{
+    Command:   "npx",
+    Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
+    Enabled:   true,
+    Transport: "stdio",
+    ToolFilter: manager.ToolFilter{All: true},
+})
+if err != nil {
+    log.Printf("Failed to add server: %v", err)
+}
 ```
 
 
 ## Health Monitoring
 
-The manager automatically monitors server health:
+The manager provides health checking by pinging each connected server:
 
 ```go
-// Get health status
-health := mgr.GetHealth()
-for server, status := range health {
-    fmt.Printf("%s: healthy=%t, lastPing=%v\n",
-        server, status.Healthy, status.LastPing)
+// Check health of all connected servers (pings each one)
+health := mgr.HealthCheck(ctx)
+for server, healthy := range health {
+    fmt.Printf("%s: healthy=%t\n", server, healthy)
 }
 
 // Check if a specific server is healthy
-if mgr.IsHealthy("filesystem") {
+if mgr.IsHealthy(ctx, "filesystem") {
     // Safe to use
 }
-```
-
-### Health Check Configuration
-
-```yaml
-mcp:
-  health_check:
-    enabled: true
-    interval_seconds: 30
-    timeout_seconds: 5
-
-  servers:
-    filesystem:
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
 ```
 
 
 ## Tool Registration
 
-### Register All Tools from a Server
+### Access Tools via Client
 
 ```go
-// Get all tools from all servers
-allTools, err := mgr.ListAllTools(ctx)
-for server, tools := range allTools {
-    for _, tool := range tools {
-        fmt.Printf("[%s] %s: %s\n", server, tool.Name, tool.Description)
-    }
+// Get a specific server's client
+c, err := mgr.GetClient("filesystem")
+if err != nil {
+    log.Fatalf("server not found: %v", err)
 }
 
-// Register with an agent
-agent.RegisterMCPServer(ctx, mgr, "filesystem")
+// List tools from that server
+tools, err := c.ListTools(ctx)
+if err != nil {
+    log.Fatalf("failed to list tools: %v", err)
+}
+for _, tool := range tools {
+    fmt.Printf("%s: %s\n", tool.Name, tool.Description)
+}
 ```
 
 ### Tool Filtering
@@ -138,8 +147,10 @@ agent.RegisterMCPServer(ctx, mgr, "filesystem")
 ```go
 // Whitelist specific tools
 cfg.Servers["filesystem"] = manager.ServerConfig{
-    Command: "npx",
-    Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/data"},
+    Command:   "npx",
+    Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", "/data"},
+    Enabled:   true,
+    Transport: "stdio",
     ToolFilter: manager.ToolFilter{
         Include: []string{"read_file", "list_directory"},
     },
@@ -147,8 +158,10 @@ cfg.Servers["filesystem"] = manager.ServerConfig{
 
 // Blacklist dangerous tools
 cfg.Servers["filesystem"] = manager.ServerConfig{
-    Command: "npx",
-    Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/data"},
+    Command:   "npx",
+    Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", "/data"},
+    Enabled:   true,
+    Transport: "stdio",
     ToolFilter: manager.ToolFilter{
         All:     true,
         Exclude: []string{"delete_file", "write_file"},
@@ -157,51 +170,59 @@ cfg.Servers["filesystem"] = manager.ServerConfig{
 ```
 
 
+## Server Inspection
+
+### List Active Server Names
+
+```go
+// ServerNames returns names of all connected (active) servers
+names := mgr.ServerNames()
+for _, name := range names {
+    fmt.Println(name)
+}
+```
+
+### Get Server Configuration
+
+```go
+// GetServerConfig returns the configuration for a named server
+cfg, err := mgr.GetServerConfig("filesystem")
+if err != nil {
+    log.Printf("Server not found: %v", err)
+} else {
+    fmt.Printf("Transport: %s, Enabled: %t\n", cfg.Transport, cfg.Enabled)
+}
+```
+
+
 ## Error Handling
 
 ### Connection Errors
 
+Errors from `GetClient` and other manager methods are plain `fmt.Errorf` values.
+Check the error message for context:
+
 ```go
 client, err := mgr.GetClient("filesystem")
 if err != nil {
-    if errors.Is(err, manager.ErrServerNotFound) {
-        // Server not configured
-    } else if errors.Is(err, manager.ErrServerNotRunning) {
-        // Server crashed or not started
-    }
+    // err message is "server not found: filesystem" if the server
+    // is not configured or not connected
+    log.Printf("Cannot get client: %v", err)
 }
 ```
 
-### Automatic Restart
-
-Servers that crash are automatically restarted:
-
-```yaml
-mcp:
-  auto_restart:
-    enabled: true
-    max_restarts: 3
-    restart_delay_seconds: 5
-
-  servers:
-    filesystem:
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
-```
-
-### Circuit Breaker
-
-Prevent repeated failures:
+### Stopping and Removing Servers
 
 ```go
-// Circuit breaker trips after 5 failures in 1 minute
-// Opens for 30 seconds before trying again
-cfg := &manager.Config{
-    CircuitBreaker: manager.CircuitBreakerConfig{
-        Enabled:     true,
-        Threshold:   5,
-        Window:      time.Minute,
-        OpenTimeout: 30 * time.Second,
-    },
+// Stop a specific server (keeps it in config)
+err := mgr.StopServer("filesystem")
+if err != nil {
+    log.Printf("Failed to stop: %v", err)
+}
+
+// Remove a server completely (stops it and removes from config)
+err = mgr.RemoveServer("filesystem")
+if err != nil {
+    log.Printf("Failed to remove: %v", err)
 }
 ```

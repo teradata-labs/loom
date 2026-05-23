@@ -1,7 +1,6 @@
-
 # Quick Start
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -11,23 +10,42 @@
   - [Step 1: Build from Source](#step-1-build-from-source)
   - [Step 2: Configure API Key](#step-2-configure-api-key)
   - [Step 3: Start Server](#step-3-start-server)
-  - [Step 4: Weave Your First Thread](#step-4-weave-your-first-thread)
+  - [Step 4: Launch the TUI](#step-4-launch-the-tui)
 - [Examples](#examples)
-  - [Example 1: File Explorer](#example-1-file-explorer)
-  - [Example 2: SQL Analyzer](#example-2-sql-analyzer)
+  - [Example 1: Using the Guide Agent](#example-1-using-the-guide-agent)
+  - [Example 2: Connecting to a Specific Agent](#example-2-connecting-to-a-specific-agent)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 
-
 ## Overview
 
-Get a working Loom agent in 5 minutes. Describe what you need, and the weaver generates the configuration.
+Get a working Loom agent running in 5 minutes. The server (`looms`) hosts your agents, and the TUI client (`loom`) connects to interact with them over gRPC.
+
+### What You Get
+
+- ✅ **gRPC server** on port 60051 hosting configured agents
+- ✅ **Interactive TUI** with session management, streaming, and cost tracking
+- ✅ **CLI chat mode** (`loom chat --thread <name> "message"`) for scripting
+- ✅ **MCP bridge** (`loom-mcp`) for Model Context Protocol integration
+- ✅ **System keyring** integration for secure API key storage
 
 ## Prerequisites
 
-- **Go 1.21+**: [Download](https://go.dev/dl/)
+- **Go 1.25+**: [Download](https://go.dev/dl/)
 - **just**: `brew install just` (macOS) or `cargo install just`
-- **LLM API Key**: Anthropic, AWS Bedrock, or Ollama
+- **buf**: [Install](https://buf.build/docs/installation) (required for proto code generation)
+- **protoc-gen-go** and **protoc-gen-go-grpc**: Install with `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
+- **LLM API Key**: One of the following providers:
+  - Anthropic Claude (API key)
+  - AWS Bedrock (AWS credentials)
+  - OpenAI (API key)
+  - Azure OpenAI (API key + endpoint)
+  - Google Gemini (API key)
+  - Mistral (API key)
+  - Hugging Face (API key)
+  - Ollama (local, no key required)
+
+> **Note:** All builds and tests require the `-tags fts5` flag. The `just` commands handle this automatically, but if you run `go build` or `go test` directly, you must include `-tags fts5`.
 
 ## Quick Start
 
@@ -39,24 +57,44 @@ cd loom
 just build
 ```
 
-Expected output:
+The build runs proto generation first, then compiles three binaries:
+
 ```
-building loom (TUI client)...
-building looms (server)...
-Build complete. Binaries in ./bin/
+Building Loom server (looms)...
+✅ Server binary: bin/looms
+Building Loom TUI client (loom)...
+✅ TUI binary: bin/loom
+Building Loom MCP bridge (loom-mcp)...
+✅ MCP binary: bin/loom-mcp
+✅ All binaries built successfully!
+```
+
+You can verify the toolchain is set up correctly with:
+
+```bash
+just verify
 ```
 
 ### Step 2: Configure API Key
+
+Run the interactive configuration wizard, then store your API key in the system keyring:
 
 ```bash
 bin/looms config init
 bin/looms config set-key anthropic_api_key
 ```
 
-Expected output:
+The `config init` command walks you through choosing an LLM provider and backends interactively. When complete it prints:
+
+```
+✓ Config file created: <your $LOOM_DATA_DIR>/looms.yaml
+```
+
+The `set-key` command prompts for the secret with hidden input:
+
 ```
 Enter anthropic_api_key (input hidden):
-Saved anthropic_api_key to system keyring
+✓ Saved anthropic_api_key to system keyring
 ```
 
 ### Step 3: Start Server
@@ -65,87 +103,100 @@ Saved anthropic_api_key to system keyring
 bin/looms serve
 ```
 
-Expected output:
+The server prints an ASCII art logo, then starts listening. You will see a structured zap log line like:
+
 ```
-Loom server starting on :9090
-Server ready
+{"level":"info","msg":"Server listening","address":"0.0.0.0:60051"}
 ```
 
-### Step 4: Weave Your First Thread
+The server listens on `0.0.0.0:60051` by default (configurable in `looms.yaml`). Press Ctrl+C to shut down gracefully.
+
+### Step 4: Launch the TUI
 
 In a new terminal:
 
 ```bash
-bin/looms weave "I need a thread to read and analyze files"
+bin/loom
 ```
 
-Expected output:
-```
-Weaving thread from requirements...
+This connects to the server at `127.0.0.1:60051` and opens the TUI. With no `--thread` flag, it defaults to the built-in **guide** agent, which helps you discover and select configured agents.
 
-Thread woven successfully!
-  Thread Name: file-analyzer-abc123
-  Status: running
-
-Activating thread...
-```
-
-The TUI client launches automatically. If you need to reconnect later:
+To connect to a specific agent by name:
 
 ```bash
-bin/loom --thread file-analyzer-abc123 --server localhost:9090
+bin/loom --thread my-agent-name
 ```
 
+To connect to a server at a different address:
+
+```bash
+bin/loom --server 10.0.0.5:60051 --thread my-agent-name
+```
 
 ## Examples
 
-### Example 1: File Explorer
+### Example 1: Using the Guide Agent
+
+Launch the TUI with no arguments to enter the guide:
 
 ```bash
-bin/looms weave "Create a file explorer that can:
-- Read files in my project
-- Search for patterns
-- Analyze code structure"
+bin/loom
 ```
 
-After connecting, try:
+The guide agent helps you discover available agents. Try typing:
+
 ```
-> Show me all Go files in this project
-> What's the structure of the pkg/agent package?
-> Search for TODO comments in the codebase
+What agents are available?
 ```
 
-### Example 2: SQL Analyzer
+The guide lists configured agents and lets you pick one to start a conversation.
+
+### Example 2: Connecting to a Specific Agent
+
+If you have an agent named `sql-analyzer` configured in `$LOOM_DATA_DIR/agents/`, connect directly:
 
 ```bash
-bin/looms weave "Build a SQL query optimizer for PostgreSQL"
+bin/loom --thread sql-analyzer
 ```
 
-After connecting:
+Once connected, interact with the agent:
+
 ```
-> Analyze this query for performance issues: SELECT * FROM users WHERE email LIKE '%@gmail.com'
-> Suggest indexes for a table with columns: id, user_id, created_at, status
+Analyze this query for performance issues: SELECT * FROM users WHERE email LIKE '%@gmail.com'
 ```
+
+The agent uses its configured tools, patterns, and LLM provider to respond.
 
 
 ## Configuration
 
-Config file location: `$LOOM_DATA_DIR/looms.yaml`
+Config file location: `$LOOM_DATA_DIR/looms.yaml` (default: `~/.loom/looms.yaml`)
+
+The `config init` command generates a file like this:
 
 ```yaml
 server:
   host: 0.0.0.0
-  port: 9090
+  port: 60051
 
 llm:
   provider: anthropic
   anthropic_model: claude-sonnet-4-5-20250929
   temperature: 1.0
   max_tokens: 4096
+  timeout_seconds: 60
 
 database:
-  path: $LOOM_DATA_DIR/loom.db
+  path: ./loom.db
   driver: sqlite
+
+observability:
+  enabled: false
+  provider: hawk
+
+logging:
+  level: info
+  format: text
 ```
 
 View configuration:
@@ -159,16 +210,21 @@ bin/looms config set llm.provider bedrock
 bin/looms config set llm.anthropic_model claude-sonnet-4-5-20250929
 ```
 
+> **Note:** The interactive `config init` wizard offers Anthropic, Bedrock, and Ollama. To use other supported providers (OpenAI, Azure OpenAI, Gemini, Mistral, Hugging Face), set them manually with `config set`.
+
 
 ## Troubleshooting
 
 ### Connection Refused
 
-Server uses port 9090 by default, client uses 60051.
+The TUI defaults to connecting at `127.0.0.1:60051`. Make sure the server is running and listening on that address.
 
-**Solution:**
 ```bash
-bin/loom --server localhost:9090
+# Verify the server is running
+bin/looms serve
+
+# Then in another terminal, connect explicitly
+bin/loom --server 127.0.0.1:60051
 ```
 
 ### API Key Required
@@ -182,31 +238,50 @@ export ANTHROPIC_API_KEY=sk-ant-xxx
 ### Model Not Found (Ollama)
 
 ```bash
-ollama pull llama3.1
+# Pull the model specified in your looms.yaml (ollama_model field)
+ollama pull qwen2.5:7b
 ollama serve
 ```
 
 ### Thread Not Loading
 
 1. Check server logs for errors
-2. Verify config saved: `ls $LOOM_DATA_DIR/agents/`
+2. Verify agent config exists: `ls $LOOM_DATA_DIR/agents/`
 3. Restart server: `bin/looms serve`
 
 
 ## TUI Keyboard Shortcuts
 
+### Global Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` or `Ctrl+Q` | Quit |
+| `Ctrl+G` or `Ctrl+/` | Help / more info |
+| `Ctrl+K` or `Ctrl+P` | Command palette |
+| `Ctrl+O` or `Ctrl+S` | Sessions |
+| `Ctrl+E` | Agents dialog |
+| `Ctrl+W` | Workflows dialog |
+| `Ctrl+Z` | Suspend |
+
+### Chat Shortcuts
+
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Ctrl+C` | Quit |
-| `Esc` | Quit |
 | `Ctrl+N` | New session |
-| `Ctrl+L` | Clear screen |
+| `Ctrl+F` | Add attachment |
+| `Ctrl+D` | Toggle details |
+| `Ctrl+Space` | Toggle tasks |
+| `Esc` | Cancel current operation |
+| `Tab` | Change focus |
 | Mouse wheel | Scroll history |
 
 
 ## Next Steps
 
-- [Zero-Code Configuration](../zero-code-implementation-guide/) - No-code MCP setup
+- [Zero-Code Configuration](../zero-code-implementation-guide/) - YAML-only agent deployment (no Go code)
 - [Meta-Agent Usage](../meta-agent-usage/) - Advanced thread creation
 - [Pattern Library](../pattern-library-guide/) - Using domain patterns
+- [TUI Guide](../tui-guide/) - Detailed TUI usage and navigation
+- [CLI Reference](../../reference/cli/) - Full CLI command reference

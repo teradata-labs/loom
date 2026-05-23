@@ -1,7 +1,7 @@
 
 # MCP Examples
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0 | **Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -13,7 +13,7 @@
 
 ## Basic Agent with MCP
 
-Minimal example using filesystem MCP server:
+✅ Minimal example using filesystem MCP server:
 
 ```go
 package main
@@ -21,9 +21,10 @@ package main
 import (
     "context"
     "log"
+    "os"
 
     "github.com/teradata-labs/loom/pkg/agent"
-    "github.com/teradata-labs/loom/pkg/llm"
+    "github.com/teradata-labs/loom/pkg/llm/anthropic"
     "github.com/teradata-labs/loom/pkg/mcp/manager"
     "go.uber.org/zap"
 )
@@ -33,7 +34,7 @@ func main() {
     logger, _ := zap.NewDevelopment()
 
     // Create MCP manager
-    mcpCfg := &manager.Config{
+    mcpCfg := manager.Config{
         Servers: map[string]manager.ServerConfig{
             "filesystem": {
                 Command:    "npx",
@@ -44,7 +45,10 @@ func main() {
             },
         },
     }
-    mcpMgr := manager.NewManager(mcpCfg, logger)
+    mcpMgr, err := manager.NewManager(mcpCfg, logger)
+    if err != nil {
+        log.Fatalf("Invalid MCP config: %v", err)
+    }
 
     // Start MCP servers
     if err := mcpMgr.Start(ctx); err != nil {
@@ -53,7 +57,7 @@ func main() {
     defer mcpMgr.Stop()
 
     // Create LLM provider
-    llmProvider, _ := llm.NewAnthropicProvider(llm.AnthropicConfig{
+    llmProvider := anthropic.NewClient(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
         Model:  "claude-sonnet-4-5-20250929",
     })
@@ -66,19 +70,22 @@ func main() {
         log.Fatalf("Failed to register MCP tools: %v", err)
     }
 
-    // Use agent
-    response, _ := ag.Chat(ctx, "session-1", "List files in /data")
-    log.Printf("Response: %s", response)
+    // Use agent — Chat returns (*agent.Response, error)
+    response, err := ag.Chat(ctx, "session-1", "List files in /data")
+    if err != nil {
+        log.Fatalf("Chat failed: %v", err)
+    }
+    log.Printf("Response: %s", response.Content)
 }
 ```
 
 
 ## Multi-Server Setup
 
-Using multiple MCP servers together:
+✅ Using multiple MCP servers together:
 
 ```go
-mcpCfg := &manager.Config{
+mcpCfg := manager.Config{
     Servers: map[string]manager.ServerConfig{
         "filesystem": {
             Command:    "npx",
@@ -106,8 +113,13 @@ mcpCfg := &manager.Config{
     },
 }
 
-mcpMgr := manager.NewManager(mcpCfg, logger)
-mcpMgr.Start(ctx)
+mcpMgr, err := manager.NewManager(mcpCfg, logger)
+if err != nil {
+    log.Fatalf("Invalid config: %v", err)
+}
+if err := mcpMgr.Start(ctx); err != nil {
+    log.Printf("Some servers failed: %v", err)
+}
 
 // Register all servers with agent
 for serverName := range mcpCfg.Servers {
@@ -115,17 +127,19 @@ for serverName := range mcpCfg.Servers {
 }
 
 // Agent now has tools from all three servers
+// Chat returns (*agent.Response, error)
 response, _ := ag.Chat(ctx, "session-1", `
     Read the config.yaml file,
     then create a GitHub issue with its contents,
     and log the issue URL to the database
 `)
+log.Printf("Response: %s", response.Content)
 ```
 
 
 ## Custom MCP Server
 
-Create your own MCP server for custom tools:
+✅ Create your own MCP server for custom tools:
 
 ```go
 // cmd/my-mcp-server/main.go
@@ -135,41 +149,57 @@ import (
     "context"
     "os"
 
+    "github.com/teradata-labs/loom/pkg/mcp/protocol"
     "github.com/teradata-labs/loom/pkg/mcp/server"
+    "github.com/teradata-labs/loom/pkg/mcp/transport"
+    "go.uber.org/zap"
 )
 
-func main() {
-    srv := server.New(server.Config{
-        Name:    "my-custom-server",
-        Version: "1.0.0",
-    })
+// metricsProvider implements server.ToolProvider
+type metricsProvider struct{}
 
-    // Register tools
-    srv.RegisterTool(server.Tool{
-        Name:        "calculate_metrics",
-        Description: "Calculate custom business metrics",
-        InputSchema: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "metric_name": map[string]interface{}{"type": "string"},
-                "start_date":  map[string]interface{}{"type": "string"},
-                "end_date":    map[string]interface{}{"type": "string"},
+func (p *metricsProvider) ListTools(ctx context.Context) ([]protocol.Tool, error) {
+    return []protocol.Tool{
+        {
+            Name:        "calculate_metrics",
+            Description: "Calculate custom business metrics",
+            // InputSchema is map[string]interface{} (JSON Schema)
+            InputSchema: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "metric_name": map[string]interface{}{"type": "string", "description": "Name of the metric"},
+                    "start_date":  map[string]interface{}{"type": "string", "description": "Start date"},
+                    "end_date":    map[string]interface{}{"type": "string", "description": "End date"},
+                },
+                "required": []string{"metric_name"},
             },
-            "required": []string{"metric_name"},
         },
-        Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-            metricName := args["metric_name"].(string)
-            // Your custom logic here
-            return map[string]interface{}{
-                "metric":  metricName,
-                "value":   42.5,
-                "status":  "success",
-            }, nil
-        },
-    })
+    }, nil
+}
 
-    // Start server (stdio transport)
-    srv.ServeStdio(os.Stdin, os.Stdout)
+func (p *metricsProvider) CallTool(ctx context.Context, name string, args map[string]interface{}) (*protocol.CallToolResult, error) {
+    metricName := args["metric_name"].(string)
+    // Your custom logic here
+    return &protocol.CallToolResult{
+        Content: []protocol.Content{
+            {Type: "text", Text: metricName + ": 42.5"},
+        },
+    }, nil
+}
+
+func main() {
+    logger, _ := zap.NewDevelopment()
+
+    // Create server with a ToolProvider option
+    srv := server.NewMCPServer("my-custom-server", "1.0.0", logger,
+        server.WithToolProvider(&metricsProvider{}),
+    )
+
+    // Create stdio transport and serve
+    t := transport.NewStdioServerTransport(os.Stdin, os.Stdout)
+    if err := srv.Serve(context.Background(), t); err != nil {
+        logger.Fatal("server error", zap.Error(err))
+    }
 }
 ```
 
@@ -186,7 +216,7 @@ mcp:
 
 ## Agent with Mixed Tools
 
-Combine custom tools with MCP tools:
+✅ Combine custom tools with MCP tools:
 
 ```go
 // Create agent with custom backend
@@ -206,17 +236,19 @@ ag.RegisterMCPServer(ctx, mcpMgr, "github")
 // - File I/O from filesystem MCP
 // - GitHub integration from GitHub MCP
 
+// Chat returns (*agent.Response, error)
 response, _ := ag.Chat(ctx, "session-1", `
     Analyze the slow queries from query_log.sql,
     optimize them,
     and create a GitHub issue with the recommendations
 `)
+log.Printf("Response: %s", response.Content)
 ```
 
 
 ## YAML Configuration
 
-Equivalent YAML configuration:
+✅ Equivalent YAML configuration:
 
 ```yaml
 # $LOOM_DATA_DIR/looms.yaml

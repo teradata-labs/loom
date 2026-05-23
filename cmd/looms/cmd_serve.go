@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
@@ -49,6 +50,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
@@ -58,11 +60,14 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -221,6 +226,9 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockSessionToken == "" {
 		dst.BedrockSessionToken = src.BedrockSessionToken
 	}
+	if dst.BedrockBearerToken == "" {
+		dst.BedrockBearerToken = src.BedrockBearerToken
+	}
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
@@ -320,6 +328,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
 			SessionToken:      cfg.BedrockSessionToken,
+			BearerToken:       cfg.BedrockBearerToken,
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
 			MaxTokens:         cfg.MaxTokens,
@@ -421,6 +430,9 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 
 	case "huggingface":
 		key := apiKey(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
+		if key == "" {
+			key = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
+		}
 		if key == "" {
 			return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_API_KEY)")
 		}
@@ -552,6 +564,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
 			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
 			SessionToken:    serverConfig.LLM.BedrockSessionToken,
+			BearerToken:     serverConfig.LLM.BedrockBearerToken,
 			Profile:         serverConfig.LLM.BedrockProfile,
 			ModelID:         modelID,
 			MaxTokens:       maxTokens,
@@ -699,6 +712,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	defer func() { _ = logger.Sync() }()
 
+	// Replace the zap global so library packages that log via zap.L()
+	// (Agent.runConversationLoop Phase D, skill required-tool warnings,
+	// task context errors, etc.) reach the same sink as the structured
+	// server logger. Without this, those diagnostics go to the default
+	// Nop and silently disappear — which is what hid the original
+	// skills-overhaul Phase D wiring gap during initial diagnosis.
+	zap.ReplaceGlobals(logger)
+
 	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
 
 	// Show actual config file used (not just the --config flag)
@@ -805,8 +826,65 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
 	errorStore := storageBackend.ErrorStore()
+
+	// Extract graph memory store if available (optional interface)
+	var graphMemoryStore memory.GraphMemoryStore
+	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
+		graphMemoryStore = gmp.GraphMemoryStore()
+	}
+
+	// Extract task store if available (optional interface)
+	var taskManager *task.Manager
+	var taskDecomposer *task.Decomposer
+	if tsp, ok := storageBackend.(backend.TaskStoreProvider); ok {
+		ts := tsp.TaskStore()
+		if ts != nil {
+			taskManager = task.NewManager(ts, nil, tracer, logger.Named("task"))
+			taskDecomposer = task.NewDecomposer(taskManager, tracer, logger.Named("task.decompose"))
+			// Wire graph memory for auto-creating memories on task completion.
+			if graphMemoryStore != nil {
+				taskManager.SetGraphMemory(graphMemoryStore)
+			}
+		}
+	}
+
 	logger.Info("Storage backend initialized",
-		zap.String("backend", config.Storage.Backend))
+		zap.String("backend", config.Storage.Backend),
+		zap.Bool("graph_memory_available", graphMemoryStore != nil),
+		zap.Bool("task_store_available", taskManager != nil))
+
+	// Create memory embedder from config (optional).
+	var memoryEmbedder memory.Embedder
+	if config.Embedding.Enabled && graphMemoryStore != nil {
+		switch config.Embedding.Provider {
+		case "openai", "":
+			apiKey := config.Embedding.APIKey
+			if apiKey == "" {
+				apiKey = config.LLM.OpenAIAPIKey
+			}
+			if apiKey == "" {
+				apiKey = os.Getenv("OPENAI_API_KEY")
+			}
+			if apiKey != "" {
+				model := config.Embedding.Model
+				if model == "" {
+					model = "text-embedding-3-small"
+				}
+				memoryEmbedder = embedding.NewOpenAIEmbedder(embedding.OpenAIConfig{
+					APIKey:     apiKey,
+					Model:      model,
+					Dimensions: config.Embedding.Dimensions,
+				})
+				logger.Info("Memory embedder initialized",
+					zap.String("provider", "openai"),
+					zap.String("model", model))
+			} else {
+				logger.Warn("Embedding enabled but no OpenAI API key found (set embedding.api_key, llm.openai_api_key, or OPENAI_API_KEY)")
+			}
+		default:
+			logger.Warn("Unknown embedding provider", zap.String("provider", config.Embedding.Provider))
+		}
+	}
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -822,6 +900,19 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to create scratchpad directory", zap.Error(err))
 	}
 	logger.Info("Scratchpad directory initialized", zap.String("path", scratchpadDir))
+
+	// Initialize shared HITL (Human-in-the-Loop) request store
+	// This SQLite store is shared between the server (contact_human tool) and the CLI (hitl list/respond)
+	hitlDBPath := filepath.Join(loomDataDir, "hitl.db")
+	hitlStore, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+		Path:   hitlDBPath,
+		Tracer: tracer,
+	})
+	if err != nil {
+		logger.Fatal("Failed to create HITL request store", zap.Error(err))
+	}
+	defer func() { _ = hitlStore.Close() }()
+	logger.Info("HITL request store initialized", zap.String("path", hitlDBPath))
 
 	// Copy documentation from docs to loom data directory
 	docsDestDir := filepath.Join(loomDataDir, "documentation")
@@ -929,6 +1020,40 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	} else {
 		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
+	}
+
+	// Deploy bundled weaver skills (if not exists). One block per skill so
+	// users can delete an individual file to opt out without losing the
+	// others.
+	skillsDir := filepath.Join(loomDataDir, "skills")
+	weaverBundledSkills := []struct {
+		name string
+		data []byte
+	}{
+		{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
+		{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
+		{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
+		{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
+	}
+	for _, s := range weaverBundledSkills {
+		path := filepath.Join(skillsDir, s.name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := os.MkdirAll(skillsDir, 0750); err != nil {
+				logger.Warn("Failed to create skills directory", zap.Error(err))
+			}
+			if err := os.WriteFile(path, s.data, 0600); err != nil {
+				logger.Warn("Failed to deploy weaver skill",
+					zap.String("name", s.name), zap.Error(err))
+			} else {
+				logger.Info("Weaver skill installed",
+					zap.String("name", s.name),
+					zap.String("dest", path),
+					zap.Int("size", len(s.data)))
+			}
+		} else {
+			logger.Debug("Weaver skill already exists",
+				zap.String("name", s.name), zap.String("path", path))
+		}
 	}
 
 	// Create agent guide in loom data directory (visible to agents)
@@ -1061,6 +1186,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockAccessKeyID:     config.LLM.BedrockAccessKeyID,
 		BedrockSecretAccessKey: config.LLM.BedrockSecretAccessKey,
 		BedrockSessionToken:    config.LLM.BedrockSessionToken,
+		BedrockBearerToken:     config.LLM.BedrockBearerToken,
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
 
@@ -1270,25 +1396,67 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Transfer skills configuration from metadata
+				// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns.
+				// Patterns are enabled by default (DefaultPatternConfig), so all agents
+				// need a patterns directory to find filesystem patterns.
+				if pd, ok := cfg.Metadata["patterns_dir"]; ok && pd != "" {
+					agentCfg.PatternsDir = pd
+				} else {
+					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+				}
+				// Skills config: just attach to agentCfg here. Discovery
+				// wiring requires the agent's LLM provider and is performed
+				// below once agentLLMProvider is resolved.
 				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
 					agentCfg.SkillsConfig = sc
-					libOpts := []skills.LibraryOption{}
-					if sc.SkillsDir != "" {
-						libOpts = append(libOpts, skills.WithSearchPaths(sc.SkillsDir))
-					}
-					if tracer != nil {
-						libOpts = append(libOpts, skills.WithTracer(tracer))
-					}
-					skillLib := skills.NewLibrary(libOpts...)
-					skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(tracer))
-					agentOpts = append(agentOpts, agent.WithSkillOrchestrator(skillOrch))
-					logger.Info("    Skills orchestrator created",
-						zap.String("skills_dir", sc.SkillsDir),
-						zap.Int("max_concurrent", sc.MaxConcurrentSkills))
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
+
+				// Wire graph memory (opt-out: enabled by default when store is available).
+				// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
+				// tools.minimal=true also suppresses it across the board.
+				if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
+					gmCfg := cfg.Memory.GetGraphMemory()
+					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+					if !explicitlyDisabled {
+						if gmCfg == nil {
+							gmCfg = agent.DefaultGraphMemoryConfig()
+						}
+						agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+						if memoryEmbedder != nil {
+							agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
+						}
+						logger.Info("    Graph memory enabled",
+							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
+							zap.Bool("vector_search", memoryEmbedder != nil))
+					} else {
+						logger.Info("    Graph memory explicitly disabled")
+					}
+				} else if graphMemoryStore != nil {
+					logger.Info("    Graph memory suppressed by tools.minimal")
+				}
+
+				// Wire task subsystem. The manager is always wired so skills-overhaul
+				// task emission and the sticky-while-open-tasks checker work for every
+				// agent. The per-agent memory.task_board.enabled flag gates only tool
+				// surfacing (task_board builtin, kanban prompt, in-context summary).
+				// tools.minimal=true overrides the per-agent flag and forces the tool
+				// off, while leaving the manager wired for skill task emission.
+				if taskManager != nil {
+					tbCfg := cfg.Memory.GetTaskBoard()
+					if tbCfg == nil {
+						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					}
+					if viper.GetBool("tools.minimal") && tbCfg.Enabled {
+						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+						logger.Info("    Task board tool suppressed by tools.minimal")
+					}
+					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+					if tbCfg.Enabled {
+						logger.Info("    Task board tool surfacing enabled")
+					}
+				}
 
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {
@@ -1322,25 +1490,51 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
 				}
 
+				// Wire skills (orchestrator + Discovery + hierarchical router)
+				// via the shared agent.BuildSkillsOptions helper. This is the
+				// single source of truth used by both this static-YAML loader
+				// and registry.buildAgent (dynamic gRPC-created agents). Must
+				// run AFTER agentLLMProvider is finalized so the router can
+				// fall back to it when no override/classifier is configured.
+				if agentCfg.SkillsConfig != nil && agentCfg.SkillsConfig.Enabled {
+					if registry != nil {
+						agentOpts = append(agentOpts,
+							registry.BuildSkillsOptions(agentCfg.SkillsConfig, nil, agentLLMProvider, cfg.Name)...)
+					} else {
+						agentOpts = append(agentOpts,
+							agent.BuildSkillsOptions(agent.SkillsWiringDeps{
+								SkillsConfig: agentCfg.SkillsConfig,
+								PrimaryLLM:   agentLLMProvider,
+								AgentName:    cfg.Name,
+								Tracer:       tracer,
+								Logger:       logger,
+							})...)
+					}
+				}
+
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
 
-				// Always register shell_execute for all agents
-				// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
-				var shellTool shuttle.Tool
-				if cfg.Name == "weaver" {
-					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
-					shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
-					logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
-				} else {
-					shellTool = builtin.NewShellExecuteTool("")
-					logger.Info("    Auto-registered shell_execute tool")
-				}
-				ag.RegisterTool(shellTool)
+				// Always register shell_execute and workspace for all agents,
+				// unless tools.minimal=true (--minimal-tools) is set, in which
+				// case the agent only sees what its YAML declares.
+				if !viper.GetBool("tools.minimal") {
+					var shellTool shuttle.Tool
+					if cfg.Name == "weaver" {
+						weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+						shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+						logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
+					} else {
+						shellTool = builtin.NewShellExecuteTool("")
+						logger.Info("    Auto-registered shell_execute tool")
+					}
+					ag.RegisterTool(shellTool)
 
-				// Always register workspace tool for session-scoped file management
-				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
-				ag.RegisterTool(workspaceTool)
-				logger.Info("    Auto-registered workspace tool")
+					workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+					ag.RegisterTool(workspaceTool)
+					logger.Info("    Auto-registered workspace tool")
+				} else {
+					logger.Info("    tools.minimal=true: skipping auto-registration of shell_execute and workspace")
+				}
 
 				// Register builtin tools if specified
 				if cfg.Tools != nil && len(cfg.Tools.Builtin) > 0 {
@@ -1367,18 +1561,56 @@ func runServe(cmd *cobra.Command, args []string) {
 							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"contact_human":                   true, // HITL tool (registered with shared SQLite store)
 						}
 						if skipTools[toolName] {
 							continue
 						}
 						// spawn_agent removed
 
-						tool := builtin.ByName(toolName)
+						// agent_management writes skill YAMLs via
+						// create_skill / update_skill. After a successful
+						// write we want every running agent's router to
+						// pick up the new skill on the next chat turn,
+						// without a server restart. Wire a post-write hook
+						// to Registry.ReloadAllSkillRouters; the tool runs
+						// the hook synchronously in its Execute path.
+						var tool shuttle.Tool
+						if toolName == "agent_management" && registry != nil {
+							hook := func(skillName, filePath string) {
+								reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+								logger.Info("agent_management: skill write triggered router reload",
+									zap.String("skill", skillName),
+									zap.String("file", filePath),
+									zap.Int("reloaded", reloaded),
+									zap.Int("failed", failed))
+							}
+							tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+						} else {
+							tool = builtin.ByName(toolName)
+						}
 						if tool != nil {
 							ag.RegisterTool(tool)
 							logger.Info("      Tool registered", zap.String("name", toolName))
 						} else {
 							logger.Warn("      Unknown builtin tool", zap.String("name", toolName))
+						}
+					}
+				}
+
+				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+				if cfg.Tools != nil {
+					for _, toolName := range cfg.Tools.Builtin {
+						if toolName == "contact_human" {
+							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+								Store:  hitlStore,
+								Tracer: tracer,
+								Logger: logger,
+							})
+							ag.RegisterTool(humanTool)
+							logger.Info("    Auto-registered contact_human tool (shared SQLite store)",
+								zap.String("db_path", hitlDBPath))
+							break
 						}
 					}
 				}
@@ -1423,8 +1655,9 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Register tool_search and enable dynamic tool registration if tool registry available
-				if toolRegistry != nil {
+				// Register tool_search and enable dynamic tool registration if tool registry available.
+				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
+				if toolRegistry != nil && !viper.GetBool("tools.minimal") {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
@@ -1600,10 +1833,89 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// Register TaskService for gRPC task management and TUI streaming.
+	// Bus wired later via SetBus (two-phase init, bus not yet created).
+	var taskService *server.TaskServiceImpl
+	if taskManager != nil {
+		taskService = server.NewTaskServiceImpl(taskManager, nil, logger)
+		loomv1.RegisterTaskServiceServer(grpcServer, taskService)
+		logger.Info("Task service registered")
+	}
+
+	// Register GraphMemoryService for graph-backed episodic memory management.
+	if graphMemoryStore != nil {
+		graphMemoryServer := server.NewGraphMemoryServer(graphMemoryStore, logger)
+		loomv1.RegisterGraphMemoryServiceServer(grpcServer, graphMemoryServer)
+		logger.Info("Graph memory service registered")
+	}
+
 	// Register JudgeService for multi-judge LLM evaluation capabilities.
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
 	logger.Info("Judge service registered")
+
+	// Register SkillsImportService — the gRPC surface for the skills
+	// importer (BulkImportSkills streaming + AddSkill + ClassifySkill).
+	// Peer service alongside MultiAgentServer per the "keep skills as
+	// separate as possible" architectural decision.
+	//
+	// The classifier provider is read from LOOM_CLASSIFY_PROVIDER /
+	// LOOM_CLASSIFY_MODEL plus the provider's standard creds (same env
+	// vars the CLI's --classify flag uses). When unset, the server
+	// boots without a classifier; classify=true requests fail with
+	// FAILED_PRECONDITION rather than silently degrading.
+	{
+		var classifyLLM types.LLMProvider
+		if cprov := os.Getenv("LOOM_CLASSIFY_PROVIDER"); cprov != "" {
+			cmodel := os.Getenv("LOOM_CLASSIFY_MODEL")
+			cfgFactory := factory.NewProviderFactory(factory.FactoryConfig{
+				DefaultProvider: cprov,
+				DefaultModel:    cmodel,
+				Temperature:     0.0,
+			})
+			rawLLM, err := cfgFactory.CreateProvider(cprov, cmodel)
+			if err != nil {
+				logger.Warn("SkillsImportService: classify provider construction failed; classify=true requests will fail",
+					zap.String("provider", cprov),
+					zap.Error(err))
+			} else if llm, ok := rawLLM.(types.LLMProvider); ok {
+				classifyLLM = llm
+				logger.Info("SkillsImportService: classify provider configured",
+					zap.String("provider", cprov),
+					zap.String("model", cmodel))
+			}
+		}
+
+		// Read-only skills library shared with the importer service.
+		// Same skills_dir every agent reads from.
+		importLibOpts := []skills.LibraryOption{skills.WithSearchPaths(skillsDir)}
+		if tracer != nil {
+			importLibOpts = append(importLibOpts, skills.WithTracer(tracer))
+		}
+		importLib := skills.NewLibrary(importLibOpts...)
+
+		// Persisted index store backed by the registry's SQLite DB.
+		// Same store the per-agent routers SaveIndex into; reading
+		// LatestIndex here gives the importer the live router's view.
+		importStore := skillindex.NewSQLStore(registry.DB(), skillindex.DialectSQLite)
+
+		importServer, err := server.NewSkillsImportServer(server.SkillsImportServerConfig{
+			Registry:      registry,
+			Store:         importStore,
+			SkillLib:      importLib,
+			DefaultOutDir: skillsDir,
+			Classify:      classifyLLM,
+			Tracer:        tracer,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Error("SkillsImportService registration failed",
+				zap.Error(err))
+		} else {
+			loomv1.RegisterSkillsImportServiceServer(grpcServer, importServer)
+			logger.Info("SkillsImportService registered")
+		}
+	}
 
 	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
 	// SQLite backends do not provide multi-tenant admin and are silently skipped.
@@ -1669,6 +1981,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("Provider pool injected into agent registry",
 				zap.Int("providers", len(providerPool)))
 		}
+		// Inject the task subsystem so registry-built agents reach Phase D
+		// (skills-overhaul task emission) and the sticky-while-open-tasks
+		// eviction checker. The per-agent memory.task_board.enabled flag
+		// still controls task_board tool surfacing; emission is always-on.
+		if registry != nil && taskManager != nil {
+			registry.SetTaskManager(taskManager, taskDecomposer)
+			logger.Info("Task manager injected into agent registry",
+				zap.Bool("decomposer_present", taskDecomposer != nil))
+		}
 		// Wire the eval store for ABTest result persistence.
 		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
 			evalDBPath := config.Database.Path
@@ -1697,6 +2018,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	if registry != nil {
 		loomService.SetAgentRegistry(registry)
 		logger.Info("Agent registry configured on server for workflow execution")
+	}
+
+	// Wire task manager into server for persistent workflow tracking
+	if taskManager != nil {
+		loomService.SetTaskManager(taskManager)
+		logger.Info("Task manager configured on server for workflow tracking")
 	}
 
 	// Set clarification timeouts from config
@@ -1776,6 +2103,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		// 1. Broadcast Bus for pub/sub
 		messageBus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
 		logger.Info("Broadcast bus initialized")
+
+		// Wire message bus into task manager for event publishing (two-phase init).
+		if taskManager != nil {
+			taskManager.SetBus(messageBus)
+		}
+		// Wire message bus into task service for streaming task updates to TUI.
+		if taskService != nil {
+			taskService.SetBus(messageBus)
+		}
 
 		// 2. Message Queue for point-to-point async messaging
 		queuePath := config.Communication.Store.Path
@@ -1867,6 +2203,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Initializing LearningAgent (self-improvement system)")
 	var learningAgent *learning.LearningAgent
 	var learningService *server.LearningService
+	var patternTracker *learning.PatternEffectivenessTracker
 	{
 		// 1. Open database connection for learning agent
 		learningDBPath := config.Database.Path
@@ -1906,7 +2243,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			1*time.Hour,   // windowSize
 			5*time.Minute, // flushInterval
 		)
-		logger.Info("  Pattern effectiveness tracker created")
+		patternTracker = tracker // hoist for agent wiring below
+		if err := tracker.Start(ctx); err != nil {
+			logger.Fatal("Failed to start pattern effectiveness tracker", zap.Error(err))
+		}
+		logger.Info("  Pattern effectiveness tracker created and started")
 
 		// 6. Create learning agent
 		// Check for YAML config file first (declarative preferred)
@@ -2003,6 +2344,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("LearningAgent initialization complete")
 
+	// Wire pattern effectiveness tracker into the multi-agent server.
+	// This wires the tracker into all existing agents' orchestrators and ensures
+	// any agent added later (via hot-reload or CreateAgent RPC) also gets it.
+	if patternTracker != nil {
+		loomService.SetPatternTracker(patternTracker)
+		logger.Info("Pattern effectiveness tracking enabled for all agents",
+			zap.Int("agents", len(agents)))
+	}
+
 	// Initialize workflow scheduler
 	var workflowScheduler *scheduler.Scheduler
 	if config.Scheduler.Enabled {
@@ -2027,6 +2377,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			Logger:       logger,
 			MessageBus:   messageBus,
 			SharedMemory: sharedMemory,
+			TaskManager:  taskManager, // persistent workflow tracking (nil = disabled)
 		})
 
 		// Create and start scheduler
@@ -2254,6 +2605,24 @@ func runServe(cmd *cobra.Command, args []string) {
 				EnableTracing:     config.Observability.Enabled,
 			}
 
+			// Transfer pattern configuration from proto if present
+			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
+				cfg.PatternConfig = &agent.PatternConfig{
+					Enabled:            agentConfig.Behavior.Patterns.Enabled,
+					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
+					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
+					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
+					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
+				}
+			}
+
+			// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns
+			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
+				cfg.PatternsDir = pd
+			} else {
+				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+			}
+
 			// Set context limits if specified in LLM config
 			if agentConfig.Llm != nil {
 				if agentConfig.Llm.MaxContextTokens > 0 {
@@ -2303,6 +2672,48 @@ func runServe(cmd *cobra.Command, args []string) {
 				agent.WithConfig(cfg),
 			}
 
+			// Wire graph memory (opt-out: enabled by default when store is available).
+			// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
+			// tools.minimal=true also suppresses it across the board.
+			if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
+				gmCfg := agentConfig.GetMemory().GetGraphMemory()
+				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+				if !explicitlyDisabled {
+					if gmCfg == nil {
+						gmCfg = agent.DefaultGraphMemoryConfig()
+					}
+					agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+					if memoryEmbedder != nil {
+						agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
+					}
+					logger.Info("    Graph memory enabled (hot-reload)",
+						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
+						zap.Bool("vector_search", memoryEmbedder != nil))
+				} else {
+					logger.Info("    Graph memory explicitly disabled (hot-reload)")
+				}
+			} else if graphMemoryStore != nil {
+				logger.Info("    Graph memory suppressed by tools.minimal (hot-reload)")
+			}
+
+			// Wire task subsystem. Manager always wired (skills emission unconditional);
+			// per-agent flag gates only tool surfacing. tools.minimal=true forces the
+			// tool surface off while leaving the manager wired for skill task emission.
+			if taskManager != nil {
+				tbCfg := agentConfig.GetMemory().GetTaskBoard()
+				if tbCfg == nil {
+					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+				}
+				if viper.GetBool("tools.minimal") && tbCfg.Enabled {
+					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					logger.Info("    Task board tool suppressed by tools.minimal (hot-reload)")
+				}
+				agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+				if tbCfg.Enabled {
+					logger.Info("    Task board tool surfacing enabled (hot-reload)")
+				}
+			}
+
 			// Add PermissionChecker if configured
 			if permissionChecker != nil {
 				agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
@@ -2316,6 +2727,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Create new agent
 			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
 
+			// Wire pattern effectiveness tracker for metrics collection
+			if patternTracker != nil {
+				newAgent.SetPatternTracker(patternTracker)
+			}
+
 			// Set stable GUID from registry if provided
 			// This ensures the agent maintains the same ID across hot-reloads
 			if guid != "" {
@@ -2323,38 +2739,75 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Debug("  Set stable GUID on agent", zap.String("guid", guid))
 			}
 
-			// Always register shell_execute for all agents
-			// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
-			var shellTool shuttle.Tool
-			if agentConfig.Name == "weaver" {
-				weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
-				shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
-				logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
-			} else {
-				shellTool = builtin.NewShellExecuteTool("")
-				logger.Info("  Auto-registered shell_execute tool")
-			}
-			newAgent.RegisterTool(shellTool)
+			// Always register shell_execute and workspace for all agents,
+			// unless tools.minimal=true (--minimal-tools) is set, in which
+			// case the agent only sees what its YAML declares.
+			if !viper.GetBool("tools.minimal") {
+				var shellTool shuttle.Tool
+				if agentConfig.Name == "weaver" {
+					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+					shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+					logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
+				} else {
+					shellTool = builtin.NewShellExecuteTool("")
+					logger.Info("  Auto-registered shell_execute tool")
+				}
+				newAgent.RegisterTool(shellTool)
 
-			// Always register workspace tool for session-scoped file management
-			workspaceTool := builtin.NewWorkspaceTool(artifactStore)
-			newAgent.RegisterTool(workspaceTool)
-			logger.Info("  Auto-registered workspace tool")
+				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+				newAgent.RegisterTool(workspaceTool)
+				logger.Info("  Auto-registered workspace tool")
+			} else {
+				logger.Info("  tools.minimal=true: skipping auto-registration of shell_execute and workspace")
+			}
 
 			// Register builtin tools if specified
 			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
 				logger.Info("  Registering builtin tools", zap.Int("count", len(agentConfig.Tools.Builtin)))
 				for _, toolName := range agentConfig.Tools.Builtin {
-					// Skip shell_execute since it's already registered
-					if toolName == "shell_execute" {
+					// Skip tools that are registered separately
+					if toolName == "shell_execute" || toolName == "contact_human" {
 						continue
 					}
 					// spawn_agent removed
 
-					tool := builtin.ByName(toolName)
+					// Mirror the boot path's agent_management wiring: the
+					// hot-reload path also needs the post-write hook so
+					// reloaded weaver agents trigger router rebuilds.
+					var tool shuttle.Tool
+					if toolName == "agent_management" && registry != nil {
+						hook := func(skillName, filePath string) {
+							reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+							logger.Info("agent_management (reload): skill write triggered router reload",
+								zap.String("skill", skillName),
+								zap.String("file", filePath),
+								zap.Int("reloaded", reloaded),
+								zap.Int("failed", failed))
+						}
+						tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+					} else {
+						tool = builtin.ByName(toolName)
+					}
 					if tool != nil {
 						newAgent.RegisterTool(tool)
 						logger.Info("    Tool registered", zap.String("name", toolName))
+					}
+				}
+			}
+
+			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+			if agentConfig.Tools != nil {
+				for _, toolName := range agentConfig.Tools.Builtin {
+					if toolName == "contact_human" {
+						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+							Store:  hitlStore,
+							Tracer: tracer,
+							Logger: logger,
+						})
+						newAgent.RegisterTool(humanTool)
+						logger.Info("  Auto-registered contact_human tool (shared SQLite store)",
+							zap.String("db_path", hitlDBPath))
+						break
 					}
 				}
 			}
@@ -2399,8 +2852,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Register tool_search and enable dynamic tool registration if tool registry available
-			if toolRegistry != nil {
+			// Register tool_search and enable dynamic tool registration if tool registry available.
+			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
+			if toolRegistry != nil && !viper.GetBool("tools.minimal") {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
@@ -2661,6 +3115,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Error closing tool registry", zap.Error(err))
 			} else {
 				logger.Info("Tool registry closed")
+			}
+		}
+
+		// Stop pattern tracker (flushes remaining buffered metrics)
+		if patternTracker != nil {
+			ctx := context.Background()
+			if err := patternTracker.Stop(ctx); err != nil {
+				logger.Warn("Error stopping pattern tracker", zap.Error(err))
+			} else {
+				logger.Info("Pattern effectiveness tracker stopped (final flush complete)")
 			}
 		}
 

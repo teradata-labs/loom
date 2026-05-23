@@ -28,18 +28,18 @@ func TestGetModelContextLimits(t *testing.T) {
 		shouldFind       bool
 	}{
 		{
-			name:             "Claude Sonnet 4 exact match",
-			model:            "claude-sonnet-4",
-			expectedMax:      200000,
-			expectedReserved: 64000,
-			shouldFind:       true,
+			// Claude 4.x entries intentionally no longer live in this legacy
+			// map — the catalog owns per-model ContextWindow/MaxOutputTokens.
+			// An unqualified "claude-sonnet-4" that isn't in the catalog must
+			// not match a stale prefix here; callers fall to provider defaults.
+			name:       "Claude Sonnet 4 (unqualified) no longer in legacy map",
+			model:      "claude-sonnet-4",
+			shouldFind: false,
 		},
 		{
-			name:             "Claude Sonnet 4 with version suffix",
-			model:            "claude-sonnet-4-20250514",
-			expectedMax:      200000,
-			expectedReserved: 64000,
-			shouldFind:       true,
+			name:       "Claude Sonnet 4 dated variant no longer in legacy map",
+			model:      "claude-sonnet-4-20250514",
+			shouldFind: false,
 		},
 		{
 			name:             "Llama 3.1 exact match",
@@ -210,8 +210,8 @@ func TestResolveContextLimits(t *testing.T) {
 			configuredMax:      0,
 			configuredReserved: 0,
 			expectedMax:        128000,
-			expectedReserved:   12800,
-			description:        "Use model-specific limits from lookup table",
+			expectedReserved:   8192,
+			description:        "Use catalog ContextWindow and MaxOutputTokens for exact match",
 		},
 		{
 			name:               "Model lookup with custom reserved",
@@ -221,7 +221,27 @@ func TestResolveContextLimits(t *testing.T) {
 			configuredReserved: 20000,
 			expectedMax:        128000,
 			expectedReserved:   20000,
-			description:        "Use model max from lookup, custom reserved",
+			description:        "Use catalog max, explicit configuredReserved overrides catalog MaxOutputTokens",
+		},
+		{
+			name:               "Catalog lookup: Anthropic Claude Opus 4.6",
+			provider:           "anthropic",
+			model:              "claude-opus-4-6",
+			configuredMax:      0,
+			configuredReserved: 0,
+			expectedMax:        1_000_000,
+			expectedReserved:   128_000,
+			description:        "Catalog ContextWindow (1M) and MaxOutputTokens (128K) for Claude Opus 4.6",
+		},
+		{
+			name:               "Catalog lookup: Gemini 2.5 Pro",
+			provider:           "gemini",
+			model:              "gemini-2.5-pro",
+			configuredMax:      0,
+			configuredReserved: 0,
+			expectedMax:        1_048_576,
+			expectedReserved:   65_536,
+			description:        "Catalog values for Gemini 2.5 Pro",
 		},
 		{
 			name:               "Unknown model - provider default",

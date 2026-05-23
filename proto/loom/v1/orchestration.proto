@@ -26,6 +26,13 @@ message WorkflowPattern {
     TeacherStudentPattern teacher_student = 8;
     IterativeWorkflowPattern iterative = 9;
   }
+
+  // Stable workflow ID for session determinism across scheduled executions.
+  // If set, executors use this as the workflowID prefix instead of generating a random UUID.
+  // This makes agent session IDs deterministic (e.g., "{workflow_id}-stage1-{agent_id}"),
+  // enabling conversation continuity across cron ticks.
+  // If empty, executors generate a random UUID (default behavior).
+  string workflow_id = 10;
 }
 
 // DebatePattern orchestrates multiple agents to debate a topic and reach consensus.
@@ -61,6 +68,9 @@ message ForkJoinPattern {
 
   // Optional: Timeout for all parallel executions
   int32 timeout_seconds = 4;
+
+  // Optional: Output validation policy applied to each agent's output.
+  OutputPolicy agent_output_policy = 5;
 }
 
 // PipelinePattern executes agents sequentially where each agent's output
@@ -84,8 +94,24 @@ message PipelineStage {
   // Prompt template (can include {{previous}} or {{history}} placeholders)
   string prompt_template = 2;
 
-  // Optional: Validation function to check output before proceeding
+  // Optional: LLM-based validation — asks an LLM if the output meets criteria.
+  // Use {{output}} placeholder to reference the stage output.
   string validation_prompt = 3;
+
+  // Optional: Retry policy when validation fails (schema or LLM validation).
+  // Each retry includes the failure reason and expected format in the prompt.
+  // Each retry uses a fresh session ID.
+  OutputRetryPolicy retry_policy = 4;
+
+  // Optional: JSON Schema for validating stage output.
+  // Instant, free, deterministic validation — no LLM call required.
+  // When both output_schema and validation_prompt are set, schema is checked
+  // first (cheap), then validation_prompt only if schema passes (semantic check).
+  string output_schema = 5;
+
+  // Optional: Unified output validation policy. When set, takes precedence
+  // over the legacy validation_prompt + output_schema + retry_policy fields.
+  OutputPolicy output_policy = 6;
 }
 
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
@@ -198,6 +224,9 @@ message AgentTask {
 
   // Optional: Task metadata
   map<string, string> metadata = 3;
+
+  // Optional: Output validation policy for this task's output.
+  OutputPolicy output_policy = 4;
 }
 
 // ConditionalPattern routes execution based on an agent's decision.
@@ -214,6 +243,11 @@ message ConditionalPattern {
 
   // Optional: Default branch if condition doesn't match any branch
   WorkflowPattern default_branch = 4;
+
+  // Optional: Retry policy when condition output doesn't match any branch key.
+  // On retry, the agent receives a prompt listing valid branch keys and its
+  // previous failed output. Each retry uses a fresh session ID.
+  OutputRetryPolicy retry_policy = 5;
 }
 
 // MergeStrategy defines how to combine multiple agent outputs.
@@ -427,6 +461,22 @@ message ScheduleConfig {
 
   // Variables to pass to workflow execution
   map<string, string> variables = 6;
+
+  // Session mode for workflow agents (NEW = fresh each tick, RESUME = continue previous)
+  ScheduledSessionMode session_mode = 7;
+}
+
+// ScheduledSessionMode controls session lifecycle for scheduled workflow executions.
+enum ScheduledSessionMode {
+  // Default: each execution starts fresh (random workflow_id).
+  SCHEDULED_SESSION_MODE_UNSPECIFIED = 0;
+
+  // Each cron tick creates fresh sessions for all agents.
+  SCHEDULED_SESSION_MODE_NEW = 1;
+
+  // Each cron tick resumes agent sessions from the previous execution.
+  // The scheduler sets workflow_id to a stable value derived from the schedule ID.
+  SCHEDULED_SESSION_MODE_RESUME = 2;
 }
 
 // ScheduledWorkflow represents a workflow with automatic execution schedule.
@@ -464,6 +514,9 @@ message ScheduledWorkflow {
 
   // Last updated timestamp (Unix seconds)
   int64 updated_at = 11;
+
+  // Workflow ID used in the last execution (for RESUME mode tracking)
+  string last_workflow_id = 12;
 }
 
 // ScheduleStats tracks execution statistics for a scheduled workflow.

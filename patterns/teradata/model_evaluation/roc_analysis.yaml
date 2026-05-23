@@ -1,0 +1,336 @@
+# === METADATA START ===
+name: roc_analysis
+title: "ROC Curve and AUC Analysis"
+description: |
+  Generate ROC curve data and compute AUC using TD_ROC. Evaluates binary classification
+  performance across all possible thresholds by computing True Positive Rate (TPR) and
+  False Positive Rate (FPR) at each threshold. AUC provides a single threshold-independent
+  metric. Supports multi-model evaluation via ModelIDColumn.
+
+  TD_ROC is ideal for:
+  - Evaluating binary classifiers across all thresholds
+  - Computing AUC as a threshold-independent performance measure
+  - Comparing multiple models on the same data in a single call
+  - Choosing optimal classification thresholds for deployment
+
+category: model_evaluation
+difficulty: intermediate
+teradata_function: TD_ROC
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - model_evaluation
+  - analytics
+  - reporting
+use_cases:
+  # --- Use Case 1: ROC Curve Generation ---
+  - Generating ROC curve data (TPR vs FPR) for visualization
+
+  # --- Use Case 2: AUC Computation ---
+  - Computing AUC score for threshold-independent model evaluation
+
+  # --- Use Case 3: Multi-Model Comparison ---
+  - Comparing multiple models via AUC in a single query
+
+  # --- Use Case 4: Threshold Selection ---
+  - Finding the optimal classification threshold for deployment
+
+  # --- Use Case 5: Gini Coefficient ---
+  - Computing Gini coefficient to measure prediction inequality
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the scored predictions table"
+    example: "ml_project"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain probability and actual label columns
+    required: true
+    description: "Table containing predicted probabilities and actual labels"
+    example: "churn_scored"
+
+  # --- Parameter 3: Probability Column ---
+  - name: probability_column
+    type: string
+    # LLM-HINT: Column with predicted probability of positive class; values in [0, 1]
+    required: true
+    description: "Column containing predicted probability of the positive class"
+    example: "churn_probability"
+
+  # --- Parameter 4: Observation Column ---
+  - name: observation_column
+    type: string
+    # LLM-HINT: Column with actual class labels (e.g., 0/1 or 'yes'/'no')
+    required: true
+    description: "Column containing actual (ground truth) class labels"
+    example: "actual_churn"
+
+  # --- Parameter 5: Positive Label ---
+  - name: positive_label
+    type: string
+    # LLM-HINT: Value representing the positive class; default '1'
+    required: false
+    default: "1"
+    description: "Value that represents the positive class label"
+    example: "1"
+
+  # --- Parameter 6: Num Thresholds ---
+  - name: num_thresholds
+    type: integer
+    # LLM-HINT: Number of uniformly distributed thresholds in [0, 1]; default 50; range [1, 10000]
+    required: false
+    default: "50"
+    description: "Number of thresholds to evaluate. Range [1, 10000]. More = smoother curve"
+    example: "100"
+
+  # --- Parameter 7: Model ID Column ---
+  - name: model_id_column
+    type: string
+    # LLM-HINT: Optional; evaluate multiple models in one call; each model gets its own ROC curve
+    required: false
+    description: "Column identifying different models for multi-model comparison"
+    example: "model_name"
+
+  # --- Parameter 8: Output Table ---
+  - name: output_table
+    type: string
+    # LLM-HINT: OUT TABLE for ROC curve data; use for persisting results or visualization
+    required: false
+    description: "Table to persist ROC curve output data"
+    example: "churn_roc_results"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === ROC_WITH_AUC TEMPLATE ===
+  # LLM-HINT: Standard ROC analysis with AUC; use for single model evaluation with threshold-independent metric
+  roc_with_auc:
+    description: "Generate ROC curve data with AUC score"
+    sql: |
+      -- ROC curve with AUC computation
+      -- Output: one row per threshold with TPR, FPR, and AUC
+      SELECT * FROM TD_ROC(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ProbabilityColumn('{{probability_column}}')
+          ObservationColumn('{{observation_column}}')
+          PositiveLabel('{{positive_label}}')
+          NumThresholds({{num_thresholds}})
+          AUC('true')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - probability_column
+      - observation_column
+      - positive_label
+      - num_thresholds
+
+  # === MULTI_MODEL_ROC TEMPLATE ===
+  # LLM-HINT: Compare ROC curves and AUC across multiple models; requires a model ID column in the data
+  multi_model_roc:
+    description: "Compare ROC curves and AUC across multiple models in a single call"
+    sql: |
+      -- Multi-model ROC comparison
+      -- Each model gets its own ROC curve and AUC
+      SELECT * FROM TD_ROC(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ProbabilityColumn('{{probability_column}}')
+          ObservationColumn('{{observation_column}}')
+          ModelIDColumn('{{model_id_column}}')
+          PositiveLabel('{{positive_label}}')
+          NumThresholds({{num_thresholds}})
+          AUC('true')
+          Gini('true')
+      ) AS t
+      ORDER BY Model_id, Threshold;
+    required_parameters:
+      - database
+      - table
+      - probability_column
+      - observation_column
+      - model_id_column
+      - positive_label
+      - num_thresholds
+
+  # === OPTIMAL_THRESHOLD TEMPLATE ===
+  # LLM-HINT: Find the threshold that maximizes Youden's J statistic (TPR - FPR); best balance of sensitivity and specificity
+  optimal_threshold:
+    description: "Find the optimal classification threshold using Youden's J statistic"
+    sql: |
+      -- Find optimal threshold (maximizes TPR - FPR)
+      -- Youden's J statistic: best balance of sensitivity and specificity
+      SELECT TOP 1
+        Threshold,
+        TPR,
+        FPR,
+        (TPR - FPR) AS youden_j,
+        AUC
+      FROM TD_ROC(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ProbabilityColumn('{{probability_column}}')
+          ObservationColumn('{{observation_column}}')
+          PositiveLabel('{{positive_label}}')
+          NumThresholds({{num_thresholds}})
+          AUC('true')
+      ) AS t
+      ORDER BY (TPR - FPR) DESC;
+    required_parameters:
+      - database
+      - table
+      - probability_column
+      - observation_column
+      - positive_label
+      - num_thresholds
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Churn Model ROC ---
+  - name: "Churn Model ROC with AUC"
+    description: "Evaluate a churn prediction model using ROC curve and AUC"
+    parameters:
+      database: "telecom"
+      table: "churn_scored"
+      probability_column: "churn_probability"
+      observation_column: "actual_churn"
+      positive_label: "1"
+      num_thresholds: 100
+    expected_result: |
+      ROC curve data (100 threshold points):
+
+      Threshold |  TPR   |  FPR   |  AUC
+      ----------+--------+--------+-------
+        0.00    | 1.0000 | 1.0000 | 0.912
+        0.10    | 0.9800 | 0.4500 | 0.912
+        0.30    | 0.9200 | 0.1500 | 0.912
+        0.50    | 0.8500 | 0.0600 | 0.912
+        0.70    | 0.6800 | 0.0200 | 0.912
+        0.90    | 0.3500 | 0.0050 | 0.912
+        1.00    | 0.0000 | 0.0000 | 0.912
+
+      AUC = 0.912: Excellent discrimination between churners and non-churners.
+      Optimal threshold (Youden's J): ~0.35 (TPR=0.92, FPR=0.15)
+
+  # --- Example 2: Multi-Model Comparison ---
+  - name: "Compare Logistic Regression vs Decision Forest"
+    description: "Compare two models using ROC AUC and Gini coefficient"
+    parameters:
+      database: "fraud_detection"
+      table: "model_comparison_scores"
+      probability_column: "fraud_probability"
+      observation_column: "is_fraud"
+      model_id_column: "model_name"
+      positive_label: "1"
+      num_thresholds: 50
+    expected_result: |
+      Model comparison summary (AUC and Gini per model):
+
+      Model_id          |  AUC   |  GINI
+      ------------------+--------+-------
+      logistic_reg      | 0.875  | 0.750
+      decision_forest   | 0.923  | 0.846
+
+      Decision Forest outperforms Logistic Regression by 4.8 AUC points.
+      Higher Gini confirms stronger discrimination capability.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Probability Column Not in [0, 1] ---
+  - error: "Probability values outside [0, 1] range"
+    cause: "ProbabilityColumn contains raw scores or logits instead of calibrated probabilities"
+    solution: "Ensure ProbabilityColumn contains values in [0, 1]. Apply sigmoid or softmax to raw model scores before using TD_ROC"
+
+  # --- Error 2: Wrong Positive Label ---
+  - error: "AUC is below 0.5 (worse than random)"
+    cause: "PositiveLabel is set to the wrong class, inverting the ROC curve"
+    solution: "Check the actual positive class value. Use: SELECT DISTINCT observation_col FROM table. Set PositiveLabel to the correct value"
+
+  # --- Error 3: Too Few Thresholds ---
+  - error: "ROC curve appears jagged or stepwise"
+    cause: "NumThresholds too low for the dataset size"
+    solution: "Increase NumThresholds. Use 100-500 for smooth curves. Default 50 is often too coarse for visualization"
+
+  # --- Error 4: Missing Model ID for Multi-Model ---
+  - error: "All models mixed into single ROC curve"
+    cause: "ModelIDColumn not specified when data contains multiple models"
+    solution: "Set ModelIDColumn('model_name') to separate ROC curves per model. Each distinct value gets its own curve and AUC"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## ROC Analysis Best Practices
+
+  ### 1. Interpret AUC Correctly
+  - **AUC = 0.5**: No better than random guessing
+  - **AUC = 0.7-0.8**: Acceptable discrimination
+  - **AUC = 0.8-0.9**: Good discrimination
+  - **AUC > 0.9**: Excellent discrimination
+  - **AUC = 1.0**: Perfect (suspicious - check for data leakage)
+
+  ### 2. Use Enough Thresholds
+  ```sql
+  -- 100-200 thresholds for smooth curves
+  NumThresholds(200)
+  ```
+  - Default 50 is adequate for AUC computation
+  - Use 100+ for smooth visualization
+  - Up to 10000 for very fine-grained analysis
+
+  ### 3. Find the Optimal Threshold
+  - Default 0.5 threshold is rarely optimal
+  - **Youden's J** (TPR - FPR): best overall balance
+  - **High-recall threshold**: lower threshold when false negatives are costly (fraud, disease)
+  - **High-precision threshold**: higher threshold when false positives are costly (spam filter)
+
+  ### 4. Compare Models Fairly
+  - Always evaluate on the same test set
+  - Use ModelIDColumn for side-by-side comparison
+  - AUC is threshold-independent, making it ideal for comparison
+  - Pair with Gini coefficient for additional perspective
+
+  ### 5. Check for Data Leakage
+  - AUC near 1.0 on test data is suspicious
+  - Verify no target leakage in features
+  - Ensure train/test split is properly applied
+
+  ### 6. Pair with TD_ClassificationEvaluator
+  - TD_ROC evaluates across all thresholds
+  - TD_ClassificationEvaluator evaluates at a chosen threshold
+  - Workflow: TD_ROC to select threshold, then TD_ClassificationEvaluator for detailed metrics
+
+  ### 7. ROC Is for Binary Classification
+  - TD_ROC works with binary outcomes
+  - For multi-class: compute one-vs-rest ROC per class
+  - Weight per-class AUC by class prevalence for macro-average
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Classification Evaluator ---
+  - classification_evaluator
+
+  # --- Pattern 2: Train/Test Split ---
+  - train_test_split
+
+  # --- Pattern 3: SHAP Explainability ---
+  - shap_explainability
+
+  # --- Pattern 4: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 5: GLM ---
+  - glm
+# === RELATED_PATTERNS END ===

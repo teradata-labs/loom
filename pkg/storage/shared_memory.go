@@ -33,11 +33,11 @@ import (
 const (
 	// DefaultMaxMemoryBytes is 1GB
 	DefaultMaxMemoryBytes = 1 * 1024 * 1024 * 1024
-	// DefaultSharedMemoryThreshold is 0 bytes - all tool results stored as references.
-	// This prevents conversation history accumulation by keeping all tool output in storage
-	// rather than inline in conversation. Agents use query_tool_result to access data.
-	// Provides massive token savings (80%+), critical for database agents.
-	DefaultSharedMemoryThreshold = 0 // Store everything as references
+	// DefaultSharedMemoryThreshold is -1 (never reference, inline everything).
+	// Tool results are kept inline in conversation history rather than stored as references.
+	// Per-agent override via MemoryConfig.SharedMemoryThresholdBytes:
+	//   -1 = inline everything, 0 = always reference, >0 = reference if exceeds N bytes.
+	DefaultSharedMemoryThreshold = -1 // Inline everything by default
 	// DefaultCompressionThreshold is 1MB
 	DefaultCompressionThreshold = 1 * 1024 * 1024
 	// DefaultTTLSeconds is 1 hour

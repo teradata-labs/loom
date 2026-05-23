@@ -1,7 +1,7 @@
 
 # Loom Features Guide
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -23,11 +23,16 @@ This guide covers Loom's major features and how to use them.
 
 ## YAML-Based Configuration
 
-Configure agents entirely through YAML without writing code.
+✅ Configure agents and servers entirely through YAML without writing code.
+
+Loom uses two configuration layers:
+
+1. **Server config** (`$LOOM_DATA_DIR/looms.yaml`) - LLM provider, MCP servers, observability, logging
+2. **Agent configs** (`$LOOM_DATA_DIR/agents/*.yaml`) - Individual agent definitions
 
 ### Create an Agent Configuration
 
-Create `config/agent.yaml`:
+Create `$LOOM_DATA_DIR/agents/my-agent.yaml`:
 
 ```yaml
 apiVersion: loom/v1
@@ -37,59 +42,72 @@ metadata:
   version: "1.0.0"
   description: "PostgreSQL agent with observability"
 spec:
-  backend: postgres
-  llm:
-    provider: anthropic
-    model: claude-sonnet-4-5-20250929
+  system_prompt: |
+    Generate efficient SQL queries, optimize existing queries, and provide data insights.
+    Always use proper formatting, explicit JOIN syntax, and CTEs for complex queries.
 
   tools:
-    - name: execute_query
-      enabled: true
-    - name: get_schema
-      enabled: true
-    - name: list_tables
-      enabled: true
+    - execute_query
+    - get_schema
+    - list_tables
 
-  observability:
-    enabled: true
-    hawk_endpoint: http://localhost:9090
-
-  limits:
+  config:
     max_turns: 25
     max_tool_executions: 50
-    timeout_seconds: 300
+```
+
+Observability and LLM provider settings are configured in the server config (`$LOOM_DATA_DIR/looms.yaml`):
+
+```yaml
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-5-20250929
+
+observability:
+  enabled: true
+  provider: hawk
+  hawk_endpoint: http://localhost:9090
 ```
 
 ### Start with the Configuration
 
 ```bash
-looms serve --config config/agent.yaml
+looms serve --config $LOOM_DATA_DIR/looms.yaml
 ```
 
 ## MCP Server Support
 
-Connect to Model Context Protocol servers for external tool access.
+✅ Connect to Model Context Protocol servers for external tool access.
 
 ### Configure MCP Servers
 
-Create `$LOOM_DATA_DIR/mcp.yaml`:
+Add MCP servers to the `mcp:` section of `$LOOM_DATA_DIR/looms.yaml`:
 
 ```yaml
-servers:
-  filesystem:
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+mcp:
+  servers:
+    filesystem:
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/data"
+      transport: stdio
 
-  postgres:
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-postgres"]
-    env:
-      DATABASE_URL: ${POSTGRES_URL}
+    postgres:
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-postgres"
+      env:
+        DATABASE_URL: ${POSTGRES_URL}
+      transport: stdio
 
-  vantage:
-    command: ~/Projects/vantage-mcp/bin/vantage-mcp
-    env:
-      TD_USER: myuser
+    vantage:
+      command: ~/Projects/vantage-mcp/bin/vantage-mcp
+      env:
+        TD_USER: myuser
+      transport: stdio
 ```
 
 ### Use MCP Servers
@@ -110,30 +128,41 @@ looms config set mcp.servers.vantage.env.TD_USER myuser
 looms config set-key td_password  # Secure keyring storage
 ```
 
-See [MCP Integration Guide](../integration/mcp-readme/) for details.
+See [MCP Integration Guide](./integration/mcp-readme/) for details.
 
 ## Hot Reload
 
-Update patterns and prompts without restarting the server.
+✅ Update patterns, prompts, skills, artifacts, and agent configs without restarting the server.
 
 ### Supported File Types
 
 - Pattern YAML files (`patterns/**/*.yaml`)
 - Prompt templates (`prompts/**/*.yaml`)
-- Agent configuration (`config/agent.yaml`)
-- Tool definitions (`tools/**/*.yaml`)
+- Skill YAML files (`skills/**/*.yaml`)
+- Agent configurations (`$LOOM_DATA_DIR/agents/*.yaml`)
+- Workflow configurations (`$LOOM_DATA_DIR/workflows/*.yaml`)
+- Artifact files (`$LOOM_DATA_DIR/artifacts/`)
 
-### Enable Hot Reload
+### How Hot Reload Works
+
+Hot reload is enabled by default. The server watches for file changes and reloads automatically:
 
 ```bash
-looms serve --hot-reload
+looms serve
+```
+
+For artifacts, hot reload can be controlled via `looms.yaml`:
+
+```yaml
+artifacts:
+  hot_reload: true   # default: true
 ```
 
 Changes apply immediately when files are saved.
 
 ## Pattern-Guided Learning
 
-Use YAML patterns to encode domain knowledge.
+✅ Use YAML patterns to encode domain knowledge.
 
 ### Create a Pattern
 
@@ -171,7 +200,7 @@ See [Pattern Library Guide](./pattern-library-guide/) for details.
 
 ## Real-Time Streaming
 
-Stream execution progress to build responsive UIs.
+✅ Stream execution progress to build responsive UIs.
 
 ### Use StreamWeave
 
@@ -187,21 +216,29 @@ for {
     }
 
     fmt.Printf("[%s] %d%% - %s\n",
-        progress.Stage,
-        progress.Progress,
-        progress.Message)
+        progress.GetStage(),
+        progress.GetProgress(),
+        progress.GetMessage())
 }
 ```
 
-### Progress Events
+### Progress Stages
 
-- `pattern_selection` - Matching query to patterns
-- `llm_generation` - LLM generating response
-- `tool_execution` - Running tools
+The `ExecutionStage` enum defines the following stages:
+
+- `EXECUTION_STAGE_PATTERN_SELECTION` - Matching query to patterns
+- `EXECUTION_STAGE_SCHEMA_DISCOVERY` - Discovering backend schema
+- `EXECUTION_STAGE_LLM_GENERATION` - LLM generating response (supports token streaming via `PartialContent`)
+- `EXECUTION_STAGE_TOOL_EXECUTION` - Running tools
+- `EXECUTION_STAGE_GUARDRAIL_CHECK` - Running guardrail checks
+- `EXECUTION_STAGE_SELF_CORRECTION` - Agent self-correcting
+- `EXECUTION_STAGE_HUMAN_IN_THE_LOOP` - Waiting for human input
+- `EXECUTION_STAGE_COMPLETED` - Execution finished
+- `EXECUTION_STAGE_FAILED` - Execution failed
 
 ## Multiple LLM Providers
 
-Use different LLM providers with the same agent code.
+✅ Use different LLM providers with the same agent code. Eight providers are supported.
 
 ### Anthropic Claude
 
@@ -215,7 +252,7 @@ llm := anthropic.NewClient(anthropic.Config{
 ### AWS Bedrock
 
 ```go
-llm := bedrock.NewClient(bedrock.Config{
+llm, err := bedrock.NewClient(bedrock.Config{
     Region:  "us-east-1",
     ModelID: "anthropic.claude-sonnet-4-5-20250929-v1:0",
 })
@@ -225,65 +262,80 @@ llm := bedrock.NewClient(bedrock.Config{
 
 ```go
 llm := ollama.NewClient(ollama.Config{
-    BaseURL: "http://localhost:11434",
-    Model:   "llama3.2:latest",
+    Endpoint: "http://localhost:11434",
+    Model:    "llama3.2:latest",
 })
 ```
+
+### Other Supported Providers
+
+- ✅ **OpenAI** (`pkg/llm/openai`) - GPT-4o and other OpenAI models
+- ✅ **Azure OpenAI** (`pkg/llm/azureopenai`) - Azure-hosted OpenAI models
+- ✅ **Mistral** (`pkg/llm/mistral`) - Mistral AI models
+- ✅ **Google Gemini** (`pkg/llm/gemini`) - Gemini models
+- ✅ **HuggingFace** (`pkg/llm/huggingface`) - HuggingFace Inference API
 
 See [LLM Providers Reference](../reference/llm-providers/) for details.
 
 ## Session Persistence
 
-Automatically save conversation history.
+✅ Automatically save conversation history with SQLite-backed session stores.
 
-### Configure Session Storage
+### Configure Session Storage (Go API)
 
 ```go
-store, _ := agent.NewSessionStore("./sessions.db", tracer)
+store, err := agent.NewSessionStore("./sessions.db", tracer)
+if err != nil {
+    log.Fatal(err)
+}
 memory := agent.NewMemoryWithStore(store)
 ```
 
-### Per-Agent Memory
+### Server-Side Session Storage
+
+When running via `looms serve`, session persistence is automatic. The server stores sessions in SQLite at `$LOOM_DATA_DIR/loom.db` by default. Configure the storage backend in `looms.yaml`:
 
 ```yaml
-apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: sql_expert
-  version: "1.0.0"
-spec:
-  memory:
-    type: sqlite
-    path: $LOOM_DATA_DIR/memory/sql_expert.db
-    max_history: 50
+storage:
+  # SQLite (default)
+  migration:
+    auto_migrate: true
+
+  # Or PostgreSQL (optional)
+  # postgres:
+  #   host: localhost
+  #   port: 5432
+  #   database: loom
 ```
 
 ## Vision and Document Parsing
 
-Analyze images and parse documents.
+✅ Analyze images and parse documents using built-in tools.
 
 ### Analyze Images
 
+Enable the `analyze_image` tool in your agent configuration:
+
 ```yaml
 tools:
-  - name: analyze_image
-    enabled: true
+  - analyze_image
 ```
 
-Supported formats: JPEG, PNG, GIF, WebP (max 20MB).
+Supported formats: JPEG, PNG, GIF, WebP (max 20MB). Requires a multi-modal LLM provider (e.g., Anthropic Claude, Gemini).
 
 ### Parse Documents
 
+Enable the `parse_document` tool in your agent configuration:
+
 ```yaml
 tools:
-  - name: parse_document
-    enabled: true
+  - parse_document
 ```
 
 Supported formats:
-- CSV - Auto-delimiter detection, type inference
-- PDF - Text extraction, page selection
-- Excel (.xlsx) - Multi-sheet support
+- **CSV** - Auto-delimiter detection, type inference, up to 10,000 rows
+- **PDF** - Text extraction, up to 100 pages
+- **Excel (.xlsx)** - Multi-sheet support, up to 10,000 rows per sheet
 
 ## Next Steps
 

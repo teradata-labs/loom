@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewMemoryStorage(t *testing.T) {
@@ -52,9 +54,7 @@ func TestNewMemoryStorage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			storage := NewMemoryStorage(tt.maxTraces)
-			if storage == nil {
-				t.Fatal("NewMemoryStorage returned nil")
-			}
+			require.NotNil(t, storage, "NewMemoryStorage returned nil")
 			if storage.maxTraces != tt.wantMax {
 				t.Errorf("maxTraces = %d, want %d", storage.maxTraces, tt.wantMax)
 			}

@@ -51,6 +51,8 @@ tags: [nasa, space, correlation, investigation, real-time, learning]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - investigation
 use_cases:
   - Discover unexpected correlations in space weather
   - Track Mars weather patterns and rover impacts

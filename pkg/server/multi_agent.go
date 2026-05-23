@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
+	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -33,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -138,6 +140,12 @@ type MultiAgentServer struct {
 
 	// judgeServer holds the registered judge configurations for ABTest judge_id resolution.
 	judgeServer *JudgeServer
+
+	// patternTracker is wired into every agent's orchestrator for effectiveness metrics.
+	patternTracker *learning.PatternEffectivenessTracker
+
+	// taskManager for persistent workflow tracking via the task system (optional).
+	taskManager *task.Manager
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -291,6 +299,14 @@ func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 	s.registry = registry
 }
 
+// SetTaskManager injects the task manager for persistent workflow tracking.
+// When set, workflow executions automatically create task boards with stage tasks.
+func (s *MultiAgentServer) SetTaskManager(tm *task.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskManager = tm
+}
+
 // SetTracer injects an observability tracer for workflow and agent tracing.
 // This should be called after NewMultiAgentServer() to enable observability.
 // Also ensures traceStoreLocal is initialized so GetTrace RPC works.
@@ -336,6 +352,16 @@ func (s *MultiAgentServer) SetLLMConcurrencyLimit(limit int) {
 	if s.logger != nil {
 		s.logger.Info("LLM concurrency limit configured",
 			zap.Int("limit", limit))
+	}
+}
+
+// ClearAllSessions removes all in-memory sessions from every agent.
+// Used by the benchmark server to free memory between scenarios.
+func (s *MultiAgentServer) ClearAllSessions() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ag := range s.agents {
+		ag.ClearAllSessions()
 	}
 }
 
@@ -518,6 +544,11 @@ func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 
 	// Note: MessageBus, MessageQueue, and SharedMemoryComm are server-level singletons
 	// accessed via gRPC RPCs, not directly injected into agents
+
+	// Wire pattern effectiveness tracker so every pattern-guided turn records metrics
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
+	}
 }
 
 // UpdateAgent replaces an existing agent with a new instance (for hot-reload).
@@ -553,6 +584,11 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 				zap.String("agent_name", ag.GetName()),
 				zap.Int("num_tools", len(commTools)))
 		}
+	}
+
+	// Wire pattern effectiveness tracker for metrics collection
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
 	}
 
 	// Now acquire lock ONLY for the agent swap (minimal critical section)
@@ -672,13 +708,6 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		sessionID = GenerateSessionID()
 	}
 
-	// Set permission mode if specified in request
-	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
-		if err := ag.SetPermissionMode(ctx, sessionID, req.PermissionMode); err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
-		}
-	}
-
 	// Add progress multiplexer to context if available for this agent
 	s.mu.RLock()
 	if pm, ok := s.progressMultiplexers[agentID]; ok {
@@ -727,24 +756,18 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		)
 	}
 
-	// Convert context from map[string]string to map[string]interface{} for interpolation
-	requestContext := make(map[string]interface{})
-	if req.Context != nil {
-		for k, v := range req.Context {
-			requestContext[k] = v
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		ag.ResetSessionContext(sessionID)
+		if s.logger != nil {
+			s.logger.Info("Context window reset before processing",
+				zap.String("session_id", sessionID),
+				zap.String("agent_id", agentID))
 		}
 	}
 
-	// Log context variables for debugging
-	if s.logger != nil && len(requestContext) > 0 {
-		s.logger.Debug("Weave: context variables for interpolation",
-			zap.String("agent_id", agentID),
-			zap.String("session_id", sessionID),
-			zap.Int("context_len", len(requestContext)))
-	}
-
-	// Execute agent chat with context for variable interpolation
-	resp, err := ag.ChatWithProgressAndContext(ctx, sessionID, req.Query, requestContext, nil)
+	// Execute agent chat
+	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
 		if span != nil {
 			span.RecordError(err)
@@ -763,11 +786,24 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		s.RecordTraceSpan(span)
 	}
 
+	// Build context state snapshot (after response, reflects post-conversation state)
+	var contextState *loomv1.ContextState
+	if cs := ag.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	// Convert response to proto format
 	return &loomv1.WeaveResponse{
-		Text:      resp.Content,
-		SessionId: sessionID,
-		AgentId:   agentID,
+		Text:         resp.Content,
+		SessionId:    sessionID,
+		AgentId:      agentID,
+		ContextState: contextState,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
 				Provider:                 ag.GetLLMProviderName(),
@@ -819,13 +855,6 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		sessionID = GenerateSessionID()
 	}
 
-	// Set permission mode if specified in request
-	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
-		if err := ag.SetPermissionMode(stream.Context(), sessionID, req.PermissionMode); err != nil {
-			return status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
-		}
-	}
-
 	// Register manage_ephemeral_agents tool if not already registered
 	// This allows agents to spawn and despawn sub-agents dynamically
 	toolNames := ag.ListTools()
@@ -863,6 +892,16 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// This allows asynchronous workflow responses to trigger coordinator notifications
 	// even after the coordinator has returned an initial response to the user.
 
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		ag.ResetSessionContext(sessionID)
+		if s.logger != nil {
+			s.logger.Info("Context window reset before streaming",
+				zap.String("session_id", sessionID),
+				zap.String("agent_id", resolvedAgentID))
+		}
+	}
+
 	// Channel to receive agent result
 	type agentResult struct {
 		resp *agent.Response
@@ -882,25 +921,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 	}
 
-	// Convert context from map[string]string to map[string]interface{} for interpolation
-	requestContext := make(map[string]interface{})
-	if req.Context != nil {
-		for k, v := range req.Context {
-			requestContext[k] = v
-		}
-	}
-
-	// Log context variables for debugging
-	if s.logger != nil && len(requestContext) > 0 {
-		s.logger.Debug("StreamWeave: context variables for interpolation",
-			zap.String("agent_id", resolvedAgentID),
-			zap.String("session_id", sessionID),
-			zap.Int("context_len", len(requestContext)))
-	}
-
-	// Execute agent with progress callback and context for variable interpolation
+	// Execute agent with progress callback
 	go func() {
-		resp, err := ag.ChatWithProgressAndContext(stream.Context(), sessionID, req.Query, requestContext, progressCallback)
+		resp, err := ag.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan)
 	}()
@@ -919,14 +942,19 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				continue
 			}
 
-			// Convert agent progress to proto format
+			// Convert agent progress to proto format.
+			// Sanitize string fields: LLM streaming can produce invalid UTF-8
+			// (e.g. multi-byte chars split across chunks), which proto3 rejects.
 			protoProgress := &loomv1.WeaveProgress{
 				Stage:          convertAgentStageToProto(event.Stage),
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
-				PartialContent: event.PartialContent, // Stream partial content to TUI
+				PartialContent: sanitizeUTF8(event.PartialContent),
+				IsTokenStream:  event.IsTokenStream,
+				TokenCount:     event.TokenCount,
+				TtftMs:         event.TTFT,
 			}
 
 			// Include HITL request if present
@@ -968,7 +996,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		// Send a FAILED progress event so the TUI can display the error message
 		// before we return the gRPC error. Without this, the client stream ends
 		// abruptly and the user sees zero content after many tool calls.
-		errContent := fmt.Sprintf("Agent execution failed: %v", finalResult.err)
+		errContent := sanitizeUTF8(fmt.Sprintf("Agent execution failed: %v", finalResult.err))
 		failedProgress := &loomv1.WeaveProgress{
 			Stage:          loomv1.ExecutionStage_EXECUTION_STAGE_FAILED,
 			Progress:       100,
@@ -978,15 +1006,28 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 		// Best-effort: if resp has partial content from synthesis fallback, include it
 		if finalResult.resp != nil && finalResult.resp.Content != "" {
-			failedProgress.PartialContent = finalResult.resp.Content
+			failedProgress.PartialContent = sanitizeUTF8(finalResult.resp.Content)
 			failedProgress.Message = "Agent completed with errors"
 		}
 		_ = stream.Send(failedProgress)
 		return status.Errorf(codes.Internal, "agent execution failed: %v", finalResult.err)
 	}
 
-	// Send final completion event with result and cost
+	// Send final completion event with result, cost, and context state
 	resp := finalResult.resp
+
+	// Build context state snapshot
+	var contextState *loomv1.ContextState
+	if cs := ag.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	completionProgress := &loomv1.WeaveProgress{
 		Stage:     loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
 		Progress:  100,
@@ -994,9 +1035,10 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		Timestamp: time.Now().Unix(),
 		PartialResult: &loomv1.ExecutionResult{
 			Type:     "text",
-			DataJson: resp.Content,
+			DataJson: sanitizeUTF8(resp.Content),
 		},
-		PartialContent: resp.Content,
+		PartialContent: sanitizeUTF8(resp.Content),
+		ContextState:   contextState,
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
 			LlmCost: &loomv1.LLMCost{
@@ -1030,7 +1072,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // No registry available
 	}
 
+	// coordinatorID may be a GUID (from getAgent resolution) — resolve to name for config lookup
 	protoConfig := s.registry.GetConfig(coordinatorID)
+	if protoConfig == nil {
+		// Try using the agent's actual name (GetName) since coordinatorID might be a GUID
+		agentName := coordinatorAgent.GetName()
+		if agentName != coordinatorID {
+			protoConfig = s.registry.GetConfig(agentName)
+			if protoConfig != nil {
+				s.logger.Info("spawnWorkflowSubAgents: resolved GUID to agent name for config lookup",
+					zap.String("guid", coordinatorID),
+					zap.String("agent_name", agentName))
+				coordinatorID = agentName // Use the name from here on
+			}
+		}
+	}
 	if protoConfig == nil {
 		s.logger.Debug("spawnWorkflowSubAgents: protoConfig is nil",
 			zap.String("coordinator_id", coordinatorID))
@@ -1048,14 +1104,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Debug("spawnWorkflowSubAgents: checking role/workflow",
 		zap.String("coordinator_id", coordinatorID),
 		zap.Bool("has_role", hasRole),
-		zap.Any("role", role),
+		zap.String("role", role),
 		zap.Bool("has_workflow", hasWorkflow),
-		zap.Any("workflow_name", workflowName))
+		zap.String("workflow_name", workflowName))
 
 	if !hasRole || role != "coordinator" || !hasWorkflow {
 		s.logger.Debug("spawnWorkflowSubAgents: not a coordinator",
 			zap.Bool("has_role", hasRole),
-			zap.Any("role", role),
+			zap.String("role", role),
 			zap.Bool("has_workflow", hasWorkflow))
 		return nil // Not a workflow coordinator
 	}
@@ -1136,15 +1192,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 								continue
 							}
 
-							// Construct workflow-prefixed agent ID
-							subAgentID := fmt.Sprintf("%s:%s", workflowName, agentName)
+							// Construct workflow-prefixed agent ID using role name (not agent config name)
+							// This ensures IDs match what coordinator sends to: "workflow:role-name"
+							nameForID := roleName
+							if nameForID == "" {
+								nameForID = agentName // fallback to agent config name
+							}
+							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
 							s.logger.Info("Spawning workflow sub-agent",
 								zap.String("sub_agent_id", subAgentID),
-								zap.String("agent_name", agentName))
+								zap.String("agent_name", agentName),
+								zap.String("role_name", roleName))
 
-							// Spawn the sub-agent (will auto-register with message queue if it exists)
-							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID); err != nil {
+							// Spawn the sub-agent, passing base agent name for registry lookup
+							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID, agentName); err != nil {
 								s.logger.Warn("Failed to spawn workflow sub-agent",
 									zap.String("sub_agent_id", subAgentID),
 									zap.Error(err))
@@ -1933,18 +1995,26 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
 // pending messages for it. This handles the case where workflows are registered post-startup
 // (e.g., by weaver) and messages arrive before the coordinator connects.
-func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string) error {
-	// Parse workflow name from agent ID (format: "workflow-name:agent-id")
+func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string, baseAgentNames ...string) error {
+	// Parse workflow name from agent ID (format: "workflow-name:role-name")
 	parts := strings.SplitN(agentID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid workflow agent ID format: %s", agentID)
 	}
 	workflowName := parts[0]
-	baseAgentName := parts[1]
+	roleName := parts[1]
+
+	// Determine base agent name for registry lookup
+	// If explicit base agent name provided, use it; otherwise fall back to role name
+	baseAgentName := roleName
+	if len(baseAgentNames) > 0 && baseAgentNames[0] != "" {
+		baseAgentName = baseAgentNames[0]
+	}
 
 	s.logger.Info("Auto-spawning workflow sub-agent",
 		zap.String("agent", agentID),
 		zap.String("workflow", workflowName),
+		zap.String("role_name", roleName),
 		zap.String("base_agent", baseAgentName))
 
 	// Try to get the agent from registry using the workflow-prefixed ID first
@@ -1957,7 +2027,29 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 
 		subAgent, _, err = s.getAgent(baseAgentName)
 		if err != nil {
-			return fmt.Errorf("failed to get agent (tried both '%s' and '%s'): %w", agentID, baseAgentName, err)
+			// Last resort: search registry for agent with matching workflow metadata
+			// This handles the case where the monitor auto-spawns without knowing the base agent name
+			if s.registry != nil {
+				configs := s.registry.ListConfigs()
+				for _, config := range configs {
+					if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
+						// Check if this agent's name matches the role name pattern
+						// e.g., "dnd-world-builder" might be the agent for role "world-builder"
+						if strings.HasSuffix(config.Name, roleName) || strings.Contains(config.Name, roleName) {
+							s.logger.Info("Found matching agent in registry via workflow metadata search",
+								zap.String("role_name", roleName),
+								zap.String("found_agent", config.Name))
+							subAgent, _, err = s.getAgent(config.Name)
+							if err == nil {
+								break
+							}
+						}
+					}
+				}
+			}
+			if subAgent == nil {
+				return fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
+			}
 		}
 	}
 
@@ -2739,13 +2831,11 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check by pinging each configured LLM provider across all agents.
-// Returns per-component status in the components map with keys like "agent-id.llm.role".
-// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
+// GetHealth performs a health check by pinging each unique LLM provider.
+// Providers are deduplicated across agents (many agents share the same provider)
+// and checked concurrently, so latency is O(slowest_provider) not O(agents × latency).
+// Returns per-provider status in the components map.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
-	components := make(map[string]*loomv1.ComponentHealth)
-	overallHealthy := true
-
 	s.mu.RLock()
 	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
 	for id, ag := range s.agents {
@@ -2753,35 +2843,64 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 	}
 	s.mu.RUnlock()
 
+	// Deduplicate providers across all agents (56 agents may share 1-2 providers)
+	type providerInfo struct {
+		provider types.LLMProvider
+		agents   []string
+	}
+	unique := make(map[string]*providerInfo)
 	for agentID, ag := range agentsCopy {
-		roleLLMs := ag.GetAllRoleLLMs()
-		for role, llmProvider := range roleLLMs {
-			componentName := agentID + ".llm." + llmRoleToString(role)
-			start := time.Now()
+		for _, llmProvider := range ag.GetAllRoleLLMs() {
+			key := llmProvider.Name() + "/" + llmProvider.Model()
+			if unique[key] == nil {
+				unique[key] = &providerInfo{provider: llmProvider}
+			}
+			unique[key].agents = append(unique[key].agents, agentID)
+		}
+	}
 
-			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := llmProvider.Chat(checkCtx, []types.Message{
+	// Ping all unique providers concurrently
+	type result struct {
+		key     string
+		healthy bool
+		latency int64
+		err     string
+	}
+	results := make(chan result, len(unique))
+
+	for key, info := range unique {
+		go func() {
+			start := time.Now()
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err := info.provider.Chat(checkCtx, []types.Message{
 				{Role: "user", Content: "ping"},
 			}, nil)
 			cancel()
-
 			latency := time.Since(start).Milliseconds()
 
+			r := result{key: key, latency: latency, healthy: err == nil}
 			if err != nil {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "unhealthy",
-					LastCheck: time.Now().Unix(),
-					Error:     err.Error(),
-					LatencyMs: latency,
-				}
-				overallHealthy = false
-			} else {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "healthy",
-					LastCheck: time.Now().Unix(),
-					LatencyMs: latency,
-				}
+				r.err = err.Error()
 			}
+			results <- r
+		}()
+	}
+
+	// Collect results
+	components := make(map[string]*loomv1.ComponentHealth, len(unique))
+	overallHealthy := true
+	for range unique {
+		r := <-results
+		status := "healthy"
+		if !r.healthy {
+			status = "unhealthy"
+			overallHealthy = false
+		}
+		components[r.key] = &loomv1.ComponentHealth{
+			Status:    status,
+			LastCheck: time.Now().Unix(),
+			Error:     r.err,
+			LatencyMs: r.latency,
 		}
 	}
 
@@ -3015,6 +3134,20 @@ func (s *MultiAgentServer) SetArtifactStore(store artifacts.ArtifactStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.artifactStore = store
+}
+
+// SetPatternTracker sets the pattern effectiveness tracker on the server.
+// All existing and future agents (via AddAgent) will have their orchestrators
+// wired to record metrics automatically.
+func (s *MultiAgentServer) SetPatternTracker(tracker *learning.PatternEffectivenessTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.patternTracker = tracker
+
+	// Wire tracker into all existing agents
+	for _, ag := range s.agents {
+		ag.SetPatternTracker(tracker)
+	}
 }
 
 // AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.
@@ -3334,7 +3467,7 @@ func (s *MultiAgentServer) executeWorkflowInternalWithProgress(ctx context.Conte
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
-	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback)
+	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager)
 
 	// Execute pattern
 	result, err := orchestrator.ExecutePattern(ctx, pattern)
@@ -3481,7 +3614,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 				ExecutionId:    executionID,
 				PatternType:    event.PatternType,
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				CurrentAgentId: event.CurrentAgentID,
 				Timestamp:      time.Now().Unix(),
 				PartialResults: event.PartialResults,
@@ -3541,7 +3674,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 }
 
 // createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
-func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback) *orchestration.Orchestrator {
+func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager) *orchestration.Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -3556,6 +3689,7 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 		Tracer:           tracer, // Use provided tracer for observability
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
+		TaskManager:      taskManager,      // Persistent workflow tracking
 	})
 
 	// Register all agents with orchestrator
@@ -4057,7 +4191,7 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 					update.UpdateType = &loomv1.SessionUpdate_NewMessage{
 						NewMessage: &loomv1.NewMessageUpdate{
 							Role:             msg.Role,
-							Content:          msg.Content,
+							Content:          sanitizeUTF8(msg.Content),
 							MessageTimestamp: msg.Timestamp.Unix(),
 						},
 					}
@@ -4081,145 +4215,4 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 			lastMessageCount = len(messages)
 		}
 	}
-}
-
-// ApprovePlan approves or rejects an execution plan created in PLAN mode.
-func (s *MultiAgentServer) ApprovePlan(ctx context.Context, req *loomv1.ApprovePlanRequest) (*loomv1.ApprovePlanResponse, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Plans are managed per-agent, so we need to find which agent owns this plan
-	// For now, iterate through all agents to find the plan
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, ag := range s.agents {
-		plan, err := ag.GetPlan(req.PlanId)
-		if err == nil && plan != nil {
-			// Found the agent that owns this plan
-			approvedPlan, err := ag.ApprovePlan(req.PlanId, req.Approved, req.Feedback)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to approve plan: %v", err)
-			}
-			return &loomv1.ApprovePlanResponse{
-				Plan: approvedPlan,
-			}, nil
-		}
-	}
-
-	return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
-}
-
-// GetPlan retrieves a specific execution plan.
-func (s *MultiAgentServer) GetPlan(ctx context.Context, req *loomv1.GetPlanRequest) (*loomv1.ExecutionPlan, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Plans are managed per-agent, so we need to find which agent owns this plan
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, ag := range s.agents {
-		plan, err := ag.GetPlan(req.PlanId)
-		if err == nil && plan != nil {
-			return plan, nil
-		}
-	}
-
-	return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
-}
-
-// ListPlans lists execution plans for a session.
-func (s *MultiAgentServer) ListPlans(ctx context.Context, req *loomv1.ListPlansRequest) (*loomv1.ListPlansResponse, error) {
-	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	// Find which agent owns the session
-	ag, _, ok := s.findAgentBySession(req.SessionId)
-	if !ok {
-		// Session not found, try default agent
-		var err error
-		ag, _, err = s.getAgent("")
-		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "session not found: %s", req.SessionId)
-		}
-	}
-
-	// Call agent's ListPlans method
-	plans, err := ag.ListPlans(req.SessionId, req.StatusFilter)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to list plans: %v", err)
-	}
-
-	// Apply pagination if specified
-	totalCount := len(plans)
-	if req.PageSize > 0 {
-		offset := int(req.PageOffset)
-		pageSize := int(req.PageSize)
-
-		// Validate pagination bounds
-		if offset >= totalCount {
-			plans = []*loomv1.ExecutionPlan{}
-		} else {
-			end := offset + pageSize
-			if end > totalCount {
-				end = totalCount
-			}
-			plans = plans[offset:end]
-		}
-	}
-
-	return &loomv1.ListPlansResponse{
-		Plans:      plans,
-		TotalCount: types.SafeInt32(totalCount),
-	}, nil
-}
-
-// ExecutePlan executes an approved plan by running its tools.
-func (s *MultiAgentServer) ExecutePlan(ctx context.Context, req *loomv1.ExecutePlanRequest) (*loomv1.ExecutePlanResponse, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Find which agent owns the plan by iterating through all agents
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var targetAgent *agent.Agent
-	for _, ag := range s.agents {
-		// Try to get the plan from this agent
-		plan, err := ag.GetPlan(req.PlanId)
-		if err == nil && plan != nil {
-			targetAgent = ag
-			break
-		}
-	}
-
-	if targetAgent == nil {
-		return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
-	}
-
-	// Execute the plan
-	plan, err := targetAgent.ExecutePlan(ctx, req.PlanId)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to execute plan: %v", err)
-	}
-
-	// Build summary based on plan status
-	var summary string
-	if plan.Status == loomv1.PlanStatus_PLAN_STATUS_COMPLETED {
-		summary = fmt.Sprintf("Successfully executed %d tool(s)", len(plan.Tools))
-	} else if plan.Status == loomv1.PlanStatus_PLAN_STATUS_FAILED {
-		summary = fmt.Sprintf("Plan execution failed: %s", plan.ErrorMessage)
-	} else {
-		summary = fmt.Sprintf("Plan status: %v", plan.Status)
-	}
-
-	return &loomv1.ExecutePlanResponse{
-		Plan:    plan,
-		Summary: summary,
-	}, nil
 }

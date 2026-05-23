@@ -450,7 +450,7 @@ func (h *HTTPServer) handleAppsIndex(w http.ResponseWriter, _ *http.Request) {
 		sb.WriteString(`<p>No apps available.</p>`)
 	}
 	for _, name := range names {
-		sb.WriteString(fmt.Sprintf(`<a href="/apps/%s">%s</a>`, url.PathEscape(name), html.EscapeString(name)))
+		fmt.Fprintf(&sb, `<a href="/apps/%s">%s</a>`, url.PathEscape(name), html.EscapeString(name))
 	}
 	sb.WriteString(`</body></html>`)
 

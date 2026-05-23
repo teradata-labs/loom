@@ -1,9 +1,9 @@
 
 # TLS/HTTPS Configuration Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete reference for TLS/HTTPS configuration in Loom - securing gRPC and HTTP connections with manual certificates, Let's Encrypt, self-signed certificates, and mutual TLS (mTLS).
+Reference for TLS/HTTPS configuration in Loom -- securing gRPC and HTTP connections with manual certificates, Let's Encrypt, self-signed certificates, and mutual TLS (mTLS).
 
 
 ## Table of Contents
@@ -103,7 +103,7 @@ Loom supports **TLS/HTTPS** for securing gRPC and HTTP/SSE connections between c
 
 **Supported Protocols**:
 - gRPC over TLS (port 60051)
-- HTTP/REST+SSE over HTTPS (port 8080)
+- HTTP/REST+SSE over HTTPS (port 5006)
 
 **TLS Versions**:
 - Minimum: TLS 1.2
@@ -111,7 +111,7 @@ Loom supports **TLS/HTTPS** for securing gRPC and HTTP/SSE connections between c
 - TLS 1.0/1.1: Not supported (deprecated)
 
 **Implementation**:
-- Server: `pkg/server/tls/manager.go` (TLS manager)
+- Server: `pkg/tls/manager.go` (TLS manager)
 - Client: `pkg/tui/client/client.go` (TLS configuration)
 - Available Since: v0.8.0
 
@@ -129,7 +129,7 @@ Loom supports **TLS/HTTPS** for securing gRPC and HTTP/SSE connections between c
 | Service | Protocol | Default Port | TLS Required? |
 |---------|----------|--------------|---------------|
 | gRPC | gRPC/HTTP2 | 60051 | Optional |
-| HTTP/REST+SSE | HTTP/1.1 | 8080 | Optional |
+| HTTP/REST+SSE | HTTP/1.1 | 5006 | Optional |
 | ACME Challenge | HTTP | 80 | Yes (Let's Encrypt mode only) |
 
 **Firewall Rules** (Let's Encrypt mode):
@@ -139,7 +139,7 @@ sudo ufw allow 80/tcp
 
 # Allow gRPC/HTTPS
 sudo ufw allow 60051/tcp
-sudo ufw allow 8080/tcp
+sudo ufw allow 5006/tcp
 ```
 
 
@@ -168,13 +168,15 @@ openssl verify -CAfile ca.pem cert.pem
 
 ### Mode: manual
 
+**Status**: ✅ Implemented (with tests)
+
 **Use Case**: Production environments with existing certificates from a CA (commercial, internal, or self-managed).
 
 **Pros**:
 - ✅ Full control over certificates
 - ✅ Works with any CA (commercial, internal PKI)
 - ✅ No automatic network calls (isolated environments)
-- ✅ Simple configuration
+- ✅ Minimal configuration (two fields required)
 
 **Cons**:
 - ❌ Manual certificate renewal required
@@ -188,6 +190,8 @@ openssl verify -CAfile ca.pem cert.pem
 
 
 ### Mode: letsencrypt
+
+**Status**: ✅ Implemented (with tests)
 
 **Use Case**: Public production servers with internet-accessible domains.
 
@@ -212,6 +216,8 @@ openssl verify -CAfile ca.pem cert.pem
 
 ### Mode: self-signed
 
+**Status**: ✅ Implemented (with tests)
+
 **Use Case**: Development, testing, internal environments without CA infrastructure.
 
 **Pros**:
@@ -235,12 +241,12 @@ openssl verify -CAfile ca.pem cert.pem
 
 **Location**: `$LOOM_DATA_DIR/looms.yaml` or specified with `--config`
 
-**Complete Example**:
+**Full Example**:
 ```yaml
 server:
   host: 0.0.0.0
   port: 60051
-  http_port: 8080
+  http_port: 5006
   enable_reflection: true
 
   tls:
@@ -262,7 +268,7 @@ server:
       email: admin@example.com
       acme_directory_url: https://acme-v02.api.letsencrypt.org/directory
       http_challenge_port: 80
-      cache_dir: /var/loom/letsencrypt
+      cache_dir: /var/loom/certs
       auto_renew: true
       renew_before_days: 30
       accept_tos: true
@@ -310,7 +316,7 @@ INFO    Certificate issuer  issuer=CN=My CA
 INFO    Certificate domains  domains=[loom.example.com]
 INFO    Certificate expiry  not_after=2026-12-11T10:00:00Z days_until_expiry=365
 INFO  gRPC server TLS credentials applied
-INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:8080
+INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:5006
 ```
 
 
@@ -541,7 +547,7 @@ openssl rsa -noout -modulus -in server.key | openssl md5
 server:
   host: 0.0.0.0
   port: 60051
-  http_port: 8080
+  http_port: 5006
 
   tls:
     enabled: true
@@ -610,7 +616,7 @@ server:
       email: admin@example.com
       acme_directory_url: https://acme-v02.api.letsencrypt.org/directory
       http_challenge_port: 80
-      cache_dir: /var/loom/letsencrypt
+      cache_dir: /var/loom/certs
       auto_renew: true
       renew_before_days: 30
       accept_tos: true
@@ -716,21 +722,22 @@ sudo ufw allow 80/tcp
 #### cache_dir
 
 **Type**: `string` (directory path)
-**Default**: `/var/loom/letsencrypt`
+**Default**: `$LOOM_DATA_DIR/certs`
 **Required**: No
 
 **Description**: Directory for storing certificates, private keys, and ACME account data.
 
 **Contents**:
-- `<domain>.crt` - Certificate
-- `<domain>.key` - Private key
-- `<domain>.json` - ACME account data
+- `certificate.pem` - Certificate
+- `key.pem` - Private key
+- `resource.json` - ACME certificate resource data
+- `user.json` - ACME account data
 
 **Permissions**:
 ```bash
-sudo mkdir -p /var/loom/letsencrypt
-sudo chmod 700 /var/loom/letsencrypt
-sudo chown loom:loom /var/loom/letsencrypt
+sudo mkdir -p $LOOM_DATA_DIR/certs
+sudo chmod 700 $LOOM_DATA_DIR/certs
+sudo chown loom:loom $LOOM_DATA_DIR/certs
 ```
 
 
@@ -791,7 +798,7 @@ accept_tos: true
 server:
   host: 0.0.0.0
   port: 60051
-  http_port: 8080
+  http_port: 5006
 
   tls:
     enabled: true
@@ -823,7 +830,7 @@ INFO    Certificate issuer  issuer=CN=R3,O=Let's Encrypt,C=US
 INFO    Certificate domains  domains=[loom.example.com]
 INFO    Certificate expiry  not_after=2025-03-11T10:00:00Z days_until_expiry=90
 INFO  gRPC server TLS credentials applied
-INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:8080
+INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:5006
 ```
 
 **Client Connection**:
@@ -951,7 +958,7 @@ validity_days: 365
 #### organization
 
 **Type**: `string`
-**Default**: `Loom Self-Signed`
+**Default**: `Loom Development`
 **Required**: No
 
 **Description**: Organization name in certificate subject.
@@ -971,7 +978,7 @@ organization: My Development Team
 server:
   host: 0.0.0.0
   port: 60051
-  http_port: 8080
+  http_port: 5006
 
   tls:
     enabled: true
@@ -999,50 +1006,37 @@ INFO    Self-signed configuration  hostnames=[localhost dev.example.com]
 INFO    IP addresses  ips=[127.0.0.1 192.168.1.100]
 INFO    Generating self-signed certificate...
 INFO    Certificate generated successfully
-INFO    Certificate issuer  issuer=CN=Loom Self-Signed CA,O=Development Team
+INFO    Certificate issuer  issuer=Self-Signed
 INFO    Certificate domains  domains=[localhost dev.example.com]
 INFO    Certificate expiry  not_after=2026-12-11T10:00:00Z days_until_expiry=365
 INFO  gRPC server TLS credentials applied
-INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:8080
+INFO  🚀 Loom server listening  grpc_addr=:60051 http_addr=:5006
 ```
 
 **Client Connection**:
 ```bash
 # Skip certificate verification (self-signed not trusted)
 loom --tls --tls-insecure --server localhost:60051
-
-# Or trust the generated CA certificate
-loom --tls --tls-ca-file /var/loom/self-signed-ca.crt --server localhost:60051
 ```
 
+Note: Since self-signed certificates are generated in-memory with no separate CA, clients must use `--tls-insecure` for development/testing.
 
-### Generated Files
 
-**Location**: `/var/loom/certs/` (or `$LOOM_DATA_DIR/certs/`)
+### Generated Certificates
 
-**Files**:
-- `self-signed-ca.crt` - CA certificate (trust this for clients)
-- `self-signed-ca.key` - CA private key
-- `<hostname>.crt` - Server certificate
-- `<hostname>.key` - Server private key
+Self-signed certificates are generated **in-memory only** and are **not persisted to disk**. There are no files written to `/var/loom/certs/` or any other directory. The certificate and private key exist only in the server process memory and are lost when the server stops.
 
-**Trust CA Certificate** (for clients):
-```bash
-# macOS
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /var/loom/certs/self-signed-ca.crt
+**Implications**:
+- A new certificate is generated each time the server starts
+- Clients cannot pre-trust a CA certificate (there is no separate CA -- see below)
+- Use `--tls-insecure` for development/testing connections
 
-# Linux
-sudo cp /var/loom/certs/self-signed-ca.crt /usr/local/share/ca-certificates/loom-self-signed.crt
-sudo update-ca-certificates
-
-# Windows
-certutil -addstore -f "ROOT" C:\loom\certs\self-signed-ca.crt
-```
-
-**After trusting**: Clients can connect without `--tls-insecure`.
+**No Separate CA**: The self-signed provider generates a single self-signed leaf certificate with `CommonName: "localhost"` and the configured organization. It does **not** generate a separate CA certificate. The certificate signs itself (the template is both issuer and subject in `x509.CreateCertificate`).
 
 
 ## Mutual TLS (mTLS)
+
+> **Warning: mTLS is not yet implemented.** The `ca_file` and `require_client_cert` fields are accepted in configuration but are currently ignored. The server never sets `ClientAuth` or `ClientCAs` on the TLS config. See `pkg/tls/manual.go` for the TODO.
 
 ### Overview
 
@@ -1050,7 +1044,9 @@ certutil -addstore -f "ROOT" C:\loom\certs\self-signed-ca.crt
 - Server authenticates to client (standard TLS)
 - Client authenticates to server with certificate (mTLS)
 
-**Use Cases**:
+**Status**: 📋 Planned (configuration fields exist in proto but are not wired into TLS handshake)
+
+**Use Cases** (once implemented):
 - Zero-trust networks
 - Service-to-service authentication
 - Regulatory compliance (financial, healthcare)
@@ -1130,7 +1126,7 @@ tlsConfig := &tls.Config{
 
 // Create gRPC connection with mTLS
 creds := credentials.NewTLS(tlsConfig)
-conn, err := grpc.Dial("loom.example.com:60051", grpc.WithTransportCredentials(creds))
+conn, err := grpc.NewClient("loom.example.com:60051", grpc.WithTransportCredentials(creds))
 ```
 
 
@@ -1175,8 +1171,8 @@ server:
 | Mode | Certificate Location | Private Key Location |
 |------|---------------------|---------------------|
 | manual | User-specified (`cert_file`) | User-specified (`key_file`) |
-| letsencrypt | `<cache_dir>/<domain>.crt` | `<cache_dir>/<domain>.key` |
-| self-signed | `/var/loom/certs/<hostname>.crt` | `/var/loom/certs/<hostname>.key` |
+| letsencrypt | `<cache_dir>/certificate.pem` | `<cache_dir>/key.pem` |
+| self-signed | In-memory only (not persisted) | In-memory only (not persisted) |
 
 **Permissions** (critical):
 ```bash
@@ -1261,7 +1257,7 @@ tar czf - $BACKUP_DIR | gpg --encrypt --recipient admin@example.com > loom-certs
 
 ### Overview
 
-The **TLS Manager** (`pkg/server/tls/manager.go`) handles:
+The **TLS Manager** (`pkg/tls/manager.go`) handles:
 - Certificate loading
 - Certificate renewal (Let's Encrypt)
 - Certificate status monitoring
@@ -1275,22 +1271,23 @@ The **TLS Manager** (`pkg/server/tls/manager.go`) handles:
 
 ### TLS Manager Methods
 
+`Manager` is a concrete struct (not an interface). It delegates to a `Provider` interface for mode-specific behavior.
+
 ```go
-type Manager interface {
-    // Start starts the TLS manager (blocking for initial cert acquisition)
+// Manager struct methods:
+func (m *Manager) Start(ctx context.Context) error
+func (m *Manager) Stop(ctx context.Context) error
+func (m *Manager) TLSConfig() *tls.Config
+func (m *Manager) Status(ctx context.Context) (*loomv1.TLSStatus, error)
+func (m *Manager) Renew(ctx context.Context, force bool) error
+
+// Provider interface (implemented by ManualProvider, LetsEncryptProvider, SelfSignedProvider):
+type Provider interface {
+    GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error)
     Start(ctx context.Context) error
-
-    // Stop stops the TLS manager
     Stop(ctx context.Context) error
-
-    // TLSConfig returns the current TLS configuration for gRPC server
-    TLSConfig() *tls.Config
-
-    // Status returns the current certificate status
     Status(ctx context.Context) (*loomv1.TLSStatus, error)
-
-    // Renew manually triggers certificate renewal (Let's Encrypt mode only)
-    Renew(ctx context.Context) error
+    Renew(ctx context.Context, force bool) error
 }
 ```
 
@@ -1304,31 +1301,40 @@ if err != nil {
     log.Fatalf("Failed to get TLS status: %v", err)
 }
 
+fmt.Printf("Enabled: %v\n", status.Enabled)
 fmt.Printf("Mode: %s\n", status.Mode)
 if status.Certificate != nil {
     fmt.Printf("Issuer: %s\n", status.Certificate.Issuer)
     fmt.Printf("Domains: %v\n", status.Certificate.Domains)
-    fmt.Printf("Not Before: %s\n", time.Unix(status.Certificate.NotBefore, 0))
-    fmt.Printf("Not After: %s\n", time.Unix(status.Certificate.NotAfter, 0))
+    fmt.Printf("Expires At: %s\n", time.Unix(status.Certificate.ExpiresAt, 0))
     fmt.Printf("Days Until Expiry: %d\n", status.Certificate.DaysUntilExpiry)
+    fmt.Printf("Valid: %v\n", status.Certificate.Valid)
 }
 ```
 
-**Status Fields**:
+**Status Fields** (from `proto/loom/v1/server.proto`):
 ```protobuf
 message TLSStatus {
-  string mode = 1;  // manual | letsencrypt | self-signed
-  CertificateInfo certificate = 2;
-  bool auto_renew_enabled = 3;
-  int32 renew_before_days = 4;
+  bool enabled = 1;
+  string mode = 2;              // "manual" | "letsencrypt" | "self-signed" | "none"
+  CertificateInfo certificate = 3;
+  RenewalStatus renewal = 4;    // Auto-renewal status (Let's Encrypt)
 }
 
 message CertificateInfo {
-  string issuer = 1;
-  repeated string domains = 2;
-  int64 not_before = 3;
-  int64 not_after = 4;
-  int32 days_until_expiry = 5;
+  repeated string domains = 1;
+  string issuer = 2;
+  int64 expires_at = 3;         // Unix seconds
+  int32 days_until_expiry = 4;
+  bool valid = 5;
+}
+
+message RenewalStatus {
+  bool enabled = 1;
+  int64 last_attempt_at = 2;
+  bool last_attempt_success = 3;
+  int64 next_renewal_at = 4;
+  string last_error = 5;
 }
 ```
 
@@ -1385,20 +1391,20 @@ server:
 ```bash
 # Test connection with grpcurl
 grpcurl -v \
-    -d '{"agent_id": "test"}' \
+    -d '{}' \
     loom.example.com:60051 \
     loom.v1.LoomService/GetHealth
 
 # With custom CA
 grpcurl -v \
     -cacert ca.crt \
-    -d '{"agent_id": "test"}' \
+    -d '{}' \
     internal.example.com:60051 \
     loom.v1.LoomService/GetHealth
 
 # Skip verification (testing only)
 grpcurl -v -insecure \
-    -d '{"agent_id": "test"}' \
+    -d '{}' \
     dev.example.com:60051 \
     loom.v1.LoomService/GetHealth
 ```
@@ -1408,13 +1414,13 @@ grpcurl -v -insecure \
 
 ```bash
 # Test HTTP gateway
-curl -v https://loom.example.com:8080/health
+curl -v https://loom.example.com:5006/v1/health
 
 # With custom CA
-curl -v --cacert ca.crt https://internal.example.com:8080/health
+curl -v --cacert ca.crt https://internal.example.com:5006/v1/health
 
 # Skip verification (testing only)
-curl -v -k https://dev.example.com:8080/health
+curl -v -k https://dev.example.com:5006/v1/health
 ```
 
 
@@ -1652,7 +1658,9 @@ nmap --script ssl-enum-ciphers -p 60051 loom.example.com
 
 ### 6. Enable mTLS for Service-to-Service
 
-**Recommendation**: Use mTLS for service-to-service communication in zero-trust networks.
+> **Note**: mTLS is 📋 Planned but not yet implemented. The `ca_file` and `require_client_cert` fields are accepted in configuration but currently ignored. See the [mTLS section](#mutual-tls-mtls) for details.
+
+**Recommendation** (once implemented): Use mTLS for service-to-service communication in zero-trust networks.
 
 **Configuration**:
 ```yaml
@@ -2001,6 +2009,8 @@ Error: too many certificates already issued for: loom.example.com
 
 ### ERR_MTLS_CLIENT_CERT_REQUIRED
 
+> **Note**: This error cannot currently occur because mTLS is 📋 Planned but not yet implemented.
+
 **Code**: `mtls_client_cert_required`
 **HTTP Status**: N/A (connection error)
 **gRPC Code**: `UNAUTHENTICATED`
@@ -2022,14 +2032,9 @@ Error: tls: client didn't provide a certificate
 ### Reference Documentation
 - [TUI Reference](./tui.md) - Terminal UI with TLS support
 - [CLI Reference](./cli.md) - `looms` server commands
-- [gRPC API Reference](./grpc-api.md) - Protocol details
-
-### Guides
-- [Production Deployment Guide](../guides/production-deployment.md) - Production setup with TLS
-- [Security Best Practices](../guides/security.md) - Comprehensive security guide
 
 ### Architecture Documentation
-- [Communication Architecture](../architecture/communication-system.md) - gRPC/HTTP design
+- [Communication Architecture](../architecture/communication-system-design.md) - gRPC/HTTP design
 
 ### External Resources
 - [Let's Encrypt Documentation](https://letsencrypt.org/docs/) - ACME protocol, rate limits

@@ -488,11 +488,32 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Set workflow_id for session continuity in RESUME mode
+	if schedule.Schedule.SessionMode == loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_RESUME {
+		// Use schedule ID as stable workflow_id so agent sessions are deterministic
+		schedule.Pattern.WorkflowId = schedule.Id
+		s.logger.Info("RESUME mode: using stable workflow_id for session continuity",
+			zap.String("schedule_id", schedule.Id),
+			zap.String("workflow_id", schedule.Id))
+	}
+	// For NEW or UNSPECIFIED: leave WorkflowId empty → random UUID in executor
+
 	// Execute workflow via orchestrator
 	// TODO: Add variable interpolation support
 	_, err := s.orchestrator.ExecutePattern(execCtx, schedule.Pattern)
 
 	duration := time.Since(startTime)
+
+	// Track which workflow_id was used
+	workflowID := schedule.Pattern.WorkflowId
+	if workflowID == "" {
+		workflowID = executionID // for NEW mode, track the execution ID
+	}
+
+	// Update last_workflow_id for tracking
+	if storeErr := s.store.UpdateLastWorkflowID(ctx, schedule.Id, workflowID); storeErr != nil {
+		s.logger.Error("Failed to update last workflow ID", zap.Error(storeErr))
+	}
 
 	// Record execution in history
 	execution := &loomv1.ScheduleExecution{
@@ -500,6 +521,7 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 		StartedAt:   startTime.Unix(),
 		CompletedAt: time.Now().Unix(),
 		DurationMs:  duration.Milliseconds(),
+		WorkflowId:  workflowID,
 	}
 
 	if err != nil {
@@ -596,6 +618,14 @@ func (s *Scheduler) validateSchedule(schedule *loomv1.ScheduledWorkflow) error {
 	}
 	if _, err := time.LoadLocation(schedule.Schedule.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone: %w", err)
+	}
+
+	// Warn if RESUME mode is used without skip_if_running
+	if schedule.Schedule.SessionMode == loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_RESUME &&
+		!schedule.Schedule.SkipIfRunning {
+		s.logger.Warn("RESUME session mode without skip_if_running may cause concurrent access to the same sessions",
+			zap.String("schedule_id", schedule.Id),
+			zap.String("workflow_name", schedule.WorkflowName))
 	}
 
 	return nil

@@ -1,9 +1,9 @@
 
 # SQLite Best Practices Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete best practices for SQLite usage in Loom - session storage, HITL persistence, reference storage, and performance optimization.
+Best practices for SQLite usage in Loom - session storage, HITL persistence, reference storage, and performance optimization.
 
 
 ## Table of Contents
@@ -47,21 +47,24 @@ Complete best practices for SQLite usage in Loom - session storage, HITL persist
 
 | Storage Type | Package | Database File | Purpose |
 |--------------|---------|---------------|---------|
-| Session Store | `pkg/agent` | `sessions.db` | Conversation history, messages, tool executions |
+| Session Store | `pkg/agent` | `loom.db` | Conversation history, messages, tool executions, artifacts |
 | HITL Store | `pkg/shuttle` | `hitl.db` | Human-in-the-loop approval requests |
-| Reference Store | `pkg/communication` | `references.db` | Large content reference counting |
+| Reference Store | `pkg/communication` | configurable | Large content reference counting |
 
 ### File Paths
 
 ```bash
 # Default storage locations
 $LOOM_DATA_DIR/
-├── sessions.db         # Agent sessions (SessionStore)
-├── sessions.db-wal     # WAL file (auto-created)
-├── sessions.db-shm     # Shared memory (auto-created)
+├── loom.db             # Agent sessions, messages, artifacts (SessionStore)
+├── loom.db-wal         # WAL file (auto-created)
+├── loom.db-shm         # Shared memory (auto-created)
 ├── hitl.db             # HITL requests (SQLiteHumanRequestStore)
-└── references.db       # Reference storage (SQLiteStore)
+├── agents.db           # Agent registry (Registry)
+└── tools.db            # Tool registry
 ```
+
+**Note**: The default session database path is `$LOOM_DATA_DIR/loom.db` (from `pkg/storage.GetDefaultLoomDBPath()`). This can be overridden via the `sqlite.path` storage configuration field.
 
 
 ## Overview
@@ -75,9 +78,9 @@ Loom uses **SQLite** for persistent storage of agent sessions, human-in-the-loop
 - **Concurrency**: WAL mode enables concurrent readers + single writer
 
 **Implementation**:
-- `pkg/agent/session_store.go` (566 lines) - Session persistence
-- `pkg/shuttle/human_store_sqlite.go` (521 lines) - HITL persistence
-- `pkg/communication/sqlite_store.go` (353 lines) - Reference storage
+- `pkg/agent/session_store.go` (~1600 lines) - Session persistence (includes FTS5, artifacts, cross-session memory)
+- `pkg/shuttle/human_store_sqlite.go` (~520 lines) - HITL persistence
+- `pkg/communication/sqlite_store.go` (~370 lines) - Reference storage
 
 **Available Since**: v0.7.0
 
@@ -130,7 +133,9 @@ This means the `UserIDUnaryInterceptor` and `UserIDStreamInterceptor` will injec
 ### System Requirements
 
 - **SQLite Version**: 3.8.0+ (Loom requires 3.24+ for UPSERT support)
-- **Go Driver**: `github.com/mattn/go-sqlite3` (CGO-based)
+- **Go Driver (CGO)**: `github.com/mutecomm/go-sqlcipher/v4` - provides SQLCipher encryption support
+- **Go Driver (no CGO)**: `modernc.org/sqlite` - pure Go, no CGO required (no encryption)
+- **Driver abstraction**: `internal/sqlitedriver` - build-tag-based driver selection
 - **Disk Space**: 100MB minimum (sessions grow ~1MB per 1000 messages)
 - **File System**: POSIX-compliant (ext4, APFS, NTFS)
 
@@ -143,7 +148,7 @@ sqlite3 --version
 # Expected: 3.24.0 or later
 ```
 
-**Note**: CGO is required to compile `go-sqlite3`. For environments without CGO, consider using `modernc.org/sqlite` (pure Go, no CGO).
+**Note**: Loom supports both CGO and non-CGO builds. With CGO, `go-sqlcipher` provides optional database encryption via SQLCipher. Without CGO, `modernc.org/sqlite` is used automatically (pure Go, no encryption support).
 
 
 ## Use Cases
@@ -191,17 +196,21 @@ sqlite3 --version
 
 ### Schema
 
-**File**: `sessions.db`
+**File**: `loom.db` (default: `$LOOM_DATA_DIR/loom.db`)
 
 ```sql
 -- Sessions table
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,                 -- Session identifier (sess_abc123)
+    name TEXT,                           -- Human-readable session name (optional)
+    agent_id TEXT,                       -- Owning agent ID (for cross-session memory)
+    parent_session_id TEXT,              -- Links sub-agent sessions to coordinator
     context_json TEXT,                   -- Session context (user, goals)
     created_at INTEGER NOT NULL,         -- Unix timestamp
     updated_at INTEGER NOT NULL,         -- Unix timestamp
     total_cost_usd REAL DEFAULT 0,       -- Cumulative cost
-    total_tokens INTEGER DEFAULT 0       -- Cumulative tokens
+    total_tokens INTEGER DEFAULT 0,      -- Cumulative tokens
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
 
 -- Messages table
@@ -213,6 +222,8 @@ CREATE TABLE messages (
     tool_calls_json TEXT,                -- Tool calls (if assistant role)
     tool_use_id TEXT,                    -- Tool use ID (if tool role)
     tool_result_json TEXT,               -- Tool result (if tool role)
+    session_context TEXT DEFAULT 'direct', -- direct | coordinator | shared
+    agent_id TEXT,                       -- Which agent created this message
     timestamp INTEGER NOT NULL,          -- Unix timestamp
     token_count INTEGER DEFAULT 0,       -- Tokens in this message
     cost_usd REAL DEFAULT 0,             -- Cost of this message
@@ -232,11 +243,67 @@ CREATE TABLE tool_executions (
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
+-- Memory snapshots table (L2 summary archival)
+CREATE TABLE memory_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    snapshot_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    token_count INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+-- FTS5 virtual table for semantic search (BM25 ranking)
+CREATE VIRTUAL TABLE messages_fts5 USING fts5(
+    message_id UNINDEXED,
+    session_id UNINDEXED,
+    role UNINDEXED,
+    content,
+    timestamp UNINDEXED,
+    tokenize='porter unicode61'
+);
+
+-- Artifacts table (user-provided and agent-generated files)
+CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_agent_id TEXT,
+    purpose TEXT,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_accessed_at INTEGER,
+    access_count INTEGER DEFAULT 0,
+    tags TEXT,
+    metadata_json TEXT,
+    deleted_at INTEGER,
+    session_id TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
 -- Indexes
 CREATE INDEX idx_messages_session ON messages(session_id);
 CREATE INDEX idx_tool_executions_session ON tool_executions(session_id);
 CREATE INDEX idx_sessions_updated ON sessions(updated_at);
+CREATE INDEX idx_snapshots_session ON memory_snapshots(session_id, created_at);
+CREATE INDEX idx_sessions_agent ON sessions(agent_id);
+CREATE INDEX idx_sessions_parent ON sessions(parent_session_id);
+CREATE INDEX idx_messages_context ON messages(session_context);
+CREATE INDEX idx_messages_agent ON messages(agent_id);
+CREATE INDEX idx_artifacts_name ON artifacts(name);
+CREATE INDEX idx_artifacts_source ON artifacts(source);
+CREATE INDEX idx_artifacts_content_type ON artifacts(content_type);
+CREATE INDEX idx_artifacts_created ON artifacts(created_at DESC);
+CREATE INDEX idx_artifacts_deleted ON artifacts(deleted_at);
+CREATE INDEX idx_artifacts_session ON artifacts(session_id);
 ```
+
+**Note**: The schema also includes FTS5 sync triggers (insert/update/delete) and an artifacts FTS5 virtual table. The `-tags fts5` build tag is required for FTS5 support.
 
 ### Usage
 
@@ -248,7 +315,7 @@ import (
 
 // Create session store
 tracer := observability.NewNoOpTracer()
-store, err := agent.NewSessionStore("sessions.db", tracer)
+store, err := agent.NewSessionStore("loom.db", tracer)
 if err != nil {
     log.Fatalf("Failed to create session store: %v", err)
 }
@@ -315,12 +382,12 @@ CREATE TABLE human_requests (
     session_id TEXT NOT NULL,            -- Session context
     question TEXT NOT NULL,              -- Approval question
     context_json TEXT,                   -- Additional context
-    request_type TEXT NOT NULL,          -- approval | input | selection
-    priority TEXT NOT NULL,              -- low | medium | high | critical
+    request_type TEXT NOT NULL,          -- approval | decision | input | review
+    priority TEXT NOT NULL,              -- low | normal | high | critical
     timeout_ms INTEGER NOT NULL,         -- Timeout duration
     created_at INTEGER NOT NULL,         -- Unix timestamp (ms)
     expires_at INTEGER NOT NULL,         -- Unix timestamp (ms)
-    status TEXT NOT NULL,                -- pending | approved | rejected | expired
+    status TEXT NOT NULL,                -- pending | approved | rejected | timeout | responded
     response TEXT,                       -- User response
     response_data_json TEXT,             -- Structured response data
     responded_at INTEGER,                -- Response timestamp (ms)
@@ -382,7 +449,7 @@ requests, err := store.ListBySession(ctx, "sess_abc123")
 
 ### Schema
 
-**File**: `references.db`
+**File**: User-specified path (e.g., `references.db`)
 
 ```sql
 CREATE TABLE reference_store (
@@ -448,7 +515,9 @@ fmt.Printf("Active refs: %d, Size: %d bytes\n",
 
 ### Essential PRAGMAs
 
-**Set at database open** (required for all Loom storage implementations):
+**Set at database open** (used by all Loom storage implementations):
+
+WAL mode is enabled by all three stores (SessionStore, SQLiteHumanRequestStore, SQLiteStore). Foreign keys are enabled by `OpenDB()` in `pkg/agent/db_config.go` for the session store, and explicitly in the HITL store constructor.
 
 ```go
 db, err := sql.Open("sqlite3", "sessions.db")
@@ -472,7 +541,7 @@ if err != nil {
 
 ### Performance PRAGMAs
 
-**Recommended for production**:
+**Recommended for deployed environments**:
 
 ```sql
 -- Increase cache size (default: 2000 pages = ~8MB)
@@ -852,8 +921,8 @@ _, err := db.Exec("PRAGMA journal_mode=WAL")
 - **Crash-safe**: WAL file ensures durability
 
 **Files created**:
-- `sessions.db-wal` - Write-ahead log
-- `sessions.db-shm` - Shared memory for coordination
+- `loom.db-wal` - Write-ahead log
+- `loom.db-shm` - Shared memory for coordination
 
 **Checkpointing**: WAL merged into main database periodically.
 
@@ -885,9 +954,10 @@ _, err := db.Exec("PRAGMA busy_timeout = 5000")
 
 ```go
 type SessionStore struct {
-    db     *sql.DB
-    mu     sync.RWMutex  // Protects concurrent access
-    tracer observability.Tracer
+    db           *sql.DB
+    mu           sync.RWMutex  // Protects concurrent access
+    tracer       observability.Tracer
+    cleanupHooks []SessionCleanupHook
 }
 
 func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error {
@@ -913,7 +983,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 
 ### 1. Online Backup (Hot Backup)
 
-**Using SQLite Backup API** (via `go-sqlite3`):
+**Using SQLite Backup API**:
 
 ```go
 import "database/sql"
@@ -931,9 +1001,10 @@ func BackupDatabase(srcPath, dstPath string) error {
     }
     defer dst.Close()
 
-    // Use backup API (not simple file copy!)
-    // Note: go-sqlite3 supports backup via driver-specific API
-    // This is pseudocode - actual implementation requires C extension
+    // Use backup API (not a raw file copy!)
+    // Note: The backup API requires driver-specific extensions.
+    // With go-sqlcipher (CGO), backup is available via the C API.
+    // With modernc.org/sqlite (pure Go), use VACUUM INTO as an alternative.
 
     return nil
 }
@@ -950,11 +1021,10 @@ func BackupDatabase(srcPath, dstPath string) error {
 **Copy database files** (requires database closed or WAL checkpoint):
 
 ```bash
-# Stop Loom server
-looms stop
+# Stop the Loom server process (e.g., Ctrl+C or kill the process)
 
 # Copy database files
-cp $LOOM_DATA_DIR/sessions.db $LOOM_DATA_DIR/backups/sessions-2025-12-11.db
+cp $LOOM_DATA_DIR/loom.db $LOOM_DATA_DIR/backups/loom-2025-12-11.db
 cp $LOOM_DATA_DIR/hitl.db $LOOM_DATA_DIR/backups/hitl-2025-12-11.db
 
 # Restart Loom
@@ -968,10 +1038,10 @@ looms serve
 
 ```bash
 # Export schema and data to SQL
-sqlite3 sessions.db .dump > sessions-backup.sql
+sqlite3 loom.db .dump > loom-backup.sql
 
 # Restore from SQL
-sqlite3 restored.db < sessions-backup.sql
+sqlite3 restored.db < loom-backup.sql
 ```
 
 **Advantages**:
@@ -996,12 +1066,11 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 mkdir -p $BACKUP_DIR
 
 # Checkpoint WAL (merge into main database)
-sqlite3 $LOOM_DATA_DIR/sessions.db "PRAGMA wal_checkpoint(TRUNCATE)"
+sqlite3 $LOOM_DATA_DIR/loom.db "PRAGMA wal_checkpoint(TRUNCATE)"
 
 # Copy databases
-cp $LOOM_DATA_DIR/sessions.db $BACKUP_DIR/sessions-$TIMESTAMP.db
+cp $LOOM_DATA_DIR/loom.db $BACKUP_DIR/loom-$TIMESTAMP.db
 cp $LOOM_DATA_DIR/hitl.db $BACKUP_DIR/hitl-$TIMESTAMP.db
-cp $LOOM_DATA_DIR/references.db $BACKUP_DIR/references-$TIMESTAMP.db
 
 # Delete backups older than 7 days
 find $BACKUP_DIR -name "*.db" -mtime +7 -delete
@@ -1037,7 +1106,7 @@ func CheckIntegrity(db *sql.DB) error {
 
 **Run periodically** (weekly):
 ```bash
-sqlite3 sessions.db "PRAGMA integrity_check"
+sqlite3 loom.db "PRAGMA integrity_check"
 # Expected: ok
 ```
 
@@ -1084,7 +1153,7 @@ func GetDatabaseSize(path string) (int64, error) {
 }
 
 func main() {
-    size, _ := GetDatabaseSize("sessions.db")
+    size, _ := GetDatabaseSize("loom.db")
     fmt.Printf("Database size: %.2f MB\n", float64(size)/(1024*1024))
 }
 ```
@@ -1233,13 +1302,13 @@ EXPLAIN QUERY PLAN SELECT ...;
 **Resolution**:
 ```bash
 # 1. Delete old sessions
-sqlite3 sessions.db "DELETE FROM sessions WHERE updated_at < strftime('%s', 'now', '-30 days')"
+sqlite3 loom.db "DELETE FROM sessions WHERE updated_at < strftime('%s', 'now', '-30 days')"
 
 # 2. Vacuum to reclaim space
-sqlite3 sessions.db "VACUUM"
+sqlite3 loom.db "VACUUM"
 
 # 3. Check fragmentation
-sqlite3 sessions.db "PRAGMA page_count; PRAGMA freelist_count;"
+sqlite3 loom.db "PRAGMA page_count; PRAGMA freelist_count;"
 
 # 4. Monitor reference storage garbage collection
 # (automatic in reference store every 5 minutes)
@@ -1262,7 +1331,7 @@ sqlite3 sessions.db "PRAGMA page_count; PRAGMA freelist_count;"
 db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 
 // Check WAL size
-info, _ := os.Stat("sessions.db-wal")
+info, _ := os.Stat("loom.db-wal")
 fmt.Printf("WAL size: %d bytes\n", info.Size())
 
 // Configure auto-checkpoint threshold
@@ -1399,7 +1468,7 @@ db.Exec("PRAGMA wal_autocheckpoint = 1000")  // Every 1000 pages
 
 ```bash
 # Weekly cron job
-0 3 * * 0 sqlite3 $LOOM_DATA_DIR/sessions.db "PRAGMA integrity_check"
+0 3 * * 0 sqlite3 $LOOM_DATA_DIR/loom.db "PRAGMA integrity_check"
 ```
 
 **Why**: Detect corruption early before data loss.
@@ -1409,14 +1478,14 @@ db.Exec("PRAGMA wal_autocheckpoint = 1000")  // Every 1000 pages
 
 ```bash
 # Backup before migration
-cp sessions.db sessions.db.backup
+cp loom.db loom.db.backup
 
 # Apply schema change
-sqlite3 sessions.db "ALTER TABLE sessions ADD COLUMN new_field TEXT"
+sqlite3 loom.db "ALTER TABLE sessions ADD COLUMN new_field TEXT"
 
 # Test
 # If OK, delete backup
-# If fail, restore: mv sessions.db.backup sessions.db
+# If fail, restore: mv loom.db.backup loom.db
 ```
 
 **Why**: Schema changes cannot be rolled back.
@@ -1440,6 +1509,7 @@ if err != nil {
 }
 
 span.SetAttribute("tokens", fmt.Sprintf("%d", msg.TokenCount))
+span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", msg.CostUSD))
 ```
 
 **Why**: Monitor performance, debug errors, audit operations.
@@ -1560,20 +1630,21 @@ Error: schema version mismatch: expected 2, got 1
 ## See Also
 
 ### Reference Documentation
-- [Session Management](./sessions.md) - Session lifecycle and persistence
-- [HITL Reference](./hitl.md) - Human-in-the-loop system
-- [Communication System](./communication.md) - Reference storage protocol
+- [Agent Configuration](./agent-configuration.md) - Agent configuration options
+- [Backend Reference](./backend.md) - ExecutionBackend interface and implementations
 - [CLI Reference](./cli.md) - `looms` commands for database management
 
 ### Guides
-- [Agent Configuration Guide](../guides/agent-configuration.md) - Configure session storage
-- [HITL Guide](../guides/hitl.md) - Configure HITL persistence
+- [Human-in-the-Loop Guide](../guides/human-in-the-loop.md) - Configure HITL persistence
+- [Memory Management Guide](../guides/memory-management.md) - Session and memory configuration
 
 ### Architecture Documentation
-- [Storage Architecture](../architecture/storage-system.md) - Storage design decisions
+- [Communication System Design](../architecture/communication-system-design.md) - Reference storage protocol design
+- [Memory Systems](../architecture/memory-systems.md) - Memory and storage architecture
 
 ### External Resources
 - [SQLite Documentation](https://www.sqlite.org/docs.html) - Official SQLite docs
 - [SQLite WAL Mode](https://www.sqlite.org/wal.html) - Write-ahead logging details
-- [go-sqlite3 Documentation](https://github.com/mattn/go-sqlite3) - Go driver docs
+- [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) - Pure Go SQLite driver (no CGO)
+- [go-sqlcipher](https://github.com/mutecomm/go-sqlcipher) - SQLCipher Go driver (CGO, encryption)
 - [SQLite Performance Tuning](https://www.sqlite.org/speed.html) - Performance guide

@@ -1,9 +1,9 @@
 
 # Azure OpenAI Integration Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for integrating Loom with Azure OpenAI Service.
+Technical reference for integrating Loom with Azure OpenAI Service.
 
 
 ## Table of Contents
@@ -106,7 +106,7 @@ az account get-access-token \
 | `Endpoint` | `string` | Yes | - | Must be valid HTTPS URL |
 | `DeploymentID` | `string` | Yes | - | Must match Azure deployment |
 | `APIKey` | `string` | One of* | - | - |
-| `EntraToken` | `string` | One of* | - | Format: `Bearer <token>` |
+| `EntraToken` | `string` | One of* | - | Raw JWT token (Bearer prefix added automatically) |
 | `APIVersion` | `string` | No | `"2024-10-21"` | Azure API version |
 | `ModelName` | `string` | No | Auto-inferred | For cost calculation |
 | `MaxTokens` | `int` | No | `4096` | 1-128000 (model dependent) |
@@ -118,7 +118,7 @@ az account get-access-token \
 
 ## Overview
 
-Azure OpenAI provides enterprise access to OpenAI models through Microsoft's secure cloud infrastructure. The integration offers:
+Azure OpenAI provides access to OpenAI models through Microsoft Azure cloud infrastructure. The integration offers:
 - Deployment-based routing (models hosted as named deployments)
 - Dual authentication (API key or Microsoft Entra ID)
 - Regional deployment options for compliance
@@ -126,7 +126,7 @@ Azure OpenAI provides enterprise access to OpenAI models through Microsoft's sec
 - Automatic model inference for cost calculation
 
 **Implementation**: `pkg/llm/azureopenai/client.go`
-**Test Coverage**: 76% (515 lines of tests)
+**Test Coverage**: 50.5% (791 lines of tests)
 **Interface**: Full `LLMProvider` compliance
 
 
@@ -164,20 +164,17 @@ az cognitiveservices account deployment list \
 - Dual authentication support (API key and Entra ID)
 - Model name inference from deployment ID
 - Temperature and max tokens configuration
-- Streaming support (`StreamChat`)
+- Automatic `max_completion_tokens` vs `max_tokens` selection (newer vs older models)
+- Tool name sanitization (MCP colon-namespaced names converted to Azure-compatible format)
+- Tool schema sanitization (`SanitizeToolSchemas` removes empty arrays, null defaults)
+- Streaming support via `ChatStream` (implements `StreamingLLMProvider` interface)
 - Rate limiting (configurable)
-- 76% test coverage (515 lines of tests)
-
-### Partial ⚠️
-
-- Server integration (available via Builder API only, not in `looms serve` CLI yet)
-- Keyring storage (not integrated with `looms config` commands)
+- Circuit breaker integration (via `pkg/fabric/circuit_breaker.go`)
+- 50.5% test coverage (791 lines of tests)
 
 ### Planned 📋
 
-- Full CLI integration with `looms config` (v1.1.0)
-- Automatic retry with exponential backoff (v1.1.0)
-- Circuit breaker integration (v1.2.0)
+- Automatic retry with exponential backoff
 
 
 ## Authentication Methods
@@ -230,7 +227,7 @@ For enterprise scenarios using Azure Active Directory:
 client, err := azureopenai.NewClient(azureopenai.Config{
     Endpoint:     "https://myresource.openai.azure.com",
     DeploymentID: "gpt-4o-deployment",
-    EntraToken:   bearerToken,  // Obtained from Azure AD
+    EntraToken:   rawToken,  // Raw JWT from Azure AD (Bearer prefix added automatically)
 })
 if err != nil {
     log.Fatalf("Failed to create client: %v", err)
@@ -317,7 +314,7 @@ agent, err := builder.NewAgentBuilder().
     WithAzureOpenAIEntraAuth(
         "https://myresource.openai.azure.com",
         "gpt-4o-deployment",
-        entraToken,  // Bearer token from Azure AD
+        entraToken,  // Raw JWT from Azure AD (Bearer prefix added automatically)
     ).
     Build()
 ```
@@ -351,7 +348,7 @@ client, err := azureopenai.NewClient(azureopenai.Config{
 
     // Authentication (choose one)
     APIKey:       "your-api-key",        // Option 1: API key
-    EntraToken:   "Bearer ...",          // Option 2: Entra ID token
+    EntraToken:   "eyJ0eX...",           // Option 2: Entra ID token (raw JWT, Bearer prefix added automatically)
 
     // Optional
     APIVersion:   "2024-10-21",          // Default: "2024-10-21"
@@ -369,7 +366,7 @@ client, err := azureopenai.NewClient(azureopenai.Config{
 | `Endpoint` | `string` | Yes | - | Valid HTTPS URL | Azure OpenAI resource endpoint |
 | `DeploymentID` | `string` | Yes | - | Azure deployment name | Your model deployment name |
 | `APIKey` | `string` | One of* | - | - | Azure API key (KEY1 or KEY2) |
-| `EntraToken` | `string` | One of* | - | Valid JWT token | Microsoft Entra ID bearer token |
+| `EntraToken` | `string` | One of* | - | Raw JWT token | Microsoft Entra ID token (Bearer prefix added automatically) |
 | `APIVersion` | `string` | No | `"2024-10-21"` | Azure API version | Azure OpenAI API version |
 | `ModelName` | `string` | No | Auto-inferred | OpenAI model ID | Model for cost calculation |
 | `MaxTokens` | `int` | No | `4096` | 1-128000 | Maximum tokens in response |
@@ -411,13 +408,13 @@ The Azure OpenAI client can automatically infer the model from your deployment n
 | `gpt-4o-prod` | `gpt-4o` | Yes ✅ |
 | `my-gpt4-turbo` | `gpt-4-turbo` | Yes ✅ |
 | `prod-gpt-35-turbo` | `gpt-35-turbo` | Yes ✅ |
-| `custom-name` | Unknown | No ⚠️ (specify `ModelName`) |
+| `custom-name` | `custom-name` (as-is) | No ⚠️ (specify `ModelName`) |
 
 **Model Inference Logic**:
 - Searches deployment name for model identifiers (`gpt-4o`, `gpt-4-turbo`, `gpt-35-turbo`, etc.)
 - Case-insensitive matching
 - Handles common prefixes/suffixes (`prod-`, `-deployment`, etc.)
-- Falls back to "unknown" if no match found
+- Falls back to returning the deployment ID as-is if no match found (cost calculation may be inaccurate)
 
 **Recommendation**: Include model name in deployment ID for automatic cost tracking.
 
@@ -481,7 +478,7 @@ The request body is identical to OpenAI:
 ```go
 // Same message format as OpenAI
 messages := []types.Message{
-    {Role: "system", Content: "You are a helpful assistant"},
+    {Role: "system", Content: "Respond helpfully and concisely."},
     {Role: "user", Content: "Hello!"},
 }
 
@@ -496,11 +493,11 @@ if err != nil {
     log.Fatalf("Chat failed: %v", err)
 }
 
-fmt.Printf("Response: %s\n", response.Message)
+fmt.Printf("Response: %s\n", response.Content)
 fmt.Printf("Tokens: %d input, %d output\n",
-    response.TokensUsed.Input,
-    response.TokensUsed.Output)
-fmt.Printf("Cost: $%.4f\n", response.CostUSD)
+    response.Usage.InputTokens,
+    response.Usage.OutputTokens)
+fmt.Printf("Cost: $%.4f\n", response.Usage.CostUSD)
 ```
 
 **Expected Output**:
@@ -526,7 +523,7 @@ ctx := context.Background()
 messages := []types.Message{
     {
         Role:    "system",
-        Content: "You are a SQL expert.",
+        Content: "Analyze SQL queries for correctness and performance.",
     },
     {
         Role:    "user",
@@ -547,7 +544,7 @@ Content-Type: application/json
 
 {
   "messages": [
-    {"role": "system", "content": "You are a SQL expert."},
+    {"role": "system", "content": "Analyze SQL queries for correctness and performance."},
     {"role": "user", "content": "Explain SELECT statements."}
   ],
   "max_tokens": 4096,
@@ -559,31 +556,37 @@ Content-Type: application/json
 ### Chat Response
 
 ```go
-type Response struct {
-    Message    string        // Assistant response
-    TokensUsed TokenUsage    // Token counts
-    CostUSD    float64       // Estimated cost
-    ToolCalls  []ToolCall    // Tool calls (if any)
+type LLMResponse struct {
+    Content    string                 // Assistant response
+    ToolCalls  []ToolCall             // Tool calls (if any)
+    StopReason string                 // Why the LLM stopped ("end_turn", "max_tokens", "tool_use")
+    Usage      Usage                  // Token counts and cost
+    Metadata   map[string]interface{} // Provider metadata
+    Thinking   string                 // Internal reasoning (for thinking-enabled models)
 }
 
-type TokenUsage struct {
-    Input  int
-    Output int
-    Total  int
+type Usage struct {
+    InputTokens              int
+    OutputTokens             int
+    TotalTokens              int
+    CostUSD                  float64
+    CacheReadInputTokens     int     // Tokens served from prompt cache
+    CacheCreationInputTokens int     // Tokens written to prompt cache
 }
 ```
 
 **Example**:
 
 ```go
-response := &types.Response{
-    Message: "A SELECT statement retrieves data from database tables...",
-    TokensUsed: types.TokenUsage{
-        Input:  28,
-        Output: 156,
-        Total:  184,
+response := &types.LLMResponse{
+    Content: "A SELECT statement retrieves data from database tables...",
+    StopReason: "end_turn",
+    Usage: types.Usage{
+        InputTokens:  28,
+        OutputTokens: 156,
+        TotalTokens:  184,
+        CostUSD:      0.0016,  // $2.50/1M input + $10/1M output
     },
-    CostUSD: 0.0016,  // $2.50/1M input + $10/1M output
 }
 ```
 
@@ -599,9 +602,9 @@ if err != nil {
 }
 
 fmt.Printf("Tokens used: %d input, %d output\n",
-    response.TokensUsed.Input,
-    response.TokensUsed.Output)
-fmt.Printf("Estimated cost: $%.4f\n", response.CostUSD)
+    response.Usage.InputTokens,
+    response.Usage.OutputTokens)
+fmt.Printf("Estimated cost: $%.4f\n", response.Usage.CostUSD)
 ```
 
 **Expected Output**:
@@ -748,7 +751,7 @@ Error: either APIKey or EntraToken must be provided
 
 **Resolution**:
 1. Provide API key: `APIKey: "your-api-key"`
-2. OR provide Entra token: `EntraToken: "Bearer ..."`
+2. OR provide Entra token: `EntraToken: "eyJ0eX..."` (raw JWT, Bearer prefix added automatically)
 3. Do not provide both (API key takes precedence)
 
 **Retry behavior**: Not retryable (configuration error)
@@ -817,14 +820,14 @@ Error: API error (status 429): {"error": {"message": "Requests to the ChatComple
 3. **Long-term**: Increase TPM quota in Azure Portal (Model deployments → Edit → Tokens Per Minute)
 4. **Alternative**: Create additional deployments for load balancing
 
-**Retry behavior**: Should be retried with exponential backoff (currently manual, automatic retry coming in v1.1.0)
+**Retry behavior**: Should be retried with exponential backoff (currently manual)
 
 **Example Retry Logic**:
 
 ```go
 import "time"
 
-func chatWithRetry(client *azureopenai.Client, ctx context.Context, messages []types.Message) (*types.Response, error) {
+func chatWithRetry(client *azureopenai.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
     maxRetries := 3
     baseDelay := time.Second
 
@@ -889,7 +892,6 @@ Error: HTTP request failed: context deadline exceeded
 1. **Increase timeout**: `Timeout: 120 * time.Second`
 2. **Reduce request complexity**: Smaller prompts, fewer tools, lower max_tokens
 3. **Check network**: Ensure stable connectivity to Azure region
-4. **Consider streaming**: Use `StreamChat` for long responses
 
 **Retry behavior**: Retryable with same request (Azure state is not persisted on timeout)
 
@@ -949,7 +951,7 @@ import (
     "time"
 )
 
-func chatWithBackoff(client *azureopenai.Client, ctx context.Context, messages []types.Message) (*types.Response, error) {
+func chatWithBackoff(client *azureopenai.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
     maxRetries := 5
     baseDelay := 1 * time.Second
     maxDelay := 32 * time.Second
@@ -1003,8 +1005,8 @@ client, err := azureopenai.NewClient(azureopenai.Config{
     DeploymentID: deploymentID,
     APIKey:       apiKey,
     RateLimiterConfig: llm.RateLimiterConfig{
+        Enabled:         true,
         TokensPerMinute: 100000,  // 100K TPM (below your 120K quota)
-        RefillInterval:  time.Minute,
     },
 })
 ```
@@ -1024,7 +1026,7 @@ type LoadBalancedClient struct {
     mu      sync.Mutex
 }
 
-func (lb *LoadBalancedClient) Chat(ctx context.Context, messages []types.Message, tools []shuttle.Tool) (*types.Response, error) {
+func (lb *LoadBalancedClient) Chat(ctx context.Context, messages []types.Message, tools []shuttle.Tool) (*types.LLMResponse, error) {
     lb.mu.Lock()
     client := lb.clients[lb.current]
     lb.current = (lb.current + 1) % len(lb.clients)
@@ -1080,21 +1082,21 @@ func (t *TokenTracker) TrackUsage(tokens int) {
 
 ## Testing
 
-The Azure OpenAI client includes comprehensive tests:
+The Azure OpenAI client includes tests covering the main code paths:
 
 ```bash
 # Run tests
 cd /path/to/loom
-go test ./pkg/llm/azureopenai
+go test -tags fts5 ./pkg/llm/azureopenai
 
-# With coverage (76.0%)
-go test -cover ./pkg/llm/azureopenai
+# With coverage (50.5%)
+go test -tags fts5 -cover ./pkg/llm/azureopenai
 
 # With race detection
-go test -race ./pkg/llm/azureopenai
+go test -tags fts5 -race ./pkg/llm/azureopenai
 
 # Verbose output
-go test -v ./pkg/llm/azureopenai
+go test -tags fts5 -v ./pkg/llm/azureopenai
 ```
 
 **Expected Output**:
@@ -1104,12 +1106,12 @@ go test -v ./pkg/llm/azureopenai
 === RUN   TestNewClient/valid_config_with_API_key
 === RUN   TestNewClient/valid_config_with_Entra_token
 === RUN   TestNewClient/missing_endpoint
-=== RUN   TestNewClient/missing_deployment
+=== RUN   TestNewClient/missing_deployment_ID
 === RUN   TestNewClient/missing_authentication
 --- PASS: TestNewClient (0.00s)
 ...
 PASS
-coverage: 76.0% of statements
+coverage: 50.5% of statements
 ok  	github.com/teradata-labs/loom/pkg/llm/azureopenai	0.156s
 ```
 
@@ -1146,9 +1148,9 @@ func TestAzureOpenAI_Integration(t *testing.T) {
 
     resp, err := client.Chat(ctx, messages, nil)
     require.NoError(t, err)
-    assert.NotEmpty(t, resp.Message)
-    assert.Greater(t, resp.TokensUsed.Total, 0)
-    assert.Greater(t, resp.CostUSD, 0.0)
+    assert.NotEmpty(t, resp.Content)
+    assert.Greater(t, resp.Usage.TotalTokens, 0)
+    assert.Greater(t, resp.Usage.CostUSD, 0.0)
 }
 ```
 
@@ -1159,7 +1161,7 @@ export AZURE_OPENAI_ENDPOINT="https://myresource.openai.azure.com"
 export AZURE_OPENAI_DEPLOYMENT="gpt-4o-prod"
 export AZURE_OPENAI_API_KEY="your-api-key"
 
-go test -v ./pkg/llm/azureopenai -run Integration
+go test -tags fts5 -v ./pkg/llm/azureopenai -run Integration
 ```
 
 
@@ -1190,9 +1192,10 @@ agent, err := builder.NewAgentBuilder().
     Build()
 ```
 
-**Circuit Breaker Behavior** (coming in v1.2.0):
-- Opens after 5 consecutive failures
-- Half-opens after 30 seconds to test recovery
+**Circuit Breaker Behavior** (✅ implemented via `pkg/fabric/circuit_breaker.go`):
+- Opens after 5 consecutive failures (default `FailureThreshold`)
+- Half-opens after 30 seconds to test recovery (default `Timeout`)
+- Closes after 2 successes in half-open state (default `SuccessThreshold`)
 - Prevents cascading failures
 
 
@@ -1204,7 +1207,7 @@ Azure OpenAI has strict TPM quotas. Monitor usage:
 import "go.uber.org/zap"
 
 // Track token usage
-totalTokens += response.TokensUsed.Total
+totalTokens += response.Usage.TotalTokens
 tokensPerMinute := calculateTPM(totalTokens, startTime)
 
 if tokensPerMinute > tpmQuota * 0.8 {
@@ -1244,7 +1247,7 @@ type RegionConfig struct {
     Client   *azureopenai.Client
 }
 
-func (r *RegionalClient) ChatWithFailover(ctx context.Context, messages []types.Message) (*types.Response, error) {
+func (r *RegionalClient) ChatWithFailover(ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
     for _, region := range r.regions {
         resp, err := region.Client.Chat(ctx, messages, nil)
         if err == nil {
@@ -1338,7 +1341,10 @@ import (
 )
 
 logger, _ := zap.NewProduction()
-tracer := observability.NewHawkTracer(hawkConfig)
+tracer, err := observability.NewHawkTracer(hawkConfig)
+if err != nil {
+    log.Fatalf("Failed to create tracer: %v", err)
+}
 
 // Log requests
 logger.Info("Azure OpenAI request",
@@ -1355,29 +1361,10 @@ response, err := client.Chat(ctx, messages, tools)
 
 // Log response
 logger.Info("Azure OpenAI response",
-    zap.Int("output_tokens", response.TokensUsed.Output),
-    zap.Float64("cost_usd", response.CostUSD),
+    zap.Int("output_tokens", response.Usage.OutputTokens),
+    zap.Float64("cost_usd", response.Usage.CostUSD),
     zap.Duration("latency", time.Since(startTime)),
 )
-```
-
-
-### 7. Handle Streaming Properly
-
-```go
-stream, err := client.StreamChat(ctx, messages, tools)
-if err != nil {
-    return err
-}
-
-for chunk := range stream {
-    if chunk.Error != nil {
-        log.Errorf("Stream error: %v", chunk.Error)
-        break
-    }
-
-    fmt.Print(chunk.Delta)
-}
 ```
 
 
@@ -1392,7 +1379,7 @@ for chunk := range stream {
 | **VNet Integration** | Yes (Private Endpoint) | No | Yes (VPC Endpoint) |
 | **Cost** | Pay-as-you-go / Provisioned | Credits / Pay-as-you-go | Pay-as-you-go |
 | **Rate Limits** | TPM quotas per deployment | Per-org rate limits | Per-model rate limits |
-| **Tool Calling** | ✅ | ✅ | ⚠️ (Claude only) |
+| **Tool Calling** | ✅ | ✅ | ✅ (via Converse API) |
 | **Streaming** | ✅ | ✅ | ✅ |
 | **Vision** | ✅ (GPT-4o, GPT-4 Turbo) | ✅ | ⚠️ (Claude only) |
 | **Region Options** | 9+ regions | N/A | 10+ regions |
@@ -1568,7 +1555,7 @@ Content-Type: application/json
 
 ## Migration from OpenAI
 
-Migrating from OpenAI to Azure OpenAI is straightforward:
+Migrating from OpenAI to Azure OpenAI requires minimal code changes:
 
 ### Before (OpenAI Direct)
 
@@ -1577,10 +1564,7 @@ import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
-    WithOpenAILLM(
-        openaiKey,       // OpenAI API key
-        "gpt-4o",       // Model name
-    ).
+    WithOpenAILLM(openaiKey).
     Build()
 ```
 
@@ -1641,8 +1625,6 @@ The message format, tool calling, and response structure remain identical.
 
 ### Integration Guides
 - [Agent Configuration](./agent-configuration.md) - Complete agent setup
-- [Builder API Reference](../guides/builder-api.md) - Programmatic agent creation
-- [Cost Tracking Guide](../guides/cost-tracking.md) - Monitor LLM costs
 
 ### External Resources
 - [Azure OpenAI Documentation](https://learn.microsoft.com/azure/ai-services/openai/)

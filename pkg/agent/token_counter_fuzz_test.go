@@ -73,9 +73,22 @@ func FuzzTokenCounter(f *testing.F) {
 				count, maxReasonable, len(text))
 		}
 
-		// Property 4: Empty or whitespace-only text should have very low token count
-		if strings.TrimSpace(text) == "" && count > 10 {
-			t.Errorf("whitespace-only text has suspiciously high token count: %d", count)
+		// Property 4: Whitespace-only text should have bounded token count.
+		// BPE tokenizers can split uncommon Unicode whitespace (e.g. U+2000
+		// EN QUAD) into multiple byte-level tokens, so we allow up to 4
+		// tokens per rune — enough to cover any multi-byte UTF-8 whitespace
+		// while still catching pathological blow-ups.
+		if strings.TrimSpace(text) == "" {
+			runes := utf8.RuneCountInString(text)
+			switch {
+			case runes == 0:
+				if count != 0 {
+					t.Errorf("empty string produced %d tokens, want 0", count)
+				}
+			case count > runes*4:
+				t.Errorf("whitespace-only text (%d runes) produced %d tokens; "+
+					"exceeds 4x per-rune bound", runes, count)
+			}
 		}
 
 		// Property 5: Idempotence - counting twice should give same result

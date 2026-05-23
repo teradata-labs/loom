@@ -12,6 +12,8 @@ author: Loom Framework
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data-import
 use_cases:
   - Import CSV files to Teradata with intelligent type mapping
   - Bulk load large datasets (>100K rows) using FastLoad

@@ -35,6 +35,3 @@ BEGIN
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
-
-INSERT INTO schema_migrations (version, description) VALUES (4, 'soft delete support')
-ON CONFLICT (version) DO NOTHING;

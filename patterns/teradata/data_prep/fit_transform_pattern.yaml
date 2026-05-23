@@ -1,0 +1,400 @@
+# === METADATA START ===
+name: fit_transform_pattern
+title: "Fit/Transform Two-Phase Architecture"
+description: |
+  Reference pattern for the Fit/Transform architecture used across Teradata's native
+  analytic functions. This is not a single function but a design pattern: many TD_*
+  functions follow a two-phase approach:
+
+  1. **Fit phase**: Runs against training data and outputs a "model" — a result set
+     of learned parameters (bin boundaries, scaling factors, encoding mappings, etc.).
+  2. **Transform phase**: Takes new input data plus the Fit output, applies the learned
+     transformation without recomputing parameters.
+
+  This separation enables:
+  - Train once, apply many times (different datasets, environments, time periods)
+  - Consistent transformations between training and scoring pipelines
+  - Model versioning and governance via persisted fit tables
+  - Pipeline composition via TD_ColumnTransformer
+
+  Known Fit/Transform pairs:
+  - TD_BinCodeFit / TD_BinCodeTransform (binning)
+  - TD_FunctionFit / TD_FunctionTransform (numeric functions)
+  - TD_NonLinearCombineFit / TD_NonLinearCombineTransform (non-linear features)
+  - TD_OneHotEncodingFit / TD_OneHotEncodingTransform (one-hot encoding)
+  - TD_OrdinalEncodingFit / TD_OrdinalEncodingTransform (ordinal encoding)
+  - TD_OutlierFilterFit / TD_OutlierFilterTransform (outlier filtering)
+  - TD_PolynomialFeaturesFit / TD_PolynomialFeaturesTransform (polynomial features)
+  - TD_RandomProjectionFit / TD_RandomProjectionTransform (dimensionality reduction)
+  - TD_RowNormalizeFit / TD_RowNormalizeTransform (row normalization)
+  - TD_ScaleFit / TD_ScaleTransform (scaling/normalization)
+  - TD_SimpleImputeFit / TD_SimpleImputeTransform (missing value imputation)
+  - TD_TargetEncodingFit / TD_TargetEncodingTransform (target encoding)
+
+category: data_prep
+difficulty: intermediate
+teradata_function: Fit/Transform Pattern (architectural)
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - architecture
+  - pipeline
+use_cases:
+  # --- Use Case 1: Consistent Preprocessing ---
+  - Apply identical preprocessing to training, test, and production data
+
+  # --- Use Case 2: Model Governance ---
+  - Store fit models as versioned tables for audit trails and reproducibility
+
+  # --- Use Case 3: Scoring Pipeline ---
+  - Reuse fit models on new data without re-running the Fit step
+
+  # --- Use Case 4: Pipeline Composition ---
+  - Combine multiple fit models in TD_ColumnTransformer for single-pass transformation
+
+  # --- Use Case 5: Centralized Model Registry ---
+  - Store multiple fit model versions in a shared registry table for enterprise governance
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database for source tables and fit model storage"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Table used in the Fit phase to learn transformation parameters
+    required: true
+    description: "Table to learn transformation parameters from (Fit phase input)"
+    example: "features_train"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: Table to apply the transformation to (Transform phase input)
+    required: true
+    description: "Table to apply the learned transformation to (Transform phase input)"
+    example: "features_test"
+
+  # --- Parameter 4: Fit Model Table ---
+  - name: fit_model_table
+    type: string
+    # LLM-HINT: Persisted output of the Fit function; passed as DIMENSION to Transform
+    required: true
+    description: "Name for the persisted fit model table"
+    example: "my_model_fit"
+
+  # --- Parameter 5: Target Columns ---
+  - name: target_columns
+    type: array[string]
+    # LLM-HINT: Columns the Fit/Transform operates on; must exist in both training and scoring tables
+    required: true
+    description: "Columns to fit and transform"
+    example: '["col1", "col2", "col3"]'
+
+  # --- Parameter 6: Model Registry Table ---
+  - name: model_registry
+    type: string
+    # LLM-HINT: Optional; shared table to store multiple model versions with a model_id column
+    required: false
+    description: "Optional shared registry table for storing multiple model versions"
+    example: "model_registry"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === DEDICATED_TABLE TEMPLATE ===
+  # LLM-HINT: Most common pattern; one table per fit model. Simple and explicit.
+  dedicated_table:
+    description: "Store fit model as a dedicated table and use it for transforms"
+    sql: |
+      -- Phase 1: FIT — learn parameters from training data
+      -- Replace TD_SomeFit with the specific function (TD_ScaleFit, TD_BinCodeFit, etc.)
+      CREATE TABLE {{database}}.{{fit_model_table}} AS (
+          SELECT * FROM TD_SomeFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  -- ... function-specific parameters ...
+          ) AS t
+      ) WITH DATA;
+
+      -- Phase 2: TRANSFORM — apply learned parameters to any data
+      -- The FitTable ON clause uses DIMENSION (small broadcast table)
+      SELECT * FROM TD_SomeTransform(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.{{fit_model_table}} AS FitTable DIMENSION
+          USING
+              -- ... function-specific parameters ...
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - scoring_table
+      - fit_model_table
+      - target_columns_quoted
+
+  # === MODEL_REGISTRY TEMPLATE ===
+  # LLM-HINT: Governed workflow; multiple models in one table filtered by model_id
+  model_registry:
+    description: "Store fit models in a shared registry table with version identifiers"
+    sql: |
+      -- Create the registry table (one time)
+      CREATE TABLE {{database}}.{{model_registry}} (
+          model_id VARCHAR(100),
+          -- Remaining columns match the Fit function output schema
+          -- Schema varies by function; inspect the Fit output to determine columns
+          fit_col1 VARCHAR(500),
+          fit_col2 FLOAT,
+          fit_col3 FLOAT
+      );
+
+      -- Insert a versioned model into the registry
+      INSERT INTO {{database}}.{{model_registry}}
+      SELECT '{{model_version}}' AS model_id, t.*
+      FROM TD_SomeFit(
+          ON {{database}}.{{training_table}} AS InputTable
+          USING
+              TargetColumns({{target_columns_quoted}})
+              -- ... function-specific parameters ...
+      ) AS t;
+
+      -- Transform using a specific model version from the registry
+      SELECT * FROM TD_SomeTransform(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON (SELECT * FROM {{database}}.{{model_registry}}
+              WHERE model_id = '{{model_version}}') AS FitTable DIMENSION
+          USING
+              -- ... function-specific parameters ...
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - scoring_table
+      - model_registry
+      - model_version
+      - target_columns_quoted
+
+  # === INLINE_SUBQUERY TEMPLATE ===
+  # LLM-HINT: No model persistence; fit and transform in one query. Good for exploration only.
+  inline_subquery:
+    description: "Fit and transform in a single query without persisting the model"
+    sql: |
+      -- Inline subquery: fit output passed directly to transform
+      -- Use for exploration only; NOT recommended for production pipelines
+      SELECT * FROM TD_SomeTransform(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON (
+              SELECT * FROM TD_SomeFit(
+                  ON {{database}}.{{training_table}} AS InputTable
+                  USING
+                      TargetColumns({{target_columns_quoted}})
+                      -- ... function-specific parameters ...
+              ) AS t
+          ) AS FitTable DIMENSION
+          USING
+              -- ... function-specific parameters ...
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - scoring_table
+      - target_columns_quoted
+
+  # === COLUMN_TRANSFORMER_INTEGRATION TEMPLATE ===
+  # LLM-HINT: Combine multiple fit models in TD_ColumnTransformer for single-pass preprocessing
+  column_transformer_integration:
+    description: "Combine multiple fit models in TD_ColumnTransformer for single-pass transformation"
+    sql: |
+      -- Fit each model separately (run once on training data)
+      CREATE TABLE {{database}}.scale_fit AS (
+          SELECT * FROM TD_ScaleFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING TargetColumns({{numeric_columns_quoted}}) ScaleMethod('STD')
+          ) AS t
+      ) WITH DATA;
+
+      CREATE TABLE {{database}}.onehot_fit AS (
+          SELECT * FROM TD_OneHotEncodingFit(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IsInputDense('true')
+                  TargetColumn({{categorical_columns_quoted}})
+                  Approach('AUTO')
+                  CategoryCounts({{category_counts}})
+          ) AS t
+      ) WITH DATA;
+
+      -- Apply all transforms in a single pass using TD_ColumnTransformer
+      SELECT * FROM TD_ColumnTransformer(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.scale_fit   AS ScaleFitTable DIMENSION
+          ON {{database}}.onehot_fit  AS OneHotEncodingFitTable DIMENSION
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - scoring_table
+      - numeric_columns_quoted
+      - categorical_columns_quoted
+      - category_counts
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Dedicated Table Pattern ---
+  - name: "Scale Model with Dedicated Table"
+    description: "Create a scaling model, persist it, and apply to new data"
+    parameters:
+      database: "ml_db"
+      training_table: "features_train"
+      scoring_table: "features_test"
+      fit_model_table: "scale_model_v1"
+      target_columns: ["age", "income", "credit_score"]
+    expected_result: |
+      Phase 1 (Fit): scale_model_v1 table created with learned parameters:
+        Column       | Location (mean) | Scale (stddev)
+        age          | 42.3            | 15.8
+        income       | 65000           | 28000
+        credit_score | 710             | 65
+
+      Phase 2 (Transform): Test data scaled using training parameters:
+        customer_id | age   | income | credit_score
+        T001        | -0.52 |  0.18  |  0.62
+        T002        |  1.14 | -0.71  | -1.08
+
+      The same scale_model_v1 table can be used to transform any future data
+      without re-running the Fit step.
+
+  # --- Example 2: Model Registry Pattern ---
+  - name: "Versioned Model Registry"
+    description: "Store multiple model versions in a registry and select by version ID"
+    parameters:
+      database: "ml_db"
+      training_table: "features_train_2026q1"
+      scoring_table: "features_incoming"
+      model_registry: "preprocessing_registry"
+      model_version: "scale_v2_2026q1"
+      target_columns: ["age", "income", "credit_score"]
+    expected_result: |
+      Registry table after multiple inserts:
+        model_id          | ... fit parameters ...
+        scale_v1_2025q4   | (Q4 2025 training stats)
+        scale_v2_2026q1   | (Q1 2026 training stats)
+
+      Transform filters by model_id = 'scale_v2_2026q1' to use the latest model.
+      Previous versions remain in the registry for comparison or rollback.
+
+      Governance benefits:
+      - Full lineage: which model processed which data
+      - Version history: compare models across time periods
+      - Easy rollback: change the WHERE clause to use an older model
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Data Leakage ---
+  - error: "Model evaluation metrics are overly optimistic"
+    cause: "Fit was run on the full dataset (including test data). Transformation parameters encode information about the test set."
+    solution: "Always Fit on training data only. Apply the same Fit model to test/validation/production data via the Transform function."
+
+  # --- Error 2: Mixed Model Rows in Registry ---
+  - error: "Transform produces incorrect results from the model registry"
+    cause: "The registry SELECT for the FitTable returned rows from multiple models (missing or incorrect WHERE clause)."
+    solution: "Ensure the FitTable subquery filters to exactly one model_id. Mixing rows from different models produces garbage output."
+
+  # --- Error 3: VOLATILE Table Lost ---
+  - error: "Fit table does not exist when running Transform"
+    cause: "The Fit model was stored as a VOLATILE table which is session-scoped. It was lost when the session ended."
+    solution: "Use CREATE TABLE ... WITH DATA for permanent storage. VOLATILE tables are only useful within a single session for exploration."
+
+  # --- Error 4: Column Name Mismatch ---
+  - error: "Transform fails because expected columns are not in the input table"
+    cause: "The scoring table has different column names than the training table used for the Fit step."
+    solution: "Column names in the Transform input must match the TargetColumns used during Fit. Use column aliases if needed to align names."
+
+  # --- Error 5: FitTable Not DIMENSION ---
+  - error: "Query plan error or unexpected partitioned join on FitTable"
+    cause: "The FitTable ON clause is missing the DIMENSION keyword. Without DIMENSION, Teradata treats it as a partitioned input."
+    solution: "Always specify DIMENSION on the FitTable ON clause: ON db.fit_model AS FitTable DIMENSION. The fit model is a small broadcast table."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Fit/Transform Architecture Best Practices
+
+  ### 1. Persist Fit Models as Permanent Tables
+  Always save Fit output as a permanent table using CREATE TABLE ... WITH DATA.
+  This ensures:
+  - Consistency between training and scoring preprocessing
+  - Auditability and version tracking
+  - Reuse without re-running the Fit step (which can be expensive on large datasets)
+
+  ### 2. Use the Dedicated Table Pattern by Default
+  One table per model is the simplest and most debuggable approach:
+  ```sql
+  CREATE TABLE db.my_scale_fit AS (
+      SELECT * FROM TD_ScaleFit(...) AS t
+  ) WITH DATA;
+  ```
+  Move to the model registry pattern only when you need formal governance or
+  multiple model versions.
+
+  ### 3. Name Fit Tables Descriptively
+  Include the function type, version, and training data context:
+  ```
+  scale_fit_v2_2026q1
+  onehot_fit_customer_features_v1
+  bincode_fit_amounts_20260401
+  ```
+
+  ### 4. Always Fit on Training Data Only
+  The golden rule of preprocessing: Fit learns from training data. Transform
+  applies to any data. Never Fit on test, validation, or production data.
+
+  ### 5. Combine with TD_ColumnTransformer for Production
+  For multi-step preprocessing, create individual fit models then combine them
+  in TD_ColumnTransformer. This gives you:
+  - Individual control over each transform
+  - Single-pass efficiency in Transform
+  - Ability to update one transform without refitting all
+
+  ### 6. Validate Fit Model Contents
+  After fitting, inspect the model table to verify it captured the expected parameters:
+  ```sql
+  SELECT * FROM db.my_fit_model ORDER BY 1;
+  ```
+  Check that all target columns are represented and parameters look reasonable.
+
+  ### 7. Handle Schema Evolution
+  When training data schema changes (new columns, renamed columns):
+  - Refit the model on the updated training data
+  - Update the scoring pipeline to use the new fit model
+  - Keep the old fit model for backward compatibility until migration is complete
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Feature Scaling ---
+  - scale_transform
+
+  # --- Pattern 2: One-Hot Encoding ---
+  - one_hot_encoding
+
+  # --- Pattern 3: Binning ---
+  - bincode
+
+  # --- Pattern 4: Column Transformer Pipeline ---
+  - column_transformer
+
+  # --- Pattern 5: SMOTE ---
+  - smote
+# === RELATED_PATTERNS END ===

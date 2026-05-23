@@ -1,0 +1,337 @@
+# === METADATA START ===
+name: one_hot_encoding
+title: "One-Hot Encoding (TD_OneHotEncodingFit / TD_OneHotEncodingTransform)"
+description: |
+  Convert categorical columns into binary indicator columns using TD_OneHotEncodingFit
+  and TD_OneHotEncodingTransform. Each unique category value becomes its own column
+  with values 0 or 1.
+
+  The Fit phase learns the set of categories from training data. The Transform phase
+  applies those category mappings to any dataset, handling unseen categories via the
+  "other" column.
+
+  Supports two approaches:
+  - AUTO: Categories discovered from data. Requires CategoryCounts per column.
+  - LIST: Categories explicitly specified via CategoricalValues or a CategoryTable.
+
+  Supports both dense (standard table) and sparse (attribute/value format) inputs.
+
+category: data_prep
+difficulty: intermediate
+teradata_function: TD_OneHotEncodingFit, TD_OneHotEncodingTransform
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - feature_engineering
+  - encoding
+use_cases:
+  # --- Use Case 1: Categorical to Numeric ---
+  - Convert categorical features to numeric for ML models that require numeric input
+
+  # --- Use Case 2: Multi-Column Encoding ---
+  - Encode multiple categorical columns at once for a feature engineering pipeline
+
+  # --- Use Case 3: Consistent Train/Test Encoding ---
+  - Learn encoding from training data and apply identically to test/production data
+
+  # --- Use Case 4: Known Category Encoding ---
+  - Encode categorical columns with a known, fixed set of category values (LIST approach)
+
+  # --- Use Case 5: Pipeline Integration ---
+  - Produce a fit table for use in TD_ColumnTransformer alongside scaling and imputation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the source tables"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Maps to {{training_table}}; table used to learn the category mappings
+    required: true
+    description: "Table to learn category values from (typically the training set)"
+    example: "customer_train"
+
+  # --- Parameter 3: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Maps to {{input_table}}; table to transform (can be same as training or new data)
+    required: true
+    description: "Table to apply the one-hot encoding to"
+    example: "customer_test"
+
+  # --- Parameter 4: Target Columns ---
+  - name: target_columns
+    type: array[string]
+    # LLM-HINT: Categorical columns to encode; each unique value becomes a binary column
+    required: true
+    description: "Categorical columns to one-hot encode"
+    example: '["gender", "region", "product_type"]'
+
+  # --- Parameter 5: Approach ---
+  - name: approach
+    type: string
+    # LLM-HINT: AUTO discovers categories from data (needs CategoryCounts); LIST uses explicit values
+    required: true
+    description: "AUTO (discover from data) or LIST (explicit category values)"
+    example: "AUTO"
+
+  # --- Parameter 6: Category Counts ---
+  - name: category_counts
+    type: array[integer]
+    # LLM-HINT: Required with AUTO; one count per target column; top-N categories kept
+    required: false
+    description: "Number of top categories to keep per column (required with AUTO approach)"
+    example: '[2, 5, 10]'
+
+  # --- Parameter 7: Fit Table Name ---
+  - name: fit_table
+    type: string
+    # LLM-HINT: Name for the persisted fit model table; reuse for consistent encoding
+    required: false
+    default: "onehot_fit_model"
+    description: "Name for the persisted encoding model table"
+    example: "onehot_fit_model"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === FIT_AUTO TEMPLATE ===
+  # LLM-HINT: Discovers categories from data; CategoryCounts controls how many categories per column
+  fit_auto:
+    description: "Fit one-hot encoder with AUTO category discovery from data"
+    sql: |
+      -- Learn category values from training data (AUTO approach)
+      -- CategoryCounts specifies the number of top categories per target column
+      -- Values beyond CategoryCounts go into the 'other' column
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_OneHotEncodingFit(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IsInputDense('true')
+                  TargetColumn({{target_columns_quoted}})
+                  Approach('AUTO')
+                  CategoryCounts({{category_counts}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - category_counts
+
+  # === FIT_LIST TEMPLATE ===
+  # LLM-HINT: Use when you know the exact categories; single target column only with CategoricalValues
+  fit_list_single_column:
+    description: "Fit one-hot encoder with an explicit list of category values (single column)"
+    sql: |
+      -- Explicitly specify which categories to encode (LIST approach, single column)
+      -- Categories not in the list are mapped to 'other'
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_OneHotEncodingFit(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IsInputDense('true')
+                  TargetColumn('{{target_column}}')
+                  Approach('LIST')
+                  CategoricalValues({{categorical_values_quoted}})
+                  OtherColumnName('other_{{target_column}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_column
+      - categorical_values_quoted
+
+  # === TRANSFORM TEMPLATE ===
+  # LLM-HINT: Applies the fit model to any dataset; output adds binary columns for each category
+  transform_data:
+    description: "Transform data using a previously fitted one-hot encoder"
+    sql: |
+      -- Apply one-hot encoding using the persisted fit model
+      -- Output adds binary (0/1) columns for each category
+      SELECT * FROM TD_OneHotEncodingTransform(
+          ON {{database}}.{{input_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{fit_table}} AS FitTable DIMENSION
+          USING
+              IsInputDense('true')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - fit_table
+
+  # === FIT_LIST_CATEGORY_TABLE TEMPLATE ===
+  # LLM-HINT: For multiple columns with LIST approach; uses a dimension CategoryTable
+  fit_list_category_table:
+    description: "Fit one-hot encoder for multiple columns using a CategoryTable"
+    sql: |
+      -- CategoryTable must have columns: one for target column names, one for category values
+      -- Example CategoryTable rows:
+      --   ('gender', 'M'), ('gender', 'F'), ('region', 'East'), ('region', 'West'), ...
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_OneHotEncodingFit(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              ON {{database}}.{{category_table}} AS CategoryTable DIMENSION
+              USING
+                  IsInputDense('true')
+                  TargetColumn({{target_columns_quoted}})
+                  Approach('LIST')
+                  TargetColumnNames('{{target_col_name_column}}')
+                  CategoriesColumn('{{categories_column}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - category_table
+      - target_col_name_column
+      - categories_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Auto-Discover Categories ---
+  - name: "Auto One-Hot Encoding for Customer Features"
+    description: "Encode gender and region columns with automatic category discovery"
+    parameters:
+      database: "retail_db"
+      training_table: "customer_train"
+      input_table: "customer_test"
+      target_columns: ["gender", "region"]
+      approach: "AUTO"
+      category_counts: [2, 5]
+      fit_table: "customer_onehot_fit"
+    expected_result: |
+      Fit discovers categories from training data:
+        gender: M, F (2 categories)
+        region: East, West, North, South, Central (5 categories)
+
+      Transform output adds binary columns:
+        customer_id | gender_M | gender_F | region_East | region_West | region_North | region_South | region_Central
+        C001        | 1        | 0        | 0           | 1           | 0            | 0            | 0
+        C002        | 0        | 1        | 1           | 0           | 0            | 0            | 0
+
+      Unseen category values in test data map to the 'other' column (all encoded columns = 0).
+
+  # --- Example 2: Explicit LIST Encoding ---
+  - name: "Explicit Category Encoding for Product Type"
+    description: "Encode product_type with a known fixed list of categories"
+    parameters:
+      database: "ecommerce_db"
+      training_table: "orders_train"
+      target_column: "product_type"
+      categorical_values: ["Electronics", "Clothing", "Home", "Food"]
+      fit_table: "product_type_onehot_fit"
+    expected_result: |
+      Fit creates encoding for exactly the 4 listed categories:
+        product_type_Electronics, product_type_Clothing, product_type_Home, product_type_Food
+
+      Transform output:
+        order_id | product_type_Electronics | product_type_Clothing | product_type_Home | product_type_Food | other_product_type
+        O001     | 1                        | 0                     | 0                 | 0                 | 0
+        O002     | 0                        | 0                     | 0                 | 0                 | 1  (was "Beauty", not in list)
+
+      Products with categories not in the list (e.g., "Beauty") are flagged in the other column.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing CategoryCounts with AUTO ---
+  - error: "CategoryCounts is required when using Approach AUTO"
+    cause: "The AUTO approach requires you to specify how many categories to keep per target column."
+    solution: "Add CategoryCounts with one integer per TargetColumn. Example: CategoryCounts(2, 5) for two columns with 2 and 5 categories respectively."
+
+  # --- Error 2: CategoricalValues with Multiple Columns ---
+  - error: "CategoricalValues cannot be used with multiple TargetColumn values"
+    cause: "CategoricalValues is only valid for a single TargetColumn. For multiple columns with LIST, you need a CategoryTable."
+    solution: "Create a CategoryTable with columns for target column names and category values, then use the fit_list_category_table template."
+
+  # --- Error 3: IsInputDense Not Set ---
+  - error: "Unexpected output format or function error"
+    cause: "IsInputDense defaults may not match your input format. Dense input (standard table rows) requires IsInputDense('true'). Sparse input (attribute/value pairs) requires IsInputDense('false')."
+    solution: "Always explicitly set IsInputDense('true') for standard table inputs or IsInputDense('false') for attribute/value pair inputs."
+
+  # --- Error 4: High Cardinality Explosion ---
+  - error: "Transform output has too many columns, query is slow or fails"
+    cause: "One-hot encoding a column with hundreds or thousands of unique values creates that many binary columns."
+    solution: "Use CategoryCounts with AUTO to limit to top-N categories. Or consider TD_OrdinalEncodingFit / TD_TargetEncodingFit for high-cardinality columns."
+
+  # --- Error 5: Unseen Categories in Transform ---
+  - error: "New category values in test data not present in training"
+    cause: "Categories that did not appear in training data are not in the fit model."
+    solution: "The OtherColumnName parameter catches unseen categories. Verify the 'other' column is included in downstream models. Alternatively, use LIST approach with all known categories."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## One-Hot Encoding Best Practices
+
+  ### 1. Choose AUTO vs LIST
+  - **AUTO:** Best when you want to discover categories from data. Use CategoryCounts to
+    limit the number of encoded columns. Rare categories are grouped into 'other'.
+  - **LIST:** Best when categories are known and fixed (e.g., US states, product tiers).
+    Guarantees consistent encoding regardless of what appears in the data.
+
+  ### 2. Handle High Cardinality
+  One-hot encoding creates one column per category. For columns with many unique values:
+  - Use CategoryCounts with AUTO to keep only the top-N most frequent categories
+  - Consider TD_TargetEncodingFit for high-cardinality categoricals (produces a single
+    numeric column instead of many binary columns)
+  - Consider TD_OrdinalEncodingFit when ordinal relationships exist
+
+  ### 3. Persist the Fit Model
+  Save the fit output as a permanent table for:
+  - Consistent encoding between training, test, and production data
+  - Reuse in TD_ColumnTransformer pipelines
+  - Auditing which categories were learned
+
+  ### 4. Drop One Category to Avoid Multicollinearity
+  For linear models, N binary columns from N categories are perfectly collinear.
+  Consider dropping one column after encoding (the "reference" category). This is known
+  as "drop first" encoding. TD_OneHotEncodingFit does not do this automatically.
+
+  ### 5. Combine with TD_ColumnTransformer
+  Pass the one-hot fit table as the OneHotEncodingFitTable dimension input to
+  TD_ColumnTransformer. This applies encoding alongside scaling and imputation in
+  a single pass over the data.
+
+  ### 6. Validate Category Counts
+  After fitting, verify the fit table contains the expected categories:
+  ```sql
+  SELECT * FROM db.onehot_fit_model ORDER BY 1;
+  ```
+  Check for unexpected categories or missing ones before deploying to production.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Feature Scaling ---
+  - scale_transform
+
+  # --- Pattern 2: Binning ---
+  - bincode
+
+  # --- Pattern 3: Column Transformer Pipeline ---
+  - column_transformer
+
+  # --- Pattern 4: Fit/Transform Architecture ---
+  - fit_transform_pattern
+
+  # --- Pattern 5: SMOTE (uses OrdinalEncoding for smotenc) ---
+  - smote
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,309 @@
+# === METADATA START ===
+name: classification_evaluator
+title: "Classification Model Evaluator"
+description: |
+  Evaluate classification model performance using TD_ClassificationEvaluator. Computes
+  per-class precision, recall, F1-score, and support from observed vs. predicted labels.
+  Produces a confusion-matrix-style primary output and an aggregate metrics secondary output.
+
+  TD_ClassificationEvaluator is ideal for:
+  - Generating confusion matrices for multi-class models
+  - Computing precision, recall, and F1 per class
+  - Evaluating model performance on holdout test data
+  - Comparing multiple classification models
+
+category: model_evaluation
+difficulty: intermediate
+teradata_function: TD_ClassificationEvaluator
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - model_evaluation
+  - analytics
+  - reporting
+use_cases:
+  # --- Use Case 1: Confusion Matrix ---
+  - Generating confusion matrix to visualize classification errors
+
+  # --- Use Case 2: Per-Class Metrics ---
+  - Computing precision, recall, and F1 for each class
+
+  # --- Use Case 3: Model Comparison ---
+  - Comparing classification model accuracy across different approaches
+
+  # --- Use Case 4: Imbalanced Class Analysis ---
+  - Identifying poor recall on minority classes in imbalanced datasets
+
+  # --- Use Case 5: Production Model Monitoring ---
+  - Monitoring deployed model performance against ground truth labels
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the predictions table"
+    example: "ml_project"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must have actual and predicted label columns
+    required: true
+    description: "Table containing actual and predicted class labels"
+    example: "churn_predictions"
+
+  # --- Parameter 3: Observation Column ---
+  - name: observation_column
+    type: string
+    # LLM-HINT: Column with actual/ground-truth class labels
+    required: true
+    description: "Column containing actual (ground truth) class labels"
+    example: "actual_label"
+
+  # --- Parameter 4: Prediction Column ---
+  - name: prediction_column
+    type: string
+    # LLM-HINT: Column with model-predicted class labels
+    required: true
+    description: "Column containing model-predicted class labels"
+    example: "predicted_label"
+
+  # --- Parameter 5: Labels ---
+  - name: labels
+    type: array[string]
+    # LLM-HINT: Explicit list of class labels; mutually exclusive with num_labels
+    required: false
+    description: "Explicit list of class label values. Mutually exclusive with num_labels"
+    example: '["0", "1"]'
+
+  # --- Parameter 6: Num Labels ---
+  - name: num_labels
+    type: integer
+    # LLM-HINT: Number of distinct class labels; mutually exclusive with labels
+    required: false
+    description: "Number of distinct class labels. Mutually exclusive with labels"
+    example: "2"
+
+  # --- Parameter 7: Output Table ---
+  - name: output_table
+    type: string
+    # LLM-HINT: Optional OUT TABLE for aggregate metrics (secondary output)
+    required: false
+    description: "Table name for aggregate metrics output"
+    example: "churn_eval_metrics"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CONFUSION_MATRIX TEMPLATE ===
+  # LLM-HINT: Full evaluation with confusion matrix and per-class metrics; use Labels for explicit class names
+  confusion_matrix:
+    description: "Generate confusion matrix with per-class precision, recall, and F1"
+    sql: |
+      -- Classification evaluation with confusion matrix
+      -- Primary output: per-class metrics with confusion matrix counts
+      SELECT * FROM TD_ClassificationEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column}}')
+          Labels({{labels_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column
+      - labels_quoted
+
+  # === EVAL_WITH_AGGREGATE_METRICS TEMPLATE ===
+  # LLM-HINT: Saves aggregate metrics to OUT TABLE; use for programmatic threshold tuning or model comparison
+  eval_with_aggregate_metrics:
+    description: "Evaluate and persist aggregate metrics to an output table for comparison"
+    sql: |
+      -- Classification evaluation with aggregate metrics saved
+      -- Primary output: confusion matrix with per-class P/R/F1
+      -- Secondary output (OUT TABLE): aggregate metrics
+      SELECT * FROM TD_ClassificationEvaluator(
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable({{database}}.{{output_table}})
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column}}')
+          NumLabels({{num_labels}})
+      ) AS t;
+
+      -- Query aggregate metrics
+      SELECT * FROM {{database}}.{{output_table}}
+      ORDER BY SeqNum;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column
+      - num_labels
+      - output_table
+
+  # === END_TO_END_EVAL TEMPLATE ===
+  # LLM-HINT: Full pipeline from test set predictions to evaluation; use after TD_TrainTestSplit
+  end_to_end_eval:
+    description: "End-to-end evaluation on test set after train/test split"
+    sql: |
+      -- Step 1: Get predictions on test set only (TD_IsTrainRow = 0)
+      -- Assumes predictions table was generated from model scoring
+      -- and joined back with the split table
+      SELECT * FROM TD_ClassificationEvaluator(
+        ON (
+          SELECT
+            p.{{observation_column}},
+            p.{{prediction_column}}
+          FROM {{database}}.{{table}} p
+          WHERE p.TD_IsTrainRow = 0
+        ) AS InputTable
+        USING
+          ObservationColumn('{{observation_column}}')
+          PredictionColumn('{{prediction_column}}')
+          Labels({{labels_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - observation_column
+      - prediction_column
+      - labels_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Binary Churn Classification ---
+  - name: "Binary Churn Classification Evaluation"
+    description: "Evaluate a churn prediction model with two classes (0=no churn, 1=churn)"
+    parameters:
+      database: "telecom"
+      table: "churn_test_predictions"
+      observation_column: "actual_churn"
+      prediction_column: "predicted_churn"
+      labels: ["0", "1"]
+    expected_result: |
+      Confusion matrix and per-class metrics:
+
+      Prediction | Class_0 | Class_1 | Precision | Recall |   F1   | Support
+      -----------+---------+---------+-----------+--------+--------+--------
+            0    |   850   |    30   |   0.9660  | 0.9545 | 0.9602 |   890
+            1    |    40   |   280   |   0.9032  | 0.9333 | 0.9180 |   300
+
+      Interpretation:
+      - Model correctly identifies 93.3% of churners (recall for class 1)
+      - 3.4% of predicted non-churners actually churned (false negatives)
+      - Overall accuracy: ~94.2%
+
+  # --- Example 2: Multi-Class Sentiment ---
+  - name: "Multi-Class Sentiment Evaluation"
+    description: "Evaluate a 3-class sentiment classifier (negative, neutral, positive)"
+    parameters:
+      database: "nlp_project"
+      table: "sentiment_predictions"
+      observation_column: "actual_sentiment"
+      prediction_column: "predicted_sentiment"
+      labels: ["negative", "neutral", "positive"]
+    expected_result: |
+      Per-class metrics:
+
+      Prediction | negative | neutral | positive | Precision | Recall |   F1   | Support
+      -----------+----------+---------+----------+-----------+--------+--------+--------
+       negative  |   180    |   15    |    5     |   0.9000  | 0.8571 | 0.8780 |   210
+       neutral   |    20    |   300   |   25     |   0.8696  | 0.8824 | 0.8759 |   340
+       positive  |    10    |   25    |   420    |   0.9231  | 0.9333 | 0.9282 |   450
+
+      Macro-averaged F1: 0.894
+      Neutral class has lowest precision - often confused with both positive and negative.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Labels vs NumLabels Conflict ---
+  - error: "Cannot specify both Labels and NumLabels"
+    cause: "Labels and NumLabels are mutually exclusive parameters"
+    solution: "Use Labels('0','1') for explicit label names or NumLabels(2) for auto-detection, but not both"
+
+  # --- Error 2: Missing Labels in Data ---
+  - error: "Label in data not found in Labels parameter"
+    cause: "Actual or predicted values contain labels not listed in Labels()"
+    solution: "Ensure all distinct values in both ObservationColumn and PredictionColumn are included in Labels(). Check: SELECT DISTINCT actual_col FROM table UNION SELECT DISTINCT predicted_col FROM table"
+
+  # --- Error 3: NULL Values in Label Columns ---
+  - error: "Unexpected NULL in observation or prediction column"
+    cause: "NULLs in ObservationColumn or PredictionColumn are not valid class labels"
+    solution: "Filter out NULLs before evaluation: WHERE actual_col IS NOT NULL AND predicted_col IS NOT NULL"
+
+  # --- Error 4: Evaluating on Training Data ---
+  - error: "Metrics are suspiciously high (near 1.0)"
+    cause: "Evaluating on training data instead of holdout test data"
+    solution: "Always evaluate on test data (TD_IsTrainRow = 0). Training set metrics are unreliable due to overfitting"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Classification Evaluation Best Practices
+
+  ### 1. Use the Right Metric for Your Problem
+  - **Accuracy** is misleading for imbalanced classes (99% accuracy means nothing if 99% is one class)
+  - **Precision** when false positives are costly (spam filter: don't lose real email)
+  - **Recall** when false negatives are costly (fraud detection: don't miss fraud)
+  - **F1** as a balanced metric when both matter equally
+
+  ### 2. Always Evaluate on Holdout Data
+  ```sql
+  -- Filter to test set only
+  WHERE TD_IsTrainRow = 0
+  ```
+  - Never evaluate on training data
+  - Use TD_TrainTestSplit for consistent splits
+
+  ### 3. Use Labels for Explicit Control
+  - Prefer Labels('0','1') over NumLabels(2) for clarity
+  - Labels define the confusion matrix column order
+  - Makes output easier to interpret
+
+  ### 4. Check Per-Class Metrics, Not Just Aggregates
+  - A model can have 95% overall accuracy but 0% recall on the minority class
+  - Always inspect the confusion matrix row by row
+  - If recall on a minority class is poor, consider TD_SMOTE for resampling
+
+  ### 5. Save Aggregate Metrics for Comparison
+  - Use OUT TABLE to persist metrics
+  - Compare across model versions:
+    ```sql
+    SELECT * FROM model_v1_metrics
+    UNION ALL
+    SELECT * FROM model_v2_metrics;
+    ```
+
+  ### 6. Pair with ROC Analysis
+  - TD_ClassificationEvaluator uses a fixed threshold
+  - Use TD_ROC to evaluate across all thresholds
+  - AUC gives a threshold-independent performance measure
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Train/Test Split ---
+  - train_test_split
+
+  # --- Pattern 2: ROC Analysis ---
+  - roc_analysis
+
+  # --- Pattern 3: Regression Evaluator ---
+  - regression_evaluator
+
+  # --- Pattern 4: SHAP Explainability ---
+  - shap_explainability
+
+  # --- Pattern 5: Decision Forest ---
+  - decision_forest
+# === RELATED_PATTERNS END ===

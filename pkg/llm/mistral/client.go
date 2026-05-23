@@ -119,7 +119,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 }
 
 // calculateCost estimates the cost in USD based on token usage.
-// Pricing as of 2024-11 (approximate, per million tokens):
+// Pricing as of 2026-03 (approximate, per million tokens):
 //
 // Open Models (free/permissive):
 // - open-mistral-7b: $0.25 / $0.25
@@ -127,9 +127,13 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 // - open-mixtral-8x22b: $2.00 / $6.00
 //
 // Commercial Models:
-// - mistral-small-latest: $1.00 / $3.00
+// - mistral-small-latest: $0.10 / $0.30
 // - mistral-medium-latest: $2.70 / $8.10
-// - mistral-large-latest: $4.00 / $12.00
+// - mistral-large-latest: $2.00 / $6.00
+// - magistral-medium-latest: $2.00 / $8.00
+// - magistral-small-latest: $0.50 / $1.50
+// - codestral-latest: $0.30 / $0.90
+// - devstral-medium-latest: $0.50 / $1.50
 //
 // Note: Prices may vary. Check https://mistral.ai/technology/#pricing for current rates.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
@@ -149,21 +153,37 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 		outputCostPerM = 6.00
 
 	case "mistral-small-latest", "mistral-small-2402":
-		inputCostPerM = 1.00
-		outputCostPerM = 3.00
+		inputCostPerM = 0.10
+		outputCostPerM = 0.30
 
 	case "mistral-medium-latest", "mistral-medium-2312": // Deprecated
 		inputCostPerM = 2.70
 		outputCostPerM = 8.10
 
 	case "mistral-large-latest", "mistral-large-2402", "mistral-large-2407":
-		inputCostPerM = 4.00
-		outputCostPerM = 12.00
+		inputCostPerM = 2.00
+		outputCostPerM = 6.00
+
+	case "magistral-medium-latest":
+		inputCostPerM = 2.00
+		outputCostPerM = 8.00
+
+	case "magistral-small-latest":
+		inputCostPerM = 0.50
+		outputCostPerM = 1.50
+
+	case "codestral-latest":
+		inputCostPerM = 0.30
+		outputCostPerM = 0.90
+
+	case "devstral-medium-latest":
+		inputCostPerM = 0.50
+		outputCostPerM = 1.50
 
 	default:
 		// Default to large pricing for unknown models
-		inputCostPerM = 4.00
-		outputCostPerM = 12.00
+		inputCostPerM = 2.00
+		outputCostPerM = 6.00
 	}
 
 	inputCost := float64(inputTokens) * inputCostPerM / 1_000_000

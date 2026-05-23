@@ -138,12 +138,17 @@ func NewClient(config Config) (*Client, error) {
 		rateLimiter = getOrCreateGlobalRateLimiter(config.RateLimiterConfig)
 	}
 
+	// Strip "Bearer " prefix from Entra token if present, since we add it
+	// back when constructing the Authorization header. This prevents
+	// double-prefixing ("Bearer Bearer ...") when users provide the full header value.
+	entraToken := strings.TrimPrefix(config.EntraToken, "Bearer ")
+
 	return &Client{
 		endpoint:     config.Endpoint,
 		deploymentID: config.DeploymentID,
 		apiVersion:   config.APIVersion,
 		apiKey:       config.APIKey,
-		entraToken:   config.EntraToken,
+		entraToken:   entraToken,
 		maxTokens:    config.MaxTokens,
 		temperature:  config.Temperature,
 		modelName:    modelName,

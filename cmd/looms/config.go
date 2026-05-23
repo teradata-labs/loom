@@ -98,6 +98,32 @@ type Config struct {
 
 	// ActiveProvider names the currently active entry in the Providers pool.
 	ActiveProvider string `mapstructure:"active_provider"`
+
+	// Embedding configures vector embeddings for hybrid semantic memory search.
+	Embedding EmbeddingConfig `mapstructure:"embedding"`
+}
+
+// EmbeddingConfig configures the vector embedding provider for hybrid memory search.
+// Once set, the model should not be changed without re-embedding (different models
+// produce incompatible vector spaces). Embeddings from a previous model are
+// automatically skipped during recall — new extractions gradually replace them.
+type EmbeddingConfig struct {
+	// Enabled activates embedding generation during memory extraction and
+	// vector similarity search during memory recall. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Provider: "openai" (default). Future: "ollama", "bedrock", "gemini".
+	Provider string `mapstructure:"provider"`
+
+	// Model name. Default: "text-embedding-3-small" for OpenAI.
+	Model string `mapstructure:"model"`
+
+	// Dimensions override (0 = use model default). Only supported by some models.
+	Dimensions int `mapstructure:"dimensions"`
+
+	// API key (provider-specific). Resolved: explicit > env > keyring.
+	// OpenAI: OPENAI_API_KEY env var. Ollama: not needed.
+	APIKey string `mapstructure:"api_key"`
 }
 
 // ArtifactsConfig holds artifacts storage configuration.
@@ -258,6 +284,7 @@ type LLMConfig struct {
 	BedrockAccessKeyID     string `mapstructure:"bedrock_access_key_id"`     // From CLI/env/keyring only
 	BedrockSecretAccessKey string `mapstructure:"bedrock_secret_access_key"` // From CLI/env/keyring only
 	BedrockSessionToken    string `mapstructure:"bedrock_session_token"`     // From CLI/env/keyring only
+	BedrockBearerToken     string `mapstructure:"bedrock_bearer_token"`      // From CLI/env/keyring only
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
 
@@ -1064,6 +1091,13 @@ func setDefaults() {
 	viper.SetDefault("tools.permissions.yolo", true) // Default to YOLO mode for autonomous operation
 	viper.SetDefault("tools.permissions.default_action", "deny")
 	viper.SetDefault("tools.permissions.timeout_seconds", 300)
+
+	// Tool injection defaults. tools.minimal=true suppresses the five
+	// always-on auto-injected tools (shell_execute, workspace, tool_search,
+	// graph_memory, task_board) so an agent only sees what its YAML
+	// declares. Default false preserves all existing behavior — set
+	// explicitly via --minimal-tools or tools.minimal: true in config.
+	viper.SetDefault("tools.minimal", false)
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
@@ -1135,6 +1169,12 @@ func setDefaults() {
 	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions
 	viper.SetDefault("tools.shell_execute.restrict_reads", "session")    // Session-only reads by default
 	viper.SetDefault("tools.shell_execute.enable_path_validation", true) // Enable path validation
+
+	// Embedding defaults
+	viper.SetDefault("embedding.enabled", false)
+	viper.SetDefault("embedding.provider", "openai")
+	viper.SetDefault("embedding.model", "text-embedding-3-small")
+	viper.SetDefault("embedding.dimensions", 0) // use model default
 }
 
 // SecretMapping defines how to load a secret from keyring into the config.
@@ -1168,6 +1208,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "bedrock_session_token",
 			Setter:     func(c *Config, val string) { c.LLM.BedrockSessionToken = val },
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockSessionToken != "" },
+		},
+		{
+			KeyringKey: "bedrock_bearer_token",
+			Setter:     func(c *Config, val string) { c.LLM.BedrockBearerToken = val },
+			IsSet:      func(c *Config) bool { return c.LLM.BedrockBearerToken != "" },
 		},
 		{
 			KeyringKey: "hawk_api_key",
@@ -1414,12 +1459,12 @@ func (c *Config) Validate() error {
 
 	case "gemini":
 		if c.LLM.GeminiAPIKey == "" {
-			return fmt.Errorf("gemini API key is required (set via --gemini-key, LOOM_LLM_GEMINI_API_KEY, or save to keyring with 'looms config set-key gemini_api_key')")
+			return fmt.Errorf("gemini API key is required (set LOOM_LLM_GEMINI_API_KEY, GEMINI_API_KEY, or save to keyring with 'looms config set-key gemini_api_key')")
 		}
 
 	case "huggingface":
 		if c.LLM.HuggingFaceToken == "" {
-			return fmt.Errorf("huggingface token is required (set via --huggingface-token, LOOM_LLM_HUGGINGFACE_TOKEN, or save to keyring with 'looms config set-key huggingface_token')")
+			return fmt.Errorf("huggingface token is required (set LOOM_LLM_HUGGINGFACE_TOKEN, HUGGINGFACE_API_KEY, or save to keyring with 'looms config set-key huggingface_token')")
 		}
 
 	default:
@@ -1583,6 +1628,7 @@ llm:
   # bedrock_access_key_id: set via keyring or env (LOOM_LLM_BEDROCK_ACCESS_KEY_ID)
   # bedrock_secret_access_key: set via keyring or env (LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY)
   # bedrock_session_token: set via keyring or env (LOOM_LLM_BEDROCK_SESSION_TOKEN)
+  # bedrock_bearer_token: set via keyring or env (AWS_BEARER_TOKEN_BEDROCK)
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434

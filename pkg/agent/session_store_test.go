@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -540,5 +541,104 @@ func TestMemory_WithStore_Integration(t *testing.T) {
 
 	if reloaded.Messages[0].Content != "test" {
 		t.Error("Expected message content to be preserved")
+	}
+}
+
+// TestSessionStore_ConcurrentLoadSession exercises the re-entrant RLock deadlock scenario.
+// LoadSession acquires RLock then calls loadMessagesLocked (which must NOT re-acquire RLock).
+// If the internal call used the public LoadMessages (which also acquires RLock), a writer
+// waiting between the two acquisitions would cause a deadlock with Go's sync.RWMutex.
+//
+// This test runs 10 concurrent LoadSession goroutines against 10 concurrent SaveMessage
+// goroutines to create write-contention that triggers the deadlock window.
+func TestSessionStore_ConcurrentLoadSession(t *testing.T) {
+	tmpfile := t.TempDir() + "/test.db"
+	defer func() { _ = os.Remove(tmpfile) }()
+
+	tracer := observability.NewNoOpTracer()
+	store, err := NewSessionStore(tmpfile, tracer)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+
+	// Create session with some initial messages
+	session := &Session{
+		ID:        "deadlock-test-session",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Context:   map[string]interface{}{"test": "deadlock"},
+	}
+	if err := store.SaveSession(ctx, session); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Seed a few messages so LoadSession has data to load
+	for i := 0; i < 5; i++ {
+		msg := Message{
+			Role:      "user",
+			Content:   fmt.Sprintf("seed message %d", i),
+			Timestamp: time.Now(),
+		}
+		if err := store.SaveMessage(ctx, "deadlock-test-session", msg); err != nil {
+			t.Fatalf("Failed to seed message: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+
+	// 10 goroutines doing LoadSession (readers)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			loaded, err := store.LoadSession(ctx, "deadlock-test-session")
+			if err != nil {
+				errs <- fmt.Errorf("LoadSession failed: %w", err)
+				return
+			}
+			if loaded.ID != "deadlock-test-session" {
+				errs <- fmt.Errorf("unexpected session ID: %s", loaded.ID)
+				return
+			}
+			if len(loaded.Messages) < 5 {
+				errs <- fmt.Errorf("expected at least 5 messages, got %d", len(loaded.Messages))
+			}
+		}()
+	}
+
+	// 10 goroutines doing SaveMessage (writers) to create contention
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			msg := Message{
+				Role:      "assistant",
+				Content:   fmt.Sprintf("concurrent write %d", id),
+				Timestamp: time.Now(),
+			}
+			if err := store.SaveMessage(ctx, "deadlock-test-session", msg); err != nil {
+				errs <- fmt.Errorf("SaveMessage failed: %w", err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Verify final state: at least 15 messages (5 seed + 10 concurrent writes)
+	messages, err := store.LoadMessages(ctx, "deadlock-test-session")
+	if err != nil {
+		t.Fatalf("Final LoadMessages failed: %v", err)
+	}
+	if len(messages) != 15 {
+		t.Errorf("Expected 15 messages, got %d", len(messages))
 	}
 }

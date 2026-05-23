@@ -14,19 +14,19 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
@@ -34,7 +34,11 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -82,6 +86,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		tokenCounter: GetTokenCounter(),
 	}
 
+	// Default shared memory threshold: -1 means use storage.DefaultSharedMemoryThreshold
+	a.sharedMemoryThreshold = -1
+
 	// Enable self-correction by default (guardrails + circuit breakers)
 	// Users can opt-out via WithoutSelfCorrection() or provide custom implementations
 	a.guardrails = fabric.NewGuardrailEngine()
@@ -109,6 +116,21 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.extractionCadence = a.config.ExtractionCadence
 	a.toolExecutionsSinceExtraction = 0
 
+	// Initialize automatic graph memory extraction if graph memory is enabled.
+	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
+		a.graphMemoryConfig.Enabled && a.graphMemoryConfig.EnableExtraction {
+		a.enableGraphMemoryExtraction = true
+		a.graphExtractionCadence = int(a.graphMemoryConfig.ExtractionCadence)
+		if a.graphExtractionCadence <= 0 {
+			a.graphExtractionCadence = 5
+		}
+		a.graphToolExecutionsSinceExtraction = 0
+
+		// Conversation-turn-based extraction (fires on LLM responses, not just tool use).
+		a.graphConversationExtractionCadence = int(a.graphMemoryConfig.ConversationExtractionCadence)
+		a.graphTurnsSinceExtraction = 0
+	}
+
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
@@ -135,31 +157,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	}
 
 	// Set up system prompt function for memory
-	// This allows dynamic prompt loading from PromptRegistry and context variable interpolation.
+	// This allows dynamic prompt loading from PromptRegistry
 	// Context is threaded through for proper RLS user_id propagation in PostgreSQL.
 	a.memory.SetSystemPromptFunc(func(ctx context.Context) string {
-		// Get base system prompt
-		basePrompt := a.getSystemPrompt(ctx)
-
-		// Get context variables from Go context (passed via WithContextVariables)
-		// This avoids needing to access memory/session during prompt generation,
-		// which would cause deadlock when called from GetOrCreateSessionWithAgent
-		contextData := getContextVariablesFromContext(ctx)
-
-		if contextData == nil || len(contextData) == 0 {
-			// No context variables - return prompt as-is
-			return basePrompt
-		}
-
-		// Interpolate context variables ({{.project_path}}, {{.workspace_id}}, etc.)
-		interpolated := interpolateContextVariables(basePrompt, contextData)
-
-		// Log interpolation for debugging
-		zap.L().Debug("Interpolated system prompt with context variables",
-			zap.String("agent", a.config.Name),
-			zap.Int("original_len", len(basePrompt)),
-			zap.Int("interpolated_len", len(interpolated)))
-		return interpolated
+		return a.getSystemPrompt(ctx)
 	})
 
 	// Set context limits for memory (if configured)
@@ -196,7 +197,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Set shared memory on executor so large tool results are stored in the same store
 	// that GetToolResultTool retrieves from (fixes tool reference loop bug)
 	if a.executor != nil && a.sharedMemory != nil {
-		a.executor.SetSharedMemory(a.sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(a.sharedMemory, threshold)
 	}
 
 	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
@@ -259,9 +264,147 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		}
 	}
 
-	// NOTE: conversation_memory tool (unified recall/search/clear) uses progressive disclosure.
+	// NOTE: conversation_memory tool uses progressive disclosure.
 	// It registers automatically after first L2 swap event.
 	// See checkAndRegisterConversationMemoryTool() for implementation.
+
+	// Register graph_memory tool eagerly (not progressive disclosure).
+	// Unlike conversation_memory which depends on runtime state (L2 swap events),
+	// graph_memory only depends on graphMemoryStore + graphMemoryConfig — both known
+	// at construction time. Registering here ensures the tool is in the LLM's tool
+	// list from the very first conversation turn, matching the system prompt supplement
+	// that references it. The post-loop calls in Chat/ChatWithProgress are harmless
+	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
+	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
+
+	// Auto-wire the skill task emitter when both the skill subsystem AND
+	// the task subsystem are configured. The emitter is the bridge between
+	// skill activations and task board entries (skills overhaul Phase 6).
+	// Caller can preempt this by setting WithSkillTaskEmitter explicitly.
+	if a.skillTaskEmitter == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
+	}
+
+	// Install the sticky-while-open-tasks checker on the orchestrator
+	// when both the skill subsystem and the task subsystem are present.
+	// Eviction will treat any active skill with non-DONE+non-CANCELLED
+	// tasks for this (skill, session) pair as sticky, so in-flight work
+	// is never abandoned mid-turn. (Skills overhaul deferred work C.)
+	if a.skillOrchestrator != nil && a.taskManager != nil {
+		taskMgr := a.taskManager
+		a.skillOrchestrator.SetStickinessChecker(func(skillName, sessionID string) bool {
+			open, err := taskMgr.HasOpenSkillTasks(context.Background(), skillName, sessionID)
+			if err != nil {
+				// Treat lookup failures as "not sticky" so eviction can
+				// still proceed; logging is enough.
+				zap.L().Debug("stickiness check failed",
+					zap.String("skill", skillName),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return false
+			}
+			return open
+		})
+	}
+
+	// Construct the end-of-turn hygiene auditor + enforcer when both the
+	// skill and task subsystems are wired. The auditor inspects tasks
+	// emitted by currently-active skills via SkillIdempotencyKey; the
+	// enforcer applies the resolved HygienePolicy from SkillsConfig.Hygiene
+	// at end-of-turn (see runConversationLoop). Caller can preempt by
+	// providing a non-nil pair via Option before NewAgent returns.
+	if a.hygieneAuditor == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.hygieneAuditor = hygiene.NewAuditor(
+			a.taskManager,
+			a.skillOrchestrator,
+			hygiene.WithTracer(a.tracer),
+			hygiene.WithLogger(zap.L()),
+		)
+	}
+	if a.hygieneEnforcer == nil && a.taskManager != nil {
+		a.hygieneEnforcer = hygiene.NewEnforcer(
+			a.taskManager,
+			hygiene.WithEnforcerTracer(a.tracer),
+			hygiene.WithEnforcerLogger(zap.L()),
+			hygiene.WithAgentID(a.id),
+		)
+	}
+
+	// Install an eviction callback that boosts graph memory salience for
+	// entities related to the evicted skill. When a skill is evicted, its
+	// related knowledge becomes more relevant (the agent just used it),
+	// so touching those memories strengthens future retrieval. Zero LLM
+	// calls — pure FTS search + TouchMemories.
+	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
+		store := a.graphMemoryStore
+		agentName := a.config.Name
+		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
+			ctx := context.Background()
+
+			// Build search query from skill name + first 3 keywords.
+			query := skill.Name
+			keywords := skill.Trigger.Keywords
+			if len(keywords) > 3 {
+				keywords = keywords[:3]
+			}
+			for _, kw := range keywords {
+				query += " " + kw
+			}
+
+			entities, err := store.SearchEntities(ctx, agentName, query, 5)
+			if err != nil {
+				zap.L().Debug("eviction salience boost: entity search failed",
+					zap.String("skill", skill.Name),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return
+			}
+
+			var memoryIDs []string
+			for _, ent := range entities {
+				memories, recallErr := store.Recall(ctx, memory.RecallOpts{
+					AgentID:   agentName,
+					EntityIDs: []string{ent.ID},
+					Limit:     3,
+				})
+				if recallErr != nil {
+					continue
+				}
+				for _, mem := range memories {
+					memoryIDs = append(memoryIDs, mem.ID)
+				}
+			}
+
+			if len(memoryIDs) == 0 {
+				return
+			}
+
+			// Deduplicate.
+			seen := make(map[string]struct{}, len(memoryIDs))
+			deduped := memoryIDs[:0]
+			for _, id := range memoryIDs {
+				if _, exists := seen[id]; !exists {
+					seen[id] = struct{}{}
+					deduped = append(deduped, id)
+				}
+			}
+
+			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				zap.L().Debug("eviction salience boost: TouchMemories failed",
+					zap.String("skill", skill.Name),
+					zap.Error(touchErr))
+				return
+			}
+
+			zap.L().Debug("eviction salience boost: touched memories",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.Duration("active_for", activeFor),
+				zap.Int("entity_count", len(entities)),
+				zap.Int("memory_count", len(deduped)))
+		})
+	}
 
 	return a
 }
@@ -439,6 +582,130 @@ func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
 	}
 }
 
+// WithSkillDiscovery wires the new top-level Discovery (introduced by the
+// skills overhaul). When set, runConversationLoop uses the four-phase
+// pipeline (binding -> discovery -> activate -> emit tasks) instead of the
+// legacy MatchSkills filter path. Requires WithSkillOrchestrator to also
+// be set so the activation lifecycle still has somewhere to land.
+func WithSkillDiscovery(d *discovery.Discovery) Option {
+	return func(a *Agent) {
+		a.skillDiscovery = d
+	}
+}
+
+// WithSkillTaskEmitter wires the skill task emitter. When set and the
+// skill's EffectiveEmitTasks() returns true, freshly-activated skills
+// materialize tasks onto the agent's task board. Requires that the
+// agent's task manager is also configured.
+func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
+	return func(a *Agent) {
+		a.skillTaskEmitter = e
+	}
+}
+
+// skillNameSet returns the names currently active on a session as a set
+// keyed by skill name. Used by the four-phase pipeline to decide which
+// activations are "new this turn" so the task emitter only fires once per
+// activation event.
+func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
+	out := make(map[string]bool, len(active))
+	for _, as := range active {
+		if as != nil && as.Skill != nil {
+			out[as.Skill.Name] = true
+		}
+	}
+	return out
+}
+
+// enforceRequiredSkillTools auto-registers tools listed in active skills'
+// SkillToolConfig.RequiredTools when they are available in the builtin
+// catalog and not already registered. Tools that aren't builtin-known are
+// logged at Warn so operators can see what's missing without breaking the
+// turn — the agent continues with whatever tools ARE registered.
+//
+// MCP servers (SkillToolConfig.MCPServers) are not yet activated by skill
+// activation; the field is parsed but not enforced. A future change can
+// add an MCPManager hook here.
+func (a *Agent) enforceRequiredSkillTools(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return
+	}
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.RequiredTools {
+			if a.tools.IsRegistered(name) {
+				continue
+			}
+			tool := builtin.ByName(name)
+			if tool == nil {
+				zap.L().Warn("skill required tool not available; skipping",
+					zap.String("skill", as.Skill.Name),
+					zap.String("tool", name))
+				continue
+			}
+			a.tools.Register(tool)
+			zap.L().Debug("skill required tool auto-registered",
+				zap.String("skill", as.Skill.Name),
+				zap.String("tool", name))
+		}
+		// Surface MCP-server requests so operators see when a skill has
+		// declared servers that aren't yet honored. Logged once per turn
+		// per skill rather than per server to avoid log spam.
+		if len(as.Skill.Tools.MCPServers) > 0 {
+			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
+				zap.String("skill", as.Skill.Name),
+				zap.Int("count", len(as.Skill.Tools.MCPServers)))
+		}
+	}
+}
+
+// applySkillExcludedTools filters the input tool slice by removing any
+// tool whose name appears in any active skill's
+// SkillToolConfig.ExcludedTools. Multiple active skills' exclusions union;
+// a tool excluded by ANY active skill is removed for this turn.
+//
+// The filter is per-turn (no permanent unregistration) so deactivating a
+// skill restores its excluded tools on subsequent turns automatically.
+func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []shuttle.Tool {
+	if a.skillOrchestrator == nil || session == nil {
+		return in
+	}
+	sessionID := session.ID
+	if sessionID == "" {
+		sessionID = a.id
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return in
+	}
+	excluded := make(map[string]bool)
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.ExcludedTools {
+			excluded[name] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, tool := range in {
+		if excluded[tool.Name()] {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
 // RegisterTool registers a tool with the agent.
 func (a *Agent) RegisterTool(tool shuttle.Tool) {
 	a.tools.Register(tool)
@@ -560,6 +827,54 @@ func (a *Agent) GetConfig() *Config {
 	return &configCopy
 }
 
+// ContextState holds a snapshot of the agent's memory and context window state.
+// Used to populate the proto ContextState message in WeaveResponse.
+type ContextState struct {
+	ActivePattern     string
+	ContextTokensUsed int64
+	ContextTokensMax  int64
+	Rom               string
+	ToolsLoaded       []string
+}
+
+// GetContextState returns a snapshot of the agent's memory and context window state
+// for the given session. Returns nil if the session has no SegmentedMemory.
+func (a *Agent) GetContextState(sessionID string) *ContextState {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return nil
+	}
+
+	state := &ContextState{
+		Rom:         a.config.Rom,
+		ToolsLoaded: a.ListTools(),
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		state.ActivePattern = segMem.GetActivePattern()
+		state.ContextTokensUsed = int64(segMem.GetTokenCount())
+		state.ContextTokensMax = int64(segMem.GetTokenBudgetMax())
+	}
+
+	return state
+}
+
+// ResetSessionContext clears the context window for a session, preserving ROM and
+// registered tools. Returns true if the session was found and reset, false otherwise.
+func (a *Agent) ResetSessionContext(sessionID string) bool {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return false
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		segMem.ResetContext()
+		return true
+	}
+
+	return false
+}
+
 // getSystemPrompt loads the system prompt from config or PromptRegistry.
 // Priority: ROM + Config.SystemPrompt (if explicitly set) > ROM + PromptRegistry > Default
 // ROM (Read-Only Memory) provides domain-specific knowledge loaded based on config.Rom
@@ -595,54 +910,6 @@ func formatSystemPromptWithDatetime(prompt string, workflowCtx *WorkflowCommunic
 	return header + workflowInstructions + prompt
 }
 
-// Context key for storing context variables in Go context
-type contextVarsKey struct{}
-
-// WithContextVariables stores context variables in the Go context for system prompt interpolation.
-// This avoids needing to access memory/session locks during prompt generation.
-func WithContextVariables(ctx context.Context, vars map[string]interface{}) context.Context {
-	if vars == nil || len(vars) == 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, contextVarsKey{}, vars)
-}
-
-// getContextVariablesFromContext retrieves context variables from the Go context.
-func getContextVariablesFromContext(ctx context.Context) map[string]interface{} {
-	if vars, ok := ctx.Value(contextVarsKey{}).(map[string]interface{}); ok {
-		return vars
-	}
-	return nil
-}
-
-// interpolateContextVariables replaces {{.variable}} placeholders in the system prompt
-// with actual values from the session context (e.g., {{.project_path}} -> "/path/to/project").
-// Returns the original prompt if interpolation fails (no error propagation).
-func interpolateContextVariables(prompt string, contextData map[string]interface{}) string {
-	// If no context data or no template markers, return as-is
-	if len(contextData) == 0 || !strings.Contains(prompt, "{{.") {
-		return prompt
-	}
-
-	// Parse template
-	tmpl, err := template.New("system_prompt").Parse(prompt)
-	if err != nil {
-		// Template parsing failed - log warning and return original
-		zap.L().Warn("Failed to parse system prompt template", zap.Error(err))
-		return prompt
-	}
-
-	// Execute template with context data
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, contextData); err != nil {
-		// Template execution failed - log warning and return original
-		zap.L().Warn("Failed to interpolate context variables", zap.Error(err))
-		return prompt
-	}
-
-	return buf.String()
-}
-
 func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Load ROM content first (if configured)
 	var romContent string
@@ -657,17 +924,20 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		romContent = LoadROMContent(a.config.Rom, backendPath)
 	}
 
+	// Resolve the base prompt from config, prompt registry, or fallback
+	var basePrompt string
+
 	// If agent has a custom system prompt in config, use it (takes priority)
 	if a.config != nil && a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// Try loading from PromptRegistry as fallback
-	if a.prompts != nil {
+	if basePrompt == "" && a.prompts != nil {
 		patternCount := 0
 		if a.orchestrator != nil && a.orchestrator.GetLibrary() != nil {
 			patternCount = len(a.orchestrator.GetLibrary().ListAll())
@@ -694,40 +964,326 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		if streamingSupported {
 			prompt, err := a.prompts.Get(ctx, "agent.system_with_streaming", vars)
 			if err == nil && prompt != "" {
-				return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+				basePrompt = prompt
 			}
-			// Fall through to standard prompt if streaming prompt not found
 		}
 
-		// Try loading system prompt with patterns if pattern library is available
-		prompt, err := a.prompts.Get(ctx, "agent.system", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Try loading system prompt with patterns if pattern library is available
+			prompt, err := a.prompts.Get(ctx, "agent.system", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 
-		// Fall back to basic system prompt
-		prompt, err = a.prompts.Get(ctx, "agent.system_basic", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Fall back to basic system prompt
+			prompt, err := a.prompts.Get(ctx, "agent.system_basic", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 	}
 
-	// Fall back to config
-	if a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
+	// Fall back to config (second check for non-nil config without SystemPrompt already set)
+	if basePrompt == "" && a.config.SystemPrompt != "" {
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// If we have ROM but no system prompt, just use ROM
-	if romContent != "" {
-		return formatSystemPromptWithDatetime(romContent, a.workflowCommContext)
+	if basePrompt == "" && romContent != "" {
+		basePrompt = romContent
 	}
 
 	// Final fallback - minimal instruction
-	return formatSystemPromptWithDatetime(`Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`, a.workflowCommContext)
+	if basePrompt == "" {
+		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
+	}
+
+	// Append graph memory instructions if graph memory is enabled
+	basePrompt += a.graphMemoryPromptSupplement()
+
+	// Inject live task context (current tasks, ready front, board stats).
+	// Rebuilt from DB each turn — survives context compaction.
+	basePrompt += a.buildTaskContext(ctx)
+
+	// Append task board tool instructions after the context block,
+	// so the agent sees "here's your state" before "here's how to manage it".
+	basePrompt += a.taskBoardPromptSupplement()
+
+	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
+}
+
+// graphMemoryPromptSupplement returns instructions for agents with graph memory enabled.
+// Returns empty string when graph memory is not available.
+func (a *Agent) graphMemoryPromptSupplement() string {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+GRAPH MEMORY
+
+You have persistent memory across sessions via the graph_memory tool. Relevant memories are automatically loaded into context each turn — you do not need to recall them manually.
+
+When to use the graph_memory tool:
+- When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
+- When you learn facts about systems, tools, or workflows → remember with entities and relationships.
+- When you need deeper context beyond what was auto-loaded → use recall or context_for.
+
+Actions:
+- remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
+- recall: search by searchQuery, filter by type/tags
+- supersede: correct outdated info (preserves lineage)
+- forget: soft-delete
+- relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
+- context_for: get an entity's full profile within a token budget
+- entities: browse the knowledge graph
+- consolidate: merge related memories
+
+Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
+}
+
+// taskBoardPromptSupplement returns instructions for agents with task board enabled.
+// Returns empty string when task board is not available.
+func (a *Agent) taskBoardPromptSupplement() string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+TASK BOARD
+
+You have a task_board tool for decomposing goals into dependency-tracked tasks and managing work via a kanban board.
+
+Workflow:
+1. decompose — Break a complex goal into a DAG of subtasks (specify strategy: backward, forward, or parallel)
+2. ready — See what tasks have all dependencies satisfied and are available to work on
+3. claim — Atomically claim a task to work on (prevents other agents from picking it up)
+4. Work on the task using your other tools
+5. update — Append progress notes, update approach as you learn more
+6. close — Mark the task done with a completion reason
+7. ready — Check what's unblocked next
+
+Key actions: decompose, ready, claim, update, close, create, list, show, add_dep, board
+
+Guidelines:
+- For complex multi-step requests, use decompose before diving in
+- Always claim a task before working on it
+- Append structured notes at milestones: [STARTED], [PROGRESS], [KEY FINDING], [BLOCKED]
+- Close tasks with a meaningful reason summarizing what was accomplished
+- Use show to check dependencies and blocked/blocking relationships
+- Tasks are domain-agnostic: research, analysis, writing, decisions — not just code`
+}
+
+// checkAndRegisterTaskBoardTool implements progressive disclosure for the task_board tool.
+func (a *Agent) checkAndRegisterTaskBoardTool() {
+	if a.tools.IsRegistered("task_board") {
+		return
+	}
+	if a.taskManager == nil {
+		return
+	}
+	if a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return
+	}
+
+	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
+	a.tools.Register(tbTool)
+}
+
+// buildTaskContext queries the task store and builds a compact context block
+// for injection into the system prompt. Rebuilt from DB each turn, so it
+// survives context compaction — the agent never forgets what it's working on.
+// Returns empty string if task board is not enabled, budget is 0, or no tasks exist.
+func (a *Agent) buildTaskContext(ctx context.Context) string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+
+	// context_budget_tokens = 0 means disable context injection (per proto doc).
+	// Negative values also disable. Unset (proto default 0) disables; users must
+	// explicitly set a positive value or rely on the default below.
+	budgetTokens := int(a.taskBoardConfig.ContextBudgetTokens)
+	if budgetTokens < 0 {
+		return ""
+	}
+	if budgetTokens == 0 {
+		budgetTokens = 500 // default when not explicitly set
+	}
+
+	boardID := a.taskBoardConfig.DefaultBoardId
+
+	// Query current claimed tasks for this agent.
+	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		AssigneeAgentID: a.id,
+		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		BoardID:         boardID,
+		Limit:           5,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list claimed tasks", zap.Error(err))
+	}
+
+	// Query ready front.
+	ready, err := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
+		MaxResults: 5,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to get ready front", zap.Error(err))
+	}
+
+	// Query board stats.
+	allTasks, total, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Limit:   1000,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list board tasks", zap.Error(err))
+	}
+
+	// Query recent completions (last 3 closed tasks for momentum/context).
+	recentDone, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Status:  loomv1.TaskStatus_TASK_STATUS_DONE,
+		Limit:   3,
+	})
+
+	// If no tasks exist anywhere, skip the context block entirely.
+	if total == 0 && len(claimed) == 0 && len(ready) == 0 {
+		return ""
+	}
+
+	// Compute stats.
+	stats := map[string]int{"total": total}
+	for _, t := range allTasks {
+		stats[task.StatusName(t.Status)]++
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n--- TASK CONTEXT ---\n")
+
+	// Current tasks with dependency info.
+	if len(claimed) > 0 {
+		for _, t := range claimed {
+			fmt.Fprintf(&b, "CURRENT TASK: [%s] %q (%s, %s)\n",
+				truncateID(t.ID), t.Title, task.StatusName(t.Status), task.PriorityName(t.Priority))
+			if t.Objective != "" {
+				fmt.Fprintf(&b, "  Objective: %s\n", t.Objective)
+			}
+			if t.Approach != "" {
+				fmt.Fprintf(&b, "  Approach: %s\n", t.Approach)
+			}
+			if t.Notes != "" {
+				notes := t.Notes
+				if len(notes) > 200 {
+					notes = "..." + notes[len(notes)-200:]
+				}
+				fmt.Fprintf(&b, "  Notes: %s\n", notes)
+			}
+			// Show dependency info for current task.
+			a.writeTaskDeps(&b, ctx, t.ID)
+		}
+	} else {
+		b.WriteString("NO CURRENT TASK — use task_board ready to find work\n")
+	}
+
+	// Ready front
+	if len(ready) > 0 {
+		fmt.Fprintf(&b, "\nREADY FRONT (%d tasks):\n", len(ready))
+		for _, t := range ready {
+			effort := ""
+			if t.EstimatedEffort != "" {
+				effort = ", ~" + t.EstimatedEffort
+			}
+			fmt.Fprintf(&b, "  [%s] %q (%s%s)\n",
+				truncateID(t.ID), t.Title, task.PriorityName(t.Priority), effort)
+		}
+	}
+
+	// Recent completions
+	if len(recentDone) > 0 {
+		fmt.Fprintf(&b, "\nRECENT COMPLETIONS (%d):\n", len(recentDone))
+		for _, t := range recentDone {
+			fmt.Fprintf(&b, "  [%s] %q — %s\n", truncateID(t.ID), t.Title, t.CloseReason)
+		}
+	}
+
+	// Board stats
+	fmt.Fprintf(&b, "\nBOARD: %d total", stats["total"])
+	if v := stats["IN_PROGRESS"]; v > 0 {
+		fmt.Fprintf(&b, " | %d in_progress", v)
+	}
+	if v := stats["BLOCKED"]; v > 0 {
+		fmt.Fprintf(&b, " | %d blocked", v)
+	}
+	if v := stats["DONE"]; v > 0 {
+		fmt.Fprintf(&b, " | %d done", v)
+	}
+	if v := stats["OPEN"]; v > 0 {
+		fmt.Fprintf(&b, " | %d open", v)
+	}
+	b.WriteString("\n")
+
+	result := b.String()
+
+	// Rough token budget enforcement (~4 chars per token).
+	maxChars := budgetTokens * 4
+	if len(result) > maxChars {
+		result = result[:maxChars] + "\n[task context truncated]\n"
+	}
+
+	return result
+}
+
+// writeTaskDeps appends blocked-by and blocking info for a task to the builder.
+func (a *Agent) writeTaskDeps(b *strings.Builder, ctx context.Context, taskID string) {
+	deps, _ := a.taskManager.Store().GetDependencies(ctx, taskID)
+	dependents, _ := a.taskManager.Store().GetDependents(ctx, taskID)
+
+	blockedBy := []string{}
+	for _, d := range deps {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocker, err := a.taskManager.Store().GetTask(ctx, d.ToTaskID)
+			if err == nil && !task.IsTerminal(blocker.Status) {
+				blockedBy = append(blockedBy, fmt.Sprintf("[%s] %q", truncateID(blocker.ID), blocker.Title))
+			}
+		}
+	}
+	blocking := []string{}
+	for _, d := range dependents {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocked, err := a.taskManager.Store().GetTask(ctx, d.FromTaskID)
+			if err == nil {
+				blocking = append(blocking, fmt.Sprintf("[%s] %q", truncateID(blocked.ID), blocked.Title))
+			}
+		}
+	}
+
+	if len(blockedBy) > 0 {
+		fmt.Fprintf(b, "  Blocked by: %s\n", strings.Join(blockedBy, ", "))
+	} else {
+		b.WriteString("  Blocked by: (none)\n")
+	}
+	if len(blocking) > 0 {
+		fmt.Fprintf(b, "  Blocking: %s\n", strings.Join(blocking, ", "))
+	}
+}
+
+// truncateID returns the first 8 chars of an ID for compact display.
+func truncateID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
@@ -835,32 +1391,28 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Start trace span with detailed attributes
-	var span *observability.Span
+	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat")
+	defer a.tracer.EndSpan(span)
 
-	if a.config.EnableTracing {
-		ctx, span = a.tracer.StartSpan(ctx, observability.SpanAgentConversation)
-		defer a.tracer.EndSpan(span)
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
-		// Set initial attributes
-		span.SetAttribute(observability.AttrSessionID, sessionID)
-		span.SetAttribute("message.length", len(userMessage))
-		span.SetAttribute("message.preview", truncateString(userMessage, 100))
-		a.mu.RLock()
-		currentLLM := a.llm
-		a.mu.RUnlock()
-		span.SetAttribute("llm.provider", currentLLM.Name())
-		span.SetAttribute("llm.model", currentLLM.Model())
-		span.SetAttribute("config.max_turns", a.config.MaxTurns)
-		span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-
-		// Record conversation started event
-		span.AddEvent("conversation.started", map[string]interface{}{
-			"session_id":     sessionID,
-			"message_length": len(userMessage),
-		})
-	}
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+	})
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
@@ -881,9 +1433,18 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
+	}
+
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it. The user message is where the
+	// information lives — extract entities/facts before the response comes back.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(ctx, sessionID)
+		}()
 	}
 
 	// Create agent context
@@ -901,29 +1462,26 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
 
 	if err != nil {
-		if span != nil {
-			span.Status = observability.Status{
-				Code:    observability.StatusError,
-				Message: err.Error(),
-			}
-			span.SetAttribute(observability.AttrErrorMessage, err.Error())
-			span.AddEvent("conversation.failed", map[string]interface{}{
-				"error":       err.Error(),
-				"duration_ms": duration.Milliseconds(),
-			})
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
 		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
 
-		// Emit error metric
-		if a.config.EnableTracing {
-			a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
-				observability.AttrSessionID: sessionID,
-			})
-		}
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
@@ -945,88 +1503,77 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", assistantMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Record success metrics and span attributes
-	if span != nil {
-		span.Status = observability.Status{
-			Code: observability.StatusOK,
-		}
-
-		// Capture conversation metrics
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
-
-		span.SetAttribute("conversation.turns", turns)
-		span.SetAttribute("conversation.tool_executions", toolExecs)
-		span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-		span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-		span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-		span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-		span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
-		span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
-		span.SetAttribute("response.length", len(response.Content))
-		span.SetAttribute("response.preview", truncateString(response.Content, 100))
-
-		// Check if we hit limits
-		if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
-			span.SetAttribute("conversation.max_turns_hit", true)
-		}
-		if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
-			span.SetAttribute("conversation.max_executions_hit", true)
-		}
-
-		// Record completion event
-		span.AddEvent("conversation.completed", map[string]interface{}{
-			"duration_ms":     duration.Milliseconds(),
-			"turns":           turns,
-			"tool_executions": toolExecs,
-			"cost_usd":        response.Usage.CostUSD,
-			"tokens":          response.Usage.TotalTokens,
-		})
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
 	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
 
 	// Emit metrics
-	if a.config.EnableTracing {
-		a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
-			observability.AttrSessionID: sessionID,
-			"status":                    "success",
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
 
-		a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-
-		a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-	}
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
 	return response, nil
 }
@@ -1035,44 +1582,35 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 // The progressCallback will be called at key execution stages to report progress.
 // This is used by StreamWeave to provide real-time feedback to clients.
 func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error) {
-	return a.ChatWithProgressAndContext(ctx, sessionID, userMessage, nil, progressCallback)
-}
-
-// ChatWithProgressAndContext is the internal implementation that accepts a context map for variable interpolation.
-// Context variables (e.g., project_path, workspace_id) are interpolated into the system prompt using {{.variable}} syntax.
-func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string, userMessage string, requestContext map[string]interface{}, progressCallback ProgressCallback) (*Response, error) {
-	// Log context for debugging
-	zap.L().Debug("ChatWithProgressAndContext called",
-		zap.String("agent", a.config.Name),
-		zap.String("session_id", sessionID),
-		zap.Int("context_len", len(requestContext)))
-
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Start trace span if enabled
-	var span *observability.Span
-	if a.config.EnableTracing {
-		ctx, span = a.tracer.StartSpan(ctx, "agent.chat_with_progress")
-		defer a.tracer.EndSpan(span)
-		span.SetAttribute("session_id", sessionID)
-		span.SetAttribute("message_length", fmt.Sprintf("%d", len(userMessage)))
-	}
+	// Start trace span — always created; NoOpTracer handles disabled case
+	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat_with_progress")
+	defer a.tracer.EndSpan(span)
 
-	// Inject context variables into Go context BEFORE creating session
-	// This allows system prompt interpolation to access variables without deadlock
-	if requestContext != nil && len(requestContext) > 0 {
-		ctx = WithContextVariables(ctx, requestContext)
-	}
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+		"has_progress":   true,
+	})
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-
-	// Store request context in session for persistence and future access
-	if requestContext != nil && len(requestContext) > 0 {
-		// Use thread-safe method to merge context
-		sess.SetContext(requestContext)
-	}
+	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	// Add user message to history
 	userMsg := Message{
@@ -1081,7 +1619,7 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
-	sess.AddMessage(ctx, userMsg)
+	session.AddMessage(ctx, userMsg)
 
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
@@ -1090,9 +1628,17 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 			zap.String("session_id", sessionID),
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
+	}
+
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(ctx, sessionID)
+		}()
 	}
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it
@@ -1104,7 +1650,7 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 	// Create agent context with progress callback
 	agentCtx := &agentContext{
 		Context:          ctx, // Now contains progressCallback
-		session:          sess,
+		session:          session,
 		tracer:           a.tracer,
 		progressCallback: progressCallback,
 	}
@@ -1116,8 +1662,27 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
+
+	// Calculate total duration
+	duration := time.Since(startTime)
 
 	if err != nil {
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
+		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
+
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
+
 		// Emit failure event
 		if progressCallback != nil {
 			progressCallback(ProgressEvent{
@@ -1139,7 +1704,7 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}
-	sess.AddMessage(ctx, assistantMsg)
+	session.AddMessage(ctx, assistantMsg)
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
@@ -1147,18 +1712,77 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 			zap.String("session_id", sessionID),
 			zap.String("role", assistantMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
-	if err := a.memory.PersistSession(ctx, sess); err != nil {
+	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
+
+	// Record success metrics and span attributes
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
+	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
+
+	// Emit metrics
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
+
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
 	// Note: We don't emit StageCompleted here - the caller (StreamWeave) will
 	// emit it with the full result included in the progress event
@@ -1271,48 +1895,6 @@ func emitToolCompleted(ctx Context, progress int32, toolCall ToolCall, result *s
 	}
 }
 
-// emitPlanCreated sends a plan-created progress event.
-func emitPlanCreated(ctx Context, plan *loomv1.ExecutionPlan) {
-	if callback := ctx.ProgressCallback(); callback != nil {
-		callback(ProgressEvent{
-			Stage:         StageToolExecution, // Plan creation is part of tool execution stage
-			Progress:      25,                 // Early in process
-			Message:       fmt.Sprintf("Created execution plan with %d steps", len(plan.Tools)),
-			Timestamp:     time.Now(),
-			IsPlanCreated: true,
-			Plan:          plan,
-		})
-	}
-}
-
-// emitPlanApproved sends a plan-approved progress event.
-func emitPlanApproved(ctx Context, plan *loomv1.ExecutionPlan) {
-	if callback := ctx.ProgressCallback(); callback != nil {
-		callback(ProgressEvent{
-			Stage:          StageToolExecution,
-			Progress:       30,
-			Message:        fmt.Sprintf("Execution plan approved, proceeding with %d steps", len(plan.Tools)),
-			Timestamp:      time.Now(),
-			IsPlanApproved: true,
-			Plan:           plan,
-		})
-	}
-}
-
-// emitPlanRejected sends a plan-rejected progress event.
-func emitPlanRejected(ctx Context, plan *loomv1.ExecutionPlan) {
-	if callback := ctx.ProgressCallback(); callback != nil {
-		callback(ProgressEvent{
-			Stage:          StageToolExecution,
-			Progress:       0,
-			Message:        "Execution plan rejected by user",
-			Timestamp:      time.Now(),
-			IsPlanRejected: true,
-			Plan:           plan,
-		})
-	}
-}
-
 // extractHITLInfo extracts HITL request details from contact_human tool input.
 // Returns partial info even if some fields are missing (graceful degradation).
 func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
@@ -1360,17 +1942,23 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
 func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
-	// Start trace span
-	var span *observability.Span
-	if a.config.EnableTracing {
-		_, span = ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
-		defer ctx.Tracer().EndSpan(span)
-	}
+	// Start trace span — always created; NoOpTracer handles disabled case
+	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
+	defer ctx.Tracer().EndSpan(span)
 
 	session := ctx.Session()
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
+	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
+	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
+	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
+
+	// Self-healing orchestrator (Tier 1 recovery).
+	var recovery *recoveryOrchestrator
+	if a.config.EnableSelfHealing {
+		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
+	}
 
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -1391,55 +1979,112 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 	}
 
-	// Get available tools
-	tools := a.tools.ListTools()
+	// Inject graph memory context (if enabled and available).
+	a.injectGraphMemoryContext(ctx, session)
 
 	// --- Skill activation ---
+	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
+	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
+	// Format/inject). When skillDiscovery is nil we fall back to the legacy
+	// path so existing tests and configs that don't wire Discovery still
+	// behave exactly as v1.2.0 did.
 	if a.skillOrchestrator != nil && session != nil {
 		sessionID := session.ID
 		if sessionID == "" {
 			sessionID = a.id
 		}
 
-		// Get skills config (use defaults if not set)
 		skillsConfig := a.config.SkillsConfig
 		if skillsConfig == nil {
 			skillsConfig = skills.DefaultSkillsConfig()
 		}
 
 		if skillsConfig.Enabled {
-			// Match skills from user message
 			msgs := session.GetMessages()
+			// Find the most-recent user message rather than just inspecting
+			// the last entry: system prompts and context messages can be
+			// appended AFTER the user's turn (graph memory inject, ROM
+			// hydration, etc.), so msgs[len-1].Role is often "system".
+			// Mirrors the lazy-tool-disclosure walk above.
 			lastMsg := ""
-			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
-				lastMsg = msgs[len(msgs)-1].Content
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == "user" {
+					lastMsg = msgs[i].Content
+					break
+				}
 			}
 
-			if lastMsg != "" {
-				matches, matchErr := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig)
-				if matchErr == nil {
-					for _, match := range matches {
-						a.skillOrchestrator.ActivateSkill(sessionID, match.Skill, match.TriggerType, match.TriggerValue, match.Confidence)
+			// Phase B: discover candidates.
+			activatedThisTurn := map[string]*skills.Skill{}
+			activeBefore := skillNameSet(a.skillOrchestrator.GetActiveSkills(sessionID))
+			if a.skillDiscovery != nil {
+				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
+					for _, c := range candidates {
+						if c.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
+								zap.String("skill", c.Skill.Name),
+								zap.String("risk_level", c.Skill.RiskLevel))
+							continue
+						}
+						if !activeBefore[c.Skill.Name] {
+							activatedThisTurn[c.Skill.Name] = c.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
+							c.TriggerType, c.TriggerValue, c.Confidence)
+					}
+				} else {
+					zap.L().Debug("skill discovery failed; skipping activation",
+						zap.String("session", sessionID),
+						zap.Error(err))
+				}
+			} else if lastMsg != "" {
+				// Legacy path: direct MatchSkills via the orchestrator.
+				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
+					for _, m := range matches {
+						if m.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
+								zap.String("skill", m.Skill.Name),
+								zap.String("risk_level", m.Skill.RiskLevel))
+							continue
+						}
+						if !activeBefore[m.Skill.Name] {
+							activatedThisTurn[m.Skill.Name] = m.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, m.Skill,
+							m.TriggerType, m.TriggerValue, m.Confidence)
 					}
 				}
 			}
 
-			// Deactivate non-sticky skills from previous turns
-			activeSkills := a.skillOrchestrator.GetActiveSkills(sessionID)
-			for _, as := range activeSkills {
-				if !as.Skill.Sticky {
-					// Non-sticky skills only last one turn -- deactivate if they were activated before this message
-					// (Simplification; more sophisticated turn tracking could be added)
-					_ = as
+			// Phase D: emit tasks for newly-activated skills (overhaul-only).
+			if a.skillTaskEmitter != nil && len(activatedThisTurn) > 0 {
+				agentTasksEnabled := skillsConfig.EffectiveTasksEnabled()
+				boardID := skillsConfig.SkillTaskBoardID
+				if boardID == "" && a.taskBoardConfig != nil {
+					boardID = a.taskBoardConfig.DefaultBoardId
+				}
+				for name, skill := range activatedThisTurn {
+					_, err := a.skillTaskEmitter.EmitForActivation(ctx, skilltasks.EmitRequest{
+						Skill:             skill,
+						SessionID:         sessionID,
+						AgentID:           a.id,
+						BoardID:           boardID,
+						LLM:               a.llm,
+						AgentTasksEnabled: agentTasksEnabled,
+					})
+					if err != nil {
+						zap.L().Warn("skill task emission failed",
+							zap.String("skill", name),
+							zap.Error(err))
+					}
 				}
 			}
 
-			// Build combined skill prompt and inject
-			maxTokens := 1500 // default
+			// Format and inject skill prompts (existing logic).
+			maxTokens := 1500
 			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
 				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
 			}
-
 			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
 			if skillContent != "" {
 				activeNames := make([]string, 0)
@@ -1451,7 +2096,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			// Co-inject pattern refs from active skills
+			// Co-inject pattern refs from active skills (existing logic).
 			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
 				for _, ref := range as.Skill.PatternRefs {
 					if a.orchestrator != nil {
@@ -1464,8 +2109,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					}
 				}
 			}
+
+			// Enforce SkillToolConfig.required_tools across all active skills.
+			// required_tools that aren't yet registered are auto-registered
+			// from the builtin set when available; missing tools log a Warn
+			// and the skill continues without them (the LLM still has access
+			// to whatever IS registered).
+			a.enforceRequiredSkillTools(sessionID)
 		}
 	}
+
+	// Get available tools. Done AFTER the skill block so any required_tools
+	// that the skill auto-registered show up; the excluded-tools filter
+	// below removes any active skill's excluded set for this turn.
+	tools := a.tools.ListTools()
+	tools = a.applySkillExcludedTools(tools, session)
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
@@ -1493,12 +2151,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		if lastUserMessage != "" {
-			// Start pattern selection span
-			var patternSpan *observability.Span
-			if a.config.EnableTracing && a.tracer != nil {
-				_, patternSpan = a.tracer.StartSpan(ctx, "agent.pattern_selection")
-				defer a.tracer.EndSpan(patternSpan)
-			}
+			// Start pattern selection span — always created
+			_, patternSpan := a.tracer.StartSpan(ctx, "agent.pattern_selection")
+			defer a.tracer.EndSpan(patternSpan)
 
 			// Build context data
 			backendType := "meta-agent" // Default for agents without backends
@@ -1513,25 +2168,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Step 1: Classify intent
 			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
 
-			if patternSpan != nil {
-				patternSpan.SetAttribute("intent.category", string(intent))
-				patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
-			}
+			patternSpan.SetAttribute("intent.category", intent)
+			patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
 
 			// Step 2: Recommend pattern based on keyword matching and intent
 			// Always attempt pattern recommendation regardless of intent classification.
 			// RecommendPattern uses its own keyword-based search which can find relevant
-			// patterns even when the intent classifier returns IntentUnknown (e.g., for
+			// patterns even when the intent classifier returns an empty string (e.g., for
 			// meta-agent workflows or domain-specific queries not covered by the default
 			// intent classifier).
 			{
 				patternName, patternConf := a.orchestrator.RecommendPattern(lastUserMessage, intent)
 				patternConfidence = patternConf
 
-				if patternSpan != nil {
-					patternSpan.SetAttribute("pattern.name", patternName)
-					patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
-				}
+				patternSpan.SetAttribute("pattern.name", patternName)
+				patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
 
 				// Step 3: Load pattern if confidence threshold met
 				if patternName != "" && patternConf >= patternConfig.MinConfidence {
@@ -1546,22 +2197,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 							segMem.InjectPattern(formattedPattern, pattern.Name)
 
-							if patternSpan != nil {
-								tokenCount := a.tokenCounter.CountTokens(formattedPattern)
-								patternSpan.SetAttribute("pattern.tokens", tokenCount)
-								patternSpan.SetAttribute("pattern.injected", "true")
-							}
+							tokenCount := a.tokenCounter.CountTokens(formattedPattern)
+							patternSpan.SetAttribute("pattern.tokens", tokenCount)
+							patternSpan.SetAttribute("pattern.injected", "true")
 						}
 
 						// Record metrics
-						if a.config.EnableTracing && a.tracer != nil {
-							a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
-								"pattern":    patternName,
-								"intent":     string(intent),
-								"confidence": fmt.Sprintf("%.0f", patternConf*100),
-							})
-						}
-					} else if patternSpan != nil {
+						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
+							"pattern":    patternName,
+							"intent":     intent,
+							"confidence": fmt.Sprintf("%.0f", patternConf*100),
+						})
+					} else {
 						patternSpan.RecordError(fmt.Errorf("pattern load failed: %w", err))
 					}
 				}
@@ -1582,23 +2229,29 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		turnCount++
 		turnStartTime := time.Now()
 
+		// Record turn start on conversation_loop span
+		span.AddEvent("turn.started", map[string]interface{}{
+			"turn":                turnCount,
+			"tool_executions":     toolExecutionCount,
+			"max_turns":           a.config.MaxTurns,
+			"max_tool_executions": a.config.MaxToolExecutions,
+		})
+
 		// === FEATURE INTEGRATION: Token Budget Management ===
 		// Check token budget and enforce compression if needed (segmented memory only)
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 			budgetInfo := checkTokenBudget(segMem)
 
-			// Log budget status if tracing enabled
-			if a.config.EnableTracing && span != nil {
-				span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
-				span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
-				span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
-				span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
+			// Log budget status
+			span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
+			span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
+			span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
+			span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
 
-				if budgetInfo.budgetPct > 70 {
-					span.AddEvent("token_budget.warning", map[string]interface{}{
-						"usage_pct": budgetInfo.budgetPct,
-					})
-				}
+			if budgetInfo.budgetPct > 70 {
+				span.AddEvent("token_budget.warning", map[string]interface{}{
+					"usage_pct": budgetInfo.budgetPct,
+				})
 			}
 
 			// Force compression at 85% threshold
@@ -1606,10 +2259,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if err != nil {
 				return nil, fmt.Errorf("token budget enforcement failed: %w", err)
 			}
-			if compressed && a.config.EnableTracing && span != nil {
+			if compressed {
 				span.AddEvent("memory.compressed", map[string]interface{}{
 					"trigger": "budget_critical",
 				})
+			}
+
+			// After compression, if still critically over budget, attempt recovery.
+			if checkTokenBudget(segMem).budgetPct > 85 {
+				if recovery != nil {
+					budgetChecker := func() float64 { return checkTokenBudget(segMem).budgetPct }
+					recovered, _ := recovery.recoverTokenBudget(ctx, session, segMem, budgetChecker)
+					if !recovered {
+						budgetErr := fmt.Errorf("token budget critically exceeded (%.1f%%) after aggressive trim", checkTokenBudget(segMem).budgetPct)
+						return nil, recovery.buildRecoverableError("token_budget_exceeded", budgetErr, "reset_context", map[string]any{"budget_pct": checkTokenBudget(segMem).budgetPct})
+					}
+				} else {
+					return nil, fmt.Errorf("token budget critically exceeded (%.1f%%) and self-healing disabled", checkTokenBudget(segMem).budgetPct)
+				}
 			}
 		}
 
@@ -1636,18 +2303,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					messages[0].Content += combinedReminder
 				}
 
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("soft_reminder.added", map[string]interface{}{
-						"tool_count":        toolExecutionCount,
-						"turn_count":        turnCount,
-						"max_tools":         a.config.MaxToolExecutions,
-						"max_turns":         a.config.MaxTurns,
-						"tool_threshold":    int(float64(a.config.MaxToolExecutions) * 0.75),
-						"turn_threshold":    int(float64(a.config.MaxTurns) * 0.75),
-						"has_tool_reminder": toolReminder != "",
-						"has_turn_reminder": turnReminder != "",
-					})
-				}
+				span.AddEvent("soft_reminder.added", map[string]interface{}{
+					"tool_count":        toolExecutionCount,
+					"turn_count":        turnCount,
+					"max_tools":         a.config.MaxToolExecutions,
+					"max_turns":         a.config.MaxTurns,
+					"tool_threshold":    int(float64(a.config.MaxToolExecutions) * 0.75),
+					"turn_threshold":    int(float64(a.config.MaxTurns) * 0.75),
+					"has_tool_reminder": toolReminder != "",
+					"has_turn_reminder": turnReminder != "",
+				})
 			}
 		}
 
@@ -1657,8 +2322,41 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// Call LLM
 		llmResp, err := a.chatWithRetry(ctx, messages, tools)
 		if err != nil {
+			span.AddEvent("turn.llm_failed", map[string]interface{}{
+				"turn":  turnCount,
+				"error": err.Error(),
+			})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
+
+		// Record LLM response on conversation_loop span
+		llmEvent := map[string]interface{}{
+			"turn":          turnCount,
+			"stop_reason":   llmResp.StopReason,
+			"tool_calls":    len(llmResp.ToolCalls),
+			"input_tokens":  llmResp.Usage.InputTokens,
+			"output_tokens": llmResp.Usage.OutputTokens,
+			"total_tokens":  llmResp.Usage.TotalTokens,
+			"cost_usd":      llmResp.Usage.CostUSD,
+			"has_content":   llmResp.Content != "",
+		}
+		if llmResp.Thinking != "" {
+			llmEvent["has_thinking"] = true
+			llmEvent["thinking_length"] = len(llmResp.Thinking)
+			llmEvent["thinking"] = truncateString(llmResp.Thinking, 2000)
+		}
+		if llmResp.Content != "" {
+			llmEvent["response_preview"] = truncateString(llmResp.Content, 500)
+		}
+		// Include tool call names for quick scan
+		if len(llmResp.ToolCalls) > 0 {
+			toolNames := make([]string, 0, len(llmResp.ToolCalls))
+			for _, tc := range llmResp.ToolCalls {
+				toolNames = append(toolNames, tc.Name)
+			}
+			llmEvent["tool_names"] = strings.Join(toolNames, ", ")
+		}
+		span.AddEvent("turn.llm_response", llmEvent)
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
 		// Protects against the agent getting stuck in an infinite tool-call loop where
@@ -1686,24 +2384,31 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// The tool calls cannot be executed because they are incomplete.
 					exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.exhaustion", map[string]interface{}{
-							"count":              exhaustionCount,
-							"has_empty_toolcall": hasEmptyToolCall,
-							"stop_reason":        llmResp.StopReason,
-							"output_tokens":      llmResp.Usage.OutputTokens,
-							"threshold":          threshold,
-						})
-					}
+					span.AddEvent("output_token.exhaustion", map[string]interface{}{
+						"count":              exhaustionCount,
+						"has_empty_toolcall": hasEmptyToolCall,
+						"stop_reason":        llmResp.StopReason,
+						"output_tokens":      llmResp.Usage.OutputTokens,
+						"threshold":          threshold,
+					})
 
 					if err := failureTracker.checkOutputTokenCircuitBreaker(threshold); err != nil {
-						if a.config.EnableTracing && span != nil {
-							span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
-								"exhaustion_count":   exhaustionCount,
-								"has_empty_toolcall": hasEmptyToolCall,
-								"threshold":          threshold,
-							})
-							span.RecordError(err)
+						span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
+							"exhaustion_count":   exhaustionCount,
+							"has_empty_toolcall": hasEmptyToolCall,
+							"threshold":          threshold,
+						})
+						span.RecordError(err)
+
+						// Tier 1: attempt self-healing before propagating.
+						if recovery != nil {
+							if segMem, ok := session.SegmentedMem.(TrimableMemory); ok {
+								recovered, _ := recovery.recoverOutputTokenCB(ctx, session, segMem, failureTracker, threshold)
+								if recovered {
+									continue
+								}
+							}
+							return nil, recovery.buildRecoverableError("output_token_circuit_breaker", err, "rewind_and_retry", map[string]any{"threshold": threshold})
 						}
 						return nil, fmt.Errorf("output token circuit breaker: %w", err)
 					}
@@ -1714,48 +2419,124 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// prior verbose turns do not accumulate toward the CB threshold.
 					failureTracker.clearOutputTokenExhaustion()
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
-							"stop_reason":   llmResp.StopReason,
-							"output_tokens": llmResp.Usage.OutputTokens,
-						})
-					}
+					span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
+						"stop_reason":   llmResp.StopReason,
+						"output_tokens": llmResp.Usage.OutputTokens,
+					})
 
 				default:
 					// max_tokens with non-truncated tool calls: agent may still make progress
 					// on the next turn. Don't count, don't clear — let it continue.
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
-							"stop_reason":        llmResp.StopReason,
-							"tool_call_count":    len(llmResp.ToolCalls),
-							"has_empty_toolcall": hasEmptyToolCall,
-						})
-					}
+					span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
+						"stop_reason":        llmResp.StopReason,
+						"tool_call_count":    len(llmResp.ToolCalls),
+						"has_empty_toolcall": hasEmptyToolCall,
+					})
 				}
 			} else {
 				// Normal completion (end_turn, stop_sequence, etc.) — clear the counter.
 				failureTracker.clearOutputTokenExhaustion()
 
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("output_token.exhaustion_cleared", map[string]interface{}{
-						"stop_reason": llmResp.StopReason,
-					})
-				}
+				span.AddEvent("output_token.exhaustion_cleared", map[string]interface{}{
+					"stop_reason": llmResp.StopReason,
+				})
 			}
 		}
 
-		// If LLM returned text (no tool calls), we're done
+		// If LLM returned text (no tool calls), we're done — unless the response
+		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
+			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
+				// One-shot retry: nudge the LLM to produce a response.
+				emptyRetried = true
+				nudgeMsg := Message{
+					Role:      "user",
+					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
+					AgentID:   a.id,
+					Timestamp: time.Now(),
+				}
+				session.AddMessage(ctx, nudgeMsg)
+				if err := a.memory.PersistMessage(ctx, session.ID, nudgeMsg); err != nil {
+					zap.L().Warn("Failed to persist empty-response nudge",
+						zap.String("session_id", session.ID),
+						zap.Error(err))
+				}
+				continue // re-enter conversation loop for one more LLM call
+			}
+
+			content := llmResp.Content
+			if strings.TrimSpace(content) == "" {
+				// Already retried and still empty — use fallback.
+				content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+			}
+
+			// Record pattern usage for text-only responses (no tool calls).
+			// Pattern was selected and injected — track effectiveness even without tools.
+			if selectedPattern != nil && patternConfig.EnableTracking {
+				latency := time.Since(turnStartTime)
+				costUSD := 0.0
+				if llmResp.Usage.InputTokens > 0 {
+					costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
+						float64(llmResp.Usage.OutputTokens)*0.000015
+				}
+				a.orchestrator.RecordPatternUsage(
+					ctx, selectedPattern.Name, a.config.Name,
+					true, costUSD, latency, "",
+					"anthropic", "claude-sonnet-4-5",
+				)
+			}
+
+			// Record conversation completion on span
+			span.AddEvent("conversation.completed", map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"response_length": len(content),
+				"total_tokens":    llmResp.Usage.TotalTokens,
+				"cost_usd":        llmResp.Usage.CostUSD,
+			})
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
+
+			// End-of-turn hygiene check for skill-emitted tasks. Audits the
+			// active skill's tasks and either injects a fixup message and
+			// retries (REQUIRE_FIX), machine-repairs the board (AUTO_FIX), or
+			// logs and continues (WARN_ONLY). See pkg/skills/hygiene.
+			retry, outcome := a.runEndOfTurnHygiene(ctx, session, &hygieneRetries)
+			if outcome != nil {
+				hygieneLast = outcome
+			}
+			if retry {
+				// runEndOfTurnHygiene already appended the synthetic user
+				// message to the session and persisted it. Re-enter the
+				// conversation loop so the LLM sees the fixup request.
+				continue
+			}
+
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"empty_retried":   emptyRetried,
+			}
+			if hygieneLast != nil {
+				meta["hygiene_policy"] = hygieneLast.Policy.String()
+				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
+				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
+				meta["hygiene_resolved"] = hygieneLast.Resolved
+				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
+				if hygieneLast.FallthroughReason != "" {
+					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
+				}
+			}
 			return &Response{
-				Content:        llmResp.Content,
+				Content:        content,
 				Usage:          llmResp.Usage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
-				Metadata: map[string]interface{}{
-					"turns":           turnCount,
-					"tool_executions": toolExecutionCount,
-					"stop_reason":     llmResp.StopReason,
-				},
+				Metadata:       meta,
 			}, nil
 		}
 
@@ -1778,116 +2559,79 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.String("session_id", session.ID),
 				zap.String("role", assistantMsg.Role),
 				zap.Error(err))
-			if span != nil {
-				span.RecordError(err)
-			}
+			span.RecordError(err)
 		}
 
-		// Check if in PLAN permission mode - if so, create plan instead of executing
-		if len(llmResp.ToolCalls) > 0 && a.permissionChecker != nil && a.permissionChecker.InPlanMode() {
-			zap.L().Debug("In PLAN mode - creating execution plan instead of executing tools",
-				zap.String("session_id", session.ID),
-				zap.Int("tool_count", len(llmResp.ToolCalls)))
+		// Execute tool calls with per-turn cap and deduplication.
+		// MaxIterations limits how many tool calls are executed from a single
+		// LLM response. Excess calls get "turn_limit_exceeded" error results.
+		// Identical calls (same name + input) within a turn reuse the first result.
+		maxPerTurn := a.config.MaxIterations
+		if maxPerTurn <= 0 {
+			maxPerTurn = 10 // default
+		}
+		turnToolCount := 0
+		turnDedup := make(map[string]*shuttle.Result) // dedup key → result
 
-			// Initialize planner for this session
-			a.ensurePlannerForSession(session.ID)
-
-			// Get the user's query from the last user message
-			userQuery := ""
-			msgs := session.GetMessages()
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role == "user" {
-					userQuery = msgs[i].Content
-					break
-				}
+		for i, toolCall := range llmResp.ToolCalls {
+			if toolExecutionCount >= a.config.MaxToolExecutions {
+				break
 			}
 
-			// Create execution plan from tool calls
-			plan, err := a.planner.CreatePlan(userQuery, llmResp.ToolCalls, llmResp.Content)
-			if err != nil {
-				if span != nil {
-					span.RecordError(err)
-				}
-				return nil, fmt.Errorf("failed to create execution plan: %w", err)
-			}
-
-			// Emit plan created progress event
-			emitPlanCreated(ctx, plan)
-
-			// CRITICAL: Add tool_result messages for each deferred tool call
-			// This prevents conversation state corruption - LLM APIs require every tool_use
-			// to have a corresponding tool_result in the next message.
-			for _, toolCall := range llmResp.ToolCalls {
-				deferredResult := Message{
+			// Per-turn cap: skip remaining calls with an error result
+			if turnToolCount >= maxPerTurn {
+				skipMsg := Message{
 					Role:      "tool",
-					Content:   fmt.Sprintf("Tool execution deferred to execution plan %s. Please approve the plan to execute this tool.", plan.PlanId),
+					Content:   fmt.Sprintf("turn_limit_exceeded — per-turn tool call limit (%d) reached. Synthesize a response from the results you have.", maxPerTurn),
 					ToolUseID: toolCall.ID,
 					ToolResult: &shuttle.Result{
-						Success: true,
-						Data: map[string]interface{}{
-							"status":  "deferred",
-							"plan_id": plan.PlanId,
-							"message": "Tool execution deferred - pending plan approval",
+						Success: false,
+						Error: &shuttle.Error{
+							Code:    "turn_limit_exceeded",
+							Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", maxPerTurn, i+1, len(llmResp.ToolCalls)),
 						},
 					},
 					AgentID:   a.id,
 					Timestamp: time.Now(),
 				}
-				session.AddMessage(ctx, deferredResult)
-
-				// Persist the deferred result message
-				if persistErr := a.memory.PersistMessage(ctx, session.ID, deferredResult); persistErr != nil {
-					zap.L().Warn("Failed to persist deferred tool result message",
+				session.AddMessage(ctx, skipMsg)
+				if persistErr := a.memory.PersistMessage(ctx, session.ID, skipMsg); persistErr != nil {
+					zap.L().Warn("Failed to persist turn-limit skip message",
 						zap.String("session_id", session.ID),
-						zap.String("tool_call_id", toolCall.ID),
 						zap.Error(persistErr))
-					if span != nil {
-						span.RecordError(persistErr)
-					}
 				}
+				toolExecutionCount++
+				continue
 			}
 
-			// Add system message explaining the plan
-			planMsg := Message{
-				Role:    "assistant",
-				Content: fmt.Sprintf("I've created an execution plan with %d steps. Please review and approve the plan to proceed.", len(plan.Tools)),
-				AgentID: a.id,
+			// Deduplication: compute canonical key from tool name + sorted JSON input
+			dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
+			if cachedResult, ok := turnDedup[dedupKey]; ok {
+				dedupMsg := Message{
+					Role:       "tool",
+					Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
+					ToolUseID:  toolCall.ID,
+					ToolResult: cachedResult,
+					AgentID:    a.id,
+					Timestamp:  time.Now(),
+				}
+				session.AddMessage(ctx, dedupMsg)
+				if persistErr := a.memory.PersistMessage(ctx, session.ID, dedupMsg); persistErr != nil {
+					zap.L().Warn("Failed to persist dedup message",
+						zap.String("session_id", session.ID),
+						zap.Error(persistErr))
+				}
+				allToolExecutions = append(allToolExecutions, ToolExecution{
+					ToolName: toolCall.Name,
+					Input:    toolCall.Input,
+					Result:   cachedResult,
+				})
+				toolExecutionCount++
+				turnToolCount++
+				continue
 			}
-			session.AddMessage(ctx, planMsg)
 
-			// Return response with plan info (actual execution happens after approval)
-			return &Response{
-				Content: planMsg.Content,
-				Usage:   llmResp.Usage,
-				Metadata: map[string]interface{}{
-					"plan_id":         plan.PlanId,
-					"plan_status":     plan.Status.String(),
-					"tool_count":      len(plan.Tools),
-					"turns":           turnCount,
-					"tool_executions": toolExecutionCount,
-					"stop_reason":     "plan_created",
-				},
-			}, nil
-		}
-
-		// Execute tool calls (normal AUTO_ACCEPT or ASK_BEFORE mode)
-		if len(llmResp.ToolCalls) > 0 {
-			var modeName string
-			if a.permissionChecker != nil {
-				modeName = a.permissionChecker.GetMode().String()
-			} else {
-				modeName = "UNSPECIFIED"
-			}
-			zap.L().Debug("Executing tools immediately",
-				zap.String("session_id", session.ID),
-				zap.String("permission_mode", modeName),
-				zap.Int("tool_count", len(llmResp.ToolCalls)))
-		}
-
-		for _, toolCall := range llmResp.ToolCalls {
-			if toolExecutionCount >= a.config.MaxToolExecutions {
-				break
-			}
+			turnToolCount++
 			toolExecutionCount++
 
 			// Check if this is a HITL request (contact_human tool)
@@ -1896,18 +2640,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				hitlInfo := extractHITLInfo(toolCall.Input)
 
 				// Add instrumentation for HITL request
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("hitl.request_detected", map[string]interface{}{
-						"question":     hitlInfo.Question,
-						"request_type": hitlInfo.RequestType,
-						"priority":     hitlInfo.Priority,
-						"timeout":      hitlInfo.Timeout.String(),
-					})
-					span.SetAttribute("hitl.active", true)
-					span.SetAttribute("hitl.question", hitlInfo.Question)
-					span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
-					span.SetAttribute("hitl.priority", hitlInfo.Priority)
-				}
+				span.AddEvent("hitl.request_detected", map[string]interface{}{
+					"question":     hitlInfo.Question,
+					"request_type": hitlInfo.RequestType,
+					"priority":     hitlInfo.Priority,
+					"timeout":      hitlInfo.Timeout.String(),
+				})
+				span.SetAttribute("hitl.active", true)
+				span.SetAttribute("hitl.question", hitlInfo.Question)
+				span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
+				span.SetAttribute("hitl.priority", hitlInfo.Priority)
 
 				// Emit HITL-specific progress event
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
@@ -1916,18 +2658,43 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
 			}
 
-			// Execute tool with tracing
-			var toolSpan *observability.Span
-			if a.config.EnableTracing {
-				_, toolSpan = ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
-				toolSpan.SetAttribute("tool_name", toolCall.Name)
-			}
+			// Execute tool with tracing — always created
+			_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
+			toolSpan.SetAttribute("tool_name", toolCall.Name)
 
 			// Execute with self-correction (circuit breaker + SQL correction)
 			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
 
+			// Tier 1: if tool CB fired, disable tool and inject synthetic result.
+			if err != nil && strings.Contains(err.Error(), "circuit breaker open") && recovery != nil {
+				_, syntheticResult := recovery.recoverToolCB(ctx, toolCall.Name, &tools)
+				result = syntheticResult
+				err = nil
+			}
+
+			// Record tool execution on conversation_loop span
+			{
+				toolSuccess := err == nil && (result == nil || result.Success)
+				toolEvent := map[string]interface{}{
+					"turn":      turnCount,
+					"tool_name": toolCall.Name,
+					"success":   toolSuccess,
+					"index":     i + 1,
+					"total":     len(llmResp.ToolCalls),
+				}
+				if err != nil {
+					toolEvent["error"] = err.Error()
+				} else if result != nil && !result.Success && result.Error != nil {
+					toolEvent["error"] = result.Error.Message
+				}
+				if result != nil {
+					toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+				}
+				span.AddEvent("turn.tool_execution", toolEvent)
+			}
+
 			// Add instrumentation for HITL completion
-			if toolCall.Name == "contact_human" && a.config.EnableTracing && span != nil {
+			if toolCall.Name == "contact_human" {
 				if err != nil {
 					span.AddEvent("hitl.request_failed", map[string]interface{}{
 						"error": err.Error(),
@@ -1950,15 +2717,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			if a.config.EnableTracing && toolSpan != nil {
-				// Determine success: both err must be nil AND result.Success must be true
+			// Record tool execution results on span
+			{
 				success := err == nil && (result == nil || result.Success)
 
-				// Record errors from both Go error and result.Error
 				if err != nil {
 					toolSpan.RecordError(err)
 				} else if result != nil && !result.Success && result.Error != nil {
-					// MCP tools can fail without Go error - record result.Error
 					toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
 					toolSpan.SetAttribute("error.code", result.Error.Code)
 					toolSpan.SetAttribute("error.message", result.Error.Message)
@@ -1980,15 +2745,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			allToolExecutions = append(allToolExecutions, execution)
 
+			// Cache result for dedup (only cache successful results or tool errors —
+			// not Go-level errors which may be transient).
+			if result != nil {
+				turnDedup[dedupKey] = result
+			}
+
 			// Emit tool-completed progress event
 			emitToolCompleted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall, result, err)
 
 			// Persist tool execution
 			if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
 				// Log but don't fail
-				if toolSpan != nil {
-					toolSpan.RecordError(persistErr)
-				}
+				toolSpan.RecordError(persistErr)
 			}
 
 			// === FEATURE INTEGRATION: Consecutive Failure Tracking ===
@@ -2006,7 +2775,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					failureCount := failureTracker.record(toolCall.Name, toolCall.Input, errorType)
 					escalationMsg = failureTracker.getEscalationMessage(failureCount, 2)
 
-					if escalationMsg != "" && a.config.EnableTracing && span != nil {
+					if escalationMsg != "" {
 						span.AddEvent("failure.escalated", map[string]interface{}{
 							"tool":          toolCall.Name,
 							"failure_count": failureCount,
@@ -2016,11 +2785,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// Clear failures on success
 					failureTracker.clear(toolCall.Name, toolCall.Input)
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("failure.cleared", map[string]interface{}{
-							"tool": toolCall.Name,
-						})
-					}
+					span.AddEvent("failure.cleared", map[string]interface{}{
+						"tool": toolCall.Name,
+					})
 				}
 			}
 
@@ -2048,9 +2815,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					zap.String("session_id", session.ID),
 					zap.String("role", toolMsg.Role),
 					zap.Error(persistErr))
-				if toolSpan != nil {
-					toolSpan.RecordError(persistErr)
-				}
+				toolSpan.RecordError(persistErr)
 			}
 
 			// === AUTOMATIC FINDING EXTRACTION ===
@@ -2063,24 +2828,40 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					a.toolExecutionsSinceExtraction = 0
 				}
 			}
+
+			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
+			// After each tool execution, check if we should extract graph memories.
+			// Skip when the tool IS graph_memory — explicit use is higher quality.
+			if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
+				a.graphToolExecutionsSinceExtraction++
+				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
+					a.graphExtractionWG.Add(1)
+					go func() {
+						defer a.graphExtractionWG.Done()
+						a.extractGraphMemoryAsync(ctx, session.ID)
+					}()
+					a.graphToolExecutionsSinceExtraction = 0
+				}
+			}
 		}
 
 		// === PATTERN EFFECTIVENESS TRACKING ===
-		// Track pattern usage after tool execution completes
-		if selectedPattern != nil && patternConfig.EnableTracking && len(allToolExecutions) > 0 {
-			// Get the most recent tool execution for this turn
-			lastExecution := allToolExecutions[len(allToolExecutions)-1]
-
-			// Determine success based on execution result
-			success := lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
-
-			// Extract error type if failed
+		// Track pattern usage after each turn (with or without tool execution).
+		// A pattern was selected and injected into the prompt — record its effectiveness.
+		if selectedPattern != nil && patternConfig.EnableTracking {
+			// Determine success and error type from tool executions if any ran;
+			// otherwise treat a pure-LLM response as successful.
+			success := true
 			errorType := ""
-			if !success {
-				if lastExecution.Error != nil {
-					errorType = "execution_error"
-				} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
-					errorType = lastExecution.Result.Error.Code
+			if len(allToolExecutions) > 0 {
+				lastExecution := allToolExecutions[len(allToolExecutions)-1]
+				success = lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
+				if !success {
+					if lastExecution.Error != nil {
+						errorType = "execution_error"
+					} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
+						errorType = lastExecution.Result.Error.Code
+					}
 				}
 			}
 
@@ -2122,7 +2903,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
-	synthesisPrompt := "Based on all the tool executions and data you've gathered above, provide your complete response now. Follow the exact output format specified in your system instructions."
+	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
@@ -2138,9 +2919,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			zap.String("session_id", session.ID),
 			zap.String("role", synthesisMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Make final LLM call WITHOUT tools to force synthesis
@@ -2162,9 +2941,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}, nil
 	}
 
-	// Return synthesized response
+	// Return synthesized response — fall back to a brief summary if LLM returned empty
+	content := finalResp.Content
+	if strings.TrimSpace(content) == "" {
+		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+	}
+
 	return &Response{
-		Content:        finalResp.Content,
+		Content:        content,
 		Usage:          finalResp.Usage,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
@@ -2176,6 +2960,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"synthesized":     true,
 		},
 	}, nil
+}
+
+// canonicalJSON serializes a map to a deterministic JSON string for deduplication.
+// Go's encoding/json.Marshal sorts map keys, making the output canonical.
+func canonicalJSON(input map[string]interface{}) string {
+	b, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Sprintf("%v", input) // fallback
+	}
+	return string(b)
 }
 
 // contextWithValue wraps a Context to add a key-value pair while preserving the Context interface.
@@ -2374,6 +3168,341 @@ func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
 	// The tool's discovery is natural - agent sees it in tool list when needed
 }
 
+// checkAndRegisterGraphMemoryTool implements progressive disclosure for the graph_memory tool.
+// Registers the tool immediately if a graph memory store is configured and enabled.
+func (a *Agent) checkAndRegisterGraphMemoryTool() {
+	if a.tools.IsRegistered("graph_memory") {
+		return
+	}
+	if a.graphMemoryStore == nil {
+		return
+	}
+	if a.graphMemoryConfig != nil && !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	a.tools.Register(tool)
+}
+
+// graphMemoryTokenBudget returns the token budget for graph memory context injection.
+// Follows the same pattern as SegmentedMemory's L1 budget.
+func (a *Agent) graphMemoryTokenBudget() int {
+	if a.graphMemoryConfig == nil {
+		return 0
+	}
+	if a.graphMemoryConfig.MaxContextTokens > 0 {
+		return int(a.graphMemoryConfig.MaxContextTokens)
+	}
+	pct := a.graphMemoryConfig.ContextBudgetPercent
+	if pct == 0 {
+		pct = 10 // default 10%
+	}
+	if a.config.MaxContextTokens > 0 {
+		return a.config.MaxContextTokens * int(pct) / 100
+	}
+	// Default: 200K context → 10% = 20K tokens
+	return 200000 * int(pct) / 100
+}
+
+// FlushGraphMemoryExtraction blocks until all in-flight async graph memory
+// extractions have completed. Call this before querying graph memory to
+// ensure recently ingested content has been fully extracted.
+func (a *Agent) FlushGraphMemoryExtraction() {
+	a.graphExtractionWG.Wait()
+}
+
+// injectGraphMemoryContext queries graph memory for the current topic and injects
+// relevant context into the conversation as a system message.
+func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	// Wait for any in-flight extractions to finish before querying.
+	// This ensures recently ingested content is available for recall.
+	a.graphExtractionWG.Wait()
+
+	budget := a.graphMemoryTokenBudget()
+	if budget <= 0 {
+		return
+	}
+
+	// Get the last user message.
+	var userMessage string
+	msgs := session.GetMessages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && msgs[i].Content != "" {
+			userMessage = msgs[i].Content
+			break
+		}
+	}
+	if userMessage == "" {
+		return
+	}
+
+	// Use LLM to distill the user message into a search query for memory recall.
+	// "What was the first issue I had with my new car after its first service?"
+	// becomes something like "first issue with new car after first service".
+	searchQuery := a.extractSearchQuery(ctx, userMessage)
+	if searchQuery == "" {
+		return
+	}
+
+	// Gather candidate memories from multiple sources.
+	seen := make(map[string]bool)
+	var candidates []*memory.Memory
+
+	// Entity-scoped recall: search entities, get their neighborhoods.
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	if err == nil {
+		for _, e := range entities {
+			recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+				AgentID:    a.config.Name,
+				EntityName: e.Name,
+				Topic:      searchQuery,
+				MaxTokens:  budget,
+			})
+			if err == nil && recall != nil {
+				for _, sm := range recall.Memories {
+					if sm.Memory != nil && !seen[sm.Memory.ID] {
+						seen[sm.Memory.ID] = true
+						candidates = append(candidates, sm.Memory)
+					}
+				}
+			}
+		}
+	}
+
+	// Multi-hop recall via user entity: traverse 2 hops from the user node
+	// to surface memories connected through shared relationships (e.g.,
+	// user → ATTENDED → event_a, user → ATTENDED → event_b). This catches
+	// facts that keyword search misses because they use different terms.
+	candidates = append(candidates, a.multiHopRecall(ctx, seen, budget)...)
+
+	// Unscoped recall: broad FTS5 search across all memories.
+	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   a.config.Name,
+		Query:     searchQuery,
+		Limit:     50,
+		MaxTokens: budget,
+	})
+	if recallErr == nil {
+		for _, m := range memories {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				candidates = append(candidates, m)
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	relevant := a.rerankMemories(ctx, userMessage, candidates)
+	if len(relevant) == 0 {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Relevant memories from past conversations:\n\n")
+	for _, m := range relevant {
+		sb.WriteString("- ")
+		if m.EventDate != "" {
+			// Surface the absolute date first so the answering LLM can order
+			// facts lexicographically without re-resolving relative phrases
+			// embedded in content.
+			sb.WriteString("[")
+			sb.WriteString(m.EventDate)
+			sb.WriteString("] ")
+		}
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
+	}
+
+	session.AddMessage(ctx, types.Message{
+		Role:    "system",
+		Content: "[Graph Memory Context]\n" + sb.String(),
+	})
+}
+
+// multiHopRecall finds the user entity and traverses 2 hops outward to collect
+// memories from connected entities. This surfaces facts that keyword search misses —
+// e.g., "days between Holi and St. Mary's mass" requires both events, which are
+// connected through the user entity but use different vocabulary.
+func (a *Agent) multiHopRecall(ctx context.Context, seen map[string]bool, budget int) []*memory.Memory {
+	if a.graphMemoryStore == nil {
+		return nil
+	}
+
+	agentID := a.config.Name
+
+	// Find the user entity (marked with is_user:true during extraction).
+	userEntity := a.findUserEntity(ctx, agentID)
+	if userEntity == nil {
+		return nil
+	}
+
+	// Traverse 2 hops from the user entity in both directions.
+	edges, err := a.graphMemoryStore.Neighbors(ctx, userEntity.ID, "", "both", 2)
+	if err != nil || len(edges) == 0 {
+		return nil
+	}
+
+	// Collect unique neighbor entity IDs (excluding user itself).
+	neighborIDs := make(map[string]bool)
+	for _, edge := range edges {
+		if edge.SourceID != userEntity.ID {
+			neighborIDs[edge.SourceID] = true
+		}
+		if edge.TargetID != userEntity.ID {
+			neighborIDs[edge.TargetID] = true
+		}
+	}
+
+	// Recall memories scoped to these neighbor entities.
+	var entityIDs []string
+	for id := range neighborIDs {
+		entityIDs = append(entityIDs, id)
+	}
+
+	memories, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   agentID,
+		EntityIDs: entityIDs,
+		Limit:     30,
+		MaxTokens: budget,
+	})
+	if err != nil {
+		return nil
+	}
+
+	var result []*memory.Memory
+	for _, m := range memories {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+
+	return result
+}
+
+// findUserEntity locates the entity marked as the human user (is_user:true).
+// Caches the result for the agent's lifetime to avoid repeated lookups.
+func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Entity {
+	// Check person entities for is_user property.
+	entities, _, err := a.graphMemoryStore.ListEntities(ctx, agentID, "person", 20, 0)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entities {
+		if strings.Contains(e.PropertiesJSON, `"is_user":true`) ||
+			strings.Contains(e.PropertiesJSON, `"is_user": true`) {
+			return e
+		}
+	}
+	return nil
+}
+
+// rerankMemories uses the LLM to select the most relevant memories for a user message
+// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	rerankCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	// Build numbered list of candidates.
+	var sb strings.Builder
+	sb.WriteString("User message:\n")
+	sb.WriteString(userMessage)
+	if len(userMessage) > 500 {
+		sb.WriteString(userMessage[:500])
+	} else {
+		sb.WriteString(userMessage)
+	}
+	sb.WriteString("\n\nCandidate memories:\n")
+	for i, m := range candidates {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, m.Content))
+	}
+	sb.WriteString("\nReturn ONLY the numbers of memories that are relevant to the user's message, ")
+	sb.WriteString("comma-separated. Example: 1,3,7\n")
+	sb.WriteString("If none are relevant, return: none")
+
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
+		{Role: "user", Content: sb.String()},
+	}, nil)
+	if err != nil {
+		// On failure, return all candidates (no worse than before).
+		return candidates
+	}
+
+	// Parse the response — extract numbers.
+	response := strings.TrimSpace(resp.Content)
+	if strings.EqualFold(response, "none") {
+		return nil
+	}
+
+	var result []*memory.Memory
+	for _, part := range strings.Split(response, ",") {
+		part = strings.TrimSpace(part)
+		var idx int
+		if _, err := fmt.Sscanf(part, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(candidates) {
+				result = append(result, candidates[idx-1])
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		// LLM returned something we couldn't parse — fall back to all candidates.
+		return candidates
+	}
+	return result
+}
+
+// extractSearchQuery uses the LLM to distill a user message into a concise
+// search query for memory recall. Returns a natural language query like
+// "car GPS malfunction after March service" — not searchQuery, not the raw prompt.
+func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) string {
+	extractCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf(
+		"Distill this message into a concise search query for looking up relevant memories. "+
+			"Return ONLY the search query, nothing else. Strip away instructions, "+
+			"framing, and filler — just the core topic the user is asking about.\n\n"+
+			"Message: %s\n\nSearch query:", userMessage)
+
+	// Use compressor LLM if available (cheaper/faster), otherwise main LLM.
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(extractCtx, []types.Message{
+		{Role: "user", Content: prompt},
+	}, nil)
+	if err != nil {
+		return ""
+	}
+
+	query := strings.TrimSpace(resp.Content)
+	if idx := strings.IndexByte(query, '\n'); idx > 0 {
+		query = query[:idx]
+	}
+	return query
+}
+
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
 	// Handle execution errors (tool didn't run)
 	if err != nil {
@@ -2483,6 +3612,22 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				// MCP tool already handled truncation - return as-is
 				return dataStr
 			}
+		}
+
+		// Respect the configured byte-based threshold from SetSharedMemoryThreshold.
+		// The executor's handleLargeResult already checks the byte threshold and
+		// stores large results in shared memory. If the executor kept the result
+		// inline (bytes <= threshold), we must not override that decision with the
+		// hardcoded token-based check below. This ensures the admin-configured
+		// threshold (e.g. 40KB) is authoritative — not the 1000-token heuristic.
+		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
+		if a.sharedMemoryThreshold >= 0 {
+			byteThreshold = a.sharedMemoryThreshold
+		}
+		dataBytes := int64(len(dataStr))
+		if byteThreshold > 0 && dataBytes <= byteThreshold {
+			// Result fits within the configured byte threshold — keep inline
+			return dataStr
 		}
 
 		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory
@@ -2776,6 +3921,12 @@ func (a *Agent) DeleteSession(sessionID string) {
 	a.memory.DeleteSession(sessionID)
 }
 
+// ClearAllSessions removes all sessions from memory.
+// Used by the benchmark server to free memory between scenarios.
+func (a *Agent) ClearAllSessions() {
+	a.memory.ClearAll()
+}
+
 // cleanupSessionReferences releases all shared memory references for a session.
 // Called automatically when sessions are deleted (via cleanup hook).
 // This prevents reference leaks by decrementing RefCount on all pinned references.
@@ -2846,6 +3997,15 @@ func (a *Agent) GetCircuitBreakers() *fabric.CircuitBreakerManager {
 // GetOrchestrator returns the pattern orchestrator for intent classification.
 func (a *Agent) GetOrchestrator() *patterns.Orchestrator {
 	return a.orchestrator
+}
+
+// SetPatternTracker wires a PatternEffectivenessTracker into this agent's
+// orchestrator so that every pattern-guided turn records metrics to the
+// pattern_effectiveness table. Safe to call with nil (no-op).
+func (a *Agent) SetPatternTracker(tracker *learning.PatternEffectivenessTracker) {
+	if a.orchestrator != nil && tracker != nil {
+		a.orchestrator.WithTracker(tracker)
+	}
 }
 
 // GetLLMProviderName returns the name of the LLM provider (e.g., "anthropic", "bedrock", "ollama").
@@ -2991,6 +4151,21 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 	return result
 }
 
+// SetSharedMemoryThreshold configures the byte threshold for storing large tool results in shared memory.
+// -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
+func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
+	a.sharedMemoryThreshold = threshold
+}
+
+// SetMaxToolResults configures how many tool results to keep in the conversation kernel.
+// 0 = use default (5). Propagates to the memory manager for new sessions.
+func (a *Agent) SetMaxToolResults(n int) {
+	a.maxToolResults = n
+	if a.memory != nil {
+		a.memory.SetMaxToolResults(n)
+	}
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)
@@ -3004,7 +4179,11 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 
 	// Inject into tool executor
 	if a.executor != nil {
-		a.executor.SetSharedMemory(sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(sharedMemory, threshold)
 	}
 
 	// Inject into memory manager (which handles all sessions)
@@ -3099,6 +4278,30 @@ func WithCommunicationPolicy(policy *communication.PolicyManager) Option {
 	}
 }
 
+// WithGraphMemoryStore sets the graph-backed episodic memory store.
+func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMemoryConfig) Option {
+	return func(a *Agent) {
+		a.graphMemoryStore = store
+		a.graphMemoryConfig = config
+	}
+}
+
+// WithTaskBoard sets the task manager, decomposer, and config for task decomposition and kanban.
+func WithTaskBoard(manager *task.Manager, decomposer *task.Decomposer, config *loomv1.TaskBoardConfig) Option {
+	return func(a *Agent) {
+		a.taskManager = manager
+		a.taskDecomposer = decomposer
+		a.taskBoardConfig = config
+	}
+}
+
+// WithEmbedder sets the vector embedding provider for semantic memory search.
+func WithEmbedder(embedder memory.Embedder) Option {
+	return func(a *Agent) {
+		a.embedder = embedder
+	}
+}
+
 // GetProviderPool returns the named provider pool (nil if not configured).
 func (a *Agent) GetProviderPool() map[string]LLMProvider {
 	a.mu.RLock()
@@ -3159,162 +4362,4 @@ func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allo
 		return a.SetActiveProvider(active)
 	}
 	return nil
-}
-
-// SetPermissionMode updates the permission mode at runtime.
-// This updates both the permission checker and the session state.
-// Used by server to set mode from WeaveRequest.permission_mode.
-func (a *Agent) SetPermissionMode(ctx context.Context, sessionID string, mode loomv1.PermissionMode) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Log permission mode change for debugging
-	zap.L().Debug("Setting permission mode",
-		zap.String("agent", a.config.Name),
-		zap.String("session_id", sessionID),
-		zap.String("mode", mode.String()))
-
-	// Update permission checker mode
-	if a.permissionChecker != nil {
-		a.permissionChecker.SetMode(mode)
-	}
-
-	// Update session state to persist mode
-	session, exists := a.memory.GetSession(sessionID)
-	if exists && session != nil {
-		session.PermissionMode = mode
-
-		// Persist session to save permission_mode
-		if a.memory.store != nil {
-			if err := a.memory.store.SaveSession(ctx, session); err != nil {
-				return fmt.Errorf("failed to save session permission mode: %w", err)
-			}
-		}
-	}
-
-	return nil
-}
-
-// GetPermissionMode returns the current permission mode for a session.
-func (a *Agent) GetPermissionMode(sessionID string) loomv1.PermissionMode {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	session, exists := a.memory.GetSession(sessionID)
-	if exists && session != nil {
-		return session.PermissionMode
-	}
-
-	return loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED
-}
-
-// ensurePlannerForSession initializes the planner for a session if needed.
-// Planner is session-scoped since plans are tied to specific conversations.
-func (a *Agent) ensurePlannerForSession(sessionID string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Initialize planner if not already set
-	// Note: In the future, we could have per-session planners in a map
-	// For now, we use a single planner and rely on sessionID in plans
-	if a.planner == nil || a.planner.sessionID != sessionID {
-		a.planner = NewExecutionPlanner(sessionID)
-	}
-}
-
-// ApprovePlan approves or rejects an execution plan.
-// Called by server RPC when user makes approval decision.
-func (a *Agent) ApprovePlan(planID string, approved bool, feedback string) (*loomv1.ExecutionPlan, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	if a.planner == nil {
-		return nil, fmt.Errorf("no planner initialized")
-	}
-
-	return a.planner.ApprovePlan(planID, approved, feedback)
-}
-
-// GetPlan retrieves a specific execution plan by ID.
-func (a *Agent) GetPlan(planID string) (*loomv1.ExecutionPlan, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	if a.planner == nil {
-		return nil, fmt.Errorf("no planner initialized")
-	}
-
-	return a.planner.GetPlan(planID)
-}
-
-// ListPlans lists execution plans for the current session.
-func (a *Agent) ListPlans(sessionID string, statusFilter loomv1.PlanStatus) ([]*loomv1.ExecutionPlan, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	if a.planner == nil {
-		return nil, nil // No plans yet
-	}
-
-	// Verify planner is for this session
-	if a.planner.sessionID != sessionID {
-		return nil, nil // Wrong session, no plans
-	}
-
-	return a.planner.ListPlans(statusFilter), nil
-}
-
-// ExecutePlan executes an approved plan by running its tools through the agent's executor.
-// This method provides the executor function that bridges the planner and tool execution.
-func (a *Agent) ExecutePlan(ctx context.Context, planID string) (*loomv1.ExecutionPlan, error) {
-	a.mu.RLock()
-	if a.planner == nil {
-		a.mu.RUnlock()
-		return nil, fmt.Errorf("no planner initialized")
-	}
-	a.mu.RUnlock()
-
-	// Temporarily switch permission mode to AUTO_ACCEPT for plan execution
-	// The plan has already been approved by the user, so we can auto-execute tools
-	var originalMode loomv1.PermissionMode
-	if a.permissionChecker != nil {
-		originalMode = a.permissionChecker.GetMode()
-		a.permissionChecker.SetMode(loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT)
-		// Restore original mode when done
-		defer a.permissionChecker.SetMode(originalMode)
-	}
-
-	// Create executor function that uses agent's executor to run tools
-	executorFunc := func(execCtx context.Context, toolName string, params map[string]interface{}) (string, error) {
-		if a.executor == nil {
-			return "", fmt.Errorf("executor not initialized")
-		}
-
-		// Execute tool through executor
-		result, err := a.executor.Execute(execCtx, toolName, params)
-		if err != nil {
-			return "", err
-		}
-
-		// Check if execution succeeded
-		if !result.Success {
-			return "", fmt.Errorf("tool execution failed: %s", result.Error.Message)
-		}
-
-		// Convert result to string for storage in plan
-		resultJSON, err := json.Marshal(result.Data)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal tool result: %w", err)
-		}
-
-		return string(resultJSON), nil
-	}
-
-	// Execute the plan using planner's ExecutePlan
-	if err := a.planner.ExecutePlan(ctx, planID, executorFunc); err != nil {
-		return nil, err
-	}
-
-	// Return updated plan
-	return a.planner.GetPlan(planID)
 }

@@ -471,6 +471,70 @@ func TestClient_CalculateCost(t *testing.T) {
 			wantMin:      0.0012, // (1000 * 0.5 + 500 * 1.5) / 1M = 0.00125
 			wantMax:      0.0013,
 		},
+		{
+			name:         "gpt-5",
+			model:        "gpt-5",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.007, // (1000 * 2.5 + 500 * 10) / 1M = 0.0075
+			wantMax:      0.008,
+		},
+		{
+			name:         "gpt-5-mini",
+			model:        "gpt-5-mini",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.0011, // (1000 * 0.4 + 500 * 1.6) / 1M = 0.0012
+			wantMax:      0.0013,
+		},
+		{
+			name:         "gpt-4.1",
+			model:        "gpt-4.1",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.005, // (1000 * 2.0 + 500 * 8.0) / 1M = 0.006
+			wantMax:      0.007,
+		},
+		{
+			name:         "gpt-4.1-mini",
+			model:        "gpt-4.1-mini",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.0011, // (1000 * 0.4 + 500 * 1.6) / 1M = 0.0012
+			wantMax:      0.0013,
+		},
+		{
+			name:         "gpt-4.1-nano",
+			model:        "gpt-4.1-nano",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.0002, // (1000 * 0.1 + 500 * 0.4) / 1M = 0.0003
+			wantMax:      0.0004,
+		},
+		{
+			name:         "o3",
+			model:        "o3",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.029, // (1000 * 10.0 + 500 * 40.0) / 1M = 0.03
+			wantMax:      0.031,
+		},
+		{
+			name:         "o3-mini",
+			model:        "o3-mini",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.003, // (1000 * 1.1 + 500 * 4.4) / 1M = 0.0033
+			wantMax:      0.004,
+		},
+		{
+			name:         "o4-mini",
+			model:        "o4-mini",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.003, // (1000 * 1.1 + 500 * 4.4) / 1M = 0.0033
+			wantMax:      0.004,
+		},
 	}
 
 	for _, tt := range tests {

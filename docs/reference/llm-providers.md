@@ -1,10 +1,10 @@
 
 # LLM Provider Support
 
-Complete reference for all supported LLM providers and their configuration.
+Reference for all supported LLM providers and their configuration.
 
-**Version**: v1.0.0
-**Status**: 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); Google Vertex AI planned
+**Version**: v1.2.0
+**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); 📋 Google Vertex AI planned
 
 
 ## Table of Contents
@@ -13,14 +13,14 @@ Complete reference for all supported LLM providers and their configuration.
 - [Anthropic Claude](#1-anthropic-claude-recommended) - Direct API access (Production)
 - [AWS Bedrock](#2-aws-bedrock) - Enterprise AWS integration (Production)
 - [Ollama](#3-ollama-local) - Local inference (Production)
-- [OpenAI](#4-openai) - GPT-4 and o1 reasoning models (Production)
+- [OpenAI](#4-openai) - GPT-5, GPT-4.1, and o-series reasoning models (Production)
 - [Azure OpenAI](#5-azure-openai) - Microsoft Azure integration (Production)
 - [Mistral AI](#6-mistral-ai) - Open and commercial models (Production)
 - [Google Gemini](#7-google-gemini) - Google AI Studio (Production)
 - [HuggingFace](#8-huggingface) - 1M+ open-source models (Production)
 
 ### Planned Providers
-- [Google Vertex AI](#9-google-vertex-ai) - GCP integration (Planned for v1.0)
+- [Google Vertex AI](#9-google-vertex-ai) - GCP integration (Planned)
 
 ### Reference
 - [Provider Comparison](#provider-comparison) - Feature matrix and benchmarks
@@ -39,13 +39,13 @@ Complete reference for all supported LLM providers and their configuration.
 
 | Provider | Status | Tool Calling | Context | Pricing Range | Best For |
 |----------|--------|--------------|---------|---------------|----------|
-| **Anthropic Claude** | ✅ Production | Native | 200k | $3-$15/1M tokens | General production, agent tasks |
-| **AWS Bedrock** | ✅ Production | Native | 200k | $3-$15/1M tokens | AWS infrastructure, enterprise |
-| **Ollama** | ✅ Production | Prompt-based | Varies | Free (local) | Development, privacy, offline |
-| **OpenAI** | ✅ Production | Native | 128k | $0.15-$60/1M tokens | GPT-4 tasks, reasoning models |
-| **Azure OpenAI** | ✅ Production | Native | 128k | $0.15-$60/1M tokens | Microsoft infrastructure |
-| **Mistral AI** | ✅ Production | Native | 128k | $0.25-$12/1M tokens | OpenAI-compatible, MoE models |
-| **Google Gemini** | ✅ Production | Native | 1M+ | $0.30-$18/1M tokens | Long context, multimodal |
+| **Anthropic Claude** | ✅ Production | Native | 200k-1M | $1-$75/1M tokens | General production, agent tasks |
+| **AWS Bedrock** | ✅ Production | Native | 200k-1M | $1-$75/1M tokens | AWS infrastructure, enterprise |
+| **Ollama** | ✅ Production | Auto-detect (native or prompt) | Varies | Free (local) | Development, privacy, offline |
+| **OpenAI** | ✅ Production | Native | 200k-1M | $0.10-$40/1M tokens | GPT-5/4.1 tasks, reasoning models |
+| **Azure OpenAI** | ✅ Production | Native | 200k-1M | $0.40-$40/1M tokens | Microsoft infrastructure |
+| **Mistral AI** | ✅ Production | Native | 32k-256k | $0.10-$8/1M tokens | Reasoning, code models |
+| **Google Gemini** | ✅ Production | Native | 1M | $0-$10/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Production | Native | Varies | $0.20-$1.00/1M tokens | Open-source models |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
@@ -74,16 +74,17 @@ Complete reference for all supported LLM providers and their configuration.
 | **Complete Privacy** | Ollama | N/A |
 | **Cost Optimization** | Ollama (local) or HuggingFace | Mistral |
 | **Offline Work** | Ollama | N/A |
-| **Maximum Quality** | Anthropic Claude | OpenAI GPT-4 |
+| **Maximum Quality** | Anthropic Claude | OpenAI GPT-5 |
 | **Open Source Models** | HuggingFace or Ollama | N/A |
 
 
 ## Overview
 
-Loom supports multiple LLM providers for different deployment scenarios. All providers implement the same `LLMProvider` interface, enabling seamless switching through configuration changes only - no code modifications required.
+Loom supports multiple LLM providers for different deployment scenarios. All providers implement the same `LLMProvider` interface (defined at `pkg/types/types.go:183`), enabling provider switching through configuration changes only - no code modifications required.
 
 **Key Features**:
-- Unified interface across all providers
+- Unified interface across all providers (`LLMProvider` + `StreamingLLMProvider`)
+- Token streaming support on all 8 providers
 - Automatic tool calling conversion (native or fallback)
 - Cost tracking and observability
 - Secure credential management (system keyring)
@@ -94,23 +95,23 @@ Loom supports multiple LLM providers for different deployment scenarios. All pro
 
 ### 1. Anthropic Claude (Recommended)
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 The primary and recommended provider for Loom, offering the best balance of quality, tool calling support, and cost.
 
 **Why Anthropic**:
 - Native tool calling support (best agent performance)
-- Latest Claude 4.5 models with excellent reasoning
+- Latest Claude 4.6 and 4.5 models with excellent reasoning
 - Direct API access (no intermediaries)
-- 200k context window
-- Competitive pricing ($3-$15 per 1M tokens)
+- Up to 1M context window (4.6 models)
+- Competitive pricing ($1-$75 per 1M tokens)
 - Strong documentation and API stability
 
 **Configuration**:
 ```yaml
 llm:
   provider: anthropic
-  anthropic_model: claude-sonnet-4-5-20250929
+  anthropic_model: claude-sonnet-4-6  # or claude-opus-4-6, claude-sonnet-4-5-20250929
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -120,12 +121,15 @@ llm:
 - **Environment variable**: `LOOM_LLM_ANTHROPIC_API_KEY`
 - **CLI flag**: `--anthropic-key`
 
-**Available Models**:
+**Available Models** (6 models):
 | Model | Context | Input Cost | Output Cost | Best For |
 |-------|---------|------------|-------------|----------|
+| `claude-opus-4-6` | 1M | $5/1M tokens | $25/1M tokens | Most capable reasoning |
+| `claude-sonnet-4-6` | 1M | $3/1M tokens | $15/1M tokens | Balanced quality/cost |
+| `claude-opus-4-5-20251101` | 200k | $5/1M tokens | $25/1M tokens | Complex reasoning |
 | `claude-sonnet-4-5-20250929` | 200k | $3/1M tokens | $15/1M tokens | General tasks (recommended) |
-| `claude-opus-4-6` | 200k | $15/1M tokens | $75/1M tokens | Complex reasoning |
-| `claude-haiku-4-5-20251001` | 200k | $0.80/1M tokens | $4/1M tokens | Speed/cost optimization |
+| `claude-haiku-4-5-20251001` | 200k | $1/1M tokens | $5/1M tokens | Speed/cost optimization |
+| `claude-opus-4-1-20250805` | 200k | $15/1M tokens | $75/1M tokens | Legacy complex reasoning |
 
 **Tool Calling**:
 - Native support via Anthropic's tool calling API
@@ -150,7 +154,7 @@ llm:
 
 ### 2. AWS Bedrock
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 Claude models through AWS infrastructure for enterprise deployments requiring AWS ecosystem integration.
 
@@ -166,7 +170,7 @@ Claude models through AWS infrastructure for enterprise deployments requiring AW
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-6-v1:0  # or other Bedrock model IDs
   bedrock_profile: default  # Optional: AWS profile
   temperature: 1.0
   max_tokens: 4096
@@ -178,11 +182,15 @@ llm:
 - **Environment variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - **System keyring**: `looms config set-key bedrock_access_key_id`
 
-**Available Models**:
+**Available Models** (6 models):
 | Model ID | Model | Region Availability |
 |----------|-------|---------------------|
-| `anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 | us-east-1, us-west-2 |
-| `anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | All AWS regions |
+| `us.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 | us-east-1, us-west-2 |
+| `us.anthropic.claude-sonnet-4-6-v1:0` | Claude Sonnet 4.6 | us-east-1, us-west-2 |
+| `us.anthropic.claude-opus-4-5-20251101-v1:0` | Claude Opus 4.5 | us-east-1, us-west-2 |
+| `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 | us-east-1, us-west-2 |
+| `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | All AWS regions |
+| `us.anthropic.claude-opus-4-1-20250805-v1:0` | Claude Opus 4.1 | us-east-1, us-west-2 |
 
 **Tool Calling**:
 - Native support (same as Anthropic direct)
@@ -206,7 +214,7 @@ llm:
 
 ### 3. Ollama (Local)
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 Local LLM inference for development, privacy, and cost savings.
 
@@ -222,7 +230,7 @@ Local LLM inference for development, privacy, and cost savings.
 llm:
   provider: ollama
   ollama_endpoint: http://localhost:11434
-  ollama_model: qwen2.5:7b
+  ollama_model: llama3.2  # default; also supports qwen3, deepseek-r1, etc.
   temperature: 0.8
   max_tokens: 4096
   timeout_seconds: 120
@@ -230,19 +238,25 @@ llm:
 
 **Authentication**: None required (local server)
 
-**Available Models** (popular):
-| Model | Size | Context | Best For |
-|-------|------|---------|----------|
-| `qwen2.5:7b` | 7B params | 32k | General tasks (recommended) |
-| `llama3.1:8b` | 8B params | 128k | Long context |
-| `mistral:7b` | 7B params | 8k | Fast inference |
-| `qwen2.5-coder:7b` | 7B params | 32k | Code tasks |
+**Default Models** (10 models in catalog; runtime discovery replaces with locally installed models):
+| Model | Capabilities | Context | Best For |
+|-------|-------------|---------|----------|
+| `llama3.3` | text, tool-use | 128k | General tasks |
+| `llama3.2` | text, tool-use | 128k | General tasks (factory default) |
+| `llama3.2-vision` | text, vision | 128k | Multimodal |
+| `llama3.1` | text, tool-use | 128k | General tasks |
+| `qwen3` | text, tool-use, thinking | 128k | Reasoning |
+| `qwen2.5` | text, tool-use | 128k | General tasks |
+| `deepseek-r1` | text, thinking | 128k | Reasoning |
+| `deepseek-v3` | text, tool-use | 128k | General tasks |
+| `phi4` | text, tool-use | 16k | Small/fast |
+| `gemma3` | text, vision | 128k | Vision tasks |
 
 **Tool Calling**:
-- **No native support** - uses prompt-based workaround
-- Loom automatically converts tools to text descriptions
-- Agent extracts tool calls from model output
-- Works but less reliable than native tool calling
+- **Auto-detection** (default `ToolModeAuto`) probes the model via `/api/show` to check for native tool support
+- **Native mode** supported on many models (Llama 3.x, Qwen 2.5/3, Mistral, Phi 4, etc.) via Ollama v0.12.3+
+- **Prompt-based fallback** for models without native tool support
+- Can be explicitly set: `auto` (default), `native`, or `prompt`
 
 **When to Use**:
 - Development and testing
@@ -252,11 +266,10 @@ llm:
 - Prototyping agent workflows
 
 **Limitations**:
-- No native tool calling (prompt-based fallback)
+- Native tool calling depends on model support (auto-detected; prompt fallback available)
 - Requires sufficient local hardware (GPU recommended)
 - Quality varies by model size (7B << 70B)
 - Slower inference on CPU
-- Higher risk of hallucinations in tool calling
 
 **Installation**:
 ```bash
@@ -277,23 +290,23 @@ ollama serve
 
 ### 4. OpenAI
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
-Direct access to OpenAI's GPT models including GPT-4 and reasoning models (o1).
+Direct access to OpenAI's GPT and o-series reasoning models.
 
 **Why OpenAI**:
 - Native tool calling support (function calling)
-- Multiple model options (GPT-4o, GPT-4, GPT-3.5)
-- Advanced reasoning models (o1-preview, o1-mini)
-- 128k context window (GPT-4)
-- Competitive pricing ($0.15-$60 per 1M tokens)
+- Multiple model options (GPT-5, GPT-4.1 family, o-series)
+- Advanced reasoning models (o3, o3-mini, o4-mini)
+- Up to 1M context window (GPT-4.1 family)
+- Competitive pricing ($0.10-$40 per 1M tokens)
 - Mature API and ecosystem
 
 **Configuration**:
 ```yaml
 llm:
   provider: openai
-  openai_model: gpt-4o  # or gpt-4-turbo, gpt-3.5-turbo, o1-preview
+  openai_model: gpt-4.1  # or gpt-5, o3, o4-mini
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -303,14 +316,17 @@ llm:
 - **Environment variable**: `LOOM_LLM_OPENAI_API_KEY`
 - **CLI flag**: `--openai-key`
 
-**Available Models**:
+**Available Models** (8 models):
 | Model | Context | Input Cost | Output Cost | Best For |
 |-------|---------|------------|-------------|----------|
-| `gpt-4o` | 128k | $2.50/1M tokens | $10/1M tokens | General tasks (recommended) |
-| `gpt-4o-mini` | 128k | $0.15/1M tokens | $0.60/1M tokens | Cost optimization |
-| `gpt-4-turbo` | 128k | $10/1M tokens | $30/1M tokens | Complex reasoning |
-| `o1-preview` | 128k | $15/1M tokens | $60/1M tokens | Advanced reasoning |
-| `o1-mini` | 128k | $3/1M tokens | $12/1M tokens | Fast reasoning |
+| `gpt-5` | 272k | $2.50/1M tokens | $10/1M tokens | Most capable |
+| `gpt-5-mini` | 272k | $0.40/1M tokens | $1.60/1M tokens | Cost-effective GPT-5 |
+| `gpt-4.1` | 1M | $2/1M tokens | $8/1M tokens | General tasks (recommended) |
+| `gpt-4.1-mini` | 1M | $0.40/1M tokens | $1.60/1M tokens | Cost optimization |
+| `gpt-4.1-nano` | 1M | $0.10/1M tokens | $0.40/1M tokens | Cheapest OpenAI |
+| `o3` | 200k | $10/1M tokens | $40/1M tokens | Advanced reasoning |
+| `o3-mini` | 200k | $1.10/1M tokens | $4.40/1M tokens | Fast reasoning |
+| `o4-mini` | 200k | $1.10/1M tokens | $4.40/1M tokens | Latest reasoning |
 
 **Tool Calling**:
 - Native support via OpenAI's function calling API
@@ -318,14 +334,14 @@ llm:
 - Parallel tool execution supported
 
 **When to Use**:
-- GPT-4 model family preferred
+- GPT-5 or GPT-4.1 model family preferred
 - OpenAI ecosystem integration
-- Advanced reasoning models needed (o1)
+- Advanced reasoning models needed (o3, o4-mini)
 - Alternative to Claude
 
 **Limitations**:
 - Different models than Claude (different strengths)
-- Reasoning models (o1) don't support streaming
+- Reasoning models (o-series) don't support streaming
 - Cloud-based (data sent to OpenAI servers)
 
 **Detailed Guide**: [llm-openai.md](./llm-openai/)
@@ -335,9 +351,9 @@ llm:
 
 ### 5. Azure OpenAI
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
-OpenAI GPT models through Microsoft Azure infrastructure with enterprise security and comprehensive authentication options.
+OpenAI GPT models through Microsoft Azure infrastructure with enterprise security and multiple authentication options.
 
 **Why Azure OpenAI**:
 - Enterprise Microsoft integration (Azure Monitor, VNet)
@@ -352,7 +368,7 @@ OpenAI GPT models through Microsoft Azure infrastructure with enterprise securit
 llm:
   provider: azure-openai
   azure_openai_endpoint: https://myresource.openai.azure.com
-  azure_openai_deployment_id: gpt-4o-deployment
+  azure_openai_deployment_id: gpt-4-1-deployment
   # azure_openai_api_key: set via keyring (looms config set-key azure_openai_api_key)
   # OR for Entra ID: azure_openai_entra_token set via keyring
   temperature: 1.0
@@ -377,12 +393,12 @@ llm:
    - Best for: VM, App Service, AKS deployments
    - Automatic token refresh via Azure SDK
 
-**Available Models**:
-- GPT-4o ($2.50/$10 per 1M tokens)
-- GPT-4o mini ($0.15/$0.60 per 1M tokens)
-- GPT-4 Turbo ($10/$30 per 1M tokens)
-- GPT-4 ($30/$60 per 1M tokens)
-- GPT-3.5 Turbo ($0.50/$1.50 per 1M tokens)
+**Available Models** (5 models):
+- GPT-5 ($2.50/$10 per 1M tokens)
+- GPT-4.1 ($2/$8 per 1M tokens)
+- GPT-4.1 Mini ($0.40/$1.60 per 1M tokens)
+- o3 ($10/$40 per 1M tokens)
+- o4-mini ($1.10/$4.40 per 1M tokens)
 
 **Tool Calling**:
 - Native support (same as OpenAI direct)
@@ -406,15 +422,14 @@ llm:
 
 ### 6. Mistral AI
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 High-performance models from Mistral AI, including both open-source and commercial options with OpenAI-compatible API.
 
 **Why Mistral**:
 - OpenAI-compatible API (easy migration)
-- Open-source models (Apache 2.0 license)
-- Competitive pricing ($0.25-$12 per 1M tokens)
-- Mixture of Experts (MoE) architecture
+- Competitive pricing ($0.10-$8 per 1M tokens)
+- Reasoning models (Magistral) and code models (Codestral, Devstral)
 - Native function calling support
 - Strong multilingual capabilities
 
@@ -422,7 +437,7 @@ High-performance models from Mistral AI, including both open-source and commerci
 ```yaml
 llm:
   provider: mistral
-  mistral_model: mistral-large-latest  # or open-mixtral-8x7b, mistral-small-latest
+  mistral_model: mistral-large-latest  # or mistral-small-latest, codestral-latest
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -433,13 +448,15 @@ llm:
 - **CLI flag**: `--mistral-key`
 - API key from https://console.mistral.ai
 
-**Available Models**:
+**Available Models** (6 models):
 | Model | Type | Context | Input Cost | Output Cost | Best For |
 |-------|------|---------|------------|-------------|----------|
-| `mistral-large-latest` | Commercial | 128k | $3/1M tokens | $12/1M tokens | Complex tasks |
-| `mistral-small-latest` | Commercial | 128k | $0.50/1M tokens | $2/1M tokens | General tasks |
-| `open-mixtral-8x7b` | Open (Apache 2.0) | 32k | $0.25/1M tokens | $0.75/1M tokens | Cost optimization |
-| `open-mixtral-8x22b` | Open (Apache 2.0) | 64k | $1/1M tokens | $3/1M tokens | Quality + open |
+| `mistral-large-latest` | Commercial | 128k | $2/1M tokens | $6/1M tokens | Complex tasks |
+| `mistral-small-latest` | Commercial | 32k | $0.10/1M tokens | $0.30/1M tokens | General tasks |
+| `magistral-medium-latest` | Reasoning | 128k | $2/1M tokens | $8/1M tokens | Complex reasoning |
+| `magistral-small-latest` | Reasoning | 128k | $0.50/1M tokens | $1.50/1M tokens | Fast reasoning |
+| `codestral-latest` | Code | 256k | $0.30/1M tokens | $0.90/1M tokens | Code generation |
+| `devstral-medium-latest` | Code | 128k | $0.50/1M tokens | $1.50/1M tokens | Development tasks |
 
 **Tool Calling**:
 - Native support via Mistral's function calling API
@@ -448,15 +465,14 @@ llm:
 
 **When to Use**:
 - OpenAI-compatible API desired
-- Open-source models preferred
+- Code-focused tasks (Codestral, Devstral)
+- Reasoning tasks (Magistral)
 - Cost optimization with quality
 - Multilingual tasks
-- MoE architecture benefits
 
 **Limitations**:
-- Smaller context than Claude (32k-128k vs 200k)
+- Smaller context than Claude (32k-256k vs 200k-1M)
 - Less established ecosystem than OpenAI/Anthropic
-- Open models less capable than commercial equivalents
 
 **Detailed Guide**: [llm-mistral.md](./llm-mistral/)
 
@@ -465,23 +481,23 @@ llm:
 
 ### 7. Google Gemini
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 Direct access to Google's latest Gemini models via Google AI Studio with native function calling support.
 
 **Why Gemini**:
-- Latest Google AI models (Gemini 3 Pro, 2.5 Pro, 2.5 Flash)
-- Simple API key authentication
+- Google AI models (Gemini 3.x preview, 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
+- Single API key authentication (one key, no OAuth or SDK setup)
 - Native function calling support
-- Competitive pricing ($0.30-$18 per 1M tokens)
-- 1M+ token context windows (longest available)
-- Free tier available for development
+- Competitive pricing ($0-$10 per 1M tokens; Gemini 3 Flash is free during preview)
+- 1M token context windows
+- Implicit caching for cost savings
 
 **Configuration**:
 ```yaml
 llm:
   provider: gemini
-  gemini_model: gemini-3-flash-preview  # or gemini-3-pro-preview, gemini-2.5-pro, gemini-2.5-flash
+  gemini_model: gemini-3-flash-preview  # default; or gemini-3-pro-preview, gemini-2.5-pro, gemini-2.5-flash
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -492,14 +508,14 @@ llm:
 - **CLI flag**: `--gemini-key`
 - API key from https://makersuite.google.com/
 
-**Available Models**:
+**Available Models** (5 models, 3 GA + 2 preview):
 | Model | Context | Input Cost | Output Cost | Best For |
 |-------|---------|------------|-------------|----------|
-| `gemini-3-pro-preview` | 1M | $2-4/1M tokens | $12-18/1M tokens | Most intelligent |
+| `gemini-3-pro-preview` | 1M | $2-4/1M tokens | $12-18/1M tokens | Most intelligent (preview) |
 | `gemini-3-flash-preview` | 1M | Free (preview) | Free (preview) | Balanced (default) |
-| `gemini-2.5-pro` | 1M | $1.25-2.50/1M tokens | $10-15/1M tokens | Complex reasoning |
-| `gemini-2.5-flash` | 1M | $0.30/1M tokens | $2.50/1M tokens | Stable workhorse |
-| `gemini-2.5-flash-lite` | 1M | $0.10/1M tokens | $0.40/1M tokens | Fastest/cheapest |
+| `gemini-2.5-pro` | 1M | $1.25/1M tokens | $10/1M tokens | Complex reasoning (GA) |
+| `gemini-2.5-flash` | 1M | $0.30/1M tokens | $2.50/1M tokens | Stable workhorse (GA) |
+| `gemini-2.5-flash-lite` | 1M | $0.10/1M tokens | $0.40/1M tokens | Fastest/cheapest (GA) |
 
 **Tool Calling**:
 - Native support via Gemini's function calling API
@@ -509,20 +525,21 @@ llm:
 **When to Use**:
 - Very long context required (1M tokens)
 - Google ecosystem integration
-- Cost-effective quality (2.5 Flash or 3 Flash preview)
-- Free tier for development (Gemini 3 Flash preview)
+- Cost-effective quality (2.5 Flash at $0.30/1M input)
 
 **Limitations**:
 - Different API format than OpenAI (not compatible)
 - Less established ecosystem
 - API key in query parameter (not header)
 
+**Detailed Guide**: [llm-gemini.md](./llm-gemini/)
+
 **Reference**: [Google AI Studio](https://makersuite.google.com/)
 
 
 ### 8. HuggingFace
 
-**Status**: ✅ Fully Implemented (Production)
+**Status**: ✅ Implemented (Production)
 
 Direct access to 1M+ open-source models via HuggingFace Inference API with OpenAI-compatible format.
 
@@ -576,6 +593,8 @@ llm:
 - Backend provider selection automatic (not configurable)
 - Some models don't support function calling
 
+**Detailed Guide**: [llm-huggingface.md](./llm-huggingface/)
+
 **Reference**: [HuggingFace Inference API](https://huggingface.co/docs/api-inference/index)
 
 
@@ -583,7 +602,7 @@ llm:
 
 ### 9. Google Vertex AI
 
-**Status**: 📋 Planned for v1.0
+**Status**: 📋 Planned
 
 Claude and Gemini models through Google Cloud infrastructure.
 
@@ -600,7 +619,7 @@ llm:
   provider: vertex-ai
   vertex_project_id: my-project
   vertex_location: us-central1
-  vertex_model: claude-sonnet-4-5@20250929
+  vertex_model: claude-sonnet-4-6@latest
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -614,10 +633,10 @@ llm:
 **Implementation Status**:
 - Interface design: Planned
 - Authentication: Planned
-- Model support: Claude 3.5 and Gemini models planned
+- Model support: Claude 4.x and Gemini 2.5 models planned
 - Tool calling: Will support Vertex AI function calling
 
-**Target Release**: v1.0 (2025)
+**Target Release**: TBD
 
 **Reference**: [Vertex AI Documentation](https://cloud.google.com/vertex-ai)
 
@@ -629,9 +648,9 @@ llm:
 | Feature | Anthropic | Bedrock | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
 |---------|-----------|---------|--------|--------|--------------|---------|--------|-------------|-----------|
 | **Status** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
-| **Native Tool Calling** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 |
-| **Cost** | $3-$15/1M | $3-$15/1M | Free | $0.15-$60/1M | $0.15-$60/1M | $0.25-$12/1M | $0.30-$18/1M | $0.20-$1/1M | TBD |
-| **Context Window** | 200k | 200k | Varies | 128k | 128k | 128k | 1M+ | Varies | TBD |
+| **Native Tool Calling** | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 |
+| **Cost** | $1-$75/1M | $1-$75/1M | Free | $0.10-$40/1M | $0.40-$40/1M | $0.10-$8/1M | $0-$10/1M | $0.20-$1/1M | TBD |
+| **Context Window** | 200k-1M | 200k-1M | Varies | 200k-1M | 200k-1M | 32k-256k | 1M | Varies | TBD |
 | **Latency** | Medium | Low-Medium | Very Low (GPU) | Medium | Medium | Medium | Medium | Medium | TBD |
 | **Privacy** | Cloud | Cloud | 100% Local | Cloud | Cloud | Cloud | Cloud | Cloud | Cloud |
 | **Internet Required** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -642,18 +661,18 @@ llm:
 
 ### Cost Comparison
 
-Based on similar quality tiers (as of 2025):
+Based on similar quality tiers (as of 2026):
 
 | Provider | Model | Input (per 1M) | Output (per 1M) | Typical Task* |
 |----------|-------|----------------|-----------------|---------------|
-| **Anthropic** | Sonnet 4.5 | $3.00 | $15.00 | $0.018 |
-| **Bedrock** | Sonnet 4.5 | $3.00 | $15.00 | $0.018 |
-| **Ollama** | Qwen 2.5 7B | $0 | $0 | $0 |
-| **OpenAI** | GPT-4o | $2.50 | $10.00 | $0.0125 |
-| **Azure OpenAI** | GPT-4o | $2.50 | $10.00 | $0.0125 |
-| **Mistral** | Large | $3.00 | $12.00 | $0.015 |
-| **Gemini** | 2.5 Flash | $0.30 | $2.50 | $0.0025 |
-| **HuggingFace** | Llama 3.1 70B | $0.88 | $0.88 | $0.0012 |
+| **Anthropic** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
+| **Bedrock** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
+| **Ollama** | Qwen 3 | $0 | $0 | $0 |
+| **OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |
+| **Azure OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |
+| **Mistral** | Large | $2.00 | $6.00 | $0.007 |
+| **Gemini** | 2.5 Flash | $0.30 | $2.50 | $0.0027 |
+| **HuggingFace** | Llama 3.1 70B | $0.88 | $0.88 | $0.0013 |
 
 \* Typical task = 500 input tokens, 1000 output tokens
 
@@ -678,31 +697,31 @@ llm:
 
 **Anthropic**:
 ```yaml
-anthropic_model: claude-sonnet-4-5-20250929
+anthropic_model: claude-sonnet-4-6
 ```
 
 **Bedrock**:
 ```yaml
 bedrock_region: us-west-2
-bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+bedrock_model_id: us.anthropic.claude-sonnet-4-6-v1:0
 bedrock_profile: default  # Optional AWS profile
 ```
 
 **Ollama**:
 ```yaml
 ollama_endpoint: http://localhost:11434
-ollama_model: qwen2.5:7b
+ollama_model: llama3.2
 ```
 
 **OpenAI**:
 ```yaml
-openai_model: gpt-4o
+openai_model: gpt-4.1
 ```
 
 **Azure OpenAI**:
 ```yaml
 azure_openai_endpoint: https://your-resource.openai.azure.com
-azure_openai_deployment_id: gpt-4o-deployment
+azure_openai_deployment_id: gpt-4-1-deployment
 ```
 
 **Mistral**:
@@ -724,7 +743,7 @@ huggingface_model: meta-llama/Meta-Llama-3.1-70B-Instruct
 ```yaml
 vertex_project_id: your-gcp-project
 vertex_location: us-central1
-vertex_model: claude-sonnet-4-5@20250929
+vertex_model: claude-sonnet-4-6@latest
 ```
 
 
@@ -832,7 +851,7 @@ Configuration change only - no code changes needed:
 ```yaml
 llm:
   provider: anthropic
-  anthropic_model: claude-sonnet-4-5-20250929
+  anthropic_model: claude-sonnet-4-6
 ```
 
 **After** (Bedrock):
@@ -840,7 +859,7 @@ llm:
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-6-v1:0
 ```
 
 Loom automatically handles provider differences (authentication, API format, tool calling).
@@ -849,7 +868,7 @@ Loom automatically handles provider differences (authentication, API format, too
 
 Not all providers are equal:
 
-- **Ollama**: No native tool calling (uses fallback)
+- **Ollama**: Native tool calling auto-detected per model (prompt fallback for unsupported models)
 - **Azure/Vertex**: May have different rate limits
 - **OpenAI/Gemini**: Different models than Claude
 
@@ -899,13 +918,14 @@ Requests per minute (approximate):
 All providers report cost through Loom's observability layer:
 
 ```go
-// Automatic cost tracking in every LLM response
-resp.Cost = &Cost{
-    Provider: "anthropic",
-    Model: "claude-sonnet-4-5-20250929",
-    InputTokens: 500,
+// Automatic cost tracking in every LLM response (pkg/types/types.go Usage struct)
+resp.Usage = types.Usage{
+    InputTokens:  500,
     OutputTokens: 1000,
-    CostUSD: 0.018,
+    TotalTokens:  1500,
+    CostUSD:      0.0165,
+    CacheReadInputTokens:     0, // Anthropic/Gemini prompt caching
+    CacheCreationInputTokens: 0, // Anthropic cache write tokens
 }
 ```
 
@@ -929,14 +949,21 @@ Monitor token usage to optimize costs:
 
 ### For Developers Adding New Providers
 
-All LLM providers in Loom implement the `agent.LLMProvider` interface:
+All LLM providers in Loom implement the `LLMProvider` interface, and all 8 current providers also implement `StreamingLLMProvider`:
 
 ```go
-// pkg/agent/llm_provider.go
+// pkg/types/types.go:183
 type LLMProvider interface {
-    Chat(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error)
+    Chat(ctx context.Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error)
     Name() string
     Model() string
+}
+
+// pkg/types/types.go:201 - All 8 providers implement this
+type StreamingLLMProvider interface {
+    LLMProvider
+    ChatStream(ctx context.Context, messages []Message, tools []shuttle.Tool,
+        tokenCallback TokenCallback) (*LLMResponse, error)
 }
 ```
 
@@ -950,7 +977,7 @@ type LLMProvider interface {
        httpClient *http.Client
    }
 
-   func (c *<Provider>Client) Chat(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+   func (c *<Provider>Client) Chat(ctx context.Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
        // Convert Loom format to provider API format
        // Make API call
        // Convert provider response to Loom format
@@ -964,7 +991,7 @@ type LLMProvider interface {
 6. **Document**: Create `docs/reference/llm-<provider>.md` following existing structure
 
 **Reference Implementations**:
-- Simple API client: `pkg/llm/anthropic/client.go`
+- Direct API client: `pkg/llm/anthropic/client.go`
 - AWS SDK integration: `pkg/llm/bedrock/client.go`
 - HTTP-only client: `pkg/llm/ollama/client.go`
 
@@ -977,17 +1004,17 @@ type LLMProvider interface {
 
 ## Roadmap
 
-### Completed (v1.0.0-beta.2)
-- ✅ Anthropic Claude
-- ✅ AWS Bedrock
-- ✅ Ollama
-- ✅ OpenAI (GPT-4o, GPT-4, o1 reasoning)
-- ✅ Azure OpenAI (API key and Entra ID auth)
-- ✅ Mistral AI (open + commercial models)
-- ✅ Google Gemini (2.5, 3 Pro)
+### Completed (v1.2.0)
+- ✅ Anthropic Claude (Opus 4.6, Sonnet 4.6, Opus 4.5, Sonnet 4.5, Haiku 4.5, Opus 4.1)
+- ✅ AWS Bedrock (Claude 4.6, 4.5, 4.1 variants)
+- ✅ Ollama (local inference, 10 default models, native tool auto-detect)
+- ✅ OpenAI (GPT-5, GPT-4.1, o3/o4-mini reasoning)
+- ✅ Azure OpenAI (GPT-5, GPT-4.1, o3/o4-mini, API key and Entra ID auth)
+- ✅ Mistral AI (Mistral Large/Small, Magistral, Codestral, Devstral)
+- ✅ Google Gemini (3 Pro/Flash preview, 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
 - ✅ HuggingFace Inference API
 
-### Planned (v1.0)
+### Planned
 - 📋 Google Vertex AI integration
 - 📋 Provider fallback/failover
 - 📋 Multi-provider load balancing
@@ -1009,5 +1036,7 @@ type LLMProvider interface {
 - [OpenAI Integration](./llm-openai/) - GPT models
 - [Azure OpenAI Integration](./llm-azure-openai/) - GPT via Azure
 - [Mistral AI Integration](./llm-mistral/) - Mistral models
+- [Google Gemini Integration](./llm-gemini/) - Gemini models
+- [HuggingFace Integration](./llm-huggingface/) - Open-source models
 - [Agent Configuration](./agent-configuration/) - Agent YAML spec
 - [Observability Guide](../guides/integration/observability/) - Hawk integration

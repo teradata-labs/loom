@@ -20,6 +20,9 @@ teradata_function: SQL_CASE_STATEMENTS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - ETL pipeline validation (catch errors before load)
   - API input validation (reject invalid requests)
@@ -749,7 +752,7 @@ best_practices: |
   - **Kernel Layer**: Cache reference data (valid codes, lookup tables) and validation rules for the session
   - **L1 Cache**: Keep recent validation results (last 5-10 tables) for cross-table consistency checks
   - **L2 Compressed**: Archive validation summaries from earlier in the conversation
-  - **Swap Layer**: Store complete validation history for long-running data quality initiatives; use recall_conversation to reference baseline quality metrics from weeks/months ago
+  - **Swap Layer**: Store complete validation history for long-running data quality initiatives; use conversation_memory to reference baseline quality metrics from weeks/months ago
   This approach reduces database queries for reference data and enables trend analysis across long timeframes.
 # === BEST_PRACTICES END ===
 

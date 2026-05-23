@@ -7,61 +7,94 @@ package visualization
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"go.uber.org/zap"
 )
 
-// StyleGuideClient fetches styling from Hawk StyleGuide service
+// ErrStyleGuideRemoteNotImplemented is returned when a non-empty StyleGuide
+// endpoint is configured but the remote gRPC client is not implemented yet.
+var ErrStyleGuideRemoteNotImplemented = errors.New("styleguide: remote fetch not implemented")
+
+// StyleGuideClient fetches styling from Hawk StyleGuide service.
 type StyleGuideClient struct {
 	endpoint string
+	logger   *zap.Logger
 	// In future: gRPC client to Hawk StyleGuide service
 }
 
-// NewStyleGuideClient creates a new StyleGuide client
+// NewStyleGuideClient creates a new StyleGuide client. It uses the global
+// [zap.Logger] for any fallback warnings; call [StyleGuideClient.WithLogger]
+// to inject a specific logger.
 func NewStyleGuideClient(endpoint string) *StyleGuideClient {
 	return &StyleGuideClient{
 		endpoint: endpoint,
+		logger:   zap.L(),
 	}
 }
 
-// FetchStyle retrieves the current style configuration from Hawk
-// TODO: Implement gRPC client to Hawk StyleGuide service
+// WithLogger sets the structured logger used by [StyleGuideClient.FetchStyleWithFallback].
+// A nil logger is replaced by [zap.NewNop] so the client never panics on write.
+// The receiver is returned for chaining.
+func (sgc *StyleGuideClient) WithLogger(logger *zap.Logger) *StyleGuideClient {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	sgc.logger = logger
+	return sgc
+}
+
+// FetchStyle retrieves the current style configuration from Hawk.
+// It respects ctx cancellation: if ctx is done, it returns ctx.Err().
+// An empty endpoint returns default styling without calling the network.
+// A non-empty endpoint returns [ErrStyleGuideRemoteNotImplemented] until the
+// gRPC client exists. The theme argument is reserved for the future RPC; it is
+// not used until that client is implemented.
 func (sgc *StyleGuideClient) FetchStyle(ctx context.Context, theme string) (*StyleConfig, error) {
-	// For now, return default Hawk styling
-	// In future, this will make gRPC call to Hawk StyleGuide service
-	// to fetch current design tokens, color palettes, fonts, etc.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if sgc.endpoint == "" {
-		// No endpoint configured, use defaults
 		return DefaultStyleConfig(), nil
 	}
 
-	// TODO: Implement gRPC call
-	// Example:
-	// conn, err := grpc.Dial(sgc.endpoint, grpc.WithInsecure())
+	_ = theme // Used by future gRPC GetStyle(theme).
+
+	// TODO: Implement gRPC call, for example (local dev only — use TLS creds in production):
+	// conn, err := grpc.NewClient(sgc.endpoint,
+	//     grpc.WithTransportCredentials(insecure.NewCredentials()))
 	// if err != nil {
-	//     return nil, fmt.Errorf("failed to connect to StyleGuide service: %w", err)
+	//     return nil, fmt.Errorf("styleguide dial: %w", err)
 	// }
 	// defer conn.Close()
 	//
 	// client := styleguide.NewStyleGuideServiceClient(conn)
 	// resp, err := client.GetStyle(ctx, &styleguide.GetStyleRequest{Theme: theme})
-	// if err != nil {
-	//     return nil, fmt.Errorf("failed to fetch style: %w", err)
-	// }
-	//
-	// return convertProtoToStyleConfig(resp.Style), nil
+	// ...
 
-	// For now, return default config
-	return DefaultStyleConfig(), nil
+	return nil, fmt.Errorf("%w: endpoint is set but remote client is not implemented", ErrStyleGuideRemoteNotImplemented)
 }
 
-// FetchStyleWithFallback attempts to fetch from Hawk, falls back to defaults on error
+// FetchStyleWithFallback calls [StyleGuideClient.FetchStyle] and returns [DefaultStyleConfig]
+// on any error, including context cancellation, [ErrStyleGuideRemoteNotImplemented] when the
+// endpoint is non-empty but the remote client is not implemented yet, and future RPC failures.
+// It logs the error with the configured [zap.Logger] (see [StyleGuideClient.WithLogger]).
+// Callers that need to detect misconfiguration, respect cancellation, or surface errors to
+// users should use FetchStyle instead.
 func (sgc *StyleGuideClient) FetchStyleWithFallback(ctx context.Context, theme string) *StyleConfig {
 	style, err := sgc.FetchStyle(ctx, theme)
 	if err != nil {
-		// Log error and return defaults
-		// In production, would use proper logger
-		fmt.Printf("Warning: Failed to fetch style from Hawk, using defaults: %v\n", err)
+		logger := sgc.logger
+		if logger == nil {
+			logger = zap.L()
+		}
+		logger.Warn("visualization: style fetch failed, using defaults",
+			zap.String("endpoint", sgc.endpoint),
+			zap.String("theme", theme),
+			zap.Error(err),
+		)
 		return DefaultStyleConfig()
 	}
 	return style

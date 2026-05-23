@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"charm.land/lipgloss/v2"
 )
 
@@ -52,9 +54,7 @@ func TestNewStyles(t *testing.T) {
 	theme := DefaultTheme
 	styles := NewStyles(theme)
 
-	if styles == nil {
-		t.Fatal("NewStyles should not return nil")
-	}
+	require.NotNil(t, styles, "NewStyles should not return nil")
 
 	// Check theme is set
 	if styles.Theme.Primary != theme.Primary {
@@ -82,9 +82,7 @@ func TestNewStyles(t *testing.T) {
 func TestDefaultStyles(t *testing.T) {
 	styles := DefaultStyles()
 
-	if styles == nil {
-		t.Fatal("DefaultStyles should not return nil")
-	}
+	require.NotNil(t, styles, "DefaultStyles should not return nil")
 
 	// Should use DefaultTheme
 	if styles.Theme.Primary != DefaultTheme.Primary {

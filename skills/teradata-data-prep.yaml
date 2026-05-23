@@ -1,0 +1,172 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: teradata-data-prep
+  title: Teradata Data Preparation
+  description: Data preparation and feature engineering workflow using native Teradata Fit/Transform functions — scaling, encoding, binning, and combining transforms
+  version: "1.0.0"
+  domain: teradata
+  author: loom
+  labels:
+    category: database
+    backend: teradata
+trigger:
+  slash_commands:
+    - /td-prep
+    - /td-features
+  keywords:
+    - feature engineering
+    - normalize
+    - encode
+    - scale
+    - bin
+    - transform
+    - one-hot
+    - ordinal
+    - standardize
+    - impute
+  intent_categories:
+    - data_engineering
+    - analytics
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Guide the user through data preparation and feature engineering using native Teradata
+    Vantage Fit/Transform functions. All operations run in-database across all AMPs.
+
+    ## The Fit/Transform Architecture
+
+    Every Teradata data preparation function follows a two-phase pattern:
+
+    **Fit phase** — learns parameters from training data and saves them to a FitTable:
+    - TD_ScaleFit learns mean/stddev (or min/max) per column
+    - TD_BinCodeFit learns bin boundaries
+    - TD_OneHotEncodingFit learns category-to-column mappings
+    - The FitTable is a regular Teradata table you can inspect and reuse
+
+    **Transform phase** — applies learned parameters to any dataset:
+    - TD_ScaleTransform applies the scaling using the saved FitTable
+    - Works on training data, test data, or new production data identically
+    - Guarantees consistency: same transformation applied everywhere
+
+    This separation prevents data leakage. Fit on training data only. Transform everything.
+
+    ## When to Use Each Technique
+
+    ### Scaling (TD_ScaleFit / TD_ScaleTransform)
+    **When:** Required for distance-based models (KNN, SVM, KMeans). Optional for tree-based
+    models (XGBoost, DecisionForest) but can still help convergence.
+
+    Methods:
+    - StandardScale (Z-score): centers at 0, unit variance. Default choice.
+    - MinMax: scales to [0,1] range. Use when you need bounded values.
+    - MaxAbsScale: scales by max absolute value. Preserves sparsity.
+
+    ### Encoding Categorical Data
+    **When:** ML models require numeric inputs. Choose encoding by cardinality and task.
+
+    - TD_OneHotEncodingFit/Transform: for nominal categoricals with LOW cardinality (<20 values).
+      Creates binary columns. Can explode dimensionality if cardinality is high.
+    - TD_OrdinalEncodingFit/Transform: for ordinal categoricals (e.g., low/medium/high) or
+      as a compact encoding for high-cardinality columns in tree-based models.
+    - TD_TargetEncodingFit/Transform: for high-cardinality categoricals in supervised learning.
+      Encodes each category as the mean of the target variable. Powerful but must Fit on
+      training data only to avoid leakage.
+
+    ### Binning (TD_BinCodeFit / TD_BinCodeTransform)
+    **When:** Discretize continuous features to reduce noise, handle non-linear relationships,
+    or create interpretable categories (e.g., age groups, income brackets).
+
+    Methods:
+    - EqualWidth: bins of equal range. Simple but sensitive to outliers.
+    - EqualFrequency (quantile): bins with equal number of observations. Handles skew.
+    - Custom: specify your own boundaries.
+
+    ### Polynomial Features (TD_PolynomialFeaturesFit / TD_PolynomialFeaturesTransform)
+    **When:** Create interaction terms and polynomial features for linear models that need
+    to capture non-linear relationships. Degree 2 is typical; degree 3+ risks overfitting.
+
+    ### SMOTE Oversampling (TD_SMOTE)
+    **When:** Class imbalance in classification tasks. Apply ONLY to training data AFTER
+    train/test split. Never SMOTE the test set.
+
+    ### Non-Linear Transforms (TD_FunctionFit / TD_FunctionTransform)
+    **When:** Apply log, sqrt, or other mathematical transforms to skewed features.
+
+    ### Row Normalization (TD_RowNormalizeFit / TD_RowNormalizeTransform)
+    **When:** Normalize across rows instead of columns (e.g., for text frequency vectors
+    or compositional data where row totals matter).
+
+    ## Order of Operations
+
+    Recommended sequence for feature engineering:
+    1. Handle missing values (TD_SimpleImputeFit/Transform)
+    2. Handle outliers (TD_OutlierFilterFit/Transform)
+    3. Encode categoricals (OneHot, Ordinal, or TargetEncoding)
+    4. Scale numeric features (TD_ScaleFit/Transform)
+    5. Create polynomial/interaction features if needed
+    6. Apply TD_SMOTE if class imbalance (training set only)
+
+    ## TD_ColumnTransformer — Combine Everything
+
+    TD_ColumnTransformer applies multiple saved FitTables in a single pass:
+
+    ```sql
+    SELECT * FROM TD_ColumnTransformer(
+        ON input_data AS InputTable
+        ON scale_fit AS ScaleFitTable DIMENSION
+        ON encode_fit AS OneHotEncodingFitTable DIMENSION
+        ON bin_fit AS BinCodeFitTable DIMENSION
+    ) AS t;
+    ```
+
+    This is the recommended way to apply all transforms together, especially in
+    production scoring pipelines (wrap in a CTE, feed into Predict function).
+
+    ## Vector Normalization (TD_VectorNormalize)
+    For normalizing embedding vectors before similarity search:
+    - Approach('UNITVECTOR'): L2 normalization (unit length). Required for cosine similarity.
+    - This is a standalone function, not part of the Fit/Transform pattern.
+  constraints:
+    - Always Fit on training data only — never Fit on test or full dataset (data leakage)
+    - Always use TD_ColumnTransformer when applying multiple transforms in production
+    - Apply TD_SMOTE to training data only — never resample the test set
+    - Filter input data before passing to Fit functions — push predicates into subqueries
+    - Persist FitTables for reuse — they are the key to reproducible pipelines
+    - Use EXPLAIN before running Fit operations on large tables
+  output_format: |
+    ## Data Preparation Plan
+    **Input**: [table/data description]
+    **Transforms needed**: [list of Fit/Transform pairs]
+
+    ### Step-by-step SQL
+    ```sql
+    -- 1. Fit phase (run once on training data)
+    -- 2. Transform phase (apply to any dataset)
+    -- 3. Combined via TD_ColumnTransformer
+    ```
+
+    ### Notes
+    [Why each transform was chosen, order of operations rationale]
+  examples:
+    - user_input: "Prepare my customer data for a KMeans clustering model"
+      expected_output: "Scale all numeric features with TD_ScaleFit(StandardScale) since KMeans is distance-based. Encode categoricals with TD_OrdinalEncodingFit. Combine with TD_ColumnTransformer."
+      explanation: "KMeans requires scaled features; ordinal encoding is compact for clustering"
+    - user_input: "My target column has 95% class 0 and 5% class 1"
+      expected_output: "After TD_TrainTestSplit, apply TD_SMOTE to the training set to rebalance. Evaluate on the original test set."
+      explanation: "SMOTE must only be applied to training data to avoid leaking synthetic examples into evaluation"
+tools:
+  required_tools: []
+  preferred_order:
+    - execute_sql
+    - explain_query
+    - get_syntax_help
+  excluded_tools: []
+  mcp_servers: []
+pattern_refs:
+  - teradata-data-prep
+skill_refs: []
+max_prompt_tokens: 0
+sticky: false
+backend: teradata

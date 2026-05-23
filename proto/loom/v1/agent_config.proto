@@ -8,6 +8,7 @@ syntax = "proto3";
 package loom.v1;
 
 import "loom/v1/skill.proto";
+import "loom/v1/task.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
@@ -246,6 +247,103 @@ message MemoryConfig {
 
   // Memory compression configuration (conversation history compression)
   MemoryCompressionConfig memory_compression = 5;
+
+  // Shared memory threshold in bytes for large tool results.
+  // 0 = always reference (default), -1 = never reference (inline everything), >0 = reference only if result exceeds N bytes.
+  int64 shared_memory_threshold_bytes = 6;
+
+  // Maximum number of tool results to keep in the conversation kernel.
+  // 0 = use default (5). Higher values give the LLM more context from recent tool calls.
+  int32 max_tool_results = 7;
+
+  // Graph memory configuration for salience-driven episodic memory.
+  GraphMemoryConfig graph_memory = 8;
+
+  // Task board configuration for dependency-aware task decomposition and kanban.
+  TaskBoardConfig task_board = 9;
+}
+
+// GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer.
+message GraphMemoryConfig {
+  // Whether graph memory is enabled.
+  bool enabled = 1;
+
+  // Memory budget as percentage of max context window (0-100).
+  // Default: 10 (10% of context). For 200K context -> 20K tokens.
+  // Set to 0 to use max_context_tokens instead.
+  int32 context_budget_percent = 2;
+
+  // Fixed token budget (overrides context_budget_percent if > 0).
+  // Default: 0 (use percentage-based budget).
+  int32 max_context_tokens = 3;
+
+  // Salience decay rate per day. Default: 0.995.
+  // 0.995^138 ~ 0.5 (half-life ~138 days).
+  float decay_rate = 4;
+
+  // Salience boost per access. Default: 0.05.
+  float boost_amount = 5;
+
+  // Minimum salience for recall. Default: 0.1.
+  float min_salience_threshold = 6;
+
+  // Max memories to consider during recall. Default: 50.
+  int32 max_recall_candidates = 7;
+
+  // Default salience for new memories. Default: 0.5.
+  float default_salience = 8;
+
+  // Enable automatic memory extraction from conversation context.
+  // When enabled, an LLM subprocess periodically extracts entities,
+  // relationships, and memories from recent conversation turns.
+  // Default: true (when graph memory is enabled).
+  bool enable_extraction = 9;
+
+  // Number of tool executions between automatic graph memory extractions.
+  // Default: 5.
+  int32 extraction_cadence = 10;
+
+  // Maximum entities to extract per extraction cycle.
+  // Default: 10.
+  int32 max_entities_per_extraction = 11;
+
+  // Number of conversation turns (LLM responses) between automatic extractions.
+  // Fires independently of extraction_cadence (tool-based).
+  // 0 = disabled (default). Set to 1 to extract after every LLM turn.
+  // Useful for conversational agents that build memory without tool use.
+  int32 conversation_extraction_cadence = 12;
+
+  // Timeout in seconds for each extraction LLM call.
+  // Default: 30. Set higher for slower providers or larger context windows.
+  int32 extraction_timeout_seconds = 13;
+
+  // Number of recent messages to include in each extraction window.
+  // Default: 0 (auto = extraction_cadence * 3, minimum 15).
+  // Set higher to give the extractor more conversational context per cycle.
+  // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
+  int32 extraction_window_messages = 14;
+}
+
+// TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
+message TaskBoardConfig {
+  // Whether the task board is enabled. Default: false (opt-in).
+  bool enabled = 1;
+
+  // Automatically decompose complex goals into task DAGs.
+  bool auto_decompose = 2;
+
+  // Maximum decomposition depth (default: 3).
+  int32 max_depth = 3;
+
+  // Default board ID. If empty, the agent creates/uses a board named after itself.
+  string default_board_id = 4;
+
+  // Default decomposition strategy.
+  DecomposeStrategy default_strategy = 5;
+
+  // Maximum tokens for the task context block injected into the system prompt.
+  // Default: 500. Set to 0 to disable context injection.
+  int32 context_budget_tokens = 6;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

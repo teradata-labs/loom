@@ -26,6 +26,7 @@ import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
 import "loom/v1/storage.proto";
+import "loom/v1/templates.proto";
 import "loom/v1/tools.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
@@ -621,6 +622,30 @@ service LoomService {
       body: "*"
     };
   }
+
+  // Templates & Presets — the scaffolding registries the weaver uses to
+  // create agents and workflows from curated bundles. See
+  // proto/loom/v1/templates.proto for the registry shape.
+
+  // ListAgentPresets returns the set of preconfigured single-agent presets.
+  rpc ListAgentPresets(ListAgentPresetsRequest) returns (ListAgentPresetsResponse) {
+    option (google.api.http) = {get: "/v1/presets/agents"};
+  }
+
+  // ListWorkflowTemplates returns the set of preconfigured workflow templates.
+  rpc ListWorkflowTemplates(ListWorkflowTemplatesRequest) returns (ListWorkflowTemplatesResponse) {
+    option (google.api.http) = {get: "/v1/templates/workflows"};
+  }
+
+  // CreateWorkflowFromTemplate instantiates a template: creates each agent
+  // in the template (reusing by name where possible), then creates a
+  // workflow that composes them under the template's pattern.
+  rpc CreateWorkflowFromTemplate(CreateWorkflowFromTemplateRequest) returns (CreateWorkflowFromTemplateResponse) {
+    option (google.api.http) = {
+      post: "/v1/templates/workflows:apply"
+      body: "*"
+    };
+  }
 }
 
 // AdminService provides administrative operations that bypass RLS.
@@ -688,10 +713,15 @@ message WeaveRequest {
   // Agent ID to route request to (optional, uses default if not specified)
   string agent_id = 9;
 
-  // Permission mode for this request/session (optional)
-  // If not set, uses agent's default configuration
-  // Allows Canvas AI and other clients to switch modes dynamically
-  PermissionMode permission_mode = 10;
+  // Clear context window before processing this message.
+  // When true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)
+  // before the query is processed, giving a fresh context window.
+  bool reset_context = 10;
+
+  // Permission mode for this request/session (optional).
+  // When unspecified, uses the agent's configured default.
+  // Allows clients to switch modes dynamically per request.
+  PermissionMode permission_mode = 11;
 }
 
 // WeaveResponse contains the execution result.
@@ -719,6 +749,9 @@ message WeaveResponse {
 
   // Agent ID that handled this request
   string agent_id = 8;
+
+  // Context window state after this response
+  ContextState context_state = 9;
 }
 
 // WeaveProgress streams incremental updates during execution.
@@ -786,19 +819,22 @@ message WeaveProgress {
   // Unique identifier correlating started/completed events for the same tool call
   string tool_call_id = 20;
 
+  // Context window state (included in completion event)
+  ContextState context_state = 21;
+
   // Plan-related fields (for PERMISSION_MODE_PLAN)
 
   // True if this is a plan-created event
-  bool is_plan_created = 21;
+  bool is_plan_created = 22;
 
   // True if this is a plan-approved event
-  bool is_plan_approved = 22;
+  bool is_plan_approved = 23;
 
   // True if this is a plan-rejected event
-  bool is_plan_rejected = 23;
+  bool is_plan_rejected = 24;
 
   // Execution plan (populated when is_plan_created/approved/rejected)
-  ExecutionPlan plan = 24;
+  ExecutionPlan plan = 25;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
@@ -996,6 +1032,26 @@ message LLMCost {
 
   // Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
   int32 cache_creation_input_tokens = 8;
+}
+
+// ContextState reports the agent's memory and context window state after a response.
+// This is a per-session cumulative view (how full is the window, what's loaded),
+// distinct from ExecutionMetadata which is per-turn (tokens, cost, duration).
+message ContextState {
+  // Active pattern name (empty if none)
+  string active_pattern = 1;
+
+  // Context tokens currently used
+  int64 context_tokens_used = 2;
+
+  // Context token budget (max context window)
+  int64 context_tokens_max = 3;
+
+  // ROM identifier loaded (empty if none)
+  string rom = 4;
+
+  // Tool names currently registered on the agent
+  repeated string tools_loaded = 5;
 }
 
 // ExecutionMetadata contains execution metadata.
@@ -2219,6 +2275,9 @@ message ScheduleExecution {
 
   // Duration in milliseconds
   int64 duration_ms = 6;
+
+  // Workflow ID used for this execution
+  string workflow_id = 7;
 }
 
 // Server Management Messages
@@ -2382,6 +2441,15 @@ message ModelInfo {
 
   // Whether model is currently available
   bool available = 8;
+
+  // Maximum output tokens supported by this model
+  int32 max_output_tokens = 9;
+
+  // Whether this model supports extended thinking / reasoning
+  bool is_reasoning = 10;
+
+  // Whether this model should appear in UI dropdowns (false = API-only or deprecated)
+  bool show_in_dropdown = 11;
 }
 
 // Tool Permission Messages

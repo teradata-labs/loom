@@ -53,6 +53,3 @@ ALTER POLICY human_requests_tenant_isolation ON human_requests
     WITH CHECK (agent_id = current_setting('app.current_tenant_id', true)
                 OR current_setting('app.current_tenant_id', true) = ''
                 OR current_setting('app.current_tenant_id', true) IS NULL);
-
-INSERT INTO schema_migrations (version, description) VALUES (5, 'rls with check clauses')
-ON CONFLICT (version) DO NOTHING;

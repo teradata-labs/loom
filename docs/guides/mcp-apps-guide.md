@@ -2,7 +2,7 @@
 
 Create interactive dashboards and visualizations from agent conversations or MCP tool calls.
 
-**Status**: ✅ Implemented (v1.1.0)
+**Status**: ✅ Implemented (v1.2.0)
 
 ## Table of Contents
 
@@ -24,11 +24,11 @@ Create interactive dashboards and visualizations from agent conversations or MCP
 
 ## Overview
 
-MCP Apps let you create standalone HTML dashboards from a declarative JSON spec. You describe what you want (stat cards, charts, tables, etc.), and Loom compiles it into a self-contained HTML page with the Tokyonight Dark theme.
+MCP Apps let you create standalone HTML dashboards from a declarative JSON spec. You describe what you want (stat cards, charts, tables, etc.), and Loom compiles it into a single HTML page with the Tokyonight Dark theme. CSS and core JavaScript are embedded inline; Chart.js is loaded from CDN on demand when chart components are used.
 
 Apps can be created from three surfaces:
 - **Claude Code / Cursor**: via MCP tools (`loom_create_app`)
-- **Loom agents**: via auto-registered tools (`create_ui_app`)
+- **Loom agents**: via lazily injected tools (`create_ui_app`) — tools appear when the agent detects UI intent keywords in the user message (e.g., "dashboard", "chart", "create app")
 - **gRPC/HTTP API**: via `CreateUIApp` RPC
 
 All apps are served at `http://localhost:5006/apps/<name>` and as MCP resources at `ui://loom/<name>`.
@@ -37,7 +37,7 @@ All apps are served at `http://localhost:5006/apps/<name>` and as MCP resources 
 
 - Loom server running (`looms serve`)
 - For MCP tool access: `loom-mcp` bridge configured in your MCP client
-- For agent access: any Loom agent (tools are auto-registered)
+- For agent access: any Loom agent (tools are lazily injected when a UI intent is detected in the user message)
 
 ## Quick Start
 
@@ -392,4 +392,4 @@ MCP apps are served as `text/html` MCP resources. Claude Desktop renders them in
 
 - [MCP Apps Reference](../reference/mcp-apps.md) — full component catalog with all props and examples
 - [MCP Apps Architecture](../architecture/mcp-apps.md) — compiler pipeline and security model
-- [MCP Integration](../../README.md) — connecting MCP servers to Loom
+- [Loom Overview](../../README.md) — project overview and getting started

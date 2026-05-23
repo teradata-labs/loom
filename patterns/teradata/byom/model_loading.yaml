@@ -1,0 +1,511 @@
+# === METADATA START ===
+name: model_loading
+title: "BYOM Model Loading"
+description: |
+  Load externally trained ML models into Teradata Vantage for in-database scoring.
+  BYOM (Bring Your Own Model) stores models as BLOBs in standard tables — no data
+  leaves the platform; the model comes to the data.
+
+  Supported model formats:
+  - PMML (.pmml) — no license required
+  - H2O MOJO (pipeline.mojo) — open source: no license; DAI: requires H2O DAI license
+  - ONNX (.onnx) — no license required; scoring models do not need a tokenizer table
+  - Dataiku (.jar thin JAR) — no license required
+  - DataRobot (.jar scoring code) — requires DataRobot account
+  - MLeap (bundle zip) — no license required
+
+  All formats share the same base table schema: model_id VARCHAR + model BLOB.
+  This pattern covers table creation, model file loading, and format-specific setup.
+
+category: byom
+difficulty: advanced
+teradata_function: BYOM Model Loading
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - model_deployment
+  - data_engineering
+  - ml_operations
+use_cases:
+  # --- Use Case 1: Deploy Trained Model ---
+  - Store a trained PMML, H2O, or ONNX model in Vantage for in-database scoring
+
+  # --- Use Case 2: Model Version Management ---
+  - Load multiple model versions into a single model table with distinct model_id values
+
+  # --- Use Case 3: Large Model Deployment ---
+  - Use sparse map tables to store large ONNX models while reducing permanent space
+
+  # --- Use Case 4: H2O DAI License Setup ---
+  - Configure H2O Driverless AI license for DAI model scoring
+
+  # --- Use Case 5: ONNX Embedding Pipeline ---
+  - Load ONNX embedding model and tokenizer for text vectorization
+
+  # --- Use Case 6: Multi-Format Model Catalog ---
+  - Maintain separate model tables per format (PMML, H2O, ONNX) for organized management
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database where model tables will be created"
+    example: "ml_models"
+
+  # --- Parameter 2: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: Name of the table storing model BLOBs
+    required: true
+    description: "Name of the model table (will contain model_id VARCHAR + model BLOB)"
+    example: "pmml_models"
+
+  # --- Parameter 3: Model ID ---
+  - name: model_id
+    type: string
+    # LLM-HINT: Unique identifier for the model; used to SELECT at score time
+    required: true
+    description: "Unique identifier for the model. Used in WHERE clause when scoring."
+    example: "iris_rf_model"
+
+  # --- Parameter 4: Model File ---
+  - name: model_file
+    type: string
+    # LLM-HINT: Path to the model file (.pmml, .mojo, .onnx, .jar)
+    required: true
+    description: "Path to the model file to load (.pmml, .mojo, .onnx, .jar)"
+    example: "iris_rf_model.pmml"
+
+  # --- Parameter 5: Model Format ---
+  - name: model_format
+    type: string
+    # LLM-HINT: One of: pmml, h2o, onnx, dataiku, datarobot, mleap
+    required: true
+    description: "Model format: pmml, h2o, onnx, dataiku, datarobot, or mleap"
+    example: "pmml"
+
+  # --- Parameter 6: License Key (H2O DAI only) ---
+  - name: license_key
+    type: string
+    # LLM-HINT: H2O Driverless AI license key text; only needed for DAI models
+    required: false
+    description: "H2O Driverless AI license key. Required only for DAI models."
+    example: "<license_key_text>"
+
+  # --- Parameter 7: Tokenizer Table (ONNX embeddings only) ---
+  - name: tokenizer_table
+    type: string
+    # LLM-HINT: Table for ONNX tokenizer BLOBs; needed for ONNXEmbeddings/Seq2Seq/Classification
+    required: false
+    description: "Table name for ONNX tokenizer storage. Required for ONNXEmbeddings, ONNXSeq2Seq, ONNXClassification."
+    example: "embedding_tokenizers"
+
+  # --- Parameter 8: Sparse Map Name ---
+  - name: sparse_map_name
+    type: string
+    # LLM-HINT: Name for sparse map; reduces permanent space for large models
+    required: false
+    description: "Name for a sparse map to reduce storage for large models"
+    example: "sparse_map_8Amps"
+
+  # --- Parameter 9: Sparse AMP Count ---
+  - name: sparse_amp_count
+    type: integer
+    # LLM-HINT: Number of AMPs for sparse map distribution
+    required: false
+    description: "Number of AMPs for sparse map distribution"
+    example: "8"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CREATE_MODEL_TABLE TEMPLATE ===
+  # LLM-HINT: Base table schema shared by all BYOM model formats
+  create_model_table:
+    description: "Create the standard BYOM model table (model_id + model BLOB)"
+    sql: |
+      -- Standard BYOM model table
+      -- Works for PMML, H2O, ONNX, Dataiku, DataRobot, MLeap
+      CREATE SET TABLE {{database}}.{{model_table}} (
+          model_id  VARCHAR(30),
+          model     BLOB
+      )
+      PRIMARY INDEX (model_id);
+    required_parameters:
+      - database
+      - model_table
+
+  # === CREATE_H2O_DAI_LICENSE_TABLE TEMPLATE ===
+  # LLM-HINT: Separate license table for H2O DAI models (recommended approach)
+  create_h2o_dai_license_table:
+    description: "Create H2O DAI license table (Option 1 — recommended)"
+    sql: |
+      -- H2O DAI license table (Option 1 — recommended)
+      -- Enforces exactly one row with the license key
+      CREATE TABLE {{database}}.h2o_dai_lic (
+          id      INTEGER BETWEEN 1 AND 1,
+          license VARCHAR(2500)
+      ) UNIQUE PRIMARY INDEX (id);
+
+      -- Insert the license
+      INSERT INTO {{database}}.h2o_dai_lic VALUES (1, '{{license_key}}');
+    required_parameters:
+      - database
+      - license_key
+
+  # === ADD_LICENSE_COLUMN TEMPLATE ===
+  # LLM-HINT: Add license column to existing model table for H2O DAI (Option 2)
+  add_license_column:
+    description: "Add license column to model table for H2O DAI (Option 2)"
+    sql: |
+      -- H2O DAI license in model table (Option 2)
+      ALTER TABLE {{database}}.{{model_table}} ADD license VARCHAR(2500);
+
+      -- Set license for all models
+      UPDATE {{database}}.{{model_table}} SET license = '{{license_key}}';
+    required_parameters:
+      - database
+      - model_table
+      - license_key
+
+  # === CREATE_TOKENIZER_TABLE TEMPLATE ===
+  # LLM-HINT: Tokenizer table for ONNXEmbeddings, ONNXSeq2Seq, ONNXClassification
+  create_tokenizer_table:
+    description: "Create tokenizer table for ONNX embedding/seq2seq/classification models"
+    sql: |
+      -- Tokenizer table for ONNX text models
+      -- Required by ONNXEmbeddings, ONNXSeq2Seq, ONNXClassification
+      -- Not needed for ONNXPredict or ONNXPredictRT
+      CREATE SET TABLE {{database}}.{{tokenizer_table}} (
+          tokenizer_id  VARCHAR(30),
+          tokenizer     BLOB
+      )
+      PRIMARY INDEX (tokenizer_id);
+    required_parameters:
+      - database
+      - tokenizer_table
+
+  # === CREATE_SPARSE_MAP_TABLE TEMPLATE ===
+  # LLM-HINT: Sparse map reduces permanent space for large models at cost of query performance
+  create_sparse_map_table:
+    description: "Create model table on a sparse map for large models"
+    sql: |
+      -- Create sparse map for large model storage
+      CREATE MAP {{sparse_map_name}} FROM td_map1 SPARSE ampcount={{sparse_amp_count}};
+
+      -- Create model table on the sparse map
+      CREATE TABLE {{database}}.{{model_table}},
+      MAP = {{sparse_map_name}}
+      (
+          model_id  VARCHAR(30),
+          model     BLOB(2097088000)
+      )
+      PRIMARY INDEX (model_id);
+    required_parameters:
+      - database
+      - model_table
+      - sparse_map_name
+      - sparse_amp_count
+
+  # === LOAD_MODEL_BTEQ TEMPLATE ===
+  # LLM-HINT: BTEQ loading pattern; works for all model formats
+  load_model_bteq:
+    description: "Load a model file using BTEQ (works for all formats)"
+    sql: |
+      -- BTEQ model loading
+      -- Create a pipe-delimited text file (load_models.txt) mapping model IDs to files:
+      --   {{model_id}}|{{model_file}}
+      --
+      -- Then run in BTEQ:
+      .import vartext file load_models.txt
+      .repeat *
+      USING (c1 VARCHAR(30), c2 BLOB AS DEFERRED BY NAME) INSERT INTO {{database}}.{{model_table}}(:c1, :c2);
+    required_parameters:
+      - database
+      - model_table
+      - model_id
+      - model_file
+
+  # === LOAD_MODEL_PYTHON TEMPLATE ===
+  # LLM-HINT: Python loading using teradatasql; works for all formats
+  load_model_python:
+    description: "Load a model file using Python teradatasql (works for all formats)"
+    sql: |
+      -- Python model loading (teradatasql)
+      -- Replace host, user, password with your Teradata connection details
+      --
+      -- import teradatasql
+      --
+      -- with teradatasql.connect(host='your-host', user='your-user', password='your-password') as con:
+      --     with open('{{model_file}}', 'rb') as f:
+      --         model_bytes = f.read()
+      --     with con.cursor() as cur:
+      --         cur.execute(
+      --             "INSERT INTO {{database}}.{{model_table}} (model_id, model) VALUES (?, ?)",
+      --             ['{{model_id}}', model_bytes]
+      --         )
+
+      -- Verify the model was loaded
+      SELECT model_id, HASHBUCKET(HASHROW(model)) AS model_hash
+      FROM {{database}}.{{model_table}}
+      WHERE model_id = '{{model_id}}';
+    required_parameters:
+      - database
+      - model_table
+      - model_id
+      - model_file
+
+  # === ROTATE_H2O_LICENSE TEMPLATE ===
+  # LLM-HINT: Update an expired H2O DAI license
+  rotate_h2o_license:
+    description: "Rotate an expired H2O DAI license key"
+    sql: |
+      -- Rotate H2O DAI license (Option 1 — license table)
+      UPDATE {{database}}.h2o_dai_lic SET license = '{{license_key}}' WHERE id = 1;
+
+      -- Or rotate license in model table (Option 2)
+      -- UPDATE {{database}}.{{model_table}} SET license = '{{license_key}}';
+    required_parameters:
+      - database
+      - license_key
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: PMML Model Setup ---
+  - name: "Load a PMML Random Forest Model"
+    description: "Create model table and load a PMML model for iris classification"
+    parameters:
+      database: "ml_models"
+      model_table: "pmml_models"
+      model_id: "iris_rf_model"
+      model_file: "iris_rf_model.pmml"
+      model_format: "pmml"
+    expected_result: |
+      Steps:
+      1. CREATE SET TABLE ml_models.pmml_models (model_id VARCHAR(30), model BLOB) PRIMARY INDEX (model_id);
+      2. Load iris_rf_model.pmml via BTEQ or Python
+      3. Verify: SELECT model_id FROM ml_models.pmml_models;
+         → iris_rf_model
+
+      Now score with: PMMLPredict(...ON ml_models.pmml_models AS ModelTable DIMENSION...)
+
+  # --- Example 2: H2O DAI Model with License ---
+  - name: "Load H2O Driverless AI Model with License Table"
+    description: "Set up H2O DAI model with separate license table (recommended)"
+    parameters:
+      database: "ml_models"
+      model_table: "h2o_models"
+      model_id: "pipeline_model"
+      model_file: "pipeline.mojo"
+      model_format: "h2o"
+      license_key: "<your_dai_license_key>"
+    expected_result: |
+      Steps:
+      1. Create model table: ml_models.h2o_models
+      2. Create license table: ml_models.h2o_dai_lic
+      3. Insert license key into license table
+      4. Load pipeline.mojo into model table
+      5. Score with: H2OPredict(
+             ON data AS InputTable
+             ON (SELECT model_id, model FROM ml_models.h2o_models
+                 WHERE model_id = 'pipeline_model') AS ModelTable DIMENSION
+             USING ModelType('DAI') ...)
+
+      Important: Load only pipeline.mojo from the zip — not the full archive.
+
+  # --- Example 3: ONNX Model on Sparse Map ---
+  - name: "Load Large ONNX Embedding Model with Sparse Map"
+    description: "Set up a large ONNX model using sparse storage for space efficiency"
+    parameters:
+      database: "ml_models"
+      model_table: "onnx_models_sparse"
+      model_id: "bge-large-en-v1.5"
+      model_file: "bge-large-en-v1.5-onnx/model_fixed.onnx"
+      model_format: "onnx"
+      tokenizer_table: "embedding_tokenizers"
+      sparse_map_name: "sparse_map_8Amps"
+      sparse_amp_count: 8
+    expected_result: |
+      Steps:
+      1. CREATE MAP sparse_map_8Amps FROM td_map1 SPARSE ampcount=8;
+      2. Create model table on sparse map
+      3. Create tokenizer table: ml_models.embedding_tokenizers
+      4. Load model_fixed.onnx into model table
+      5. Load tokenizer.json into tokenizer table
+      6. Score with EXECUTE MAP = sparse_map_8Amps in the function call
+
+      Large ONNX models (bge-large: 1275 MB) benefit from sparse maps
+      to reduce permanent space allocation across AMPs.
+
+  # --- Example 4: Multiple Model Versions ---
+  - name: "Multiple Model Versions in One Table"
+    description: "Load multiple versions of a model for A/B testing"
+    parameters:
+      database: "ml_models"
+      model_table: "churn_models"
+      model_format: "pmml"
+    expected_result: |
+      Load multiple models into the same table with distinct model_id values:
+        model_id: 'churn_v1' → churn_model_v1.pmml
+        model_id: 'churn_v2' → churn_model_v2.pmml
+        model_id: 'churn_v3' → churn_model_v3.pmml
+
+      Score specific version:
+        ON (SELECT * FROM ml_models.churn_models WHERE model_id = 'churn_v2') AS ModelTable DIMENSION
+
+      Compare versions:
+        Run scoring with each model_id and compare predictions.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Model File Not Found ---
+  - error: "File not found during BTEQ import"
+    cause: "Model file path is incorrect or file is not in the BTEQ working directory"
+    solution: "Use absolute paths in the load file, or change to the directory containing the model files before running BTEQ."
+
+  # --- Error 2: BLOB Too Large ---
+  - error: "Model file exceeds BLOB column size"
+    cause: "Default BLOB size is too small for large models"
+    solution: "Specify BLOB size explicitly: model BLOB(2097088000). For very large models, use sparse map tables."
+
+  # --- Error 3: H2O DAI License Missing ---
+  - error: "H2OPredict returns license error"
+    cause: "DAI model requires a license but none is configured"
+    solution: "Create a license table (Option 1) or add a license column to the model table (Option 2). Include license column in SELECT when scoring."
+
+  # --- Error 4: Wrong H2O File ---
+  - error: "H2OPredict fails to load model"
+    cause: "Loading the full zip instead of pipeline.mojo"
+    solution: "Unzip the DAI download and load only pipeline.mojo — not the full archive zip."
+
+  # --- Error 5: Dataiku model_id Format ---
+  - error: "DataikuPredict cannot find model"
+    cause: "model_id does not match the fully qualified Java class name"
+    solution: "The model_id must be the exact fully qualified class name from Dataiku (e.g., 'mypackage.MyModel'). Check Dataiku download dialog for the correct name."
+
+  # --- Error 6: VantageCloud Lake NDS ---
+  - error: "Cannot create model table on VantageCloud Lake"
+    cause: "Model table must be in Native Data Store (NDS) on VantageCloud Lake"
+    solution: "Create model tables in the NDS database, not in temporary or foreign databases."
+
+  # --- Error 7: Model Cache Conflict ---
+  - error: "Scoring returns stale predictions after model update"
+    cause: "BYOM functions cache models in node memory for up to 7 days"
+    solution: "Use OverwriteCachedModel('model_name') when you have updated a model. Do not use it in concurrent queries — can cause OOM errors."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## BYOM Model Loading Best Practices
+
+  ### 1. Table Organization
+  **Separate tables per format:**
+  ```sql
+  -- Recommended: one table per model format
+  CREATE SET TABLE db.pmml_models (...) PRIMARY INDEX (model_id);
+  CREATE SET TABLE db.h2o_models  (...) PRIMARY INDEX (model_id);
+  CREATE SET TABLE db.onnx_models (...) PRIMARY INDEX (model_id);
+  ```
+
+  **Naming convention:**
+  - model_id should be descriptive: 'churn_rf_v2', 'iris_xgb_v1'
+  - Include version in model_id for A/B testing
+  - Use consistent prefixes per project or team
+
+  ### 2. Storage Sizing
+  **Permanent space:**
+  - Formula: avg_model_size x (expected_rows / num_AMPs) x num_AMPs
+  - Add equivalent spool space
+  - PMML models are typically small (KB to low MB)
+  - H2O MOJO models are moderate (MB range)
+  - ONNX models can be very large (100 MB to 2 GB)
+
+  **Sparse maps for large models:**
+  - Use when model size > 100 MB
+  - Reduces permanent space by concentrating data on fewer AMPs
+  - Trade-off: slightly slower query performance
+  - Must add EXECUTE MAP to scoring function calls
+
+  ### 3. Loading Methods
+  **BTEQ (recommended for automation):**
+  - Create a pipe-delimited mapping file
+  - Scriptable and repeatable
+  - Works in CI/CD pipelines
+
+  **Python teradatasql (recommended for development):**
+  - Flexible and easy to integrate with ML workflows
+  - Read model as bytes, insert directly
+  - Same script works for all formats
+
+  **Teradata Studio (ad-hoc only):**
+  - GUI file picker for one-off loads
+  - Not suitable for automation
+
+  ### 4. H2O DAI License Management
+  **Option 1 (separate table — recommended):**
+  - Single license table, easy to rotate
+  - Keeps model table clean
+  - Supports multiple model tables sharing one license
+
+  **Option 2 (column in model table):**
+  - Simpler setup for single-table deployments
+  - License travels with the model
+  - Must update all rows when rotating
+
+  **License rotation:**
+  ```sql
+  -- Rotate without downtime
+  UPDATE db.h2o_dai_lic SET license = '<new_key>' WHERE id = 1;
+  ```
+
+  ### 5. ONNX Model Preparation
+  **Scoring models (ONNXPredict):**
+  - Export directly from PyTorch, scikit-learn, XGBoost, etc.
+  - No tokenizer needed
+  - Verify column-to-tensor mapping with ShowModelInputFieldsMap('true')
+
+  **Embedding models (ONNXEmbeddings, ONNXSeq2Seq, ONNXClassification):**
+  - Convert from Hugging Face with optimum-cli
+  - Fix IR version and dimensions for Vantage compatibility
+  - Load both model.onnx and tokenizer.json
+  - Pre-converted models available at huggingface.co/Teradata
+
+  ### 6. Model Caching
+  - BYOM functions cache models in node memory for up to 7 days
+  - Do NOT use OverwriteCachedModel routinely — only when replacing a model
+  - Never use OverwriteCachedModel in concurrent queries (OOM risk)
+  - After updating a model, run one query with OverwriteCachedModel to refresh
+
+  ### 7. Verification
+  **After loading, always verify:**
+  ```sql
+  -- Check model exists
+  SELECT model_id FROM db.model_table WHERE model_id = 'my_model';
+
+  -- Check model is scoreable (PMML example)
+  SELECT TOP 5 * FROM PMMLPredict(
+      ON db.test_data AS InputTable
+      ON (SELECT * FROM db.model_table WHERE model_id = 'my_model') AS ModelTable DIMENSION
+      USING Accumulate('*')
+  ) AS t;
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Model Scoring ---
+  - model_scoring
+
+  # --- Pattern 2: K-Means (in-database ML) ---
+  - kmeans
+
+  # --- Pattern 3: Decision Tree (in-database ML) ---
+  - decision_tree
+# === RELATED_PATTERNS END ===

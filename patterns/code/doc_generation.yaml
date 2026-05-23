@@ -12,6 +12,8 @@ backend_type: code
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - documentation
 use_cases:
   - Godoc-style function documentation
   - README.md generation

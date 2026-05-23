@@ -838,6 +838,12 @@ func (p *chatPage) View() string {
 	var chatView string
 	t := styles.CurrentTheme()
 
+	// The editor (input area) takes absolute priority over all other
+	// components.  We use a fixed-size canvas so the editor is always
+	// placed at the bottom — the canvas clips any overflow from the
+	// viewport or sidebar instead of letting it push the editor out.
+	editorY := p.height - EditorHeight
+
 	if p.session.ID == "" {
 		splashView := p.splash.View()
 		editorView := p.editor.View()
@@ -847,27 +853,21 @@ func (p *chatPage) View() string {
 			chatView = splashView
 		} else if p.compact {
 			// Compact mode: splash + editor stacked vertically
-			chatView = lipgloss.JoinVertical(
-				lipgloss.Left,
-				t.S().Base.Render(splashView),
-				editorView,
+			chatView = p.renderOnCanvas(
+				lipgloss.NewLayer(t.S().Base.Render(splashView)).X(0).Y(0),
+				lipgloss.NewLayer(editorView).X(0).Y(editorY),
 			)
 		} else {
 			// Non-compact mode with sidebar: splash in chat area + sidebar
 			sidebarView := p.sidebar.View()
-			messagesColumn := lipgloss.JoinVertical(
+			upper := lipgloss.JoinHorizontal(
 				lipgloss.Left,
 				splashView,
-			)
-			messages := lipgloss.JoinHorizontal(
-				lipgloss.Left,
-				messagesColumn,
 				sidebarView,
 			)
-			chatView = lipgloss.JoinVertical(
-				lipgloss.Left,
-				messages,
-				editorView,
+			chatView = p.renderOnCanvas(
+				lipgloss.NewLayer(upper).X(0).Y(0),
+				lipgloss.NewLayer(editorView).X(0).Y(editorY),
 			)
 		}
 	} else {
@@ -941,8 +941,11 @@ func (p *chatPage) View() string {
 			if pillsArea != "" {
 				views = append(views, pillsArea)
 			}
-			views = append(views, editorView)
-			chatView = lipgloss.JoinVertical(lipgloss.Left, views...)
+			upper := lipgloss.JoinVertical(lipgloss.Left, views...)
+			chatView = p.renderOnCanvas(
+				lipgloss.NewLayer(upper).X(0).Y(0),
+				lipgloss.NewLayer(editorView).X(0).Y(editorY),
+			)
 		} else {
 			sidebarView := p.sidebar.View()
 			var messagesColumn string
@@ -955,15 +958,14 @@ func (p *chatPage) View() string {
 			} else {
 				messagesColumn = messagesView
 			}
-			messages := lipgloss.JoinHorizontal(
+			upper := lipgloss.JoinHorizontal(
 				lipgloss.Left,
 				messagesColumn,
 				sidebarView,
 			)
-			chatView = lipgloss.JoinVertical(
-				lipgloss.Left,
-				messages,
-				p.editor.View(),
+			chatView = p.renderOnCanvas(
+				lipgloss.NewLayer(upper).X(0).Y(0),
+				lipgloss.NewLayer(editorView).X(0).Y(editorY),
 			)
 		}
 	}
@@ -992,6 +994,15 @@ func (p *chatPage) View() string {
 
 	canvas := lipgloss.NewCompositor(layers...)
 	return canvas.Render()
+}
+
+// renderOnCanvas renders layers onto a fixed-size canvas (p.width × p.height).
+// Content that overflows the canvas bounds is clipped, ensuring the editor
+// (placed at the bottom) is never pushed out by taller upper content.
+func (p *chatPage) renderOnCanvas(layers ...*lipgloss.Layer) string {
+	canvas := lipgloss.NewCanvas(p.width, p.height)
+	comp := lipgloss.NewCompositor(layers...)
+	return canvas.Compose(comp).Render()
 }
 
 func (p *chatPage) updateCompactConfig(compact bool) tea.Cmd {

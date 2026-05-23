@@ -39,6 +39,8 @@ var validDomains = map[string]bool{
 	"data-quality": true,
 	"rest-api":     true,
 	"document":     true,
+	"meta-agent":   true,
+	"teradata":     true,
 }
 
 // validModes lists allowed activation mode values.
@@ -52,28 +54,57 @@ var validModes = map[string]bool{
 
 // SkillYAML represents the YAML structure for a single skill file.
 type SkillYAML struct {
-	APIVersion      string            `yaml:"apiVersion"`
-	Kind            string            `yaml:"kind"`
-	Metadata        SkillMetadataYAML `yaml:"metadata"`
-	Trigger         SkillTriggerYAML  `yaml:"trigger"`
-	Prompt          SkillPromptYAML   `yaml:"prompt"`
-	Tools           SkillToolsYAML    `yaml:"tools"`
-	PatternRefs     []string          `yaml:"pattern_refs"`
-	SkillRefs       []string          `yaml:"skill_refs"`
-	MaxPromptTokens int32             `yaml:"max_prompt_tokens"`
-	Sticky          bool              `yaml:"sticky"`
-	Backend         string            `yaml:"backend"`
+	APIVersion      string                 `yaml:"apiVersion"`
+	Kind            string                 `yaml:"kind"`
+	Metadata        SkillMetadataYAML      `yaml:"metadata"`
+	Trigger         SkillTriggerYAML       `yaml:"trigger"`
+	Prompt          SkillPromptYAML        `yaml:"prompt"`
+	Tools           SkillToolsYAML         `yaml:"tools"`
+	PatternRefs     []string               `yaml:"pattern_refs"`
+	SkillRefs       []string               `yaml:"skill_refs"`
+	MaxPromptTokens int32                  `yaml:"max_prompt_tokens"`
+	Sticky          bool                   `yaml:"sticky"`
+	Backend         string                 `yaml:"backend"`
+	TaskTemplate    *SkillTaskTemplateYAML `yaml:"task_template,omitempty"`
+	ParentIndexPath string                 `yaml:"parent_index_path,omitempty"`
+	// EmitTasks uses *bool so we can distinguish "not specified" (default-true)
+	// from "explicitly false". yaml.v3 leaves the pointer nil when the key is absent.
+	EmitTasks *bool `yaml:"emit_tasks,omitempty"`
+}
+
+// SkillTaskTemplateYAML holds an authored skill task decomposition from YAML.
+type SkillTaskTemplateYAML struct {
+	Steps                 []SkillTaskStepYAML `yaml:"steps"`
+	RootTitle             string              `yaml:"root_title"`
+	EphemeralOnDeactivate bool                `yaml:"ephemeral_on_deactivate"`
+	MaxTasks              int32               `yaml:"max_tasks"`
+}
+
+// SkillTaskStepYAML holds a single template step from YAML.
+type SkillTaskStepYAML struct {
+	Title              string   `yaml:"title"`
+	Objective          string   `yaml:"objective"`
+	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
+	Category           string   `yaml:"category"`
+	Priority           string   `yaml:"priority"`
+	DependsOn          []int32  `yaml:"depends_on"`
+	EstimatedEffort    string   `yaml:"estimated_effort"`
+	Tags               []string `yaml:"tags"`
 }
 
 // SkillMetadataYAML holds skill metadata from YAML.
 type SkillMetadataYAML struct {
-	Name        string            `yaml:"name"`
-	Title       string            `yaml:"title"`
-	Description string            `yaml:"description"`
-	Version     string            `yaml:"version"`
-	Domain      string            `yaml:"domain"`
-	Author      string            `yaml:"author"`
-	Labels      map[string]string `yaml:"labels"`
+	Name            string            `yaml:"name"`
+	Title           string            `yaml:"title"`
+	Description     string            `yaml:"description"`
+	Version         string            `yaml:"version"`
+	Domain          string            `yaml:"domain"`
+	Author          string            `yaml:"author"`
+	Labels          map[string]string `yaml:"labels"`
+	Confidence      float64           `yaml:"confidence"`
+	Status          string            `yaml:"status"`
+	LastValidatedMs int64             `yaml:"last_validated_ms"`
+	RiskLevel       string            `yaml:"risk_level"`
 }
 
 // SkillTriggerYAML holds trigger configuration from YAML.
@@ -200,7 +231,7 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("metadata.domain is required")
 	}
 	if !validDomains[strings.ToLower(sy.Metadata.Domain)] {
-		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document)", sy.Metadata.Domain)
+		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document, meta-agent, teradata)", sy.Metadata.Domain)
 	}
 
 	// trigger.mode must be valid
@@ -213,9 +244,9 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("prompt.instructions is required (non-empty)")
 	}
 
-	// skill_refs max depth 2
-	if len(sy.SkillRefs) > 2 {
-		return fmt.Errorf("skill_refs max depth is 2, got %d refs", len(sy.SkillRefs))
+	// skill_refs max depth 3
+	if len(sy.SkillRefs) > 3 {
+		return fmt.Errorf("skill_refs max depth is 3, got %d refs", len(sy.SkillRefs))
 	}
 
 	return nil
@@ -247,14 +278,24 @@ func yamlToSkill(sy *SkillYAML) *Skill {
 		examples = append(examples, SkillExample(ex))
 	}
 
+	// Confidence defaults to 1.0 for hand-authored skills.
+	confidence := sy.Metadata.Confidence
+	if confidence == 0 {
+		confidence = 1.0
+	}
+
 	return &Skill{
-		Name:        sy.Metadata.Name,
-		Title:       sy.Metadata.Title,
-		Description: sy.Metadata.Description,
-		Version:     version,
-		Domain:      strings.ToLower(sy.Metadata.Domain),
-		Labels:      sy.Metadata.Labels,
-		Author:      sy.Metadata.Author,
+		Name:            sy.Metadata.Name,
+		Title:           sy.Metadata.Title,
+		Description:     sy.Metadata.Description,
+		Version:         version,
+		Domain:          strings.ToLower(sy.Metadata.Domain),
+		Labels:          sy.Metadata.Labels,
+		Author:          sy.Metadata.Author,
+		Confidence:      confidence,
+		Status:          sy.Metadata.Status,
+		LastValidatedMs: sy.Metadata.LastValidatedMs,
+		RiskLevel:       sy.Metadata.RiskLevel,
 		Trigger: SkillTrigger{
 			SlashCommands:    sy.Trigger.SlashCommands,
 			Keywords:         sy.Trigger.Keywords,
@@ -279,6 +320,45 @@ func yamlToSkill(sy *SkillYAML) *Skill {
 		MaxPromptTokens: sy.MaxPromptTokens,
 		Sticky:          sy.Sticky,
 		Backend:         sy.Backend,
+		TaskTemplate:    yamlToSkillTaskTemplate(sy.TaskTemplate),
+		ParentIndexPath: sy.ParentIndexPath,
+		EmitTasks:       sy.EmitTasks,
+	}
+}
+
+// yamlToSkillTaskTemplate converts a SkillTaskTemplateYAML to its Go mirror.
+// Returns nil for absent or empty templates.
+func yamlToSkillTaskTemplate(t *SkillTaskTemplateYAML) *SkillTaskTemplate {
+	if t == nil {
+		return nil
+	}
+	steps := make([]SkillTaskStep, 0, len(t.Steps))
+	for _, s := range t.Steps {
+		steps = append(steps, SkillTaskStep(s))
+	}
+	return &SkillTaskTemplate{
+		Steps:                 steps,
+		RootTitle:             t.RootTitle,
+		EphemeralOnDeactivate: t.EphemeralOnDeactivate,
+		MaxTasks:              t.MaxTasks,
+	}
+}
+
+// skillTaskTemplateToYAML converts a SkillTaskTemplate Go struct back to YAML.
+// Returns nil for nil templates so the YAML omits the key entirely.
+func skillTaskTemplateToYAML(t *SkillTaskTemplate) *SkillTaskTemplateYAML {
+	if t == nil {
+		return nil
+	}
+	steps := make([]SkillTaskStepYAML, 0, len(t.Steps))
+	for _, s := range t.Steps {
+		steps = append(steps, SkillTaskStepYAML(s))
+	}
+	return &SkillTaskTemplateYAML{
+		Steps:                 steps,
+		RootTitle:             t.RootTitle,
+		EphemeralOnDeactivate: t.EphemeralOnDeactivate,
+		MaxTasks:              t.MaxTasks,
 	}
 }
 
@@ -295,13 +375,17 @@ func SkillToYAML(s *Skill) ([]byte, error) {
 		APIVersion: "loom/v1",
 		Kind:       "Skill",
 		Metadata: SkillMetadataYAML{
-			Name:        s.Name,
-			Title:       s.Title,
-			Description: s.Description,
-			Version:     s.Version,
-			Domain:      s.Domain,
-			Author:      s.Author,
-			Labels:      s.Labels,
+			Name:            s.Name,
+			Title:           s.Title,
+			Description:     s.Description,
+			Version:         s.Version,
+			Domain:          s.Domain,
+			Author:          s.Author,
+			Labels:          s.Labels,
+			Confidence:      s.Confidence,
+			Status:          s.Status,
+			LastValidatedMs: s.LastValidatedMs,
+			RiskLevel:       s.RiskLevel,
 		},
 		Trigger: SkillTriggerYAML{
 			SlashCommands:    s.Trigger.SlashCommands,
@@ -327,6 +411,9 @@ func SkillToYAML(s *Skill) ([]byte, error) {
 		MaxPromptTokens: s.MaxPromptTokens,
 		Sticky:          s.Sticky,
 		Backend:         s.Backend,
+		TaskTemplate:    skillTaskTemplateToYAML(s.TaskTemplate),
+		ParentIndexPath: s.ParentIndexPath,
+		EmitTasks:       s.EmitTasks,
 	}
 
 	data, err := yaml.Marshal(&sy)

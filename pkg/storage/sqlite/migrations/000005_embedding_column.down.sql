@@ -1,0 +1,4 @@
+-- 000003_embedding_column.down.sql
+-- SQLite doesn't support DROP COLUMN before 3.35.0.
+-- Recreate the table without the embedding column if needed.
+-- For now, this is a no-op since the column is nullable and harmless.

@@ -1,7 +1,7 @@
 
 # Judge CLI Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0 | **Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -13,22 +13,25 @@
   - [Stream Evaluation Progress](#stream-evaluation-progress)
   - [Register a Judge](#register-a-judge)
   - [View Evaluation History](#view-evaluation-history)
+- [CLI Flag Reference](#cli-flag-reference)
 - [Examples](#examples)
   - [Example 1: Single Judge Evaluation](#example-1-single-judge-evaluation)
   - [Example 2: Multi-Judge with Streaming](#example-2-multi-judge-with-streaming)
   - [Example 3: Evaluation from Files](#example-3-evaluation-from-files)
+- [Aggregation Strategies](#aggregation-strategies)
 - [Troubleshooting](#troubleshooting)
 
 
 ## Overview
 
-Evaluate agent outputs using CLI commands with support for multiple judges and streaming progress.
+Evaluate agent outputs using CLI commands with support for multiple judges, streaming progress, and configurable aggregation strategies. The judge CLI communicates with the Loom server via gRPC (`JudgeService`).
 
 ## Prerequisites
 
 - Loom server running: `looms serve`
-- At least one judge registered
+- At least one judge registered (see [Register a Judge](#register-a-judge))
 - Agent with output to evaluate
+- Server accessible at the default address `localhost:60051` (or specify with `--server`)
 
 ## Quick Start
 
@@ -44,18 +47,26 @@ looms judge evaluate \
 
 Expected output:
 ```
-Evaluating agent output...
-  Agent: sql-agent
-  Judges: quality-judge
-  Aggregation: weighted-average
+🔍 Evaluating with 1 judges...
+   Agent: sql-agent
+   Judges: quality-judge
+   Aggregation: weighted-average
 
-Judge Results:
-  quality-judge: 85/100 (PASS)
-    - Query is syntactically correct
-    - Uses appropriate table name
-    - Consider adding column selection instead of SELECT *
+✅ Overall Verdict: PASS (score: 85.0/100)
+────────────────────────────────────────────────────────────────────────────────
 
-Overall: PASS (score: 85/100)
+📊 Judge Results (1 judges)
+
+[1] ✅ quality-judge (claude-sonnet-4-5-20250929)
+    Verdict: PASS (score: 85.0/100)
+    Dimensions:
+      - quality: 85.0/100
+      - correctness: 90.0/100
+      - completeness: 80.0/100
+    Reasoning: Query is syntactically correct and uses appropriate table name.
+    Suggestions:
+      - Consider adding column selection instead of SELECT *
+    Cost: $0.0032 | Latency: 1200ms
 ```
 
 ## Common Tasks
@@ -95,21 +106,55 @@ looms judge evaluate-stream \
   --judges=quality-judge,safety-judge,cost-judge
 ```
 
-Expected output:
+Expected output (streaming shows real-time progress per judge, then the final summary):
 ```
-Streaming evaluation with 3 judges...
---------------------------------------------------------------------------------
-Judge quality-judge started (example 1)
-Judge quality-judge completed (1245ms, score: 85/100)
-Judge safety-judge started (example 1)
-Judge safety-judge completed (980ms, score: 92/100)
-Judge cost-judge started (example 1)
-Judge cost-judge completed (756ms, score: 78/100)
---------------------------------------------------------------------------------
+🔍 Streaming evaluation with 3 judges...
+   Agent: sql-agent
+   Judges: quality-judge, safety-judge, cost-judge
+   Aggregation: weighted-average
 
-Evaluation completed! (2981ms total)
+────────────────────────────────────────────────────────────────────────────────
+⏳ Judge quality-judge started (example 1)
+✅ Judge quality-judge completed (1245ms, score: 85/100)
+⏳ Judge safety-judge started (example 1)
+✅ Judge safety-judge completed (980ms, score: 92/100)
+⏳ Judge cost-judge started (example 1)
+✅ Judge cost-judge completed (756ms, score: 78/100)
+✅ Example 1/1 completed (score: 85/100)
 
-Overall Verdict: PASS (score: 85.0/100)
+────────────────────────────────────────────────────────────────────────────────
+
+🎉 Evaluation completed! (2981ms total)
+
+✅ Overall Verdict: PASS (score: 85.0/100)
+────────────────────────────────────────────────────────────────────────────────
+
+📊 Judge Results (3 judges)
+
+[1] ✅ quality-judge (claude-sonnet-4-5-20250929)
+    Verdict: PASS (score: 85.0/100)
+    Dimensions:
+      - quality: 85.0/100
+      - correctness: 90.0/100
+      - completeness: 80.0/100
+    Cost: $0.0032 | Latency: 1245ms
+
+[2] ✅ safety-judge (claude-sonnet-4-5-20250929)
+    Verdict: PASS (score: 92.0/100)
+    Cost: $0.0028 | Latency: 980ms
+
+[3] ⚠️ cost-judge (claude-sonnet-4-5-20250929)
+    Verdict: PARTIAL (score: 78.0/100)
+    Cost: $0.0025 | Latency: 756ms
+
+────────────────────────────────────────────────────────────────────────────────
+
+💰 Metrics
+
+   Pass Rate: 66.7% (WEIGHTED_AVERAGE)
+   Score Range: 78.0 - 92.0 (avg: 85.0, σ: 5.7)
+   Total Cost: $0.0085
+   Total Time: 2981ms
 ```
 
 Press **Ctrl+C** to cancel.
@@ -169,6 +214,57 @@ looms judge history \
   --limit=50
 ```
 
+## CLI Flag Reference
+
+### Global Flags (all judge subcommands)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `localhost:60051` | Loom server gRPC address |
+| `--timeout` | `60` | Request timeout in seconds |
+
+### `looms judge evaluate` / `looms judge evaluate-stream`
+
+| Flag | Default | Required | Description |
+|------|---------|----------|-------------|
+| `--agent` | | Yes | Agent ID |
+| `--prompt` | | No* | User prompt/input (inline) |
+| `--prompt-file` | | No* | Read prompt from file |
+| `--response` | | No* | Agent response/output (inline) |
+| `--response-file` | | No* | Read response from file |
+| `--judges` | | Yes | Judge IDs (comma-separated) |
+| `--aggregation` | `weighted-average` | No | Aggregation strategy |
+| `--export-to-hawk` | `false` | No | Export results to Hawk |
+| `--fail-fast` | `false` | No | Abort if any critical judge fails |
+| `--pattern` | | No | Pattern used (optional context) |
+
+\* Either `--prompt` or `--prompt-file` is required. Either `--response` or `--response-file` is required.
+
+### `looms judge register`
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-attempts` | `3` | Maximum retry attempts |
+| `--initial-backoff-ms` | `1000` | Initial backoff in milliseconds |
+| `--max-backoff-ms` | `8000` | Maximum backoff in milliseconds |
+| `--backoff-multiplier` | `2.0` | Backoff multiplier |
+| `--circuit-breaker` | `true` | Enable circuit breaker |
+| `--circuit-breaker-failure-threshold` | `5` | Circuit breaker failure threshold |
+| `--circuit-breaker-reset-timeout-ms` | `60000` | Circuit breaker reset timeout in ms |
+| `--circuit-breaker-success-threshold` | `2` | Circuit breaker success threshold |
+
+### `looms judge history`
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--agent` | | Filter by agent ID |
+| `--judges` | | Filter by judge ID (uses first value) |
+| `--pattern` | | Filter by pattern name |
+| `--start-time` | | Start time (RFC3339 format) |
+| `--end-time` | | End time (RFC3339 format) |
+| `--limit` | `50` | Maximum number of results |
+| `--offset` | `0` | Offset for pagination |
+
 ## Examples
 
 ### Example 1: Single Judge Evaluation
@@ -216,14 +312,14 @@ looms judge evaluate \
 
 ## Aggregation Strategies
 
-| Strategy | Description |
-|----------|-------------|
-| `weighted-average` | Weighted average of scores (default) |
-| `all-must-pass` | All judges must pass threshold |
-| `majority-pass` | More than 50% must pass |
-| `any-pass` | Any judge passing is sufficient |
-| `min-score` | Use lowest score |
-| `max-score` | Use highest score |
+| Strategy | Aliases | Description |
+|----------|---------|-------------|
+| `weighted-average` | `weighted` | Weighted average of scores (default) |
+| `all-must-pass` | `all` | All judges must pass |
+| `majority-pass` | `majority` | Majority must pass (>50%) |
+| `any-pass` | `any` | Any judge passing is sufficient |
+| `min-score` | `min` | Use minimum score across all judges |
+| `max-score` | `max` | Use maximum score across all judges |
 
 ## Troubleshooting
 
@@ -238,7 +334,7 @@ looms judge history --limit=1
 Verify judge exists:
 
 ```bash
-looms judge history --judge=quality-judge --limit=1
+looms judge history --judges=quality-judge --limit=1
 ```
 
 ### Circuit Breaker Opens
@@ -252,10 +348,39 @@ looms judge register config.yaml \
 
 ### Evaluation Times Out
 
-Increase timeout:
+Increase timeout (default is 60 seconds):
 
 ```bash
 looms judge evaluate-stream \
-  --timeout=120 \
-  ...
+  --agent=sql-agent \
+  --prompt="Analyze quarterly sales trends" \
+  --response="SELECT region, SUM(revenue)..." \
+  --judges=quality-judge,safety-judge \
+  --timeout=120
 ```
+
+### Server Connection Refused
+
+Verify the server is running and reachable:
+
+```bash
+looms serve
+```
+
+If running on a non-default address, specify with `--server`:
+
+```bash
+looms judge evaluate \
+  --server=myhost:60051 \
+  --agent=sql-agent \
+  --prompt="test" \
+  --response="SELECT 1" \
+  --judges=quality-judge
+```
+
+## Next Steps
+
+- [Multi-Judge Evaluation Guide](/docs/guides/multi-judge-evaluation.md) - Multi-judge configurations and strategies
+- [Judge DSPy Integration](/docs/guides/judge-dspy-integration.md) - Integrating judges with DSPy optimization
+- [Judge DSPy Streaming](/docs/guides/judge-dspy-streaming.md) - Streaming evaluation with DSPy
+- [Judge System Architecture](/docs/architecture/judge-system.md) - Internal architecture of the judge system

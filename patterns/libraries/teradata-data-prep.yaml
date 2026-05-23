@@ -1,0 +1,169 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-data-prep
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata in-database data preparation patterns for feature scaling, encoding, binning, pipeline transforms, and class imbalance handling"
+  labels:
+    vendor: teradata
+    category: data-prep
+    maturity: production
+
+spec:
+  entries:
+    - name: scale_transform
+      description: "Feature scaling and normalization using TD_ScaleFit and TD_ScaleTransform with 8 scaling methods"
+      trigger_conditions:
+        - "user asks about feature scaling or normalization"
+        - "user asks about z-score standardization or min-max scaling"
+        - "user mentions preprocessing for distance-based algorithms"
+        - "user asks about TD_ScaleFit or TD_ScaleTransform"
+        - "user asks about centering or rescaling numeric columns"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/scale_transform.yaml
+
+        Supported scaling methods:
+        - STD (Z-score): center at 0, divide by std dev
+        - RANGE (Min-Max): scale to [0, 1]
+        - RESCALE: scale to custom [lower, upper] range
+        - MAXABS: divide by max absolute value (preserves sparsity)
+        - MEAN, MIDRANGE, USTD, SUM
+      priority: 80
+      tags:
+        - data-prep
+        - scaling
+        - normalization
+        - feature-engineering
+        - teradata
+
+    - name: one_hot_encoding
+      description: "Convert categorical columns to binary indicators using TD_OneHotEncodingFit and TD_OneHotEncodingTransform"
+      trigger_conditions:
+        - "user asks about one-hot encoding or dummy variables"
+        - "user asks about converting categories to numeric"
+        - "user mentions encoding categorical features for ML"
+        - "user asks about TD_OneHotEncodingFit or TD_OneHotEncodingTransform"
+        - "user asks about handling categorical variables in models"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/one_hot_encoding.yaml
+
+        Key features:
+        - AUTO mode: categories discovered from data
+        - LIST mode: categories explicitly specified
+        - Handles unseen categories via "other" column
+        - Supports dense and sparse input formats
+      priority: 80
+      tags:
+        - data-prep
+        - encoding
+        - categorical
+        - feature-engineering
+        - teradata
+
+    - name: bincode
+      description: "Bin numeric columns into categorical intervals using TD_BinCodeFit and TD_BinCodeTransform"
+      trigger_conditions:
+        - "user asks about binning or discretization"
+        - "user asks about creating age groups or income tiers"
+        - "user mentions converting continuous to categorical"
+        - "user asks about TD_BinCodeFit or TD_BinCodeTransform"
+        - "user asks about equal-width or custom bin boundaries"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/bincode.yaml
+
+        Binning methods:
+        - Equal-width: N bins of equal width across value range
+        - Variable-width: custom bin boundaries via FitInput table
+
+        Key use cases:
+        - Age groups, income tiers, score buckets
+        - Feature engineering for tree-based models
+        - Reducing outlier effects via edge bins
+      priority: 75
+      tags:
+        - data-prep
+        - binning
+        - discretization
+        - feature-engineering
+        - teradata
+
+    - name: column_transformer
+      description: "Apply multiple Fit/Transform operations in a single pass using TD_ColumnTransformer"
+      trigger_conditions:
+        - "user asks about applying multiple transformations at once"
+        - "user asks about TD_ColumnTransformer or pipeline transform"
+        - "user mentions combining scaling, encoding, and imputation"
+        - "user asks about production preprocessing pipeline"
+        - "user asks about chaining transforms efficiently"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/column_transformer.yaml
+
+        Accepts up to 10 fit table inputs:
+        - BincodeFitTable, ScaleFitTable, OneHotEncodingFitTable
+        - OrdinalEncodingFitTable, FunctionFitTable, SimpleImputeFitTable
+        - OutlierFilterFitTable, RowNormalizeFitTable
+        - NonLinearCombineFitTable, PolynomialFeaturesFitTable
+      priority: 85
+      tags:
+        - data-prep
+        - pipeline
+        - transformer
+        - preprocessing
+        - teradata
+
+    - name: smote
+      description: "Synthetic minority oversampling using TD_SMOTE to address class imbalance with four strategies"
+      trigger_conditions:
+        - "user asks about class imbalance or oversampling"
+        - "user asks about SMOTE or synthetic data generation"
+        - "user mentions imbalanced datasets for classification"
+        - "user asks about TD_SMOTE or ADASYN"
+        - "user asks about balancing training data before model training"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/smote.yaml
+
+        Oversampling strategies:
+        - smote: standard interpolation between minority neighbors
+        - adasyn: adaptive, more samples near decision boundary
+        - borderline: focus on minority samples near class boundary
+        - smotenc: mixed numeric + categorical features
+
+        CRITICAL: apply SMOTE only to training data AFTER train/test split
+      priority: 80
+      tags:
+        - data-prep
+        - smote
+        - class-imbalance
+        - oversampling
+        - teradata
+
+    - name: fit_transform_pattern
+      description: "Reference pattern for the Fit/Transform two-phase architecture used across Teradata analytic functions"
+      trigger_conditions:
+        - "user asks about fit/transform pattern or two-phase transforms"
+        - "user asks how Teradata preprocessing functions work"
+        - "user mentions persisting transformation parameters"
+        - "user asks about consistent transforms between training and scoring"
+        - "user asks about model versioning for preprocessing"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_prep/fit_transform_pattern.yaml
+
+        Design principle:
+        - Fit phase: learn parameters from training data
+        - Transform phase: apply learned parameters to any dataset
+        - Enables: train once, apply many times
+        - Pipeline composition via TD_ColumnTransformer
+      priority: 70
+      tags:
+        - data-prep
+        - architecture
+        - fit-transform
+        - best-practices
+        - teradata

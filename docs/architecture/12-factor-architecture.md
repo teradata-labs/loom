@@ -1,10 +1,10 @@
 # 12-Factor Architecture
 
-Comprehensive analysis of Loom's adherence to 12-factor app principles for cloud-native LLM agent frameworks.
+Analysis of Loom's adherence to 12-factor app principles for cloud-native LLM agent frameworks.
 
 **Target Audience**: Architects, academics, platform engineers
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 ---
 
@@ -71,8 +71,8 @@ This document analyzes Loom's architecture against the **12-factor app methodolo
 │                        Loom Agent Framework                             │
 │                                                                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                 │
-│  │   CLI Tool   │  │ gRPC Server  │  │ HTTP Gateway │                 │
-│  │   (looms)    │  │  Port 60051  │  │  Port 5006   │                 │
+│  │  CLI/TUI    │  │ gRPC Server  │  │ HTTP Gateway │                 │
+│  │ (looms/loom)│  │  Port 60051  │  │  Port 5006   │                 │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                 │
 │         │                  │                  │                         │
 │         └──────────────────┼──────────────────┘                         │
@@ -119,12 +119,12 @@ This document analyzes Loom's architecture against the **12-factor app methodolo
 │  │  Claude    │ │   Claude   │ │ Local LLMs │            │
 │  └────────────┘ └────────────┘ └────────────┘            │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐            │
-│  │   Azure    │ │  Vertex AI │ │  Gemini    │            │
-│  │   OpenAI   │ │   Claude   │ │   Flash    │            │
+│  │   Azure    │ │  Gemini    │ │  Mistral   │            │
+│  │   OpenAI   │ │   Flash    │ │   AI       │            │
 │  └────────────┘ └────────────┘ └────────────┘            │
 │  ┌────────────┐ ┌────────────┐                            │
-│  │   OpenAI   │ │OpenAI Compat│                           │
-│  │  Official  │ │   Servers   │                           │
+│  │   OpenAI   │ │ HuggingFace│                            │
+│  │  Official  │ │  Inference │                            │
 │  └────────────┘ └────────────┘                            │
 │                                                            │
 │  Observability (Optional):                                 │
@@ -141,11 +141,11 @@ This document analyzes Loom's architecture against the **12-factor app methodolo
 └────────────────────────────────────────────────────────────┘
 ```
 
-**External Clients**: CLI (looms/loom), gRPC clients (Go, Python, etc.), HTTP/REST clients (curl, Postman, browsers)
+**External Clients**: CLI admin (looms), TUI (loom), gRPC clients (Go, Python, etc.), HTTP/REST clients (curl, Postman, browsers)
 
 **External Dependencies**:
 - **LLM Providers** (8): Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Gemini, Mistral, HuggingFace
-- **Observability** (optional): Hawk platform or embedded SQLite tracing
+- **Observability** (optional): Hawk platform (requires `-tags hawk` build) or embedded SQLite tracing
 - **MCP Servers** (optional): External tool providers via Model Context Protocol
 - **Backing Services**: SQLite (required), Postgres (planned), Redis (planned)
 
@@ -162,23 +162,25 @@ This document analyzes Loom's architecture against the **12-factor app methodolo
 **Single Repository**: `github.com/teradata-labs/loom`
 
 **Multiple Binaries**:
-- `looms`: Multi-agent server (gRPC + HTTP gateway)
+- `looms`: Multi-agent server (gRPC + HTTP gateway) + CLI admin commands
+- `loom`: TUI client (Bubbletea-based terminal interface)
 - `loom-mcp`: MCP protocol adapter
 
 **Build Configuration**:
-```go
-// cmd/looms/main.go
-// Single codebase, multiple build targets
-go build -o looms ./cmd/looms
-go build -o loom-mcp ./cmd/loom-mcp
+```bash
+# Single codebase, multiple build targets (via Justfile)
+just build           # Builds all: looms, loom, loom-mcp
+just build-server    # go build -tags fts5 -o bin/looms ./cmd/looms
+just build-tui       # go build -tags fts5 -o bin/loom ./cmd/loom
+just build-mcp       # go build -tags fts5 -o bin/loom-mcp ./cmd/loom-mcp
 ```
 
-**Deployment Variants**:
-- **Development**: `LOOM_ENV=dev looms start` (Ollama, NoOpTracer)
-- **Staging**: `LOOM_ENV=staging looms start` (Bedrock, EmbeddedHawk)
-- **Production**: `LOOM_ENV=prod looms start` (Anthropic, HawkTracer)
+**Deployment Variants** (config-driven, same binary):
+- **Development**: `looms serve --config=dev.yaml` (Ollama, NoOpTracer)
+- **Staging**: `looms serve --config=staging.yaml` (Bedrock, EmbeddedHawk)
+- **Production**: `looms serve --config=prod.yaml` (Anthropic, HawkTracer)
 
-**Files**: `cmd/looms/main.go`, `cmd/loom-mcp/main.go`
+**Files**: `cmd/looms/main.go`, `cmd/loom/main.go`, `cmd/loom-mcp/main.go`
 
 **Compliance**: ✅ **Excellent**. Single Git repository with multiple build targets and config-driven deployment differences.
 
@@ -193,65 +195,73 @@ go build -o loom-mcp ./cmd/loom-mcp
 **Dependency Declaration**: Go modules (`go.mod`)
 
 ```go
-// go.mod
+// go.mod (selected dependencies — see go.mod for full list)
 module github.com/teradata-labs/loom
 
 require (
-    google.golang.org/grpc v1.60.0
-    github.com/anthropics/anthropic-sdk-go v0.1.0
-    github.com/aws/aws-sdk-go-v2 v1.21.0
-    github.com/ollama/ollama v0.1.17
-    // 8 LLM provider SDKs
+    google.golang.org/grpc           // gRPC framework
+    github.com/anthropics/anthropic-sdk-go  // Anthropic Claude
+    github.com/aws/aws-sdk-go-v2     // AWS Bedrock
+    go.uber.org/zap                   // Structured logging
+    github.com/fsnotify/fsnotify      // File watching (hot-reload)
+    // + per-provider SDKs for all 8 LLM providers
 )
 ```
 
 **Interface-Based Dependency Injection**:
 
 ```go
-// pkg/agent/agent.go
-type Agent struct {
-    backend ExecutionBackend  // Interface, not concrete type
-    llm     LLMProvider        // Interface, not concrete type
-    tracer  Tracer             // Interface, not concrete type
+// pkg/types/types.go — LLMProvider interface
+type LLMProvider interface {
+    Chat(ctx context.Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error)
+    Name() string
+    Model() string
 }
 
-// Dependency injection at construction
+// pkg/agent/agent.go — Dependency injection at construction
 agent := agent.NewAgent(
-    postgresBackend,  // Implements ExecutionBackend
-    anthropicLLM,     // Implements LLMProvider
+    postgresBackend,  // Implements fabric.ExecutionBackend
+    anthropicLLM,     // Implements types.LLMProvider
     agent.WithTracer(hawkTracer),  // Optional dependency
 )
 ```
 
 **8 LLM Providers** (pluggable via interface):
-1. Anthropic (Claude Sonnet/Opus 4.5)
+1. Anthropic (claude-sonnet-4-5-20250929)
 2. AWS Bedrock (cross-region inference profiles)
-3. Ollama (local inference)
-4. OpenAI (GPT-4.1)
+3. Ollama (local inference, default: llama3.2)
+4. OpenAI (default: gpt-4o)
 5. Azure OpenAI (Entra token or API key auth)
-6. Mistral AI
-7. Google Gemini (2.5-flash)
-8. HuggingFace (Meta-Llama models)
+6. Mistral AI (default: mistral-large-latest)
+7. Google Gemini (default: gemini-3-flash-preview)
+8. HuggingFace (default: meta-llama/Meta-Llama-3.1-70B-Instruct)
 
 **Optional Dependencies** (build tags):
-- `-tags hawk`: Hawk observability integration
-- `-tags promptio`: Promptio prompt management
-- Default build: Works independently without external deps
+- `-tags fts5`: SQLite FTS5 support (required for all builds)
+- `-tags hawk`: Hawk HTTP export observability integration
+- Default build (with `-tags fts5`): Works independently without external deps
 
 **Circuit Breakers** (failure isolation):
 ```go
 // pkg/fabric/circuit_breaker.go
 type CircuitBreakerManager struct {
     breakers map[string]*CircuitBreaker
+    config   CircuitBreakerConfig
 }
 
-// Isolates failures in external dependencies
-func (m *CircuitBreakerManager) Execute(ctx context.Context, key string, fn func() error) error {
-    breaker := m.breakers[key]
-    if breaker.IsOpen() {
-        return ErrCircuitOpen
+// Per-tool circuit breakers prevent cascading failures
+func (m *CircuitBreakerManager) GetBreaker(toolName string) *CircuitBreaker {
+    // Thread-safe double-checked locking; creates breaker if needed
+}
+
+// Each breaker wraps operations with state tracking (Closed/Open/HalfOpen)
+func (cb *CircuitBreaker) Execute(operation func() error) error {
+    if err := cb.beforeRequest(); err != nil {
+        return err // Circuit open — reject immediately
     }
-    return breaker.Call(fn)
+    err := operation()
+    cb.afterRequest(err) // Track success/failure for state transitions
+    return err
 }
 ```
 
@@ -283,7 +293,7 @@ func (m *CircuitBreakerManager) Execute(ctx context.Context, key string, fn func
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Priority 1: CLI Flags (Highest)                                        │
 │  ─────────────────────────────────────────────────────────────────────  │
-│  $ looms start --config=/path/config.yaml --port=60051 --hawk-addr=...  │
+│  $ looms serve --config=/path/config.yaml --port=60051 --hawk-addr=...  │
 │                                                                          │
 │  Overrides all other sources                                            │
 └─────────────────────────────────────┬───────────────────────────────────┘
@@ -314,13 +324,11 @@ func (m *CircuitBreakerManager) Execute(ctx context.Context, key string, fn func
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Priority 3: Environment Variables                                      │
 │  ─────────────────────────────────────────────────────────────────────  │
-│  LOOM_CONFIG=/etc/loom/config.yaml                                      │
-│  LOOM_GRPC_PORT=60051                                                    │
-│  LOOM_HTTP_PORT=5006                                                     │
-│  LOOM_HAWK_ADDRESS=hawk.example.com:50051                               │
-│  ANTHROPIC_API_KEY=sk-ant-...     (from keyring or env)                 │
-│  BEDROCK_REGION=us-east-1                                                │
-│  OLLAMA_URL=http://localhost:11434                                       │
+│  LOOM_DATA_DIR=~/.loom              (data directory)                     │
+│  LOOM_SERVER_PORT=60051             (gRPC port)                          │
+│  ANTHROPIC_API_KEY=sk-ant-...       (from keyring or env)               │
+│  AWS_REGION=us-east-1               (Bedrock region)                    │
+│  OLLAMA_ENDPOINT=http://localhost:11434                                   │
 └─────────────────────────────────────┬───────────────────────────────────┘
                                       │
                                       ▼
@@ -341,18 +349,19 @@ func (m *CircuitBreakerManager) Execute(ctx context.Context, key string, fn func
 │                                                                          │
 │  Via gRPC RPCs:                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │ UpdateAgentConfig(agent_id, new_patterns)                        │   │
+│  │ ReloadAgent(agent_id)                                            │   │
 │  │   → Hot-reload agent configuration without restart              │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │ SetTraceLevel(level)                                             │   │
-│  │   → Adjust observability verbosity at runtime                    │   │
+│  │ SwitchModel(session_id, provider, model)                         │   │
+│  │   → Switch LLM model/provider for a session without losing      │   │
+│  │     context                                                      │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │ ReloadPatterns()                                                 │   │
-│  │   → Refresh pattern library from disk                            │   │
+│  │ LoadPatterns(directory)                                           │   │
+│  │   → Load/refresh pattern library from disk                       │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -373,11 +382,11 @@ looms config set-key anthropic_api_key
 ```
 
 **Hot-Reload** (89-143ms latency):
-- Pattern files via `fsnotify` (line 76-80 in `loom.proto`)
-- Agent configuration via `ReloadAgent` RPC (line 213-219)
-- Model switching via `SwitchModel` RPC (line 221-227, preserves context)
+- Pattern files via `fsnotify` (`pkg/patterns/hotreload.go`)
+- Agent configuration via `ReloadAgent` RPC (line 231-237 in `loom.proto`)
+- Model switching via `SwitchModel` RPC (line 239-245, preserves context)
 
-**Files**: `cmd/looms/config.go` (lines 33-1167), `pkg/config/paths.go`, `proto/loom/v1/loom.proto` (lines 76-80, 213-227)
+**Files**: `cmd/looms/config.go`, `pkg/config/paths.go`, `proto/loom/v1/loom.proto` (lines 231-245)
 
 **Compliance**: ✅ **Excellent**. Hierarchical config with env var support, keyring for secrets, hot-reload for runtime changes.
 
@@ -398,19 +407,22 @@ type ExecutionBackend interface {
     ExecuteQuery(ctx context.Context, query string) (*QueryResult, error)
     GetSchema(ctx context.Context, resource string) (*Schema, error)
     ListResources(ctx context.Context, filters map[string]string) ([]Resource, error)
+    GetMetadata(ctx context.Context, resource string) (map[string]interface{}, error)
     Ping(ctx context.Context) error
     Capabilities() *Capabilities
+    ExecuteCustomOperation(ctx context.Context, op string, params map[string]interface{}) (interface{}, error)
     Close() error
 }
 ```
 
-**Supported Backend Types**:
-- **SQL Databases**: PostgreSQL, Teradata, SQLite (connection pooling, prepared statements)
+**Supported Backend Types** (validated via `pkg/fabric/config.go`):
+- **SQL Databases**: PostgreSQL, MySQL, SQLite
 - **REST APIs**: HTTP client with OAuth2, API key auth
 - **GraphQL Endpoints**: Query builder with schema introspection
 - **gRPC Services**: Client with automatic retry and circuit breaking
 - **MCP Servers**: Model Context Protocol for external tools
-- **Document Stores**: File system, S3, embeddings
+- **Document Stores**: File system
+- **Supabase**: Managed Postgres via Supabase API
 
 **Backend Configuration** (YAML, swappable at runtime):
 
@@ -433,44 +445,44 @@ connection:
 **LLM Provider Abstraction**:
 
 ```go
-// pkg/llm/provider.go
+// pkg/types/types.go
 type LLMProvider interface {
-    Complete(ctx context.Context, prompt string, opts ...Option) (*Response, error)
-    Stream(ctx context.Context, prompt string, opts ...Option) (<-chan *Chunk, error)
+    Chat(ctx context.Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error)
     Name() string
-    Capabilities() *Capabilities
+    Model() string
 }
 
-// 8 implementations: Anthropic, Bedrock, Ollama, OpenAI, Azure, Gemini, Mistral, HuggingFace
+// StreamingLLMProvider extends LLMProvider with token streaming support
+type StreamingLLMProvider interface {
+    LLMProvider
+    ChatStream(ctx context.Context, messages []Message, tools []shuttle.Tool, callback TokenCallback) (*LLMResponse, error)
+}
+
+// 8 implementations: Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Gemini, Mistral, HuggingFace
 ```
 
-**Connection Pooling** (shared across agents):
+**Shared Backend Wrapper** (large result storage):
 
 ```go
-// pkg/fabric/factory/shared_backend.go
-type SharedBackend struct {
-    backend ExecutionBackend
-    refCount int32
+// pkg/fabric/shared_backend.go
+type SharedBackendWrapper struct {
+    backend      ExecutionBackend
+    sharedMemory *storage.SharedMemoryStore
+    threshold    int64
+    autoStore    bool
 }
-
-// Multiple agents share single database connection pool
-func (f *Factory) GetOrCreateBackend(config *BackendConfig) ExecutionBackend {
-    // Reuses existing backend if config matches
-}
+// Wraps backends to auto-store large results (>100KB) in shared memory
 ```
 
-**Health Checks**:
+**Health Checks** (via ExecutionBackend interface):
 
 ```go
-// pkg/fabric/health.go
-func (b *Backend) Ping(ctx context.Context) error {
-    ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-    defer cancel()
-    return b.conn.PingContext(ctx)
-}
+// pkg/fabric/interface.go — Ping is part of the ExecutionBackend interface
+Ping(ctx context.Context) error
+// Each backend implementation provides its own health check logic
 ```
 
-**Files**: `pkg/fabric/interface.go` (lines 1-185), `proto/loom/v1/backend.proto`, `pkg/llm/provider.go`
+**Files**: `pkg/fabric/interface.go` (lines 1-185), `pkg/fabric/shared_backend.go`, `proto/loom/v1/backend.proto`, `pkg/types/types.go`
 
 **Compliance**: ✅ **Excellent**. Clean interface abstraction, pluggable implementations, connection pooling, health checks.
 
@@ -491,10 +503,10 @@ buf generate
 
 # Go compilation
 just build
-# Output: bin/looms, bin/loom-mcp
+# Output: bin/looms (server), bin/loom (TUI), bin/loom-mcp (MCP bridge)
 
-# Build with optional dependencies
-just build-full  # Includes -tags hawk,promptio
+# Build with Hawk observability support
+just build-hawk  # Includes -tags fts5,hawk
 ```
 
 **Release Stage** (versioned artifacts):
@@ -514,18 +526,18 @@ docker build -t loom:v1.0.0 .
 
 ```bash
 # Development
-LOOM_ENV=dev looms start
+looms serve --config=dev.yaml
 
 # Staging
-LOOM_ENV=staging looms start --config=/etc/loom/staging.yaml
+looms serve --config=/etc/loom/staging.yaml
 
 # Production
-LOOM_ENV=prod looms start --config=/etc/loom/prod.yaml
+looms serve --config=/etc/loom/prod.yaml
 ```
 
 **No Build-Time Configuration**: All environment-specific config injected at runtime via env vars or config files.
 
-**Files**: `Justfile` (lines 50-100 for build targets), `buf.gen.yaml`, `.github/workflows/release.yml`
+**Files**: `Justfile` (build targets at line ~106), `buf.gen.yaml`, `.github/workflows/release.yml`
 
 **Compliance**: ✅ **Excellent**. Strict separation of build (buf + go build), release (Git tags), and run (config-driven).
 
@@ -631,14 +643,14 @@ LOOM_ENV=prod looms start --config=/etc/loom/prod.yaml
 - All session state persists to SQLite (WAL mode)
 - Agents are goroutines, not OS processes
 - Shared-nothing memory model (each agent has isolated memory space)
-- Horizontal scaling via multiple looms instances (session affinity recommended)
+- Horizontal scaling not yet supported (SQLite single-writer limitation)
 
 **Crash Recovery** (crash-only design):
 - Sessions automatically restored from SQLite on startup
 - Reference-counted shared memory reattached
 - MCP server reconnection on failure
 
-**Files**: `pkg/server/server.go` (lines 1-300), `pkg/agent/session_store.go` (lines 30-76)
+**Files**: `pkg/server/server.go`, `pkg/agent/session_store.go`
 
 **Compliance**: ✅ **Good**. Stateless process model with externalized state. Single-process design limits horizontal scaling (no distributed coordination).
 
@@ -653,23 +665,21 @@ LOOM_ENV=prod looms start --config=/etc/loom/prod.yaml
 **Self-Contained Server** (no external web server):
 
 ```go
-// cmd/looms/cmd_serve.go
-func startServer(config *Config) error {
-    // gRPC server (primary)
-    grpcLis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.GRPCPort))
-    grpcServer := grpc.NewServer()
-    loomv1.RegisterLoomServiceServer(grpcServer, loomService)
+// cmd/looms/cmd_serve.go (conceptual — actual function is runServe)
+// gRPC server (primary)
+grpcLis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.GRPCPort))
+grpcServer := grpc.NewServer()
+loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
-    // HTTP gateway (optional)
-    if config.HTTPPort > 0 {
-        httpMux := runtime.NewServeMux()
-        loomv1.RegisterLoomServiceHandlerServer(ctx, httpMux, loomService)
-        httpServer := &http.Server{Addr: fmt.Sprintf(":%d", config.HTTPPort), Handler: httpMux}
-        go httpServer.ListenAndServe()
-    }
-
-    return grpcServer.Serve(grpcLis)
+// HTTP gateway (optional, via grpc-gateway)
+if config.HTTPPort > 0 {
+    httpMux := runtime.NewServeMux()
+    loomv1.RegisterLoomServiceHandlerServer(ctx, httpMux, loomService)
+    httpServer := &http.Server{Addr: fmt.Sprintf(":%d", config.HTTPPort), Handler: httpMux}
+    go httpServer.ListenAndServe()
 }
+
+grpcServer.Serve(grpcLis)
 ```
 
 **Port Configuration**:
@@ -714,12 +724,11 @@ server:
 ```
 
 **Protocol Support**:
-- **gRPC** (60051): Primary API, streaming support, bidirectional
+- **gRPC** (60051): Primary API, streaming support (StreamWeave, StreamPatternUpdates, StreamWorkflow)
 - **HTTP/REST** (5006): Gateway with JSON marshaling (grpc-gateway)
 - **Server-Sent Events** (SSE): Streaming over HTTP for browser clients
-- **WebSocket** (planned): Full-duplex communication
 
-**Files**: `cmd/looms/cmd_serve.go`, `proto/loom/v1/server.proto` (lines 1-195), `cmd/looms/config.go` (lines 144-210)
+**Files**: `cmd/looms/cmd_serve.go`, `proto/loom/v1/server.proto`, `cmd/looms/config.go`
 
 **Compliance**: ✅ **Excellent**. Self-contained server with port binding, TLS/mTLS, CORS, multiple protocols.
 
@@ -793,7 +802,7 @@ server:
 go test -tags fts5 -race ./...
 
 # Results:
-# 2252+ test functions across 244 test files
+# 2462+ test functions across 342 test files
 # 0 race conditions detected
 # Critical packages: patterns 81.7%, communication 77.9%, fabric 79.2%
 ```
@@ -808,7 +817,7 @@ go test -tags fts5 -race ./...
 - Distributed locking (Consul/etcd) for agent hot-reload
 - Load balancer with session affinity (sticky sessions or JWT tokens)
 
-**Files**: `pkg/shuttle/executor.go`, `pkg/agent/agent.go` (lines 104-147), `proto/loom/v1/orchestration.proto`
+**Files**: `pkg/shuttle/executor.go`, `pkg/agent/agent.go`, `proto/loom/v1/orchestration.proto`
 
 **Compliance**: ⚠️ **Partial**. Excellent vertical scaling (goroutines, 0 race conditions), but no horizontal scaling (single-process limitation).
 
@@ -826,7 +835,7 @@ go test -tags fts5 -race ./...
 Startup Breakdown:
   Binary startup:        <100ms
   SQLite init (WAL):     <50ms
-  Pattern loading:       89-143ms (59 patterns, 80KB YAML)
+  Pattern loading:       89-143ms (104 patterns, 80KB YAML)
   Agent initialization:  <50ms
   Total:                 <200ms
 ```
@@ -841,35 +850,22 @@ Startup Breakdown:
 - Sessions automatically restored from database on startup
 - Reference-counted shared memory reattached on process restart
 
-**Graceful Shutdown** (gRPC drain):
+**Graceful Shutdown** (signal-driven, multi-phase):
 
 ```go
-// cmd/looms/cmd_serve.go
-func gracefulShutdown(grpcServer *grpc.Server, timeout time.Duration) {
-    // 1. Stop accepting new requests
-    grpcServer.GracefulStop()
-
-    // 2. Drain in-flight requests (30s timeout)
-    done := make(chan struct{})
-    go func() {
-        grpcServer.GracefulStop()
-        close(done)
-    }()
-
-    select {
-    case <-done:
-        log.Info("Graceful shutdown completed")
-    case <-time.After(timeout):
-        log.Warn("Forcing shutdown after timeout")
-        grpcServer.Stop()
-    }
-
-    // 3. Close database connections
-    db.Close()
-
-    // 4. Flush observability traces
-    tracer.Flush(context.Background())
-}
+// cmd/looms/cmd_serve.go (conceptual — actual shutdown is more involved)
+// On SIGINT/SIGTERM:
+// 1. Cancel message queue monitor (prevent new work)
+// 2. Stop HTTP server with timeout
+// 3. Stop hot-reload watchers
+// 4. Close agent registry
+// 5. Stop pattern tracker (flush buffered metrics)
+// 6. Stop learning agent
+// 7. Close communication system (message bus, queue)
+// 8. GracefulStop gRPC server (drain in-flight, 10s timeout)
+// 9. Close database connections
+// 10. Flush tracer
+// Second Ctrl+C forces immediate exit via os.Exit(1)
 ```
 
 **Shutdown Timeout Configuration**:
@@ -887,7 +883,7 @@ server:
 - Shared memory references: Reattached on process restart
 - MCP server reconnection: Automatic retry on failure
 
-**Files**: `pkg/agent/session_store.go` (lines 30-76), `cmd/looms/cmd_serve.go`
+**Files**: `pkg/agent/session_store.go`, `cmd/looms/cmd_serve.go`
 
 **Compliance**: ✅ **Excellent**. Fast startup (<200ms), crash-only design with automatic recovery, graceful drain for zero-downtime deploys.
 
@@ -903,10 +899,10 @@ server:
 
 ```bash
 # Development
-LOOM_ENV=dev looms start --config=dev.yaml
+looms serve --config=dev.yaml
 
 # Production
-LOOM_ENV=prod looms start --config=prod.yaml
+looms serve --config=prod.yaml
 ```
 
 **Configuration Differences** (not code differences):
@@ -943,17 +939,16 @@ database:
 - **Race detection**: All tests run with `-race` flag
 
 **Build Tags** (optional dependencies):
-- `-tags fts5`: SQLite FTS5 support (required)
-- `-tags hawk`: Hawk observability (optional)
-- `-tags promptio`: Promptio integration (optional)
-- Default build: Works independently without external deps
+- `-tags fts5`: SQLite FTS5 support (required for all builds)
+- `-tags hawk`: Hawk HTTP export observability (optional)
+- Default build (with `-tags fts5`): Works independently without external deps
 
 **Gap: Database Backend**:
 - Dev: SQLite (file-based)
 - Prod: SQLite (should be Postgres for multi-instance deployments)
 - **Recommendation**: Implement Postgres session store for production parity
 
-**Files**: `cmd/looms/config.go`, `pkg/llm/factory/factory.go`, `pkg/observability/auto_select.go`
+**Files**: `cmd/looms/config.go`, `pkg/llm/factory/factory.go`
 
 **Compliance**: ✅ **Good**. Same binary, config-driven differences. Minor gap: SQLite vs Postgres for session store (Postgres backend not yet implemented).
 
@@ -968,16 +963,16 @@ database:
 **Structured Logging** (zap-based):
 
 ```go
-// pkg/observability/logger.go
+// Conceptual — zap structured logging used throughout codebase via zap.L() global logger
+// Logger initialized in cmd/looms/cmd_serve.go via zap.NewProduction() or zap.NewDevelopment()
 import "go.uber.org/zap"
 
-logger, _ := zap.NewProduction() // JSON format
-logger.Info("LLM completion",
+zap.L().Info("LLM completion",
     zap.String("trace_id", span.TraceID),
     zap.String("session_id", sessionID),
     zap.String("agent_id", agentID),
     zap.String("llm.provider", "anthropic"),
-    zap.String("llm.model", "claude-sonnet-4.5"),
+    zap.String("llm.model", "claude-sonnet-4-5-20250929"),
     zap.Int("llm.tokens.input", 1234),
     zap.Int("llm.tokens.output", 567),
     zap.Float64("llm.cost_usd", 0.012),
@@ -1006,7 +1001,7 @@ logging:
   "session_id": "sess-456",
   "agent_id": "sql-agent",
   "llm.provider": "anthropic",
-  "llm.model": "claude-sonnet-4.5",
+  "llm.model": "claude-sonnet-4-5-20250929",
   "llm.tokens.input": 1234,
   "llm.tokens.output": 567,
   "llm.cost_usd": 0.012,
@@ -1020,7 +1015,7 @@ logging:
 - Agent IDs for multi-agent scenarios
 
 **Event Streams** (real-time progress):
-- gRPC streaming RPCs: `StreamChatResponse`, `StreamPatternUpdates`
+- gRPC streaming RPCs: `StreamWeave`, `StreamPatternUpdates`, `StreamWorkflow`
 - Server-Sent Events (SSE) over HTTP gateway
 - `SubscribeToSession` RPC for session update notifications
 
@@ -1036,7 +1031,7 @@ logging:
 - External log aggregation: Fluentd, Logstash, CloudWatch Logs
 - Observability traces exported to Hawk (separate from logs)
 
-**Files**: `pkg/observability/logger.go`, `cmd/looms/config.go` (logging section)
+**Files**: `pkg/observability/hawk.go`, `pkg/observability/hawk_types.go`, `cmd/looms/config.go` (logging section)
 
 **Compliance**: ✅ **Excellent**. Structured JSON logs with trace correlation, stdout/stderr streams, event streams via gRPC/SSE.
 
@@ -1051,75 +1046,74 @@ logging:
 **looms CLI** (one-off tasks):
 
 ```bash
+# Server
+looms serve --config=looms.yaml
+
 # Pattern management
 looms pattern load --dir ./patterns/sql
 looms pattern list --domain sql
-looms pattern validate --file ./patterns/custom.yaml
-
-# Agent management
-looms agent list
-looms agent reload sql-agent
-looms agent create --config ./agent.yaml
-
-# MCP server management
-looms mcp add python-tools --command python3 --args "-m,mcp_server.main"
-looms mcp restart python-tools
-looms mcp health-check
 
 # Learning agent (pattern proposals)
-looms learning analyze --domain sql --since 7d
-looms learning propose --pattern query-optimization
-looms learning apply --proposal prop-123 --autonomy-level human-approval
+looms learning analyze --domain sql
+looms learning proposals --status=pending
+looms learning apply <proposal-id>
+looms learning rollback <proposal-id>
+looms learning tune --domain=sql --strategy=moderate
 
 # Judge evaluation (multi-judge assessment)
 looms judge evaluate --agent sql-agent --judges quality,safety,cost
-looms judge export --format json --output results.json
+looms judge evaluate-stream --agent sql-agent
 
-# Workflow scheduling (cron-based)
-looms workflow schedule --file ./workflow.yaml --cron "0 0 * * *"
-looms workflow list-schedules
-looms workflow trigger schedule-123
-
-# Database maintenance
-looms db vacuum
-looms db cleanup --older-than 30d
-looms db export --format json
+# Workflow management
+looms workflow validate <file>
 
 # Configuration management
+looms config init
 looms config set-key anthropic_api_key
 looms config get llm.provider
-looms config validate
+looms config get-key <key-name>
+
+# Validation
+looms validate file agents/my-agent.yaml
+looms validate dir examples/
 ```
 
 **gRPC APIs for Admin Tasks** (proto-first):
 
 ```protobuf
-// proto/loom/v1/loom.proto
+// proto/loom/v1/loom.proto — LoomService (selected admin RPCs)
 service LoomService {
   // Pattern management
   rpc LoadPatterns(LoadPatternsRequest) returns (LoadPatternsResponse);
   rpc ListPatterns(ListPatternsRequest) returns (ListPatternsResponse);
+  rpc CreatePattern(CreatePatternRequest) returns (CreatePatternResponse);
 
   // Agent management
-  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc CreateAgentFromConfig(CreateAgentRequest) returns (AgentInfo);
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
-  rpc ReloadAgent(ReloadAgentRequest) returns (ReloadAgentResponse);
+  rpc ReloadAgent(ReloadAgentRequest) returns (AgentInfo);
+  rpc SwitchModel(SwitchModelRequest) returns (SwitchModelResponse);
 
   // MCP server management
   rpc AddMCPServer(AddMCPServerRequest) returns (AddMCPServerResponse);
-  rpc RestartMCPServer(RestartMCPServerRequest) returns (RestartMCPServerResponse);
-
-  // Learning agent
-  rpc AnalyzePatternUsage(AnalyzePatternUsageRequest) returns (AnalyzePatternUsageResponse);
-  rpc ProposePatternImprovement(ProposePatternImprovementRequest) returns (ProposePatternImprovementResponse);
-
-  // Judge evaluation
-  rpc EvaluateWithJudges(EvaluateWithJudgesRequest) returns (EvaluateWithJudgesResponse);
+  rpc RestartMCPServer(RestartMCPServerRequest) returns (MCPServerInfo);
+  rpc DeleteMCPServer(DeleteMCPServerRequest) returns (DeleteMCPServerResponse);
 
   // Workflow scheduling
   rpc ScheduleWorkflow(ScheduleWorkflowRequest) returns (ScheduleWorkflowResponse);
   rpc ListScheduledWorkflows(ListScheduledWorkflowsRequest) returns (ListScheduledWorkflowsResponse);
+}
+
+// proto/loom/v1/learning.proto — LearningService
+service LearningService {
+  rpc AnalyzePatternEffectiveness(AnalyzePatternEffectivenessRequest) returns (PatternAnalysisResponse);
+}
+
+// proto/loom/v1/judge.proto — JudgeService
+service JudgeService {
+  rpc EvaluateWithJudges(EvaluateRequest) returns (EvaluateResponse);
+  rpc EvaluateWithJudgesStream(EvaluateRequest) returns (stream EvaluateProgress);
 }
 ```
 
@@ -1134,9 +1128,9 @@ curl -X POST http://localhost:5006/v1/patterns/load \
 curl http://localhost:5006/v1/agents
 ```
 
-**Files**: `cmd/looms/cmd_pattern.go`, `cmd/looms/cmd_learning.go`, `cmd/looms/cmd_judge.go`, `cmd/looms/cmd_workflow.go`, `proto/loom/v1/loom.proto`
+**Files**: `cmd/looms/cmd_pattern.go`, `cmd/looms/cmd_learning.go`, `cmd/looms/cmd_judge.go`, `cmd/looms/cmd_workflow.go`, `cmd/looms/cmd_config.go`, `proto/loom/v1/loom.proto`, `proto/loom/v1/learning.proto`, `proto/loom/v1/judge.proto`
 
-**Compliance**: ✅ **Excellent**. Comprehensive CLI for one-off tasks, gRPC/HTTP APIs for automation, proto-first design.
+**Compliance**: ✅ **Excellent**. CLI for one-off tasks, gRPC/HTTP APIs for automation, proto-first design.
 
 ---
 
@@ -1154,7 +1148,8 @@ curl http://localhost:5006/v1/agents
 
  I. Codebase         ┌──────────────────────────────────────┐
  One codebase,       │  Git repo with multi-binary build    │
- many deploys        │  • looms (server + CLI)              │
+ many deploys        │  • looms (server + CLI admin)        │
+                     │  • loom (TUI client)                 │
                      │  • loom-mcp (MCP adapter)            │
                      └──────────────────────────────────────┘
 
@@ -1206,7 +1201,7 @@ curl http://localhost:5006/v1/agents
  Scale out via       │  Goroutine-based scaling:            │
  process model       │  • Each agent = goroutine pool       │
                      │  • Vertical scaling (multi-core)     │
-                     │  • Horizontal scaling (multi-node)   │
+                     │  • ❌ No horizontal scaling yet      │
                      └──────────────────────────────────────┘
 
  IX. Disposability   ┌──────────────────────────────────────┐
@@ -1232,8 +1227,8 @@ curl http://localhost:5006/v1/agents
 
  XII. Admin          ┌──────────────────────────────────────┐
  Processes           │  looms CLI for admin tasks:          │
- Run admin tasks     │  • create (scaffold agents)          │
- as one-off          │  • start (run server)                │
+ Run admin tasks     │  • serve (run server)                │
+ as one-off          │  • pattern/learning/judge/workflow   │
  processes           │  • gRPC RPCs (runtime management)    │
                      └──────────────────────────────────────┘
 ```
@@ -1484,12 +1479,12 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Breakdown**:
 - Binary startup: <100ms (Go compiled executable)
 - SQLite init (WAL): <50ms
-- Pattern loading: 89-143ms (59 patterns, 80KB YAML)
+- Pattern loading: 89-143ms (104 patterns, 80KB YAML)
 - Agent initialization: <50ms
 
 **Warm Start** (cached patterns): <150ms
 
-**Scaling**: O(n log n) where n = pattern count (TF-IDF indexing dominates)
+**Scaling**: O(n) where n = pattern count (pattern index build dominates)
 
 ---
 
@@ -1498,14 +1493,14 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Pattern Hot-Reload**: 89-143ms (p50-p99)
 
 **Measurement Conditions**:
-- Pattern library size: 59 patterns (11 libraries)
+- Pattern library size: 104 patterns (11 libraries)
 - Total pattern bytes: ~80KB YAML
 - Test hardware: M2 MacBook Pro
 
 **Breakdown**:
 - File watch notification: 10-15ms (fsnotify)
 - YAML parsing: 45-60ms
-- TF-IDF index rebuild: 20-40ms
+- Pattern index rebuild: 20-40ms
 - Atomic swap: <1ms
 
 **Optimization Considered**: Incremental index updates
@@ -1523,7 +1518,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 - Single agent: ~100 requests/second (LLM latency-bound)
 - Multi-agent: ~1000 requests/second (10 agents, parallel)
 
-**Race Conditions**: 0 detected (2252+ test functions with `-race` flag)
+**Race Conditions**: 0 detected (2462+ test functions across 342 test files with `-race` flag)
 
 **Critical Packages** (test coverage):
 - patterns: 81.7%
@@ -1585,27 +1580,24 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 
 ### Privacy
 
-**PII Redaction** (automatic):
+**PII Redaction** (configured via HawkTracer PrivacyConfig):
 
 ```go
-// pkg/observability/privacy.go
-func redactPII(content string) string {
-    // Email addresses
-    content = emailRegex.ReplaceAllString(content, "[EMAIL]")
-
-    // Phone numbers
-    content = phoneRegex.ReplaceAllString(content, "[PHONE]")
-
-    // Credit card numbers
-    content = ccRegex.ReplaceAllString(content, "[CC]")
-
-    return content
+// pkg/observability/hawk.go (requires -tags hawk)
+// Redaction is integrated into HawkTracer span export, not a standalone function.
+// Configured via PrivacyConfig:
+type PrivacyConfig struct {
+    RedactCredentials bool     // Remove password, api_key, token fields
+    RedactPII         bool     // Remove email, phone, SSN, credit card patterns
+    AllowedAttributes []string // Whitelist keys that bypass redaction
 }
+
+// Redaction markers: [EMAIL_REDACTED], [PHONE_REDACTED], [SSN_REDACTED], [CARD_REDACTED]
 ```
 
-**Trace Export**: PII redacted before sending to Hawk
+**Trace Export**: PII redacted before sending to Hawk (configurable per-field)
 
-**Override**: Whitelist mode for debugging (disabled in production)
+**Override**: AllowedAttributes whitelist for debugging (attribute keys bypass redaction)
 
 ---
 
@@ -1718,7 +1710,7 @@ func redactPII(content string) string {
 
 ---
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 **Last Updated**: 2026-01-14
 

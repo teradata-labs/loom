@@ -1,0 +1,226 @@
+---
+name: weaver_skills_catalog
+namespace: loom
+description: Catalog of available skills for weaver to recommend based on user needs
+---
+prompts:
+  - id: skills_recommendation_guide
+    content: |
+      # Loom Skills Catalog for Agent Creation
+
+      Use this catalog to recommend relevant skills when creating agents. Match user problems to skill capabilities.
+
+      ## Skill Matching Decision Tree
+
+      ### Problem: Database/SQL Performance
+      **Recommended Skills:**
+      - `sql-optimization` (PRIMARY)
+        - Triggers: "slow query", "database performance", "optimize SQL", "query tuning"
+        - Capabilities: Index recommendations, query rewrites, execution plan analysis
+        - Command: `/optimize`
+        - Sticky: Yes (persists across conversation)
+
+      ### Problem: Code Quality & Security
+      **Recommended Skills:**
+      - `code-review` (PRIMARY)
+        - Triggers: "code review", "security audit", "find bugs", "code quality"
+        - Capabilities: OWASP top 10 scanning, bug detection, performance analysis
+        - Command: `/review`
+        - Requirements: Needs `file_read` tool
+        - Sticky: Yes
+
+      ### Problem: Data Validation & Quality
+      **Recommended Skills:**
+      - `data-quality-check` (PRIMARY)
+        - Triggers: "validate data", "data quality", "check duplicates", "missing values"
+        - Capabilities: Null analysis, type consistency, range validation, anomaly detection
+        - Command: `/dq`
+        - Preferred tools: `shell_execute`, `file_read`
+        - Sticky: No (one-turn execution)
+
+      ### Problem: Multi-Agent Coordination
+      **Recommended Skills (use together):**
+      - `multi-agent-coordinator` (PRIMARY)
+        - Triggers: "coordinate agents", "multiple agents", "delegate tasks"
+        - Capabilities: Task delegation, communication pattern selection, response synthesis
+        - Command: `/coordinate`
+        - Requirements: Needs `send_message` tool
+        - Sticky: Yes
+
+      - `agent-discovery` (SECONDARY)
+        - Triggers: "find agent", "which agent", "who can help"
+        - Capabilities: Agent capability matching, domain mapping
+        - Command: `/find-agent`
+        - Preferred tools: `tool_search`, `send_message`
+        - Sticky: No
+
+      - `request-response-coordinator` (SECONDARY)
+        - Triggers: "ask another agent", "need agent response", "sequential workflow"
+        - Capabilities: Synchronous request-response, correlation tracking, timeouts
+        - Command: `/ask-agent`
+        - Requirements: Needs `send_message` tool
+        - Sticky: Yes
+
+      ## Recommendation Strategy by Use Case
+
+      ### Use Case: SQL Analytics Agent
+      ```
+      User: "Create an agent to analyze slow database queries"
+
+      Recommend:
+      1. sql-optimization (MUST HAVE)
+         - "I've configured the sql-optimization skill (/optimize) to help analyze query performance"
+      2. data-quality-check (OPTIONAL)
+         - "Would you like data-quality-check (/dq) to validate query results?"
+
+      Agent Config:
+      spec:
+        skills:
+          - name: sql-optimization
+            enabled: true
+          - name: data-quality-check
+            enabled: true
+      ```
+
+      ### Use Case: Code Review Agent
+      ```
+      User: "Build an agent for security code reviews"
+
+      Recommend:
+      1. code-review (MUST HAVE)
+         - "I've enabled the code-review skill (/review) with OWASP security scanning"
+
+      Agent Config:
+      spec:
+        skills:
+          - name: code-review
+            enabled: true
+            config:
+              focus: security
+      ```
+
+      ### Use Case: Multi-Agent Workflow
+      ```
+      User: "Create a workflow where agents collaborate on data processing"
+
+      Recommend:
+      1. multi-agent-coordinator (MUST HAVE)
+         - "I've added multi-agent-coordinator (/coordinate) for task delegation"
+      2. agent-discovery (HELPFUL)
+         - "Plus agent-discovery (/find-agent) to help find the right specialist agents"
+
+      Coordinator Agent Config:
+      spec:
+        skills:
+          - name: multi-agent-coordinator
+            enabled: true
+          - name: agent-discovery
+            enabled: true
+        tools:
+          - send_message  # Required for coordination
+      ```
+
+      ### Use Case: Data Pipeline Agent
+      ```
+      User: "Build an agent to validate and process CSV files"
+
+      Recommend:
+      1. data-quality-check (MUST HAVE)
+         - "I've configured data-quality-check (/dq) for comprehensive validation"
+
+      Agent Config:
+      spec:
+        skills:
+          - name: data-quality-check
+            enabled: true
+        tools:
+          - file_read
+          - csv_parse
+      ```
+
+      ## Skill Activation Modes
+
+      - **MANUAL**: User must use slash command (e.g., `/optimize`)
+      - **AUTO**: Activates on keyword detection (e.g., "slow query")
+      - **HYBRID**: Both slash commands and keywords work (RECOMMENDED)
+      - **ALWAYS**: Skill is always active
+
+      Most skills use HYBRID mode for flexibility.
+
+      ## Common Skill Combinations
+
+      ### Database Development Team
+      - sql-optimization + data-quality-check
+      - Use case: Build queries and validate results
+
+      ### Code Review Pipeline
+      - code-review (solo)
+      - Use case: Automated PR reviews
+
+      ### Multi-Agent Orchestration
+      - multi-agent-coordinator + agent-discovery + request-response-coordinator
+      - Use case: Complex workflows with agent delegation
+
+      ### Data Engineering Pipeline
+      - data-quality-check + sql-optimization
+      - Use case: ETL validation and optimization
+
+      ## When NOT to Recommend Skills
+
+      1. **User wants simplicity**: Don't overwhelm with skills if they want basic functionality
+      2. **No matching skills**: If no skill fits, use custom system prompts instead
+      3. **Tool dependencies missing**: Don't recommend if required tools aren't available
+      4. **Conflicting skills**: Some skills may overlap (e.g., both do validation)
+
+      ## Presentation Format
+
+      When recommending skills to users:
+
+      ```
+      Based on your needs, I recommend these skills:
+
+      ✨ **sql-optimization** (/optimize) - CORE
+         Analyzes query performance and suggests optimizations
+         Includes: Index recommendations, execution plan analysis
+
+      📊 **data-quality-check** (/dq) - OPTIONAL
+         Validates data quality with null/duplicate/range checks
+         Useful for: Ensuring query results are clean
+
+      Would you like me to include both, or just sql-optimization?
+      ```
+
+      ## Skill Configuration in Agent YAML
+
+      ```yaml
+      spec:
+        skills:
+          - name: sql-optimization
+            enabled: true
+            activation_mode: HYBRID  # Slash command + keywords
+
+          - name: data-quality-check
+            enabled: true
+            activation_mode: MANUAL  # Only via /dq command
+            config:
+              max_sample_size: 10000
+      ```
+
+      ## Domain Mapping
+
+      | Domain | Primary Skills | Secondary Skills |
+      |--------|---------------|------------------|
+      | SQL/Database | sql-optimization | data-quality-check |
+      | Code | code-review | - |
+      | Data Engineering | data-quality-check | sql-optimization |
+      | Multi-Agent | multi-agent-coordinator | agent-discovery, request-response-coordinator |
+      | Operations | agent-discovery | - |
+
+    variables: {}
+    tags:
+      - weaver
+      - skills
+      - recommendations
+    metadata:
+      version: "v1"
+      description: "Skills catalog for weaver to make intelligent skill recommendations"

@@ -1,9 +1,11 @@
 
 # Pattern Recommendations Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete reference for Loom's 65 built-in patterns across 11 categories - pattern selection by use case, backend type, difficulty level, and comprehensive pattern catalog.
+Reference for Loom's built-in patterns across multiple categories - pattern selection by use case, backend type, difficulty level, and pattern catalog.
+
+> **Note**: This document covers the most commonly used pattern categories. Additional specialized categories (teradata/data_discovery, teradata/performance, weaver, fun, nasa, rest_api, document, teradata/data_quality, teradata/timeseries, teradata/text, teradata/data_loading, teradata/data_modeling, teradata/code_migration) exist in the `patterns/` directory but are not fully documented here yet. Run `looms pattern watch` or browse the `patterns/` directory for the full inventory.
 
 
 ## Table of Contents
@@ -29,8 +31,12 @@ Complete reference for Loom's 65 built-in patterns across 11 categories - patter
 | Category | Pattern Count | Backend Type | Difficulty Range | Use Cases |
 |----------|---------------|--------------|------------------|-----------|
 | **postgres/analytics** | 12 | PostgreSQL | Beginner - Advanced | Query optimization, performance analysis, index tuning |
-| **teradata/analytics** | 6 | Teradata | Intermediate - Advanced | Customer analytics, funnel analysis, churn prediction |
+| **teradata/analytics** | 7 | Teradata | Intermediate - Advanced | Customer analytics, funnel analysis, churn prediction, nPath |
 | **teradata/ml** | 4 | Teradata | Intermediate - Advanced | Machine learning, regression, clustering, classification |
+| **teradata/data_discovery** | 8 | Teradata | Intermediate - Advanced | Schema analysis, key detection, data profiling |
+| **teradata/data_quality** | 5 | Teradata | Beginner - Intermediate | Data profiling, duplicate detection, outlier analysis |
+| **teradata/performance** | 3 | Teradata | Intermediate - Advanced | PI skew, spool space, statistics collection |
+| **teradata/timeseries** | 2 | Teradata | Intermediate | Moving average, ARIMA |
 | **sql/data_quality** | 5 | SQL (Generic) | Beginner - Intermediate | Data profiling, duplicate detection, outlier analysis |
 | **sql/timeseries** | 2 | SQL (Generic) | Intermediate | Time series forecasting, trend analysis |
 | **sql/text** | 1 | SQL (Generic) | Intermediate | Text processing, n-gram analysis |
@@ -41,9 +47,16 @@ Complete reference for Loom's 65 built-in patterns across 11 categories - patter
 | **vision** | 2 | LLM (Vision) | Intermediate | Chart interpretation, form extraction |
 | **evaluation** | 1 | LLM | Intermediate | Prompt quality evaluation |
 | **documents** | 4 | LLM | Beginner - Intermediate | CSV/PDF/Excel processing, document Q&A |
-| **libraries** | 11 | N/A | N/A | Pattern library definitions |
+| **document** | 2 | LLM | Intermediate | Document analysis, file parsing |
+| **weaver** | 9 | N/A | Intermediate - Advanced | Workflow patterns (pipeline, fork-join, debate, etc.) |
+| **fun** | 5 | LLM | Beginner | Haiku, limerick, D&D, rubber duck debugging |
+| **rest_api** | 1 | REST | Beginner | Health check |
+| **nasa** | 1 | LLM | Intermediate | Cosmic anomaly investigation |
+| **libraries** | 16 | N/A | N/A | Pattern library definitions |
 
-**Total Patterns**: 65 (54 executable patterns + 11 library definitions)
+**Total Patterns**: 104 (88 executable patterns + 16 library definitions)
+
+> Additional teradata subcategories: teradata/text (1), teradata/data_loading (1), teradata/data_modeling (1), teradata/code_migration (1), and 1 top-level teradata pattern (csv_to_teradata_intelligent) also exist.
 
 
 ### Pattern Selection Decision Tree
@@ -54,8 +67,8 @@ START: What do you need to accomplish?
 ├─ Query Performance Issue?
 │  ├─ PostgreSQL → postgres/analytics patterns
 │  │  ├─ Slow queries → sequential_scan_detection, missing_index_analysis
-│  │  ├─ Join issues → join_optimization, join_elimination
-│  │  └─ Table design → normalization_denormalization_analysis
+│  │  ├─ Join issues → join_optimization, subquery_to_join
+│  │  └─ Query rewrite → query_rewrite, count_optimization
 │  └─ Teradata → teradata/analytics patterns
 │     └─ Customer behavior → sessionize, funnel_analysis, churn_analysis
 │
@@ -115,7 +128,7 @@ START: What do you need to accomplish?
 
 ## Overview
 
-Loom includes **65 built-in patterns** across **11 categories** to guide agents in solving domain-specific problems. Patterns provide:
+Loom includes **88 executable patterns** (plus 16 library definitions) across **27 categories** to guide agents in solving domain-specific problems. Patterns provide:
 
 - **Structured problem-solving**: Templates for common tasks
 - **Domain expertise**: Best practices for SQL, ML, text processing
@@ -142,15 +155,15 @@ Loom includes **65 built-in patterns** across **11 categories** to guide agents 
 1. **sequential_scan_detection** - Identify full table scans hurting performance
 2. **missing_index_analysis** - Find missing indexes causing slow queries
 3. **join_optimization** - Optimize JOIN operations (type, order, statistics)
-4. **join_elimination** - Remove unnecessary JOINs
-5. **subquery_optimization** - Convert subqueries to JOINs or CTEs
-6. **cte_optimization** - Optimize Common Table Expressions
-7. **partition_pruning_analysis** - Verify partition pruning works
-8. **materialized_view_recommendation** - Suggest materialized views for expensive queries
-9. **vacuum_analyze_recommendations** - Optimize VACUUM and ANALYZE schedules
-10. **query_plan_analysis** - Deep EXPLAIN ANALYZE interpretation
-11. **index_bloat_detection** - Identify bloated indexes
-12. **normalization_denormalization_analysis** - Table design optimization
+4. **subquery_to_join** - Convert correlated subqueries to JOINs for better performance
+5. **vacuum_recommendation** - Identify tables needing VACUUM/ANALYZE
+6. **partition_recommendation** - Recommend table partitioning for large tables
+7. **count_optimization** - Optimize slow COUNT(*) queries
+8. **data_type_optimization** - Recommend better column data types
+9. **distinct_elimination** - Remove unnecessary DISTINCT clauses
+10. **foreign_key_validation** - Identify missing foreign keys and recommend FK indexes
+11. **like_pattern_optimization** - Fix inefficient LIKE queries with leading wildcards
+12. **query_rewrite** - Rewrite queries using equivalent but faster SQL patterns
 
 **Example Usage**:
 ```yaml
@@ -163,13 +176,13 @@ parameters:
 ```
 
 
-### 2. teradata/analytics (6 patterns)
+### 2. teradata/analytics (7 patterns)
 
 **Purpose**: Advanced analytics using Teradata-specific functions
 
 **Backend**: Teradata database
 **Difficulty**: Intermediate - Advanced
-**Use Cases**: Customer journey analysis, marketing attribution, churn prediction
+**Use Cases**: Customer journey analysis, marketing attribution, churn prediction, sequence analysis
 
 **Patterns**:
 1. **sessionize** - Group events into user sessions with SESSIONIZE()
@@ -178,6 +191,7 @@ parameters:
 4. **churn_analysis** - Customer churn prediction and analysis
 5. **customer_health_scoring** - Calculate customer health scores
 6. **resource_utilization** - Teradata resource usage analysis (CPU, I/O, spool)
+7. **npath** - nPath sequence analysis for ordered event pattern matching
 
 **Example Usage**:
 ```yaml
@@ -226,7 +240,7 @@ parameters:
 **Use Cases**: Data validation, anomaly detection, data profiling
 
 **Patterns**:
-1. **data_profiling** - Generate comprehensive data profile (nulls, cardinality, distribution)
+1. **data_profiling** - Generate full data profile (nulls, cardinality, distribution)
 2. **duplicate_detection** - Find duplicate records
 3. **outlier_detection** - Identify statistical outliers
 4. **missing_value_analysis** - Analyze missing data patterns
@@ -480,17 +494,17 @@ parameters:
    # PostgreSQL: Find root cause
    - postgres/analytics/missing_index_analysis
    - postgres/analytics/join_optimization
-   - postgres/analytics/query_plan_analysis
+   - postgres/analytics/query_rewrite
 
    # Fix issues
-   - postgres/analytics/index_bloat_detection (if indexes exist)
-   - postgres/analytics/vacuum_analyze_recommendations (if statistics stale)
-   - postgres/analytics/partition_pruning_analysis (if using partitions)
+   - postgres/analytics/vacuum_recommendation (if statistics stale)
+   - postgres/analytics/partition_recommendation (if using partitions)
+   - postgres/analytics/count_optimization (if COUNT queries slow)
    ```
 
 3. **Optimize further**:
-   - Consider materialized views: `postgres/analytics/materialized_view_recommendation`
-   - Consider denormalization: `postgres/analytics/normalization_denormalization_analysis`
+   - Consider data type changes: `postgres/analytics/data_type_optimization`
+   - Eliminate unnecessary work: `postgres/analytics/distinct_elimination`
 
 
 #### Data Quality Checks
@@ -630,11 +644,11 @@ pattern: evaluation/prompt_evaluation
 
 
 #### Advanced Patterns (Expert Level)
-- **postgres/analytics/query_plan_analysis** - Deep EXPLAIN knowledge
+- **postgres/analytics/query_rewrite** - Advanced query transformation
+- **postgres/analytics/partition_recommendation** - Table partitioning strategy
 - **teradata/analytics/funnel_analysis** - Complex nPath queries
 - **teradata/analytics/attribution** - Multi-touch attribution modeling
 - **teradata/ml/decision_tree** - ML hyperparameter tuning
-- **postgres/analytics/normalization_denormalization_analysis** - Database design
 
 **Characteristics**:
 - Many parameters with complex interactions
@@ -679,7 +693,7 @@ pattern: evaluation/prompt_evaluation
 - postgres/analytics/sequential_scan_detection
 - postgres/analytics/missing_index_analysis
 - postgres/analytics/join_optimization
-- postgres/analytics/query_plan_analysis
+- postgres/analytics/query_rewrite
 
 # Teradata
 - teradata/analytics/resource_utilization
@@ -688,9 +702,9 @@ pattern: evaluation/prompt_evaluation
 **Maintenance**:
 ```yaml
 # PostgreSQL
-- postgres/analytics/vacuum_analyze_recommendations
-- postgres/analytics/index_bloat_detection
-- postgres/analytics/partition_pruning_analysis
+- postgres/analytics/vacuum_recommendation
+- postgres/analytics/partition_recommendation
+- postgres/analytics/foreign_key_validation
 ```
 
 
@@ -781,15 +795,15 @@ All patterns in `postgres/analytics/`:
 - sequential_scan_detection
 - missing_index_analysis
 - join_optimization
-- join_elimination
-- subquery_optimization
-- cte_optimization
-- partition_pruning_analysis
-- materialized_view_recommendation
-- vacuum_analyze_recommendations
-- query_plan_analysis
-- index_bloat_detection
-- normalization_denormalization_analysis
+- subquery_to_join
+- vacuum_recommendation
+- partition_recommendation
+- count_optimization
+- data_type_optimization
+- distinct_elimination
+- foreign_key_validation
+- like_pattern_optimization
+- query_rewrite
 
 **Requirements**:
 - PostgreSQL 12+ (most patterns)
@@ -798,10 +812,11 @@ All patterns in `postgres/analytics/`:
 - Sufficient privileges to read system catalogs
 
 
-### Teradata Patterns (10)
-**Analytics** (6 patterns):
+### Teradata Patterns (34)
+**Analytics** (7 patterns):
 - sessionize (SESSIONIZE function)
 - funnel_analysis (nPath function)
+- npath (nPath sequence analysis)
 - attribution (nPath + analytics)
 - churn_analysis (ML + analytics)
 - customer_health_scoring (aggregate analytics)
@@ -812,6 +827,24 @@ All patterns in `postgres/analytics/`:
 - logistic_regression (GLML1L2 function)
 - kmeans (KMeans function)
 - decision_tree (DecisionTree function)
+
+**Data Discovery** (8 patterns):
+- column_similarity, corpus_navigation, data_profiling, domain_discovery
+- foreign_key_detection, key_detection, schema_graph_query, signature_generation
+
+**Data Quality** (5 patterns):
+- data_profiling, data_validation, duplicate_detection, missing_value_analysis, outlier_detection
+
+**Performance** (3 patterns):
+- pi_skew_detection, spool_space_analysis, statistics_collection
+
+**Timeseries** (2 patterns):
+- moving_average, arima
+
+**Other** (5 patterns):
+- teradata/text/ngram, teradata/data_loading/fastload_generation
+- teradata/data_modeling/temporal_table_design, teradata/code_migration/macro_to_procedure
+- teradata/csv_to_teradata_intelligent
 
 **Requirements**:
 - Teradata 16.20+ (analytics functions)
@@ -836,29 +869,27 @@ Patterns in `sql/data_quality/`, `sql/timeseries/`, `sql/text/`:
 - Some patterns require PostgreSQL, Teradata, or other specific features
 
 
-### LLM Patterns (19)
-Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `evaluation/`, `documents/`:
-- chain_of_thought
-- few_shot_learning
-- structured_output
-- hallucination_prevention
-- sentiment_analysis
-- summarization
-- test_generation
-- doc_generation
-- root_cause_analysis
-- chart_interpretation (vision)
-- form_extraction (vision)
-- prompt_evaluation
-- csv_import
-- excel_analysis
-- pdf_extraction
-- document_qa
+### LLM Patterns (24)
+Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `evaluation/`, `documents/`, `document/`, `fun/`, `nasa/`:
+- chain_of_thought, few_shot_learning, structured_output, hallucination_prevention (prompt_engineering/)
+- sentiment_analysis, summarization (text/)
+- test_generation, doc_generation (code/)
+- root_cause_analysis (debugging/)
+- chart_interpretation, form_extraction (vision/)
+- prompt_evaluation (evaluation/)
+- csv_import, excel_analysis, pdf_extraction, document_qa (documents/)
+- document_analyzer, file_parser (document/)
+- code_haiku, commit_message_limerick, dnd_character_generator, error_translator, rubber_duck_debugger (fun/)
+- cosmic_anomaly_investigator (nasa/)
 
 **Requirements**:
 - LLM provider (Anthropic, Bedrock, Ollama, etc.)
 - Vision-enabled LLM for vision patterns (Claude 4.5 Sonnet, GPT-4 Vision)
 - Sufficient token limits (varies by pattern)
+
+### Other Patterns (10)
+- **rest_api**: health_check (1 pattern)
+- **weaver**: conditional_workflow, debate_workflow, fork_join_workflow, hub_spoke_workflow, iterative_workflow, parallel_workflow, pipeline_workflow, pubsub_workflow, swarm_workflow (9 patterns)
 
 
 ## Pattern by Difficulty
@@ -884,7 +915,7 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - prompt_engineering/structured_output
 
 
-### Intermediate (30 patterns)
+### Intermediate (representative patterns)
 **Characteristics**: Moderate complexity, some domain knowledge needed
 
 **SQL**:
@@ -896,16 +927,15 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - sql/text/ngram
 - postgres/analytics/missing_index_analysis
 - postgres/analytics/join_optimization
-- postgres/analytics/subquery_optimization
-- postgres/analytics/cte_optimization
-- postgres/analytics/partition_pruning_analysis
-- postgres/analytics/index_bloat_detection
+- postgres/analytics/subquery_to_join
+- postgres/analytics/query_rewrite
 
 **Teradata**:
 - teradata/analytics/sessionize
 - teradata/analytics/churn_analysis
 - teradata/analytics/customer_health_scoring
 - teradata/analytics/resource_utilization
+- teradata/analytics/npath
 - teradata/ml/linear_regression
 - teradata/ml/logistic_regression
 - teradata/ml/kmeans
@@ -919,15 +949,13 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - evaluation/prompt_evaluation
 
 
-### Advanced (10 patterns)
+### Advanced (representative patterns)
 **Characteristics**: Expert-level knowledge, complex parameters, long execution
 
 **SQL**:
-- postgres/analytics/join_elimination
-- postgres/analytics/materialized_view_recommendation
-- postgres/analytics/vacuum_analyze_recommendations
-- postgres/analytics/query_plan_analysis
-- postgres/analytics/normalization_denormalization_analysis
+- postgres/analytics/partition_recommendation
+- postgres/analytics/data_type_optimization
+- postgres/analytics/count_optimization
 
 **Teradata**:
 - teradata/analytics/funnel_analysis (nPath complexity)
@@ -961,7 +989,7 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - Table size
 - Index suggestions
 
-**Related Patterns**: missing_index_analysis, query_plan_analysis
+**Related Patterns**: missing_index_analysis, query_rewrite
 
 
 ### postgres/analytics/missing_index_analysis
@@ -1013,139 +1041,41 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - JOIN order suggestions
 - Statistics freshness check
 
-**Related Patterns**: join_elimination, query_plan_analysis
+**Related Patterns**: subquery_to_join, query_rewrite
 
 
-### postgres/analytics/join_elimination
+### postgres/analytics/subquery_to_join
 
-**Purpose**: Remove unnecessary JOINs from queries
-
-**Difficulty**: Advanced
-**Backend**: PostgreSQL
-**Execution Time**: 5-10 seconds
-
-**When to Use**:
-- Queries have JOINs but don't use joined columns
-- Foreign key relationships allow JOIN removal
-- Performance optimization needed
-
-**Parameters**:
-- `query` (string, required): Query to analyze
-- `check_foreign_keys` (bool, default: true): Use foreign keys for elimination
-
-**Output**:
-- Simplified query
-- Performance improvement estimate
-
-**Related Patterns**: join_optimization, subquery_optimization
-
-
-### postgres/analytics/subquery_optimization
-
-**Purpose**: Convert subqueries to JOINs or CTEs
+**Purpose**: Convert correlated subqueries to JOINs for better performance
 
 **Difficulty**: Intermediate
 **Backend**: PostgreSQL
 **Execution Time**: 5-10 seconds
 
 **When to Use**:
-- Queries have correlated subqueries
-- Subqueries execute multiple times
-- Need to materialize subquery results
+- Eliminate correlated subqueries
+- Speed up existence checks (EXISTS/IN)
+- Optimize nested SELECT statements
+- Convert scalar subqueries to aggregated JOINs
 
 **Parameters**:
-- `query` (string, required): Query with subqueries
-- `prefer_cte` (bool, default: false): Prefer CTEs over JOINs
+- `main_table` (string, required): Main table in query
+- `subquery_table` (string, required): Table used in subquery
 
 **Output**:
-- Rewritten query (JOIN or CTE)
+- Rewritten query using JOINs
 - Performance comparison
 
-**Related Patterns**: cte_optimization, join_optimization
+**Related Patterns**: join_optimization, query_rewrite
 
 
-### postgres/analytics/cte_optimization
+### postgres/analytics/vacuum_recommendation
 
-**Purpose**: Optimize Common Table Expressions
+**Purpose**: Identify tables needing VACUUM/ANALYZE for optimal query planning
 
-**Difficulty**: Intermediate
-**Backend**: PostgreSQL
-**Execution Time**: 5-10 seconds
-
-**When to Use**:
-- Queries use CTEs
-- CTEs are not materialized correctly
-- Need to inline or materialize CTEs
-
-**Parameters**:
-- `query` (string, required): Query with CTEs
-- `materialize` (string, default: "auto"): Materialization strategy (auto/always/never)
-
-**Output**:
-- Optimized CTE usage
-- Materialization recommendations
-
-**Related Patterns**: subquery_optimization, materialized_view_recommendation
-
-
-### postgres/analytics/partition_pruning_analysis
-
-**Purpose**: Verify partition pruning works correctly
-
-**Difficulty**: Intermediate
+**Difficulty**: Beginner
 **Backend**: PostgreSQL
 **Execution Time**: 1-5 seconds
-
-**When to Use**:
-- Using table partitioning
-- Queries scan more partitions than expected
-- Need to verify pruning logic
-
-**Parameters**:
-- `table_name` (string, required): Partitioned table
-- `query` (string, required): Query to analyze
-
-**Output**:
-- Partitions scanned
-- Pruning effectiveness
-- Constraint suggestions
-
-**Related Patterns**: query_plan_analysis
-
-
-### postgres/analytics/materialized_view_recommendation
-
-**Purpose**: Suggest materialized views for expensive queries
-
-**Difficulty**: Advanced
-**Backend**: PostgreSQL
-**Execution Time**: 10-30 seconds
-
-**When to Use**:
-- Queries are expensive and run frequently
-- Data doesn't change frequently
-- Can tolerate stale data
-
-**Parameters**:
-- `min_query_time_ms` (int, default: 5000): Minimum query time
-- `min_execution_count` (int, default: 100): Minimum query frequency
-- `max_staleness_hours` (int, default: 24): Maximum acceptable staleness
-
-**Output**:
-- Materialized view recommendations
-- Refresh strategy
-- Estimated storage cost
-
-**Related Patterns**: cte_optimization, vacuum_analyze_recommendations
-
-
-### postgres/analytics/vacuum_analyze_recommendations
-
-**Purpose**: Optimize VACUUM and ANALYZE schedules
-
-**Difficulty**: Advanced
-**Backend**: PostgreSQL
-**Execution Time**: 5-10 seconds
 
 **When to Use**:
 - Query performance degraded over time
@@ -1153,91 +1083,192 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - Table bloat suspected
 
 **Parameters**:
-- `database` (string, required): Database to analyze
-- `check_bloat` (bool, default: true): Check for bloat
+- `table_name` (string, optional): Specific table to check (empty for all tables)
 
 **Output**:
-- VACUUM recommendations
-- ANALYZE recommendations
-- Bloat report
+- Dead tuple ratios
+- Last analyze timestamps
+- VACUUM/ANALYZE recommendations
 
-**Related Patterns**: index_bloat_detection
+**Related Patterns**: partition_recommendation
 
 
-### postgres/analytics/query_plan_analysis
+### postgres/analytics/partition_recommendation
 
-**Purpose**: Deep EXPLAIN ANALYZE interpretation
+**Purpose**: Recommend table partitioning for very large tables
 
 **Difficulty**: Advanced
 **Backend**: PostgreSQL
-**Execution Time**: Varies by query
+**Execution Time**: 5-10 seconds
 
 **When to Use**:
-- Need detailed query execution analysis
-- Query performance issues
-- Understand query plan choices
+- Large tables with millions of rows
+- Queries filtering on date/time columns
+- Need to improve scan performance
 
 **Parameters**:
-- `query` (string, required): Query to analyze
-- `buffers` (bool, default: true): Include buffer usage
-- `timing` (bool, default: true): Include timing information
+- `table_name` (string, required): Large table to partition
+- `partition_column` (string, required): Column to partition by (usually date/time)
+- `partition_strategy` (string, default: "range"): Partitioning strategy (range, list, hash)
 
 **Output**:
-- Detailed plan breakdown
-- Bottleneck identification
-- Optimization suggestions
+- Table size analysis
+- Partitioning strategy recommendation
+- Migration plan
 
-**Related Patterns**: join_optimization, sequential_scan_detection
+**Related Patterns**: vacuum_recommendation
 
 
-### postgres/analytics/index_bloat_detection
+### postgres/analytics/count_optimization
 
-**Purpose**: Identify bloated indexes needing rebuild
+**Purpose**: Optimize slow COUNT(*) queries using faster strategies
+
+**Difficulty**: Intermediate
+**Backend**: PostgreSQL
+**Execution Time**: 1-5 seconds
+
+**When to Use**:
+- COUNT(*) on large tables (10+ million rows)
+- Optimize existence checks
+- Use statistics for approximate counts
+- Speed up dashboard metrics
+
+**Parameters**:
+- `table_name` (string, required): Table to count
+- `filter_condition` (string, optional): WHERE clause filter
+
+**Output**:
+- Optimized count strategies
+- Statistical estimates vs exact counts
+- Performance improvement (10-1000x)
+
+**Related Patterns**: sequential_scan_detection
+
+
+### postgres/analytics/data_type_optimization
+
+**Purpose**: Recommend better column data types for storage and performance
 
 **Difficulty**: Intermediate
 **Backend**: PostgreSQL
 **Execution Time**: 5-10 seconds
 
 **When to Use**:
-- Index size larger than expected
-- Query performance degraded
-- After many UPDATEs/DELETEs
+- Reduce table size by 20-60%
+- Identify oversized VARCHAR columns
+- Detect unnecessary precision in NUMERIC types
+- Optimize index size
 
 **Parameters**:
-- `database` (string, required): Database to analyze
-- `min_bloat_pct` (int, default: 30): Minimum bloat percentage to report
+- `table_name` (string, required): Table to analyze
+- `schema_name` (string, optional): Schema name
 
 **Output**:
-- Bloated indexes
-- Bloat percentage
-- REINDEX recommendations
+- Data type recommendations per column
+- Estimated storage savings
+- Migration steps
 
-**Related Patterns**: vacuum_analyze_recommendations
+**Related Patterns**: foreign_key_validation
 
 
-### postgres/analytics/normalization_denormalization_analysis
+### postgres/analytics/distinct_elimination
 
-**Purpose**: Analyze table design (normalization vs denormalization)
+**Purpose**: Remove unnecessary DISTINCT clauses that slow down queries
+
+**Difficulty**: Intermediate
+**Backend**: PostgreSQL
+**Execution Time**: 1-5 seconds
+
+**When to Use**:
+- Remove redundant DISTINCT on primary keys
+- Replace DISTINCT with GROUP BY for better performance
+- Convert DISTINCT to EXISTS for existence checks
+- Reduce query execution time by 30-80%
+
+**Parameters**:
+- `query` (string, required): Query using DISTINCT to analyze
+- `table_name` (string, optional): Table name for constraint checking
+
+**Output**:
+- Rewritten query without unnecessary DISTINCT
+- Explanation of why DISTINCT is unnecessary
+
+**Related Patterns**: query_rewrite
+
+
+### postgres/analytics/foreign_key_validation
+
+**Purpose**: Identify missing foreign keys and recommend indexes on FK columns
+
+**Difficulty**: Beginner
+**Backend**: PostgreSQL
+**Execution Time**: 1-5 seconds
+
+**When to Use**:
+- Schema validation
+- Performance audit (missing FK indexes)
+- Data integrity checks
+
+**Parameters**:
+- `table_name` (string, required): Table to validate
+
+**Output**:
+- Existing foreign keys
+- Missing FK index recommendations
+- Data integrity suggestions
+
+**Related Patterns**: data_type_optimization
+
+
+### postgres/analytics/like_pattern_optimization
+
+**Purpose**: Fix inefficient LIKE queries with leading wildcards
+
+**Difficulty**: Beginner
+**Backend**: PostgreSQL
+**Execution Time**: <1 second
+
+**When to Use**:
+- LIKE queries with leading wildcards (`%search%`)
+- Full-text search performance issues
+- Need trigram or GIN index recommendations
+
+**Parameters**:
+- `table_name` (string, required): Table with LIKE query
+- `column_name` (string, required): Column being searched
+- `pattern` (string, required): LIKE pattern
+
+**Output**:
+- Problem detection
+- Index recommendations (trigram, GIN)
+- Alternative query strategies
+
+**Related Patterns**: sequential_scan_detection
+
+
+### postgres/analytics/query_rewrite
+
+**Purpose**: Rewrite queries for better performance using equivalent but faster SQL patterns
 
 **Difficulty**: Advanced
 **Backend**: PostgreSQL
-**Execution Time**: 10-30 seconds
+**Execution Time**: 5-10 seconds
 
 **When to Use**:
-- Schema design review
-- Frequent JOINs hurting performance
-- Considering denormalization
+- Transform slow queries to faster equivalents
+- Replace IN with EXISTS or JOIN
+- Rewrite OR conditions for better index usage
+- Improve query execution time by 2-100x
 
 **Parameters**:
-- `tables` (array, required): Tables to analyze
-- `analyze_joins` (bool, default: true): Analyze JOIN patterns
+- `original_query` (string, required): Original slow query to rewrite
 
 **Output**:
-- Normalization level
-- Denormalization recommendations
-- Trade-off analysis
+- Rewritten query
+- Explanation of optimization
+- Performance comparison
 
-**Related Patterns**: join_optimization, materialized_view_recommendation
+**Related Patterns**: subquery_to_join, join_optimization
 
 
 ### teradata/analytics/sessionize
@@ -1396,7 +1427,7 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - Spool usage
 - Top queries
 
-**Related Patterns**: postgres/analytics/query_plan_analysis
+**Related Patterns**: postgres/analytics/query_rewrite
 
 
 ### teradata/ml/linear_regression
@@ -1507,7 +1538,7 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 
 ### sql/data_quality/data_profiling
 
-**Purpose**: Generate comprehensive data profile
+**Purpose**: Generate full data profile
 
 **Difficulty**: Beginner
 **Backend**: SQL (generic)
@@ -2126,26 +2157,35 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 ### Loading Patterns
 
 ```go
-import "github.com/teradata-labs/loom/pkg/patterns"
+import (
+    "embed"
+    "log"
 
-// Create library
-lib, err := patterns.NewLibrary(
-    patterns.WithEmbeddedPatterns(),
-    patterns.WithFilesystemPatterns("/path/to/patterns"),
-    patterns.WithTracer(tracer),
+    "github.com/teradata-labs/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
+//go:embed patterns
+var embeddedPatterns embed.FS
+
+// Create library with embedded and/or filesystem patterns
+// Both sources are optional - embedded patterns are checked first, then filesystem.
+lib := patterns.NewLibrary(&embeddedPatterns, "/path/to/patterns")
+
+// Optionally attach a tracer for observability
+lib = lib.WithTracer(tracer)
+
 // Load specific pattern
-pattern, err := lib.Load("postgres/analytics/missing_index_analysis")
+pattern, err := lib.Load("missing_index_analysis")
 if err != nil {
     log.Fatalf("Pattern not found: %v", err)
 }
 
 // Pattern contains:
-// - name, title, description
-// - category, difficulty, backend_type
-// - use_cases, parameters, templates, examples
-// - common_errors, best_practices, related_patterns
+// - Name, Title, Description
+// - Category, Difficulty, BackendType
+// - UseCases, Parameters, Templates, Examples
+// - CommonErrors, BestPractices, RelatedPatterns
 ```
 
 
@@ -2153,22 +2193,22 @@ if err != nil {
 
 ```go
 // List all patterns
-patterns := lib.ListAll()
+allPatterns := lib.ListAll()
 
 // Each PatternSummary contains:
-// - Name, Title, Category
-// - Difficulty, BackendType
-// - Use case count
+// - Name, Title, Description
+// - Category, Difficulty, BackendType
+// - UseCases []string
+// - BackendFunction string (optional)
 ```
 
 **Expected Output**:
 ```
-Name: postgres/analytics/missing_index_analysis
+Name: missing_index_analysis
 Title: Missing Index Analysis
 Category: analytics
 Difficulty: intermediate
 Backend: PostgreSQL
-Use Cases: 3
 ```
 
 
@@ -2214,7 +2254,7 @@ Before optimizing, understand the problem:
 
 # Then optimize based on findings
 - postgres/analytics/join_optimization
-- postgres/analytics/query_plan_analysis
+- postgres/analytics/query_rewrite
 ```
 
 **Why**: Avoid premature optimization.
@@ -2239,7 +2279,7 @@ Patterns reference related patterns for complex workflows:
 
 | Your Skill Level | Start With | Avoid |
 |-----------------|------------|-------|
-| SQL Beginner | sql/data_quality/data_profiling | postgres/analytics/query_plan_analysis |
+| SQL Beginner | sql/data_quality/data_profiling | postgres/analytics/query_rewrite |
 | SQL Intermediate | postgres/analytics/missing_index_analysis | teradata/analytics/funnel_analysis |
 | SQL Expert | Any postgres/analytics pattern | N/A |
 | ML Beginner | teradata/ml/linear_regression | teradata/ml/decision_tree |
@@ -2269,10 +2309,10 @@ Many patterns have multiple templates for progressive refinement:
 
 ```yaml
 # teradata/analytics/funnel_analysis templates:
-1. discovery - Explore event values
-2. simple_funnel - Basic funnel
-3. funnel_with_timing - Add timing analysis
-4. funnel_with_paths - Full path analysis
+1. basic_funnel - Basic funnel analysis
+2. time_constrained_funnel - Add timing constraints
+3. drop_off_analysis - Analyze drop-off points
+4. cohort_funnel - Cohort-based funnel analysis
 ```
 
 **Why**: Start simple, add complexity as needed.
@@ -2428,7 +2468,7 @@ Error: pattern missing required field: name
 Error: invalid category: unknown_category
 ```
 
-**Valid Categories**:
+**Valid Categories** (from Library search paths):
 - analytics
 - ml
 - data_quality
@@ -2440,6 +2480,11 @@ Error: invalid category: unknown_category
 - vision
 - evaluation
 - documents
+- document
+- rest_api
+- etl
+- weaver
+- fun
 
 **Resolution**: Use valid category
 
@@ -2499,8 +2544,6 @@ Error: pattern requires Teradata backend but only PostgreSQL available
 
 ### Guides
 - [Pattern Library Guide](../guides/pattern-library-guide.md) - Using patterns in agents
-- [Custom Pattern Guide](../guides/custom-patterns.md) - Creating custom patterns
-- [Agent Configuration Guide](../guides/agent-configuration.md) - Configure pattern-guided agents
 
 ### Architecture Documentation
 - [Pattern System Architecture](../architecture/pattern-system.md) - Pattern system design

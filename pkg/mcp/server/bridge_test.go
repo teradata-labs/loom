@@ -22,9 +22,11 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +63,7 @@ type mockLoomClient struct {
 	updateUIAppFunc             func(ctx context.Context, in *loomv1.UpdateUIAppRequest, opts ...grpc.CallOption) (*loomv1.UpdateUIAppResponse, error)
 	deleteUIAppFunc             func(ctx context.Context, in *loomv1.DeleteUIAppRequest, opts ...grpc.CallOption) (*loomv1.DeleteUIAppResponse, error)
 	listComponentTypesFunc      func(ctx context.Context, in *loomv1.ListComponentTypesRequest, opts ...grpc.CallOption) (*loomv1.ListComponentTypesResponse, error)
+	getAgentFunc                func(ctx context.Context, in *loomv1.GetAgentRequest, opts ...grpc.CallOption) (*loomv1.AgentInfo, error)
 }
 
 func (m *mockLoomClient) GetHealth(ctx context.Context, in *loomv1.GetHealthRequest, opts ...grpc.CallOption) (*loomv1.HealthStatus, error) {
@@ -181,6 +184,16 @@ func (m *mockLoomClient) ListComponentTypes(ctx context.Context, in *loomv1.List
 	return &loomv1.ListComponentTypesResponse{}, nil
 }
 
+func (m *mockLoomClient) GetAgent(ctx context.Context, in *loomv1.GetAgentRequest, opts ...grpc.CallOption) (*loomv1.AgentInfo, error) {
+	if m.getAgentFunc != nil {
+		return m.getAgentFunc(ctx, in, opts...)
+	}
+	if in == nil {
+		return &loomv1.AgentInfo{}, nil
+	}
+	return &loomv1.AgentInfo{Id: in.GetAgentId()}, nil
+}
+
 func TestLoomBridge_ListTools(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}
@@ -290,8 +303,12 @@ func TestLoomBridge_CallTool_Weave(t *testing.T) {
 	mockClient := &mockLoomClient{
 		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
 			return &loomv1.WeaveResponse{
-				Text: "Analyzed the data: " + in.GetQuery(),
+				Text:    "Analyzed the data: " + in.GetQuery(),
+				AgentId: "weave-test-agent",
 			}, nil
+		},
+		getAgentFunc: func(_ context.Context, in *loomv1.GetAgentRequest, _ ...grpc.CallOption) (*loomv1.AgentInfo, error) {
+			return &loomv1.AgentInfo{Id: in.GetAgentId(), Name: "Weave Test Agent"}, nil
 		},
 	}
 
@@ -302,7 +319,106 @@ func TestLoomBridge_CallTool_Weave(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Contains(t, result.Content[0].Text, "Analyzed the data")
+	text := result.Content[0].Text
+	assert.Contains(t, text, "Loom weave routing:")
+	assert.Contains(t, text, "weave-test-agent")
+	assert.Contains(t, text, "agent_name: Weave Test Agent")
+	assert.Contains(t, text, "agent_id was not set")
+	assert.Contains(t, text, "Analyzed the data")
+}
+
+// weaveToolTextJSONObject parses the WeaveResponse JSON object from loom_weave tool text after the
+// optional routing preamble (avoids false matches if a preamble line ever contained '{').
+func weaveToolTextJSONObject(t *testing.T, text string) map[string]interface{} {
+	t.Helper()
+	const hdr = "Loom weave routing:"
+	rest := text
+	if i := strings.Index(text, hdr); i >= 0 {
+		rest = text[i+len(hdr):]
+	}
+	var jsonStart int
+	if j := strings.Index(rest, "\n{"); j >= 0 {
+		jsonStart = j + 1
+	} else {
+		j = strings.Index(rest, "{")
+		require.NotEqual(t, -1, j, "expected JSON object in loom_weave text")
+		jsonStart = j
+	}
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(rest[jsonStart:]), &payload))
+	return payload
+}
+
+func TestLoomBridge_CallTool_Weave_TrailingJSONParses(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			return &loomv1.WeaveResponse{
+				Text:    "hello",
+				AgentId: "aid-1",
+			}, nil
+		},
+	}
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_weave", map[string]interface{}{
+		"query": "q",
+	})
+	require.NoError(t, err)
+	payload := weaveToolTextJSONObject(t, result.Content[0].Text)
+	assert.Equal(t, "hello", payload["text"])
+	assert.Equal(t, "aid-1", payload["agentId"])
+}
+
+func TestLoomBridge_CallTool_Weave_ExplicitAgentID_jsonNumber(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			assert.Equal(t, "42", in.GetAgentId())
+			return &loomv1.WeaveResponse{Text: "ok", AgentId: "42"}, nil
+		},
+	}
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+	result, err := bridge.CallTool(context.Background(), "loom_weave", map[string]interface{}{
+		"query":    "q",
+		"agent_id": json.Number("42"),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result.Content[0].Text, "agent_id was set on this tool call")
+}
+
+func TestLoomBridge_CallTool_Weave_PreambleWhenAgentIDMissingFromResponse(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, _ *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			return &loomv1.WeaveResponse{Text: "x"}, nil
+		},
+	}
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+	result, err := bridge.CallTool(context.Background(), "loom_weave", map[string]interface{}{"query": "q"})
+	require.NoError(t, err)
+	assert.Contains(t, result.Content[0].Text, "(server did not return agent_id)")
+}
+
+func TestLoomBridge_CallTool_Weave_ExplicitAgentIDNoDefaultWarning(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			assert.Equal(t, "teradata-agent", in.GetAgentId())
+			return &loomv1.WeaveResponse{Text: "ok", AgentId: "teradata-agent"}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_weave", map[string]interface{}{
+		"query":    "select 1",
+		"agent_id": "teradata-agent",
+	})
+	require.NoError(t, err)
+	text := result.Content[0].Text
+	assert.Contains(t, text, "agent_id was set on this tool call")
+	assert.NotContains(t, text, "agent_id was not set")
 }
 
 func TestLoomBridge_CallTool_ListSessions(t *testing.T) {

@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -340,4 +342,125 @@ func callGRPC[Req proto.Message, Resp proto.Message](
 			{Type: "text", Text: string(respJSON)},
 		},
 	}, nil
+}
+
+// weaveAgentLookupTimeout bounds optional GetAgent calls used to enrich loom_weave MCP text.
+const weaveAgentLookupTimeout = 5 * time.Second
+
+// weaveAgentIDStringValue returns a non-empty string form of agent_id from MCP tool args, or false if
+// the client did not supply a usable id (nil, empty, bool, or composite values).
+func weaveAgentIDStringValue(raw interface{}) (string, bool) {
+	if raw == nil {
+		return "", false
+	}
+	switch v := raw.(type) {
+	case string:
+		s := strings.TrimSpace(v)
+		return s, s != ""
+	case json.Number:
+		s := strings.TrimSpace(v.String())
+		return s, s != ""
+	case float64:
+		if v != float64(int64(v)) {
+			return strings.TrimSpace(strconv.FormatFloat(v, 'f', -1, 64)), true
+		}
+		return strconv.FormatInt(int64(v), 10), true
+	case int:
+		return strconv.Itoa(v), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint64:
+		return strconv.FormatUint(v, 10), true
+	case bool, []interface{}, map[string]interface{}:
+		return "", false
+	default:
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if s == "" || s == "<nil>" {
+			return "", false
+		}
+		return s, true
+	}
+}
+
+// weaveArgsHaveExplicitAgentID reports whether MCP tool args include a non-empty agent_id supplied by
+// the client (after the same coercion rules as prepareWeaveMCPArgsForProtoJSON).
+func weaveArgsHaveExplicitAgentID(args map[string]interface{}) bool {
+	if args == nil {
+		return false
+	}
+	raw, ok := args["agent_id"]
+	if !ok {
+		return false
+	}
+	_, ok = weaveAgentIDStringValue(raw)
+	return ok
+}
+
+// prepareWeaveMCPArgsForProtoJSON returns a shallow copy of args with agent_id coerced to a JSON string
+// when the client sent a numeric or other scalar form, so protojson can populate WeaveRequest.agent_id.
+func prepareWeaveMCPArgsForProtoJSON(args map[string]interface{}) map[string]interface{} {
+	if len(args) == 0 {
+		return args
+	}
+	out := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		out[k] = v
+	}
+	raw, ok := out["agent_id"]
+	if !ok || raw == nil {
+		return out
+	}
+	if s, ok := weaveAgentIDStringValue(raw); ok {
+		out["agent_id"] = s
+	} else {
+		delete(out, "agent_id")
+	}
+	return out
+}
+
+// weaveRoutingPreamble returns a short, model-visible routing summary for loom_weave results.
+// Labels in the preamble use snake_case for readability. The JSON body that follows handleWeave
+// uses protojson default names (camelCase, e.g. agentId).
+func (b *LoomBridge) weaveRoutingPreamble(ctx context.Context, explicitAgent bool, resolvedAgentID string) string {
+	var name string
+	if resolvedAgentID != "" && b != nil && b.client != nil {
+		lookupCtx, cancel := context.WithTimeout(ctx, weaveAgentLookupTimeout)
+		defer cancel()
+		info, err := b.client.GetAgent(lookupCtx, &loomv1.GetAgentRequest{AgentId: resolvedAgentID})
+		switch {
+		case err != nil && b.logger != nil:
+			b.logger.Debug("loom weave routing: GetAgent lookup failed",
+				zap.String("agent_id", resolvedAgentID),
+				zap.Error(err))
+		case info != nil:
+			name = info.GetName()
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("Loom weave routing:")
+	sb.WriteString("\n- agent_id: ")
+	if resolvedAgentID != "" {
+		sb.WriteString(resolvedAgentID)
+	} else {
+		sb.WriteString("(server did not return agent_id)")
+	}
+	sb.WriteString("\n")
+	if name != "" {
+		sb.WriteString("- agent_name: ")
+		sb.WriteString(name)
+		sb.WriteString("\n")
+	}
+	if explicitAgent {
+		sb.WriteString("- agent_id was set on this tool call.\n")
+	} else {
+		sb.WriteString("- note: agent_id was not set; the server picked the agent above (default or session-owned).\n")
+		sb.WriteString("  If tools are missing, run loom_list_agents and pass agent_id for an agent with the right MCP servers.\n")
+	}
+	return sb.String()
 }

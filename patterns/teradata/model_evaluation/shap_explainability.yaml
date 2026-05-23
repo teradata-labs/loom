@@ -1,0 +1,374 @@
+# === METADATA START ===
+name: shap_explainability
+title: "SHAP Feature Explainability"
+description: |
+  Compute SHAP (Shapley Additive Explanations) values using TD_SHAP to explain individual
+  predictions and global feature importance. Works with TD_GLM, TD_DecisionForest, and
+  TD_XGBoost models. Produces per-sample feature contributions (primary output) and mean
+  absolute feature importance (GlobalExplanation OUT TABLE).
+
+  TD_SHAP is ideal for:
+  - Explaining why a model made a specific prediction
+  - Ranking features by global importance
+  - Identifying which features drive individual predictions
+  - Model debugging and auditing for fairness and bias
+  - Regulatory compliance requiring model interpretability
+
+category: model_evaluation
+difficulty: advanced
+teradata_function: TD_SHAP
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - model_evaluation
+  - analytics
+  - reporting
+  - explainability
+use_cases:
+  # --- Use Case 1: Feature Importance ---
+  - Computing global feature importance rankings for a trained model
+
+  # --- Use Case 2: Individual Prediction Explanation ---
+  - Explaining why the model made a specific prediction for a single row
+
+  # --- Use Case 3: Model Debugging ---
+  - Debugging unexpected model predictions by examining feature contributions
+
+  # --- Use Case 4: Bias Detection ---
+  - Detecting if protected attributes disproportionately drive predictions
+
+  # --- Use Case 5: Regulatory Compliance ---
+  - Providing model interpretability for regulatory audit requirements
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the input data and model tables"
+    example: "ml_project"
+
+  # --- Parameter 2: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Table with data to explain; must have same columns as training data
+    required: true
+    description: "Table containing data to explain (same schema as training data)"
+    example: "customer_test_data"
+
+  # --- Parameter 3: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: Table containing the trained model output (from TD_GLM, TD_DecisionForest, or TD_XGBoost)
+    required: true
+    description: "Table containing the trained model (output of TD_GLM, TD_DecisionForest, or TD_XGBoost)"
+    example: "churn_model"
+
+  # --- Parameter 4: Global Explanation Table ---
+  - name: global_table
+    type: string
+    # LLM-HINT: Required OUT TABLE; stores mean absolute SHAP values per feature (global importance)
+    required: true
+    description: "Output table for global feature importance (mean absolute SHAP values)"
+    example: "churn_global_importance"
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier in the input table
+    required: true
+    description: "Unique identifier column in the input table"
+    example: "customer_id"
+
+  # --- Parameter 6: Training Function ---
+  - name: training_function
+    type: string
+    # LLM-HINT: Must match the function used to train the model: 'td_glm', 'td_decisionforest', or 'td_xgboost'
+    required: true
+    description: "Training function that created the model. One of: td_glm, td_decisionforest, td_xgboost"
+    example: "td_xgboost"
+
+  # --- Parameter 7: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: Must exactly match training column names and case; order does not matter
+    required: true
+    description: "Feature columns used during training. Must match exact column names and case"
+    example: '["age", "tenure_months", "monthly_charges", "total_charges"]'
+
+  # --- Parameter 8: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'Regression' (default) or 'Classification'; must match the model's task type
+    required: false
+    default: "Regression"
+    description: "Model type: 'Regression' or 'Classification'"
+    example: "Classification"
+
+  # --- Parameter 9: Detailed ---
+  - name: detailed
+    type: string
+    # LLM-HINT: 'true' for per-tree SHAP values (DecisionForest/XGBoost only); 'Final' row = aggregated
+    required: false
+    default: "false"
+    description: "Output per-tree SHAP values. DecisionForest and XGBoost only"
+    example: "true"
+
+  # --- Parameter 10: Accumulate ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Extra columns to carry through from InputTable to output for context
+    required: false
+    description: "Additional columns to carry through from input to output"
+    example: '["customer_name", "segment"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === GLOBAL_IMPORTANCE TEMPLATE ===
+  # LLM-HINT: Computes per-sample SHAP values and global feature importance; use for feature ranking
+  global_importance:
+    description: "Compute SHAP values for global feature importance ranking"
+    sql: |
+      -- SHAP global feature importance
+      -- Primary output: per-sample SHAP contributions
+      -- GlobalExplanation OUT TABLE: mean |SHAP| per feature
+      SELECT * FROM TD_SHAP(
+        ON {{database}}.{{input_table}} AS InputTable
+        ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+        OUT TABLE GlobalExplanation({{database}}.{{global_table}})
+        USING
+          IDColumn('{{id_column}}')
+          TrainingFunction('{{training_function}}')
+          InputColumns({{input_columns_quoted}})
+          ModelType('{{model_type}}')
+      ) AS t;
+
+      -- Query global feature importance (ranked)
+      SELECT * FROM {{database}}.{{global_table}};
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - global_table
+      - id_column
+      - training_function
+      - input_columns_quoted
+      - model_type
+
+  # === INDIVIDUAL_EXPLANATION TEMPLATE ===
+  # LLM-HINT: Explains specific predictions; filter input to rows of interest; use Accumulate for context
+  individual_explanation:
+    description: "Explain individual predictions with per-feature SHAP contributions"
+    sql: |
+      -- Explain specific predictions with context columns
+      -- Each feature column in the output contains its SHAP contribution
+      -- Positive SHAP = pushes prediction higher; Negative = pushes lower
+      SELECT * FROM TD_SHAP(
+        ON (
+          SELECT * FROM {{database}}.{{input_table}}
+          WHERE {{id_column}} IN ({{target_ids}})
+        ) AS InputTable
+        ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+        OUT TABLE GlobalExplanation({{database}}.{{global_table}})
+        USING
+          IDColumn('{{id_column}}')
+          TrainingFunction('{{training_function}}')
+          InputColumns({{input_columns_quoted}})
+          ModelType('{{model_type}}')
+          Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - global_table
+      - id_column
+      - training_function
+      - input_columns_quoted
+      - model_type
+      - target_ids
+      - accumulate_columns_quoted
+
+  # === DETAILED_TREE_SHAP TEMPLATE ===
+  # LLM-HINT: Per-tree SHAP for DecisionForest/XGBoost; 'Final' row = aggregated; useful for ensemble debugging
+  detailed_tree_shap:
+    description: "Detailed per-tree SHAP values for tree-based models (DecisionForest/XGBoost)"
+    sql: |
+      -- Detailed SHAP with per-tree contributions
+      -- tree_num column shows individual tree contributions
+      -- 'Final' row = aggregated SHAP across all trees
+      -- NOTE: Execution time scales with model size - use on small datasets
+      SELECT * FROM TD_SHAP(
+        ON {{database}}.{{input_table}} AS InputTable
+        ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+        OUT TABLE GlobalExplanation({{database}}.{{global_table}})
+        USING
+          IDColumn('{{id_column}}')
+          TrainingFunction('{{training_function}}')
+          InputColumns({{input_columns_quoted}})
+          ModelType('{{model_type}}')
+          Detailed('true')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - global_table
+      - id_column
+      - training_function
+      - input_columns_quoted
+      - model_type
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Churn Model Explainability ---
+  - name: "Churn Model Feature Importance"
+    description: "Explain a churn prediction XGBoost model using SHAP"
+    parameters:
+      database: "telecom"
+      input_table: "churn_test_data"
+      model_table: "churn_xgboost_model"
+      global_table: "churn_shap_global"
+      id_column: "customer_id"
+      training_function: "td_xgboost"
+      input_columns: ["tenure_months", "monthly_charges", "total_charges", "num_support_tickets", "contract_type_encoded"]
+      model_type: "Classification"
+    expected_result: |
+      Global feature importance (mean absolute SHAP values):
+
+      tenure_months | monthly_charges | total_charges | num_support_tickets | contract_type_encoded
+      --------------+-----------------+---------------+---------------------+----------------------
+          0.2341    |     0.1876      |    0.0954     |       0.1523        |        0.2105
+
+      Feature ranking by importance:
+      1. tenure_months (0.234) - strongest predictor of churn
+      2. contract_type_encoded (0.211) - contract type heavily influences retention
+      3. monthly_charges (0.188) - higher charges correlate with churn
+      4. num_support_tickets (0.152) - service issues drive churn
+      5. total_charges (0.095) - less important when tenure is already included
+
+      Per-sample example (customer_id = 1042):
+        tenure_months: -0.35 (short tenure pushes toward churn)
+        monthly_charges: +0.22 (high charges push toward churn)
+        contract_type_encoded: +0.28 (month-to-month pushes toward churn)
+
+  # --- Example 2: GLM Price Prediction ---
+  - name: "House Price GLM Explanation"
+    description: "Explain a GLM regression model for house price prediction"
+    parameters:
+      database: "real_estate"
+      input_table: "house_test_data"
+      model_table: "price_glm_model"
+      global_table: "price_shap_global"
+      id_column: "listing_id"
+      training_function: "td_glm"
+      input_columns: ["sqft", "bedrooms", "bathrooms", "lot_size", "year_built", "garage_spaces"]
+      model_type: "Regression"
+    expected_result: |
+      Global feature importance (mean absolute SHAP values):
+
+      sqft   | bedrooms | bathrooms | lot_size | year_built | garage_spaces
+      -------+----------+-----------+----------+------------+--------------
+      0.4215 |  0.1123  |   0.0987  |  0.1532  |   0.1245   |    0.0898
+
+      sqft is by far the strongest predictor of house price.
+      lot_size and year_built also contribute meaningfully.
+      garage_spaces has the least impact in this model.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Column Name Mismatch ---
+  - error: "InputColumns do not match model training columns"
+    cause: "Column names in InputColumns must exactly match the names and case used during model training"
+    solution: "Verify exact column names from the training step. Column names are case-sensitive. Use the same list passed to the original TD_GLM/TD_DecisionForest/TD_XGBoost call"
+
+  # --- Error 2: Wrong TrainingFunction ---
+  - error: "TrainingFunction does not match the model source"
+    cause: "Specifying td_glm when the model was trained with td_xgboost, or vice versa"
+    solution: "Set TrainingFunction to exactly the function that created the model table: 'td_glm', 'td_decisionforest', or 'td_xgboost'"
+
+  # --- Error 3: Missing GlobalExplanation OUT TABLE ---
+  - error: "OUT TABLE GlobalExplanation is required"
+    cause: "TD_SHAP requires the GlobalExplanation OUT TABLE parameter"
+    solution: "Always specify: OUT TABLE GlobalExplanation(db.table_name). This is a required parameter, not optional"
+
+  # --- Error 4: Performance Issues on Large Models ---
+  - error: "TD_SHAP query takes extremely long or times out"
+    cause: "TD_SHAP parses all branches of every tree in the model; execution time scales with model complexity"
+    solution: "Reduce scope: lower NumParallelTrees (default 1000), lower NumBoostRounds for XGBoost, or run on a smaller sample of input data"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## SHAP Explainability Best Practices
+
+  ### 1. Start with Global Importance
+  - Run TD_SHAP on the full test set first
+  - Check GlobalExplanation table for overall feature ranking
+  - Identifies which features matter most across all predictions
+
+  ### 2. Investigate Individual Predictions
+  - Filter input to specific rows of interest
+  - Use Accumulate to carry through context columns
+  - Positive SHAP = pushes prediction higher; Negative = pushes prediction lower
+  - Compare feature contributions to the overall prediction
+
+  ### 3. Performance Optimization
+  ```sql
+  -- For large tree models, limit scope
+  NumParallelTrees(100)   -- default 1000; reduce for faster execution
+  NumBoostRounds(3)       -- XGBoost only; default 3
+  ```
+  - TD_SHAP parses every tree branch - execution time scales with model size
+  - Run on a representative sample, not the entire dataset
+  - For very large models, start with a 1000-row sample
+
+  ### 4. Validate Feature Importance
+  - SHAP importance should align with domain knowledge
+  - If a low-importance feature ranks high, investigate data leakage
+  - If a key business feature ranks low, the model may not capture that signal
+
+  ### 5. Use Detailed Mode for Ensemble Debugging
+  - Set Detailed('true') for DecisionForest and XGBoost
+  - Inspect per-tree SHAP values to understand ensemble behavior
+  - 'Final' row gives the aggregated result across all trees
+  - Useful for identifying trees that disagree with the ensemble
+
+  ### 6. Model Type Must Match
+  - Classification models: set ModelType('Classification')
+  - Regression models: set ModelType('Regression') (default)
+  - Wrong setting produces incorrect SHAP values without error
+
+  ### 7. Pair with Model Evaluation
+  - Use TD_ClassificationEvaluator or TD_RegressionEvaluator first
+  - Once you know the model performs well, use TD_SHAP to explain why
+  - If the model performs poorly, SHAP helps diagnose which features are misleading it
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Classification Evaluator ---
+  - classification_evaluator
+
+  # --- Pattern 2: Regression Evaluator ---
+  - regression_evaluator
+
+  # --- Pattern 3: ROC Analysis ---
+  - roc_analysis
+
+  # --- Pattern 4: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 5: XGBoost ---
+  - xgboost
+
+  # --- Pattern 6: GLM ---
+  - glm
+# === RELATED_PATTERNS END ===

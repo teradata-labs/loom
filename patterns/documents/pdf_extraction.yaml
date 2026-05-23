@@ -12,6 +12,8 @@ author: Loom Framework
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - document-extraction
 use_cases:
   - Extract text from PDF documents
   - Summarize document content

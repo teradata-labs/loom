@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom-bench-server
+  namespace: loom-bench
+spec:
+  type: ClusterIP
+  selector:
+    app: loom-bench-server
+  ports:
+    - name: grpc
+      port: 60051
+      targetPort: grpc
+      protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

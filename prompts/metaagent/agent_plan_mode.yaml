@@ -1,0 +1,247 @@
+---
+name: agent_plan_mode_guide
+namespace: loom
+description: Guide for weaver's /agent-plan mode - structured requirement gathering
+---
+prompts:
+  - id: agent_plan_conversation_flow
+    content: |
+      # Agent Planning Mode Conversation Flow
+
+      When a user chooses /agent-plan mode, guide them through structured requirement gathering.
+
+      ## Phase 1: Problem Understanding (2-3 questions)
+
+      ### Goal Discovery
+      "Let's start with the big picture. What specific problem are you trying to solve?"
+
+      Follow-up prompts based on response:
+      - If vague: "Can you give me a concrete example of when you'd use this agent?"
+      - If technical: "What's the end goal from a business perspective?"
+      - If broad: "What's the #1 outcome you want from this agent?"
+
+      ### Success Criteria
+      "How will you know this agent is working well? What does success look like?"
+
+      Listen for:
+      - Performance metrics ("process 1000 records in under 5 minutes")
+      - Quality metrics ("95% accuracy", "no false positives")
+      - User experience ("easy to understand outputs", "helpful error messages")
+
+      ### Current Workflow
+      "How do you handle this today? (Manually, different tool, not at all?)"
+
+      This reveals:
+      - Pain points to solve
+      - Existing patterns to match
+      - Integration points needed
+
+      ## Phase 2: Technical Requirements (3-4 questions)
+
+      ### Data Sources
+      "What data will this agent work with?"
+
+      Probe for:
+      - Databases (PostgreSQL, MySQL, Teradata, etc.)
+      - Files (CSV, JSON, Excel, logs)
+      - APIs (REST, GraphQL, internal services)
+      - Real-time streams vs batch processing
+
+      Example: "You mentioned PostgreSQL - do you need read-only access or write access too?"
+
+      ### Integration Points
+      "Does this agent need to interact with other systems or agents?"
+
+      Look for:
+      - External APIs or services
+      - Other Loom agents (suggest multi-agent coordination)
+      - Existing tools or scripts
+      - Notification systems (Slack, email, etc.)
+
+      ### Tool Requirements
+      "What actions does the agent need to take?"
+
+      Categories:
+      - **Data operations**: Query databases, read files, parse CSVs
+      - **Analysis**: Run calculations, generate reports, find patterns
+      - **Communication**: Send messages, create tickets, notify users
+      - **Execution**: Run scripts, deploy code, restart services
+
+      Use tool_search to find relevant tools, then confirm: "I found these tools that might help: [list]. Do these cover your needs?"
+
+      ### Constraints & Preferences
+      "Any constraints I should know about?"
+
+      Common constraints:
+      - **Performance**: "Must respond in under 3 seconds"
+      - **Security**: "No sensitive data in logs", "read-only access"
+      - **Compliance**: "GDPR requirements", "audit trail needed"
+      - **LLM provider**: "Must use Bedrock/Anthropic/Ollama"
+
+      ## Phase 3: Skill Recommendation (1-2 questions)
+
+      Based on gathered requirements, recommend relevant skills:
+
+      "Based on what you've told me, I think these skills would help:
+
+      🎯 **[PRIMARY_SKILL]** (/command) - RECOMMENDED
+         [Why this helps their specific problem]
+         Example: 'sql-optimization analyzes your slow queries and suggests indexes'
+
+      📊 **[SECONDARY_SKILL]** (/command) - OPTIONAL
+         [Additional value]
+         Example: 'data-quality-check can validate query results before processing'
+
+      Would you like me to include these skills in the agent configuration?"
+
+      ### Skill Selection Decision Tree
+
+      Match user needs to skills using this logic:
+
+      ```
+      IF user mentions:
+        "slow queries" OR "database performance" OR "SQL tuning"
+          → Recommend: sql-optimization (MUST HAVE)
+
+        "validate data" OR "data quality" OR "check duplicates"
+          → Recommend: data-quality-check (MUST HAVE)
+
+        "code review" OR "security" OR "find bugs"
+          → Recommend: code-review (MUST HAVE)
+
+        "multiple agents" OR "coordinate" OR "delegation"
+          → Recommend: multi-agent-coordinator (MUST HAVE)
+                      + agent-discovery (HELPFUL)
+                      + request-response-coordinator (IF synchronous workflow)
+      ```
+
+      ## Phase 4: Workflow Design (if multi-agent)
+
+      If user needs multiple specialized agents:
+
+      "I'm seeing this might work best as a multi-agent workflow. Let me propose a structure:
+
+      **Coordinator Agent**: Handles user requests and delegates to specialists
+      **[Specialist 1]**: [Specific responsibility]
+      **[Specialist 2]**: [Specific responsibility]
+
+      Should I create:
+      1. **Orchestrated workflow** - Coordinator manages a defined pipeline (debate, pipeline, parallel)
+      2. **Coordination workflow** - Free-form collaboration between agents
+
+      Which fits your needs better?"
+
+      ### Workflow Type Selection
+
+      - **Pipeline**: Sequential steps, each agent's output feeds the next
+        - Example: "Data ingestion → Validation → Transformation → Loading"
+
+      - **Parallel**: Independent tasks running simultaneously
+        - Example: "Analyze code quality + Run security scan + Check dependencies"
+
+      - **Debate**: Multiple agents discuss to reach consensus
+        - Example: "Review PR from different perspectives (security, performance, maintainability)"
+
+      - **Coordination** (free-form): Dynamic collaboration
+        - Example: "Research agent gathers info, then hands off to appropriate specialist"
+
+      ## Phase 5: Confirmation & Creation
+
+      "Great! Here's what I'm going to create:
+
+      **Agent/Workflow Name**: [name]
+      **Purpose**: [one-line description]
+      **Data Sources**: [list]
+      **Key Tools**: [list]
+      **Recommended Skills**: [list with commands]
+      **Success Criteria**: [from Phase 1]
+
+      Does this match what you're looking for? Any changes before I create it?"
+
+      Wait for confirmation, then proceed with YOUR Workflow steps from the main system prompt.
+
+      ## Example Full Conversation Flow
+
+      ```
+      WEAVER: "I can help you create that! Would you like:
+              1. Quick Start - Create it right away
+              2. /agent-plan Mode - Guided planning
+              Which approach?"
+
+      USER: "/agent-plan"
+
+      WEAVER: "Let's plan this out. What specific problem are you solving?"
+
+      USER: "Our SQL queries are getting slower as data grows"
+
+      WEAVER: "How will you know the agent is working well?"
+
+      USER: "If it can identify why queries are slow and suggest fixes"
+
+      WEAVER: "What database are you using?"
+
+      USER: "PostgreSQL"
+
+      WEAVER: "Do you need the agent to automatically apply fixes or just recommend them?"
+
+      USER: "Just recommend - we'll review before applying"
+
+      WEAVER: "Perfect. Based on this, I recommend:
+
+              🎯 **sql-optimization** (/optimize) - RECOMMENDED
+                 Analyzes query execution plans and suggests improvements
+                 Includes index recommendations and query rewrites
+
+              Would you like me to include this skill?"
+
+      USER: "Yes"
+
+      WEAVER: "Great! Here's the plan:
+
+              **Agent Name**: postgresql-query-optimizer
+              **Purpose**: Analyze slow PostgreSQL queries and recommend optimizations
+              **Database**: PostgreSQL (read-only)
+              **Key Tools**: shell_execute, tool_search
+              **Skill**: sql-optimization (/optimize)
+              **Success Criteria**: Identify performance bottlenecks and suggest actionable fixes
+
+              Ready to create this?"
+
+      USER: "Yes!"
+
+      WEAVER: [Creates agent with agent_management tool]
+              "Done! Your agent is ready..."
+      ```
+
+      ## Tips for Good /agent-plan Conversations
+
+      1. **Ask focused questions**: One concept per question
+      2. **Build on previous answers**: Reference what they said earlier
+      3. **Clarify ambiguity**: If unclear, probe deeper with examples
+      4. **Suggest, don't dictate**: Offer recommendations but let user decide
+      5. **Summarize often**: Recap every few questions to confirm understanding
+      6. **Stay concise**: Don't overwhelm with options
+      7. **Show value**: Explain WHY each skill/tool/decision helps
+
+      ## Common Pitfalls to Avoid
+
+      ❌ **Don't ask too many questions** - Max 8-10 total
+      ❌ **Don't use jargon** - Explain technical terms
+      ❌ **Don't assume expertise** - User may not know what's possible
+      ❌ **Don't skip skill recommendations** - Always suggest relevant skills
+      ❌ **Don't create without confirmation** - Get explicit "yes" first
+
+      ✅ **Do stay conversational** - This is a dialogue, not a form
+      ✅ **Do provide examples** - Concrete scenarios help clarify
+      ✅ **Do surface options** - User may not know all possibilities
+      ✅ **Do confirm understanding** - Summarize before creating
+
+    variables: {}
+    tags:
+      - weaver
+      - agent-plan
+      - planning
+      - conversation-design
+    metadata:
+      version: "v1"
+      description: "Conversation flow guide for weaver's /agent-plan mode"

@@ -1,0 +1,276 @@
+# === METADATA START ===
+name: data_types_casting
+title: "Teradata Data Types & Casting"
+description: |
+  Reference and templates for Teradata data types and type conversion. Covers numeric,
+  character, date/time, binary, and vector types with CAST patterns and FORMAT clauses.
+
+  Key Teradata-specific types:
+  - VECTOR / Vector32 — native embedding storage (float64/float32, up to 4096 dimensions)
+  - NUMBER — Oracle-compatible variable precision
+  - CLOB/BLOB — large objects up to 2GB
+  - INTERVAL types — year/month and day/second durations
+
+category: core
+difficulty: beginner
+teradata_function: CAST
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - query_generation
+  - data_preparation
+use_cases:
+  - Convert string columns to numeric or date types
+  - Format dates for display or comparison
+  - Create and query vector/embedding columns
+  - Handle type mismatches in joins and unions
+  - Stage external data with proper type casting
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Target database"
+    example: "analytics"
+
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Target table"
+    example: "customer_data"
+
+  - name: source_column
+    type: string
+    # LLM-HINT: Column to cast from
+    required: true
+    description: "Source column for type conversion"
+    example: "date_string"
+
+  - name: target_type
+    type: string
+    # LLM-HINT: Teradata data type to cast to (see type reference tables)
+    required: true
+    description: "Target Teradata data type"
+    example: "DATE"
+
+  - name: format_string
+    type: string
+    # LLM-HINT: Optional FORMAT clause for date/numeric display; only valid for date and numeric types
+    required: false
+    description: "FORMAT clause for dates or numerics"
+    example: "YYYY-MM-DD"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === NUMERIC_CAST TEMPLATE ===
+  # LLM-HINT: Common numeric conversions; DECIMAL(n,m) for precision control
+  numeric_cast:
+    description: "Cast columns to numeric types"
+    sql: |
+      -- Numeric type conversions
+      SELECT
+        CAST({{source_column}} AS INTEGER) AS as_integer,
+        CAST({{source_column}} AS DECIMAL(10, 2)) AS as_decimal,
+        CAST({{source_column}} AS FLOAT) AS as_float,
+        CAST({{source_column}} AS BIGINT) AS as_bigint
+      FROM {{database}}.{{table}}
+      SAMPLE 10;
+    required_parameters:
+      - database
+      - table
+      - source_column
+
+  # === DATE_CAST TEMPLATE ===
+  # LLM-HINT: Use FORMAT clause to parse non-standard date strings; common formats shown
+  date_cast:
+    description: "Cast strings to dates with FORMAT clause"
+    sql: |
+      -- Date conversions with various formats
+      SELECT
+        -- ISO format
+        CAST('2024-01-15' AS DATE FORMAT 'YYYY-MM-DD') AS iso_date,
+        -- US format
+        CAST('01/15/2024' AS DATE FORMAT 'MM/DD/YYYY') AS us_date,
+        -- Compact format
+        CAST('20240115' AS DATE FORMAT 'YYYYMMDD') AS compact_date,
+        -- Date to string
+        CAST(CURRENT_DATE AS VARCHAR(10) FORMAT 'YYYY-MM-DD') AS date_string,
+        -- Timestamp to date
+        CAST(CURRENT_TIMESTAMP AS DATE) AS ts_to_date,
+        -- Date to timestamp
+        CAST(CURRENT_DATE AS TIMESTAMP) AS date_to_ts;
+    required_parameters: []
+
+  # === TIMESTAMP_CAST TEMPLATE ===
+  # LLM-HINT: B in format separates date from time; fractional seconds use (n)
+  timestamp_cast:
+    description: "Cast strings to timestamps"
+    sql: |
+      -- Timestamp conversions
+      SELECT
+        CAST('2024-01-15 14:30:00' AS TIMESTAMP FORMAT 'YYYY-MM-DDBHH:MI:SS') AS ts,
+        -- Date arithmetic returns INTEGER (number of days)
+        CAST(CURRENT_DATE AS INTEGER) - CAST(DATE '2024-01-01' AS INTEGER) AS days_diff;
+    required_parameters: []
+
+  # === VECTOR_TABLE TEMPLATE ===
+  # LLM-HINT: VECTOR = float64 (8 bytes/dim); Vector32 = float32 (4 bytes/dim); max 4096 dims
+  vector_table:
+    description: "Create a table with vector columns for embeddings"
+    sql: |
+      CREATE MULTISET TABLE {{database}}.{{table}} (
+        id        INTEGER,
+        embedding VECTOR,       -- float64 vector
+        emb32     Vector32      -- float32 vector (half storage)
+      ) PRIMARY INDEX (id);
+    required_parameters:
+      - database
+      - table
+
+  # === VECTOR_INSERT TEMPLATE ===
+  # LLM-HINT: Insert vectors as comma-separated float strings; works for both VECTOR and Vector32
+  vector_insert:
+    description: "Insert embedding vectors into a vector column"
+    sql: |
+      -- Implicit string literal (comma-separated floats)
+      INSERT INTO {{database}}.{{table}} (id, embedding)
+      VALUES (1, '-0.06944,0.080352,0.045963,0.006985,-0.000496');
+
+      -- Explicit constructor
+      INSERT INTO {{database}}.{{table}} (id, embedding)
+      VALUES (2, NEW Vector('-0.06944,0.080352,0.045963,0.006985,-0.000496'));
+    required_parameters:
+      - database
+      - table
+
+  # === VECTOR_READ TEMPLATE ===
+  # LLM-HINT: Cast to VARCHAR(34000) for display; use .LENGTH() for dimension count
+  vector_read:
+    description: "Read and inspect vector columns"
+    sql: |
+      -- Display vectors as strings
+      SELECT id, CAST(embedding AS VARCHAR(34000)) AS embedding_str
+      FROM {{database}}.{{table}};
+
+      -- Check dimension count
+      SELECT id, embedding.LENGTH() AS dims
+      FROM {{database}}.{{table}};
+
+      -- Verify consistent dimensions across all rows
+      SELECT embedding.LENGTH() AS dims, COUNT(*) AS row_count
+      FROM {{database}}.{{table}}
+      GROUP BY 1;
+    required_parameters:
+      - database
+      - table
+
+  # === FORMAT_DISPLAY TEMPLATE ===
+  # LLM-HINT: FORMAT clause for display formatting; Z suppresses leading zeros
+  format_display:
+    description: "Format numbers and dates for display"
+    sql: |
+      SELECT
+        -- Date formats
+        CAST(CURRENT_DATE AS VARCHAR(20) FORMAT 'MMM DD, YYYY') AS display_date,
+        CAST(CURRENT_DATE AS VARCHAR(10) FORMAT 'YYYYMMDD') AS compact_date,
+        -- Numeric formats
+        CAST(1234567.89 AS DECIMAL(12,2) FORMAT 'ZZZ,ZZ9.99') AS formatted_number;
+    required_parameters: []
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "String to Date Conversion"
+    description: "Convert a string column with US date format to proper DATE type"
+    parameters:
+      database: "staging"
+      table: "raw_data"
+      source_column: "date_text"
+      target_type: "DATE"
+      format_string: "MM/DD/YYYY"
+    expected_result: |
+      CAST(date_text AS DATE FORMAT 'MM/DD/YYYY')
+      Converts '01/15/2024' → DATE '2024-01-15'
+
+  - name: "Create Embedding Table"
+    description: "Create a table to store text embeddings with Vector32 for efficiency"
+    parameters:
+      database: "ml_data"
+      table: "doc_embeddings"
+    expected_result: |
+      Table created with VECTOR column for float64 embeddings.
+      Use Vector32 when float32 precision is sufficient — halves storage
+      and improves HNSW index performance.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "CHAR vs VARCHAR mismatch in joins"
+    cause: "CHAR is space-padded, VARCHAR is not — join/comparison may fail or return unexpected results"
+    solution: "Explicitly CAST one side: CAST(char_col AS VARCHAR(50)) = varchar_col"
+
+  - error: "'abc' = 'abc   ' is TRUE"
+    cause: "CHAR comparisons pad with spaces; this is by design in Teradata"
+    solution: "Use TRIM() or CAST to VARCHAR for exact-length comparisons"
+
+  - error: "Date arithmetic returns INTEGER"
+    cause: "end_date - start_date returns number of days as INTEGER, not an INTERVAL"
+    solution: "This is expected behavior. Use the result directly as a day count."
+
+  - error: "NULL comparison with = returns unknown"
+    cause: "Using = NULL or <> NULL instead of IS NULL / IS NOT NULL"
+    solution: "Always use IS NULL / IS NOT NULL for NULL checks"
+
+  - error: "Mixing CHAR and VARCHAR in UNION"
+    cause: "UNION with mismatched string types requires explicit CAST"
+    solution: "CAST both sides to the same type: CAST(col AS VARCHAR(100))"
+
+  - error: "Vector dimension mismatch"
+    cause: "Inserting vectors with different dimension counts into the same column"
+    solution: "Verify dimensions are consistent: SELECT embedding.LENGTH() AS dims, COUNT(*) GROUP BY 1"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Data Type Best Practices
+
+  ### 1. Numeric Type Selection
+  - Use INTEGER for IDs and counts
+  - Use DECIMAL(n,m) for financial/precise calculations (avoid FLOAT for money)
+  - Use BIGINT for very large counters or IDs
+  - Use FLOAT only for scientific computations where approximate precision is acceptable
+
+  ### 2. String Type Selection
+  - Prefer VARCHAR over CHAR — avoids space-padding issues
+  - Use CHARACTER SET UNICODE for internationalized data
+  - Use CLOB only for text >64KB; prefer VARCHAR for shorter text
+
+  ### 3. Date/Time Handling
+  - Store dates as DATE type, not strings — enables date arithmetic
+  - Use TIMESTAMP(0) when sub-second precision is not needed (saves storage)
+  - Use FORMAT clause for parsing non-standard date strings
+
+  ### 4. Vector Type Selection
+  - Use Vector32 when float32 precision is sufficient (most embedding models)
+  - Vector32 halves storage and improves HNSW performance
+  - Maximum 4096 dimensions for both VECTOR and Vector32
+  - Always verify dimension consistency after bulk loads
+
+  ### 5. Type Conversion Rules
+  - Always use explicit CAST — never rely on implicit conversion
+  - Match types in JOIN conditions to avoid implicit conversion overhead
+  - Use TD_ConvertTo for bulk type conversion in analytics pipelines
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - sql_basics
+  - vector_distance
+  - embeddings
+# === RELATED_PATTERNS END ===

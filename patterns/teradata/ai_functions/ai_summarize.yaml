@@ -1,0 +1,429 @@
+# === METADATA START ===
+name: ai_summarize
+title: "AI Text Summarization"
+description: |
+  Generate summaries of text stored in Teradata columns using LLM-powered
+  summarization. AI_TextSummarize supports multi-level summarization where each
+  level runs the summarizer again on the previous output, producing progressively
+  more compressed results.
+
+  AI_TextSummarize is ideal for:
+  - Summarizing long documents or articles
+  - Creating executive summaries from detailed reports
+  - Compressing verbose text for dashboards
+  - Generating abstracts from research papers
+  - Condensing customer feedback into key points
+
+  Requires an authorization object configured for the target LLM provider.
+  All functions are schema-qualified under TD_SYSFNLIB.
+
+category: ai_functions
+difficulty: beginner
+teradata_function: AI_TextSummarize
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - text_analysis
+  - summarization
+use_cases:
+  # --- Use Case 1: Document Summarization ---
+  - Summarize long documents or articles into concise text
+
+  # --- Use Case 2: Report Compression ---
+  - Create executive summaries from detailed reports
+
+  # --- Use Case 3: Feedback Condensation ---
+  - Condense verbose customer feedback into key points
+
+  # --- Use Case 4: Research Abstracts ---
+  - Generate abstracts from research papers or technical documents
+
+  # --- Use Case 5: Dashboard Text ---
+  - Compress text content for dashboard display
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the text data"
+    example: "document_store"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain a text column
+    required: true
+    description: "Table or view with text data to summarize"
+    example: "research_papers"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column containing text to summarize; must be VARCHAR, CHAR, or CLOB
+    required: true
+    description: "Column containing the text to summarize (VARCHAR, CHAR, or CLOB)"
+    example: "full_text"
+
+  # --- Parameter 4: Levels ---
+  - name: levels
+    type: string
+    # LLM-HINT: Number of summarization passes (1-5); higher = shorter summary; NOTE: argument is lowercase 'levels'
+    required: false
+    default: "1"
+    description: "Number of summarization passes (1-5). Higher levels produce shorter summaries"
+    example: "2"
+
+  # --- Parameter 5: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: Fully qualified authorization object name; must be created first
+    required: true
+    description: "Authorization object for LLM provider (e.g., db.td_gen_azure_auth)"
+    example: "ai_credentials.td_gen_azure_auth"
+
+  # --- Parameter 6: Provider ---
+  - name: provider
+    type: string
+    # LLM-HINT: ApiType value: 'azure', 'aws', 'gcp', 'nim', or 'litellm'
+    required: true
+    description: "LLM provider type for ApiType"
+    example: "azure"
+
+  # --- Parameter 7: Deployment/Model ---
+  - name: deployment_id
+    type: string
+    # LLM-HINT: Azure uses DeploymentId; AWS/GCP use ModelName
+    required: true
+    description: "Model deployment identifier"
+    example: "gpt-4o"
+
+  # --- Parameter 8: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable to carry through to output
+    required: false
+    description: "Columns to carry through from input to output"
+    example: '["paper_id", "title"]'
+
+  # --- Parameter 9: Region (AWS/GCP) ---
+  - name: region
+    type: string
+    # LLM-HINT: Required for AWS Bedrock; not used for Azure
+    required: false
+    description: "AWS region for Bedrock or GCP region"
+    example: "us-east-1"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_SUMMARIZE TEMPLATE ===
+  # LLM-HINT: Single-pass summarization (default); returns Summary, Count (char count), and Message columns
+  basic_summarize:
+    description: "Basic text summarization with single pass"
+    sql: |
+      -- Summarize text in each row with a single pass
+      -- Output: Summary (summarized text), Count (character count), Message (errors if any)
+      SELECT * FROM TD_SYSFNLIB.AI_TextSummarize(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+
+  # === MULTI_LEVEL_SUMMARIZE TEMPLATE ===
+  # LLM-HINT: Multi-pass summarization; each level feeds output back as input; 'levels' is lowercase
+  multi_level_summarize:
+    description: "Multi-level summarization for progressively more compressed output"
+    sql: |
+      -- Multi-level summarization: each level summarizes the previous output
+      -- levels('1') = single pass (default)
+      -- levels('2') = summarize, then summarize the summary
+      -- levels('3'-'5') = additional compression passes
+      -- NOTE: 'levels' is lowercase (unlike most USING arguments)
+      SELECT * FROM TD_SYSFNLIB.AI_TextSummarize(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              levels('{{levels}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - levels
+      - accumulate_columns_quoted
+
+  # === COMPARE_LEVELS TEMPLATE ===
+  # LLM-HINT: Compare summary lengths across different compression levels; useful for finding optimal level
+  compare_levels:
+    description: "Compare summary compression across different levels"
+    sql: |
+      -- Compare summary lengths at level 1
+      SELECT
+          'Level 1' AS summary_level,
+          AVG(t.Count) AS avg_char_count,
+          MIN(t.Count) AS min_char_count,
+          MAX(t.Count) AS max_char_count
+      FROM TD_SYSFNLIB.AI_TextSummarize(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              levels('1')
+      ) AS t
+
+      UNION ALL
+
+      -- Compare summary lengths at level 2
+      SELECT
+          'Level 2' AS summary_level,
+          AVG(t.Count) AS avg_char_count,
+          MIN(t.Count) AS min_char_count,
+          MAX(t.Count) AS max_char_count
+      FROM TD_SYSFNLIB.AI_TextSummarize(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              levels('2')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+
+  # === BATCH_SUMMARIZE TEMPLATE ===
+  # LLM-HINT: Persists summaries to a table; avoids re-running LLM calls
+  batch_summarize:
+    description: "Batch summarization with results persisted to a table"
+    sql: |
+      -- Persist summaries for downstream use
+      CREATE TABLE {{database}}.{{table}}_summaries AS (
+          SELECT * FROM TD_SYSFNLIB.AI_TextSummarize(
+              ON {{database}}.{{table}} AS InputTable
+              USING
+                  ApiType('{{provider}}')
+                  AUTHORIZATION({{auth_object}})
+                  DeploymentId('{{deployment_id}}')
+                  TextColumn('{{text_column}}')
+                  levels('{{levels}}')
+                  Accumulate({{accumulate_columns_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - levels
+      - accumulate_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Research Paper Summarization ---
+  - name: "Research Paper Summarization"
+    description: "Summarize research papers with two-level compression"
+    parameters:
+      database: "research"
+      table: "research_papers"
+      text_column: "full_text"
+      levels: "2"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["paper_id", "title"]
+    expected_result: |
+      paper_id | title                          | Summary                         | Count | Message
+      ---------|--------------------------------|---------------------------------|-------|--------
+      P-101    | Climate Change Impact Study    | This study examines regional... | 245   | NULL
+      P-102    | Machine Learning in Healthcare | ML techniques applied to...     | 198   | NULL
+
+      Level 2 produces shorter summaries than level 1 by summarizing the summary.
+      Use Count to compare compression across levels.
+
+  # --- Example 2: Customer Feedback Condensation ---
+  - name: "Customer Feedback Condensation"
+    description: "Condense verbose customer feedback into brief summaries"
+    parameters:
+      database: "support"
+      table: "customer_feedback"
+      text_column: "feedback_text"
+      levels: "1"
+      auth_object: "ai_credentials.td_gen_aws_auth"
+      provider: "aws"
+      deployment_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+      region: "us-east-1"
+      accumulate_columns: ["feedback_id", "customer_id", "product_id"]
+    expected_result: |
+      Each feedback entry summarized to key points.
+      Use levels('2') or levels('3') for further compression if needed.
+
+  # --- Example 3: Executive Report Summaries ---
+  - name: "Executive Report Summaries"
+    description: "Create executive summaries from detailed quarterly reports"
+    parameters:
+      database: "reporting"
+      table: "quarterly_reports"
+      text_column: "report_body"
+      levels: "3"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["report_id", "quarter", "department"]
+    expected_result: |
+      Level 3 provides highly compressed executive summaries.
+      Compare Count values across levels to find the right compression balance.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Authorization Object ---
+  - error: "Function fails with authorization or authentication error"
+    cause: "Authorization object does not exist or lacks EXECUTE permission"
+    solution: "Create the authorization object first (see authorization_objects pattern) and grant EXECUTE"
+
+  # --- Error 2: levels Casing ---
+  - error: "levels argument not recognized or causes syntax error"
+    cause: "The argument is lowercase 'levels', not 'Levels' or 'LEVELS'"
+    solution: "Use lowercase: levels('2'). This is an exception to the mixed-case convention of other USING arguments"
+
+  # --- Error 3: levels Value Out of Range ---
+  - error: "Invalid levels value"
+    cause: "levels must be '1' through '5' as a string"
+    solution: "Pass as a string within range: levels('1'), levels('2'), ..., levels('5')"
+
+  # --- Error 4: PARTITION BY Causes Error ---
+  - error: "Adding PARTITION BY causes an error"
+    cause: "AI_TextSummarize manages parallelism internally"
+    solution: "Remove any PARTITION BY clause from the ON clause"
+
+  # --- Error 5: Token Limit Exceeded ---
+  - error: "Message column shows token limit or context length error"
+    cause: "Input text exceeds the LLM model's maximum token limit"
+    solution: "Truncate long text or split into sections before summarizing. Consider summarizing sections first, then summarizing the combined summaries"
+
+  # --- Error 6: Empty Summary ---
+  - error: "Summary is empty or very short for some rows"
+    cause: "Input text is too short for meaningful summarization, or the LLM returned an error"
+    solution: "Check the Message column for errors. Filter out very short input text (e.g., WHERE CHARACTER_LENGTH(text_col) > 100)"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## AI Text Summarization Best Practices
+
+  ### 1. Start with Level 1
+  Begin with a single summarization pass and increase levels only if
+  you need shorter output:
+  ```sql
+  levels('1')  -- start here
+  levels('2')  -- if level 1 is too verbose
+  levels('3')  -- for executive-level brevity
+  ```
+
+  ### 2. Use Count to Evaluate Compression
+  The Count output column shows character count of the summary.
+  Compare across levels to find the right balance:
+  ```sql
+  SELECT levels, AVG(Count) FROM ... GROUP BY levels
+  ```
+
+  ### 3. Authorization Setup First
+  Create and test the authorization object before running summarization.
+  See the authorization_objects pattern for provider-specific setup.
+
+  ### 4. Use Accumulate for Traceability
+  Always include key columns:
+  ```sql
+  Accumulate('paper_id', 'title', 'author')
+  ```
+
+  ### 5. Persist Results
+  LLM calls are expensive. Save summaries to a table:
+  ```sql
+  CREATE TABLE paper_summaries AS (...) WITH DATA;
+  ```
+
+  ### 6. Handle Long Documents
+  For text that exceeds model token limits:
+  1. Split into sections (by paragraph, page, or chapter)
+  2. Summarize each section at level 1
+  3. Concatenate section summaries
+  4. Summarize the combined result at level 2-3
+
+  ### 7. lowercase 'levels'
+  Unlike most USING arguments, 'levels' is all lowercase:
+  ```sql
+  -- Correct
+  levels('2')
+
+  -- Wrong (may cause error)
+  Levels('2')
+  ```
+
+  ### 8. Filter Short Text
+  Summarizing already-short text wastes LLM calls:
+  ```sql
+  ON (SELECT * FROM documents WHERE CHARACTER_LENGTH(full_text) > 200) AS InputTable
+  ```
+
+  ### 9. No PARTITION BY
+  AI_TextSummarize manages parallelism internally.
+  Do not add a PARTITION BY clause.
+
+  ### 10. Batch Processing for Large Tables
+  Process in date-based or partition-based batches to manage LLM costs
+  and avoid timeout issues on large tables.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Authorization Objects (prerequisite) ---
+  - authorization_objects
+
+  # --- Pattern 2: AI Ask LLM ---
+  - ai_ask_llm
+
+  # --- Pattern 3: AI Sentiment ---
+  - ai_sentiment
+
+  # --- Pattern 4: AI Text Classifier ---
+  - ai_text_classifier
+
+  # --- Pattern 5: AI PII ---
+  - ai_pii
+# === RELATED_PATTERNS END ===

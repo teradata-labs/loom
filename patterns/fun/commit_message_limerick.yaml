@@ -29,6 +29,8 @@ tags: [git, commit-messages, poetry, limerick, fun]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - fun
 use_cases:
   - Transform commit history into poetry
   - Generate creative release notes

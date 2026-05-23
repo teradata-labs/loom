@@ -218,8 +218,9 @@ prompt:
 skill_refs:
   - ref1
   - ref2
-  - ref3`,
-			wantErr: "skill_refs max depth is 2",
+  - ref3
+  - ref4`,
+			wantErr: "skill_refs max depth is 3",
 		},
 	}
 
@@ -648,14 +649,14 @@ func TestValidateSkillYAML(t *testing.T) {
 			errMsg:  "prompt.instructions is required",
 		},
 		{
-			name: "invalid: 3 skill_refs",
+			name: "invalid: 4 skill_refs",
 			sy: SkillYAML{
 				Metadata:  SkillMetadataYAML{Name: "test-skill", Domain: "code"},
 				Prompt:    SkillPromptYAML{Instructions: "Do something."},
-				SkillRefs: []string{"a", "b", "c"},
+				SkillRefs: []string{"a", "b", "c", "d"},
 			},
 			wantErr: true,
-			errMsg:  "skill_refs max depth is 2",
+			errMsg:  "skill_refs max depth is 3",
 		},
 	}
 
@@ -693,4 +694,154 @@ prompt:
 	require.NoError(t, err)
 	assert.Equal(t, "sql", skill.Domain)
 	assert.Equal(t, "Do the expanded thing.", skill.Prompt.Instructions)
+}
+
+// TestLoadSkill_NewFieldsAbsent confirms that an existing v1.2.0-shape skill
+// YAML (no task_template, no parent_index_path, no emit_tasks) loads cleanly
+// and that EffectiveEmitTasks defaults to true.
+func TestLoadSkill_NewFieldsAbsent(t *testing.T) {
+	yamlContent := `apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: legacy-skill
+  domain: sql
+prompt:
+  instructions: Do legacy things.`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy-skill.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yamlContent), 0o644))
+
+	skill, err := LoadSkill(path)
+	require.NoError(t, err)
+	assert.Nil(t, skill.TaskTemplate)
+	assert.Empty(t, skill.ParentIndexPath)
+	assert.Nil(t, skill.EmitTasks)
+	assert.True(t, skill.EffectiveEmitTasks(),
+		"EffectiveEmitTasks must default to true when EmitTasks is unset")
+}
+
+// TestLoadSkill_NewFieldsPresent loads a skill that exercises every new YAML
+// field added by the overhaul: task_template (with steps + deps), parent_index_path,
+// and an explicit emit_tasks=false. Verifies the loader populates the Go mirror
+// faithfully and that EffectiveEmitTasks honours an explicit false.
+func TestLoadSkill_NewFieldsPresent(t *testing.T) {
+	yamlContent := `apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: rich-skill
+  domain: sql
+prompt:
+  instructions: Do rich things.
+parent_index_path: enterprise/sql/optimization
+emit_tasks: false
+task_template:
+  root_title: SQL Optimization Run
+  ephemeral_on_deactivate: true
+  max_tasks: 6
+  steps:
+    - title: Analyze plan
+      objective: Identify bottlenecks
+      acceptance_criteria: Plan annotated with hot spots
+      category: analysis
+      priority: P1
+      estimated_effort: 30m
+      tags: [sql, perf]
+    - title: Apply fix
+      objective: Apply optimization
+      depends_on: [0]
+      category: implementation
+      priority: P1
+`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rich-skill.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yamlContent), 0o644))
+
+	skill, err := LoadSkill(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "enterprise/sql/optimization", skill.ParentIndexPath)
+	require.NotNil(t, skill.EmitTasks)
+	assert.False(t, *skill.EmitTasks)
+	assert.False(t, skill.EffectiveEmitTasks(),
+		"explicit emit_tasks=false must propagate through EffectiveEmitTasks")
+
+	require.NotNil(t, skill.TaskTemplate)
+	assert.Equal(t, "SQL Optimization Run", skill.TaskTemplate.RootTitle)
+	assert.True(t, skill.TaskTemplate.EphemeralOnDeactivate)
+	assert.EqualValues(t, 6, skill.TaskTemplate.MaxTasks)
+
+	require.Len(t, skill.TaskTemplate.Steps, 2)
+	step0 := skill.TaskTemplate.Steps[0]
+	assert.Equal(t, "Analyze plan", step0.Title)
+	assert.Equal(t, "Identify bottlenecks", step0.Objective)
+	assert.Equal(t, "Plan annotated with hot spots", step0.AcceptanceCriteria)
+	assert.Equal(t, "analysis", step0.Category)
+	assert.Equal(t, "P1", step0.Priority)
+	assert.Equal(t, "30m", step0.EstimatedEffort)
+	assert.Equal(t, []string{"sql", "perf"}, step0.Tags)
+	assert.Empty(t, step0.DependsOn)
+
+	step1 := skill.TaskTemplate.Steps[1]
+	assert.Equal(t, "Apply fix", step1.Title)
+	assert.Equal(t, []int32{0}, step1.DependsOn)
+}
+
+// TestSkillToYAML_RoundTrip_NewFields ensures the new fields survive a Go ->
+// YAML -> Go round trip without loss.
+func TestSkillToYAML_RoundTrip_NewFields(t *testing.T) {
+	emitFalse := false
+	original := &Skill{
+		Name:        "rt-new",
+		Title:       "Round-trip new fields",
+		Description: "Verifies new field round-trip",
+		Version:     "1.0.0",
+		Domain:      "sql",
+		Prompt: SkillPrompt{
+			Instructions: "Round trip test instructions.",
+		},
+		ParentIndexPath: "enterprise/sql/tuning",
+		EmitTasks:       &emitFalse,
+		TaskTemplate: &SkillTaskTemplate{
+			RootTitle:             "Tuning Run",
+			EphemeralOnDeactivate: true,
+			MaxTasks:              4,
+			Steps: []SkillTaskStep{
+				{
+					Title:     "Step A",
+					Objective: "Do A",
+					Category:  "research",
+					Priority:  "P2",
+				},
+				{
+					Title:     "Step B",
+					Objective: "Do B",
+					DependsOn: []int32{0},
+				},
+			},
+		},
+	}
+
+	data, err := SkillToYAML(original)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rt-new.yaml")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	loaded, err := LoadSkill(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, original.ParentIndexPath, loaded.ParentIndexPath)
+	require.NotNil(t, loaded.EmitTasks)
+	assert.Equal(t, *original.EmitTasks, *loaded.EmitTasks)
+
+	require.NotNil(t, loaded.TaskTemplate)
+	assert.Equal(t, original.TaskTemplate.RootTitle, loaded.TaskTemplate.RootTitle)
+	assert.Equal(t, original.TaskTemplate.EphemeralOnDeactivate, loaded.TaskTemplate.EphemeralOnDeactivate)
+	assert.Equal(t, original.TaskTemplate.MaxTasks, loaded.TaskTemplate.MaxTasks)
+	require.Len(t, loaded.TaskTemplate.Steps, 2)
+	assert.Equal(t, original.TaskTemplate.Steps[0].Title, loaded.TaskTemplate.Steps[0].Title)
+	assert.Equal(t, original.TaskTemplate.Steps[1].DependsOn, loaded.TaskTemplate.Steps[1].DependsOn)
 }

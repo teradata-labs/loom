@@ -70,6 +70,10 @@ examples:
       partition_strategy: list
     expected_result: "List partition by region"
 
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Speed up queries on large tables (>10M rows)"
   - "Improve data archival"

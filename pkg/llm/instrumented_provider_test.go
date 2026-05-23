@@ -94,11 +94,17 @@ func (m *mockTracer) StartSpan(ctx context.Context, name string, opts ...observa
 		opt(span)
 	}
 
+	// Link to parent if exists (matches real tracer behavior)
+	if parent := observability.SpanFromContext(ctx); parent != nil {
+		span.TraceID = parent.TraceID
+		span.ParentID = parent.SpanID
+	}
+
 	m.mu.Lock()
 	m.spans = append(m.spans, span)
 	m.mu.Unlock()
 
-	return ctx, span
+	return observability.ContextWithSpan(ctx, span), span
 }
 
 func (m *mockTracer) EndSpan(span *observability.Span) {
@@ -384,6 +390,61 @@ func TestInstrumentedProvider_MultipleMessages(t *testing.T) {
 	require.Len(t, tracer.spans, 1)
 	span := tracer.spans[0]
 	assert.Equal(t, 3, span.Attributes["llm.messages.count"])
+}
+
+func TestInstrumentedProvider_SpanContextPropagated(t *testing.T) {
+	// Verify the InstrumentedProvider passes the span context to the underlying
+	// provider so child spans are properly linked.
+	var capturedCtx context.Context
+	mockProvider := &mockLLMProvider{
+		name:  "test-provider",
+		model: "test-model",
+		response: &llmtypes.LLMResponse{
+			Content:    "ok",
+			StopReason: "end_turn",
+			Usage:      llmtypes.Usage{},
+		},
+	}
+
+	// Wrap Chat to capture the context the provider receives
+	originalChat := mockProvider.Chat
+	_ = originalChat // suppress unused warning
+	contextCapturingProvider := &contextCapturingLLMProvider{
+		mockLLMProvider: mockProvider,
+	}
+
+	tracer := newMockTracer()
+	instrumented := NewInstrumentedProvider(contextCapturingProvider, tracer)
+
+	// Create a parent span in context
+	parentSpan := &observability.Span{
+		TraceID:    "parent-trace",
+		SpanID:     "parent-span",
+		Name:       "agent.chat",
+		Attributes: make(map[string]interface{}),
+	}
+	ctx := observability.ContextWithSpan(context.Background(), parentSpan)
+
+	messages := []llmtypes.Message{{Role: "user", Content: "Hello"}}
+	_, err := instrumented.Chat(ctx, messages, []shuttle.Tool{})
+	require.NoError(t, err)
+
+	// The LLM span should exist in the captured context
+	capturedCtx = contextCapturingProvider.lastCtx
+	spanInCtx := observability.SpanFromContext(capturedCtx)
+	require.NotNil(t, spanInCtx, "underlying provider should receive context with LLM span")
+	assert.Equal(t, observability.SpanLLMCompletion, spanInCtx.Name)
+}
+
+// contextCapturingLLMProvider wraps a mockLLMProvider and captures the context it receives.
+type contextCapturingLLMProvider struct {
+	*mockLLMProvider
+	lastCtx context.Context
+}
+
+func (c *contextCapturingLLMProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	c.lastCtx = ctx
+	return c.mockLLMProvider.Chat(ctx, messages, tools)
 }
 
 func TestInstrumentedProvider_ConcurrentCalls(t *testing.T) {

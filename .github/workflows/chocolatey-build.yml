@@ -240,7 +240,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
     steps:
       - name: Download package artifact
-        uses: actions/download-artifact@v8.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: chocolatey-package
 

@@ -31,6 +31,13 @@ import (
 	"github.com/teradata-labs/loom/pkg/tui/client"
 )
 
+// sessionAccumulator tracks cumulative cost/token data across turns for a session.
+type sessionAccumulator struct {
+	totalCost         float64
+	totalInputTokens  int64
+	totalOutputTokens int64
+}
+
 // CoordinatorAdapter wraps the gRPC client for agent coordination.
 // Implements agent.Coordinator interface.
 type CoordinatorAdapter struct {
@@ -39,10 +46,11 @@ type CoordinatorAdapter struct {
 	agentID string // Default agent ID
 
 	mu                   sync.Mutex
-	busyAgents           map[string]bool               // Track busy state per agent ID
-	agentCancelFunc      map[string]context.CancelFunc // Track cancel functions per agent
-	sessionToAgent       map[string]string             // Map session ID to agent ID
-	sessionSubscriptions map[string]context.CancelFunc // Track active session subscriptions
+	busyAgents           map[string]bool                // Track busy state per agent ID
+	agentCancelFunc      map[string]context.CancelFunc  // Track cancel functions per agent
+	sessionToAgent       map[string]string              // Map session ID to agent ID
+	sessionSubscriptions map[string]context.CancelFunc  // Track active session subscriptions
+	sessionAccum         map[string]*sessionAccumulator // Cumulative cost/token data per session
 }
 
 // NewCoordinatorAdapter creates a new coordinator adapter.
@@ -54,6 +62,7 @@ func NewCoordinatorAdapter(c *client.Client, events chan<- tea.Msg) *Coordinator
 		agentCancelFunc:      make(map[string]context.CancelFunc),
 		sessionToAgent:       make(map[string]string),
 		sessionSubscriptions: make(map[string]context.CancelFunc),
+		sessionAccum:         make(map[string]*sessionAccumulator),
 	}
 }
 
@@ -247,18 +256,45 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 					Provider:     progress.Cost.LlmCost.GetProvider(),
 					Model:        progress.Cost.LlmCost.GetModel(),
 				}
-				// Send session update with cost, token counts, and model info
+
+				// Accumulate per-turn cost/tokens into cumulative totals
+				c.mu.Lock()
+				accum, ok := c.sessionAccum[sessionID]
+				if !ok {
+					accum = &sessionAccumulator{}
+					c.sessionAccum[sessionID] = accum
+				}
+				accum.totalCost += progress.Cost.TotalCostUsd
+				accum.totalInputTokens += int64(progress.Cost.LlmCost.GetInputTokens())
+				accum.totalOutputTokens += int64(progress.Cost.LlmCost.GetOutputTokens())
+
+				// Snapshot cumulative values under lock
+				cumCost := accum.totalCost
+				cumInput := accum.totalInputTokens
+				cumOutput := accum.totalOutputTokens
+				c.mu.Unlock()
+
+				// Build session update with cumulative values
+				sessUpdate := session.Session{
+					ID:               sessionID,
+					Cost:             cumCost,
+					CompletionTokens: int(cumOutput),
+					PromptTokens:     int(cumInput),
+					Model:            progress.Cost.LlmCost.GetModel(),
+					Provider:         progress.Cost.LlmCost.GetProvider(),
+				}
+
+				// Include context state from server if available
+				if cs := progress.GetContextState(); cs != nil {
+					sessUpdate.ContextTokensUsed = cs.GetContextTokensUsed()
+					sessUpdate.ContextTokensMax = cs.GetContextTokensMax()
+				}
+
+				// Send session update with cumulative cost, token counts, and context state
 				if c.events != nil {
 					c.events <- pubsub.Event[session.Session]{
-						Type: pubsub.UpdatedEvent,
-						Payload: session.Session{
-							ID:               sessionID,
-							Cost:             progress.Cost.TotalCostUsd,
-							CompletionTokens: int(progress.Cost.LlmCost.GetOutputTokens()),
-							PromptTokens:     int(progress.Cost.LlmCost.GetInputTokens()),
-							Model:            progress.Cost.LlmCost.GetModel(),
-							Provider:         progress.Cost.LlmCost.GetProvider(),
-						},
+						Type:    pubsub.UpdatedEvent,
+						Payload: sessUpdate,
 					}
 				}
 			}
@@ -290,13 +326,29 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 		// Best-effort: if we accumulated cost before the error, still update the session metrics.
 		// This covers cancellation mid-stream where COMPLETED was never sent.
 		if result.Cost != nil && c.events != nil {
+			c.mu.Lock()
+			accum := c.sessionAccum[sessionID]
+			var cumCost float64
+			var cumInput, cumOutput int64
+			if accum != nil {
+				cumCost = accum.totalCost
+				cumInput = accum.totalInputTokens
+				cumOutput = accum.totalOutputTokens
+			} else {
+				// No accumulator yet (error before any COMPLETED), use per-turn values
+				cumCost = result.Cost.TotalCost
+				cumInput = int64(result.Cost.InputTokens)
+				cumOutput = int64(result.Cost.OutputTokens)
+			}
+			c.mu.Unlock()
+
 			c.events <- pubsub.Event[session.Session]{
 				Type: pubsub.UpdatedEvent,
 				Payload: session.Session{
 					ID:               sessionID,
-					Cost:             result.Cost.TotalCost,
-					CompletionTokens: int(result.Cost.OutputTokens),
-					PromptTokens:     int(result.Cost.InputTokens),
+					Cost:             cumCost,
+					CompletionTokens: int(cumOutput),
+					PromptTokens:     int(cumInput),
 					Model:            result.Cost.Model,
 					Provider:         result.Cost.Provider,
 				},

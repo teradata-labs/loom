@@ -1,0 +1,428 @@
+# === METADATA START ===
+name: ai_ask_llm
+title: "AI Ask LLM"
+description: |
+  Send free-form LLM queries with context from database tables. AI_AskLLM combines
+  a question table and a context/data table, co-partitioned by a shared key, to enable
+  RAG-style question answering directly in Teradata SQL.
+
+  AI_AskLLM is ideal for:
+  - RAG-style question answering against stored documents
+  - Document interrogation and analysis
+  - Templated analysis across database rows
+  - Knowledge extraction from unstructured text
+  - Contextual summarization with specific questions
+
+  Requires an authorization object configured for the target LLM provider.
+  Unique among AI_* functions: requires both InputTable and ContextTable with PARTITION BY.
+
+category: ai_functions
+difficulty: intermediate
+teradata_function: AI_AskLLM
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - text_analysis
+  - question_answering
+use_cases:
+  # --- Use Case 1: Document Q&A ---
+  - Answer questions against stored documents using LLM
+
+  # --- Use Case 2: Knowledge Extraction ---
+  - Extract specific information from unstructured text across rows
+
+  # --- Use Case 3: Templated Analysis ---
+  - Apply the same analytical question across different data partitions
+
+  # --- Use Case 4: Contract Review ---
+  - Review contracts or legal documents with targeted questions
+
+  # --- Use Case 5: Research Analysis ---
+  - Analyze research papers with domain-specific questions
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the question and context tables"
+    example: "document_store"
+
+  # --- Parameter 2: Question Table ---
+  - name: question_table
+    type: string
+    # LLM-HINT: Table or subquery providing questions; becomes InputTable with PARTITION BY key
+    required: true
+    description: "Table containing questions to ask the LLM"
+    example: "questions"
+
+  # --- Parameter 3: Context Table ---
+  - name: context_table
+    type: string
+    # LLM-HINT: Table or subquery providing context data; becomes ContextTable with PARTITION BY key
+    required: true
+    description: "Table containing context/document data for the LLM"
+    example: "documents"
+
+  # --- Parameter 4: Question Key Column ---
+  - name: question_key
+    type: string
+    # LLM-HINT: PARTITION BY column on InputTable; key values must match context_key values
+    required: true
+    description: "Key column in question table for co-partitioning (values must match context key)"
+    example: "doc_id"
+
+  # --- Parameter 5: Context Key Column ---
+  - name: context_key
+    type: string
+    # LLM-HINT: PARTITION BY column on ContextTable; key values must match question_key values
+    required: true
+    description: "Key column in context table for co-partitioning (values must match question key)"
+    example: "doc_id"
+
+  # --- Parameter 6: Question Column ---
+  - name: question_column
+    type: string
+    # LLM-HINT: Column in question table containing the question text; maps to TextColumn
+    required: true
+    description: "Column in question table containing the question text"
+    example: "question"
+
+  # --- Parameter 7: Context Column ---
+  - name: context_column
+    type: string
+    # LLM-HINT: Column in context table containing the context/document text; maps to ContextColumn
+    required: true
+    description: "Column in context table containing the context/document data"
+    example: "doc_text"
+
+  # --- Parameter 8: Prompt Template ---
+  - name: prompt
+    type: string
+    # LLM-HINT: Must contain #QUESTION# and #DATA# placeholders; they are replaced at runtime
+    required: true
+    description: "Prompt template with #QUESTION# and #DATA# placeholders"
+    example: "Answer the question using only the provided data.\\nQuestion: #QUESTION#\\nData: #DATA#"
+
+  # --- Parameter 9: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: Fully qualified authorization object name; must be created first
+    required: true
+    description: "Authorization object for LLM provider (e.g., db.td_gen_azure_auth)"
+    example: "ai_credentials.td_gen_azure_auth"
+
+  # --- Parameter 10: Deployment/Model ---
+  - name: deployment_id
+    type: string
+    # LLM-HINT: Azure uses DeploymentId; AWS/GCP use ModelName
+    required: true
+    description: "Model deployment identifier"
+    example: "gpt-4o"
+
+  # --- Parameter 11: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable (question table) only; '[0:]' = all columns
+    required: false
+    description: "Columns from the question table to carry through to output"
+    example: '["doc_id", "question"]'
+
+  # --- Parameter 12: Region (AWS/GCP) ---
+  - name: region
+    type: string
+    # LLM-HINT: Required for AWS Bedrock; not used for Azure
+    required: false
+    description: "AWS region for Bedrock or GCP region"
+    example: "us-east-1"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_ASK_LLM TEMPLATE ===
+  # LLM-HINT: Two-table input with PARTITION BY on both; DATAPOSITION is required (undocumented in Teradata docs)
+  basic_ask_llm:
+    description: "Basic question answering with co-partitioned question and context tables"
+    sql: |
+      -- Ask questions against context data using LLM
+      -- InputTable = questions, ContextTable = context/documents
+      -- Rows are matched by key value (not column name)
+      -- One output row per question; all matching context rows are concatenated into #DATA#
+      -- IMPORTANT: DATAPOSITION is required but missing from Teradata documentation
+      SELECT * FROM TD_SYSFNLIB.AI_AskLLM(
+          ON {{database}}.{{question_table}} AS InputTable PARTITION BY {{question_key}}
+          ON {{database}}.{{context_table}} AS ContextTable PARTITION BY {{context_key}}
+          USING
+              ApiType('azure')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{question_column}}')
+              ContextColumn('{{context_column}}')
+              Prompt('{{prompt}}')
+              QUESTIONPOSITION('#QUESTION#')
+              DATAPOSITION('#DATA#')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - question_table
+      - context_table
+      - question_key
+      - context_key
+      - auth_object
+      - deployment_id
+      - question_column
+      - context_column
+      - prompt
+      - accumulate_columns_quoted
+
+  # === SUBQUERY_ASK_LLM TEMPLATE ===
+  # LLM-HINT: Uses inline subqueries for both tables; useful for filtering or joining before the LLM call
+  subquery_ask_llm:
+    description: "Question answering with inline subqueries for filtering"
+    sql: |
+      -- Use subqueries to filter or transform data before passing to the LLM
+      SELECT * FROM TD_SYSFNLIB.AI_AskLLM(
+          ON (SELECT {{question_key}}, {{question_column}} FROM {{database}}.{{question_table}}
+              WHERE {{filter_condition}}) AS InputTable PARTITION BY {{question_key}}
+          ON (SELECT {{context_key}}, {{context_column}} FROM {{database}}.{{context_table}})
+              AS ContextTable PARTITION BY {{context_key}}
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{question_column}}')
+              ContextColumn('{{context_column}}')
+              Prompt('{{prompt}}')
+              QUESTIONPOSITION('#QUESTION#')
+              DATAPOSITION('#DATA#')
+              Accumulate('{{question_key}}', '{{question_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - question_table
+      - context_table
+      - question_key
+      - context_key
+      - question_column
+      - context_column
+      - provider
+      - auth_object
+      - deployment_id
+      - prompt
+
+  # === BATCH_ASK_LLM TEMPLATE ===
+  # LLM-HINT: Persists results to a table; avoids re-running LLM calls for the same questions
+  batch_ask_llm:
+    description: "Batch question answering with results persisted to a table"
+    sql: |
+      -- Persist Q&A results for downstream processing
+      CREATE TABLE {{database}}.qa_results AS (
+          SELECT * FROM TD_SYSFNLIB.AI_AskLLM(
+              ON {{database}}.{{question_table}} AS InputTable PARTITION BY {{question_key}}
+              ON {{database}}.{{context_table}} AS ContextTable PARTITION BY {{context_key}}
+              USING
+                  ApiType('{{provider}}')
+                  AUTHORIZATION({{auth_object}})
+                  DeploymentId('{{deployment_id}}')
+                  TextColumn('{{question_column}}')
+                  ContextColumn('{{context_column}}')
+                  Prompt('{{prompt}}')
+                  QUESTIONPOSITION('#QUESTION#')
+                  DATAPOSITION('#DATA#')
+                  Accumulate({{accumulate_columns_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - question_table
+      - context_table
+      - question_key
+      - context_key
+      - question_column
+      - context_column
+      - provider
+      - auth_object
+      - deployment_id
+      - prompt
+      - accumulate_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Document Q&A ---
+  - name: "Document Question Answering"
+    description: "Ask questions about stored documents using LLM"
+    parameters:
+      database: "document_store"
+      question_table: "questions"
+      context_table: "documents"
+      question_key: "qid"
+      context_key: "cid"
+      question_column: "question"
+      context_column: "doc"
+      prompt: "Answer the question using only the provided data.\\nQuestion: #QUESTION#\\nData: #DATA#"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["qid", "question"]
+    expected_result: |
+      qid | question                  | Output                      | Message
+      ----|---------------------------|-----------------------------|--------
+      1   | What city is mentioned?   | Saint Augustine              | NULL
+      1   | What state is mentioned?  | Florida                      | NULL
+      2   | What is the recipe about? | The recipe is about baloney  | NULL
+                                        sandwiches.
+
+      Multiple questions per key each produce their own output row.
+      All context rows for a matching key are concatenated into the #DATA# placeholder.
+
+  # --- Example 2: Contract Review ---
+  - name: "Contract Clause Analysis"
+    description: "Review contract documents with targeted legal questions"
+    parameters:
+      database: "legal"
+      question_table: "review_questions"
+      context_table: "contract_sections"
+      question_key: "contract_id"
+      context_key: "contract_id"
+      question_column: "question"
+      context_column: "section_text"
+      prompt: "Based on the contract text, answer the following question precisely.\\nQuestion: #QUESTION#\\nContract text: #DATA#"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["contract_id", "question"]
+    expected_result: |
+      Each contract question answered using all matching sections as context.
+      Useful for compliance reviews, clause extraction, and risk identification.
+
+  # --- Example 3: Research Paper Analysis ---
+  - name: "Research Paper Analysis"
+    description: "Analyze research papers with domain-specific questions"
+    parameters:
+      database: "research"
+      question_table: "analysis_questions"
+      context_table: "paper_abstracts"
+      question_key: "paper_id"
+      context_key: "paper_id"
+      question_column: "question"
+      context_column: "abstract_text"
+      prompt: "Answer the research question based only on the provided abstract.\\nQuestion: #QUESTION#\\nAbstract: #DATA#"
+      auth_object: "ai_credentials.td_gen_aws_auth"
+      deployment_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+      region: "us-east-1"
+      accumulate_columns: ["paper_id", "question"]
+    expected_result: |
+      Structured answers to research questions based on paper abstracts.
+      Useful for systematic literature reviews and meta-analysis.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing DATAPOSITION ---
+  - error: "Function fails or returns unexpected results without clear error"
+    cause: "DATAPOSITION('#DATA#') was omitted. It is required but missing from Teradata documentation"
+    solution: "Always include DATAPOSITION('#DATA#') in the USING clause. This is a known documentation gap"
+
+  # --- Error 2: Key Mismatch ---
+  - error: "Empty or missing Output for some questions"
+    cause: "Key values in InputTable do not match key values in ContextTable"
+    solution: "Verify that the PARTITION BY key values match between the two tables. Column names can differ but values must match"
+
+  # --- Error 3: Missing Authorization Object ---
+  - error: "Function fails with authorization or authentication error"
+    cause: "Authorization object does not exist or the user/database lacks EXECUTE permission"
+    solution: "Create the authorization object first (see authorization_objects pattern) and grant EXECUTE"
+
+  # --- Error 4: Prompt Missing Placeholders ---
+  - error: "Output does not reference the question or context data"
+    cause: "Prompt template is missing #QUESTION# or #DATA# placeholders"
+    solution: "Ensure the Prompt contains both #QUESTION# and #DATA# and that QUESTIONPOSITION and DATAPOSITION match"
+
+  # --- Error 5: Context Too Large ---
+  - error: "Message column shows token limit or context length error"
+    cause: "Too many context rows for a single key, exceeding the model's token limit"
+    solution: "Limit context rows per key using a subquery with ROW_NUMBER() or TOP N, or use a model with a larger context window"
+
+  # --- Error 6: PARTITION BY on Wrong Column ---
+  - error: "Unexpected row counts or all context applied to all questions"
+    cause: "PARTITION BY column does not correctly partition the data"
+    solution: "Verify the PARTITION BY column uniquely groups questions with their matching context"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## AI Ask LLM Best Practices
+
+  ### 1. Always Include DATAPOSITION
+  DATAPOSITION is required but undocumented in Teradata docs. Always specify it:
+  ```sql
+  QUESTIONPOSITION('#QUESTION#')
+  DATAPOSITION('#DATA#')
+  ```
+
+  ### 2. Design Prompts Carefully
+  The prompt template controls LLM behavior. Include clear instructions:
+  ```sql
+  Prompt('Answer the question using only the provided data. If the answer
+  is not in the data, say "Not found in provided context."
+  Question: #QUESTION#
+  Data: #DATA#')
+  ```
+
+  ### 3. Manage Context Size
+  All ContextTable rows matching a key are concatenated with escaped newlines.
+  For large documents, limit context per key:
+  ```sql
+  ON (SELECT doc_id, doc_text FROM documents
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY doc_id ORDER BY section_num) <= 10
+  ) AS ContextTable PARTITION BY doc_id
+  ```
+
+  ### 4. Use Accumulate for Traceability
+  Always carry through key columns and the question text:
+  ```sql
+  Accumulate('doc_id', 'question')
+  ```
+
+  ### 5. Persist Results
+  LLM calls are expensive. Save Q&A results to a table:
+  ```sql
+  CREATE TABLE qa_results AS (...) WITH DATA;
+  ```
+
+  ### 6. Authorization Setup First
+  Create and test the authorization object before running AI_AskLLM.
+  See the authorization_objects pattern for provider-specific setup.
+
+  ### 7. Co-Partition by Value, Not Name
+  The PARTITION BY columns can have different names in each table.
+  What matters is that the key values match between InputTable and ContextTable.
+
+  ### 8. One Output Row Per Question
+  AI_AskLLM produces one output row per question row.
+  Multiple questions can share the same key, each getting its own answer
+  with the same combined context.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Authorization Objects (prerequisite) ---
+  - authorization_objects
+
+  # --- Pattern 2: AI Text Summarize ---
+  - ai_summarize
+
+  # --- Pattern 3: AI Sentiment ---
+  - ai_sentiment
+
+  # --- Pattern 4: AI Text Classifier ---
+  - ai_text_classifier
+
+  # --- Pattern 5: AI PII ---
+  - ai_pii
+# === RELATED_PATTERNS END ===

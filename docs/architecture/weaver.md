@@ -1,8 +1,8 @@
 # Weaver Architecture
 
-**Version**: v1.0.2
-**Status**: ✅ Implemented (simple agent with structured JSON API)
-**Last Updated**: 2026-02-01
+**Version**: v1.2.0
+**Status**: ✅ Implemented (standard agent with structured JSON API)
+**Last Updated**: 2026-03-28
 
 ## Table of Contents
 
@@ -23,27 +23,27 @@
 The Weaver is Loom's **agent generation system** that creates complete agent and workflow configurations from natural language requirements. Unlike traditional template-based approaches or complex multi-stage pipelines, the Weaver is **just a regular Loom agent** with specialized prompting and tools that enable it to discover, generate, and validate agent configurations.
 
 **Key Capabilities**:
-- **Natural Language Generation**: Creates k8s-style agent and workflow YAMLs from descriptions
+- **Natural Language Generation**: Creates k8s-style agent, workflow, and skill YAMLs from descriptions
 - **Structured JSON API**: Uses JSONSchema-validated structured inputs to prevent configuration errors
 - **Multi-Layer Validation**: JSONSchema (call-time), semantic (execute-time), YAML (write-time) validation
 - **Field Validation**: Validates workflow agent references use `agent_id` field (not `role`)
 - **Self-Discovery**: Uses `tool_search` to find relevant examples and tools
-- **Hot-Reload Integration**: Saves to `$LOOM_DATA_DIR/agents/` and `$LOOM_DATA_DIR/workflows/` for immediate availability
+- **Hot-Reload Integration**: Saves to `$LOOM_DATA_DIR/agents/`, `$LOOM_DATA_DIR/workflows/`, and `$LOOM_DATA_DIR/skills/` for immediate availability
 - **Automatic Namespacing**: Workflow-scoped agents use `<workflow-name>:<role>` pattern to prevent conflicts
 
-**Design Philosophy**: **Simplicity over complexity**. The weaver is a standard agent using standard RPCs (`Weave`/`StreamWeave`). No special services, no conflict resolution system, no multi-stage pipeline. It just works.
+**Design Philosophy**: **Minimalism over complexity**. The weaver is a standard agent using standard RPCs (`Weave`/`StreamWeave`). No special services, no conflict resolution system, no multi-stage pipeline.
 
 
 ## Design Philosophy
 
-### Why a Simple Agent?
+### Why a Standard Agent?
 
 **Previous Approach (v0.x)**: Complex coordinator with 6-stage pipeline, conflict detection, specialized sub-agents, and dedicated RPCs.
 
 **Current Approach (v1.0+)**: Regular Loom agent with specialized tools.
 
 **Rationale**:
-1. **Simpler is Better**: One agent using standard infrastructure vs. custom coordinator
+1. **Less is More**: One agent using standard infrastructure vs. custom coordinator
 2. **Works Better**: LLMs are good at following examples; let them do their job
 3. **Easier to Maintain**: Standard agent configuration vs. complex pipeline code
 4. **No Special Cases**: Uses `Weave`/`StreamWeave` like every other agent
@@ -83,19 +83,18 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 │                  (embedded/weaver.yaml)                         │
 │                                                                 │
 │  System Prompt:                                                 │
-│    "You are the Weaver, a meta-agent specialized in            │
-│     generating k8s-style agent and workflow configurations."    │
+│    "Create agent and workflow YAML configurations from          │
+│     user requirements."                                        │
 │                                                                 │
 │  Tools:                                                         │
 │    - agent_management (validate & write YAML)                   │
-│    - shell_execute (read reference examples)                   │
-│    - get_error_details (debug tool errors)                     │
-│    - query_tool_result (retrieve tool outputs)                 │
+│    - shell_execute (read reference examples)                    │
+│    - tool_search (discover available tools for agents)          │
 │                                                                 │
 │  Key Instructions:                                              │
 │    - Use agent_management for all YAML operations               │
 │    - Tool validates YAML before writing                         │
-│    - Automatic placement in $LOOM_DATA_DIR/{agents,workflows}/         │
+│    - Automatic placement in $LOOM_DATA_DIR/{agents,workflows,skills}/  │
 │    - Give agents standard toolset + tool_search                │
 │    - Enable memory compression with appropriate workload        │
 │                                                                 │
@@ -108,7 +107,9 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 │              Agent Management Tool (Restricted)                 │
 │                                                                 │
 │  Security Check:                                                │
-│    if agentID != "weaver" → return UNAUTHORIZED                 │
+│    if agentID != "weaver" && agentID != "guide"                │
+│      → return UNAUTHORIZED                                      │
+│    (guide agent has read-only access)                           │
 │                                                                 │
 │  Validation Pipeline:                                           │
 │    1. Parse YAML syntax                                         │
@@ -125,27 +126,26 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                                    │
-          ┌────────────────────────┴────────────────────┐
-          │                                             │
-          ▼                                             ▼
-┌────────────────────┐                      ┌────────────────────┐
-│  $LOOM_DATA_DIR/agents/   │                      │  $LOOM_DATA_DIR/workflows/│
-│  sql-agent.yaml    │                      │  debate-flow.yaml  │
-│  file-agent.yaml   │  Hot-reload ──────▶ │  pipeline.yaml     │
-│  api-agent.yaml    │                      │  swarm.yaml        │
-└────────────────────┘                      └────────────────────┘
-           │                                             │
-           │                                             │
-           └─────────────────┬───────────────────────────┘
-                             │
-                             │ Immediately available
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   User can run  │
-                    │  generated agent│
-                    │   via Weave RPC │
-                    └─────────────────┘
+          ┌────────────────────────┼────────────────────┐
+          │                        │                    │
+          ▼                        ▼                    ▼
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ $LOOM_DATA_DIR/  │  │ $LOOM_DATA_DIR/  │  │ $LOOM_DATA_DIR/  │
+│ agents/          │  │ workflows/       │  │ skills/          │
+│  sql-agent.yaml  │  │  debate-flow.yaml│  │  sql-opt.yaml    │
+│  file-agent.yaml │  │  pipeline.yaml   │  │  code-review.yaml│
+└──────────────────┘  └──────────────────┘  └──────────────────┘
+          │                        │                    │
+          └────────────────────────┼────────────────────┘
+                                   │
+                                   │ Hot-reload / Immediately available
+                                   │
+                                   ▼
+                          ┌─────────────────┐
+                          │   User can run  │
+                          │  generated agent│
+                          │   via Weave RPC │
+                          └─────────────────┘
 ```
 
 
@@ -157,31 +157,39 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 
 **Type**: Standard Loom agent (no special service)
 
-**Configuration**:
+**Configuration** (key fields shown; see `embedded/weaver.yaml.tmpl` for full config):
 ```yaml
 apiVersion: loom/v1
 kind: Agent
 metadata:
   name: weaver
-  description: Meta-agent that generates k8s-style agent and workflow configurations
+  version: "1.0.0"
+  description: Meta-agent that generates k8s-style agent and workflow configurations from natural language
+  labels:
+    domain: meta-agent
+    category: agent-generation
 
 spec:
+  rom: "weaver"
+
   system_prompt: |
-    You are the Weaver, a meta-agent that creates agent and workflow YAML configurations.
-    You translate user requirements into Loom agent and workflow definitions.
+    Create agent and workflow YAML configurations from user requirements.
 
-    ## Guidelines
+    ## Tools
+    - agent_management: create/update/read/list/validate agent/workflow/skill YAMLs
+    - shell_execute: view reference files in $LOOM_DATA_DIR/examples/reference
+    - tool_search: discover available tools for agents
 
-    - Use the agent_management tool to create, update, read, list, and validate agent/workflow YAMLs
-    - The tool automatically validates YAML and writes to the correct directories ($LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/)
-    - When validation errors occur, read the error messages carefully and fix the YAML
-    - Give agents this standard toolset: tool_search, get_error_details, query_tool_result
+    ## Skill Creation
+    - Use agent_management with action="create_skill" / action="update_skill"
+    - Skill structure: apiVersion: loom/v1, kind: Skill, metadata (name, domain), prompt (instructions)
+    - Activation modes: MANUAL (/command), AUTO (keyword-based), HYBRID (both), ALWAYS (every turn)
+    ...
 
   tools:
-    - agent_management         # Specialized tool for agent/workflow YAML management
+    - agent_management         # Specialized tool for agent/workflow/skill YAML management
     - shell_execute            # Fallback for reading reference examples
-    - get_error_details        # Debug tool errors
-    - query_tool_result        # Retrieve tool outputs
+    - tool_search              # Discover available tools for agents
 
   memory:
     type: sqlite
@@ -193,24 +201,31 @@ spec:
     max_turns: 1000
     max_tool_executions: 50
     enable_self_correction: true
+    max_context_tokens: 200000
+    reserved_output_tokens: 20000
+    skills:
+      enabled: true
+    patterns:
+      enabled: true
+      use_llm_classifier: true
 ```
 
 ### Component: Agent Management Tool
 
 **Location**: `pkg/shuttle/builtin/agent_management.go`
 
-**Type**: Restricted tool (weaver-only access)
+**Type**: Restricted tool (weaver and guide agent access; guide is read-only)
 
 **Security Model**:
 ```go
-// SECURITY: Restrict this tool to the weaver agent only
+// SECURITY: Restrict this tool to weaver and guide agents only
 agentID := session.AgentIDFromContext(ctx)
-if agentID != "weaver" {
+if agentID != "weaver" && agentID != "guide" {
     return &shuttle.Result{
         Success: false,
         Error: &shuttle.Error{
             Code:    "UNAUTHORIZED",
-            Message: "This tool is restricted to the weaver meta-agent only",
+            Message: "This tool is restricted to the weaver and guide meta-agents only",
         },
     }, nil
 }
@@ -221,18 +236,20 @@ if agentID != "weaver" {
 **Structured Actions** (JSONSchema-validated):
 - `create_agent`: Create new agent with structured JSON config
 - `create_workflow`: Create new workflow with structured JSON config
+- `create_skill`: Create new skill with structured JSON config
 - `update_agent`: Update existing agent with structured JSON config
 - `update_workflow`: Update existing workflow with structured JSON config
+- `update_skill`: Update existing skill with structured JSON config
 
-**Simple Actions** (backward compatible):
+**Legacy Actions** (require `type` parameter: `agent`, `workflow`, or `skill`):
 - `read`: Read existing configuration
-- `list`: List all agents or workflows
+- `list`: List all agents, workflows, or skills
 - `validate`: Validate YAML content
 - `delete`: Remove configuration
 
-**Deprecated Actions** (removed in v1.0):
-- `create` (with type/name/content) → use `create_agent` or `create_workflow`
-- `update` (with type/name/content) → use `update_agent` or `update_workflow`
+**Unsupported Actions** (return `INVALID_ACTION`):
+- `create` (with type/name/content) -- use `create_agent`, `create_workflow`, or `create_skill`
+- `update` (with type/name/content) -- use `update_agent`, `update_workflow`, or `update_skill`
 
 ### No Special Infrastructure
 
@@ -246,7 +263,7 @@ if agentID != "weaver" {
 **What the Weaver DOES have**:
 - ✅ Clear system prompt with instructions
 - ✅ Specialized `agent_management` tool with validation
-- ✅ Security restriction (weaver-only access)
+- ✅ Security restriction (weaver and guide access; guide is read-only)
 - ✅ Memory management for context
 - ✅ Self-correction capabilities
 
@@ -274,7 +291,7 @@ User Request                           Weaver Agent Processing
                                                   ▼
                                      ┌─────────────────────────┐
                                      │ 3. Call agent_management│
-                                     │    with action=create   │
+                                     │  action=create_agent    │
                                      └────────────┬────────────┘
                                                   │
                                                   ▼
@@ -439,10 +456,10 @@ If LLM tries to use `role` instead of `agent_id`, JSONSchema validation fails BE
 
 ### Design Goals
 
-1. **Security**: Restrict to weaver agent only (prevent arbitrary YAML writes)
+1. **Security**: Restrict to weaver and guide agents only (guide is read-only; prevent arbitrary YAML writes)
 2. **Validation**: Catch errors before writing files (multi-layer validation)
 3. **Structured API**: JSONSchema-validated inputs prevent configuration errors
-4. **Simplicity**: Standard tool interface, no special protocols
+4. **Minimal interface**: Standard tool interface, no special protocols
 5. **Clarity**: LLM-friendly error messages with actionable fixes
 6. **Atomicity**: Either write valid YAML or fail completely
 
@@ -460,25 +477,25 @@ func All(promptRegistry prompts.PromptRegistry) []shuttle.Tool {
 }
 ```
 
-**Security Check**: Lines 78-88 of `agent_management.go`
+**Security Check**: `Execute()` in `agent_management.go` (line ~101)
 ```go
-// SECURITY: Restrict this tool to the weaver agent only
+// SECURITY: Restrict this tool to weaver and guide agents only
 agentID := session.AgentIDFromContext(ctx)
-if agentID != "weaver" {
+if agentID != "weaver" && agentID != "guide" {
     return &shuttle.Result{
         Success: false,
         Error: &shuttle.Error{
             Code:    "UNAUTHORIZED",
-            Message: "This tool is restricted to the weaver meta-agent only",
+            Message: "This tool is restricted to the weaver and guide meta-agents only",
         },
     }, nil
 }
 ```
 
-**Validation Integration**: Lines 179-196 of `agent_management.go`
+**Validation Integration**: `writeAgentFile()` in `agent_management.go` (line ~745)
 ```go
-// Validate YAML content before writing
-validationResult := validation.ValidateYAMLContent(content, "")
+// Validate YAML content
+validationResult := validation.ValidateYAMLContent(yamlContent, "")
 
 if !validationResult.Valid {
     return &shuttle.Result{
@@ -496,18 +513,14 @@ if !validationResult.Valid {
 }
 ```
 
-**Directory Management**: Lines 199-216 of `agent_management.go`
+**Directory Management**: `writeAgentFile()` in `agent_management.go` (line ~763)
 ```go
 // Determine target directory
-var dir string
-if configType == "agent" {
-    dir = config.GetLoomSubDir("agents")
-} else {
-    dir = config.GetLoomSubDir("workflows")
-}
+dir := config.GetLoomSubDir("agents")
 
 // Ensure directory exists
-if err := os.MkdirAll(dir, 0755); err != nil {
+// nosec G301 - Directory permissions 0750 (owner: rwx, group: r-x, other: none)
+if err := os.MkdirAll(dir, 0750); err != nil {
     // ... error handling ...
 }
 ```
@@ -535,7 +548,7 @@ The tool uses three-level validation from `pkg/validation/`:
 
 ### Error Formatting
 
-The tool formats errors for LLM consumption (lines 75-100 of `pkg/validation/types.go`):
+The tool formats errors for LLM consumption (`FormatForWeaver()` in `pkg/validation/types.go`, line ~75):
 
 ```go
 func (r *ValidationResult) FormatForWeaver() string {
@@ -557,18 +570,33 @@ func (r *ValidationResult) FormatForWeaver() string {
 
 ### Test Coverage
 
-**Test File**: `pkg/shuttle/builtin/agent_management_test.go`
+**Test Files**:
+- `pkg/shuttle/builtin/agent_management_test.go`
+- `pkg/shuttle/builtin/agent_management_structured_test.go`
 
-**Key Test Cases**:
-- `TestAgentManagementTool_AccessControl`: Verifies weaver-only restriction
+**Key Test Cases** (`agent_management_test.go`):
+- `TestAgentManagementTool_AccessControl`: Verifies weaver/guide-only restriction
 - `TestAgentManagementTool_CreateAgent`: Tests agent creation with validation
-- Additional tests for update, read, list, delete operations
+- `TestAgentManagementTool_UpdateAgent`: Tests update operations
+- `TestAgentManagementTool_ReadAgent`: Tests read operations
+- `TestAgentManagementTool_ListAgents`: Tests list operations
+- `TestAgentManagementTool_ValidateOnly`: Tests validation-only mode
+- `TestAgentManagementTool_DeleteAgent`: Tests delete operations
+- `TestAgentManagementTool_WorkflowOperations`: Tests workflow create/list
+- `TestAgentManagementTool_ConcurrentOperations`: Tests concurrent reads
+
+**Key Test Cases** (`agent_management_structured_test.go`):
+- `TestDNDBugPrevention`: Validates `role` vs `agent_id` field enforcement
+- `TestCreateAgentStructured`: Tests structured JSON agent creation
+- `TestAgentReferenceValidation`: Tests agent reference validation in workflows
+- `TestUpdateWorkflowValidation`: Tests workflow update validation
 
 **Coverage Verification**: Tests verify:
-- ✅ Security restriction enforced (lines 20-71)
-- ✅ Valid YAML accepted (lines 82-94)
-- ⚠️ Invalid YAML rejected (test cases present but truncated)
-- ✅ Correct directory placement
+- ✅ Security restriction enforced (weaver + guide)
+- ✅ Valid YAML accepted and written to correct directory
+- ✅ Invalid YAML rejected with actionable errors
+- ✅ Correct directory placement (`$LOOM_DATA_DIR/agents/`, `$LOOM_DATA_DIR/workflows/`)
+- ✅ Concurrent read safety
 
 
 ## Agent Configuration
@@ -580,7 +608,7 @@ The weaver's prompt emphasizes:
 1. **Tool Usage**: Must use `agent_management` for YAML operations
 2. **Validation Handling**: Read error messages and fix issues
 3. **Best Practices**: Memory compression, adequate max_turns, tool discovery
-4. **Standard Toolset**: Give agents tool_search, get_error_details, query_tool_result
+4. **Standard Toolset**: Give agents tool_search for discovering available tools
 
 ### Critical Rules
 
@@ -589,10 +617,10 @@ The weaver enforces these via the `agent_management` tool:
 ```
 VALIDATION RULES ENFORCED:
 - apiVersion MUST be "loom/v1" (not "loom.dev/v1")
-- kind MUST be "Agent" or "Workflow"
+- kind MUST be "Agent", "Workflow", or "Skill"
 - metadata.name is required
 - spec section must exist
-- tools MUST be a simple list (not nested under "builtin:")
+- tools MUST be a flat array of strings (not nested under "builtin:")
 - config section (NOT "execution:")
 - max_tool_executions (NOT "max_tool_calls")
 - memory.type MUST be specified if memory section exists
@@ -612,7 +640,7 @@ VALIDATION RULES ENFORCED:
 
 **Solution**: Specialized `agent_management` tool provides:
 - ✅ Upfront validation (fail before write)
-- ✅ Security restriction (weaver-only)
+- ✅ Security restriction (weaver + guide only)
 - ✅ Atomic operations (valid or nothing)
 - ✅ LLM-friendly errors (actionable fixes)
 - ✅ Automatic directory management
@@ -620,12 +648,12 @@ VALIDATION RULES ENFORCED:
 ### Trade-offs
 
 **Chosen Approach: Specialized Tool**
-- ✅ Secure (restricted access)
+- ✅ Secure (restricted to weaver + guide agents)
 - ✅ Reliable (validation before write)
 - ✅ Clear errors (structured validation)
-- ✅ Simple for LLM (one tool, clear actions)
+- ✅ LLM-friendly (one tool, clear actions)
 - ❌ Additional code to maintain
-- ❌ Can't be used by other agents
+- ❌ Can only be used by weaver and guide agents
 
 **Alternative: Generic File Operations**
 - ✅ Reusable by any agent
@@ -637,15 +665,15 @@ VALIDATION RULES ENFORCED:
 
 **Verdict**: Specialized tool is superior for this critical use case.
 
-### Why Restrict to Weaver?
+### Why Restrict to Weaver and Guide?
 
 **Security Rationale**:
 1. **Privilege Escalation Risk**: Agents creating agents could escalate privileges
 2. **Resource Control**: Prevent unbounded agent proliferation
 3. **Quality Control**: Ensure generated agents follow best practices
-4. **Audit Trail**: Single point of agent creation for monitoring
+4. **Audit Trail**: Limited set of agents for monitoring (weaver for write, guide for read-only)
 
-**Implementation**: Session-based agent ID check (not bypassable by LLM)
+**Implementation**: Session-based agent ID check (not bypassable by LLM). The guide agent can list and read configurations but cannot create, update, or delete.
 
 
 ## Performance Characteristics
@@ -718,7 +746,7 @@ Track changes to agent configurations over time.
 ### Non-Goals
 
 **Will NOT Add**:
-- ❌ Unrestricted access (security boundary stays)
+- ❌ Unrestricted access (security boundary stays; weaver + guide only)
 - ❌ Multi-stage pipeline (complexity without benefit)
 - ❌ Dedicated gRPC service (standard RPCs work fine)
 - ❌ Complex conflict resolution (validation prevents conflicts)
@@ -726,10 +754,9 @@ Track changes to agent configurations over time.
 
 ## Related Documentation
 
-- **Agent Configuration**: `/reference/agent-config.md` - Agent YAML schema
-- **Workflow Orchestration**: `/architecture/orchestration.md` - Workflow patterns
-- **Tool System**: `/architecture/tool-system.md` - Tool discovery and execution
-- **Validation**: `/reference/validation.md` - Validation system details
+- **Agent Configuration**: `/reference/agent-configuration.md` - Agent YAML schema
+- **Multi-Agent Architecture**: `/architecture/multi-agent.md` - Workflow and multi-agent patterns
+- **Tool Registry**: `/reference/tool-registry.md` - Tool discovery and execution
 
 
-**Key Takeaway**: The weaver uses a specialized `agent_management` tool that provides upfront validation, security restrictions, and atomic operations. This design eliminates entire classes of errors while maintaining the simplicity of the single-agent approach.
+**Key Takeaway**: The weaver uses a specialized `agent_management` tool that provides upfront validation, security restrictions, and atomic operations. This design eliminates entire classes of errors while maintaining the single-agent approach with minimal moving parts.

@@ -12,6 +12,8 @@ author: Loom Framework
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - spreadsheet-analysis
 use_cases:
   - Analyze Excel workbooks with multiple sheets
   - Summarize financial data from spreadsheets

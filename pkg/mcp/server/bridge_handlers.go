@@ -24,17 +24,46 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // ============================================================================
 // Tool handlers - Core Agent
 // ============================================================================
 
+// handleWeave calls Weave and returns MCP text: a routing preamble (see weaveRoutingPreamble), a newline,
+// then one JSON object for WeaveResponse (protojson, camelCase field names such as agentId and sessionId).
 func (b *LoomBridge) handleWeave(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
-	return callGRPC(ctx, WeaveRequestTimeout, args,
-		func() *loomv1.WeaveRequest { return &loomv1.WeaveRequest{} },
-		b.client.Weave,
-	)
+	explicitAgent := weaveArgsHaveExplicitAgentID(args)
+	prepared := prepareWeaveMCPArgsForProtoJSON(args)
+	req := &loomv1.WeaveRequest{}
+	if len(prepared) > 0 {
+		argsJSON, err := json.Marshal(prepared)
+		if err != nil {
+			return nil, fmt.Errorf("marshal args: %w", err)
+		}
+		if err := protojson.Unmarshal(argsJSON, req); err != nil {
+			return nil, fmt.Errorf("unmarshal args to proto: %w", err)
+		}
+	}
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+	resp, err := b.client.Weave(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+	respJSON, err := protojson.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal response: %w", err)
+	}
+	preamble := b.weaveRoutingPreamble(ctx, explicitAgent, resp.GetAgentId())
+	body := string(respJSON)
+	if preamble != "" {
+		body = preamble + "\n" + body
+	}
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: body}},
+	}, nil
 }
 
 // ============================================================================

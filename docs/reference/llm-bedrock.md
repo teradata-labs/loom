@@ -1,9 +1,9 @@
 
 # AWS Bedrock Integration
 
-Complete reference for connecting Loom to AWS Bedrock for Claude models.
+Technical reference for connecting Loom to AWS Bedrock for Claude models.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -33,7 +33,7 @@ Complete reference for connecting Loom to AWS Bedrock for Claude models.
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 1.0
   max_tokens: 4096
   timeout_seconds: 60
@@ -41,25 +41,24 @@ llm:
 
 ### Available Models
 
-| Model | Bedrock Model ID | Context | Best For |
-|-------|------------------|---------|----------|
-| **Claude Sonnet 4.5** | `anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | Latest, best performance (recommended) |
-| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | Fast, cost-effective |
-| **Claude Opus 4.5** | `anthropic.claude-opus-4-5-20251101-v1:0` | 200k | Maximum intelligence |
-| **Claude 3.5 Sonnet v2** | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 200k | Previous generation |
-| **Claude 3.5 Sonnet** | `anthropic.claude-3-5-sonnet-20240620-v1:0` | 200k | Legacy |
-| **Claude 3 Opus** | `anthropic.claude-3-opus-20240229-v1:0` | 200k | Legacy maximum intelligence |
-| **Claude 3 Haiku** | `anthropic.claude-3-haiku-20240307-v1:0` | 200k | Legacy fast model |
+| Model | Bedrock Model ID | Context | Max Output | Best For |
+|-------|------------------|---------|------------|----------|
+| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Latest, maximum intelligence |
+| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Latest, best balance |
+| **Claude Opus 4.5** | `us.anthropic.claude-opus-4-5-20251101-v1:0` | 200k | 64k | Maximum intelligence |
+| **Claude Sonnet 4.5** | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | 64k | Best performance (recommended) |
+| **Claude Haiku 4.5** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | 64k | Fast, cost-effective |
+| **Claude Opus 4.1** | `us.anthropic.claude-opus-4-1-20250805-v1:0` | 200k | 32k | Complex reasoning |
 
 ### Authentication Methods (Priority Order)
 
 | Method | When to Use | Configuration |
 |--------|-------------|---------------|
+| **Bearer Token** | Corporate SSO, Identity Center | `AWS_BEARER_TOKEN_BEDROCK` env var |
 | **IAM Role** | EC2/ECS/Lambda (recommended) | No config needed - automatic |
 | **AWS Profile** | Local development with named profile | `bedrock_profile: my-profile` |
 | **Environment Variables** | CI/CD, containers | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 | **Keyring** | Local development with explicit credentials | `looms config set-key bedrock_access_key_id` |
-| **CLI Flags** | Testing only (not recommended) | `--bedrock-access-key`, `--bedrock-secret-key` |
 
 ### Supported Regions
 
@@ -75,9 +74,12 @@ llm:
 
 | Model | Input (per 1M tokens) | Output (per 1M tokens) | Typical Task* |
 |-------|----------------------|------------------------|---------------|
-| **Sonnet 4.5** | $3.00 | $15.00 | $0.018 |
-| **Haiku 4.5** | $0.25 | $1.25 | $0.0015 |
-| **Opus 4.1** | $15.00 | $75.00 | $0.090 |
+| **Opus 4.6** | $5.00 | $25.00 | $0.0275 |
+| **Sonnet 4.6** | $3.00 | $15.00 | $0.0165 |
+| **Opus 4.5** | $5.00 | $25.00 | $0.0275 |
+| **Sonnet 4.5** | $3.00 | $15.00 | $0.0165 |
+| **Haiku 4.5** | $1.00 | $5.00 | $0.0055 |
+| **Opus 4.1** | $15.00 | $75.00 | $0.0825 |
 
 \* Typical task = 500 input tokens, 1000 output tokens
 
@@ -97,18 +99,18 @@ looms config set-key bedrock_secret_access_key
 
 # Configure Bedrock
 looms config set llm.bedrock_region us-west-2
-looms config set llm.bedrock_model_id anthropic.claude-sonnet-4-5-20250929-v1:0
+looms config set llm.bedrock_model_id us.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 # Test connection
 grpcurl -plaintext -d '{"query": "Hello from Bedrock!"}' \
-  localhost:50051 loom.v1.LoomService/Weave
+  localhost:60051 loom.v1.LoomService/Weave
 ```
 
 
 ## Overview
 
 AWS Bedrock provides Claude models through AWS infrastructure:
-- Enterprise-grade security and compliance
+- AWS security and compliance
 - AWS IAM integration
 - VPC and PrivateLink support
 - Unified AWS billing
@@ -153,7 +155,7 @@ Your IAM user/role needs:
 1. Go to AWS Console → Bedrock
 2. Click "Model access" in left sidebar
 3. Click "Request model access"
-4. Select Anthropic models (Claude 3.5 Sonnet, etc.)
+4. Select Anthropic Claude models
 5. Accept terms and submit request
 6. Wait for approval (usually instant for Claude models)
 
@@ -169,7 +171,43 @@ aws bedrock list-foundation-models --region us-east-1 \
 
 Bedrock supports multiple authentication methods (in order of priority):
 
-### Method 1: IAM Role (Recommended for EC2/ECS/Lambda)
+### Method 1: Bearer Token (Corporate SSO / Identity Center)
+
+Use a bearer token for environments where teams get API access to Bedrock via AWS IAM Identity Center (formerly AWS SSO) without needing full IAM credentials.
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
+```
+
+No other AWS credential fields are required. Region and model defaults still apply (`us-west-2` and `us.anthropic.claude-sonnet-4-5-20250929-v1:0`).
+
+```yaml
+llm:
+  provider: bedrock
+  # Optional: override region/model if needed
+  bedrock_region: us-west-2
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # No credentials needed - bearer token from env var bypasses SigV4
+```
+
+**When to use**:
+- Corporate SSO / AWS IAM Identity Center environments
+- API-key-style access to Bedrock without IAM credentials
+- Environments where SigV4 credential management is impractical
+
+**How it works**:
+- The AWS SDK's `bedrockruntime` client auto-detects `AWS_BEARER_TOKEN_BEDROCK` at initialization
+- Sets `AuthSchemePreference` to `httpBearerAuth`, bypassing SigV4 signing entirely
+- No `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, or IAM role is needed
+
+**Limitations**:
+- The token is a static string from the env var — no automatic refresh/rotation
+- For rotating tokens, use IAM roles or AWS profiles with SSO instead
+
+**Available since**: `bedrockruntime v1.35.0` (Loom ships `v1.50.4`)
+
+
+### Method 2: IAM Role (Recommended for EC2/ECS/Lambda)
 
 No configuration needed - Loom automatically uses the instance/task IAM role:
 
@@ -177,7 +215,7 @@ No configuration needed - Loom automatically uses the instance/task IAM role:
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   # No credentials needed - uses IAM role
 ```
 
@@ -193,7 +231,7 @@ llm:
 - Audit trail via CloudTrail
 
 
-### Method 2: AWS Profile
+### Method 3: AWS Profile
 
 Use a named profile from `~/.aws/credentials`:
 
@@ -202,7 +240,7 @@ llm:
   provider: bedrock
   bedrock_region: us-west-2
   bedrock_profile: my-profile
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
 Your `~/.aws/credentials`:
@@ -218,12 +256,12 @@ aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 - Switching between projects
 
 
-### Method 3: Environment Variables
+### Method 4: Environment Variables
 
 ```bash
 export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
 export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-export AWS_REGION="us-west-2"
+export AWS_DEFAULT_REGION="us-west-2"
 ```
 
 **When to use**:
@@ -232,7 +270,7 @@ export AWS_REGION="us-west-2"
 - Serverless deployments
 
 
-### Method 4: Keyring (for Explicit Credentials)
+### Method 5: Keyring (for Explicit Credentials)
 
 For security, store AWS credentials in system keyring:
 
@@ -252,7 +290,7 @@ Then in config:
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   # Keys loaded from keyring automatically
 ```
 
@@ -262,24 +300,11 @@ llm:
 - Sharing workstation with multiple users
 
 
-### Method 5: CLI Flags (Not Recommended)
-
-```bash
-looms serve --bedrock-access-key "AKIAIOSFO..." --bedrock-secret-key "wJalrX..."
-```
-
-**Warning**: Only use for testing - prefer IAM roles or keyring!
-
-**When to use**:
-- Quick testing only
-- Never in production
-
-
 ## Configuration
 
 ### Option 1: CLI Commands (Recommended for Novices)
 
-Configure Bedrock using simple CLI commands (no YAML editing required):
+Configure Bedrock using CLI commands (no YAML editing required):
 
 ```bash
 # Initialize config and choose Bedrock when prompted
@@ -287,7 +312,7 @@ looms config init
 
 # Set Bedrock-specific values
 looms config set llm.bedrock_region us-west-2
-looms config set llm.bedrock_model_id anthropic.claude-sonnet-4-5-20250929-v1:0
+looms config set llm.bedrock_model_id us.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 # Optional: Set AWS profile (or use IAM role)
 looms config set llm.bedrock_profile default
@@ -308,7 +333,7 @@ llm:
 
   # Required
   bedrock_region: us-west-2
-  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 
   # Optional - choose ONE authentication method:
   # bedrock_profile: default           # Use AWS profile
@@ -338,9 +363,11 @@ Set this to `bedrock` to use AWS Bedrock.
 
 **Type**: `string`
 **Required**: Yes
-**Allowed values**: `us-west-2`, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `ap-southeast-1`
+**Common values**: `us-west-2`, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `ap-southeast-1`
 
-AWS region where Bedrock is deployed.
+AWS region where Bedrock is deployed. Any valid AWS region with Bedrock availability can be used; the values listed above are common choices. See [AWS Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html) for the full list.
+
+**Environment variables** (checked in order): `AWS_DEFAULT_REGION`, `LOOM_LLM_BEDROCK_REGION`
 
 **Example**:
 ```yaml
@@ -357,10 +384,17 @@ bedrock_region: us-west-2
 
 Bedrock model identifier for Claude.
 
+**Environment variables** (checked in order): `AWS_BEDROCK_MODEL_ID`, `LOOM_LLM_BEDROCK_MODEL_ID`
+
 **Examples**:
-- `anthropic.claude-sonnet-4-5-20250929-v1:0` - Claude Sonnet 4.5 (recommended)
-- `anthropic.claude-haiku-4-5-20251001-v1:0` - Claude Haiku 4.5
-- `anthropic.claude-opus-4-5-20251101-v1:0` - Claude Opus 4.5
+- `us.anthropic.claude-opus-4-6-v1` - Claude Opus 4.6 (1M context, 128k output)
+- `us.anthropic.claude-sonnet-4-6-v1:0` - Claude Sonnet 4.6 (1M context, 64k output)
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - Claude Sonnet 4.5 (recommended)
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Claude Haiku 4.5 (cost-effective)
+- `us.anthropic.claude-opus-4-5-20251101-v1:0` - Claude Opus 4.5
+- `us.anthropic.claude-opus-4-1-20250805-v1:0` - Claude Opus 4.1
+
+**Note**: All Bedrock model IDs use the `us.` prefix for cross-region inference.
 
 **See**: [Available Models](#available-models)
 
@@ -392,7 +426,7 @@ AWS access key ID.
 
 **Recommended**: Store in keyring via `looms config set-key bedrock_access_key_id`
 
-**Environment variable**: `AWS_ACCESS_KEY_ID`
+**Environment variables**: `AWS_ACCESS_KEY_ID` (via default AWS credential chain), `LOOM_LLM_BEDROCK_ACCESS_KEY_ID` (Loom-specific)
 
 
 #### bedrock_secret_access_key
@@ -406,7 +440,7 @@ AWS secret access key.
 
 **Recommended**: Store in keyring via `looms config set-key bedrock_secret_access_key`
 
-**Environment variable**: `AWS_SECRET_ACCESS_KEY`
+**Environment variables**: `AWS_SECRET_ACCESS_KEY` (via default AWS credential chain), `LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY` (Loom-specific)
 
 
 #### bedrock_session_token
@@ -420,7 +454,7 @@ AWS session token for temporary credentials (STS).
 
 **When to use**: Temporary credentials from `aws sts assume-role`
 
-**Environment variable**: `AWS_SESSION_TOKEN`
+**Environment variables**: `AWS_SESSION_TOKEN` (via default AWS credential chain), `LOOM_LLM_BEDROCK_SESSION_TOKEN` (Loom-specific)
 
 
 #### temperature
@@ -446,10 +480,10 @@ temperature: 1.0
 
 **Type**: `int`
 **Default**: `4096`
-**Range**: `1` - `200000` (model-dependent)
+**Range**: `1` - `128000` (model-dependent)
 **Required**: No
 
-Maximum response length in tokens.
+Maximum response length in tokens. Maximum depends on model: 128k (Opus 4.6), 64k (Sonnet 4.6, Opus 4.5, Sonnet 4.5, Haiku 4.5), 32k (Opus 4.1).
 
 **Example**:
 ```yaml
@@ -474,15 +508,14 @@ timeout_seconds: 60
 
 ## Available Models
 
-| Model | Bedrock Model ID | Context | Best For |
-|-------|------------------|---------|----------|
-| **Claude Sonnet 4.5** | `anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | Latest, best performance (recommended) |
-| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | Fast, cost-effective |
-| **Claude Opus 4.5** | `anthropic.claude-opus-4-5-20251101-v1:0` | 200k | Maximum intelligence, complex reasoning |
-| **Claude 3.5 Sonnet v2** | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 200k | Previous generation |
-| **Claude 3.5 Sonnet** | `anthropic.claude-3-5-sonnet-20240620-v1:0` | 200k | Legacy |
-| **Claude 3 Opus** | `anthropic.claude-3-opus-20240229-v1:0` | 200k | Legacy maximum intelligence |
-| **Claude 3 Haiku** | `anthropic.claude-3-haiku-20240307-v1:0` | 200k | Legacy fast model |
+| Model | Bedrock Model ID | Context | Max Output | Best For |
+|-------|------------------|---------|------------|----------|
+| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Latest, maximum intelligence |
+| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Latest, best balance |
+| **Claude Opus 4.5** | `us.anthropic.claude-opus-4-5-20251101-v1:0` | 200k | 64k | Maximum intelligence |
+| **Claude Sonnet 4.5** | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | 64k | Best performance (recommended) |
+| **Claude Haiku 4.5** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | 64k | Fast, cost-effective |
+| **Claude Opus 4.1** | `us.anthropic.claude-opus-4-1-20250805-v1:0` | 200k | 32k | Complex reasoning |
 
 **List available models**:
 ```bash
@@ -562,13 +595,11 @@ If empty, see [ERR_ACCESS_DENIED](#err_access_denied).
 looms serve
 ```
 
-**Expected output**:
+**Expected output** (abridged):
 ```
-INFO  Starting Loom server
-INFO  gRPC server listening on :50051
-INFO  HTTP gateway listening on :8080
-INFO  LLM provider: bedrock (region: us-west-2)
-INFO  Model: anthropic.claude-sonnet-4-5-20250929-v1:0
+INFO  Starting Loom Server  {"version": "1.2.0"}
+INFO  LLM provider created with rate limiting  {"provider": "bedrock", ...}
+INFO  Server listening  {"address": "0.0.0.0:60051"}
 ```
 
 
@@ -576,21 +607,21 @@ INFO  Model: anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ```bash
 grpcurl -plaintext -d '{"query": "Hello from Bedrock!"}' \
-  localhost:50051 loom.v1.LoomService/Weave
+  localhost:60051 loom.v1.LoomService/Weave
 ```
 
-**Expected output**:
+**Expected output** (fields vary per session):
 ```json
 {
-  "text": "Hello! I'm Claude, running on AWS Bedrock. How can I help you today?",
-  "sessionId": "sess_abc123",
+  "text": "Hello! How can I help you today?",
+  "sessionId": "sess_...",
   "cost": {
     "llmCost": {
-      "provider": "bedrock",
-      "model": "anthropic.claude-sonnet-4-5-20250929-v1:0",
       "inputTokens": 12,
       "outputTokens": 20,
-      "costUsd": 0.000336
+      "costUsd": 0.000336,
+      "model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "provider": "bedrock"
     }
   }
 }
@@ -601,32 +632,42 @@ grpcurl -plaintext -d '{"query": "Hello from Bedrock!"}' \
 
 Bedrock pricing varies by region. US East (us-east-1) pricing:
 
+### Claude Opus 4.6
+- **Input**: $5.00 per 1M tokens
+- **Output**: $25.00 per 1M tokens
+
+### Claude Sonnet 4.6
+- **Input**: $3.00 per 1M tokens
+- **Output**: $15.00 per 1M tokens
+
+### Claude Opus 4.5
+- **Input**: $5.00 per 1M tokens
+- **Output**: $25.00 per 1M tokens
+
 ### Claude Sonnet 4.5
 - **Input**: $3.00 per 1M tokens
 - **Output**: $15.00 per 1M tokens
 
 ### Claude Haiku 4.5
-- **Input**: $0.25 per 1M tokens
-- **Output**: $1.25 per 1M tokens
+- **Input**: $1.00 per 1M tokens
+- **Output**: $5.00 per 1M tokens
 
 ### Claude Opus 4.1
 - **Input**: $15.00 per 1M tokens
 - **Output**: $75.00 per 1M tokens
 
-### Claude 3.5 Sonnet v2
-- **Input**: $3.00 per 1M tokens
-- **Output**: $15.00 per 1M tokens
-
 ### Example Costs (Claude Sonnet 4.5)
 
 | Task | Input Tokens | Output Tokens | Cost |
 |------|--------------|---------------|------|
-| Simple query | 50 | 100 | $0.0018 |
-| Medium task | 500 | 1000 | $0.018 |
-| Large task | 5000 | 10000 | $0.18 |
+| Simple query | 50 | 100 | $0.0017 |
+| Medium task | 500 | 1000 | $0.0165 |
+| Large task | 5000 | 10000 | $0.165 |
 | Data analysis | 50000 | 5000 | $0.225 |
 
 **Note**: Prices vary by region. Check [AWS Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/) for your region.
+
+> **Known issue**: The `cost_usd` field returned in `WeaveResponse` uses approximate pricing from the `calculateCost` function in the Bedrock client. Currently, all Opus 4.x models are billed at the Opus 4.1 rate ($15/$75) and Haiku is billed at $0.80/$4.00 instead of $1.00/$5.00. The prices listed in this document reflect the model catalog (source of truth for Bedrock pricing tiers). The in-response cost estimate may differ.
 
 
 ## Security Best Practices
@@ -761,7 +802,7 @@ Bedrock automatically logs metrics to CloudWatch:
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Bedrock \
   --metric-name Invocations \
-  --dimensions Name=ModelId,Value=anthropic.claude-sonnet-4-5-20250929-v1:0 \
+  --dimensions Name=ModelId,Value=us.anthropic.claude-sonnet-4-5-20250929-v1:0 \
   --start-time 2025-01-01T00:00:00Z \
   --end-time 2025-01-01T23:59:59Z \
   --period 3600 \
@@ -812,7 +853,7 @@ aws iam tag-user --user-name loom-user \
 
 **Example**:
 ```
-Error: access_denied: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
+Error: access_denied: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
 **Resolution**:
@@ -861,7 +902,7 @@ aws bedrock list-foundation-models --region us-east-1
 
 **Example**:
 ```
-Error: model_not_found: Could not find foundation model identifier anthropic.claude-sonnet-4-5-20250929-v1:0 in region us-east-1
+Error: model_not_found: Could not find foundation model identifier us.anthropic.claude-sonnet-4-5-20250929-v1:0 in region us-east-1
 ```
 
 **Resolution**:
@@ -925,12 +966,12 @@ Should contain profile with access key.
 looms config get-key bedrock_access_key_id
 ```
 
-**Step 5: Test with explicit credentials**:
+**Step 5: Test with explicit credentials via keyring**:
 ```bash
-looms serve \
-  --bedrock-access-key "YOUR_KEY" \
-  --bedrock-secret-key "YOUR_SECRET" \
-  --bedrock-region "us-east-1"
+looms config set-key bedrock_access_key_id
+looms config set-key bedrock_secret_access_key
+looms config set llm.bedrock_region us-east-1
+looms serve
 ```
 
 **Retry behavior**: Loom will not automatically retry. Configure credentials and retry request.
@@ -946,7 +987,7 @@ looms serve \
 
 **Example**:
 ```
-Error: throttling: Rate exceeded for model anthropic.claude-sonnet-4-5-20250929-v1:0 in region us-west-2
+Error: throttling: Rate exceeded for model us.anthropic.claude-sonnet-4-5-20250929-v1:0 in region us-west-2
 ```
 
 **Bedrock Default Quotas**:
@@ -961,10 +1002,14 @@ Error: throttling: Rate exceeded for model anthropic.claude-sonnet-4-5-20250929-
 3. Select quota (e.g., "Requests per minute for Claude Sonnet 4.5")
 4. Request quota increase
 
-**Option 2: Implement exponential backoff**:
+**Option 2: Use built-in exponential backoff** (enabled by default):
 ```yaml
-# Loom automatically retries with backoff
-# No configuration needed
+# Rate limiting with automatic retry is enabled by default.
+# To customize, add to looms.yaml:
+llm:
+  rate_limit:
+    max_retries: 5           # Default: 5
+    retry_backoff_ms: 1000   # Default: 1000ms
 ```
 
 **Option 3: Reduce request rate**:
@@ -978,7 +1023,7 @@ Error: throttling: Rate exceeded for model anthropic.claude-sonnet-4-5-20250929-
 # Load balance across regions
 ```
 
-**Retry behavior**: Loom automatically retries with exponential backoff (max 3 attempts).
+**Retry behavior**: Loom automatically retries with exponential backoff (up to 6 total attempts: 1 initial + 5 retries, per `DefaultRateLimiterConfig.MaxRetries`). Rate limiting is enabled by default.
 
 
 ### ERR_INVALID_REGION
@@ -1045,7 +1090,7 @@ max_tokens: 2048  # Faster completion
 **Option 3: Use faster model**:
 ```yaml
 # Switch to Haiku for speed
-bedrock_model_id: anthropic.claude-haiku-4-5-20251001-v1:0
+bedrock_model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
 **Option 4: Check network latency**:
@@ -1061,8 +1106,8 @@ time aws bedrock list-foundation-models --region us-west-2
 
 | Feature | Bedrock | Direct Anthropic |
 |---------|---------|------------------|
-| **Pricing** | Varies by region ($3-$15/1M) | Fixed global pricing ($3-$15/1M) |
-| **Authentication** | AWS IAM (roles, keys) | API key |
+| **Pricing** | Varies by region ($1-$75/1M) | Fixed global pricing ($1-$75/1M) |
+| **Authentication** | AWS IAM (roles, keys, bearer token) | API key |
 | **Network** | VPC/PrivateLink support | Public internet only |
 | **Compliance** | AWS compliance (HIPAA, SOC 2) | Anthropic compliance |
 | **Latency** | Regional (5-180ms) | Global (varies) |
@@ -1071,7 +1116,7 @@ time aws bedrock list-foundation-models --region us-west-2
 | **Setup Complexity** | Moderate (IAM, model access) | Simple (API key only) |
 | **Multi-region** | AWS regions | Single global endpoint |
 | **Tool Calling** | Native support | Native support |
-| **Streaming** | Supported | Supported |
+| **Streaming** | Non-streaming (falls back due to AWS SDK bug) | Supported |
 
 **Choose Bedrock for**:
 - Enterprise AWS integration

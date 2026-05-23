@@ -25,8 +25,10 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 9 migrations
-	assert.Len(t, migrations, 9, "should have 9 migration versions")
+	// Verify we have all 13 migrations.
+	// Bumped from 11 by 000012_skill_index and 000013_task_idempotency
+	// (skills overhaul Phases 4 and 8).
+	assert.Len(t, migrations, 13, "should have 13 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -66,6 +68,7 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{7, "user_rls_policies", "user_id = current_setting"},
 		{8, "tool_exec_snapshot_user_id", "ALTER TABLE tool_executions ADD COLUMN"},
 		{9, "session_name", "ADD COLUMN IF NOT EXISTS name"},
+		{10, "graph_memory", "graph_entities"},
 	}
 
 	for _, tt := range tests {

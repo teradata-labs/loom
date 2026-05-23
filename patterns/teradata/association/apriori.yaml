@@ -1,0 +1,477 @@
+# === METADATA START ===
+name: apriori
+title: "Frequent Itemset Mining and Association Rules (Apriori)"
+description: |
+  Discover frequent patterns and association rules in transactional data using TD_Apriori.
+  Classic application is market basket analysis — finding items that are frequently
+  purchased together.
+
+  TD_Apriori supports two input formats:
+  - Dense: one row per transaction, items in a single delimited cell
+  - Sparse: one row per item, with a transaction ID column grouping items
+
+  Output modes:
+  - Patterns: frequent itemsets with support values
+  - Rules: association rules with confidence, lift, conviction, leverage, and chi-square
+  - Both: patterns and rules together
+
+category: association
+difficulty: intermediate
+teradata_function: TD_Apriori
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - recommendation
+  - pattern_discovery
+use_cases:
+  # --- Use Case 1: Market Basket Analysis ---
+  - Identify products frequently purchased together for cross-selling
+
+  # --- Use Case 2: Web Clickstream ---
+  - Find page sequences users commonly navigate through
+
+  # --- Use Case 3: Medical Co-Occurrence ---
+  - Discover conditions or medications that co-occur in patient records
+
+  # --- Use Case 4: Bundle Recommendations ---
+  - Create product bundles based on co-purchase frequency
+
+  # --- Use Case 5: Fraud Pattern Detection ---
+  - Identify combinations of transaction attributes associated with fraud
+
+  # --- Use Case 6: Promotion Planning ---
+  - Determine which items to promote together based on association strength
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the transaction data"
+    example: "retail_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table containing transaction or event data"
+    example: "purchase_transactions"
+
+  # --- Parameter 3: Target Column ---
+  - name: target_column
+    type: string
+    # LLM-HINT: Column containing item identifiers (product names, SKUs, etc.)
+    required: true
+    description: "Column containing item data. For dense format: delimited items in one cell. For sparse format: one item per row."
+    example: "product_name"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Transaction ID column; required for sparse format, not used for dense
+    required: false
+    description: "Column grouping items into transactions (required for sparse input format)"
+    example: "transaction_id"
+
+  # --- Parameter 5: Support ---
+  - name: support
+    type: number
+    # LLM-HINT: Minimum frequency as proportion of total transactions; range (0,1]; default 0.01
+    required: false
+    default: "0.01"
+    description: "Minimum support threshold as a proportion of total transactions. Range (0,1]. Default 0.01 (1%)."
+    example: "0.05"
+
+  # --- Parameter 6: Max Length ---
+  - name: max_len
+    type: integer
+    # LLM-HINT: Maximum itemset size; default 2; max 20
+    required: false
+    default: "2"
+    description: "Maximum number of items in an itemset. Default 2. Maximum 20."
+    example: "3"
+
+  # --- Parameter 7: Patterns or Rules ---
+  - name: patterns_or_rules
+    type: string
+    # LLM-HINT: 'Patterns' (frequent itemsets only), 'Rules' (association rules), or 'Both'
+    required: false
+    default: "Patterns"
+    description: "Output mode: 'Patterns' for frequent itemsets, 'Rules' for association rules, 'Both' for both."
+    example: "Rules"
+
+  # --- Parameter 8: Partition Columns ---
+  - name: partition_columns
+    type: array[string]
+    # LLM-HINT: Optional columns to partition the analysis by (e.g., region, store)
+    required: false
+    description: "Columns to partition the analysis by (e.g., analyze per store or region). Max 10."
+    example: '["store_id"]'
+
+  # --- Parameter 9: Input Delimiter ---
+  - name: input_delimiter
+    type: string
+    # LLM-HINT: Delimiter for dense input format; default comma; only for dense format
+    required: false
+    default: ","
+    description: "Item delimiter for dense input format. Default comma. Not used for sparse format."
+    example: ","
+
+  # --- Parameter 10: Output Delimiter ---
+  - name: output_delimiter
+    type: string
+    # LLM-HINT: Delimiter in the Itemset output column; default comma
+    required: false
+    default: ","
+    description: "Delimiter used in the output Itemset column. Default comma."
+    example: "|"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === FREQUENT_ITEMSETS_SPARSE TEMPLATE ===
+  # LLM-HINT: Find frequent itemsets from sparse (one-row-per-item) transaction data
+  frequent_itemsets_sparse:
+    description: "Find frequent itemsets from sparse transactional data (one row per item)"
+    sql: |
+      -- Frequent itemset mining: sparse format
+      -- One row per item; IDColumn groups items into transactions
+      SELECT * FROM TD_Apriori(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              IDColumn('{{id_column}}')
+              Support({{support}})
+              MaxLen({{max_len}})
+              PatternsOrRules('Patterns')
+      ) AS t
+      ORDER BY Support DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - id_column
+      - support
+      - max_len
+
+  # === FREQUENT_ITEMSETS_DENSE TEMPLATE ===
+  # LLM-HINT: Find frequent itemsets from dense (items-in-one-cell) transaction data
+  frequent_itemsets_dense:
+    description: "Find frequent itemsets from dense transactional data (items in one delimited cell)"
+    sql: |
+      -- Frequent itemset mining: dense format
+      -- One row per transaction; items in a single delimited cell
+      SELECT * FROM TD_Apriori(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              InputDelimiter('{{input_delimiter}}')
+              Support({{support}})
+              MaxLen({{max_len}})
+              PatternsOrRules('Patterns')
+      ) AS t
+      ORDER BY Support DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - input_delimiter
+      - support
+      - max_len
+
+  # === ASSOCIATION_RULES TEMPLATE ===
+  # LLM-HINT: Extract association rules with confidence, lift, and other metrics
+  association_rules:
+    description: "Extract association rules with full metrics (confidence, lift, conviction, leverage)"
+    sql: |
+      -- Association rules with metrics
+      SELECT * FROM TD_Apriori(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              IDColumn('{{id_column}}')
+              Support({{support}})
+              MaxLen({{max_len}})
+              PatternsOrRules('Rules')
+      ) AS t
+      ORDER BY Lift DESC, Confidence DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - id_column
+      - support
+      - max_len
+
+  # === HIGH_CONFIDENCE_RULES TEMPLATE ===
+  # LLM-HINT: Filter for actionable rules with high confidence and positive lift
+  high_confidence_rules:
+    description: "Find high-confidence, high-lift association rules for actionable recommendations"
+    sql: |
+      -- High-confidence association rules filtered for actionability
+      SELECT
+          Antecedent,
+          Consequence,
+          Support,
+          Confidence,
+          Lift,
+          Conviction,
+          Chi_Square
+      FROM TD_Apriori(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              IDColumn('{{id_column}}')
+              Support({{support}})
+              MaxLen({{max_len}})
+              PatternsOrRules('Rules')
+      ) AS t
+      WHERE Confidence >= {{min_confidence}}
+        AND Lift > 1.0
+      ORDER BY Lift DESC, Confidence DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - id_column
+      - support
+      - max_len
+      - min_confidence
+
+  # === PARTITIONED_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Run apriori per partition (e.g., per store or region)
+  partitioned_analysis:
+    description: "Run itemset mining partitioned by store, region, or other dimension"
+    sql: |
+      -- Partitioned frequent itemset mining
+      -- Discovers separate patterns per partition value
+      SELECT * FROM TD_Apriori(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              IDColumn('{{id_column}}')
+              PartitionColumns({{partition_columns_quoted}})
+              Support({{support}})
+              MaxLen({{max_len}})
+              PatternsOrRules('Both')
+      ) AS t
+      ORDER BY {{partition_columns_first}}, Support DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - id_column
+      - partition_columns_quoted
+      - partition_columns_first
+      - support
+      - max_len
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Market Basket Analysis ---
+  - name: "Grocery Market Basket Analysis"
+    description: "Find products frequently bought together in a grocery store"
+    parameters:
+      database: "retail"
+      table: "basket_items"
+      target_column: "product_name"
+      id_column: "receipt_id"
+      support: 0.02
+      max_len: 3
+      patterns_or_rules: "Rules"
+    expected_result: |
+      Rules output (sorted by Lift):
+        Antecedent: 'bread'     Consequence: 'butter'    Support: 0.08  Confidence: 0.62  Lift: 3.1
+        Antecedent: 'chips'     Consequence: 'salsa'     Support: 0.05  Confidence: 0.55  Lift: 2.8
+        Antecedent: 'pasta'     Consequence: 'sauce'     Support: 0.04  Confidence: 0.48  Lift: 2.5
+        Antecedent: 'diapers'   Consequence: 'wipes'     Support: 0.03  Confidence: 0.71  Lift: 4.2
+
+      Interpretation: Lift > 1 indicates positive association.
+      Bread and butter appear in 8% of transactions (support).
+      62% of bread buyers also buy butter (confidence).
+      This co-purchase rate is 3.1x higher than random chance (lift).
+
+  # --- Example 2: Dense Format E-Commerce ---
+  - name: "E-Commerce Bundle Discovery (Dense Format)"
+    description: "Find item bundles from transaction data where items are comma-separated"
+    parameters:
+      database: "ecommerce"
+      table: "order_items_dense"
+      target_column: "items_purchased"
+      input_delimiter: ","
+      support: 0.01
+      max_len: 2
+      patterns_or_rules: "Patterns"
+    expected_result: |
+      Patterns output (sorted by Support):
+        Itemset: 'phone case,screen protector'  Support: 0.15
+        Itemset: 'laptop,mouse'                 Support: 0.09
+        Itemset: 'headphones,phone case'        Support: 0.06
+
+      Interpretation: 15% of all orders contain both a phone case
+      and screen protector. These are strong candidates for a bundle
+      discount or cross-sell recommendation.
+
+  # --- Example 3: Per-Store Analysis ---
+  - name: "Per-Store Association Patterns"
+    description: "Discover different co-purchase patterns at each store"
+    parameters:
+      database: "retail"
+      table: "store_transactions"
+      target_column: "product_sku"
+      id_column: "transaction_id"
+      partition_columns: ["store_id"]
+      support: 0.03
+      max_len: 2
+      patterns_or_rules: "Both"
+    expected_result: |
+      Different stores show different top patterns:
+        Store 101: {sunscreen, hat} Support: 0.12 (beach town)
+        Store 205: {soup, bread}    Support: 0.10 (urban lunch crowd)
+        Store 310: {grills, charcoal} Support: 0.08 (suburban)
+
+      Partitioned analysis reveals local shopping behavior that
+      global analysis would obscure. Use for store-specific promotions.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: No Results ---
+  - error: "TD_Apriori returns no rows"
+    cause: "Support threshold is too high for the data"
+    solution: "Lower the Support value. Start with 0.01 (1%) and increase gradually. For sparse data, even 0.001 may be needed."
+
+  # --- Error 2: Too Many Results ---
+  - error: "Overwhelming number of itemsets or rules"
+    cause: "Support threshold is too low or MaxLen is too large"
+    solution: "Increase Support (e.g., from 0.01 to 0.05) or reduce MaxLen. For rules, filter by Confidence >= 0.5 and Lift > 1."
+
+  # --- Error 3: Missing IDColumn ---
+  - error: "[Teradata] Missing required argument IDColumn"
+    cause: "Using sparse input format without specifying IDColumn"
+    solution: "For sparse format (one row per item), IDColumn is required to group items into transactions. Add IDColumn('transaction_id')."
+
+  # --- Error 4: Dense vs. Sparse Confusion ---
+  - error: "Each item treated as a separate transaction"
+    cause: "Data is in sparse format but IDColumn was not specified"
+    solution: "Check your data format. If each row is one item, add IDColumn. If each row is a full transaction with delimited items, use InputDelimiter instead."
+
+  # --- Error 5: MaxLen Too Large ---
+  - error: "Query runs for a very long time or runs out of spool"
+    cause: "MaxLen set too high (e.g., 10+) on a dataset with many distinct items"
+    solution: "MaxLen grows combinatorially. Start with 2 or 3. Only increase if you specifically need larger itemsets. Max is 20."
+
+  # --- Error 6: Partition Nondeterminism ---
+  - error: "Results differ across runs when using PartitionColumns"
+    cause: "Partition column values are not unique within TransactionIDColumns"
+    solution: "Ensure each partition column value maps to a consistent set of transactions. Output is nondeterministic otherwise."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Apriori Association Mining Best Practices
+
+  ### 1. Data Preparation
+  **Choose the right format:**
+  - Sparse format (one row per item + IDColumn) is more common and flexible
+  - Dense format (delimited items in one cell) avoids joins but is harder to maintain
+  - Sparse is recommended for new implementations
+
+  **Clean items before mining:**
+  ```sql
+  -- Normalize item names to avoid duplicates
+  SELECT
+      transaction_id,
+      TRIM(LOWER(product_name)) AS product_name
+  FROM purchase_items
+  WHERE product_name IS NOT NULL;
+  ```
+
+  **Filter noise:**
+  - Remove very common items (e.g., bags, receipts) that add no insight
+  - Remove very rare items that will never meet the support threshold
+  - Consider category-level analysis if item-level is too sparse
+
+  ### 2. Setting Support and MaxLen
+  **Support selection:**
+  - Start with 0.01 (1%) for datasets with 10K+ transactions
+  - Lower to 0.001 for very sparse data (many distinct items)
+  - Higher support (0.05-0.10) for quick initial exploration
+  - Lower support reveals niche patterns but increases output volume
+
+  **MaxLen selection:**
+  - MaxLen=2 for pairwise associations (fastest, most common)
+  - MaxLen=3 for triplet patterns (bundle discovery)
+  - MaxLen=4+ only when specifically needed — grows combinatorially
+
+  ### 3. Interpreting Metrics
+  **Support:** What fraction of all transactions contain this itemset.
+  - High support = common pattern
+  - Low support = niche but potentially valuable
+
+  **Confidence:** Given the antecedent, how often does the consequence appear.
+  - Confidence >= 0.5 is generally considered actionable
+  - Very high confidence (>0.9) may indicate trivial rules
+
+  **Lift:** How much more likely the consequence is, given the antecedent, vs. random.
+  - Lift > 1: positive association (items bought together more than expected)
+  - Lift = 1: independent (no association)
+  - Lift < 1: negative association (items substitute for each other)
+
+  **Conviction:** Measures implication strength.
+  - Higher = stronger rule
+  - Infinity = perfect implication (consequence always follows antecedent)
+
+  ### 4. Filtering for Actionable Rules
+  ```sql
+  -- Focus on rules that are both common and strong
+  WHERE Support >= 0.02      -- appears in at least 2% of transactions
+    AND Confidence >= 0.5    -- consequence appears in 50%+ of antecedent transactions
+    AND Lift > 1.5           -- at least 1.5x more likely than random
+  ORDER BY Lift DESC
+  ```
+
+  ### 5. Using Output Tables
+  **Save results for downstream use:**
+  ```sql
+  SELECT * FROM TD_Apriori(
+      ON db.transactions AS InputTable PARTITION BY ANY
+      OUT TABLE OutputTable('db.association_rules')
+      USING
+          TargetColumn('product')
+          IDColumn('txn_id')
+          Support(0.02)
+          PatternsOrRules('Rules')
+  ) AS t;
+  ```
+
+  ### 6. Partitioned Analysis
+  - Use PartitionColumns to find location-specific or segment-specific patterns
+  - Compare rules across partitions to identify regional differences
+  - Global rules may mask important local patterns
+
+  ### 7. Performance Tips
+  - Start with a high support threshold and lower gradually
+  - Use PARTITION BY ANY for parallel execution
+  - Limit MaxLen to reduce combinatorial explosion
+  - Consider sampling large datasets for exploratory runs
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Collaborative Filtering ---
+  - collaborative_filtering
+
+  # --- Pattern 2: K-Means (customer segmentation) ---
+  - kmeans
+
+  # --- Pattern 3: Decision Tree ---
+  - decision_tree
+# === RELATED_PATTERNS END ===

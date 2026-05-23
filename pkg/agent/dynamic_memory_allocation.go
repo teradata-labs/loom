@@ -263,7 +263,7 @@ func NewSegmentedMemoryWithDynamicAllocation(
 		tracer:             observability.NewNoOpTracer(),
 		maxL1Tokens:        profile.MaxL1Tokens,   // DYNAMIC based on available budget
 		minL1Messages:      profile.MinL1Messages, // DYNAMIC based on available budget
-		maxToolResults:     1,
+		maxToolResults:     5,
 		compressionProfile: profile,
 	}
 

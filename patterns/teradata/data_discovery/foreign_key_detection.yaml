@@ -34,6 +34,9 @@ teradata_function: P_XAGXB, P_XBGXA, Overlaps
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Automatically discover foreign key relationships
   - Reverse-engineer undocumented schema relationships
@@ -401,7 +404,7 @@ best_practices: |
   - **Kernel Layer**: Cache P_XAGXB/P_XBGXA threshold rules and relationship type classifications
   - **L1 Cache**: Keep recent FK detection results (last 5-8 tables) to avoid recomputation
   - **L2 Compressed**: Archive detected FK relationships showing containment rates over time
-  - **Swap Layer**: Store complete FK analysis history; use recall_conversation to compare current schema relationships against earlier data integration efforts
+  - **Swap Layer**: Store complete FK analysis history; use conversation_memory to compare current schema relationships against earlier data integration efforts
   This enables tracking when FK relationships degrade (orphans increase) and validating data quality.
 # === BEST_PRACTICES END ===
 

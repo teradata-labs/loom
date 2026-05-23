@@ -1,7 +1,7 @@
 
 # Zero-Code Configuration Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -21,11 +21,11 @@
 
 ## Overview
 
-Configure Loom agents, backends, and MCP servers using YAML files and CLI commands without writing Go code.
+✅ Configure Loom agents, backends, and MCP servers using YAML files and CLI commands without writing Go code.
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - API key: `looms config set-key anthropic_api_key`
 
 ## Quick Start
@@ -40,8 +40,9 @@ looms config set mcp.servers.filesystem.args "-y,@modelcontextprotocol/server-fi
 # Start server - MCP servers auto-start
 looms serve
 
-# Weave a thread
-looms weave "I need a file explorer"
+# In another terminal, connect to the weaver
+loom --thread weaver
+# Then type your request in the TUI: "I need a file explorer"
 ```
 
 
@@ -85,72 +86,102 @@ mcp:
         - "@modelcontextprotocol/server-filesystem"
         - "/data"
       transport: stdio
-      timeout_seconds: 30
 ```
 
 ### Create Agent Configuration
 
-Create `$LOOM_DATA_DIR/agents/sql-expert.yaml`:
+Create `$LOOM_DATA_DIR/agents/sql-expert.yaml`.
+
+Agent YAML supports two formats: k8s-style (recommended) or legacy `agent:` wrapper.
+
+**K8s-style format (recommended):**
 
 ```yaml
-name: sql-expert
-description: SQL query analysis and optimization
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: sql-expert
+  description: SQL query analysis and optimization
+spec:
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.7
+    max_tokens: 4096
 
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-5-20250929
-  temperature: 0.7
-  max_tokens: 4096
+  system_prompt: |
+    Analyze SQL queries for performance issues and suggest optimizations.
+    Focus on index usage, join efficiency, and query structure.
 
-system_prompt: |
-  Analyze SQL queries for performance issues and suggest optimizations.
-  Focus on index usage, join efficiency, and query structure.
+  tools:
+    builtin:
+      - execute_sql
+      - explain_query
+    mcp:
+      - server: vantage
+        tools:
+          - query_system
 
-tools:
-  - name: execute_sql
-    description: Execute a SQL query
-  - name: explain_query
-    description: Get query execution plan
+  config:
+    max_turns: 25
+    max_tool_executions: 50
+```
 
-max_turns: 25
-max_tool_executions: 50
-enable_tracing: true
+**Legacy format (also supported):**
+
+```yaml
+agent:
+  name: sql-expert
+  description: SQL query analysis and optimization
+
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.7
+    max_tokens: 4096
+
+  system_prompt: |
+    Analyze SQL queries for performance issues and suggest optimizations.
+
+  behavior:
+    max_turns: 25
+    max_tool_executions: 50
 ```
 
 Agents in `$LOOM_DATA_DIR/agents/` auto-load on server startup with hot-reload support.
 
 ### Configure Backends
 
-Create `$LOOM_DATA_DIR/backends/postgres.yaml`:
+Create `$LOOM_DATA_DIR/backends/postgres.yaml`.
+
+Backend YAML uses a flat format (no `metadata`/`spec` wrapper):
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
-metadata:
-  name: postgres_prod
-  description: Production PostgreSQL database
+name: postgres_prod
+description: Production PostgreSQL database
+type: postgres
 
-spec:
-  type: postgres
+database:
+  dsn: ${DATABASE_URL}
+  max_connections: 20
+  max_idle_connections: 5
+  connection_timeout_seconds: 10
 
-  connection:
-    database:
-      dsn: ${DATABASE_URL}
-      max_connections: 20
-      connection_timeout_seconds: 10
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 3600
+  include_tables:
+    - users
+    - orders
+    - products
 
-  schema_discovery:
-    enabled: true
-    cache_ttl_seconds: 3600
-    include_tables:
-      - users
-      - orders
-      - products
-
-  health_check:
-    enabled: true
-    interval_seconds: 30
-    query: "SELECT 1"
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 5
+  query: "SELECT 1"
 ```
 
 ### Validate Configuration
@@ -165,15 +196,16 @@ looms validate dir $LOOM_DATA_DIR/
 
 Expected output:
 ```
-Validating 4 YAML files in $LOOM_DATA_DIR/...
+Validating 3 YAML files in $LOOM_DATA_DIR/...
 
-looms.yaml
-backends/postgres.yaml
-agents/sql-expert.yaml
+✅ looms.yaml
+✅ backends/postgres.yaml
+✅ agents/sql-expert.yaml
 
 Summary:
   Valid:   3
   Invalid: 0
+  Total:   3
 ```
 
 
@@ -193,11 +225,10 @@ looms config set-key td_password
 # 2. Start server
 looms serve
 
-# 3. Weave a Teradata thread
-looms weave "Build a Teradata query optimizer"
-
-# 4. Connect and use
-loom --thread teradata-optimizer-abc123 --server localhost:9090
+# 3. In another terminal, connect to the weaver
+loom --thread weaver
+# Then type your request in the TUI: "Build a Teradata query optimizer"
+# The weaver will create the agent and tell you the thread name to connect to
 ```
 
 ### Example 2: Multi-Backend Setup
@@ -250,16 +281,29 @@ mcp:
 
 ### "No 'kind' field found"
 
-Add required fields to YAML:
+Add the required `kind` field to your YAML. The exact format depends on the kind:
+
+**For Agent, Workflow, Skill, AgentTemplate** (k8s-style with metadata/spec):
 
 ```yaml
 apiVersion: loom/v1
-kind: Backend  # Required
+kind: Agent
 metadata:
-  name: my-backend
+  name: my-agent
+spec:
+  # ...
 ```
 
-Supported kinds: `Project`, `Backend`, `PatternLibrary`, `EvalSuite`
+**For Backend, PatternLibrary, EvalSuite, Project** (flat format, no metadata/spec):
+
+```yaml
+apiVersion: loom/v1
+kind: Backend
+name: my-backend
+# ...
+```
+
+Supported kinds: `Agent`, `Workflow`, `Skill`, `AgentTemplate`, `Project`, `Backend`, `PatternLibrary`, `EvalSuite`
 
 ### Agent Not Loading
 
@@ -270,13 +314,15 @@ Supported kinds: `Project`, `Backend`, `PatternLibrary`, `EvalSuite`
 
 ### Environment Variables Not Expanding
 
-Ensure proper syntax:
+Loom uses `os.Expand` for environment variable expansion. Supported syntax:
+
 ```yaml
-connection:
-  dsn: ${DATABASE_URL}           # Works
-  dsn: $DATABASE_URL             # May not work
-  password: ${DB_PASSWORD:-default}  # With default value
+database:
+  dsn: ${DATABASE_URL}           # Works: braced variable
+  dsn: $DATABASE_URL             # Works: unbraced variable
 ```
+
+**Not supported:** `${VAR:-default}` (default value syntax). The `os.Expand` function does not support shell-style defaults. If a variable is unset, it expands to an empty string. Set all required environment variables before starting the server.
 
 ### Keyring Errors
 
@@ -288,11 +334,23 @@ looms config set-key anthropic_api_key
 # List available keys
 looms config list-keys
 
-# Available keys:
+# Available keys (partial list):
 # - anthropic_api_key
+# - bedrock_access_key_id
+# - bedrock_secret_access_key
+# - bedrock_session_token
+# - hawk_api_key
+# - openai_api_key
+# - azure_openai_api_key
+# - azure_openai_entra_token
+# - mistral_api_key
+# - gemini_api_key
+# - huggingface_token
+# - brave_search_api_key
+# - tavily_api_key
+# - serpapi_key
 # - td_password
 # - github_token
 # - postgres_password
-# - bedrock_access_key_id
-# - bedrock_secret_access_key
+# - database_url
 ```

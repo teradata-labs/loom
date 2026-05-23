@@ -1,0 +1,425 @@
+# === METADATA START ===
+name: vector_distance
+title: "Exact Vector Distance Search"
+description: |
+  Compute exact pairwise distances between vectors using TD_VectorDistance. Supports
+  three distance measures: Cosine, Euclidean, and Manhattan. Returns precise nearest
+  neighbors with optional TopK filtering.
+
+  TD_VectorDistance computes distances between a TargetTable and an optional ReferenceTable.
+  Without a ReferenceTable, it computes all-pairs distances within the TargetTable.
+
+  Supported column types for vectors:
+  - VECTOR or Vector32 UDT columns (recommended)
+  - VARBYTE columns
+  - Individual numeric columns (BYTEINT through DOUBLE PRECISION, max 2018 columns)
+
+  For large datasets (millions of vectors), use TD_HNSW/TD_HNSWPredict for approximate
+  nearest-neighbor search instead. TD_VectorDistance with TopK(-1) scales as O(N^2).
+
+category: vector_search
+difficulty: intermediate
+teradata_function: TD_VectorDistance
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - similarity_search
+  - vector_search
+  - analytics
+use_cases:
+  # --- Use Case 1: Semantic Search ---
+  - Find the most similar documents to a query vector using cosine distance
+
+  # --- Use Case 2: Recommendation ---
+  - Find similar items or products based on embedding similarity
+
+  # --- Use Case 3: Duplicate Detection ---
+  - Identify near-duplicate records by computing pairwise distances
+
+  # --- Use Case 4: Anomaly Detection ---
+  - Find vectors that are far from all others (high distance to nearest neighbors)
+
+  # --- Use Case 5: Clustering Validation ---
+  - Compute inter-cluster and intra-cluster distances
+
+  # --- Use Case 6: All-Pairs Similarity ---
+  - Compute similarity matrix within a single table
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the vector tables"
+    example: "embeddings_db"
+
+  # --- Parameter 2: Target Table ---
+  - name: target_table
+    type: string
+    # LLM-HINT: Table with vectors to search against; maps to TargetTable in the ON clause
+    required: true
+    description: "Table containing the vectors to search"
+    example: "document_embeddings"
+
+  # --- Parameter 3: Target ID Column ---
+  - name: target_id_column
+    type: string
+    # LLM-HINT: Unique identifier in the target table; appears as Target_ID in output
+    required: true
+    description: "Unique identifier column in the target table"
+    example: "doc_id"
+
+  # --- Parameter 4: Target Feature Columns ---
+  - name: target_feature_columns
+    type: string
+    # LLM-HINT: Vector column(s) in target table; single VECTOR column or comma-separated numeric columns
+    required: true
+    description: "Vector column(s) in the target table (VECTOR column or individual numeric columns)"
+    example: "embedding"
+
+  # --- Parameter 5: Reference Table ---
+  - name: ref_table
+    type: string
+    # LLM-HINT: Table with query/reference vectors; if omitted, all-pairs within TargetTable
+    required: false
+    description: "Table containing query/reference vectors. Omit for all-pairs within target table"
+    example: "query_embedding"
+
+  # --- Parameter 6: Reference ID Column ---
+  - name: ref_id_column
+    type: string
+    # LLM-HINT: Required when ReferenceTable is provided; unique identifier in reference table
+    required: false
+    description: "Unique identifier column in the reference table"
+    example: "query_id"
+
+  # --- Parameter 7: Reference Feature Columns ---
+  - name: ref_feature_columns
+    type: string
+    # LLM-HINT: Must match type and order of TargetFeatureColumns; required with ReferenceTable
+    required: false
+    description: "Vector column(s) in the reference table (must match target feature column types)"
+    example: "embedding"
+
+  # --- Parameter 8: Distance Measure ---
+  - name: distance_measure
+    type: string
+    # LLM-HINT: Cosine for embeddings (normalize first!), Euclidean for spatial data, Manhattan for sparse features
+    required: false
+    default: "Cosine"
+    description: "Distance measure: Cosine, Euclidean, or Manhattan. Multiple can be specified"
+    example: "Cosine"
+
+  # --- Parameter 9: TopK ---
+  - name: top_k
+    type: integer
+    # LLM-HINT: Number of nearest neighbors per target; default 1024; -1 returns all pairs (O(N^2) warning!)
+    required: false
+    default: "10"
+    description: "Number of nearest neighbors to return per target vector. -1 = all pairs"
+    example: "10"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TOPK_SIMILARITY_SEARCH TEMPLATE ===
+  # LLM-HINT: Primary pattern for semantic search; finds K nearest neighbors from reference to target
+  topk_similarity_search:
+    description: "Find top K most similar vectors from a target table given query vectors"
+    sql: |
+      -- Top-K similarity search: find nearest neighbors for query vectors
+      -- NOTE: Normalize vectors with TD_VectorNormalize(Approach('UNITVECTOR'))
+      -- BEFORE running cosine distance for accurate results
+      SELECT * FROM TD_VectorDistance(
+          ON {{database}}.{{target_table}} AS TargetTable PARTITION BY ANY
+          ON {{database}}.{{ref_table}} AS ReferenceTable DIMENSION
+          USING
+              TargetIDColumn('{{target_id_column}}')
+              TargetFeatureColumns('{{target_feature_columns}}')
+              RefIDColumn('{{ref_id_column}}')
+              RefFeatureColumns('{{ref_feature_columns}}')
+              DistanceMeasure('{{distance_measure}}')
+              TopK({{top_k}})
+      ) AS t
+      ORDER BY Distance ASC;
+    required_parameters:
+      - database
+      - target_table
+      - target_id_column
+      - target_feature_columns
+      - ref_table
+      - ref_id_column
+      - ref_feature_columns
+      - distance_measure
+      - top_k
+
+  # === PAIRWISE_DISTANCE TEMPLATE ===
+  # LLM-HINT: All-pairs distance within a single table; no ReferenceTable needed; scales as O(N^2)
+  pairwise_distance:
+    description: "Compute pairwise distances between all vectors in a single table"
+    sql: |
+      -- All-pairs pairwise distance within a single table
+      -- WARNING: Scales as O(N^2). Use only on small tables or with TopK limit.
+      -- For large tables, use TD_HNSW/TD_HNSWPredict instead.
+      SELECT * FROM TD_VectorDistance(
+          ON {{database}}.{{target_table}} AS TargetTable PARTITION BY ANY
+          USING
+              TargetIDColumn('{{target_id_column}}')
+              TargetFeatureColumns('{{target_feature_columns}}')
+              DistanceMeasure('{{distance_measure}}')
+              TopK({{top_k}})
+      ) AS t
+      ORDER BY Target_ID, Distance ASC;
+    required_parameters:
+      - database
+      - target_table
+      - target_id_column
+      - target_feature_columns
+      - distance_measure
+      - top_k
+
+  # === MULTI_DISTANCE_COMPARE TEMPLATE ===
+  # LLM-HINT: Compute multiple distance measures in a single pass for comparison
+  multi_distance_compare:
+    description: "Compute multiple distance measures in a single pass"
+    sql: |
+      -- Compare multiple distance measures in one query
+      -- Useful for evaluating which measure works best for your data
+      SELECT * FROM TD_VectorDistance(
+          ON {{database}}.{{target_table}} AS TargetTable PARTITION BY ANY
+          ON {{database}}.{{ref_table}} AS ReferenceTable DIMENSION
+          USING
+              TargetIDColumn('{{target_id_column}}')
+              TargetFeatureColumns('{{target_feature_columns}}')
+              RefIDColumn('{{ref_id_column}}')
+              RefFeatureColumns('{{ref_feature_columns}}')
+              DistanceMeasure('Cosine', 'Euclidean', 'Manhattan')
+              TopK({{top_k}})
+      ) AS t
+      ORDER BY Target_ID, DistanceType, Distance ASC;
+    required_parameters:
+      - database
+      - target_table
+      - target_id_column
+      - target_feature_columns
+      - ref_table
+      - ref_id_column
+      - ref_feature_columns
+      - top_k
+
+  # === SEMANTIC_SEARCH_WITH_NORMALIZE TEMPLATE ===
+  # LLM-HINT: End-to-end pattern: normalize query vector inline, then search normalized document table
+  semantic_search_with_normalize:
+    description: "Semantic search with inline normalization of query vector"
+    sql: |
+      -- End-to-end semantic search pattern:
+      -- 1. Query embedding is assumed already generated (e.g., from AI_TextEmbeddings)
+      -- 2. Normalize the query vector
+      -- 3. Search against pre-normalized document embeddings
+      WITH query_normalized AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON {{database}}.{{ref_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('{{ref_id_column}}')
+                  TargetColumns('{{ref_feature_columns}}')
+                  Approach('UNITVECTOR')
+          ) AS t
+      )
+      SELECT * FROM TD_VectorDistance(
+          ON {{database}}.{{target_table}} AS TargetTable PARTITION BY ANY
+          ON query_normalized AS ReferenceTable DIMENSION
+          USING
+              TargetIDColumn('{{target_id_column}}')
+              TargetFeatureColumns('{{target_feature_columns}}')
+              RefIDColumn('{{ref_id_column}}')
+              RefFeatureColumns('{{ref_feature_columns}}')
+              DistanceMeasure('Cosine')
+              TopK({{top_k}})
+      ) AS t
+      ORDER BY Distance ASC;
+    required_parameters:
+      - database
+      - target_table
+      - target_id_column
+      - target_feature_columns
+      - ref_table
+      - ref_id_column
+      - ref_feature_columns
+      - top_k
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Document Semantic Search ---
+  - name: "Document Semantic Search"
+    description: "Find the 10 most similar documents to a query embedding using cosine distance"
+    parameters:
+      database: "semantic_search"
+      target_table: "document_embeddings_norm"
+      target_id_column: "doc_id"
+      target_feature_columns: "embedding"
+      ref_table: "query_embedding"
+      ref_id_column: "query_id"
+      ref_feature_columns: "embedding"
+      distance_measure: "Cosine"
+      top_k: 10
+    expected_result: |
+      10 rows returned, one per nearest document:
+
+      Target_ID | Reference_ID | DistanceType | Distance
+      42        | 1            | cosine       | 0.0312
+      187       | 1            | cosine       | 0.0458
+      93        | 1            | cosine       | 0.0521
+      ...
+
+      Lower cosine distance = more similar. 0 = identical direction.
+      Documents are ranked by relevance to the query.
+
+  # --- Example 2: Product Similarity (All-Pairs) ---
+  - name: "Product Similarity Within Catalog"
+    description: "Find the 5 most similar products for each product in the catalog"
+    parameters:
+      database: "ecommerce"
+      target_table: "product_embeddings_norm"
+      target_id_column: "product_id"
+      target_feature_columns: "embedding"
+      distance_measure: "Cosine"
+      top_k: 5
+    expected_result: |
+      5 nearest neighbors per product (no ReferenceTable, all-pairs mode):
+
+      Target_ID | Reference_ID | DistanceType | Distance
+      101       | 203          | cosine       | 0.0189
+      101       | 455          | cosine       | 0.0234
+      ...
+      102       | 305          | cosine       | 0.0156
+      ...
+
+      Use for "similar products" recommendations.
+
+  # --- Example 3: Multi-Metric Comparison ---
+  - name: "Compare Distance Measures"
+    description: "Evaluate cosine and euclidean distances side by side"
+    parameters:
+      database: "analytics"
+      target_table: "item_embeddings"
+      target_id_column: "item_id"
+      target_feature_columns: "feat1, feat2, feat3"
+      ref_table: "query_items"
+      ref_id_column: "query_id"
+      ref_feature_columns: "feat1, feat2, feat3"
+      top_k: 20
+    expected_result: |
+      Results include both cosine and euclidean distances for each pair:
+
+      Target_ID | Reference_ID | DistanceType | Distance
+      42        | 1            | cosine       | 0.031
+      42        | 1            | euclidean    | 1.234
+      187       | 1            | cosine       | 0.045
+      187       | 1            | euclidean    | 2.567
+      ...
+
+      Compare rankings between measures to select the best one for your use case.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Unnormalized Cosine ---
+  - error: "Cosine distances seem wrong or counterintuitive"
+    cause: "Vectors were not normalized before cosine distance computation"
+    solution: "Apply TD_VectorNormalize with Approach('UNITVECTOR') before computing cosine distances. See the vector_normalize pattern"
+
+  # --- Error 2: Column Type Mismatch ---
+  - error: "Column type or count mismatch between TargetFeatureColumns and RefFeatureColumns"
+    cause: "Target and reference feature columns have different types, counts, or order"
+    solution: "TargetFeatureColumns and RefFeatureColumns must have the same number, type, and order. Both must be VECTOR columns, or both must be the same set of numeric columns"
+
+  # --- Error 3: TopK(-1) on Large Tables ---
+  - error: "Query runs out of spool space or takes extremely long"
+    cause: "Using TopK(-1) on large tables computes N^2 pairs"
+    solution: "Set a reasonable TopK value (e.g., 10-100). For large-scale nearest-neighbor search, use TD_HNSW/TD_HNSWPredict instead"
+
+  # --- Error 4: Missing RefIDColumn ---
+  - error: "RefIDColumn is required when ReferenceTable is provided"
+    cause: "Provided a ReferenceTable but forgot RefIDColumn or RefFeatureColumns"
+    solution: "When using a ReferenceTable, always specify both RefIDColumn and RefFeatureColumns"
+
+  # --- Error 5: Too Many Feature Columns ---
+  - error: "Exceeds maximum number of feature columns"
+    cause: "More than 2018 individual numeric feature columns specified"
+    solution: "Maximum 2018 individual numeric columns. Use a single VECTOR or Vector32 column instead for high-dimensional embeddings"
+
+  # --- Error 6: Distance Interpretation ---
+  - error: "Sorting results in wrong order"
+    cause: "Sorting by distance DESC instead of ASC (lower distance = more similar)"
+    solution: "Always ORDER BY Distance ASC for nearest neighbors. Cosine range is [0,2], Euclidean range is [0,inf), Manhattan range is [0,inf)"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## TD_VectorDistance Best Practices
+
+  ### 1. Always Normalize Before Cosine Distance
+  ```sql
+  -- Pre-normalize embeddings for cosine search (do once)
+  CREATE TABLE db.embeddings_norm AS (
+      SELECT * FROM TD_VectorNormalize(
+          ON db.embeddings AS InputTable PARTITION BY ANY
+          USING
+              IDColumns('id') TargetColumns('embedding') Approach('UNITVECTOR')
+      ) AS t
+  ) WITH DATA;
+  ```
+
+  ### 2. Choose the Right Distance Measure
+  | Measure | Range | Best For | Normalize First? |
+  |---------|-------|----------|------------------|
+  | Cosine | [0, 2] | Embeddings, text similarity | YES (UNITVECTOR) |
+  | Euclidean | [0, inf) | Spatial data, dense numeric features | Optional (depends on scale) |
+  | Manhattan | [0, inf) | Sparse features, high-dimensional | Optional |
+
+  ### 3. Use VECTOR Column Type
+  Store embeddings as VECTOR or Vector32 type columns rather than individual numeric
+  columns. VECTOR columns are more storage-efficient and integrate directly with
+  all vector search functions.
+
+  ### 4. Set Appropriate TopK
+  - Default is 1024; for search applications, 5-50 is typical
+  - TopK(-1) computes all N^2 pairs -- use only for small tables
+  - For large-scale search (millions of vectors), use TD_HNSW instead
+
+  ### 5. Consider SIMD Acceleration
+  ```sql
+  -- Enable SIMD for better performance on supported hardware
+  UseSIMD('true')
+  ```
+
+  ### 6. When to Use TD_VectorDistance vs TD_HNSW
+  | Scenario | Use |
+  |----------|-----|
+  | Small tables (<100K vectors) | TD_VectorDistance (exact) |
+  | Large tables (>100K vectors) | TD_HNSW/TD_HNSWPredict (approximate) |
+  | Need exact results | TD_VectorDistance |
+  | Need fast approximate results | TD_HNSWPredict |
+  | One-time analysis | TD_VectorDistance |
+  | Repeated search queries | TD_HNSW (build once, search many) |
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Vector Normalize ---
+  - vector_normalize
+
+  # --- Pattern 2: HNSW ---
+  - hnsw
+
+  # --- Pattern 3: Embeddings ---
+  - embeddings
+
+  # --- Pattern 4: KMeans ---
+  - kmeans
+# === RELATED_PATTERNS END ===

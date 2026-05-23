@@ -1,0 +1,657 @@
+# === METADATA START ===
+name: spatial_operations
+title: "Spatial Manipulation and Aggregation"
+description: |
+  Spatial manipulation functions in Teradata Vantage: ST_Buffer (buffer zones),
+  ST_Centroid (polygon centers), ST_Area and ST_Perimeter (polygon measurements),
+  ST_Union and ST_Intersection (set operations), ST_ConvexHull, ST_Envelope,
+  ST_Boundary, ST_Difference, ST_SymDifference, and SimplifyPreserveTopology.
+
+  Includes the AggGeom table function for parallel spatial aggregation (union/intersection
+  by partition), PolygonSplit for splitting large polygons, and tessellation using MGRS
+  (Military Grid Reference System) for grid-based spatial partitioning.
+
+  These operations require understanding of geometry basics and spatial relationships
+  as prerequisites.
+
+category: geospatial
+difficulty: advanced
+teradata_function: ST_Buffer
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - data_transformation
+  - reporting
+use_cases:
+  # --- Use Case 1: Buffer Zones ---
+  - Create exclusion or service zones around points or lines (e.g., 5km radius around a store)
+
+  # --- Use Case 2: Area and Perimeter ---
+  - Calculate polygon area and perimeter for land parcels, sales regions, or coverage zones
+
+  # --- Use Case 3: Spatial Aggregation ---
+  - Merge overlapping polygons into a single geometry per group (e.g., union parcels by zip code)
+
+  # --- Use Case 4: Centroid Calculation ---
+  - Find the geographic center of polygons for label placement or representative points
+
+  # --- Use Case 5: Geometry Simplification ---
+  - Simplify complex polygons for visualization while preserving topology
+
+  # --- Use Case 6: MGRS Grid Partitioning ---
+  - Convert lat/lon to MGRS grid cells for spatial binning and tessellation-based indexing
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the geospatial tables"
+    example: "geo_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Primary table with geometry data
+    required: true
+    description: "Table containing polygon or geometry data"
+    example: "land_parcels"
+
+  # --- Parameter 3: Geometry Column ---
+  - name: geometry_column
+    type: string
+    # LLM-HINT: ST_Geometry column to operate on
+    required: true
+    description: "ST_Geometry column for spatial operations"
+    example: "boundary"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique identifier for result rows
+    required: true
+    description: "Unique identifier column"
+    example: "parcel_id"
+
+  # --- Parameter 5: Buffer Distance ---
+  - name: buffer_distance
+    type: number
+    # LLM-HINT: Distance in SRS linear units; degrees for WGS84, meters for projected
+    required: false
+    description: "Buffer radius in SRS linear units. For WGS84 (SRID 4326) this is degrees; for projected systems this is meters"
+    example: "0.05"
+
+  # --- Parameter 6: Group Column ---
+  - name: group_column
+    type: string
+    # LLM-HINT: Column to partition spatial aggregation by (e.g., zip_code, region)
+    required: false
+    description: "Column to group by for spatial aggregation (AggGeom PARTITION BY)"
+    example: "zip_code"
+
+  # --- Parameter 7: Simplify Tolerance ---
+  - name: simplify_tolerance
+    type: number
+    # LLM-HINT: Maximum deviation from the original geometry in SRS units
+    required: false
+    description: "Tolerance for geometry simplification (SimplifyPreserveTopology)"
+    example: "0.001"
+
+  # --- Parameter 8: MGRS Precision ---
+  - name: mgrs_precision
+    type: integer
+    # LLM-HINT: 0=100km grid, 1=10km, 2=1km, 3=100m, 4=10m, 5=1m
+    required: false
+    default: "3"
+    description: "MGRS grid precision: 0=100km, 1=10km, 2=1km, 3=100m, 4=10m, 5=1m"
+    example: "3"
+
+  # --- Parameter 9: SRID ---
+  - name: srid
+    type: integer
+    # LLM-HINT: Spatial Reference System Identifier for MGRS conversion
+    required: false
+    default: "1619"
+    description: "SRID for coordinate system (1619 is commonly used for MGRS conversion)"
+    example: "1619"
+
+  # --- Parameter 10: Max Vertices ---
+  - name: max_vertices
+    type: integer
+    # LLM-HINT: Maximum vertices per sub-polygon for PolygonSplit; minimum 10, default 300
+    required: false
+    default: "300"
+    description: "Maximum vertices per sub-polygon for PolygonSplit (min 10)"
+    example: "400"
+
+  # --- Parameter 11: Second Geometry Column ---
+  - name: second_geometry_column
+    type: string
+    # LLM-HINT: Second geometry for set operations (intersection, union, difference)
+    required: false
+    description: "Second ST_Geometry column or WKT for binary set operations"
+    example: "overlay_shape"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BUFFER_ZONE TEMPLATE ===
+  # LLM-HINT: Creates a polygon surrounding each geometry at the given distance
+  buffer_zone:
+    description: "Create buffer zones around geometries"
+    sql: |
+      -- ST_Buffer creates a polygon at a given distance around each geometry
+      -- Distance is in SRS linear units (degrees for WGS84, meters for projected)
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_Buffer({{buffer_distance}}) AS buffer_polygon,
+        {{geometry_column}}.ST_Buffer({{buffer_distance}}).ST_Area() AS buffer_area
+      FROM {{database}}.{{table}}
+      ORDER BY {{id_column}};
+
+      -- For real-world distance buffers on lat/lon data, use SpheroidalBufferMBR
+      -- to get a bounding rectangle instead of a circular buffer:
+      -- SELECT {{geometry_column}}.ST_SpheroidalBufferMBR(5000.0)  -- 5km radius MBR
+      -- FROM {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - buffer_distance
+
+  # === AREA_AND_PERIMETER TEMPLATE ===
+  # LLM-HINT: Calculates area and perimeter for polygon geometries
+  area_and_perimeter:
+    description: "Calculate area and perimeter of polygons"
+    sql: |
+      -- ST_Area: polygon area in SRS squared units
+      -- ST_Perimeter: boundary length in SRS linear units
+      -- Both ignore z coordinates
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_Area()      AS area,
+        {{geometry_column}}.ST_Perimeter() AS perimeter,
+        {{geometry_column}}.ST_Centroid()  AS centroid
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_GeometryType() IN ('ST_Polygon', 'ST_MultiPolygon')
+      ORDER BY area DESC;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+
+  # === CENTROID_CALCULATION TEMPLATE ===
+  # LLM-HINT: Find the geometric center of polygons; only works for Polygon and MultiPolygon
+  centroid_calculation:
+    description: "Calculate centroids and representative points for polygons"
+    sql: |
+      -- ST_Centroid: geometric center (may fall outside concave polygons)
+      -- ST_PointOnSurface: guaranteed to be on/inside the polygon
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_Centroid().ST_AsText()       AS centroid_wkt,
+        {{geometry_column}}.ST_PointOnSurface().ST_AsText() AS point_on_surface_wkt,
+        {{geometry_column}}.ST_Centroid().ST_X()             AS centroid_x,
+        {{geometry_column}}.ST_Centroid().ST_Y()             AS centroid_y
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_GeometryType() IN ('ST_Polygon', 'ST_MultiPolygon')
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+
+  # === SET_OPERATIONS TEMPLATE ===
+  # LLM-HINT: Union, intersection, difference, and symmetric difference between two geometries
+  set_operations:
+    description: "Perform set operations between two geometry columns"
+    sql: |
+      -- Binary set operations between two geometries
+      -- Use Make_2D() on results if inputs are 3D (most set ops drop z)
+      SELECT
+        a.{{id_column}},
+
+        -- Union: combined area of both geometries
+        a.{{geometry_column}}.ST_Union(b.{{second_geometry_column}}).ST_AsText()
+          AS union_wkt,
+
+        -- Intersection: shared area only
+        a.{{geometry_column}}.ST_Intersection(b.{{second_geometry_column}}).ST_AsText()
+          AS intersection_wkt,
+
+        -- Difference: area in A but not in B
+        a.{{geometry_column}}.ST_Difference(b.{{second_geometry_column}}).ST_AsText()
+          AS difference_wkt,
+
+        -- Symmetric difference: area in A or B but not both
+        a.{{geometry_column}}.ST_SymDifference(b.{{second_geometry_column}}).ST_AsText()
+          AS symdiff_wkt
+
+      FROM {{database}}.{{table}} a
+      INNER JOIN {{database}}.{{table}} b
+        ON a.{{id_column}} <> b.{{id_column}}
+      WHERE a.{{geometry_column}}.ST_Intersects(b.{{second_geometry_column}}) = 1;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - second_geometry_column
+
+  # === AGGREGATE_UNION TEMPLATE ===
+  # LLM-HINT: Parallel spatial union using AggGeom table function with PARTITION BY
+  aggregate_union:
+    description: "Aggregate geometries into a single union per group using AggGeom"
+    sql: |
+      -- AggGeom: parallel spatial aggregation
+      -- PARTITION BY group_column for grouped union; omit for global union
+
+      -- Grouped union (one merged geometry per partition value)
+      SELECT {{group_column}}, geom
+      FROM AggGeom(
+        ON (SELECT {{geometry_column}} AS geom, {{group_column}}
+            FROM {{database}}.{{table}})
+        PARTITION BY {{group_column}}
+        USING Operation('Union')
+      ) L
+      ORDER BY {{group_column}};
+
+      -- Global union (all geometries into one; requires two-pass pattern)
+      -- SELECT *
+      -- FROM AggGeom(
+      --   ON (SELECT L.*, 1 AS p
+      --       FROM AggGeom(
+      --         ON (SELECT {{geometry_column}} AS geom FROM {{database}}.{{table}})
+      --         USING Operation('Union')
+      --       ) L)
+      --   PARTITION BY p
+      -- ) G;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - group_column
+
+  # === SIMPLIFY TEMPLATE ===
+  # LLM-HINT: Reduce polygon vertex count while preserving topology; useful for visualization
+  simplify_geometry:
+    description: "Simplify complex geometries while preserving topology"
+    sql: |
+      -- SimplifyPreserveTopology: reduce vertex count for visualization
+      -- Tolerance is in SRS units; larger = more simplification
+      -- Result is always topologically valid
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_NumPoints()   AS original_points,
+        {{geometry_column}}.SimplifyPreserveTopology({{simplify_tolerance}}).ST_NumPoints()
+          AS simplified_points,
+        {{geometry_column}}.SimplifyPreserveTopology({{simplify_tolerance}}).ST_AsText()
+          AS simplified_wkt
+      FROM {{database}}.{{table}}
+      ORDER BY original_points DESC;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - simplify_tolerance
+
+  # === POLYGON_SPLIT TEMPLATE ===
+  # LLM-HINT: Split large polygons into smaller sub-polygons for parallel processing
+  polygon_split:
+    description: "Split large polygons into smaller pieces for parallel processing"
+    sql: |
+      -- PolygonSplit: recursively splits into quadrants until each sub-polygon
+      -- has fewer than max_vertices (default 300, minimum 10)
+      -- Non-polygon geometries returned unchanged
+      SELECT *
+      FROM PolygonSplit(ON (
+        SELECT {{id_column}},
+               {{geometry_column}} AS geom,
+               CAST({{max_vertices}} AS INTEGER) AS max_vertices
+        FROM {{database}}.{{table}}
+      )) AS SplitTable({{id_column}}, sub_poly_id, split_geom)
+      ORDER BY {{id_column}}, sub_poly_id;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - max_vertices
+
+  # === MGRS_CONVERSION TEMPLATE ===
+  # LLM-HINT: Convert between lat/lon points and MGRS grid strings for spatial binning
+  mgrs_conversion:
+    description: "Convert between lat/lon coordinates and MGRS grid references"
+    sql: |
+      -- Point to MGRS string (precision: 0=100km, 1=10km, 2=1km, 3=100m, 4=10m, 5=1m)
+      -- TO_MGRS truncates (does not round)
+      SELECT
+        {{id_column}},
+        TO_MGRS(
+          {{geometry_column}},
+          (SELECT SRTEXT FROM SYSSPATIAL.SPATIAL_REF_SYS WHERE SRID = {{srid}}),
+          {{mgrs_precision}}
+        ) AS mgrs_code
+      FROM {{database}}.{{table}}
+      ORDER BY {{id_column}};
+
+      -- MGRS string back to ST_Point
+      -- SELECT FROM_MGRS(
+      --   '36TTQ6355387329',
+      --   (SELECT SRTEXT FROM SYSSPATIAL.SPATIAL_REF_SYS WHERE SRID = {{srid}}),
+      --   {{srid}}
+      -- );
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - srid
+      - mgrs_precision
+
+  # === TESSELLATION_INDEX TEMPLATE ===
+  # LLM-HINT: Build a tessellation-based spatial index for large-scale spatial joins
+  tessellation_index:
+    description: "Build a tessellation-based grid index for spatial joins"
+    sql: |
+      -- Step 1: Create tessellation index table
+      CREATE TABLE {{database}}.{{table}}_tess_idx (
+        {{id_column}} INTEGER,
+        cellid        INTEGER
+      );
+
+      -- Step 2: Populate with cell IDs from Tessellate_Index
+      INSERT INTO {{database}}.{{table}}_tess_idx
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.Tessellate_Index(
+          -180, -90, 180, 90,  -- universe: u_xmin, u_ymin, u_xmax, u_ymax
+          500, 500,             -- grid: g_nx, g_ny (500x500 = 250K cells)
+          1,                    -- levels (1 is usually sufficient)
+          0.01,                 -- scale (0 < scale < 1)
+          0                     -- shift (0=none, 1=shifted grids for better coverage)
+        )
+      FROM {{database}}.{{table}};
+
+      -- Step 3: Use the index for spatial join via Tessellate_Search
+      -- SELECT a.{{id_column}}, b.other_id
+      -- FROM {{database}}.{{table}} a
+      --   , {{database}}.{{table}}_tess_idx ai
+      --   , (SELECT other_id, geom,
+      --            geom.ST_MBR_Xmin() AS xmin, geom.ST_MBR_Ymin() AS ymin,
+      --            geom.ST_MBR_Xmax() AS xmax, geom.ST_MBR_Ymax() AS ymax
+      --      FROM other_table) AS b
+      --   , TABLE(SYSSPATIAL.Tessellate_Search(
+      --       b.other_id,
+      --       b.xmin, b.ymin, b.xmax, b.ymax,
+      --       -180, -90, 180, 90,
+      --       500, 500, 1, 0.01, 0)) AS t
+      -- WHERE a.{{id_column}} = ai.{{id_column}}
+      --   AND ai.cellid = t.cellid
+      --   AND t.out_key = b.other_id;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+
+  # === CONVEX_HULL_AND_ENVELOPE TEMPLATE ===
+  # LLM-HINT: Compute convex hull and bounding envelope for geometry collections
+  convex_hull_and_envelope:
+    description: "Calculate convex hull and bounding envelope"
+    sql: |
+      -- ST_ConvexHull: smallest convex polygon containing the geometry
+      -- ST_Envelope: axis-aligned bounding rectangle
+      -- Use Make_2D() on convex hull results if inputs are 3D
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_ConvexHull().ST_AsText() AS convex_hull_wkt,
+        {{geometry_column}}.ST_Envelope().ST_AsText()   AS envelope_wkt,
+        {{geometry_column}}.ST_ConvexHull().ST_Area()   AS hull_area,
+        {{geometry_column}}.ST_Area()                   AS original_area
+      FROM {{database}}.{{table}}
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Store Service Areas ---
+  - name: "Store Service Area Buffers"
+    description: "Create 5km buffer zones around store locations for coverage analysis"
+    parameters:
+      database: "retail_geo"
+      table: "stores"
+      geometry_column: "location"
+      id_column: "store_id"
+      buffer_distance: 0.045
+    expected_result: |
+      Buffer polygons created around each store. For WGS84 data (SRID 4326),
+      0.045 degrees latitude is roughly 5km. Buffer polygons can be intersected
+      with population data to estimate coverage.
+
+      store_id | buffer_polygon (WKT)                    | buffer_area
+      101      | POLYGON((-96.845 32.735, ...))           | 0.00636
+      102      | POLYGON((-87.695 41.855, ...))           | 0.00636
+
+      For precise metric buffers, use ST_SpheroidalBufferMBR(5000.0) to get
+      an MBR in meters, or reproject to a meter-based SRS first.
+
+  # --- Example 2: Land Parcel Area Ranking ---
+  - name: "Land Parcel Area Calculation"
+    description: "Calculate area and perimeter of land parcels for tax assessment"
+    parameters:
+      database: "county_gis"
+      table: "parcels"
+      geometry_column: "boundary"
+      id_column: "parcel_id"
+    expected_result: |
+      Area and perimeter computed in SRS squared/linear units.
+
+      parcel_id | area          | perimeter    | centroid (WKT)
+      P001      | 0.00234       | 0.245        | POINT(-96.78 32.81)
+      P002      | 0.00189       | 0.221        | POINT(-96.75 32.79)
+      P003      | 0.00102       | 0.158        | POINT(-96.80 32.82)
+
+      For WGS84 data, area is in square degrees. Convert to square meters
+      by reprojecting to a local projected SRS (e.g., UTM zone).
+
+  # --- Example 3: Zip Code Polygon Aggregation ---
+  - name: "Merge Parcels by Zip Code"
+    description: "Union all parcel polygons within each zip code into a single boundary"
+    parameters:
+      database: "county_gis"
+      table: "parcels"
+      geometry_column: "boundary"
+      group_column: "zip_code"
+    expected_result: |
+      AggGeom produces one merged polygon per zip code, executed in parallel.
+
+      zip_code | geom (WKT)
+      75201    | POLYGON((-96.81 32.77, -96.81 32.83, ...))
+      75202    | MULTIPOLYGON(((-96.77 32.79, ...)), ((-96.76 32.80, ...)))
+
+      Note: Non-contiguous parcels produce a MULTIPOLYGON result.
+      Row order may vary between runs but geometries are equivalent.
+
+  # --- Example 4: MGRS Grid Binning ---
+  - name: "MGRS Spatial Binning"
+    description: "Convert store locations to MGRS grid codes for spatial binning at 1km precision"
+    parameters:
+      database: "retail_geo"
+      table: "stores"
+      geometry_column: "location"
+      id_column: "store_id"
+      srid: 1619
+      mgrs_precision: 2
+    expected_result: |
+      Each point mapped to its MGRS 1km grid cell (precision 2).
+
+      store_id | mgrs_code
+      101      | 14SPE6032
+      102      | 16TDM0041
+      103      | 10SEG5537
+
+      Use GROUP BY mgrs_code for spatial binning. Precision 2 = 1km cells,
+      precision 3 = 100m cells, precision 5 = 1m resolution.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Buffer on WGS84 ---
+  - error: "Buffer zone appears oval instead of circular on a map"
+    cause: "ST_Buffer on WGS84 (SRID 4326) operates in degrees; 1 degree of longitude varies by latitude"
+    solution: "For metric circular buffers: (1) reproject to a local projected SRS, apply buffer, reproject back; or (2) use ST_SpheroidalBufferMBR for a rectangular approximation in meters"
+
+  # --- Error 2: ST_Centroid on Non-Polygon ---
+  - error: "ST_Centroid returns NULL or error"
+    cause: "ST_Centroid is defined only for ST_Polygon and ST_MultiPolygon types"
+    solution: "Filter to polygon types: WHERE shape.ST_GeometryType() IN ('ST_Polygon', 'ST_MultiPolygon'). For lines, use ST_Line_Interpolate_Point(0.5) for the midpoint"
+
+  # --- Error 3: AggGeom GeomCollection ---
+  - error: "AggGeom fails on non-empty GeomCollection"
+    cause: "AggGeom does not support non-empty GeomCollection as input or intermediate result"
+    solution: "Decompose GeomCollections into individual geometries before passing to AggGeom. Use ST_GeometryN() to extract components"
+
+  # --- Error 4: PolygonSplit Max Vertices ---
+  - error: "PolygonSplit fails with max_vertices too small"
+    cause: "max_vertices parameter is below minimum of 10"
+    solution: "Use max_vertices >= 10. Default is 300. For most use cases, 200-500 balances granularity and performance"
+
+  # --- Error 5: 3D Set Operation Results ---
+  - error: "Set operation result has unexpected z coordinates or errors"
+    cause: "ST_Union, ST_Intersection, ST_Difference on 3D geometries may produce inconsistent z values"
+    solution: "Apply Make_2D() to the result: shape1.ST_Union(shape2).Make_2D(). Or strip z from inputs first"
+
+  # --- Error 6: MGRS SRID Selection ---
+  - error: "TO_MGRS returns incorrect grid reference"
+    cause: "Using wrong SRID or SRTEXT for the input coordinate system"
+    solution: "Use the SRID that matches your data coordinate system. Look up SRTEXT: SELECT SRTEXT FROM SYSSPATIAL.SPATIAL_REF_SYS WHERE AUTH_SRID = 4326"
+
+  # --- Error 7: Tessellation Universe Mismatch ---
+  - error: "Tessellate_Search returns no matching cells"
+    cause: "Universe parameters (u_xmin, u_ymin, u_xmax, u_ymax) in Tessellate_Search differ from those used in Tessellate_Index"
+    solution: "Use identical universe, grid, levels, scale, and shift parameters in both Tessellate_Index and Tessellate_Search"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Spatial Operations Best Practices
+
+  ### 1. Buffer Zone Strategy
+  **For WGS84 (lat/lon) data:**
+  - ST_Buffer works in degrees — 1 degree != constant distance
+  - For approximate metric buffers: 1 degree latitude ~ 111km,
+    1 degree longitude ~ 111km * cos(latitude)
+  - For precise metric buffers: reproject to a local UTM zone, buffer, reproject back
+
+  **For projected data (meter-based SRS):**
+  - ST_Buffer works directly in meters
+  - Preferred for buffer analysis when metric accuracy matters
+
+  **MBR buffer for quick filtering:**
+  ```sql
+  -- Fast rectangular buffer (not circular, but cheaper)
+  SELECT point.ST_SpheroidalBufferMBR(5000.0) AS buffer_mbr
+  FROM stores;
+  ```
+
+  ### 2. Area Calculation Accuracy
+  - ST_Area on WGS84 returns square degrees (not useful directly)
+  - For real-world area in square meters:
+    1. Reproject to a local projected SRS (UTM zone for your region)
+    2. Calculate area in the projected system
+    3. Or use an approximation: area_sq_deg * 111319^2 * cos(centroid_lat)
+
+  ### 3. AggGeom Performance
+  **Grouped aggregation:**
+  ```sql
+  -- Parallel: one pass, partitioned by group
+  SELECT group_col, geom FROM AggGeom(
+    ON (SELECT geom, group_col FROM t)
+    PARTITION BY group_col
+    USING Operation('Union')
+  ) L;
+  ```
+
+  **Global aggregation (two-pass):**
+  ```sql
+  -- Pass 1: local union per AMP; Pass 2: merge local results
+  SELECT * FROM AggGeom(
+    ON (SELECT L.*, 1 AS p
+        FROM AggGeom(ON (SELECT geom FROM t) USING Operation('Union')) L)
+    PARTITION BY p
+  ) G;
+  ```
+
+  The two-pass pattern is required for global union because AggGeom
+  needs a partition key. The first pass runs in parallel across AMPs.
+
+  ### 4. Simplification for Visualization
+  - Start with a small tolerance and increase gradually
+  - SimplifyPreserveTopology guarantees valid output (no self-intersections)
+  - Monitor point count reduction vs. visual fidelity
+  - Cache simplified versions in a separate column or table for repeated display
+
+  ### 5. PolygonSplit for Large Geometry Processing
+  - Use when polygons have thousands of vertices (e.g., complex coastlines)
+  - Set max_vertices based on your UDF performance requirements
+  - Sub-polygon areas may not sum exactly to original (floating-point rounding)
+  - After splitting, spatial predicates may need to check multiple sub-polygons
+
+  ### 6. Tessellation Index vs. Geospatial NUSI
+  | Feature | Geospatial NUSI | Tessellation |
+  |---------|----------------|--------------|
+  | Setup | Automatic (INDEX clause) | Manual (build index table) |
+  | Maintenance | Automatic | Manual (rebuild on data change) |
+  | Join support | Nested join | Any join via cellid |
+  | Flexibility | Fixed MBR filtering | Configurable grid resolution |
+  | Best for | General spatial queries | Large-scale spatial joins |
+
+  **Use geospatial NUSI** for most cases. Use tessellation when you need
+  fine-grained control over grid resolution or when joining very large tables
+  where the optimizer struggles with nested spatial joins.
+
+  ### 7. MGRS for Spatial Binning
+  - MGRS provides a human-readable grid reference (e.g., '14SPE6032')
+  - Truncation-based: increasing precision adds digits, not changes them
+  - Ideal for GROUP BY spatial binning at multiple scales
+  - Use precision 2 (1km) for regional analysis, 4 (10m) for local
+  - Store MGRS codes as VARCHAR for easy indexing and joining
+
+  ### 8. Coordinate Transformation
+  ```sql
+  -- Reproject between coordinate systems using SPATIAL_REF_SYS
+  SELECT point.ST_Transform(target_srid, target_srtext, source_srtext)
+  FROM data_table,
+       SYSSPATIAL.SPATIAL_REF_SYS src,
+       SYSSPATIAL.SPATIAL_REF_SYS tgt
+  WHERE src.AUTH_SRID = 4326
+    AND tgt.AUTH_SRID = 32616;
+  ```
+
+  Always reproject before combining data from different coordinate systems.
+  Mixing SRIDs in spatial predicates produces incorrect results.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Geometry Basics ---
+  - geometry_basics
+
+  # --- Pattern 2: Spatial Relationships ---
+  - spatial_relationships
+# === RELATED_PATTERNS END ===

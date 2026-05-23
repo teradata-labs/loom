@@ -86,31 +86,31 @@ func TestPatternSelectionWithBedrockLLM(t *testing.T) {
 	// Test scenarios that challenge keyword-based classification
 	scenarios := []struct {
 		userMessage       string
-		expectedIntent    IntentCategory
+		expectedIntent    string
 		expectedInResults []string
 		description       string
 	}{
 		{
 			userMessage:       "I need to predict which customers will churn using historical behavior data",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectedInResults: []string{"churn_analysis", "customer_health_scoring", "logistic_regression"},
 			description:       "Churn prediction (semantic understanding needed)",
 		},
 		{
 			userMessage:       "build a machine learning model to forecast customer lifetime value",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectedInResults: []string{"linear_regression", "logistic_regression"},
 			description:       "ML model building (keyword classifier fails on this)",
 		},
 		{
 			userMessage:       "analyze user journeys through our funnel to find drop-off points",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectedInResults: []string{"funnel_analysis", "npath", "sessionize"},
 			description:       "Funnel/journey analysis",
 		},
 		{
 			userMessage:       "find duplicate customer records and merge them",
-			expectedIntent:    IntentDataQuality,
+			expectedIntent:    "data_quality",
 			expectedInResults: []string{"duplicate_detection", "data_profiling"},
 			description:       "Data quality - duplicates",
 		},

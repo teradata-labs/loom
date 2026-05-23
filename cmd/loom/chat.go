@@ -125,11 +125,20 @@ func runChatCommand(cmd *cobra.Command, args []string) {
 func streamChat(ctx context.Context, c *client.Client, message string) error {
 	var lastMessage string
 	var totalTokens int32
+	var totalCost float64
+	// Track streamed content length so we only print new tokens incrementally
+	var streamedLen int
+	var lastStreamedContent string // last PartialContent we streamed, for dedup at COMPLETED
 
 	err := c.StreamWeave(ctx, message, sessionID, agentID, func(progress *loomv1.WeaveProgress) {
 		// Capture running token count
 		if progress.TokenCount > 0 {
 			totalTokens = progress.TokenCount
+		}
+
+		// Capture cost from progress events
+		if progress.Cost != nil && progress.Cost.TotalCostUsd > 0 {
+			totalCost = progress.Cost.TotalCostUsd
 		}
 
 		// Only show progress if --stream flag is set
@@ -142,12 +151,21 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 				fmt.Fprintf(os.Stderr, "[Schema Discovery: %s]\n", progress.Message)
 
 			case loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION:
-				// Show LLM generation progress
-				if progress.Message != "" {
+				// Stream actual LLM tokens to stdout incrementally
+				if progress.PartialContent != "" && progress.IsTokenStream {
+					content := progress.PartialContent
+					if len(content) > streamedLen {
+						fmt.Print(content[streamedLen:])
+						streamedLen = len(content)
+						lastStreamedContent = content
+					}
+				} else if progress.Message != "" {
 					fmt.Fprintf(os.Stderr, "[LLM: %s]\n", progress.Message)
 				}
 
 			case loomv1.ExecutionStage_EXECUTION_STAGE_TOOL_EXECUTION:
+				// Reset streamed length — new LLM generation starts after tool use
+				streamedLen = 0
 				// Show tool execution
 				if progress.ToolName != "" {
 					fmt.Fprintf(os.Stderr, "[Executing Tool: %s]\n", progress.ToolName)
@@ -179,13 +197,16 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 		// Always capture the final message
 		if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
-			// Get actual agent response from PartialResult
+			// Get actual agent response — check multiple sources in priority order
 			if progress.PartialResult != nil && progress.PartialResult.DataJson != "" {
 				lastMessage = progress.PartialResult.DataJson
-			} else {
-				// Fallback to progress message if no result
+			} else if progress.PartialContent != "" {
+				lastMessage = progress.PartialContent
+			} else if progress.Message != "" && progress.Message != "Query completed successfully" {
 				lastMessage = progress.Message
 			}
+			// If no content found anywhere, lastMessage stays empty —
+			// the streamed tokens (if any) are already on stdout
 		}
 	})
 
@@ -193,9 +214,23 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		return fmt.Errorf("stream error: %w", err)
 	}
 
-	// Print the final message/response
+	// Print the final message/response.
+	// If we already streamed tokens, only print if the final message differs
+	// (e.g., the agent produced a final summary after tool calls).
 	if lastMessage != "" {
-		fmt.Println(lastMessage)
+		if chatStream && lastStreamedContent != "" {
+			// We already streamed content. Only print the final message
+			// if it differs from what was streamed (e.g., a post-tool summary).
+			if lastMessage != lastStreamedContent {
+				fmt.Println()
+				fmt.Println(lastMessage)
+			} else {
+				// Already streamed this content — just ensure trailing newline
+				fmt.Println()
+			}
+		} else {
+			fmt.Println(lastMessage)
+		}
 	}
 
 	// Print session info to stderr if user provided session ID
@@ -203,9 +238,9 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		fmt.Fprintf(os.Stderr, "\n[Session: %s]\n", sessionID)
 	}
 
-	// Print token count if available
+	// Print cost and token count if available
 	if totalTokens > 0 {
-		fmt.Fprintf(os.Stderr, "[Cost: $0.000000 | Tokens: %d]\n", totalTokens)
+		fmt.Fprintf(os.Stderr, "[Cost: $%.6f | Tokens: %d]\n", totalCost, totalTokens)
 	}
 
 	return nil

@@ -18,6 +18,10 @@ teradata_function: TD_LogReg
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - prediction
+  - model_training
 use_cases:
   # --- Use Case 1: Churn Prediction ---
   - Customer churn prediction

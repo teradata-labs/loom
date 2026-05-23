@@ -17,205 +17,124 @@ This workflow orchestrates seven specialized agents to create comprehensive D&D 
 ## Architecture
 
 ```
-┌─────────────────────────┐
-│      Coordinator        │ ← User interaction (event-driven)
-│      (Entrypoint)       │
-└───────┬─────────────────┘
-        │
-        ├──────┬──────┬──────┬──────┬──────┐
-        │      │      │      │      │      │
-        ▼      ▼      ▼      ▼      ▼      ▼
+                    ┌─────────────────────────┐
+  User ────────────>│      Coordinator        │
+                    │   (dnd-coordinator)      │
+                    └───────┬─────────────────┘
+                            │ send_message
+        ┌──────┬──────┬─────┼──────┬──────┐
+        │      │      │     │      │      │
+        ▼      ▼      ▼     ▼      ▼      ▼
      ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐
      │World│ │Story│ │Enc.│ │NPC │ │Sess│ │Pub.│
-     │Build│ │Design│ │Design│ │Create│ │Plan│ │lish│
-     └────┘ └────┘ └────┘ └────┘ └────┘ └────┘
+     └──┬─┘ └──┬─┘ └──┬─┘ └──┬─┘ └──┬─┘ └──┬─┘
+        │      │      │      │      │      │
+        └──────┴──────┴──────┴──────┴──────┘
+                    send_message back
+                 (auto-injected into
+                  coordinator session)
 ```
 
-**Communication Pattern**: Hub-and-spoke (coordinator is the hub)
+**Communication Pattern**: Hub-and-spoke via event-driven message queue
 
-### How Hub-and-Spoke Works
+### How It Works
 
-This workflow demonstrates an **emergent communication pattern** rather than an enforced workflow pattern. Unlike Loom's formal workflow patterns (`debate`, `pipeline`, `swarm`, etc.), hub-and-spoke is not implemented as runtime enforcement. Instead, it emerges naturally through:
+All communication uses Loom's **event-driven message queue**:
 
-**Loom's Tri-Modal Communication System:**
-- **Message Queue**: Direct agent-to-agent messaging via `send_message`/`receive_message` tools
-- **Broadcast Bus**: Topic-based pub/sub via `publish`/`subscribe` tools (not used in this workflow)
-- **Shared Memory**: Shared state via `shared_memory_write`/`shared_memory_read` tools (not used in this workflow)
+1. **Coordinator sends** requirements to sub-agents via `send_message`
+2. **Sub-agents receive** messages automatically (auto-injected into their conversation)
+3. **Sub-agents process** the request and send results back via `send_message`
+4. **Coordinator receives** responses automatically (auto-injected into its session)
 
-**Why the Coordinator Acts as Hub:**
-1. **Entrypoint designation**: Users interact with the coordinator first
-2. **Event-driven architecture**: Coordinator uses event-driven messaging (responses automatically injected, no polling)
-3. **System prompt instructions**: Coordinator's prompt tells it to delegate to specialists via `send_message`
-4. **Specialist agent prompts**: All specialists call `receive_message` once, then respond via `send_message`
+**There is NO `receive_message` tool.** Messages are auto-injected by the runtime. This is Loom's event-driven architecture — no polling, no timeouts, instant delivery.
 
-**Key Architectural Detail - Event-Driven Coordinator:**
-The coordinator is fully event-driven. It does NOT call `receive_message` - instead, specialist responses are automatically injected into its conversation. This eliminates polling and ensures instant notification when sub-agents complete their work.
+### Critical Naming Requirements
 
-The `communication` field in the workflow YAML is **advisory documentation only** - it communicates intent to humans but is not parsed or enforced by the runtime. This flexibility allows you to implement various communication topologies (hub-and-spoke, peer-to-peer, hierarchical) simply by configuring agent prompts and tool usage.
+When `spawnWorkflowSubAgents` detects a coordinator agent (via `metadata.role: coordinator` and `metadata.workflow: <name>`), it:
+
+1. Loads the workflow YAML from `~/.loom/workflows/<workflow-name>.yaml`
+2. Parses `spec.agents` and spawns sub-agents with namespaced IDs: `workflow-name:role-name`
+3. Registers notification channels for message delivery
+4. Sets up coordinator notification handler for receiving responses
+
+**Sub-agent metadata must include `workflow: <workflow-name>`** (matching exactly) for the registry search to find them.
 
 ## Usage
 
-### Starting the Workflow
+### Installation
+
+Copy agent configs to `~/.loom/agents/` and workflow config to `~/.loom/workflows/`:
 
 ```bash
-# Start the looms server (if not already running)
+# Copy agents
+cp agents/*.yaml ~/.loom/agents/
+
+# Copy workflow
+mkdir -p ~/.loom/workflows
+cp workflows/dnd-campaign-workflow.yaml ~/.loom/workflows/
+```
+
+### Running the Workflow
+
+```bash
+# Terminal 1: Start the looms server
 looms serve
 
-# In another terminal, connect to the coordinator
-loom --thread dnd-coordinator
+# Terminal 2: Chat with the coordinator
+loom chat --thread dnd-coordinator --message "Create a dark gothic horror D&D campaign. Party of 4, levels 1-10, 8 sessions."
 ```
 
-### Example Interaction
+### Example Output
 
 ```
-User: I want to create a dark fantasy campaign for level 5 characters,
-       about 10 sessions long, with themes of corruption and redemption
+Coordinator: I've initiated the creation of your campaign "Shadows of the
+             Corrupted Spire." Coordinating with my specialized team...
 
-Coordinator: Excellent! A dark fantasy campaign focused on corruption
-             and redemption sounds compelling. I'll coordinate with my
-             specialized agents to create your campaign...
+[MESSAGE FROM dnd-world-builder]: The region of Oakhaven is now a land of
+eternal twilight, dominated by the Cathedral of the Bleeding Sun...
 
-[Coordinator generates campaign_id: campaign_20251231_142530]
-[Coordinator sends requests to all specialist agents]
-[System automatically injects specialist responses when ready]
+[MESSAGE FROM dnd-storyline-designer]: The storyline spans three tiers:
+The Whispering Heresy (Levels 1-4), The Sanguine Covenant (Levels 5-8),
+and The Eclipse of Hope (Levels 9-10)...
 
-Coordinator: Campaign Creation Summary:
+[MESSAGE FROM dnd-npc-creator]: Father Malachi, the High Exarch, is your
+primary antagonist. Countess Elara von Hellsing provides the vampiric threat...
 
-             🌍 WORLD: The Ashen Realm
-             - Gothic fantasy setting with fallen kingdoms
-             - Magic corrupts those who wield it carelessly
-             - Three major factions vying for power
-
-             📖 STORYLINE: The Price of Power
-             - 3-act structure over 10 sessions
-             - Players investigate magical corruption
-             - Climax: Stop ritual that would doom the realm
-
-             ⚔️ ENCOUNTERS: 12 designed
-             - 8 combat encounters (CR 5-7)
-             - 4 social/exploration challenges
-
-             👥 NPCs: 15 characters created
-             - Corrupt duke (main antagonist)
-             - Redemption-seeking wizard (ally)
-             - Various faction leaders and townspeople
-
-             📅 SESSIONS: 10-session breakdown
-             - Clear objectives and pacing for each session
-             - Mix of combat, roleplay, and exploration
-
-             📄 FINAL DOCUMENT: campaign_20251231_142530.pdf
-             Complete campaign saved to artifacts!
-
-             [All artifacts in $LOOM_DATA_DIR/artifacts/dnd-campaigns/campaign_20251231_142530/]
+Coordinator: Here's your complete campaign overview...
 ```
 
-## Features
+## Agent Details
 
-### Coordinator Agent
-- **Communication Model**: Event-driven (responses automatically injected, no polling)
-- Gathers campaign requirements (setting, theme, level, length, tone)
-- Delegates work to appropriate specialist agents via `send_message`
-- Synthesizes multi-agent results into comprehensive campaign overview
-- Generates unique campaign_id for organizing artifacts
-- Saves final overview to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/overview.md`
+### Coordinator (dnd-coordinator)
+- **Role**: User-facing coordinator, delegates work to sub-agents
+- **Communication**: Event-driven — sends via `send_message`, receives auto-injected responses
+- **Tools**: shell_execute, tool_search, send_message
 - **Memory**: SQLite with conversational profile (max_history: 1000)
 - **Config**: max_turns: 100, max_tool_executions: 200, timeout: 900s
-- **Tools**: shell_execute, tool_search, send_message (NO receive_message - fully event-driven)
+- **Metadata**: `role: coordinator`, `workflow: dnd-campaign-workflow`
 
-### World Builder Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Creates fantasy world settings with detailed geography, cultures, and history
-- Designs political systems, economies, and social structures
-- Develops pantheons, magic systems, and supernatural elements
-- Ensures world elements support campaign theme and tone
-- Saves world data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/world.json`
+### Sub-Agents (all follow the same pattern)
+
+All sub-agents are event-driven:
+- Messages arrive automatically (auto-injected as `[MESSAGE from coordinator ...]`)
+- Process the request using their domain expertise
+- Send results back via `send_message`
+- **No `receive_message` needed** — the runtime handles message delivery
+
+| Agent | Config Name | Artifact Output |
+|-------|------------|-----------------|
+| World Builder | dnd-world-builder | `world.json` |
+| Storyline Designer | dnd-storyline-designer | `story.json` |
+| Encounter Designer | dnd-encounter-designer | `encounters.json` |
+| NPC Creator | dnd-npc-creator | `npcs.json` |
+| Session Planner | dnd-session-planner | `sessions.json` |
+| Campaign Publisher | dnd-campaign-publisher | `campaign-guide.md` |
+
+All sub-agents:
+- **Tools**: shell_execute, tool_search, send_message, query_tool_result, search_conversation, recall_conversation, clear_recalled_context
 - **Memory**: SQLite with data_intensive profile (max_history: 2000)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-### Storyline Designer Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Designs multi-act story arcs with compelling hooks, twists, and climaxes
-- Creates main questlines and meaningful side quests
-- Develops dramatic tension, pacing, and emotional beats
-- Integrates story with world setting from world-builder
-- Generates plot points that accommodate player agency
-- Saves story data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/story.json`
-- **Memory**: SQLite with balanced profile (max_history: 1500)
-- **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-### Encounter Designer Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Creates combat encounters with appropriate challenge ratings
-- Designs environmental hazards and tactical scenarios
-- Balances encounter difficulty for party composition
-- Integrates encounters with story beats and world setting
-- Provides stat blocks, tactics, and treasure rewards
-- Saves encounter data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/encounters.json`
-- **Memory**: SQLite with balanced profile (max_history: 1500)
-- **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-### NPC Creator Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Generates NPCs with distinct personalities, motivations, and backgrounds
-- Creates stat blocks appropriate for NPC roles (ally, enemy, neutral)
-- Designs memorable quirks, secrets, and relationships
-- Integrates NPCs into world's factions and storyline
-- Provides roleplay guidance and voice suggestions
-- Saves NPC data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/npcs.json`
-- **Memory**: SQLite with balanced profile (max_history: 1500)
-- **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-### Session Planner Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Plans session-by-session breakdown with clear objectives
-- Organizes story beats, encounters, and roleplay scenes
-- Provides pacing guidance and estimated session length
-- Includes hooks to connect sessions and maintain momentum
-- Creates session prep notes for DMs
-- Saves session plans to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/sessions.json`
-- **Memory**: SQLite with balanced profile (max_history: 1500)
-- **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-### Campaign Publisher Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
-- Compiles all campaign content into organized final document
-- Formats content with proper headers, tables, and stat blocks
-- Creates table of contents and index
-- Generates PDF or markdown formatted campaign book
-- Includes DM notes, player handouts, and reference materials
-- Saves final document to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/campaign.pdf`
-- **Memory**: SQLite with balanced profile (max_history: 1500)
-- **Config**: max_turns: 60, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
-
-## Configuration
-
-### Memory Profiles
-
-Each agent uses a different memory compression profile optimized for its workload:
-
-- **Coordinator** (`conversational`): Optimized for back-and-forth conversation with user (1000 messages)
-- **World Builder** (`data_intensive`): Handles large world generation outputs (2000 messages)
-- **Other Specialists** (`balanced`): Mix of creative generation and structured output (1500 messages)
-
-### Tool Discovery
-
-All agents use dynamic tool discovery via `tool_search`:
-- Coordinator discovers `send_message` tool
-- All specialists discover `send_message` and `receive_message` tools
-
-### Self-Correction and Observability
-
-All agents have:
-- **Self-correction**: Enabled for automatic error recovery
-- **Observability**: Full tracing and metrics export to Hawk
-- **Workflow tags**: All agents tagged with `workflow: dnd-campaign`, `domain: gaming`
+- **Metadata**: `workflow: dnd-campaign-workflow`
 
 ## Output Artifacts
 
@@ -227,125 +146,50 @@ The workflow saves detailed artifacts to `$LOOM_DATA_DIR/artifacts/dnd-campaigns
 - `encounters.json` - Combat encounters and challenges (encounter-designer)
 - `npcs.json` - Non-player characters (npc-creator)
 - `sessions.json` - Session-by-session breakdown (session-planner)
-- `campaign.pdf` - Final compiled campaign document (campaign-publisher)
+- `campaign-guide.md` - Final compiled campaign document (campaign-publisher)
 
 ## Troubleshooting
 
-### Specialist agents not responding
-- Check that all agents are running in the workflow
-- Verify agent IDs in send_message calls: must be `dnd-campaign-workflow:world-builder` format
-- Check looms server logs for message delivery issues
+### Sub-agents not receiving messages
+- Verify `looms serve` is running (the server manages message delivery)
+- Check that sub-agent YAMLs have `workflow: dnd-campaign-workflow` in metadata (must match exactly)
+- Check that coordinator YAML has `role: coordinator` and `workflow: dnd-campaign-workflow`
+- Look for "Detected workflow coordinator" in server logs
+- Look for "registered notification channel" in server logs
+
+### Messages stuck in queue
+- Check server logs for "NO NOTIFICATION CHANNEL registered for agent"
+- This means the agent ID in `send_message` doesn't match any registered channel
+- Verify the coordinator's system prompt uses correct agent IDs
 
 ### Content inconsistencies
-- Ensure coordinator is passing campaign_id to all specialists
+- Ensure coordinator passes campaign_id to all specialists
 - Verify artifacts are being saved to correct directory
 - Check that agents are reading previous agent artifacts when needed
 
-### Campaign generation timeout
-- Default timeout is 3600s (60 minutes)
-- Adjust timeout in workflow config if creating very large campaigns
-- Consider splitting large campaigns into multiple workflows
-
-## Dependencies
-
-### Required Tools (built into Loom)
-
-All agents have access to:
-- `shell_execute` - Execute shell commands
-- `tool_search` - Discover available tools dynamically
-- `get_error_detail` - Get detailed error information
-- `search_conversation` - Search conversation history
-- `recall_conversation` - Recall specific conversation segments
-- `clear_recalled_context` - Clear recalled context
-
-### Communication Tools
-
-- **Coordinator**: `send_message` only (event-driven, no receive)
-- **Specialists**: `send_message` and `receive_message`
-- **Note**: This workflow does NOT use broadcast bus or shared_memory tools
-
-## Development
-
-### Testing Individual Agents
-
-```bash
-# Test coordinator (event-driven)
-loom --thread dnd-coordinator
-
-# Test world builder (request-response)
-loom --thread dnd-world-builder
-
-# Test storyline designer (request-response)
-loom --thread dnd-storyline-designer
-
-# Test encounter designer (request-response)
-loom --thread dnd-encounter-designer
-
-# Test NPC creator (request-response)
-loom --thread dnd-npc-creator
-
-# Test session planner (request-response)
-loom --thread dnd-session-planner
-
-# Test campaign publisher (request-response)
-loom --thread dnd-campaign-publisher
-```
-
-### Understanding Event-Driven Coordinator
-
-The coordinator is unique - it does NOT poll for messages. When you provide campaign requirements:
-1. It calls `send_message` to delegate work to specialists
-2. It tells you it's coordinating the campaign creation
-3. Responses from specialists are automatically injected into its conversation
-4. It sees the responses and synthesizes them for you
-5. Once all content is ready, it sends to publisher for final compilation
-
-This eliminates polling delays and ensures instant coordination.
-
 ## Architecture Notes
 
-### Why Event-Driven Coordinator?
+### Event-Driven Message Flow
 
-Traditional hub-and-spoke patterns require the hub to poll for responses:
 ```
-send_message → poll receive_message → timeout/retry logic
+1. User → loom chat --thread dnd-coordinator
+2. Coordinator calls send_message(to="dnd-world-builder", ...)
+3. Message enqueued → notification channel triggered
+4. Sub-agent goroutine wakes up, dequeues message
+5. Message auto-injected into sub-agent conversation via Chat()
+6. Sub-agent processes request, calls send_message back to coordinator
+7. Message enqueued for coordinator → monitor detects pending message
+8. Response auto-injected into coordinator session via Chat()
+9. Coordinator sees [MESSAGE FROM dnd-world-builder]: ...
 ```
 
-This workflow's coordinator is event-driven:
-```
-send_message → system injects responses automatically → coordinator sees responses
-```
+### Key Code References
 
-Benefits:
-- **Zero polling overhead**: No wasted API calls checking for messages
-- **Instant notification**: Coordinator sees responses immediately when ready
-- **Simpler logic**: No timeout/retry management needed
-- **Better UX**: User sees progress updates instead of waiting periods
-
-### Specialist Agent Pattern
-
-All specialist agents follow a simple request-response pattern:
-1. Wait for notification of pending message
-2. Call `receive_message` ONCE to get the request
-3. Process the request (generate world/story/encounters/NPCs/sessions/compilation)
-4. Save results to artifact file
-5. Call `send_message` to send complete response with artifact path
-6. Wait for next notification
-
-This pattern ensures specialists don't poll and waste resources.
-
-### Artifact-Based Communication
-
-Campaign data flows through artifacts, not just messages:
-- Each agent saves its output to a JSON artifact file
-- Subsequent agents can read previous artifacts if needed
-- Coordinator tracks all artifact paths
-- Publisher compiles all artifacts into final document
-
-This allows:
-- **Persistence**: Campaign content survives across workflow restarts
-- **Inspection**: Users can examine intermediate artifacts
-- **Reusability**: Artifacts can be loaded into other workflows or tools
+- `pkg/server/multi_agent.go:spawnWorkflowSubAgents()` — Detects coordinator, spawns sub-agents
+- `pkg/server/multi_agent.go:autoSpawnWorkflowSubAgent()` — Creates sub-agent goroutines with notification channels
+- `pkg/server/multi_agent.go:runWorkflowSubAgent()` — Sub-agent event loop (wait for notification → dequeue → Chat())
+- `pkg/server/multi_agent.go:StartMessageQueueMonitor()` — Polls message queue, notifies registered channels
+- `pkg/communication/queue.go` — Message queue with notification channel support
 
 ## License
 

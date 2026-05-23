@@ -480,36 +480,47 @@ data: {"type":"message_stop"}
 }
 
 func TestClient_CalculateCost(t *testing.T) {
-	client := &Client{}
-
-	// Test with known values (no caching)
-	cost := client.calculateCost(1_000_000, 1_000_000, 0, 0)
-
-	// Expected: $3 + $15 = $18
-	expected := 18.0
-	if cost != expected {
-		t.Errorf("Expected cost $%.2f, got $%.2f", expected, cost)
+	tests := []struct {
+		name                string
+		model               string
+		inputTokens         int
+		outputTokens        int
+		cacheReadTokens     int
+		cacheCreationTokens int
+		expected            float64
+	}{
+		// Sonnet (default) — $3/$15
+		{"sonnet_default", "", 1_000_000, 1_000_000, 0, 0, 18.0},
+		{"sonnet_4_6", "claude-sonnet-4-6", 1000, 1000, 0, 0, 0.018},
+		{"sonnet_4_5", "claude-sonnet-4-5-20250929", 1_000_000, 0, 0, 0, 3.0},
+		// Opus 4.5/4.6 — $5/$25
+		{"opus_4_6", "claude-opus-4-6", 1_000_000, 1_000_000, 0, 0, 30.0},
+		{"opus_4_5", "claude-opus-4-5-20251101", 1_000_000, 1_000_000, 0, 0, 30.0},
+		// Opus 4.1 — $15/$75
+		{"opus_4_1", "claude-opus-4-1-20250805", 1_000_000, 1_000_000, 0, 0, 90.0},
+		// Haiku — $1/$5
+		{"haiku_4_5", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000, 0, 0, 6.0},
+		// Cache pricing derives from input price
+		{"sonnet_cache_read", "claude-sonnet-4-6", 0, 0, 1_000_000, 0, 0.3},           // $3 * 0.10
+		{"sonnet_cache_write", "claude-sonnet-4-6", 0, 0, 0, 1_000_000, 3.75},         // $3 * 1.25
+		{"opus_4_6_cache_read", "claude-opus-4-6", 0, 0, 1_000_000, 0, 0.50},          // $5 * 0.10
+		{"opus_4_6_cache_write", "claude-opus-4-6", 0, 0, 0, 1_000_000, 6.25},         // $5 * 1.25
+		{"opus_4_1_cache_read", "claude-opus-4-1-20250805", 0, 0, 1_000_000, 0, 1.50}, // $15 * 0.10
+		{"haiku_cache_read", "claude-haiku-4-5-20251001", 0, 0, 1_000_000, 0, 0.10},   // $1 * 0.10
 	}
 
-	// Test with smaller values (no caching)
-	cost = client.calculateCost(1000, 1000, 0, 0)
-	expected = 0.018 // $0.003 + $0.015
-	if cost != expected {
-		t.Errorf("Expected cost $%.6f, got $%.6f", expected, cost)
-	}
-
-	// Test cache read pricing: $0.30 per million (0.10x input rate of $3)
-	cost = client.calculateCost(0, 0, 1_000_000, 0)
-	expected = 0.30
-	if cost != expected {
-		t.Errorf("Expected cache read cost $%.2f, got $%.2f", expected, cost)
-	}
-
-	// Test cache creation pricing: $3.75 per million (1.25x input rate of $3)
-	cost = client.calculateCost(0, 0, 0, 1_000_000)
-	expected = 3.75
-	if cost != expected {
-		t.Errorf("Expected cache creation cost $%.2f, got $%.2f", expected, cost)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{model: tt.model}
+			cost := client.calculateCost(tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, tt.cacheCreationTokens)
+			diff := cost - tt.expected
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > 0.001 {
+				t.Errorf("model=%q: expected cost $%.6f, got $%.6f", tt.model, tt.expected, cost)
+			}
+		})
 	}
 }
 

@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/collaboration"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/task"
 	"go.uber.org/zap"
 )
 
@@ -75,7 +77,13 @@ type Orchestrator struct {
 	// LLM concurrency semaphore to limit parallel LLM calls (optional)
 	// If nil, no concurrency control is applied
 	llmSemaphore chan struct{}
+
+	// TaskManager for persistent workflow tracking (optional).
+	taskManager *task.Manager
 }
+
+// taskTrackingKey is a context key to prevent recursive task tracking.
+type taskTrackingKey struct{}
 
 // Config configures the orchestrator.
 type Config struct {
@@ -104,6 +112,11 @@ type Config struct {
 	// If nil, no concurrency control is applied
 	// Use make(chan struct{}, N) where N is the max concurrent LLM calls
 	LLMSemaphore chan struct{}
+
+	// TaskManager for persistent workflow tracking (optional).
+	// When set, ExecutePattern wraps execution with task-based state tracking,
+	// providing persistence, resume capability, and progress visibility.
+	TaskManager *task.Manager
 }
 
 // NewOrchestrator creates a new orchestrator instance.
@@ -125,6 +138,7 @@ func NewOrchestrator(config Config) *Orchestrator {
 		sharedMemory:     config.SharedMemory,
 		progressCallback: config.ProgressCallback,
 		llmSemaphore:     config.LLMSemaphore,
+		taskManager:      config.TaskManager,
 	}
 
 	// Initialize collaboration engine with orchestrator as provider
@@ -283,7 +297,18 @@ func (o *Orchestrator) Conditional(classifier *agent.Agent, conditionPrompt stri
 
 // ExecutePattern executes a workflow pattern and returns the result.
 // This is the low-level execution method used by pattern builders.
+// When a TaskManager is configured, workflow execution is automatically
+// wrapped with persistent task tracking (board creation, stage tasks,
+// progress recording, resume support).
 func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.WorkflowPattern) (*loomv1.WorkflowResult, error) {
+	// If task tracking is configured and this isn't already a tracked call,
+	// delegate to the TaskTrackedOrchestrator.
+	if o.taskManager != nil && ctx.Value(taskTrackingKey{}) == nil {
+		ctx = context.WithValue(ctx, taskTrackingKey{}, true)
+		tracked := NewTaskTrackedOrchestrator(o, o.taskManager, o.tracer, o.logger)
+		return tracked.ExecutePattern(ctx, pattern)
+	}
+
 	patternType := GetPatternType(pattern)
 
 	// Emit initial progress
@@ -324,27 +349,33 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_ForkJoin:
-		executor := NewForkJoinExecutor(o, p.ForkJoin)
+		wfID := o.resolveWorkflowID("fork-join", pattern)
+		executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Pipeline:
-		executor := NewPipelineExecutor(o, p.Pipeline)
+		wfID := o.resolveWorkflowID("pipeline", pattern)
+		executor := NewPipelineExecutor(o, p.Pipeline, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Parallel:
-		executor := NewParallelExecutor(o, p.Parallel)
+		wfID := o.resolveWorkflowID("parallel", pattern)
+		executor := NewParallelExecutor(o, p.Parallel, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Conditional:
-		executor := NewConditionalExecutor(o, p.Conditional)
+		wfID := o.resolveWorkflowID("conditional", pattern)
+		executor := NewConditionalExecutor(o, p.Conditional, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Iterative:
-		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus)
+		wfID := o.resolveWorkflowID("iterative", pattern)
+		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Swarm:
-		executor := NewSwarmExecutor(o, p.Swarm)
+		wfID := o.resolveWorkflowID("swarm", pattern)
+		executor := NewSwarmExecutor(o, p.Swarm, wfID)
 		result, err = executor.Execute(ctx)
 
 	default:
@@ -424,6 +455,16 @@ func (o *Orchestrator) GetMergeLLM() agent.LLMProvider {
 	}
 
 	return firstLLM
+}
+
+// resolveWorkflowID returns a stable or random workflow ID.
+// If the pattern has a workflow_id set (for scheduled RESUME mode), use it.
+// Otherwise generate a random UUID-based ID with the pattern type prefix.
+func (o *Orchestrator) resolveWorkflowID(patternType string, pattern *loomv1.WorkflowPattern) string {
+	if pattern != nil && pattern.WorkflowId != "" {
+		return pattern.WorkflowId
+	}
+	return fmt.Sprintf("%s-%s", patternType, uuid.New().String()[:8])
 }
 
 // GetPatternType returns a string representation of the pattern type.

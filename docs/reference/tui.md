@@ -1,9 +1,9 @@
 
 # Terminal UI Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for Loom's interactive terminal user interface - a Bubbletea-based chat client for real-time agent conversations.
+Technical reference for Loom's interactive terminal user interface - a Bubbletea-based chat client for real-time agent conversations.
 
 
 ## Table of Contents
@@ -33,7 +33,7 @@ Complete technical reference for Loom's interactive terminal user interface - a 
 ### Launch Commands
 
 ```bash
-# Auto-connect to agent (if only one exists)
+# Launch TUI (defaults to guide agent)
 loom
 
 # Connect to specific agent/thread
@@ -54,10 +54,15 @@ loom --tls --tls-ca-file /path/to/ca.crt
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Ctrl+C` | Quit |
-| `Ctrl+D` | Quit |
-| `Ctrl+L` | Clear screen |
-| `?` | Show help |
+| `Shift+Enter` / `Ctrl+J` | Insert newline |
+| `Ctrl+C` / `Ctrl+Q` | Quit |
+| `Ctrl+D` | Toggle details panel |
+| `Ctrl+N` | New session |
+| `Ctrl+E` | Open agents dialog |
+| `Ctrl+W` | Open workflows dialog |
+| `Ctrl+F` | Add file attachment |
+| `Ctrl+G` / `Ctrl+/` | Toggle help |
+| `Ctrl+K` / `Ctrl+P` | Open command palette |
 | `↑` / `↓` | Scroll chat history |
 | `PgUp` / `PgDn` | Scroll page up/down |
 | `Home` / `End` | Scroll to top/bottom |
@@ -66,7 +71,7 @@ loom --tls --tls-ca-file /path/to/ca.crt
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--server`, `-s` | `string` | `localhost:60051` | Loom server address (host:port) |
+| `--server`, `-s` | `string` | `127.0.0.1:60051` | Loom server address (host:port) |
 | `--thread`, `-t` | `string` | Auto-select | Agent/thread ID to connect to |
 | `--session` | `string` | Generate new | Resume existing session ID |
 | `--tls` | `bool` | `false` | Enable TLS connection |
@@ -77,10 +82,10 @@ loom --tls --tls-ca-file /path/to/ca.crt
 
 ## Overview
 
-The Loom Terminal UI (TUI) provides an **interactive chat interface** for conversing with Loom agents via gRPC. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea), it offers a modern, responsive terminal experience with real-time streaming, cost tracking, and session management.
+The Loom Terminal UI (TUI) provides an **interactive chat interface** for conversing with Loom agents via gRPC. Built with [Bubbletea v2](https://charm.land/bubbletea), it offers a modern, responsive terminal experience with real-time streaming, cost tracking, and session management.
 
-**Implementation**: `cmd/loom/` (main, chat, memory, thread components)
-**Framework**: Charmbracelet Bubbletea + Bubbles + Lipgloss
+**Implementation**: `cmd/loom/` (main, chat, agents, sessions, artifacts, mcp, providers) + `internal/tui/` (UI components, pages, adapters)
+**Framework**: Bubbletea v2 (`charm.land/bubbletea/v2`) + Bubbles v2 + Lipgloss v2
 **Protocol**: gRPC (Loom service)
 **Available Since**: v0.1.0
 
@@ -102,7 +107,7 @@ The Loom Terminal UI (TUI) provides an **interactive chat interface** for conver
 
 - **Operating System**: Linux, macOS, Windows (with WSL2)
 - **Terminal**: Any ANSI-compatible terminal (iTerm2, Terminal.app, Alacritty, etc.)
-- **Go Version**: 1.21+ (for building from source)
+- **Go Version**: 1.25+ (for building from source)
 - **Network**: Access to Loom server (gRPC port, default 60051)
 
 ### Server Requirements
@@ -113,14 +118,14 @@ The TUI requires a running Loom server:
 # Start server (separate terminal)
 looms serve
 
-# Verify server is running
-looms status
+# Verify server is reachable (from another terminal)
+loom agents
 ```
 
 **Expected Output**:
 ```
-✅ Server running on localhost:60051
-✅ 3 agents registered: sql-optimizer, code-reviewer, data-analyst
+Available agents (3):
+  sql-optimizer, code-reviewer, data-analyst
 ```
 
 
@@ -141,19 +146,22 @@ looms status
 - **Syntax Highlighting**: Colored output for user/agent messages
 - **Help System**: Built-in help with keybinding reference
 - **Timestamps**: Message timestamps for all interactions
+- **Agent Switching**: Switch agents via dialog (`Ctrl+E`) or `/agents` command
+- **Workflow Support**: Open workflows dialog via `Ctrl+W` or `/workflows` command
+- **Model Switching**: Switch LLM model/provider via command palette or `/model` command
+- **File Attachments**: Add file attachments via `Ctrl+F` or file picker
+- **Multiline Input**: Insert newlines with `Shift+Enter` / `Ctrl+J`
 
 ### Partial ⚠️
 
-- **Multi-Agent Switching**: Cannot switch agents mid-session (planned v1.1.0)
-- **Message Editing**: Cannot edit sent messages (planned v1.1.0)
+- **Message Editing**: Cannot edit sent messages
 - **Export History**: No built-in export (use server-side session queries)
 
 ### Planned 📋
 
-- **Themes**: Custom color schemes (v1.1.0)
-- **Plugins**: Extension system for custom components (v1.2.0)
-- **Shortcuts**: User-configurable keybindings (v1.1.0)
-- **Markdown Rendering**: Rich text display (v1.2.0)
+- **Themes**: Custom user-configurable color schemes
+- **Plugins**: Extension system for custom components
+- **Shortcuts**: User-configurable keybindings
 
 
 ## Installation
@@ -176,7 +184,7 @@ loom --version
 
 **Expected Output**:
 ```
-Loom TUI v1.0.0-beta.1
+loom version 1.2.0
 ```
 
 
@@ -188,7 +196,7 @@ git clone https://github.com/teradata-labs/loom.git
 cd loom
 
 # Build TUI binary
-go build -o loom ./cmd/loom
+go build -tags fts5 -o loom ./cmd/loom
 
 # Verify build
 ./loom --version
@@ -199,28 +207,21 @@ go build -o loom ./cmd/loom
 
 ### Connection Configuration
 
-The TUI connects to the Loom server via gRPC. Configure connection using flags or environment variables.
+The TUI connects to the Loom server via gRPC. Configure connection using command-line flags.
 
 **Command-Line Flags**:
 ```bash
 loom --server myserver.example.com:60051 --thread sql-optimizer
 ```
 
-**Environment Variables**:
-```bash
-# Set server address
-export LOOM_SERVER=myserver.example.com:60051
-
-# Launch TUI (uses environment)
-loom --thread sql-optimizer
-```
+**Note**: The TUI does not currently read environment variables for the server address. Use the `--server` flag to specify the server address.
 
 
 ### Server Address
 
 **Flag**: `--server`, `-s`
 **Type**: `string`
-**Default**: `localhost:60051`
+**Default**: `127.0.0.1:60051`
 **Format**: `host:port`
 
 **Examples**:
@@ -246,9 +247,9 @@ loom --server 192.168.1.100:60051
 **Default**: Auto-select (if only one agent exists)
 
 **Behavior**:
-- If no `--thread` specified and only 1 agent exists → Auto-connect
-- If no `--thread` specified and multiple agents exist → Show selection menu
+- If no `--thread` specified → Defaults to built-in `guide` agent (helps discover and select agents)
 - If `--thread` specified → Connect directly to that agent
+- If server not available → Shows `no-server` splash with connection instructions
 
 **Examples**:
 ```bash
@@ -262,18 +263,7 @@ loom --thread sql-optimizer
 loom --thread sql-optimizer-abc123
 ```
 
-**Agent Selection Menu**:
-```
-Select an agent thread:
-
-  1. sql-optimizer (SQL query optimization and analysis)
-  2. code-reviewer (Code review and best practices)
-  3. data-analyst (Data analysis and visualization)
-
-Enter number (1-3): 2
-
-✅ Connected to code-reviewer
-```
+**Agent Switching**: Use `Ctrl+E` or `/agents` command to open the agents dialog at any time.
 
 
 ### Session Management
@@ -298,7 +288,7 @@ loom --thread sql-optimizer --session sess_abc123def456
 # Session ID: sess_abc123def456 (save this to resume later)
 ```
 
-**Session ID Format**: `sess_` + 12 alphanumeric characters
+**Session ID Format**: Server-generated (format depends on server session store)
 
 
 ## Keybindings
@@ -307,10 +297,16 @@ loom --thread sql-optimizer --session sess_abc123def456
 
 | Key | Action | Description |
 |-----|--------|-------------|
-| `Ctrl+C` | Quit | Exit TUI immediately |
-| `Ctrl+D` | Quit | Exit TUI (alternative) |
-| `?` | Toggle Help | Show/hide help panel |
-| `Ctrl+L` | Clear Screen | Clear viewport (not history) |
+| `Ctrl+C` / `Ctrl+Q` | Quit | Exit TUI (opens quit dialog) |
+| `Ctrl+G` / `Ctrl+/` | Toggle Help | Show/hide help bar |
+| `Ctrl+K` / `Ctrl+P` | Commands | Open command palette |
+| `Ctrl+D` | Toggle Details | Show/hide detail panel (chat page) |
+| `Ctrl+N` | New Session | Clear session and start fresh |
+| `Ctrl+O` / `Ctrl+S` | Switch Sessions | Open session switcher |
+| `Ctrl+E` | Agents | Open agents dialog |
+| `Ctrl+W` | Workflows | Open workflows dialog |
+| `Ctrl+F` | Add Attachment | Open file picker for attachments |
+| `Ctrl+Z` | Suspend | Suspend TUI process |
 
 
 ### Input Keybindings
@@ -318,14 +314,13 @@ loom --thread sql-optimizer --session sess_abc123def456
 | Key | Action | Description |
 |-----|--------|-------------|
 | `Enter` | Send Message | Submit query to agent |
-| `Ctrl+A` | Move to Start | Move cursor to start of line |
-| `Ctrl+E` | Move to End | Move cursor to end of line |
-| `Ctrl+U` | Clear Input | Delete all text before cursor |
-| `Ctrl+K` | Delete to End | Delete all text after cursor |
-| `Ctrl+W` | Delete Word | Delete word before cursor |
-| `Alt+Backspace` | Delete Word | Delete word before cursor (alternative) |
+| `Shift+Enter` / `Ctrl+J` | Insert Newline | Add a new line (multiline input) |
+| `Ctrl+O` | Open Editor | Open external editor ($EDITOR) for long messages |
+| `Ctrl+R` | Delete Attachment | Enter attachment delete mode (then press index or `r` for all) |
+| `Esc` | Cancel | Cancel current operation or delete mode |
+| `@` | File Completions | Start file path completion |
 
-**Note**: Multi-line input not supported (newline disabled)
+**Note**: Multiline input is supported via `Shift+Enter` / `Ctrl+J`. The `\` character at end of line also inserts a newline. No character limit on input.
 
 
 ### Viewport Navigation
@@ -338,19 +333,30 @@ loom --thread sql-optimizer --session sess_abc123def456
 | `PgDn` | Page Down | Scroll down by viewport height |
 | `Home` | Scroll to Top | Jump to start of conversation |
 | `End` | Scroll to Bottom | Jump to end of conversation |
-| `g` | Scroll to Top | Vi-style scroll to top |
-| `G` | Scroll to Bottom | Vi-style scroll to bottom |
+| `Tab` | Change Focus | Switch focus between editor and chat pane |
 
 
-### Human-in-the-Loop (HITL) Keybindings
+### Permission Dialog Keybindings (HITL)
 
-When HITL request active:
+When a permission request is active:
 
 | Key | Action | Description |
 |-----|--------|-------------|
-| `y` | Approve | Approve pending action |
-| `n` | Reject | Reject pending action |
-| `Enter` | Default Action | Approve if input empty |
+| `a` / `A` / `Ctrl+A` | Allow | Allow the action once |
+| `s` / `S` / `Ctrl+S` | Allow Session | Allow for entire session |
+| `d` / `D` / `Esc` | Deny | Deny the action |
+| `Enter` / `Ctrl+Y` | Confirm | Confirm selected option |
+| `Tab` | Switch | Switch between options |
+| `t` | Toggle Diff | Toggle diff mode view |
+
+### Clarification Dialog Keybindings
+
+When an agent asks a clarification question:
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| `Enter` / `Ctrl+S` | Submit | Submit answer |
+| `Esc` | Cancel | Cancel clarification |
 
 
 ## UI Components
@@ -359,32 +365,26 @@ When HITL request active:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Loom TUI                    Session: sess_abc123    Cost: $0.42 │
-│═════════════════════════════════════════════════════════════════│
+│ Teradata™ LOOM ╱╱╱╱╱╱╱╱╱╱╱╱ ~/Projects • 42% • ctrl+d open   │
+│                                                                  │
+│ ┌──────────────────────────────────────────────────┬──────────┐ │
+│ │            Chat Viewport (Scrollable)            │ Sidebar  │ │
+│ │                                                  │ (opt.)   │ │
+│ │  User: Show sales by region                      │          │ │
+│ │                                                  │ Agent    │ │
+│ │  Assistant: Here are the sales by region:        │ Model    │ │
+│ │  West: $2.4M, East: $2.1M...                    │ Tools    │ │
+│ │                                                  │          │ │
+│ │  User: Compare with last quarter                 │          │ │
+│ │                                                  │          │ │
+│ │  Assistant: (streaming in progress)              │          │ │
+│ └──────────────────────────────────────────────────┴──────────┘ │
 │                                                                  │
 │ ┌─────────────────────────────────────────────────────────────┐ │
-│ │                    Chat Viewport (Scrollable)               │ │
-│ │                                                             │ │
-│ │  You: Show sales by region                                 │ │
-│ │  09:15:23                                                   │ │
-│ │                                                             │ │
-│ │  Agent: Here are the sales by region:                      │ │
-│ │  West: $2.4M, East: $2.1M...                              │ │
-│ │  09:15:25 | Tokens: 1,234 | Cost: $0.012                   │ │
-│ │                                                             │ │
-│ │  You: Compare with last quarter                            │ │
-│ │  09:16:10                                                   │ │
-│ │                                                             │ │
-│ │  Agent: ⠋ Querying database...                             │ │
-│ │  (streaming in progress)                                    │ │
+│ │ > Ready!                                                     │ │
 │ └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
-│ ┌─────────────────────────────────────────────────────────────┐ │
-│ │ ▸ Ask me anything...                                        │ │
-│ │                                                             │ │
-│ └─────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│ Press ? for help | Ctrl+C to quit | ↑↓ to scroll               │
+│ ctrl+c quit • ctrl+n new session • ctrl+d page down • pgup/pgdn│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -393,13 +393,14 @@ When HITL request active:
 
 **Location**: Top of screen
 **Content**:
-- Application title: "Loom TUI"
-- Session ID: Current session identifier
-- Total cost: Cumulative conversation cost
+- Branding: "Teradata LOOM" with gradient styling
+- Working directory path
+- Context usage percentage (tokens used / context window)
+- Details toggle indicator (`ctrl+d` open/close)
 
 **Example**:
 ```
-Loom TUI                    Session: sess_abc123def456    Cost: $0.42
+Teradata™ LOOM ╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Projects/loom • 42% • ctrl+d open
 ```
 
 
@@ -430,84 +431,74 @@ Comparing sales trends across regions. West shows...
 (streaming, 234 tokens so far)
 ```
 
-**Color Coding**:
-- User messages: Cyan text
-- Agent messages: Green text
-- Timestamps: Gray text
-- Cost info: Yellow text
-- Errors: Red text
-- HITL requests: Magenta text
+**Color Coding** (default theme):
+- User messages: Blue text (bold)
+- Agent/assistant messages: Pink text
+- Tool messages: Orange text (italic)
+- System messages: Gray text (italic)
+- Errors: Red text (bold)
+- Cost info: Orange/Warning color
+- Session info: Blue/Info color
 
 
 ### Input Area
 
 **Location**: Bottom of screen (above status bar)
-**Component**: Textarea (Bubbles component)
+**Component**: Textarea (Bubbles v2 component)
 
 **Configuration**:
-- Placeholder: "Ask me anything..."
-- Prompt: "▸ "
-- Character limit: 2000 characters
-- Height: 3 lines
+- Placeholder: Randomized from pool ("Ready!", "Ready...", "Ready?", "Ready for instructions")
+- Working placeholder: Randomized ("Working!", "Thinking...", "Brrrrr...", etc.)
+- Yolo mode placeholder: "Yolo mode!"
+- Prompt: `> ` (focused) or `:::` (unfocused)
+- Character limit: None (unlimited)
+- Height: Dynamic (adjusts to layout)
 - Auto-focus: Yes
-- Multiline: No (Enter submits)
+- Multiline: Yes (`Shift+Enter` / `Ctrl+J` inserts newline)
+- File completions: Type `@` to trigger file path completions
+- Max attachments: 5
 
 
 ### Status Bar
 
 **Location**: Bottom of screen
-**Content**: Context-sensitive help text
+**Content**: Context-sensitive help text showing available keybindings
 
 **States**:
 
-**Normal Mode**:
+**Normal Mode** (shows available key bindings):
 ```
-Press ? for help | Ctrl+C to quit | ↑↓ to scroll
-```
-
-**Loading**:
-```
-⠋ Waiting for response... | Press Ctrl+C to cancel
+ctrl+c quit • ctrl+n new session • ctrl+u page up • ctrl+d page down • pgup/pgdn scroll
 ```
 
-**HITL Active**:
-```
-Action requires approval: [SQL Query] | Press y to approve, n to reject
-```
-
-**Error**:
-```
-⚠ Error: Connection lost. Reconnecting... | Ctrl+C to quit
-```
+**Full Help** (toggled with `Ctrl+G`):
+Expands to show all available keybindings for the current context.
 
 
-### Help Panel
+### Help Bar
 
-**Trigger**: Press `?` to toggle
-**Location**: Overlay on viewport
+**Trigger**: Press `Ctrl+G` or `Ctrl+/` to toggle between short and full help
+**Location**: Bottom status bar (expands when toggled)
 
-**Content**:
-```
-╔═══════════════════════════════════════╗
-║          Loom TUI Help                ║
-╠═══════════════════════════════════════╣
-║ Input                                 ║
-║   Enter       Send message            ║
-║   Ctrl+C      Quit                    ║
-║   Ctrl+L      Clear screen            ║
-║                                       ║
-║ Navigation                            ║
-║   ↑ ↓         Scroll chat             ║
-║   PgUp PgDn   Page up/down            ║
-║   Home End    Scroll to start/end     ║
-║                                       ║
-║ HITL (when active)                    ║
-║   y           Approve action          ║
-║   n           Reject action           ║
-║                                       ║
-║ Press ? again to close                ║
-╚═══════════════════════════════════════╝
-```
+The help display is inline in the status bar, not a separate overlay. It shows context-sensitive keybindings relevant to the current state.
+
+### Slash Commands
+
+Type in the editor to access quick commands:
+
+| Command | Action |
+|---------|--------|
+| `/clear`, `/new`, `/reset` | Clear current session |
+| `/quit`, `/exit` | Exit TUI |
+| `/sessions` | Open session switcher |
+| `/model` | Switch LLM model/provider |
+| `/agents` | Open agents dialog |
+| `/workflows` | Open workflows dialog |
+| `/apps` | Open MCP apps browser |
+| `/mcp` | Add MCP server |
+| `/patterns` | Open pattern browser |
+| `/sidebar` | Toggle sidebar |
+| `/help` | Show slash command help |
 
 
 ## Session Management
@@ -540,7 +531,7 @@ Action requires approval: [SQL Query] | Press y to approve, n to reject
 │  └──────────────────────────────────────────┘            │
 │      │                                                    │
 │      ▼                                                    │
-│  User Quits (Ctrl+C or Ctrl+D)                          │
+│  User Quits (Ctrl+C opens quit dialog)                   │
 │      │                                                    │
 │      ▼                                                    │
 │  Session Persists on Server                              │
@@ -558,54 +549,24 @@ loom --thread sql-optimizer
 ```
 
 **Behavior**:
-1. Generate session ID: `sess_` + 12 random alphanumeric chars
-2. Display session ID at startup
-3. Send queries, build conversation history
-4. Session persisted on server
-
-**Startup Message**:
-```
-✅ Connected to sql-optimizer
-📝 Session ID: sess_abc123def456
-💡 Save this ID to resume later: loom --thread sql-optimizer --session sess_abc123def456
-```
+1. Connect to server via gRPC
+2. If no `--thread` specified, defaults to built-in `guide` agent
+3. If server not available, shows `no-server` splash with connection instructions
+4. Session created on first message send
+5. Session persisted on server
 
 
 ### Resume Session
 
 **Command**:
 ```bash
-loom --thread sql-optimizer --session sess_abc123def456
+loom --thread sql-optimizer --session <session-id>
 ```
 
 **Behavior**:
 1. Connect to server
-2. Fetch session history from server
-3. Display historical messages in viewport
-4. Continue conversation from where you left off
-
-**Startup Message**:
-```
-✅ Connected to sql-optimizer
-📝 Resuming session: sess_abc123def456
-📜 Loaded 12 previous messages
-```
-
-**Viewport Content** (historical messages):
-```
-You: Show sales by region
-09:15:23 (yesterday)
-
-Agent: Here are the sales...
-09:15:25 (yesterday)
-
-────────────────────────────────────
-Session resumed at 10:32:15 (today)
-────────────────────────────────────
-
-You: Update the analysis for this quarter
-10:32:20
-```
+2. Load existing session by ID
+3. Continue conversation from where you left off
 
 
 ### Session Persistence
@@ -614,17 +575,21 @@ You: Update the analysis for this quarter
 **Lifetime**: Until server restart or explicit deletion
 **Location**: Server session store (SQLite or in-memory)
 
-**Query Session Info**:
+**Query Session Info via CLI**:
 ```bash
 # List all sessions
-looms sessions list
+loom sessions list
 
-# Get session details
-looms sessions get sess_abc123def456
+# Show session details
+loom sessions show <session-id>
 
 # Delete session
-looms sessions delete sess_abc123def456
+loom sessions delete <session-id>
 ```
+
+**Flags for `loom sessions list`**:
+- `--limit`, `-n`: Maximum sessions to return (default: 20)
+- `--offset`: Number of sessions to skip (default: 0)
 
 
 ## Streaming Mode
@@ -656,22 +621,35 @@ $2.4M in Q4, up 15% from Q3. East maintained $2.1M...
 
 ### Streaming Stages
 
-**Progress Updates**:
+**Progress Updates** (from proto `WeaveProgress`):
 ```proto
 message WeaveProgress {
-  string stage = 1;           // "thinking", "querying", "responding"
-  int32 progress_pct = 2;     // 0-100
-  string status_message = 3;  // Human-readable status
-  StreamChunk chunk = 4;      // Partial response content
-  CostInfo cost_info = 5;     // Real-time cost tracking
+  ExecutionStage stage = 1;       // Enum: execution stage
+  int32 progress = 2;             // 0-100
+  string message = 3;             // Human-readable status
+  string tool_name = 4;           // Tool being executed (if applicable)
+  int64 timestamp = 5;            // Timestamp
+  ExecutionResult partial_result = 6; // Partial result
+  HITLRequestInfo hitl_request = 7;   // HITL request (when stage == HUMAN_IN_THE_LOOP)
+  string partial_content = 8;     // Accumulated content (streaming)
+  bool is_token_stream = 9;       // True if token streaming update
+  int32 token_count = 10;         // Running token count
+  int64 ttft_ms = 11;             // Time to first token (ms)
+  CostInfo cost = 12;             // Cost information
 }
 ```
 
-**TUI Display**:
+**Execution Stages** (enum `ExecutionStage`):
 ```
-Stage: thinking → "⠋ Agent is thinking..."
-Stage: querying → "⠹ Querying database..."
-Stage: responding → "⠸ Generating response..."
+PATTERN_SELECTION  → Pattern matching
+SCHEMA_DISCOVERY   → Schema discovery
+LLM_GENERATION     → LLM token generation (streaming)
+TOOL_EXECUTION     → Tool being executed
+HUMAN_IN_THE_LOOP  → Waiting for human input
+GUARDRAIL_CHECK    → Guardrail validation
+SELF_CORRECTION    → Self-correction
+COMPLETED          → Done
+FAILED             → Error
 ```
 
 
@@ -701,10 +679,7 @@ Agent: [response content]
 09:15:25 | Tokens: 1,234 (input: 45, output: 1,189) | Cost: $0.012
 ```
 
-**Header Summary** (cumulative):
-```
-Loom TUI                    Session: sess_abc123    Cost: $0.42
-```
+**Header**: Shows context usage percentage (not cumulative cost in header).
 
 
 ### Cost Calculation
@@ -712,39 +687,34 @@ Loom TUI                    Session: sess_abc123    Cost: $0.42
 **Cost Info Structure** (from gRPC):
 ```proto
 message CostInfo {
-  int32 input_tokens = 1;
-  int32 output_tokens = 2;
-  int32 total_tokens = 3;
-  double cost_usd = 4;
+  double total_cost_usd = 1;    // Total cost (USD)
+  LLMCost llm_cost = 2;         // LLM cost breakdown
+  double backend_cost_usd = 3;  // Backend execution cost
+}
+
+message LLMCost {
+  int32 total_tokens = 1;   // Total tokens used
+  int32 input_tokens = 2;   // Input tokens
+  int32 output_tokens = 3;  // Output tokens
 }
 ```
 
-**Rendering**:
-```go
-fmt.Sprintf("Tokens: %d (input: %d, output: %d) | Cost: $%.4f",
-    cost.TotalTokens,
-    cost.InputTokens,
-    cost.OutputTokens,
-    cost.CostUsd)
+**CLI Chat Display** (from `cmd/loom/chat.go`):
 ```
-
-**Example**:
-```
-Tokens: 3,456 (input: 123, output: 3,333) | Cost: $0.0876
+[Cost: $0.001234 | Tokens: 456]
 ```
 
 
 ### Cumulative Cost
 
-**Tracking**: Sum of all message costs in current session
-**Display**: Header bar (top-right)
-**Precision**: 2 decimal places
+**Tracking**: Cost information is reported per-response in the `CostInfo` field of `WeaveProgress`
+**CLI Chat Display**: Shown at end of response in stderr
+**TUI Display**: Cost tracked per session via server-side `total_cost_usd` field on the `Session` proto
 
-**Example**:
-```
-Cost: $0.42  (after 5 messages)
-Cost: $1.23  (after 10 messages)
-Cost: $5.67  (after 25 messages)
+**Session Cost Query**:
+```bash
+loom sessions show <session-id>
+# Shows: Total Cost: $0.001234
 ```
 
 
@@ -762,10 +732,12 @@ See [LLM Provider Reference](./llm-providers.md) for detailed pricing.
 
 ### HITL Overview
 
-Human-in-the-Loop allows agents to request user approval for sensitive operations (e.g., SQL writes, API calls, file deletions).
+Human-in-the-Loop allows agents to request user approval for sensitive operations (e.g., SQL writes, API calls, file deletions) and ask clarification questions.
 
-**Protocol**: `HITLRequestInfo` message in `WeaveProgress`
-**TUI Handling**: Display request, wait for user input (y/n), send approval via `SubmitHITLResponse` RPC
+**Protocol**: `HITLRequestInfo` message in `WeaveProgress` (when stage == `EXECUTION_STAGE_HUMAN_IN_THE_LOOP`)
+**TUI Handling**: Two mechanisms:
+1. **Permission Dialog**: For tool execution approval (allow/allow session/deny via `a`/`s`/`d` keys)
+2. **Clarification Dialog**: For agent questions (text input, answered via `AnswerClarificationQuestion` RPC)
 
 
 ### HITL Flow
@@ -774,33 +746,37 @@ Human-in-the-Loop allows agents to request user approval for sensitive operation
 ┌──────────────────────────────────────────────────────────┐
 │                    HITL Flow                              │
 │                                                           │
-│  Agent Needs Approval                                     │
+│  Agent Needs Approval or Clarification                    │
 │       │                                                   │
-│       ▼                                                   │
-│  Server Sends HITLRequestInfo                            │
-│       │                                                   │
-│       ▼                                                   │
-│  TUI Displays Request                                     │
-│  ┌────────────────────────────────────┐                  │
-│  │ Action Requires Approval:          │                  │
-│  │                                    │                  │
-│  │ [SQL Write]                        │                  │
-│  │ DELETE FROM users WHERE age > 90   │                  │
-│  │                                    │                  │
-│  │ Press y to approve, n to reject    │                  │
-│  └────────────────────────────────────┘                  │
-│       │                                                   │
-│       ├── User presses 'y'                               │
+│       ├── Permission Request (tool execution)            │
 │       │       │                                           │
 │       │       ▼                                           │
-│       │  Send SubmitHITLResponse(approved=true)          │
+│       │  TUI Opens Permission Dialog                     │
+│       │  ┌────────────────────────────────────┐          │
+│       │  │ [Tool details with diff view]      │          │
+│       │  │                                    │          │
+│       │  │ a: allow  s: allow session  d: deny│          │
+│       │  └────────────────────────────────────┘          │
+│       │       │                                           │
+│       │       ├── 'a' → Allow once                       │
+│       │       ├── 's' → Allow for session                │
+│       │       └── 'd' / Esc → Deny                       │
 │       │                                                   │
-│       └── User presses 'n'                               │
+│       └── Clarification Question                         │
 │               │                                           │
 │               ▼                                           │
-│          Send SubmitHITLResponse(approved=false)         │
+│          TUI Opens Clarification Dialog                   │
+│          ┌────────────────────────────────────┐          │
+│          │ Agent question displayed           │          │
+│          │ [text input for answer]            │          │
+│          │                                    │          │
+│          │ Enter: submit  Esc: cancel         │          │
+│          └────────────────────────────────────┘          │
+│               │                                           │
+│               ▼                                           │
+│          Send AnswerClarificationQuestion RPC             │
 │                                                           │
-│  Agent Continues or Aborts Based on Response             │
+│  Agent Continues Based on Response                       │
 │                                                           │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -808,42 +784,17 @@ Human-in-the-Loop allows agents to request user approval for sensitive operation
 
 ### HITL Display
 
-**Request Message**:
-```
-⚠ Action requires approval:
+**Permission Request**: Opens a modal dialog showing the tool details, with diff view toggle (`t` key). User selects allow (`a`), allow for session (`s`), or deny (`d`/`Esc`).
 
-Type: SQL Write
-Query: DELETE FROM users WHERE inactive_days > 180
-
-Rationale: Removing inactive users to comply with data retention policy.
-
-Press y to approve, n to reject
-```
-
-**Approval**:
-```
-✅ Action approved. Continuing...
-```
-
-**Rejection**:
-```
-❌ Action rejected. Agent will find an alternative approach.
-```
+**Clarification Question**: Opens a modal dialog showing the agent's question with a text input field. User types an answer and submits with `Enter`, or cancels with `Esc`.
 
 
 ### HITL Configuration
 
-**Server-Side**: Agent must be configured with HITL-enabled tools
-**TUI-Side**: Automatic (no configuration needed)
+**Server-Side**: Agent must be configured with tools that require approval
+**TUI-Side**: Automatic (permission dialog shown when server sends permission request)
 
-**Example Agent Config** (server):
-```yaml
-agents:
-  - id: sql-admin
-    tools:
-      - name: execute_write_query
-        hitl_required: true  # Requires user approval
-```
+**Yolo Mode**: Toggle via command palette "Toggle Yolo Mode" to skip permission requests (auto-approve all). The editor prompt changes to indicate yolo mode is active.
 
 
 ## TLS Support
@@ -921,7 +872,7 @@ Press Ctrl+C to quit
 ```
 
 **Resolution**:
-1. Verify server is running: `looms status`
+1. Verify server is running: `looms serve` (in another terminal)
 2. Check server address: `loom --server <correct-address>`
 3. Verify firewall allows gRPC port
 
@@ -943,7 +894,7 @@ Press Ctrl+C to quit
 ```
 
 **Resolution**:
-1. List available agents: `looms agents list`
+1. List available agents: `loom agents`
 2. Use correct agent ID: `loom --thread <correct-id>`
 
 
@@ -975,9 +926,8 @@ Attempting to reconnect...
 
 **Behavior**:
 1. Display partial response received so far
-2. Attempt reconnection (3 retries with exponential backoff)
-3. If reconnected: Resume conversation
-4. If failed: Display error, allow user to retry or quit
+2. Display error in status bar / error detail dialog
+3. User can send a new message to retry
 
 
 ## Troubleshooting
@@ -1034,11 +984,10 @@ loom --no-color  # (feature not yet implemented, use basic terminal)
 **Resolution**:
 ```bash
 # Verify session exists on server
-looms sessions list | grep sess_abc123
+loom sessions list
 
-# Check session format (must be sess_ + 12 chars)
-loom --session sess_abc123def456  # Correct
-loom --session abc123             # Incorrect
+# Try resuming with session ID
+loom --thread sql-optimizer --session <session-id>
 
 # If session truly lost, start new session
 loom --thread sql-optimizer
@@ -1053,9 +1002,9 @@ loom --thread sql-optimizer
 
 **Resolution**:
 1. Check network latency: `ping <server-address>`
-2. Verify server performance: `looms status --verbose`
+2. Check server logs for backend query delays
 3. Try different LLM provider (some faster than others)
-4. Check server logs for backend query delays
+4. Switch model via `/model` command or command palette
 
 
 ## Best Practices
@@ -1119,60 +1068,43 @@ loom --server prod.example.com:60051 --tls
 
 ### Custom Server Configuration
 
-**Environment Variable**:
+Use the `--server` flag to specify the server address:
 ```bash
-# Set default server address
-export LOOM_SERVER=prod.example.com:60051
-
-# Launch TUI (uses environment)
-loom
+loom --server prod.example.com:60051 --thread sql-optimizer
 ```
 
-**Config File** (planned v1.1.0):
-```yaml
-# ~/.config/loom/tui.yaml
-server:
-  address: prod.example.com:60051
-  tls:
-    enabled: true
-    ca_file: /path/to/ca.crt
-
-defaults:
-  thread: sql-optimizer
-```
+**Note**: Environment variable support for default server address is not currently implemented. Use command-line flags.
 
 
 ### Theme Customization
 
-**Implementation**: `pkg/tui/styles/theme.go`
-**Status**: ⚠️ Partial (theme exists but not user-configurable yet)
+**Implementation**: `internal/tui/styles/theme.go` (internal theme) and `pkg/tui/styles/theme.go` (public API)
+**Status**: ⚠️ Partial (theme system exists with dark/light detection, but not user-configurable via config file)
 
-**Planned** (v1.1.0):
-```yaml
-# ~/.config/loom/theme.yaml
-colors:
-  user_message: "#00FFFF"    # Cyan
-  agent_message: "#00FF00"   # Green
-  error: "#FF0000"           # Red
-  timestamp: "#808080"       # Gray
-```
+The TUI automatically detects terminal color scheme (dark/light) and adjusts colors. There are multiple built-in themes:
+- Default theme (primary: cyan, secondary: pink, accent: purple)
+- Crush theme (`internal/tui/styles/crush_theme.go`)
+- Enhanced theme (`pkg/tui/styles/enhanced_theme.go`)
+
+Custom user-configurable themes via YAML config are planned.
 
 
 ## See Also
 
 ### Reference Documentation
-- [CLI Reference](./cli.md) - `looms` server commands
-- [gRPC API Reference](./grpc-api.md) - Protocol details
-- [Session Management](./sessions.md) - Session persistence
+- [CLI Reference](./cli.md) - `looms` server commands and `loom` client commands
+- [Streaming Reference](./streaming.md) - Streaming protocol details
+- [TLS Reference](./tls.md) - TLS configuration details
+- [LLM Providers Reference](./llm-providers.md) - Provider configuration and pricing
 
 ### Guides
-- [Getting Started with TUI](../guides/getting-started-tui.md) - Quick tutorial
-- [Human-in-the-Loop Guide](../guides/hitl.md) - HITL best practices
+- [TUI Guide](../guides/tui-guide.md) - TUI usage guide
+- [Human-in-the-Loop Guide](../guides/human-in-the-loop.md) - HITL best practices
 
 ### Architecture Documentation
-- [Communication Architecture](../architecture/communication-system.md) - Streaming protocol design
+- [Communication Architecture](../architecture/communication-system-design.md) - Streaming protocol design
 
 ### External Resources
-- [Bubbletea Documentation](https://github.com/charmbracelet/bubbletea) - TUI framework
-- [Bubbles Components](https://github.com/charmbracelet/bubbles) - Textarea, Viewport
-- [Lipgloss Styling](https://github.com/charmbracelet/lipgloss) - Terminal styling
+- [Bubbletea v2 Documentation](https://charm.land/bubbletea) - TUI framework
+- [Bubbles v2 Components](https://charm.land/bubbles) - Textarea, Viewport
+- [Lipgloss v2 Styling](https://charm.land/lipgloss) - Terminal styling

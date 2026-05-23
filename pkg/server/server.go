@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -112,37 +114,35 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		sessionID = GenerateSessionID()
 	}
 
-	// Set permission mode if specified in request
-	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
-		if err := s.agent.SetPermissionMode(ctx, sessionID, req.PermissionMode); err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
-		}
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		s.agent.ResetSessionContext(sessionID)
 	}
 
-	// Convert context from map[string]string to map[string]interface{} for interpolation
-	requestContext := make(map[string]interface{})
-	if req.Context != nil {
-		for k, v := range req.Context {
-			requestContext[k] = v
-		}
-	}
-
-	// Log context variables for debugging if needed
-	zap.L().Debug("Weave: context variables for interpolation",
-		zap.String("session_id", sessionID),
-		zap.String("agent_id", req.AgentId),
-		zap.Int("context_len", len(requestContext)))
-
-	// Execute agent chat with context for variable interpolation
-	resp, err := s.agent.ChatWithProgressAndContext(ctx, sessionID, req.Query, requestContext, nil)
+	// Execute agent chat
+	resp, err := s.agent.Chat(ctx, sessionID, req.Query)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
 	}
 
+	// Build context state snapshot (after response, reflects post-conversation state)
+	var contextState *loomv1.ContextState
+	if cs := s.agent.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	// Convert response to proto format
 	return &loomv1.WeaveResponse{
-		Text:      resp.Content,
-		SessionId: sessionID,
+		Text:         resp.Content,
+		SessionId:    sessionID,
+		AgentId:      s.agent.GetID(),
+		ContextState: contextState,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
 				Provider:                 s.agent.GetLLMProviderName(),
@@ -171,11 +171,9 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		sessionID = GenerateSessionID()
 	}
 
-	// Set permission mode if specified in request
-	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
-		if err := s.agent.SetPermissionMode(stream.Context(), sessionID, req.PermissionMode); err != nil {
-			return status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
-		}
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		s.agent.ResetSessionContext(sessionID)
 	}
 
 	// Channel to receive agent result
@@ -197,25 +195,9 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		}
 	}
 
-	// Convert context from map[string]string to map[string]interface{}
-	requestContext := make(map[string]interface{})
-	if req.Context != nil {
-		for k, v := range req.Context {
-			requestContext[k] = v
-		}
-	}
-
-	// Log context variables for debugging
-	if len(requestContext) > 0 {
-		zap.L().Debug("StreamWeave: context variables for interpolation",
-			zap.String("session_id", sessionID),
-			zap.String("agent_id", req.AgentId),
-			zap.Int("context_len", len(requestContext)))
-	}
-
-	// Execute agent with progress callback and context variables for interpolation
+	// Execute agent with progress callback
 	go func() {
-		resp, err := s.agent.ChatWithProgressAndContext(stream.Context(), sessionID, req.Query, requestContext, progressCallback)
+		resp, err := s.agent.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan) // Signal no more progress events
 	}()
@@ -234,14 +216,16 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 				continue
 			}
 
-			// Convert agent progress to proto format
+			// Convert agent progress to proto format.
+			// Sanitize string fields: LLM streaming can produce invalid UTF-8
+			// (e.g. multi-byte chars split across chunks), which proto3 rejects.
 			protoProgress := &loomv1.WeaveProgress{
 				Stage:          convertAgentStageToProto(event.Stage),
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
-				PartialContent: event.PartialContent,
+				PartialContent: sanitizeUTF8(event.PartialContent),
 				IsTokenStream:  event.IsTokenStream,
 				TokenCount:     event.TokenCount,
 				TtftMs:         event.TTFT,
@@ -254,9 +238,6 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 			// Include tool lifecycle fields if present
 			applyToolLifecycleFields(protoProgress, event)
-
-			// Include plan event fields if present
-			applyPlanEventFields(protoProgress, event)
 
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {
@@ -285,8 +266,21 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
 	}
 
-	// Send final completion event with result
+	// Send final completion event with result and context state
 	resp := finalResult.resp
+
+	// Build context state snapshot
+	var contextState *loomv1.ContextState
+	if cs := s.agent.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	completionProgress := &loomv1.WeaveProgress{
 		Stage:     loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
 		Progress:  100,
@@ -294,7 +288,21 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		Timestamp: time.Now().Unix(),
 		PartialResult: &loomv1.ExecutionResult{
 			Type:     "text",
-			DataJson: resp.Content,
+			DataJson: sanitizeUTF8(resp.Content),
+		},
+		PartialContent: sanitizeUTF8(resp.Content),
+		ContextState:   contextState,
+		Cost: &loomv1.CostInfo{
+			TotalCostUsd: resp.Usage.CostUSD,
+			LlmCost: &loomv1.LLMCost{
+				Provider:                 s.agent.GetLLMProviderName(),
+				Model:                    s.agent.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+			},
 		},
 	}
 
@@ -318,6 +326,8 @@ func convertAgentStageToProto(stage agent.ExecutionStage) loomv1.ExecutionStage 
 		return loomv1.ExecutionStage_EXECUTION_STAGE_GUARDRAIL_CHECK
 	case agent.StageSelfCorrection:
 		return loomv1.ExecutionStage_EXECUTION_STAGE_SELF_CORRECTION
+	case agent.StageSynthesis:
+		return loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION
 	case agent.StageCompleted:
 		return loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED
 	case agent.StageFailed:
@@ -354,6 +364,16 @@ func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestI
 
 // applyToolLifecycleFields populates tool lifecycle fields on a WeaveProgress proto
 // if the source event is a tool-started or tool-completed event.
+// sanitizeUTF8 ensures a string contains only valid UTF-8 bytes.
+// Proto3 string fields require valid UTF-8; LLM streaming responses can
+// contain invalid sequences (e.g., multi-byte characters split across chunks).
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
 	if !event.IsToolStarted && !event.IsToolCompleted {
 		return
@@ -362,7 +382,7 @@ func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressE
 	proto.IsToolStarted = event.IsToolStarted
 	proto.IsToolCompleted = event.IsToolCompleted
 	proto.ToolCallId = event.ToolCallID
-	proto.ToolError = event.ToolError
+	proto.ToolError = sanitizeUTF8(event.ToolError)
 	proto.ToolSuccess = event.ToolSuccess
 	proto.ToolDurationMs = event.ToolDurationMs
 
@@ -378,23 +398,6 @@ func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressE
 		if v, err := structpb.NewValue(event.ToolResult); err == nil {
 			proto.ToolResult = v
 		}
-	}
-}
-
-// applyPlanEventFields populates plan event fields on a WeaveProgress proto
-// if the source event is a plan-created, plan-approved, or plan-rejected event.
-func applyPlanEventFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
-	if !event.IsPlanCreated && !event.IsPlanApproved && !event.IsPlanRejected {
-		return
-	}
-
-	proto.IsPlanCreated = event.IsPlanCreated
-	proto.IsPlanApproved = event.IsPlanApproved
-	proto.IsPlanRejected = event.IsPlanRejected
-
-	// Include execution plan if present
-	if event.Plan != nil {
-		proto.Plan = event.Plan
 	}
 }
 
@@ -820,7 +823,7 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 			results[i] = result{name: name, content: llmResp.Content, latency: latency}
 			_ = sendEvent(&loomv1.ABTestEvent{
 				ProviderName: name,
-				ContentChunk: llmResp.Content,
+				ContentChunk: sanitizeUTF8(llmResp.Content),
 				Finished:     true,
 				LatencyMs:    latency,
 				AbTestId:     abTestID,
@@ -952,7 +955,7 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		results[i] = result{name: name, content: llmResp.Content, score: score, latency: latency}
 		if err2 := sendEvent(&loomv1.ABTestEvent{
 			ProviderName: name,
-			ContentChunk: llmResp.Content,
+			ContentChunk: sanitizeUTF8(llmResp.Content),
 			Finished:     true,
 			Score:        score,
 			LatencyMs:    latency,
@@ -1032,7 +1035,7 @@ func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest,
 
 	if err2 := stream.Send(&loomv1.ABTestEvent{
 		ProviderName: primaryName,
-		ContentChunk: primaryResp.Content,
+		ContentChunk: sanitizeUTF8(primaryResp.Content),
 		Finished:     true,
 		LatencyMs:    latency,
 		AbTestId:     abTestID,
@@ -1355,102 +1358,6 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 	// 3. Wait for user response with timeout
 	// 4. Return the user's decision
 	return nil, status.Error(codes.Unimplemented, "tool permission requests not yet implemented")
-}
-
-// ApprovePlan approves or rejects an execution plan created in PLAN mode.
-func (s *Server) ApprovePlan(ctx context.Context, req *loomv1.ApprovePlanRequest) (*loomv1.ApprovePlanResponse, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Call agent's ApprovePlan method
-	plan, err := s.agent.ApprovePlan(req.PlanId, req.Approved, req.Feedback)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to approve plan: %v", err)
-	}
-
-	return &loomv1.ApprovePlanResponse{
-		Plan: plan,
-	}, nil
-}
-
-// GetPlan retrieves a specific execution plan.
-func (s *Server) GetPlan(ctx context.Context, req *loomv1.GetPlanRequest) (*loomv1.ExecutionPlan, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Call agent's GetPlan method
-	plan, err := s.agent.GetPlan(req.PlanId)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "plan not found: %v", err)
-	}
-
-	return plan, nil
-}
-
-// ListPlans lists execution plans for a session.
-func (s *Server) ListPlans(ctx context.Context, req *loomv1.ListPlansRequest) (*loomv1.ListPlansResponse, error) {
-	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	// Call agent's ListPlans method
-	plans, err := s.agent.ListPlans(req.SessionId, req.StatusFilter)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to list plans: %v", err)
-	}
-
-	// Apply pagination if specified
-	totalCount := len(plans)
-	if req.PageSize > 0 {
-		offset := int(req.PageOffset)
-		pageSize := int(req.PageSize)
-
-		// Validate pagination bounds
-		if offset >= totalCount {
-			plans = []*loomv1.ExecutionPlan{}
-		} else {
-			end := offset + pageSize
-			if end > totalCount {
-				end = totalCount
-			}
-			plans = plans[offset:end]
-		}
-	}
-
-	return &loomv1.ListPlansResponse{
-		Plans:      plans,
-		TotalCount: types.SafeInt32(totalCount),
-	}, nil
-}
-
-// ExecutePlan executes an approved plan by running its tools.
-func (s *Server) ExecutePlan(ctx context.Context, req *loomv1.ExecutePlanRequest) (*loomv1.ExecutePlanResponse, error) {
-	if req.PlanId == "" {
-		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
-	}
-
-	// Execute the plan
-	plan, err := s.agent.ExecutePlan(ctx, req.PlanId)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to execute plan: %v", err)
-	}
-
-	// Build summary based on plan status
-	var summary string
-	if plan.Status == loomv1.PlanStatus_PLAN_STATUS_COMPLETED {
-		summary = fmt.Sprintf("Successfully executed %d tool(s)", len(plan.Tools))
-	} else if plan.Status == loomv1.PlanStatus_PLAN_STATUS_FAILED {
-		summary = fmt.Sprintf("Plan execution failed: %s", plan.ErrorMessage)
-	} else {
-		summary = fmt.Sprintf("Plan status: %v", plan.Status)
-	}
-
-	return &loomv1.ExecutePlanResponse{
-		Plan:    plan,
-		Summary: summary,
-	}, nil
 }
 
 // Helper functions

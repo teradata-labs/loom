@@ -33,6 +33,8 @@ tags: [poetry, haiku, code, zen, fun, documentation]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - fun
 use_cases:
   - Create poetic commit messages
   - Document bugs in haiku form

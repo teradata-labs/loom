@@ -1,9 +1,9 @@
 
 # Pattern Reference
 
-Complete specification for Loom's pattern library system. Patterns encode domain knowledge as YAML templates for LLM-guided tool execution.
+Specification for Loom's pattern library system. Patterns encode domain knowledge as YAML templates for LLM-guided tool execution.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -23,6 +23,10 @@ Complete specification for Loom's pattern library system. Patterns encode domain
   - [FilterByBackendType](#filterbybackendtype)
   - [Search](#search)
   - [ClearCache](#clearcache)
+  - [Register](#register)
+  - [AddSearchPath](#addsearchpath)
+  - [SetPatternsDir](#setpatternsdir)
+  - [FilterByDifficulty](#filterbydiffculty)
 - [Orchestrator API](#orchestrator-api)
   - [NewOrchestrator](#neworchestrator)
   - [ClassifyIntent](#classifyintent)
@@ -30,15 +34,22 @@ Complete specification for Loom's pattern library system. Patterns encode domain
   - [GetRoutingRecommendation](#getroutingrecommendation)
   - [PlanExecution](#planexecution)
   - [SetIntentClassifier](#setintentclassifier)
-- [Intent Categories](#intent-categories)
+  - [SetExecutionPlanner](#setexecutionplanner)
+  - [SetLLMProvider](#setllmprovider)
+  - [GetLibrary](#getlibrary)
+  - [RecordPatternUsage](#recordpatternusage)
+  - [NewLLMIntentClassifier](#newllmintentclassifier)
+- [Intent Classification](#intent-classification)
 - [Hot Reload](#hot-reload)
   - [NewHotReloader](#newhotreloader)
   - [Start](#start)
   - [Stop](#stop)
+  - [ManualReload](#manualreload)
+  - [FormatForLLM](#formatforllm)
   - [CreatePattern RPC](#createpattern-rpc)
 - [Template Syntax](#template-syntax)
 - [Performance Characteristics](#performance-characteristics)
-- [Error Codes](#error-codes)
+- [Error Handling](#error-handling)
 - [Examples](#examples)
 - [Testing](#testing)
 - [See Also](#see-also)
@@ -58,20 +69,29 @@ Complete specification for Loom's pattern library system. Patterns encode domain
 | `rest_api` | API interaction patterns | REST calls, authentication |
 | `document` | Document search and processing | Vector search, embeddings |
 | `etl` | Extract, transform, load workflows | Incremental load, data sync |
+| `prompt_engineering` | Prompt design patterns | Prompt templates, few-shot examples |
+| `code` | Code generation and analysis | Code generation, refactoring |
+| `debugging` | Debugging and diagnostics | Error analysis, troubleshooting |
+| `vision` | Image and visual analysis | Image description, chart analysis |
+| `evaluation` | Evaluation and assessment | Quality scoring, benchmarking |
 
-### Intent Categories
+### Intent Classification
+
+Intents are **freeform snake_case strings** — the classifier can return any label. Common built-in intents used by the default keyword classifier:
 
 | Intent | Description | Tool Guidance |
 |--------|-------------|---------------|
-| `IntentSchemaDiscovery` | Exploring data structure | Use schema discovery tools |
-| `IntentRelationshipQuery` | Analyzing relationships | Use relationship analysis tools |
-| `IntentDataQuality` | Quality validation | Use validation tools |
-| `IntentDataTransform` | ETL operations | Use transformation tools |
-| `IntentAnalytics` | Metrics and reporting | Use aggregation/query tools |
-| `IntentQueryGeneration` | Query creation | Use code generation tools |
-| `IntentDocumentSearch` | Document retrieval | Use vector search tools |
-| `IntentAPICall` | API interaction | Use HTTP client tools |
-| `IntentUnknown` | Cannot classify | Use general-purpose tools |
+| `"schema_discovery"` | Exploring data structure | Use schema discovery tools |
+| `"relationship_query"` | Analyzing relationships | Use relationship analysis tools |
+| `"data_quality"` | Quality validation | Use validation tools |
+| `"data_transform"` | ETL operations | Use transformation tools |
+| `"analytics"` | Metrics and reporting | Use aggregation/query tools |
+| `"query_generation"` | Query creation | Use code generation tools |
+| `"document_search"` | Document retrieval | Use vector search tools |
+| `"api_call"` | API interaction | Use HTTP client tools |
+| `""` (empty) | Cannot classify | Use general-purpose tools |
+
+Patterns declare which intents they serve via the `intents` YAML field. Custom classifiers can return any string — matching is done by set intersection against pattern-declared intents, with fallback to category matching.
 
 ### Library Functions
 
@@ -79,22 +99,31 @@ Complete specification for Loom's pattern library system. Patterns encode domain
 |----------|---------|---------|
 | `NewLibrary(fs, path)` | Create pattern library | `*Library` |
 | `Load(name)` | Load pattern by name | `*Pattern, error` |
-| `ListAll()` | Get all patterns | `[]*Pattern` |
-| `FilterByCategory(cat)` | Filter by category | `[]*Pattern` |
-| `FilterByBackendType(typ)` | Filter by backend | `[]*Pattern` |
-| `Search(query)` | Free-text search | `[]*Pattern` |
+| `ListAll()` | Get all pattern summaries | `[]PatternSummary` |
+| `FilterByCategory(cat)` | Filter by category | `[]PatternSummary` |
+| `FilterByBackendType(typ)` | Filter by backend | `[]PatternSummary` |
+| `FilterByDifficulty(d)` | Filter by difficulty | `[]PatternSummary` |
+| `Search(query)` | Free-text search (ranked) | `[]PatternSummary` |
 | `ClearCache()` | Clear pattern cache | - |
+| `Register(pattern)` | Add pattern to cache | - |
+| `AddSearchPath(path)` | Add custom search path | - |
+| `SetPatternsDir(dir)` | Update patterns directory | - |
 
 ### Orchestrator Functions
 
 | Function | Purpose | Returns |
 |----------|---------|---------|
 | `NewOrchestrator(library)` | Create orchestrator | `*Orchestrator` |
-| `ClassifyIntent(msg, ctx)` | Classify user intent | `IntentCategory, float64` |
-| `RecommendPattern(msg, intent)` | Recommend pattern | `string, float64` |
+| `ClassifyIntent(msg, ctx)` | Classify user intent | `string, float64` |
+| `RecommendPattern(msg, intent)` | Recommend pattern (hybrid keyword + optional LLM) | `string, float64` |
 | `GetRoutingRecommendation(intent)` | Get tool guidance | `string` |
 | `PlanExecution(intent, msg, ctx)` | Generate execution plan | `*ExecutionPlan, error` |
 | `SetIntentClassifier(fn)` | Override classifier | - |
+| `SetExecutionPlanner(fn)` | Override execution planner | - |
+| `SetLLMProvider(provider)` | Set LLM for hybrid re-ranking | - |
+| `GetLibrary()` | Get underlying pattern library | `*Library` |
+| `RecordPatternUsage(...)` | Record usage metrics | - |
+| `NewLLMIntentClassifier(config)` | Create LLM-based classifier | `IntentClassifierFunc` |
 
 
 ## Pattern YAML Schema
@@ -147,9 +176,9 @@ category: analytics
 
 **Type**: `string`
 **Required**: Yes
-**Allowed values**: `sql`, `rest_api`, `document`, `mcp`, `file`, `graphql`
+**Common values**: `sql`, `rest_api`, `document`, `text`, `workflow`, `vision`, `evaluation`, `debugging`, `postgres`, `mcp`, `file`, `graphql`
 
-**Description**: Backend type this pattern applies to.
+**Description**: Backend type this pattern applies to. Free-form string; the values listed above are conventions used in the existing pattern library.
 
 **Example**:
 ```yaml
@@ -162,8 +191,8 @@ backend_type: sql
 #### difficulty
 
 **Type**: `string`
-**Default**: `basic`
-**Allowed values**: `basic`, `intermediate`, `advanced`
+**Default**: `beginner`
+**Allowed values**: `beginner`, `intermediate`, `advanced`
 
 **Description**: Complexity level for pattern selection and documentation.
 
@@ -187,20 +216,17 @@ backend_function: execute_aggregation_query
 ```
 
 
-#### tags
+#### title
 
-**Type**: `[]string`
-**Default**: `[]`
+**Type**: `string`
+**Required**: No (recommended)
 **Constraints**: None
 
-**Description**: Additional tags for search and filtering.
+**Description**: Human-readable title for the pattern. Used in catalog listings and LLM formatting.
 
 **Example**:
 ```yaml
-tags:
-  - aggregation
-  - group_by
-  - performance
+title: Revenue Aggregation
 ```
 
 
@@ -221,20 +247,140 @@ use_cases:
 ```
 
 
+#### intents
+
+**Type**: `[]string`
+**Default**: `[]`
+**Constraints**: Freeform snake_case strings
+
+**Description**: Freeform intent labels this pattern serves. Used by the orchestrator to match classified intents to patterns. If omitted, the orchestrator falls back to matching the classified intent against the pattern's `category` field.
+
+**Example**:
+```yaml
+intents:
+  - analytics
+  - reporting
+  - query_generation
+```
+
+
+#### related_patterns
+
+**Type**: `[]string`
+**Default**: `[]`
+
+**Description**: Names of related patterns for cross-referencing.
+
+**Example**:
+```yaml
+related_patterns:
+  - sales_trend_analysis
+  - kpi_dashboard
+```
+
+
+#### parameters
+
+**Type**: `[]Parameter`
+**Default**: `[]`
+
+**Description**: Parameter definitions used in pattern templates. Each parameter includes name, type, required flag, description, example, and optional default value.
+
+**Parameter struct**:
+```go
+type Parameter struct {
+    Name         string `yaml:"name"`
+    Type         string `yaml:"type"`         // "string", "number", "array", "object"
+    Required     bool   `yaml:"required"`
+    Description  string `yaml:"description"`
+    Example      string `yaml:"example"`
+    DefaultValue string `yaml:"default,omitempty"`
+}
+```
+
+**Example**:
+```yaml
+parameters:
+  - name: dimension
+    type: string
+    required: true
+    description: Column to group by
+    example: region
+  - name: limit
+    type: number
+    required: false
+    description: Max rows to return
+    default: "100"
+```
+
+
+#### common_errors
+
+**Type**: `[]CommonError`
+**Default**: `[]`
+
+**Description**: Frequently encountered errors and solutions. Included in `FormatForLLM()` output (up to 3) to help the LLM avoid mistakes.
+
+**Example**:
+```yaml
+common_errors:
+  - error: "Column not found"
+    cause: "Misspelled column name"
+    solution: "Verify column exists with schema discovery"
+```
+
+
+#### best_practices
+
+**Type**: `string`
+**Default**: `""`
+
+**Description**: Best practices text for this pattern. Included in `FormatForLLM()` output.
+
+**Example**:
+```yaml
+best_practices: |
+  Always validate column names before executing.
+  Use LIMIT for large datasets.
+```
+
+
+#### syntax
+
+**Type**: `*Syntax` (optional)
+
+**Description**: Backend-specific syntax documentation (e.g., nPath pattern operators, JSONPath syntax).
+
+**Example**:
+```yaml
+syntax:
+  description: "nPath pattern matching operators"
+  operators:
+    - symbol: "."
+      meaning: "Match any single event"
+      example: "A.B matches A followed by B"
+    - symbol: "*"
+      meaning: "Match zero or more events"
+      example: "A* matches zero or more A events"
+```
+
+
 ### Templates Section
 
-**Type**: `map[string]string`
+**Type**: `map[string]Template`
 **Required**: Yes (at least one template)
 **Keys**: `basic`, `advanced`, `optimized`, or custom names
 
-**Description**: Go text templates with variable substitution using `{{.variable}}` syntax.
+**Description**: Named templates with content, descriptions, and metadata. Templates support both simple string format and rich object format with additional fields.
 
-**Common template keys**:
-- `basic` - Simple template for common cases
-- `advanced` - Complex template with additional features
-- `optimized` - Performance-optimized variant
+**Template struct fields**:
+- `description` (`string`, optional) - Description of template purpose
+- `content` (`string`) - Template content (SQL, JSON, etc.) with `{{.variable}}` placeholders
+- `sql` (`string`) - Alternative field name for `content` (for SQL patterns)
+- `required_parameters` (`[]string`, optional) - List of required parameter names
+- `output_format` (`string`, optional) - Output format: `table`, `json`, `text`
 
-**Example**:
+**Simple string format** (auto-mapped to `content`):
 ```yaml
 templates:
   basic: |
@@ -242,13 +388,37 @@ templates:
     FROM {{.table}}
     GROUP BY {{.dimension}}
     ORDER BY total DESC
+```
 
-  optimized: |
-    SELECT /*+ INDEX({{.table}} {{.index_name}}) */
-      {{.dimension}}, SUM({{.metric}}) as total
-    FROM {{.table}}
-    GROUP BY {{.dimension}}
-    ORDER BY total DESC
+**Rich object format**:
+```yaml
+templates:
+  basic:
+    description: Simple aggregation query
+    sql: |
+      SELECT {{.dimension}}, SUM({{.metric}}) as total
+      FROM {{.table}}
+      GROUP BY {{.dimension}}
+      ORDER BY total DESC
+    required_parameters:
+      - dimension
+      - metric
+      - table
+    output_format: table
+
+  optimized:
+    description: Performance-optimized with index hints
+    sql: |
+      SELECT /*+ INDEX({{.table}} {{.index_name}}) */
+        {{.dimension}}, SUM({{.metric}}) as total
+      FROM {{.table}}
+      GROUP BY {{.dimension}}
+      ORDER BY total DESC
+    required_parameters:
+      - dimension
+      - metric
+      - table
+      - index_name
 ```
 
 **See**: [Template Syntax](#template-syntax) for full syntax reference
@@ -265,26 +435,30 @@ templates:
 **Schema**:
 ```yaml
 examples:
-  - name: string               # Example name
-    parameters: map[string]any # Template variables
-    expected_output: string    # Optional expected result
+  - name: string                # Example name
+    description: string         # Example description
+    parameters: map[string]any  # Template variables
+    expected_result: string     # Optional expected result
+    notes: string               # Optional notes
 ```
 
 **Example**:
 ```yaml
 examples:
   - name: Revenue by region
+    description: Aggregate revenue grouped by geographic region
     parameters:
       dimension: region
       metric: revenue
       table: sales
-    expected_output: |
+    expected_result: |
       region  | total
       --------|--------
       West    | 2400000
       East    | 2100000
 
   - name: Sales by product
+    description: Count quantities sold by product
     parameters:
       dimension: product_id
       metric: quantity
@@ -350,6 +524,41 @@ examples:
 **Common patterns**: Incremental load, data sync, schema migration
 
 
+### prompt_engineering
+
+**Purpose**: Prompt design patterns
+**Backend types**: Various
+**Common patterns**: Prompt templates, few-shot examples, chain-of-thought
+
+
+### code
+
+**Purpose**: Code generation and analysis
+**Backend types**: Various
+**Common patterns**: Code generation, refactoring, migration
+
+
+### debugging
+
+**Purpose**: Debugging and diagnostics
+**Backend types**: Various
+**Common patterns**: Error analysis, troubleshooting, log analysis
+
+
+### vision
+
+**Purpose**: Image and visual analysis
+**Backend types**: Various
+**Common patterns**: Image description, chart analysis
+
+
+### evaluation
+
+**Purpose**: Evaluation and assessment
+**Backend types**: Various
+**Common patterns**: Quality scoring, benchmarking
+
+
 ## Library API
 
 ### NewLibrary
@@ -404,12 +613,12 @@ func (l *Library) Load(name string) (*Pattern, error)
 - `*Pattern` - Loaded pattern
 - `error` - See [Error Codes](#error-codes)
 
-**Errors**:
-| Error | Condition |
-|-------|-----------|
-| `ErrPatternNotFound` | Pattern name doesn't exist in library |
-| `ErrInvalidYAML` | Pattern file has invalid YAML syntax |
-| `ErrMissingRequiredField` | Pattern missing required field (name, description, category, backend_type) |
+**Errors** (returned as `fmt.Errorf` messages, not sentinel errors):
+| Error message | Condition |
+|---------------|-----------|
+| `"pattern not found: %s"` | Pattern name doesn't exist in library |
+| `"failed to parse pattern %s: ..."` | Pattern file has invalid YAML syntax |
+| `"pattern path outside patterns directory: %s"` | Path traversal attempt detected |
 
 **Example**:
 ```go
@@ -420,7 +629,7 @@ if err != nil {
 
 fmt.Println(pattern.Name)        // "revenue_aggregation"
 fmt.Println(pattern.Description) // "Aggregate revenue metrics..."
-fmt.Println(pattern.Templates["basic"]) // Template string
+fmt.Println(pattern.Templates["basic"].GetSQL()) // Template content string
 ```
 
 **Performance**: Cached after first load (sub-millisecond retrieval)
@@ -431,24 +640,38 @@ fmt.Println(pattern.Templates["basic"]) // Template string
 ### ListAll
 
 ```go
-func (l *Library) ListAll() []*Pattern
+func (l *Library) ListAll() []PatternSummary
 ```
 
-**Description**: Get all patterns in library.
+**Description**: Get metadata summaries for all available patterns. Results are cached after first call. Scans both embedded FS and filesystem, plus any dynamically registered patterns.
 
-**Returns**: `[]*Pattern` - All loaded patterns
+**Returns**: `[]PatternSummary` - All pattern summaries
+
+**PatternSummary schema**:
+```go
+type PatternSummary struct {
+    Name            string   `json:"name"`
+    Title           string   `json:"title"`
+    Description     string   `json:"description"` // Truncated to 200 chars
+    Category        string   `json:"category"`
+    Difficulty      string   `json:"difficulty"`
+    BackendType     string   `json:"backend_type"`
+    UseCases        []string `json:"use_cases"`
+    BackendFunction string   `json:"backend_function,omitempty"`
+}
+```
 
 **Example**:
 ```go
 all := library.ListAll()
 fmt.Printf("Found %d patterns\n", len(all))
 
-for _, pattern := range all {
-    fmt.Printf("- %s (%s)\n", pattern.Name, pattern.Category)
+for _, summary := range all {
+    fmt.Printf("- %s (%s)\n", summary.Name, summary.Category)
 }
 ```
 
-**Performance**: Returns cached patterns, O(n) copy operation
+**Performance**: Cached after first scan. First call walks filesystem; subsequent calls return cached index.
 
 **Thread safety**: Safe for concurrent use
 
@@ -456,15 +679,15 @@ for _, pattern := range all {
 ### FilterByCategory
 
 ```go
-func (l *Library) FilterByCategory(category string) []*Pattern
+func (l *Library) FilterByCategory(category string) []PatternSummary
 ```
 
-**Description**: Filter patterns by category.
+**Description**: Filter patterns by category. Case-insensitive matching. Returns all patterns if category is empty.
 
 **Parameters**:
 - `category` (`string`) - Category to filter by (see [Pattern Categories](#pattern-categories))
 
-**Returns**: `[]*Pattern` - Patterns matching category
+**Returns**: `[]PatternSummary` - Pattern summaries matching category
 
 **Example**:
 ```go
@@ -472,7 +695,7 @@ analytics := library.FilterByCategory("analytics")
 fmt.Printf("Found %d analytics patterns\n", len(analytics))
 ```
 
-**Performance**: O(n) linear scan
+**Performance**: O(n) linear scan over `ListAll()` results
 
 **Thread safety**: Safe for concurrent use
 
@@ -480,15 +703,15 @@ fmt.Printf("Found %d analytics patterns\n", len(analytics))
 ### FilterByBackendType
 
 ```go
-func (l *Library) FilterByBackendType(backendType string) []*Pattern
+func (l *Library) FilterByBackendType(backendType string) []PatternSummary
 ```
 
-**Description**: Filter patterns by backend type.
+**Description**: Filter patterns by backend type. Case-insensitive matching. Returns all patterns if backendType is empty.
 
 **Parameters**:
 - `backendType` (`string`) - Backend type to filter by
 
-**Returns**: `[]*Pattern` - Patterns matching backend type
+**Returns**: `[]PatternSummary` - Pattern summaries matching backend type
 
 **Example**:
 ```go
@@ -496,7 +719,7 @@ sqlPatterns := library.FilterByBackendType("sql")
 fmt.Printf("Found %d SQL patterns\n", len(sqlPatterns))
 ```
 
-**Performance**: O(n) linear scan
+**Performance**: O(n) linear scan over `ListAll()` results
 
 **Thread safety**: Safe for concurrent use
 
@@ -504,15 +727,15 @@ fmt.Printf("Found %d SQL patterns\n", len(sqlPatterns))
 ### Search
 
 ```go
-func (l *Library) Search(query string) []*Pattern
+func (l *Library) Search(query string) []PatternSummary
 ```
 
-**Description**: Free-text search across pattern names, descriptions, tags, and use cases.
+**Description**: Free-text search across pattern metadata with relevance ranking. Tokenizes the query into keywords, filters stop words, and scores results by keyword match rate with boosts for name/title matches.
 
 **Parameters**:
-- `query` (`string`) - Search query
+- `query` (`string`) - Search query (empty returns all patterns)
 
-**Returns**: `[]*Pattern` - Patterns matching search query
+**Returns**: `[]PatternSummary` - Pattern summaries sorted by relevance score (highest first)
 
 **Example**:
 ```go
@@ -522,10 +745,12 @@ fmt.Printf("Found %d matching patterns\n", len(results))
 
 **Search behavior**:
 - Case-insensitive
-- Searches: name, description, tags[], use_cases[]
-- No ranking (results unordered)
+- Tokenizes query on whitespace, commas, semicolons, hyphens, underscores
+- Filters stop words and terms shorter than 3 characters
+- Searches: name, title, description, backend_function, use_cases[]
+- Ranked by relevance score (keyword match rate + name/title boosts)
 
-**Performance**: O(n*m) where n=patterns, m=query length
+**Performance**: O(n*m) where n=patterns, m=keywords
 
 **Thread safety**: Safe for concurrent use
 
@@ -557,6 +782,96 @@ pattern, _ := library.Load("revenue_aggregation")
 **Thread safety**: Safe for concurrent use (uses RWMutex)
 
 
+### Register
+
+```go
+func (l *Library) Register(pattern *Pattern)
+```
+
+**Description**: Add a dynamically-created pattern directly to the library cache. Enables programmatic registration without requiring a file on disk. If a pattern with the same name already exists, it is overwritten. Invalidates the cached index so `ListAll()` re-scans.
+
+**Parameters**:
+- `pattern` (`*Pattern`) - Pattern to register
+
+**Example**:
+```go
+pattern := &patterns.Pattern{
+    Name:        "custom_query",
+    Title:       "Custom Query Pattern",
+    Description: "Dynamically registered pattern",
+    Category:    "analytics",
+    BackendType: "sql",
+}
+
+library.Register(pattern)
+```
+
+**Thread safety**: Safe for concurrent use
+
+
+### AddSearchPath
+
+```go
+func (l *Library) AddSearchPath(path string)
+```
+
+**Description**: Add a custom search path for pattern discovery. Paths are relative to the patterns directory (filesystem) or embedded FS root.
+
+**Parameters**:
+- `path` (`string`) - Subdirectory path to search for pattern files
+
+**Example**:
+```go
+library.AddSearchPath("custom/analytics")
+library.AddSearchPath("vendor/patterns")
+```
+
+**Thread safety**: Safe for concurrent use
+
+
+### SetPatternsDir
+
+```go
+func (l *Library) SetPatternsDir(dir string)
+```
+
+**Description**: Update the filesystem patterns directory. Used by `LoadPatterns` RPC to dynamically set the patterns source. When the directory changes, the pattern index is invalidated so the next `ListAll()` call re-indexes.
+
+**Parameters**:
+- `dir` (`string`) - New patterns directory path
+
+**Example**:
+```go
+library.SetPatternsDir("/opt/loom/patterns")
+```
+
+**Thread safety**: Safe for concurrent use
+
+
+### FilterByDifficulty
+
+```go
+func (l *Library) FilterByDifficulty(difficulty string) []PatternSummary
+```
+
+**Description**: Filter patterns by difficulty level. Case-insensitive matching. Returns all patterns if difficulty is empty.
+
+**Parameters**:
+- `difficulty` (`string`) - Difficulty level: `beginner`, `intermediate`, `advanced`
+
+**Returns**: `[]PatternSummary` - Pattern summaries matching difficulty
+
+**Example**:
+```go
+beginnerPatterns := library.FilterByDifficulty("beginner")
+fmt.Printf("Found %d beginner patterns\n", len(beginnerPatterns))
+```
+
+**Performance**: O(n) linear scan over `ListAll()` results
+
+**Thread safety**: Safe for concurrent use
+
+
 ## Orchestrator API
 
 ### NewOrchestrator
@@ -583,23 +898,23 @@ orchestrator := patterns.NewOrchestrator(library)
 ### ClassifyIntent
 
 ```go
-func (o *Orchestrator) ClassifyIntent(message string, context map[string]interface{}) (IntentCategory, float64)
+func (o *Orchestrator) ClassifyIntent(message string, context map[string]interface{}) (string, float64)
 ```
 
-**Description**: Classify user message into intent category.
+**Description**: Classify user message into a freeform intent label.
 
 **Parameters**:
 - `message` (`string`) - User message to classify
 - `context` (`map[string]interface{}`) - Additional context (user_id, session_data, etc.)
 
 **Returns**:
-- `IntentCategory` - Classified intent (see [Intent Categories](#intent-categories))
+- `string` - Freeform intent label (e.g., `"analytics"`, `"schema_discovery"`, or any custom label). Empty string means unclassified.
 - `float64` - Confidence score (0.0-1.0)
 
 **Classification algorithm**:
 - Keyword matching on intent-specific terms
 - Context-aware scoring
-- Default fallback to `IntentUnknown`
+- Default fallback to `""` (empty string) with 0.0 confidence
 
 **Example**:
 ```go
@@ -609,7 +924,7 @@ intent, confidence := orchestrator.ClassifyIntent(
 )
 
 fmt.Printf("Intent: %v (%.2f confidence)\n", intent, confidence)
-// Output: Intent: IntentAnalytics (0.80 confidence)
+// Output: Intent: analytics (0.80 confidence)
 ```
 
 **Performance**: O(1) keyword matching
@@ -620,30 +935,31 @@ fmt.Printf("Intent: %v (%.2f confidence)\n", intent, confidence)
 ### RecommendPattern
 
 ```go
-func (o *Orchestrator) RecommendPattern(message string, intent IntentCategory) (string, float64)
+func (o *Orchestrator) RecommendPattern(message string, intent string) (string, float64)
 ```
 
 **Description**: Recommend best pattern for user message and intent.
 
 **Parameters**:
 - `message` (`string`) - User message
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 
 **Returns**:
 - `string` - Pattern name
 - `float64` - Confidence score (0.0-1.0)
 
 **Recommendation algorithm**:
-1. Filter patterns by intent-appropriate category
-2. Match message against pattern use_cases[]
-3. Score by keyword overlap
-4. Return highest-scoring pattern
+1. Match classified intent against pattern declared `intents` (set intersection), falling back to `category` match
+2. Match message keywords against pattern metadata (name, title, description, use_cases, intents)
+3. Score by intent match (+0.5) and keyword overlap (up to +0.5)
+4. Optionally re-rank top candidates with LLM for ambiguous cases
+5. Return highest-scoring pattern
 
 **Example**:
 ```go
 patternName, confidence := orchestrator.RecommendPattern(
     "Show me revenue by region",
-    patterns.IntentAnalytics,
+    "analytics",
 )
 
 if confidence > 0.7 {
@@ -660,21 +976,21 @@ if confidence > 0.7 {
 ### GetRoutingRecommendation
 
 ```go
-func (o *Orchestrator) GetRoutingRecommendation(intent IntentCategory) string
+func (o *Orchestrator) GetRoutingRecommendation(intent string) string
 ```
 
 **Description**: Get tool guidance string for LLM system prompt.
 
 **Parameters**:
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 
-**Returns**: `string` - Tool guidance text
+**Returns**: `string` - Tool guidance text. Returns generic fallback for unrecognized intents.
 
 **Example**:
 ```go
-guidance := orchestrator.GetRoutingRecommendation(patterns.IntentAnalytics)
+guidance := orchestrator.GetRoutingRecommendation("analytics")
 fmt.Println(guidance)
-// Output: "Use aggregation and query tools to analyze metrics"
+// Output: "For analytics queries, validate and estimate cost before execution..."
 
 // Include in LLM system prompt
 systemPrompt := fmt.Sprintf(`
@@ -694,13 +1010,13 @@ Available tools: execute_query, get_schema
 ### PlanExecution
 
 ```go
-func (o *Orchestrator) PlanExecution(intent IntentCategory, message string, context map[string]interface{}) (*ExecutionPlan, error)
+func (o *Orchestrator) PlanExecution(intent string, message string, context map[string]interface{}) (*ExecutionPlan, error)
 ```
 
-**Description**: Generate execution plan from intent and message.
+**Description**: Generate execution plan from intent and message. For known intents (the 8 built-in labels), returns a domain-specific plan. For unknown freeform intents, returns a generic execution plan. For empty string intent, returns an error.
 
 **Parameters**:
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 - `message` (`string`) - User message
 - `context` (`map[string]interface{}`) - Execution context
 
@@ -711,20 +1027,25 @@ func (o *Orchestrator) PlanExecution(intent IntentCategory, message string, cont
 **ExecutionPlan schema**:
 ```go
 type ExecutionPlan struct {
-    Description string
-    Steps       []ExecutionStep
+    Intent      string        `json:"intent"`
+    Description string        `json:"description"`
+    Steps       []PlannedStep `json:"steps"`
+    Reasoning   string        `json:"reasoning"`
+    PatternName string        `json:"pattern_name,omitempty"`
 }
 
-type ExecutionStep struct {
-    ToolName    string
-    Description string
+type PlannedStep struct {
+    ToolName    string            `json:"tool_name"`
+    Params      map[string]string `json:"params"`
+    Description string            `json:"description"`
+    PatternHint string            `json:"pattern_hint,omitempty"`
 }
 ```
 
 **Example**:
 ```go
 plan, err := orchestrator.PlanExecution(
-    patterns.IntentAnalytics,
+    "analytics",
     "Show me revenue by region",
     map[string]interface{}{"user_context": "sales_team"},
 )
@@ -751,13 +1072,13 @@ for i, step := range plan.Steps {
 ### SetIntentClassifier
 
 ```go
-func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]interface{}) (IntentCategory, float64))
+func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]interface{}) (string, float64))
 ```
 
 **Description**: Override default intent classifier with custom function.
 
 **Parameters**:
-- `classifier` (`func(string, map[string]interface{}) (IntentCategory, float64)`) - Custom classifier function
+- `classifier` (`func(string, map[string]interface{}) (string, float64)`) - Custom classifier function returning a freeform intent label and confidence
 
 **Use cases**:
 - LLM-based classification
@@ -766,12 +1087,12 @@ func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]in
 
 **Example**:
 ```go
-customClassifier := func(msg string, ctx map[string]interface{}) (patterns.IntentCategory, float64) {
-    // Use LLM for classification
+customClassifier := func(msg string, ctx map[string]interface{}) (string, float64) {
+    // Return any domain-specific intent label
     if strings.Contains(strings.ToLower(msg), "teradata") {
-        return patterns.IntentAnalytics, 0.95
+        return "analytics", 0.95
     }
-    return patterns.IntentUnknown, 0.0
+    return "", 0.0
 }
 
 orchestrator.SetIntentClassifier(customClassifier)
@@ -780,87 +1101,147 @@ orchestrator.SetIntentClassifier(customClassifier)
 **Thread safety**: Not safe during concurrent use (set during initialization)
 
 
-## Intent Categories
+### SetExecutionPlanner
 
-### IntentSchemaDiscovery
+```go
+func (o *Orchestrator) SetExecutionPlanner(planner ExecutionPlannerFunc)
+```
 
-**Value**: `1`
-**Description**: Exploring data structure (tables, columns, relationships)
-**Tool guidance**: Use schema discovery tools (list_tables, describe_table, get_schema)
+**Description**: Override default execution planner with custom function. Backends can provide domain-specific planners for optimized execution strategies.
 
-**Trigger keywords**: "what tables", "show schema", "list columns", "describe"
+**Parameters**:
+- `planner` (`ExecutionPlannerFunc`) - Custom planner: `func(string, string, map[string]interface{}) (*ExecutionPlan, error)`
 
-
-### IntentRelationshipQuery
-
-**Value**: `2`
-**Description**: Analyzing relationships between entities
-**Tool guidance**: Use relationship analysis tools (foreign_keys, join_analysis)
-
-**Trigger keywords**: "how are X and Y related", "join", "relationship"
+**Thread safety**: Not safe during concurrent use (set during initialization)
 
 
-### IntentDataQuality
+### SetLLMProvider
 
-**Value**: `3`
-**Description**: Quality validation and data profiling
-**Tool guidance**: Use validation tools (check_nulls, validate_schema, profile_data)
+```go
+func (o *Orchestrator) SetLLMProvider(provider types.LLMProvider)
+```
 
-**Trigger keywords**: "data quality", "validate", "check for nulls", "profile"
+**Description**: Set the LLM provider for pattern re-ranking. When set, enables a hybrid approach: fast keyword matching + LLM re-ranking for ambiguous cases where top candidates have close scores.
 
+**Parameters**:
+- `provider` (`types.LLMProvider`) - LLM provider for re-ranking
 
-### IntentDataTransform
-
-**Value**: `4`
-**Description**: ETL operations and data transformation
-**Tool guidance**: Use transformation tools (transform, load, sync)
-
-**Trigger keywords**: "transform", "load", "etl", "sync", "migrate"
+**Thread safety**: Not safe during concurrent use (set during initialization)
 
 
-### IntentAnalytics
+### GetLibrary
 
-**Value**: `5`
-**Description**: Metrics, aggregations, and reporting
-**Tool guidance**: Use aggregation/query tools (execute_query, aggregate)
+```go
+func (o *Orchestrator) GetLibrary() *Library
+```
 
-**Trigger keywords**: "show", "calculate", "total", "by", "group by", "report"
+**Description**: Get the underlying pattern library.
 
+**Returns**: `*Library` - The library used by this orchestrator
 
-### IntentQueryGeneration
-
-**Value**: `6`
-**Description**: Generate code or queries
-**Tool guidance**: Use code generation tools (generate_sql, generate_code)
-
-**Trigger keywords**: "generate", "create query", "write sql"
+**Thread safety**: Safe for concurrent use
 
 
-### IntentDocumentSearch
+### RecordPatternUsage
 
-**Value**: `7`
-**Description**: Document retrieval and vector search
-**Tool guidance**: Use vector search tools (semantic_search, find_documents)
+```go
+func (o *Orchestrator) RecordPatternUsage(
+    ctx context.Context,
+    patternName string,
+    agentID string,
+    success bool,
+    costUSD float64,
+    latency time.Duration,
+    errorType string,
+    llmProvider string,
+    llmModel string,
+)
+```
 
-**Trigger keywords**: "find documents", "search for", "similar to"
+**Description**: Record pattern usage metrics to the effectiveness tracker. Should be called after a pattern is executed to capture success/failure, cost, latency. Extracts variant and domain from context using `GetPatternMetadata()`. No-op if no tracker is configured (via `WithTracker()`).
+
+**Parameters**:
+- `ctx` (`context.Context`) - Context containing pattern metadata (variant, domain)
+- `patternName` (`string`) - Name of the executed pattern
+- `agentID` (`string`) - ID of the executing agent
+- `success` (`bool`) - Whether execution succeeded
+- `costUSD` (`float64`) - Cost of execution in USD
+- `latency` (`time.Duration`) - Execution duration
+- `errorType` (`string`) - Type of error if failed (empty if success)
+- `llmProvider` (`string`) - LLM provider used (e.g., "anthropic", "bedrock")
+- `llmModel` (`string`) - LLM model used
+
+**Thread safety**: Safe for concurrent use
 
 
-### IntentAPICall
+### NewLLMIntentClassifier
 
-**Value**: `8`
-**Description**: External API interactions
-**Tool guidance**: Use HTTP client tools (http_get, http_post, call_api)
+```go
+func NewLLMIntentClassifier(config *LLMClassifierConfig) IntentClassifierFunc
+```
 
-**Trigger keywords**: "call api", "fetch from", "post to"
+**Description**: Create an LLM-based intent classifier. Returns an `IntentClassifierFunc` that can be plugged into the orchestrator via `SetIntentClassifier()`. Uses the LLM to classify intent into freeform labels with higher accuracy than keyword matching. The LLM is prompted to return any descriptive snake_case label — not limited to the 8 built-in intents.
+
+**Parameters**:
+- `config` (`*LLMClassifierConfig`) - LLM classifier configuration
+
+**Returns**: `IntentClassifierFunc` - Pluggable classifier function
+
+**Example**:
+```go
+classifier := patterns.NewLLMIntentClassifier(&patterns.LLMClassifierConfig{
+    // Configure with LLM provider
+})
+
+orchestrator.SetIntentClassifier(classifier)
+```
 
 
-### IntentUnknown
+## Intent Classification
 
-**Value**: `0`
-**Description**: Cannot classify intent
-**Tool guidance**: Use general-purpose tools
+Intents are **freeform snake_case strings**. The classifier (keyword-based or LLM-based) returns any descriptive label, and patterns declare which intents they serve via the `intents` YAML field.
 
-**Trigger keywords**: None (default fallback)
+### How Intent Matching Works
+
+1. The classifier returns an intent string (e.g., `"analytics"`, `"predict_churn"`, `"schema_discovery"`)
+2. The orchestrator checks each pattern's declared `intents` list for a case-insensitive match
+3. If no declared intents match, falls back to matching against the pattern's `category` field
+4. Empty string (`""`) means unclassified — confidence is always 0.0
+
+### Built-in Intents (Default Keyword Classifier)
+
+The default keyword-based classifier recognizes these intents:
+
+| Intent | Trigger Keywords |
+|--------|-----------------|
+| `"schema_discovery"` | "what tables", "list tables", "schema", "table structure", "describe" |
+| `"relationship_query"` | "related", "foreign key", "relationship", "connected to", "joins" |
+| `"data_quality"` | "data quality", "duplicates", "null", "validate", "check quality" |
+| `"data_transform"` | "move data", "copy", "load data", "extract", "etl", "migrate" |
+| `"analytics"` | "aggregate", "sum", "count", "average", "group by", "analyze", "report" |
+| `"query_generation"` | "write query", "generate query", "query for", "select", "find" |
+| `"document_search"` | "search document", "find in document", "text search", "full text" |
+| `"api_call"` | "api call", "http request", "rest api", "endpoint", "webhook" |
+
+The LLM-based classifier can return any intent label, not just these 8. Custom classifiers can also return domain-specific labels like `"predict_churn"`, `"code_review"`, or `"deploy_pipeline"`.
+
+### Declaring Pattern Intents
+
+Patterns declare what intents they serve via the `intents` YAML field:
+
+```yaml
+name: linear_regression
+category: ml
+intents:
+  - analytics
+  - prediction
+  - model_training
+use_cases:
+  - Sales forecasting
+  - Customer lifetime value prediction
+```
+
+If `intents` is omitted, the orchestrator falls back to matching the classified intent against the pattern's `category` field. This provides backward compatibility with patterns that predate the `intents` field.
 
 
 ## Hot Reload
@@ -880,10 +1261,15 @@ func NewHotReloader(library *Library, config HotReloadConfig) (*HotReloader, err
 **HotReloadConfig schema**:
 ```go
 type HotReloadConfig struct {
-    Enabled    bool          // Enable hot-reload (default: false)
-    DebounceMs int           // Debounce delay in milliseconds (default: 500)
-    Logger     *zap.Logger   // Logger for reload events
+    Enabled    bool                  // Enable hot-reload (default: false)
+    DebounceMs int                   // Debounce delay in milliseconds (default: 500)
+    Logger     *zap.Logger           // Logger for reload events
+    OnUpdate   PatternUpdateCallback // Callback for pattern updates (optional)
 }
+
+// PatternUpdateCallback signature:
+// func(eventType string, patternName string, filePath string, err error)
+// eventType: "create", "modify", "delete", "validation_failed"
 ```
 
 **Returns**:
@@ -942,7 +1328,7 @@ if err != nil {
     log.Fatalf("Failed to start hot-reload: %v", err)
 }
 
-defer hotReloader.Stop()
+defer func() { _ = hotReloader.Stop() }()
 
 // Patterns automatically reload when .yaml files change
 // Invalid patterns are rejected and logged
@@ -956,17 +1342,73 @@ defer hotReloader.Stop()
 ### Stop
 
 ```go
-func (hr *HotReloader) Stop()
+func (hr *HotReloader) Stop() error
 ```
 
-**Description**: Stop watching for pattern file changes.
+**Description**: Stop watching for pattern file changes. Idempotent -- safe to call multiple times. Waits up to 5 seconds for watch loop to finish before timing out.
+
+**Returns**: `error` - Error from closing the filesystem watcher
 
 **Example**:
 ```go
-defer hotReloader.Stop()
+defer func() {
+    if err := hotReloader.Stop(); err != nil {
+        log.Printf("Error stopping hot-reloader: %v", err)
+    }
+}()
 ```
 
 **Thread safety**: Safe for concurrent use
+
+
+### ManualReload
+
+```go
+func (hr *HotReloader) ManualReload(patternName string) error
+```
+
+**Description**: Trigger a manual reload of a specific pattern. Useful for programmatic reload (e.g., after API-based pattern creation). Validates the pattern before reloading.
+
+**Parameters**:
+- `patternName` (`string`) - Name of the pattern to reload
+
+**Returns**: `error` - File not found or validation errors
+
+**Errors**:
+| Error message | Condition |
+|---------------|-----------|
+| `"pattern file not found: %s"` | Pattern YAML file not found in any search path |
+| `"validation failed: ..."` | Pattern file fails validation |
+
+**Example**:
+```go
+err := hotReloader.ManualReload("revenue_aggregation")
+if err != nil {
+    log.Printf("Manual reload failed: %v", err)
+}
+```
+
+**Thread safety**: Safe for concurrent use
+
+
+### FormatForLLM
+
+```go
+func (p *Pattern) FormatForLLM() string
+```
+
+**Description**: Format the pattern for LLM injection. Returns a concise, actionable representation optimized for token efficiency (target: <2000 tokens per pattern). Includes title, description, use cases, parameters, up to 2 templates, best practices, and common errors.
+
+**Returns**: `string` - Markdown-formatted pattern text for LLM system prompts
+
+**Example**:
+```go
+pattern, _ := library.Load("revenue_aggregation")
+llmText := pattern.FormatForLLM()
+// Include in system prompt for the LLM
+```
+
+**Thread safety**: Safe for concurrent use (read-only)
 
 
 ### CreatePattern RPC
@@ -989,10 +1431,10 @@ message CreatePatternRequest {
 **Response**:
 ```proto
 message CreatePatternResponse {
-  bool success = 1;           // Pattern created successfully
-  string file_path = 2;       // Path to created pattern file
-  string message = 3;         // Status message
-  repeated string errors = 4; // Validation errors
+  bool success = 1;          // Pattern created successfully
+  string pattern_name = 2;   // Created pattern name
+  string error = 3;          // Error message (if failed)
+  string file_path = 4;      // File path where pattern was written
 }
 ```
 
@@ -1030,20 +1472,20 @@ if err != nil {
 }
 
 if resp.Success {
-    log.Printf("Pattern created at: %s", resp.FilePath)
+    log.Printf("Pattern '%s' created at: %s", resp.PatternName, resp.FilePath)
 }
 ```
 
 **Example (CLI)**:
 ```bash
 # Create pattern from file
-looms pattern create my-pattern --agent sql-agent --file pattern.yaml
+looms pattern create my-pattern --thread sql-thread --file pattern.yaml
 
 # Create pattern from stdin
-cat pattern.yaml | looms pattern create my-pattern --agent sql-agent --stdin
+cat pattern.yaml | looms pattern create my-pattern --thread sql-thread --stdin
 
-# Verify pattern created
-looms pattern list --agent sql-agent | grep my-pattern
+# Watch for pattern updates in real-time
+looms pattern watch --thread sql-thread
 ```
 
 **File operations**:
@@ -1070,7 +1512,7 @@ templates:
 
 **Usage**:
 ```go
-tmpl := template.Must(template.New("pattern").Parse(pattern.Templates["basic"]))
+tmpl := template.Must(template.New("pattern").Parse(pattern.Templates["basic"].GetSQL()))
 
 params := map[string]interface{}{
     "column":    "revenue",
@@ -1113,14 +1555,16 @@ templates:
 
 ### Functions
 
-```yaml
-templates:
-  basic: |
-    SELECT {{.metric | upper}}
-    FROM {{.table | lower}}
-```
+Go `text/template` does not include `upper`/`lower` functions by default. Custom template functions must be registered via `template.FuncMap` when executing templates. Loom patterns primarily use variable substitution (`{{.variable}}`) and control structures (`{{if}}`, `{{range}}`).
 
-**Available functions**: Standard Go template functions (upper, lower, trim, etc.)
+```go
+// To use custom functions, register them when executing:
+funcMap := template.FuncMap{
+    "upper": strings.ToUpper,
+    "lower": strings.ToLower,
+}
+tmpl := template.Must(template.New("pattern").Funcs(funcMap).Parse(pattern.Templates["basic"].GetSQL()))
+```
 
 
 ## Performance Characteristics
@@ -1132,7 +1576,7 @@ templates:
 | `Load(name)` | 1-5ms | <0.1ms | YAML parse + cache |
 | `ListAll()` | N/A | <0.1ms | Returns cached list |
 | `FilterByCategory()` | N/A | O(n) | Linear scan |
-| `Search(query)` | N/A | O(n*m) | No indexing |
+| `Search(query)` | N/A | O(n*m) | Tokenized keyword matching with ranking |
 
 ### Hot Reload
 
@@ -1148,7 +1592,7 @@ templates:
 | Operation | Latency | Notes |
 |-----------|---------|-------|
 | `ClassifyIntent()` | <0.1ms | Keyword matching |
-| `RecommendPattern()` | O(n*m) | Scans all patterns |
+| `RecommendPattern()` | O(n*m) | Keyword matching + optional LLM re-ranking |
 | `PlanExecution()` | <0.1ms | Template-based plan |
 
 ### Memory Usage
@@ -1160,32 +1604,34 @@ templates:
 | Orchestrator | ~10KB | Intent classification state |
 
 
-## Error Codes
+## Error Handling
 
-### ErrPatternNotFound
+The patterns package uses `fmt.Errorf` for error creation rather than sentinel error variables. Errors are identified by their message content.
 
-**Code**: `pattern_not_found`
-**Cause**: Pattern name doesn't exist in library
+### Pattern Not Found
+
+**Message**: `"pattern not found: %s"`
+**Cause**: Pattern name doesn't exist in library (not found in cache, embedded FS, or filesystem)
 
 **Example**:
 ```
-Error: pattern_not_found: pattern "invalid_name" not found in library
+pattern not found: invalid_name
 ```
 
 **Resolution**:
 1. List available patterns: `library.ListAll()`
 2. Check pattern name spelling
-3. Verify pattern file exists in library path
+3. Verify pattern file exists in library path or search paths
 
 
-### ErrInvalidYAML
+### Parse Failed
 
-**Code**: `invalid_yaml`
+**Message**: `"failed to parse pattern %s: %s"`
 **Cause**: Pattern file has invalid YAML syntax
 
 **Example**:
 ```
-Error: invalid_yaml: yaml: line 5: mapping values are not allowed in this context
+failed to parse pattern my_pattern: yaml: line 5: mapping values are not allowed in this context
 ```
 
 **Resolution**:
@@ -1194,29 +1640,26 @@ Error: invalid_yaml: yaml: line 5: mapping values are not allowed in this contex
 3. Verify quotes around special characters
 
 
-### ErrMissingRequiredField
+### Hot-Reload Validation Errors
 
-**Code**: `missing_required_field`
-**Cause**: Pattern missing required field (name, description, category, backend_type, or templates)
-
-**Example**:
-```
-Error: missing_required_field: pattern missing required field "description"
-```
+**Messages**:
+- `"pattern.name is required"` - Pattern missing name field
+- `"pattern.category is required"` - Pattern missing category field
+- `"failed to load pattern: %s"` - Pattern file cannot be loaded
 
 **Resolution**:
-1. Add missing field to YAML
-2. Verify all required fields present: name, description, category, backend_type, templates
+1. Fix pattern YAML based on validation error
+2. Save file again to trigger reload
+3. Check hot-reloader logs for details (warnings logged for patterns with `backend_function` but no templates/examples)
 
 
-### ErrTemplateExecution
+### Template Execution Errors
 
-**Code**: `template_execution_failed`
-**Cause**: Template execution failed (missing variable, syntax error)
+Template execution errors come from Go's `text/template` package when variables are missing or syntax is invalid.
 
 **Example**:
 ```
-Error: template_execution_failed: template: pattern:3:5: executing "pattern" at <.missing_var>: map has no entry for key "missing_var"
+template: pattern:3:5: executing "pattern" at <.missing_var>: map has no entry for key "missing_var"
 ```
 
 **Resolution**:
@@ -1225,20 +1668,14 @@ Error: template_execution_failed: template: pattern:3:5: executing "pattern" at 
 3. Add default values for optional variables
 
 
-### ErrHotReloadFailed
+### Execution Planning Error
 
-**Code**: `hot_reload_failed`
-**Cause**: Hot-reload validation rejected pattern
-
-**Example**:
-```
-Error: hot_reload_failed: pattern validation failed: missing required field "category"
-```
+**Message**: `"cannot plan execution for unknown intent"`
+**Cause**: `PlanExecution()` called with empty string intent
 
 **Resolution**:
-1. Fix pattern YAML based on validation error
-2. Save file again to trigger reload
-3. Check hot-reloader logs for details
+1. Classify intent first with `ClassifyIntent()`
+2. Only call `PlanExecution()` with a recognized intent category
 
 
 ## Examples
@@ -1268,7 +1705,7 @@ func main() {
     fmt.Printf("Pattern: %s\n", pattern.Name)
     fmt.Printf("Description: %s\n", pattern.Description)
     fmt.Printf("Category: %s\n", pattern.Category)
-    fmt.Printf("Template:\n%s\n", pattern.Templates["basic"])
+    fmt.Printf("Template:\n%s\n", pattern.Templates["basic"].GetSQL())
 }
 
 // Output:
@@ -1307,7 +1744,7 @@ func main() {
     )
 
     fmt.Printf("Intent: %v (%.2f confidence)\n", intent, confidence)
-    // Output: Intent: IntentAnalytics (0.80 confidence)
+    // Output: Intent: analytics (0.80 confidence)
 
     // Recommend pattern
     patternName, patternConfidence := orchestrator.RecommendPattern(
@@ -1323,7 +1760,7 @@ func main() {
     if patternConfidence > 0.7 {
         pattern, _ := library.Load(patternName)
         fmt.Printf("Using pattern: %s\n", pattern.Name)
-        fmt.Printf("Template:\n%s\n", pattern.Templates["basic"])
+        fmt.Printf("Template:\n%s\n", pattern.Templates["basic"].GetSQL())
     }
 }
 ```
@@ -1362,7 +1799,7 @@ func main() {
     if err != nil {
         log.Fatalf("Failed to start hot-reload: %v", err)
     }
-    defer hotReloader.Stop()
+    defer func() { _ = hotReloader.Stop() }()
 
     log.Println("Hot-reload active. Modify patterns/*.yaml to see updates")
 
@@ -1400,23 +1837,23 @@ func main() {
     orchestrator := patterns.NewOrchestrator(library)
 
     // Define custom classifier using domain knowledge
-    customClassifier := func(msg string, ctx map[string]interface{}) (patterns.IntentCategory, float64) {
+    customClassifier := func(msg string, ctx map[string]interface{}) (string, float64) {
         msgLower := strings.ToLower(msg)
 
         // Teradata-specific keywords
         if strings.Contains(msgLower, "teradata") ||
            strings.Contains(msgLower, "spool space") ||
            strings.Contains(msgLower, "amp") {
-            return patterns.IntentAnalytics, 0.95
+            return "analytics", 0.95
         }
 
         // ML keywords
         if strings.Contains(msgLower, "train model") ||
            strings.Contains(msgLower, "predict") {
-            return patterns.IntentQueryGeneration, 0.90
+            return "query_generation", 0.90
         }
 
-        return patterns.IntentUnknown, 0.0
+        return "", 0.0
     }
 
     orchestrator.SetIntentClassifier(customClassifier)
@@ -1427,14 +1864,14 @@ func main() {
         map[string]interface{}{},
     )
     fmt.Printf("Intent: %v (%.2f)\n", intent1, conf1)
-    // Output: Intent: IntentAnalytics (0.95)
+    // Output: Intent: analytics (0.95)
 
     intent2, conf2 := orchestrator.ClassifyIntent(
         "Train ML model on sales data",
         map[string]interface{}{},
     )
     fmt.Printf("Intent: %v (%.2f)\n", intent2, conf2)
-    // Output: Intent: IntentQueryGeneration (0.90)
+    // Output: Intent: query_generation (0.90)
 }
 ```
 
@@ -1443,7 +1880,7 @@ func main() {
 
 ### Test Functions
 
-Patterns package includes 36 test functions covering:
+Patterns package includes 95 test functions covering:
 
 - Pattern loading and caching
 - YAML validation
@@ -1463,20 +1900,23 @@ func TestPatternLoad(t *testing.T) {
 
     assert.Equal(t, "revenue_aggregation", pattern.Name)
     assert.Equal(t, "analytics", pattern.Category)
-    assert.Contains(t, pattern.Templates, "basic")
+
+    basicTemplate, ok := pattern.Templates["basic"]
+    assert.True(t, ok, "expected 'basic' template")
+    assert.NotEmpty(t, basicTemplate.GetSQL())
 }
 ```
 
 **Run tests**:
 ```bash
-# All tests
-go test ./pkg/patterns -v
+# All tests (fts5 tag required)
+go test -tags fts5 ./pkg/patterns -v
 
 # With race detector
-go test ./pkg/patterns -race -v
+go test -tags fts5 -race ./pkg/patterns -v
 
 # Specific test
-go test ./pkg/patterns -run TestPatternLoad -v
+go test -tags fts5 ./pkg/patterns -run TestPatternLoad -v
 ```
 
 

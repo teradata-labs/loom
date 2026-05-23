@@ -27,6 +27,8 @@ backend_type: prompt_engineering
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - formatting
 use_cases:
   # --- Use Case 1: Workflow Coordination ---
   - Multi-agent workflow data passing

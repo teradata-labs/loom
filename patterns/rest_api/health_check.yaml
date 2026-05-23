@@ -43,6 +43,8 @@ tags: [health, monitoring, kubernetes, observability]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - rest_api
 use_cases:
   - Kubernetes liveness and readiness probes
   - Load balancer health checks (AWS ALB, nginx)

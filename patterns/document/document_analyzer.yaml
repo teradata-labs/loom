@@ -46,6 +46,8 @@ tags: [analysis, nlp, classification, extraction, entities]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - document
 use_cases:
   - Classify documents by type and topic
   - Extract named entities from contracts

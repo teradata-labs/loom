@@ -1,0 +1,388 @@
+# === METADATA START ===
+name: knn
+title: "K-Nearest Neighbors (KNN)"
+description: |
+  Classify or regress using TD_KNN (K-Nearest Neighbors). KNN is a lazy learner --
+  it stores no model. The entire training dataset is passed as a DIMENSION input at
+  prediction time and distance computation happens then. There is no separate Train
+  and Predict phase; the TrainingTable is referenced directly at scoring time.
+
+  TD_KNN supports three model types:
+  - Classification: predict class label by majority vote of K nearest neighbors
+  - Regression: predict continuous value by averaging K nearest neighbors
+  - Neighbors: return the K nearest neighbors without making a prediction
+
+  KNN is suitable for:
+  - Small to medium datasets (training data fits in memory per AMP)
+  - Quick prototyping without a training step
+  - Classification and regression baselines
+  - Nearest neighbor search and similarity lookup
+
+category: ml
+difficulty: beginner
+teradata_function: TD_KNN
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - analytics
+use_cases:
+  # --- Use Case 1: Classification ---
+  - Instance-based classification (iris, digit recognition)
+
+  # --- Use Case 2: Regression ---
+  - Local regression using nearest neighbors
+
+  # --- Use Case 3: Similarity Search ---
+  - Find most similar records (products, customers, transactions)
+
+  # --- Use Case 4: Recommendation ---
+  - Collaborative filtering style recommendations via similarity
+
+  # --- Use Case 5: Imputation ---
+  - Missing value imputation using nearest neighbor values
+
+  # --- Use Case 6: Quick Prototyping ---
+  - Fast baseline without explicit model training
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training and test data"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Passed as DIMENSION input; must fit in memory per AMP
+    required: true
+    description: "Table with labeled training data (passed as DIMENSION at score time)"
+    example: "product_features_labeled"
+
+  # --- Parameter 3: Test Table ---
+  - name: test_table
+    type: string
+    # LLM-HINT: New data to classify/regress; PARTITION BY ANY
+    required: true
+    description: "Table with data to classify or score"
+    example: "new_products"
+
+  # --- Parameter 4: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: Must match by name AND datatype in both TrainingTable and TestTable
+    required: true
+    description: "Feature columns (must match name and type in both tables)"
+    example: '["price", "weight", "rating", "num_reviews"]'
+
+  # --- Parameter 5: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Required for Classification/Regression; must be numeric; invalid for Neighbors mode
+    required: false
+    description: "Target column (required for Classification and Regression; not used for Neighbors)"
+    example: "category_id"
+
+  # --- Parameter 6: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Must be unique in both TrainingTable and TestTable
+    required: true
+    description: "Unique identifier column (must exist in both tables)"
+    example: "product_id"
+
+  # --- Parameter 7: K ---
+  - name: k
+    type: integer
+    # LLM-HINT: Number of neighbors; range 1-100; default 5; odd values avoid ties in classification
+    required: false
+    default: "5"
+    description: "Number of nearest neighbors (1-100)"
+    example: "7"
+
+  # --- Parameter 8: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'Classification', 'Regression', or 'Neighbors'; default 'Classification'
+    required: false
+    default: "Classification"
+    description: "Model type: Classification, Regression, or Neighbors"
+    example: "Classification"
+
+  # --- Parameter 9: Voting Weight ---
+  - name: voting_weight
+    type: integer
+    # LLM-HINT: 0 = uniform voting; > 0 = weight = 1/distance^voting_weight (closer neighbors matter more)
+    required: false
+    default: "0"
+    description: "Distance weighting power (0 = uniform, higher = closer neighbors weighted more)"
+    example: "2"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CLASSIFY TEMPLATE ===
+  # LLM-HINT: Classification mode; no training step; TrainingTable is DIMENSION input at score time
+  classify:
+    description: "Classify test data using K nearest neighbors"
+    sql: |
+      -- KNN classification: no model table; training data passed directly
+      -- LLM-HINT: InputColumns must match by name AND datatype in both tables
+      -- LLM-HINT: ResponseColumn must be numeric; class labels must be numeric integers
+      -- LLM-HINT: IDColumn must be unique in both tables
+      SELECT * FROM TD_KNN(
+          ON {{database}}.{{test_table}} AS TestTable PARTITION BY ANY
+          ON {{database}}.{{training_table}} AS TrainingTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              InputColumns({{input_columns_quoted}})
+              ResponseColumn('{{response_column}}')
+              ModelType('Classification')
+              K({{k}})
+              VotingWeight({{voting_weight}})
+      ) AS t;
+    required_parameters:
+      - database
+      - test_table
+      - training_table
+      - id_column
+      - input_columns_quoted
+      - response_column
+      - k
+      - voting_weight
+
+  # === REGRESSION TEMPLATE ===
+  # LLM-HINT: Regression mode; predicts continuous value as average of K nearest neighbors
+  regress:
+    description: "Predict continuous values using K nearest neighbors"
+    sql: |
+      -- KNN regression: average target value of K nearest neighbors
+      SELECT * FROM TD_KNN(
+          ON {{database}}.{{test_table}} AS TestTable PARTITION BY ANY
+          ON {{database}}.{{training_table}} AS TrainingTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              InputColumns({{input_columns_quoted}})
+              ResponseColumn('{{response_column}}')
+              ModelType('Regression')
+              K({{k}})
+              VotingWeight({{voting_weight}})
+      ) AS t;
+    required_parameters:
+      - database
+      - test_table
+      - training_table
+      - id_column
+      - input_columns_quoted
+      - response_column
+      - k
+      - voting_weight
+
+  # === FIND_NEIGHBORS TEMPLATE ===
+  # LLM-HINT: Neighbors mode; returns K nearest neighbors with optional distances; no ResponseColumn
+  find_neighbors:
+    description: "Find K nearest neighbors for each test row (similarity search)"
+    sql: |
+      -- Find K nearest neighbors with distances
+      -- LLM-HINT: No ResponseColumn for Neighbors mode
+      -- LLM-HINT: EmitNeighbors is always true for Neighbors mode
+      SELECT * FROM TD_KNN(
+          ON {{database}}.{{test_table}} AS TestTable PARTITION BY ANY
+          ON {{database}}.{{training_table}} AS TrainingTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              InputColumns({{input_columns_quoted}})
+              ModelType('Neighbors')
+              K({{k}})
+              EmitNeighbors('true')
+              EmitDistances('true')
+      ) AS t;
+    required_parameters:
+      - database
+      - test_table
+      - training_table
+      - id_column
+      - input_columns_quoted
+      - k
+
+  # === CLASSIFY_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Classification with per-class probability output
+  classify_with_probabilities:
+    description: "Classify with per-class probabilities"
+    sql: |
+      -- KNN classification with per-class probability output
+      -- LLM-HINT: Responses lists class labels as integers; max 1000 classes
+      SELECT * FROM TD_KNN(
+          ON {{database}}.{{test_table}} AS TestTable PARTITION BY ANY
+          ON {{database}}.{{training_table}} AS TrainingTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              InputColumns({{input_columns_quoted}})
+              ResponseColumn('{{response_column}}')
+              ModelType('Classification')
+              K({{k}})
+              VotingWeight({{voting_weight}})
+              OutputProb('true')
+              Responses({{response_values}})
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - test_table
+      - training_table
+      - id_column
+      - input_columns_quoted
+      - response_column
+      - k
+      - voting_weight
+      - response_values
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Product Category Classification ---
+  - name: "Product Category Classification"
+    description: "Classify products into categories based on attribute similarity"
+    parameters:
+      database: "catalog"
+      training_table: "labeled_products"
+      test_table: "new_products"
+      input_columns: ["price", "weight", "dimensions_cm3", "margin_pct"]
+      response_column: "category_id"
+      id_column: "product_id"
+      k: 7
+      model_type: "Classification"
+      voting_weight: 2
+    expected_result: |
+      Classification output:
+        product_id | prediction | category_id
+        P9001      | 3          | 3
+        P9002      | 1          | 1
+        P9003      | 2          | 3    <-- misclassification
+
+      prediction = majority class among 7 nearest neighbors
+      With VotingWeight(2), closer neighbors are weighted by 1/distance^2.
+
+  # --- Example 2: Similar Customer Lookup ---
+  - name: "Similar Customer Lookup (Neighbors Mode)"
+    description: "Find the 5 most similar customers for each new customer"
+    parameters:
+      database: "crm"
+      training_table: "existing_customers"
+      test_table: "new_customers"
+      input_columns: ["age", "annual_income", "spending_score"]
+      id_column: "customer_id"
+      k: 5
+      model_type: "Neighbors"
+    expected_result: |
+      Neighbor output (5 neighbors per test row):
+        customer_id | neighbor_id1 | neighbor_dist1 | neighbor_id2 | neighbor_dist2 | ...
+        C9001       | C1234        | 2.45           | C5678        | 3.12           | ...
+        C9002       | C2345        | 1.80           | C3456        | 2.05           | ...
+
+      Use neighbor IDs to look up what products/services similar customers bought
+      for recommendation or personalization.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Column Name/Type Mismatch ---
+  - error: "InputColumns must match by name and datatype in both tables"
+    cause: "The feature columns must have identical names and data types in both TestTable and TrainingTable."
+    solution: "Verify column names and types match exactly. Use CAST if types differ (e.g., FLOAT vs DECIMAL)."
+
+  # --- Error 2: Training Data Too Large ---
+  - error: "Spool space or memory errors during scoring"
+    cause: "TrainingTable is passed as DIMENSION and must fit in memory per AMP. Large training sets cause pressure."
+    solution: "Reduce training data size via sampling. KNN is best for small-medium training sets. For large datasets, consider TD_XGBoost or TD_DecisionForest."
+
+  # --- Error 3: ResponseColumn in Neighbors Mode ---
+  - error: "ResponseColumn is invalid for Neighbors model type"
+    cause: "Neighbors mode finds nearest neighbors without making predictions; ResponseColumn must be omitted."
+    solution: "Remove ResponseColumn when using ModelType('Neighbors')."
+
+  # --- Error 4: Non-Numeric Response ---
+  - error: "ResponseColumn class labels must be numeric"
+    cause: "KNN requires numeric response values for Classification and Regression."
+    solution: "Encode class labels as integers (e.g., 0, 1, 2). Use CASE WHEN or a lookup table to convert."
+
+  # --- Error 5: Unscaled Features ---
+  - error: "One feature dominates predictions"
+    cause: "KNN uses Euclidean distance; features with larger ranges dominate the distance calculation."
+    solution: "Normalize all features to the same scale before scoring. Use TD_ScaleFit/TD_ScaleTransform with STD or RANGE method."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## KNN Best Practices
+
+  ### 1. Feature Scaling is Essential
+  KNN uses Euclidean distance -- features with larger ranges dominate:
+  ```sql
+  -- Standardize features before KNN scoring
+  -- Apply same scaling to both training and test data
+  CREATE TABLE db.scale_fit AS (
+      SELECT * FROM TD_ScaleFit(
+          ON db.training_data PARTITION BY ANY
+          USING TargetColumns('feat1','feat2','feat3') ScaleMethod('STD')
+      ) AS t
+  ) WITH DATA;
+  ```
+
+  ### 2. Choosing K
+  - Start with K=5 (default)
+  - Use odd values for binary classification to avoid ties
+  - Small K: sensitive to noise, captures local patterns
+  - Large K: smoother boundaries, may miss local patterns
+  - Rule of thumb: try sqrt(N) where N is training set size
+  - Validate with cross-validation or train/test split
+
+  ### 3. Distance Weighting
+  - VotingWeight(0): uniform voting (all K neighbors equally weighted)
+  - VotingWeight(1): weight = 1/distance (closer neighbors matter more)
+  - VotingWeight(2): weight = 1/distance^2 (strongly favor close neighbors)
+  - Use weighting when classes overlap or boundaries are complex
+
+  ### 4. Training Data Size
+  - TrainingTable is DIMENSION: it must fit in memory per AMP
+  - KNN is best for small-medium training sets (thousands to low millions of rows)
+  - For large datasets, consider model-based approaches (XGBoost, Decision Forest)
+  - Sample training data if too large, keeping class proportions
+
+  ### 5. No Model to Save
+  - KNN is a lazy learner -- there is no model artifact to persist
+  - The training data IS the model; it must be available at every scoring call
+  - Keep the training table as a persistent table for production scoring
+
+  ### 6. Neighbors Mode for Similarity
+  - ModelType('Neighbors') returns IDs and distances of K nearest neighbors
+  - Use for recommendation engines, similar-item lookups, or anomaly detection
+  - Combine with EmitDistances('true') for distance-based thresholding
+
+  ### 7. When NOT to Use KNN
+  - Very large training sets (memory pressure from DIMENSION input)
+  - Very high-dimensional data (curse of dimensionality makes distances meaningless)
+  - When a trained model artifact is needed for deployment
+  - When low-latency scoring is critical (KNN computes all distances at score time)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: K-Means ---
+  - kmeans
+
+  # --- Pattern 2: Naive Bayes ---
+  - naive_bayes
+
+  # --- Pattern 3: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 4: XGBoost ---
+  - xgboost
+# === RELATED_PATTERNS END ===

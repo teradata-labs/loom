@@ -36,6 +36,9 @@ teradata_function: Cosine, P_XAGXB, Count_Estimate
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Catalog all domains in the corpus
   - Find columns belonging to specific domain (e.g., "states")
@@ -434,7 +437,7 @@ best_practices: |
   - **Kernel Layer**: Cache discovered domains and their representative columns
   - **L1 Cache**: Keep recent domain queries (last 5-8 domain lookups) for quick access
   - **L2 Compressed**: Archive domain catalogs showing evolution over time
-  - **Swap Layer**: Store complete domain history; use recall_conversation to reference domain definitions from earlier corpus analyses
+  - **Swap Layer**: Store complete domain history; use conversation_memory to reference domain definitions from earlier corpus analyses
   This enables consistent domain identification and tracking domain drift as data evolves.
 # === BEST_PRACTICES END ===
 

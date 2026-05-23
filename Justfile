@@ -135,6 +135,23 @@ build-hawk: proto
     GOWORK=off go build -tags fts5,hawk -o bin/loom-hawk ./cmd/loom
     @echo "✅ Hawk-enabled binaries: bin/looms-hawk, bin/loom-hawk"
 
+# Build LongMemEval benchmark harness
+build-longmemeval:
+    @echo "Building LongMemEval benchmark harness..."
+    @mkdir -p bin
+    GOWORK=off go build -tags fts5 -o bin/loom-longmemeval ./cmd/loom-longmemeval
+    @echo "✅ LongMemEval binary: bin/loom-longmemeval"
+
+# Download LongMemEval datasets and run benchmark
+longmemeval-download:
+    @just build-longmemeval
+    ./bin/loom-longmemeval download --datasets oracle
+
+# Run LongMemEval benchmark against a running Loom server
+longmemeval server="localhost:60051" mode="ingest" limit="0":
+    @just build-longmemeval
+    ./bin/loom-longmemeval run --server {{server}} --mode {{mode}} --limit {{limit}} -v
+
 # Build with all features (judge is now built-in)
 build-full: proto
     @echo "Building Loom with all features (built-in judge)..."
@@ -291,6 +308,7 @@ security:
     @gosec -exclude-dir=gen -fmt=text ./...
 
 # Clean build artifacts
+[confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
 clean:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -303,12 +321,25 @@ clean:
     rm -rf dist/
     find . -name "*.test" -delete
     find . -name "*.out" -delete
-    # Clean installed binaries (use LOOM_BIN_DIR if set, otherwise ~/.local/bin)
-    BIN_DIR="${LOOM_BIN_DIR:-~/.local/bin}"
+    : "${HOME:?HOME is unset}"
+    # Paths from shell rc or dotenv may be literal "~/..."; ${var:-~/.x} defaults also
+    # fail to expand tilde reliably. Normalize before any rm -rf.
+    normalize_literal_tilde_prefix() {
+        local p="$1"
+        if [[ "${p:0:2}" == "~/" ]]; then
+            printf '%s\n' "${HOME}/${p:2}"
+        elif [[ "$p" == "~" ]]; then
+            printf '%s\n' "$HOME"
+        else
+            printf '%s\n' "$p"
+        fi
+    }
+    # LOOM_BIN_DIR: install target for loom/looms/hawk (default ~/.local/bin).
+    BIN_DIR="$(normalize_literal_tilde_prefix "${LOOM_BIN_DIR:-${HOME}/.local/bin}")"
     rm -rf "$BIN_DIR/loom" "$BIN_DIR/looms" "$BIN_DIR/hawk"
-    # Clean app data directories (use LOOM_DATA_DIR if set, otherwise ~/.loom)
-    LOOM_DIR="${LOOM_DATA_DIR:-~/.loom}"
-    rm -rf "$LOOM_DIR" ~/.hawk
+    # LOOM_DATA_DIR: full Loom data tree (default ~/.loom).
+    LOOM_DIR="$(normalize_literal_tilde_prefix "${LOOM_DATA_DIR:-${HOME}/.loom}")"
+    rm -rf "$LOOM_DIR" "${HOME}/.hawk"
     # Clean any databases in project root
     rm -f *.db *.sqlite *.sqlite3
     # Clean any stray binaries in project root
@@ -346,8 +377,11 @@ dev-full: build-server
     @kill $$(cat /tmp/loom-server.pid) 2>/dev/null || true
     @rm -f /tmp/loom-server.pid
 
-# Run all checks (matches GitHub CI exactly)
-check: proto-lint proto-format-check proto-gen-check fmt-check vet lint test build security
+# Run all checks (matches GitHub CI exactly).
+# generate-weaver must run before vet/lint/test — CI generates embedded/weaver.yaml
+# from the .tmpl at the start of every job, and our //go:embed weaver.yaml
+# directive will otherwise fail on a clean workspace.
+check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests
@@ -382,6 +416,25 @@ race-check:
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/server
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/transport
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/apps
+
+# Run load tests against gRPC server with mock LLM (zero tokens consumed)
+load-test:
+    @echo "Running load tests with mock LLM provider..."
+    GOWORK=off go test -tags fts5 -race -v ./test/loadtest/
+
+# Run load test benchmarks (throughput measurement)
+load-test-bench:
+    @echo "Running load test benchmarks..."
+    GOWORK=off go test -tags fts5 -bench=. -benchmem -run=^$ ./test/loadtest/
+
+# Run load/scalability tests without race detector (accurate latency numbers)
+load-test-perf:
+    @echo "Running performance tests (no race detector)..."
+    GOWORK=off go test -tags fts5 -v -run "TestScalability|TestProfile" ./test/loadtest/
+
+# Run a specific load test by name
+load-test-run pattern:
+    GOWORK=off go test -tags fts5 -race -v -run {{pattern}} ./test/loadtest/
 
 # Run specific tests matching pattern
 test-run pattern:
@@ -530,3 +583,56 @@ backup:
             exit 1
         fi
     fi
+
+# =============================================================================
+# Benchmark (AKS publication-grade)
+# =============================================================================
+
+# Build benchmark Docker image and push to ACR
+bench-build:
+    @echo "Building and pushing benchmark image..."
+    bash deploy/benchmark/poc-run.sh
+
+# Run PoC benchmark on AKS (quick validation: 3 runs + 1 warmup)
+bench-poc:
+    bash deploy/benchmark/poc-run.sh
+
+# Create benchmark AKS cluster (one-time setup)
+bench-setup:
+    bash deploy/benchmark/setup-cluster.sh
+
+# Scale benchmark node pools to 0 (cost savings)
+bench-scale-down:
+    bash deploy/benchmark/scale-down.sh
+
+# Pull all results from AKS PVC to local disk
+bench-pull-results dir="./results":
+    bash deploy/benchmark/pull-results.sh {{dir}}
+
+# Tear down benchmark cluster entirely
+bench-teardown:
+    bash deploy/benchmark/teardown-cluster.sh
+
+# Run full publication-grade benchmark suite on AKS (~6 hours)
+load-test-publish server_addr http_addr:
+    @echo "Running full benchmark suite against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario=all \
+        --runs=10 \
+        --warmup-runs=2 \
+        --output-dir=./results
+
+# Run a single benchmark scenario on AKS
+load-test-publish-single server_addr http_addr scenario:
+    @echo "Running scenario {{scenario}} against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario={{scenario}} \
+        --runs=5 \
+        --warmup-runs=1 \
+        --output-dir=./results

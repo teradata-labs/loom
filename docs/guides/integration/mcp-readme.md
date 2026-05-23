@@ -1,7 +1,7 @@
 
 # MCP Integration Guide
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ Connect Loom agents to MCP (Model Context Protocol) servers for file access, dat
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - Node.js (for npx-based MCP servers) or custom MCP server binary
 - API key configured: `looms config set-key anthropic_api_key`
 
@@ -37,12 +37,14 @@ Connect Loom agents to MCP (Model Context Protocol) servers for file access, dat
 # Configure filesystem MCP server
 looms config set mcp.servers.filesystem.command npx
 looms config set mcp.servers.filesystem.args "-y,@modelcontextprotocol/server-filesystem,/data"
+looms config set mcp.servers.filesystem.enabled true
 
 # Start server - MCP servers auto-start
 looms serve
 
-# Weave a thread that uses file tools
-looms weave "I need to explore files in /data"
+# In another terminal, connect to the weaver
+loom --thread weaver
+# Then type your request in the TUI: "I need to explore files in /data"
 ```
 
 
@@ -56,15 +58,18 @@ No YAML editing required:
 # Filesystem server
 looms config set mcp.servers.filesystem.command npx
 looms config set mcp.servers.filesystem.args "-y,@modelcontextprotocol/server-filesystem,/home"
+looms config set mcp.servers.filesystem.enabled true
 
 # GitHub server
 looms config set mcp.servers.github.command npx
 looms config set mcp.servers.github.args "-y,@modelcontextprotocol/server-github"
+looms config set mcp.servers.github.enabled true
 looms config set-key github_token
 
 # Custom binary server (e.g., Teradata)
 looms config set mcp.servers.vantage.command ~/Projects/vantage-mcp/bin/vantage-mcp
 looms config set mcp.servers.vantage.env.TD_USER myuser
+looms config set mcp.servers.vantage.enabled true
 looms config set-key td_password
 ```
 
@@ -82,6 +87,7 @@ mcp:
         - "@modelcontextprotocol/server-filesystem"
         - "/data"
       transport: stdio
+      enabled: true
 
     github:
       command: npx
@@ -91,6 +97,7 @@ mcp:
       env:
         GITHUB_TOKEN: ${GITHUB_TOKEN}
       transport: stdio
+      enabled: true
 
     vantage:
       command: ~/Projects/vantage-mcp/bin/vantage-mcp
@@ -98,7 +105,7 @@ mcp:
         TD_USER: myuser
         TD_HOST: myhost.teradata.com
       transport: stdio
-      enabled: true  # Set to true to activate this server
+      enabled: true
 ```
 
 ### Transport Types
@@ -219,9 +226,11 @@ looms config set mcp.servers.myserver.enabled false
 looms config set mcp.servers.postgres.command npx
 looms config set mcp.servers.postgres.args "-y,@modelcontextprotocol/server-postgres"
 looms config set mcp.servers.postgres.env.DATABASE_URL "postgresql://user:pass@localhost/db"
+looms config set mcp.servers.postgres.enabled true
 
 # Using custom binary
 looms config set mcp.servers.custom.command /path/to/mcp-server
+looms config set mcp.servers.custom.enabled true
 ```
 
 ### Configure Tool Filtering
@@ -251,8 +260,8 @@ Programmatic usage:
 ```go
 import "github.com/teradata-labs/loom/pkg/mcp/manager"
 
-// Create MCP manager
-mcpMgr := manager.NewManager(&manager.Config{
+// Create MCP manager (NewManager returns (*Manager, error))
+mcpMgr, err := manager.NewManager(manager.Config{
     Servers: map[string]manager.ServerConfig{
         "filesystem": {
             Command:   "npx",
@@ -263,12 +272,19 @@ mcpMgr := manager.NewManager(&manager.Config{
         },
     },
 }, logger)
+if err != nil {
+    log.Fatalf("failed to create MCP manager: %v", err)
+}
 
 // Start servers
-mcpMgr.Start(ctx)
+if err := mcpMgr.Start(ctx); err != nil {
+    log.Fatalf("failed to start MCP servers: %v", err)
+}
 
 // Register tools with agent
-agent.RegisterMCPServer(ctx, mcpMgr, "filesystem")
+if err := agent.RegisterMCPServer(ctx, mcpMgr, "filesystem"); err != nil {
+    log.Fatalf("failed to register MCP tools: %v", err)
+}
 ```
 
 
@@ -280,6 +296,7 @@ agent.RegisterMCPServer(ctx, mcpMgr, "filesystem")
 # Configure
 looms config set mcp.servers.filesystem.command npx
 looms config set mcp.servers.filesystem.args "-y,@modelcontextprotocol/server-filesystem,/home/user/projects"
+looms config set mcp.servers.filesystem.enabled true
 
 # Start server
 looms serve
@@ -310,6 +327,7 @@ mcp:
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
       transport: stdio
+      enabled: true
 
     # GitHub integration
     github:
@@ -318,6 +336,7 @@ mcp:
       env:
         GITHUB_TOKEN: ${GITHUB_TOKEN}
       transport: stdio
+      enabled: true
 
     # Teradata database
     vantage:
@@ -326,6 +345,7 @@ mcp:
         TD_USER: analyst
         TD_HOST: vantage.example.com
       transport: stdio
+      enabled: true
 ```
 
 Agent configuration:
@@ -393,13 +413,13 @@ ln -s /path/to/mcp-server ~/.local/bin/mcp-server
 
 ### Connection Timeout
 
-Increase timeout in config:
+Increase timeout in config (uses Go duration format):
 ```yaml
 mcp:
   servers:
     slow_server:
       command: /path/to/server
-      timeout_seconds: 60  # Default is 30
+      timeout: "60s"  # Default is 15s
 ```
 
 ### Environment Variables Not Set

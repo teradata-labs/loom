@@ -1,0 +1,309 @@
+# === METADATA START ===
+name: sentiment
+title: "Sentiment Analysis"
+description: |
+  Native (non-LLM) sentiment analysis using TD_SentimentExtractor. Extracts
+  positive, negative, or neutral sentiment from text using a built-in WordNet
+  dictionary. Supports document-level and sentence-level analysis.
+
+  Sentiment scores:
+  - 0: Neutral
+  - 1: Above neutral
+  - 2: Highest intensity
+
+  Polarity values: POS (positive), NEG (negative), NEU (neutral).
+  English only. Handles negation (e.g., "not happy" flips polarity).
+
+category: text
+difficulty: beginner
+teradata_function: SentimentExtractor
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - document_search
+use_cases:
+  # --- Use Case 1: Customer Feedback ---
+  - Analyze customer review sentiment
+
+  # --- Use Case 2: Social Media Monitoring ---
+  - Monitor sentiment in social media posts
+
+  # --- Use Case 3: Brand Perception ---
+  - Track brand perception over time
+
+  # --- Use Case 4: Product Comparison ---
+  - Compare sentiment across products or features
+
+  # --- Use Case 5: Survey Analysis ---
+  - Analyze open-ended survey responses
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing text data"
+    example: "customer_feedback"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with text column to analyze"
+    example: "product_reviews"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column containing raw text for sentiment analysis; no pre-tokenization needed
+    required: true
+    description: "Column containing text to analyze for sentiment"
+    example: "review_text"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used for tracking sentiment per document and in Accumulate clause
+    required: true
+    description: "Unique identifier column"
+    example: "review_id"
+
+  # --- Parameter 5: Analysis Type ---
+  - name: analysis_type
+    type: string
+    # LLM-HINT: 'DOCUMENT' (default) for overall sentiment; 'SENTENCE' for per-sentence breakdown
+    required: false
+    description: "Analysis granularity: DOCUMENT (default) or SENTENCE"
+    example: "DOCUMENT"
+
+  # --- Parameter 6: Priority ---
+  - name: priority
+    type: string
+    # LLM-HINT: Bias results toward recall or precision for positive or negative sentiment
+    required: false
+    description: "Priority bias: NONE, NEGATIVE_RECALL, NEGATIVE_PRECISION, POSITIVE_RECALL, POSITIVE_PRECISION"
+    example: "NONE"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === EXTRACT_SENTIMENT TEMPLATE ===
+  # LLM-HINT: Use for basic document-level sentiment; returns polarity and score per document
+  extract_sentiment:
+    description: "Extract sentiment polarity and score from text"
+    sql: |
+      -- Extract sentiment from text
+      SELECT
+        {{id_column}},
+        polarity,
+        sentiment_score,
+        sentiment_words
+      FROM TD_SentimentExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        USING
+          TextColumn('{{text_column}}')
+          AnalysisType('{{analysis_type}}')
+          Accumulate('{{id_column}}')
+      ) AS t
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - analysis_type
+
+  # === SENTIMENT_SUMMARY TEMPLATE ===
+  # LLM-HINT: Use for aggregate sentiment breakdown; counts and percentages by polarity
+  sentiment_summary:
+    description: "Summarize sentiment distribution across all documents"
+    sql: |
+      -- Sentiment distribution summary
+      WITH sentiment_results AS (
+        SELECT
+          {{id_column}},
+          polarity,
+          sentiment_score
+        FROM TD_SentimentExtractor(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+            TextColumn('{{text_column}}')
+            AnalysisType('DOCUMENT')
+            Accumulate('{{id_column}}')
+        ) AS t
+      )
+      SELECT
+        polarity,
+        COUNT(*) AS doc_count,
+        CAST(COUNT(*) * 100.0 /
+          (SELECT COUNT(*) FROM sentiment_results) AS DECIMAL(5,2))
+          AS pct_of_total,
+        CAST(AVG(sentiment_score) AS DECIMAL(3,2)) AS avg_score
+      FROM sentiment_results
+      GROUP BY polarity
+      ORDER BY doc_count DESC;
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+
+  # === SENTENCE_SENTIMENT TEMPLATE ===
+  # LLM-HINT: Use for sentence-level granularity; breaks each document into sentences with individual sentiment
+  sentence_sentiment:
+    description: "Extract sentiment at the sentence level for fine-grained analysis"
+    sql: |
+      -- Sentence-level sentiment analysis
+      SELECT
+        {{id_column}},
+        content AS sentence_text,
+        polarity,
+        sentiment_score,
+        sentiment_words
+      FROM TD_SentimentExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        USING
+          TextColumn('{{text_column}}')
+          AnalysisType('SENTENCE')
+          Accumulate('{{id_column}}')
+      ) AS t
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+
+  # === NEGATIVE_FOCUS TEMPLATE ===
+  # LLM-HINT: Use to find negative documents with high confidence; good for complaint detection
+  negative_focus:
+    description: "Extract only negative sentiment with high precision"
+    sql: |
+      -- High-confidence negative sentiment extraction
+      SELECT
+        {{id_column}},
+        polarity,
+        sentiment_score,
+        sentiment_words
+      FROM TD_SentimentExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        USING
+          TextColumn('{{text_column}}')
+          AnalysisType('DOCUMENT')
+          Priority('NEGATIVE_PRECISION')
+          OutputType('NEG')
+          Accumulate('{{id_column}}')
+      ) AS t
+      WHERE sentiment_score >= 1
+      ORDER BY sentiment_score DESC;
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Product Review Sentiment"
+    description: "Analyze sentiment in product reviews to gauge customer satisfaction"
+    parameters:
+      database: "ecommerce"
+      table: "product_reviews"
+      text_column: "review_text"
+      id_column: "review_id"
+      analysis_type: "DOCUMENT"
+    expected_result: |
+      Sentiment distribution:
+      - POS: 4,521 reviews (62.3%), avg score 1.4
+      - NEU: 1,230 reviews (16.9%), avg score 0.0
+      - NEG: 1,509 reviews (20.8%), avg score 1.2
+
+      Individual results include sentiment_words showing
+      which terms drove the polarity classification.
+
+  - name: "Sentence-Level Survey Analysis"
+    description: "Break survey responses into sentences for granular sentiment"
+    parameters:
+      database: "surveys"
+      table: "open_responses"
+      text_column: "response_text"
+      id_column: "response_id"
+      analysis_type: "SENTENCE"
+    expected_result: |
+      Per-sentence breakdown:
+      - response_id: 101, "The product works great" -> POS (score: 2)
+      - response_id: 101, "But the price is too high" -> NEG (score: 1)
+      - response_id: 102, "Delivery was on time" -> NEU (score: 0)
+
+      Sentence-level analysis reveals mixed sentiment within
+      a single response that document-level would miss.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "No sentiment detected (all NEU)"
+    cause: "Text is not in English or contains mostly domain-specific jargon not in the WordNet dictionary"
+    solution: "Use AdditionalDictionaryTable to extend the default dictionary with domain-specific sentiment terms"
+
+  - error: "Negation not handled correctly"
+    cause: "More than one word between negation and sentiment word (e.g., 'not saying I am happy')"
+    solution: "TD_SentimentExtractor only flips polarity when 0-1 words separate the negation from the sentiment word. Rewrite queries or use sentence-level analysis."
+
+  - error: "content column missing in output"
+    cause: "Using AnalysisType('DOCUMENT') which does not produce the content column"
+    solution: "Switch to AnalysisType('SENTENCE') to get the content column with extracted sentence text"
+
+  - error: "CustomDictionaryTable replaces default dictionary"
+    cause: "Confusing CustomDictionaryTable with AdditionalDictionaryTable"
+    solution: "Use AdditionalDictionaryTable to extend the default WordNet dictionary. CustomDictionaryTable replaces it entirely."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Sentiment Analysis Best Practices
+
+  ### 1. Choose the Right Granularity
+  - DOCUMENT: Use for overall sentiment per review or post
+  - SENTENCE: Use when documents contain mixed sentiment
+
+  ### 2. Extend the Dictionary
+  - Use AdditionalDictionaryTable for domain-specific terms
+  - Schema: sentiment_word VARCHAR(128), polarity_strength INTEGER
+  - Positive strength values for positive terms, negative for negative
+
+  ### 3. Use Priority Appropriately
+  - NEGATIVE_PRECISION for complaint detection (fewer false positives)
+  - NEGATIVE_RECALL for risk monitoring (catch all possible negatives)
+  - NONE for balanced analysis
+
+  ### 4. Handle Negation Awareness
+  - The extractor flips polarity for "not X" patterns
+  - Only works with 0-1 words between negation and sentiment term
+  - Consider sentence-level analysis for complex negation patterns
+
+  ### 5. Batch Processing
+  - TD_SentimentExtractor uses PARTITION BY ANY for parallel execution
+  - No pre-tokenization required (unlike classification functions)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: N-Gram Analysis ---
+  - ngram
+
+  # --- Pattern 2: Text Classification ---
+  - text_classifier
+
+  # --- Pattern 3: Named Entity Recognition ---
+  - ner
+
+  # --- Pattern 4: TF-IDF ---
+  - tfidf
+# === RELATED_PATTERNS END ===

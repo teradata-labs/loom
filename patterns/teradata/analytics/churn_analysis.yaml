@@ -30,6 +30,10 @@ teradata_function: AGGREGATION_ANALYTICS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   # --- Use Case 1: Retention Strategy ---
   - Customer retention strategy development

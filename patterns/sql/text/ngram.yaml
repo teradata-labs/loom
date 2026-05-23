@@ -18,6 +18,9 @@ teradata_function: NGramSplitter
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - document_search
+  - analytics
 use_cases:
   # --- Use Case 1: Review Analysis ---
   - Phrase extraction from reviews

@@ -13,21 +13,28 @@
 // limitations under the License.
 package agent
 
+import (
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
+)
+
 // ModelContextLimits defines the context window and output reservation for a model
 type ModelContextLimits struct {
 	MaxContextTokens     int // Total context window size
 	ReservedOutputTokens int // Tokens reserved for model output (typically 10%)
 }
 
-// modelContextLimits is a lookup table for known model context limits.
-// Models are keyed by their base name (without version/variant suffixes).
-// If a model is not in this table, use the provider's default or auto-detect.
+// modelContextLimits is the legacy prefix-matched fallback used when a model
+// ID is not in the built-in catalog (pkg/llm/catalog). Prefer adding new
+// entries to the catalog — the catalog is authoritative, this map is only
+// consulted after an exact-match miss.
+//
+// Claude 4.x entries intentionally omitted: every current Claude 4.x model is
+// in the catalog with accurate per-model ContextWindow and MaxOutputTokens.
+// Leaving a "claude-opus-4" prefix entry here would silently override real
+// catalog values (e.g. Opus 4.6/4.7 at 1M) with stale 200K numbers for any
+// unqualified or future variant not yet in the catalog.
 var modelContextLimits = map[string]ModelContextLimits{
-	// Anthropic Claude models (current)
-	"claude-opus-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 128000}, // Claude Opus 4.6
-	"claude-sonnet-4": {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Sonnet 4.5
-	"claude-haiku-4":  {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Haiku 4.5
-	// Anthropic Claude models (legacy)
+	// Anthropic Claude 3.x — pre-catalog, kept for prefix-match fallback.
 	"claude-3-5-sonnet": {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-opus":     {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-sonnet":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
@@ -151,10 +158,13 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 }
 
 // ResolveContextLimits determines the context limits to use, with fallback precedence:
-// 1. Explicit configuration (if maxContextTokens > 0)
-// 2. Model lookup table
-// 3. Provider defaults
-// 4. System-wide default (200K for backwards compatibility)
+//  1. Explicit configuration (if configuredMax > 0)
+//  2. Built-in catalog entry for provider+model (authoritative ContextWindow /
+//     MaxOutputTokens from pkg/llm/catalog)
+//  3. Legacy prefix-matched lookup table (covers Ollama tags and pre-catalog
+//     model name variants)
+//  4. Provider defaults
+//  5. System-wide conservative fallback
 func ResolveContextLimits(provider, model string, configuredMax, configuredReserved int32) ModelContextLimits {
 	// If both are explicitly configured, use them
 	if configuredMax > 0 && configuredReserved > 0 {
@@ -172,9 +182,23 @@ func ResolveContextLimits(provider, model string, configuredMax, configuredReser
 		}
 	}
 
-	// Try model-specific limits
+	// Built-in catalog is the source of truth for known provider+model pairs.
+	// Reserve the model's documented MaxOutputTokens for output unless the
+	// caller has supplied an explicit override.
+	if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
+		reserved := int(info.MaxOutputTokens)
+		if configuredReserved > 0 {
+			reserved = int(configuredReserved)
+		}
+		return ModelContextLimits{
+			MaxContextTokens:     int(info.ContextWindow),
+			ReservedOutputTokens: reserved,
+		}
+	}
+
+	// Legacy prefix-matched lookup for model names not in the catalog
+	// (e.g. Ollama tags like "llama3.1:8b", older Claude 3.x aliases).
 	if limits := GetModelContextLimits(model); limits != nil {
-		// If reserved is explicitly configured, use it instead of the lookup value
 		if configuredReserved > 0 {
 			limits.ReservedOutputTokens = int(configuredReserved)
 		}

@@ -71,6 +71,48 @@ func (b *PipelineBuilder) WithStageByID(agentID string, promptTemplate string) *
 	return b
 }
 
+// WithStageRetry adds a stage with LLM validation and retry on failure.
+// The validationPrompt should check if the output meets requirements.
+// On failure, the stage is retried with feedback including the validation criteria.
+func (b *PipelineBuilder) WithStageRetry(ag *agent.Agent, promptTemplate string, validationPrompt string, maxRetries int32) *PipelineBuilder {
+	agentID := fmt.Sprintf("pipeline_agent_%p", ag)
+	b.orchestrator.RegisterAgent(agentID, ag)
+
+	stage := &loomv1.PipelineStage{
+		AgentId:          agentID,
+		PromptTemplate:   promptTemplate,
+		ValidationPrompt: validationPrompt,
+		RetryPolicy: &loomv1.OutputRetryPolicy{
+			MaxRetries:         maxRetries,
+			IncludeValidValues: true,
+		},
+	}
+
+	b.stages = append(b.stages, stage)
+	return b
+}
+
+// WithStageSchema adds a stage with JSON Schema validation and retry on failure.
+// The outputSchema is validated instantly (no LLM call) using gojsonschema.
+// On failure, the retry prompt includes the full schema and specific violations.
+func (b *PipelineBuilder) WithStageSchema(ag *agent.Agent, promptTemplate string, outputSchema string, maxRetries int32) *PipelineBuilder {
+	agentID := fmt.Sprintf("pipeline_agent_%p", ag)
+	b.orchestrator.RegisterAgent(agentID, ag)
+
+	stage := &loomv1.PipelineStage{
+		AgentId:        agentID,
+		PromptTemplate: promptTemplate,
+		OutputSchema:   outputSchema,
+		RetryPolicy: &loomv1.OutputRetryPolicy{
+			MaxRetries:         maxRetries,
+			IncludeValidValues: true,
+		},
+	}
+
+	b.stages = append(b.stages, stage)
+	return b
+}
+
 // WithFullHistory enables passing full history to each stage.
 // By default, only the previous stage's output is available.
 func (b *PipelineBuilder) WithFullHistory() *PipelineBuilder {

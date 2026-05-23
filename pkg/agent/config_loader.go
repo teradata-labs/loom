@@ -179,11 +179,44 @@ type CustomToolConfigYAML struct {
 
 // MemoryConfigYAML represents memory configuration in YAML
 type MemoryConfigYAML struct {
-	Type              string                       `yaml:"type"`
-	Path              string                       `yaml:"path"`
-	DSN               string                       `yaml:"dsn"`
-	MaxHistory        int                          `yaml:"max_history"`
-	MemoryCompression *MemoryCompressionConfigYAML `yaml:"memory_compression"`
+	Type                       string                       `yaml:"type"`
+	Path                       string                       `yaml:"path"`
+	DSN                        string                       `yaml:"dsn"`
+	MaxHistory                 int                          `yaml:"max_history"`
+	SharedMemoryThresholdBytes int64                        `yaml:"shared_memory_threshold_bytes"`
+	MaxToolResults             int                          `yaml:"max_tool_results"`
+	MemoryCompression          *MemoryCompressionConfigYAML `yaml:"memory_compression"`
+	GraphMemory                *GraphMemoryConfigYAML       `yaml:"graph_memory"`
+	TaskBoard                  *TaskBoardConfigYAML         `yaml:"task_board"`
+}
+
+// TaskBoardConfigYAML represents task board configuration in YAML.
+type TaskBoardConfigYAML struct {
+	Enabled             *bool  `yaml:"enabled"`
+	AutoDecompose       bool   `yaml:"auto_decompose"`
+	MaxDepth            int    `yaml:"max_depth"`
+	DefaultBoardID      string `yaml:"default_board_id"`
+	DefaultStrategy     int    `yaml:"default_strategy"`
+	ContextBudgetTokens int    `yaml:"context_budget_tokens"`
+}
+
+// GraphMemoryConfigYAML represents graph memory configuration in YAML.
+// Enabled is a *bool so we can distinguish "not set" (nil → defaults to true, opt-out)
+// from "explicitly set to false" (opt-out by the user).
+type GraphMemoryConfigYAML struct {
+	Enabled                       *bool   `yaml:"enabled"`
+	ContextBudgetPercent          int     `yaml:"context_budget_percent"`
+	MaxContextTokens              int     `yaml:"max_context_tokens"`
+	DecayRate                     float64 `yaml:"decay_rate"`
+	BoostAmount                   float64 `yaml:"boost_amount"`
+	MinSalienceThreshold          float64 `yaml:"min_salience_threshold"`
+	MaxRecallCandidates           int     `yaml:"max_recall_candidates"`
+	DefaultSalience               float64 `yaml:"default_salience"`
+	EnableExtraction              *bool   `yaml:"enable_extraction"`
+	ExtractionCadence             int     `yaml:"extraction_cadence"`
+	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
+	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
+	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -214,6 +247,7 @@ type BehaviorConfigYAML struct {
 	Patterns               *PatternConfigYAML `yaml:"patterns"`
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
+	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -225,6 +259,29 @@ type SkillsConfigYAML struct {
 	MaxConcurrentSkills  *int     `yaml:"max_concurrent_skills"`
 	SkillsDir            string   `yaml:"skills_dir"`
 	ContextBudgetPercent *int     `yaml:"context_budget_percent"`
+
+	// Declarative skill attachment for this agent. Empty falls back to the
+	// legacy enabled_skills/disabled_skills filter via the resolver shim.
+	Bindings []SkillBindingYAML `yaml:"bindings"`
+
+	// Hierarchical (PageIndex-style) router controls.
+	RouterEnabled         *bool  `yaml:"router_enabled"`
+	RouterMaxCandidates   *int   `yaml:"router_max_candidates"`
+	RouterCacheTTLSeconds *int   `yaml:"router_cache_ttl_seconds"`
+	RouterModelOverride   string `yaml:"router_model_override"`
+
+	// Skill -> task integration controls.
+	SkillTaskBoardID string `yaml:"skill_task_board_id"`
+	TasksEnabled     *bool  `yaml:"tasks_enabled"`
+}
+
+// SkillBindingYAML represents a single skill binding entry in agent YAML.
+type SkillBindingYAML struct {
+	Name       string            `yaml:"name"`
+	Mode       string            `yaml:"mode"`
+	Priority   int32             `yaml:"priority"`
+	LabelMatch map[string]string `yaml:"label_match"`
+	MinVersion string            `yaml:"min_version"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML
@@ -563,10 +620,12 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 
 	config.Memory = &loomv1.MemoryConfig{
-		Type:       yaml.Agent.Memory.Type,
-		Path:       yaml.Agent.Memory.Path,
-		Dsn:        yaml.Agent.Memory.DSN,
-		MaxHistory: maxHistory,
+		Type:                       yaml.Agent.Memory.Type,
+		Path:                       yaml.Agent.Memory.Path,
+		Dsn:                        yaml.Agent.Memory.DSN,
+		MaxHistory:                 maxHistory,
+		SharedMemoryThresholdBytes: yaml.Agent.Memory.SharedMemoryThresholdBytes,
+		MaxToolResults:             int32(yaml.Agent.Memory.MaxToolResults),
 	}
 
 	// Set defaults for memory
@@ -580,6 +639,16 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	// Convert memory compression config if specified
 	if yaml.Agent.Memory.MemoryCompression != nil {
 		config.Memory.MemoryCompression = parseMemoryCompressionConfig(yaml.Agent.Memory.MemoryCompression)
+	}
+
+	// Convert graph memory config if specified
+	if yaml.Agent.Memory.GraphMemory != nil {
+		config.Memory.GraphMemory = parseGraphMemoryConfig(yaml.Agent.Memory.GraphMemory)
+	}
+
+	// Convert task board config if specified
+	if yaml.Agent.Memory.TaskBoard != nil {
+		config.Memory.TaskBoard = parseTaskBoardConfig(yaml.Agent.Memory.TaskBoard)
 	}
 
 	// Convert behavior config with safe integer conversions
@@ -646,12 +715,27 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 
 	// Build SkillsConfig from YAML and stash as JSON in metadata.
-	// Only serialize when the user explicitly configured skills (sc.Enabled != nil).
+	// Serialize when the user has configured ANY skill-related field (Enabled,
+	// Bindings, router knobs, task knobs). The previous gate was sc.Enabled != nil
+	// only; widened so configs that declare bindings or router settings without
+	// an explicit `enabled: true` still take effect.
 	{
 		sc := yaml.Agent.Behavior.Skills
-		if sc.Enabled != nil {
+		hasSkillSettings := sc.Enabled != nil ||
+			len(sc.Bindings) > 0 ||
+			len(sc.EnabledSkills) > 0 ||
+			len(sc.DisabledSkills) > 0 ||
+			sc.RouterEnabled != nil ||
+			sc.RouterMaxCandidates != nil ||
+			sc.RouterCacheTTLSeconds != nil ||
+			sc.RouterModelOverride != "" ||
+			sc.SkillTaskBoardID != "" ||
+			sc.TasksEnabled != nil
+		if hasSkillSettings {
 			skillsConfig := skills.DefaultSkillsConfig()
-			skillsConfig.Enabled = *sc.Enabled
+			if sc.Enabled != nil {
+				skillsConfig.Enabled = *sc.Enabled
+			}
 			if sc.MinAutoConfidence != nil {
 				skillsConfig.MinAutoConfidence = *sc.MinAutoConfidence
 			}
@@ -666,6 +750,17 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 			}
 			skillsConfig.EnabledSkills = sc.EnabledSkills
 			skillsConfig.DisabledSkills = sc.DisabledSkills
+			skillsConfig.Bindings = convertSkillBindings(sc.Bindings)
+			skillsConfig.RouterEnabled = sc.RouterEnabled
+			if sc.RouterMaxCandidates != nil {
+				skillsConfig.RouterMaxCandidates = *sc.RouterMaxCandidates
+			}
+			if sc.RouterCacheTTLSeconds != nil {
+				skillsConfig.RouterCacheTTLSeconds = *sc.RouterCacheTTLSeconds
+			}
+			skillsConfig.RouterModelOverride = sc.RouterModelOverride
+			skillsConfig.SkillTaskBoardID = sc.SkillTaskBoardID
+			skillsConfig.TasksEnabled = sc.TasksEnabled
 
 			skillsJSON, err := json.Marshal(skillsConfig)
 			if err == nil {
@@ -693,6 +788,14 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	// 0 means use default (8). Negative value (-1) means disabled (handled in agent).
 	if config.Behavior.OutputTokenCbThreshold == 0 {
 		config.Behavior.OutputTokenCbThreshold = 8 // Default CB threshold
+	}
+
+	// Stash enable_self_healing in metadata (not in proto; internal config only).
+	if yaml.Agent.Behavior.EnableSelfHealing != nil && !*yaml.Agent.Behavior.EnableSelfHealing {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_enable_self_healing"] = "false"
 	}
 
 	return config, nil
@@ -767,6 +870,123 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 	}
 
 	return config
+}
+
+// DefaultGraphMemoryConfig returns a GraphMemoryConfig with sane defaults.
+// Used when graph memory is enabled but no explicit config is provided (e.g., pre-existing agents).
+func DefaultGraphMemoryConfig() *loomv1.GraphMemoryConfig {
+	return &loomv1.GraphMemoryConfig{
+		Enabled:                       true,
+		ContextBudgetPercent:          20,
+		MaxContextTokens:              0, // 0 = use ContextBudgetPercent instead of absolute cap
+		DecayRate:                     0.95,
+		EnableExtraction:              true,
+		ExtractionCadence:             5,
+		MaxEntitiesPerExtraction:      10,
+		BoostAmount:                   0.1,
+		MinSalienceThreshold:          0.1,
+		MaxRecallCandidates:           50,
+		DefaultSalience:               0.5,
+		ConversationExtractionCadence: 0,  // disabled by default (tool-based extraction is primary)
+		ExtractionTimeoutSeconds:      30, // 30s default — enough for Bedrock/Anthropic
+	}
+}
+
+// parseGraphMemoryConfig converts YAML graph memory config to proto.
+// Graph memory is opt-out: if Enabled is nil (not specified), it defaults to true.
+func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	contextBudgetPercent, err := safeInt32(yaml.ContextBudgetPercent, "GraphMemory.ContextBudgetPercent")
+	if err != nil {
+		return nil
+	}
+	maxContextTokens, err := safeInt32(yaml.MaxContextTokens, "GraphMemory.MaxContextTokens")
+	if err != nil {
+		return nil
+	}
+	maxRecallCandidates, err := safeInt32(yaml.MaxRecallCandidates, "GraphMemory.MaxRecallCandidates")
+	if err != nil {
+		return nil
+	}
+
+	// Opt-out: default to enabled unless explicitly set to false
+	enabled := true
+	if yaml.Enabled != nil {
+		enabled = *yaml.Enabled
+	}
+
+	// Extraction: opt-out, defaults to true when graph memory is enabled
+	enableExtraction := true
+	if yaml.EnableExtraction != nil {
+		enableExtraction = *yaml.EnableExtraction
+	}
+
+	extractionCadence, err := safeInt32(yaml.ExtractionCadence, "GraphMemory.ExtractionCadence")
+	if err != nil {
+		return nil
+	}
+	maxEntitiesPerExtraction, err := safeInt32(yaml.MaxEntitiesPerExtraction, "GraphMemory.MaxEntitiesPerExtraction")
+	if err != nil {
+		return nil
+	}
+
+	conversationExtractionCadence, err := safeInt32(yaml.ConversationExtractionCadence, "GraphMemory.ConversationExtractionCadence")
+	if err != nil {
+		return nil
+	}
+	extractionTimeoutSeconds, err := safeInt32(yaml.ExtractionTimeoutSeconds, "GraphMemory.ExtractionTimeoutSeconds")
+	if err != nil {
+		return nil
+	}
+
+	return &loomv1.GraphMemoryConfig{
+		Enabled:                       enabled,
+		ContextBudgetPercent:          contextBudgetPercent,
+		MaxContextTokens:              maxContextTokens,
+		DecayRate:                     float32(yaml.DecayRate),
+		BoostAmount:                   float32(yaml.BoostAmount),
+		MinSalienceThreshold:          float32(yaml.MinSalienceThreshold),
+		MaxRecallCandidates:           maxRecallCandidates,
+		DefaultSalience:               float32(yaml.DefaultSalience),
+		EnableExtraction:              enableExtraction,
+		ExtractionCadence:             extractionCadence,
+		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
+		ConversationExtractionCadence: conversationExtractionCadence,
+		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+	}
+}
+
+// parseTaskBoardConfig converts YAML task board config to proto.
+func parseTaskBoardConfig(yaml *TaskBoardConfigYAML) *loomv1.TaskBoardConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	enabled := false
+	if yaml.Enabled != nil {
+		enabled = *yaml.Enabled
+	}
+
+	maxDepth := int32(yaml.MaxDepth)
+	if maxDepth == 0 {
+		maxDepth = 3
+	}
+	contextBudget := int32(yaml.ContextBudgetTokens)
+	if contextBudget == 0 {
+		contextBudget = 500
+	}
+
+	return &loomv1.TaskBoardConfig{
+		Enabled:             enabled,
+		AutoDecompose:       yaml.AutoDecompose,
+		MaxDepth:            maxDepth,
+		DefaultBoardId:      yaml.DefaultBoardID,
+		DefaultStrategy:     loomv1.DecomposeStrategy(yaml.DefaultStrategy),
+		ContextBudgetTokens: contextBudget,
+	}
 }
 
 // expandEnvVars replaces ${VAR} or $VAR with environment variable values
@@ -907,6 +1127,25 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			DSN:        config.Memory.Dsn,
 			MaxHistory: int(config.Memory.MaxHistory),
 		}
+		if config.Memory.GraphMemory != nil {
+			enabled := config.Memory.GraphMemory.Enabled
+			enableExtraction := config.Memory.GraphMemory.EnableExtraction
+			yaml.Agent.Memory.GraphMemory = &GraphMemoryConfigYAML{
+				Enabled:                       &enabled,
+				ContextBudgetPercent:          int(config.Memory.GraphMemory.ContextBudgetPercent),
+				MaxContextTokens:              int(config.Memory.GraphMemory.MaxContextTokens),
+				DecayRate:                     float64(config.Memory.GraphMemory.DecayRate),
+				BoostAmount:                   float64(config.Memory.GraphMemory.BoostAmount),
+				MinSalienceThreshold:          float64(config.Memory.GraphMemory.MinSalienceThreshold),
+				MaxRecallCandidates:           int(config.Memory.GraphMemory.MaxRecallCandidates),
+				DefaultSalience:               float64(config.Memory.GraphMemory.DefaultSalience),
+				EnableExtraction:              &enableExtraction,
+				ExtractionCadence:             int(config.Memory.GraphMemory.ExtractionCadence),
+				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
+				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
+				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
+			}
+		}
 	}
 
 	// Convert behavior config
@@ -923,6 +1162,26 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	}
 
 	return yaml
+}
+
+// convertSkillBindings translates the YAML binding slice into the skills
+// package mirror. Mode strings are uppercased; unknown values fall through
+// as-is and the resolver treats them as zero (LAZY default).
+func convertSkillBindings(in []SkillBindingYAML) []skills.SkillBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]skills.SkillBinding, 0, len(in))
+	for _, b := range in {
+		out = append(out, skills.SkillBinding{
+			Name:       b.Name,
+			Mode:       skills.SkillBindingMode(strings.ToUpper(b.Mode)),
+			Priority:   b.Priority,
+			LabelMatch: b.LabelMatch,
+			MinVersion: b.MinVersion,
+		})
+	}
+	return out
 }
 
 // ExtractSkillsConfig extracts a SkillsConfig from proto metadata.

@@ -12,6 +12,8 @@ author: Loom Framework
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - question-answering
 use_cases:
   - Answer specific questions about document content
   - Extract financial data from reports

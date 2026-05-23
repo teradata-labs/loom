@@ -1,11 +1,11 @@
 
 # Presentation Tools Reference
 
-Complete specification for presentation strategy tools that enable SQL-like data querying on shared memory datasets. These tools achieve 99%+ data reduction through in-memory aggregation, preventing context window overflow in multi-agent workflows.
+Specification for presentation strategy tools that enable SQL-like data querying on shared memory datasets. These tools achieve 99%+ data reduction through in-memory aggregation, preventing context window overflow in multi-agent workflows.
 
-**Version**: v1.0.0-beta.2 (v0.6.0+ implementation)
+**Version**: v1.2.0 (v0.6.0+ implementation)
 **Package**: `pkg/shuttle/builtin`, `pkg/visualization`
-**Status**: ✅ Implemented with full test coverage
+**Status**: ✅ Implemented (36 test functions across 3 test files, 0 race conditions)
 
 
 ## Table of Contents
@@ -19,6 +19,7 @@ Complete specification for presentation strategy tools that enable SQL-like data
   - [EChartsGenerator](#echartsgenerator)
   - [StyleGuideClient](#styleguideclient)
   - [ReportGenerator](#reportgenerator)
+  - [VisualizationTool](#visualizationtool)
 - [Architecture](#architecture)
 - [Data Format Requirements](#data-format-requirements)
 - [Integration](#integration)
@@ -55,7 +56,8 @@ Complete specification for presentation strategy tools that enable SQL-like data
 | `n` | int | Yes (top_n) | 10 | Number of items (range: 1-1000) |
 | `sort_by` | string | Yes (top_n) | - | Column name to sort by (numeric) |
 | `direction` | string | No | `"desc"` | Sort direction: `"asc"` or `"desc"` |
-| `group_by` | []string | Yes (group_by) | - | Column names to group by |
+| `group_by` | []interface{} (string elements) | Yes (group_by) | - | Column names to group by |
+| `aggregates` | []object | No (group_by) | auto | Aggregate functions (count, sum, avg, min, max) |
 | `namespace` | string | No | `"workflow"` | Namespace: `"global"`, `"workflow"`, `"swarm"` |
 
 
@@ -63,8 +65,8 @@ Complete specification for presentation strategy tools that enable SQL-like data
 
 ### top_n_query
 
-**Implementation**: `pkg/shuttle/builtin/presentation_tools.go:20-299`
-**Registry**: `builtin://presentation/top_n_query`
+**Implementation**: `pkg/shuttle/builtin/presentation_tools.go` (TopNQueryTool)
+**Tool Name**: `top_n_query`
 
 **Purpose**: Get the top N items from a dataset, sorted by any numeric column.
 
@@ -192,8 +194,8 @@ top_n_query(
 
 ### group_by_query
 
-**Implementation**: `pkg/shuttle/builtin/presentation_tools.go:305-590`
-**Registry**: `builtin://presentation/group_by_query`
+**Implementation**: `pkg/shuttle/builtin/presentation_tools.go` (GroupByQueryTool)
+**Tool Name**: `group_by_query`
 
 **Purpose**: Aggregate data by one or more dimensions, returning counts per group.
 
@@ -220,11 +222,24 @@ top_n_query(
 
 **Type**: `[]string`
 **Required**: Yes
-**Constraints**: Columns must exist in dataset
+**Constraints**: Missing columns are treated as `"NULL"` in group keys
 
 **Description**: Column names to group by. Supports multi-dimensional grouping.
 
 **Example**: `["path_length"]`, `["customer_segment", "region"]`
+
+
+##### aggregates
+
+**Type**: `[]object`
+**Required**: No
+**Object fields**:
+- `function` (string, required): Aggregate function: `"count"`, `"sum"`, `"avg"`, `"min"`, `"max"`
+- `column` (string, required for sum/avg/min/max): Column to aggregate
+
+**Description**: Aggregations to compute. When omitted, the tool automatically computes `count`, `sum`, `avg`, `min`, and `max` for all numeric columns not in `group_by`.
+
+**Example**: `[{"function": "sum", "column": "revenue"}]`
 
 
 ##### namespace
@@ -244,10 +259,10 @@ top_n_query(
 ```json
 {
   "groups": [
-    {"path_length": 3, "count": 4500},
-    {"path_length": 4, "count": 3200},
-    {"path_length": 2, "count": 1800},
-    {"path_length": 5, "count": 500}
+    {"path_length": 3, "count": 4500, "frequency_sum": 12340, "frequency_avg": 2.74, "frequency_min": 1, "frequency_max": 50},
+    {"path_length": 4, "count": 3200, "frequency_sum": 9600, "frequency_avg": 3.0, "frequency_min": 1, "frequency_max": 45},
+    {"path_length": 2, "count": 1800, "frequency_sum": 5400, "frequency_avg": 3.0, "frequency_min": 1, "frequency_max": 40},
+    {"path_length": 5, "count": 500, "frequency_sum": 1000, "frequency_avg": 2.0, "frequency_min": 1, "frequency_max": 20}
   ],
   "group_by": ["path_length"],
   "total_rows": 10000,
@@ -265,7 +280,7 @@ import "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 // Distribution by path length
 result, err := groupByTool.Execute(ctx, map[string]interface{}{
     "source_key": "stage-9-npath-full-results",
-    "group_by":   []string{"path_length"},
+    "group_by":   []interface{}{"path_length"},
     "namespace":  "workflow",
 })
 if err != nil {
@@ -298,7 +313,7 @@ group_by_query(
 
 **Thread safety**: Safe for concurrent use (read-only, RWMutex protected)
 
-**Note**: Currently returns COUNT(*) only. Aggregates parameter (SUM, AVG, MIN, MAX) planned for future release.
+**Note**: Automatically computes COUNT, SUM, AVG, MIN, MAX for all numeric columns not in the `group_by` list. Result columns are named `{column}_sum`, `{column}_avg`, `{column}_min`, `{column}_max`.
 
 
 ## Visualization Components
@@ -312,31 +327,40 @@ group_by_query(
 #### API
 
 ```go
-func NewChartSelector(config *ChartSelectorConfig) *ChartSelector
+func NewChartSelector(styleConfig *StyleConfig) *ChartSelector
 func (cs *ChartSelector) RecommendChart(dataset *Dataset) *ChartRecommendation
+func (cs *ChartSelector) AnalyzeDataset(ds *Dataset) *DataPattern
+func (cs *ChartSelector) RecommendChartsForDatasets(datasets []*Dataset) []*ChartRecommendation
 ```
 
 #### ChartRecommendation Schema
 
 ```go
 type ChartRecommendation struct {
-    ChartType  ChartType  // Bar, Line, Pie, Scatter
-    Confidence float64    // 0.0-1.0
-    Rationale  string     // Human-readable explanation
-    XAxis      string     // Recommended X-axis column
-    YAxis      string     // Recommended Y-axis column
+    ChartType  ChartType              // bar, line, pie, scatter, radar, boxplot, treemap, graph, timeseries
+    Title      string                 // Auto-generated title
+    Rationale  string                 // Human-readable explanation
+    Config     map[string]interface{} // Chart-specific config (e.g., orientation, x_axis, y_axis)
+    Confidence float64                // 0.0-1.0
 }
 ```
 
 #### Chart Type Selection Rules
 
-| Data Pattern | Chart Type | Confidence | Condition |
-|--------------|-----------|------------|-----------|
-| Time series | Line | 0.9 | Column name contains "time", "date", or "timestamp" |
-| Ranking (5-50 items) | Bar | 0.95 | Numeric sort_by column, 5-50 rows |
-| Few categories (2-7) | Pie | 0.85 | Categorical data, 2-7 unique values |
-| Many categories (>7) | Bar | 0.80 | Categorical data, >7 unique values |
-| Two numeric dimensions | Scatter | 0.75 | Two or more numeric columns |
+Rules are evaluated in priority order; the first match wins:
+
+| Priority | Data Pattern | Chart Type | Confidence | Condition |
+|----------|--------------|-----------|------------|-----------|
+| 1 | Time series | Line/TimeSeries | 0.9 | Column name contains "time" or "date", and TimeCols detected in schema |
+| 2 | Graph/network | Graph | 0.90 | Row has "source" and "target" fields |
+| 3 | Statistical distribution | BoxPlot | 0.88 | Row has at least 3 of: min, q1, median, q3, max |
+| 4 | Ranking (5-50 items) | Bar | 0.95 | Numeric ranking column, 5-50 rows |
+| 5 | Multi-dimensional (3+ numeric, <=10 items) | Radar | 0.82 | 3+ numeric columns, <=10 cardinality |
+| 6 | Hierarchical data | TreeMap | 0.78 | Has "parent"/"children" fields, nested objects, or arrays |
+| 7 | Few categories (2-7) | Pie | 0.85 | Categorical data, 2-7 unique values |
+| 8 | Many categories (>7) | Bar | 0.80 | Categorical data, >7 unique values |
+| 9 | Two numeric dimensions | Scatter | 0.75 | Two or more numeric columns |
+| 10 | Default fallback | Bar | 0.60 | No pattern matched |
 
 #### Example
 
@@ -349,15 +373,17 @@ dataset, _ := visualization.ParseDataFromPresentationToolResult(
     "top_50_patterns",
 )
 
-// Analyze and recommend chart
+// Analyze and recommend chart (nil uses DefaultStyleConfig)
 selector := visualization.NewChartSelector(nil)
 rec := selector.RecommendChart(dataset)
 
 fmt.Printf("Recommended: %s (%.2f confidence)\n", rec.ChartType, rec.Confidence)
 fmt.Printf("Rationale: %s\n", rec.Rationale)
+fmt.Printf("Title: %s\n", rec.Title)
 // Output:
 // Recommended: bar (0.95 confidence)
 // Rationale: Ranked data with 50 items, ideal for bar chart comparison
+// Title: Top 50 by frequency
 ```
 
 **Performance**: <1ms for 50-row dataset
@@ -374,7 +400,7 @@ fmt.Printf("Rationale: %s\n", rec.Rationale)
 #### API
 
 ```go
-func NewEChartsGenerator(styleClient *StyleGuideClient) *EChartsGenerator
+func NewEChartsGenerator(style *StyleConfig) *EChartsGenerator
 func (eg *EChartsGenerator) Generate(dataset *Dataset, rec *ChartRecommendation) (string, error)
 ```
 
@@ -384,7 +410,10 @@ func (eg *EChartsGenerator) Generate(dataset *Dataset, rec *ChartRecommendation)
 - ✅ Line charts (with area fill)
 - ✅ Pie charts
 - ✅ Scatter plots
-- 📋 Planned: Radar, box plot, treemap, graph
+- ✅ Radar charts (multi-dimensional)
+- ✅ Box plot charts (statistical distribution)
+- ✅ TreeMap charts (hierarchical data)
+- ✅ Graph/network charts (force-directed layout)
 
 #### Hawk StyleGuide Design Tokens
 
@@ -405,7 +434,7 @@ GlowIntensity:      0.6        // 0.0-1.0
 ```go
 import "github.com/teradata-labs/loom/pkg/visualization"
 
-gen := visualization.NewEChartsGenerator(nil) // Uses default Hawk style
+gen := visualization.NewEChartsGenerator(nil) // nil uses DefaultStyleConfig()
 echartsJSON, _ := gen.Generate(dataset, rec)
 
 // Returns ECharts configuration JSON with:
@@ -438,7 +467,8 @@ func (sc *StyleGuideClient) FetchStyleWithFallback(ctx context.Context, theme st
 
 ```go
 visualization.GetThemeVariant("dark")      // Default Hawk dark theme
-visualization.GetThemeVariant("teradata")  // Teradata branding
+visualization.GetThemeVariant("light")     // Light theme variant
+visualization.GetThemeVariant("teradata")  // Teradata branding emphasis
 visualization.GetThemeVariant("minimal")   // Monochrome minimal
 ```
 
@@ -461,7 +491,7 @@ style = visualization.GetThemeVariant("teradata")  // Teradata Orange branding
 
 **Implementation**: `pkg/visualization/report_generator.go`
 
-**Purpose**: Assembles complete HTML reports with multiple embedded charts.
+**Purpose**: Assembles self-contained HTML reports with multiple embedded charts.
 
 #### API
 
@@ -475,7 +505,7 @@ func (rg *ReportGenerator) ExportHTML(report *Report) (string, error)
 
 - ✅ Multi-chart reports (3-5 charts per report)
 - ✅ Executive summary section
-- ✅ AI-generated insights per chart (simple heuristics)
+- ✅ AI-generated insights per chart (rule-based heuristics)
 - ✅ Metadata (data source, row counts, reduction percentage)
 - ✅ Self-contained HTML (ECharts loaded from CDN)
 - ✅ Responsive design
@@ -532,9 +562,52 @@ html, _ := rg.ExportHTML(report)
 **Thread safety**: Safe for concurrent use
 
 
+### VisualizationTool
+
+**Implementation**: `pkg/visualization/tool.go`
+
+**Purpose**: Shuttle tool wrapper that generates interactive HTML reports from presentation tool results. This is an agent-callable tool (not a library function).
+
+**Tool Name**: `generate_visualization`
+
+**Note**: This tool is NOT included in `CommunicationTools`. It must be explicitly assigned by the metaagent via `builtin.VisualizationTools()`.
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `datasets` | []object | Yes | - | Array of `{name, data}` objects from presentation tool results |
+| `title` | string | Yes | - | Report title |
+| `summary` | string | Yes | - | Executive summary |
+| `output_path` | string | Yes | - | Path to save HTML file (e.g., `/tmp/report.html`) |
+| `theme` | string | No | `"dark"` | Theme variant: `"dark"`, `"light"`, `"teradata"`, `"minimal"` |
+
+#### Example
+
+```go
+import "github.com/teradata-labs/loom/pkg/visualization"
+
+tool := visualization.NewVisualizationTool()
+result, err := tool.Execute(ctx, map[string]interface{}{
+    "datasets": []interface{}{
+        map[string]interface{}{
+            "name": "top_patterns",
+            "data": `{"items": [...], "source_key": "stage-9-results"}`,
+        },
+    },
+    "title":       "nPath Analysis Report",
+    "summary":     "Analysis of customer journey patterns...",
+    "output_path": "/tmp/npath_report.html",
+    "theme":       "dark",
+})
+```
+
+**Thread safety**: Safe for concurrent use
+
+
 ## Architecture
 
-### Complete Pipeline
+### End-to-End Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -566,8 +639,8 @@ html, _ := rg.ExportHTML(report)
 │ Visualization Layer (pkg/visualization)                    │
 │                                                             │
 │ 1. ChartSelector analyzes data patterns                    │
-│    → Detects: ranking, categories, time series             │
-│    → Recommends: bar, pie, line, scatter charts            │
+│    → Detects: ranking, categories, time series, graphs     │
+│    → Recommends: bar, pie, line, scatter, radar, etc.      │
 │                                                             │
 │ 2. EChartsGenerator creates configs                        │
 │    → Applies Hawk StyleGuide aesthetic                     │
@@ -578,7 +651,7 @@ html, _ := rg.ExportHTML(report)
 │    → Multiple charts with embedded data                    │
 │    → AI-generated insights per chart                       │
 │    → Executive summary                                      │
-│    → Self-contained HTML (no external dependencies)        │
+│    → Self-contained HTML (ECharts loaded from CDN)         │
 └──────────────────────┬──────────────────────────────────────┘
                        │
                        ▼
@@ -593,18 +666,20 @@ html, _ := rg.ExportHTML(report)
 
 ### Tool Injection
 
-Presentation tools are automatically injected into all agents by `MultiAgentServer`:
+Presentation tools are automatically injected into all agents by `MultiAgentServer` via `CommunicationTools`, which bundles messaging, shared memory, and presentation query tools:
 
 ```go
 // pkg/server/multi_agent.go
-func (s *MultiAgentServer) AddAgent(agentID string, agent *agent.Agent) error {
-    // Inject communication tools (includes presentation tools)
-    commTools := builtin.CommunicationTools(s.messageQueue, s.sharedMemory, agentID)
-    agent.RegisterTools(commTools)
-
-    return nil
+func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
+    agentGUID := ag.GetID()
+    // ...
+    // Inject communication tools (includes presentation tools: top_n_query, group_by_query)
+    commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentGUID)
+    ag.RegisterTools(commTools...)
 }
 ```
+
+**Note**: Visualization tools (`generate_workflow_visualization`, `generate_visualization`) are NOT included in `CommunicationTools`. They must be explicitly assigned by the metaagent using `builtin.VisualizationTools()`.
 
 
 ## Data Format Requirements
@@ -732,7 +807,7 @@ Typical reduction ratios:
 All presentation tools are thread-safe and tested with Go's `-race` detector:
 
 ```bash
-go test -race ./pkg/shuttle/builtin -run TestPresentationTools_ConcurrentAccess
+go test -tags fts5 -race ./pkg/shuttle/builtin -run TestPresentationTools_ConcurrentAccess
 # PASS: 0 race conditions detected
 ```
 
@@ -781,7 +856,7 @@ Error: INVALID_PARAMS: source_key is required
 
 **Example**:
 ```
-Error: KEY_NOT_FOUND: Key "stage-9-npath-full-results" not found in namespace "workflow"
+Error: KEY_NOT_FOUND: Key not found in shared memory: stage-9-npath-full-results
 ```
 
 **Resolution**:
@@ -812,43 +887,21 @@ Error: INVALID_DATA_FORMAT: Failed to parse data as JSON: unexpected token at po
 
 **Example**:
 ```
-Error: UNSUPPORTED_DATA_STRUCTURE: Data must be array or map, got: string
+Error: UNSUPPORTED_DATA_STRUCTURE: Data must be an array of objects or a map containing arrays
 ```
+
+**Note**: This error is only emitted by `top_n_query`. The `group_by_query` silently returns an empty groups array for unsupported structures.
 
 **Resolution**:
 1. Restructure source data as array of objects
 2. Or structure as map with array values
 
 
-### COLUMN_NOT_FOUND
+### Column Handling Notes
 
-**Code**: `COLUMN_NOT_FOUND`
-**Cause**: sort_by or group_by column doesn't exist in dataset
+**Missing columns**: If a `sort_by` column does not exist in the data rows, sorting produces undefined order (no explicit error). If a `group_by` column does not exist, it is treated as `"NULL"`.
 
-**Example**:
-```
-Error: COLUMN_NOT_FOUND: Column "frequency" not found in dataset
-```
-
-**Resolution**:
-1. Verify column name spelling
-2. Check dataset structure with shared_memory_read
-3. Update sort_by/group_by parameter
-
-
-### INVALID_SORT_COLUMN
-
-**Code**: `INVALID_SORT_COLUMN`
-**Cause**: sort_by column contains non-numeric values
-
-**Example**:
-```
-Error: INVALID_SORT_COLUMN: Column "frequency" must contain numeric values
-```
-
-**Resolution**:
-1. Choose different sort_by column with numeric values
-2. Or transform data to have numeric column
+**Non-numeric sort_by**: If the `sort_by` column contains non-numeric values, comparison returns false for those rows and sort order is undefined (no explicit error).
 
 
 ### READ_FAILED
@@ -917,7 +970,7 @@ func main() {
     // Get distribution by path length
     groupByResult, err := tools[1].Execute(ctx, map[string]interface{}{
         "source_key": "stage-9-npath-full-results",
-        "group_by":   []string{"path_length"},
+        "group_by":   []interface{}{"path_length"},
         "namespace":  "workflow",
     })
     if err != nil {
@@ -949,7 +1002,7 @@ func main() {
 ```
 
 
-### Example 2: Complete Visualization Pipeline
+### Example 2: End-to-End Visualization Pipeline
 
 ```go
 package main
@@ -957,8 +1010,8 @@ package main
 import (
     "context"
     "fmt"
-    "io/ioutil"
     "log"
+    "os"
 
     "github.com/teradata-labs/loom/pkg/shuttle/builtin"
     "github.com/teradata-labs/loom/pkg/visualization"
@@ -980,7 +1033,7 @@ func main() {
 
     groupByResult, _ := tools[1].Execute(ctx, map[string]interface{}{
         "source_key": "stage-9-npath-full-results",
-        "group_by":   []string{"path_length"},
+        "group_by":   []interface{}{"path_length"},
         "namespace":  "workflow",
     })
 
@@ -1007,7 +1060,7 @@ func main() {
     html, _ := rg.ExportHTML(report)
 
     // Save to file
-    ioutil.WriteFile("npath_report.html", []byte(html), 0644)
+    os.WriteFile("npath_report.html", []byte(html), 0600)
     fmt.Println("Report saved to npath_report.html")
 }
 
@@ -1020,8 +1073,9 @@ func main() {
 
 ### Test Coverage
 
-**Presentation Tools**: 8 test functions, 100% pass rate
-**Visualization**: 12 test functions, 100% pass rate
+**Presentation Tools**: 12 test functions in `presentation_tools_test.go`, 100% pass rate
+**Visualization**: 21 test functions in `visualization_test.go`, 100% pass rate
+**Visualization Tool**: 3 test functions in `tool_test.go`, 100% pass rate
 **Race Detector**: 0 race conditions detected
 
 #### Presentation Tool Tests
@@ -1032,22 +1086,34 @@ func main() {
 |---------------|----------|
 | `TestTopNQueryTool_BasicFunctionality` | Top-N with frequency sort |
 | `TestTopNQueryTool_AscendingSort` | Ascending order validation |
-| `TestTopNQueryTool_InvalidParams` | Error handling |
+| `TestTopNQueryTool_InvalidParams` | Error handling (table-driven) |
 | `TestGroupByQueryTool_BasicFunctionality` | Multi-dimensional grouping |
 | `TestGroupByQueryTool_SingleDimension` | Single dimension grouping |
 | `TestGroupByQueryTool_KeyNotFound` | Missing key error |
 | `TestPresentationTools_ConcurrentAccess` | Race detection |
-| `TestPresentationToolNames` | Registry validation |
+| `TestPresentationToolNames` | Tool name registry validation |
+| `TestVisualizationToolNames` | Visualization tool name registry |
+| `TestPresentationTools_Factory` | Factory function returns correct tools |
+| `TestVisualizationTools_Factory` | Visualization factory function |
+| `TestPresentationTools_NilStore` | Nil store returns no tools |
 
 #### Visualization Tests
 
-**File**: `pkg/visualization/*_test.go`
+**File**: `pkg/visualization/visualization_test.go`
 
 | Test Function | Coverage |
 |---------------|----------|
 | `TestChartSelector_AnalyzeDataset` | Data pattern analysis |
 | `TestChartSelector_RecommendChart` | Chart recommendation logic |
-| `TestEChartsGenerator_Generate` | ECharts config generation |
+| `TestChartSelector_RecommendRadar` | Radar chart recommendation |
+| `TestChartSelector_RecommendBoxPlot` | Box plot recommendation |
+| `TestChartSelector_RecommendGraph` | Graph chart recommendation |
+| `TestChartSelector_RecommendTreeMap` | TreeMap recommendation |
+| `TestEChartsGenerator_Generate` | ECharts config generation (bar) |
+| `TestEChartsGenerator_GenerateRadarChart` | Radar chart generation |
+| `TestEChartsGenerator_GenerateBoxPlotChart` | Box plot generation |
+| `TestEChartsGenerator_GenerateTreeMapChart` | TreeMap generation |
+| `TestEChartsGenerator_GenerateGraphChart` | Graph/network generation |
 | `TestReportGenerator_GenerateReport` | Report assembly |
 | `TestReportGenerator_ExportHTML` | HTML export |
 | `TestStyleGuideClient_FetchStyleWithFallback` | Style fetching |
@@ -1057,23 +1123,32 @@ func main() {
 | `TestDefaultStyleConfig` | Default configuration |
 | `TestMergeStyles` | Style merging |
 | `TestGetThemeVariant` | Theme variants |
+| `TestHelperFunctions` | Helper function validation |
+
+**File**: `pkg/visualization/tool_test.go`
+
+| Test Function | Coverage |
+|---------------|----------|
+| `TestVisualizationTool_Execute` | End-to-end visualization tool execution |
+| `TestVisualizationTool_InvalidParams` | Parameter validation (table-driven) |
+| `TestVisualizationTool_Schema` | Tool schema and required fields |
 
 ### Running Tests
 
 ```bash
 # All presentation tool tests
-go test ./pkg/shuttle/builtin -run TestPresentation -v
+go test -tags fts5 ./pkg/shuttle/builtin -run TestPresentation -v
 
 # All visualization tests
-go test ./pkg/visualization -v
+go test -tags fts5 ./pkg/visualization -v
 
 # With race detector (REQUIRED before commit)
-go test ./pkg/shuttle/builtin -run TestPresentation -race -v
-go test ./pkg/visualization -race -v
+go test -tags fts5 -race ./pkg/shuttle/builtin -run TestPresentation -v
+go test -tags fts5 -race ./pkg/visualization -v
 
 # Extensive race detection (50 runs)
-go test ./pkg/shuttle/builtin -run TestPresentationTools_ConcurrentAccess -race -count=50
-go test ./pkg/visualization -run TestConcurrentAccess -race -count=50
+go test -tags fts5 -race -count=50 ./pkg/shuttle/builtin -run TestPresentationTools_ConcurrentAccess
+go test -tags fts5 -race -count=50 ./pkg/visualization -run TestConcurrentAccess
 ```
 
 

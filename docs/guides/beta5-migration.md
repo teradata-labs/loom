@@ -1,7 +1,12 @@
+# Beta 5 Migration Guide
+
+## Historical Note
+
+> **This is a historical migration guide** for the beta.5 release. It is preserved for reference. Current version is v1.2.0.
 
 ## Overview
 
-Loom v1.0.0-beta.5 introduces **workload-specific compression profiles** to optimize memory management for different agent types. This release improves compression defaults and adds Hawk observability for production monitoring.
+Loom v1.0.0-beta.5 introduced **workload-specific compression profiles** to optimize memory management for different agent types. This release improves compression defaults and adds Hawk observability for production monitoring.
 
 **Key Changes:**
 - ✅ Three compression profiles: data_intensive, conversational, balanced
@@ -76,16 +81,20 @@ Labels include profile name, batch size, and trigger threshold.
 Fine-tune compression behavior per agent:
 
 ```yaml
-memory:
-  memory_compression:
-    workload_profile: balanced
-    max_l1_messages: 10
-    warning_threshold_percent: 55
-    critical_threshold_percent: 80
-    batch_sizes:
-      normal: 2
-      warning: 4
-      critical: 6
+agent:
+  name: my-agent
+  # ... other fields ...
+  memory:
+    type: memory
+    memory_compression:
+      workload_profile: balanced
+      max_l1_messages: 10
+      warning_threshold_percent: 55
+      critical_threshold_percent: 80
+      batch_sizes:
+        normal: 2
+        warning: 4
+        critical: 6
 ```
 
 
@@ -166,15 +175,19 @@ agent:
 Override specific values:
 
 ```yaml
-memory:
-  memory_compression:
-    workload_profile: balanced
-    max_l1_messages: 12              # Larger L1
-    warning_threshold_percent: 55    # Compress earlier
-    batch_sizes:
-      normal: 3
-      warning: 5
-      critical: 7
+agent:
+  name: my-agent
+  # ... other fields ...
+  memory:
+    type: memory
+    memory_compression:
+      workload_profile: balanced
+      max_l1_messages: 12              # Larger L1
+      warning_threshold_percent: 55    # Compress earlier
+      batch_sizes:
+        normal: 3
+        warning: 5
+        critical: 7
 ```
 
 ### Step 3: Deploy and Monitor
@@ -300,15 +313,14 @@ agent:
 
 Monitor compression behavior via Hawk metrics:
 
-```bash
-# View compression frequency
-curl http://localhost:9090/metrics | grep memory.compression.events
+Compression metrics are recorded via the `observability.Tracer` interface (e.g., Hawk).
+Use your tracer's dashboard to monitor these metric names:
 
-# Example output:
-memory.compression.events{profile="data_intensive",batch_size="warning"} 15
-memory.compression.messages{profile="data_intensive",batch_size="warning"} 45
-memory.compression.tokens_saved{profile="data_intensive",batch_size="warning"} 12450
-```
+- `memory.compression.events` -- compression trigger count
+- `memory.compression.messages` -- messages compressed per event
+- `memory.compression.tokens_saved` -- tokens reclaimed per event
+- `memory.compression.budget_pct` -- budget usage percentage
+- `memory.l1.size` -- current L1 cache size
 
 ### Target Metrics
 
@@ -365,7 +377,7 @@ Added to MemoryConfig:
 ```protobuf
 message MemoryConfig {
   // ... existing fields
-  MemoryCompressionConfig memory_compression = 7;
+  MemoryCompressionConfig memory_compression = 5;
 }
 ```
 
@@ -376,7 +388,7 @@ New types in `pkg/agent`:
 ```go
 type CompressionProfile struct {
     Name                     string
-    MaxL1Messages            int
+    MaxL1Tokens              int
     MinL1Messages            int
     WarningThresholdPercent  int
     CriticalThresholdPercent int
@@ -410,14 +422,17 @@ tracer.RecordEvent(ctx, "memory.profile_configured", attributes)
 
 ## Rollback Plan
 
-If you encounter issues, rolling back is simple:
+If you encounter issues, you can roll back:
 
 ### Revert to Implicit Balanced Defaults
 
 ```yaml
-memory:
-  type: memory
-  # Remove memory_compression section
+agent:
+  name: my-agent
+  # ... other fields ...
+  memory:
+    type: memory
+    # Remove memory_compression section entirely
 ```
 
 This reverts to balanced profile behavior (same as beta.5 default).
@@ -427,17 +442,20 @@ This reverts to balanced profile behavior (same as beta.5 default).
 To match beta.4 exactly:
 
 ```yaml
-memory:
-  type: memory
-  memory_compression:
-    max_l1_messages: 10              # Old L1 size
-    min_l1_messages: 5               # Old L1 minimum
-    warning_threshold_percent: 70    # Old warning
-    critical_threshold_percent: 85   # Old critical
-    batch_sizes:
-      normal: 3                      # Approximation
-      warning: 5
-      critical: 7
+agent:
+  name: my-agent
+  # ... other fields ...
+  memory:
+    type: memory
+    memory_compression:
+      max_l1_messages: 10              # Old L1 size
+      min_l1_messages: 5               # Old L1 minimum
+      warning_threshold_percent: 70    # Old warning
+      critical_threshold_percent: 85   # Old critical
+      batch_sizes:
+        normal: 3                      # Approximation
+        warning: 5
+        critical: 7
 ```
 
 
@@ -462,7 +480,7 @@ Before deploying to production:
 
 - [Memory Management Guide](/docs/guides/memory-management/)
 - [Observability Integration](/docs/guides/integration/observability/)
-- [Agent Configuration](/docs/guides/agent-configuration/)
+- [Agent Configuration](/docs/reference/agent-configuration/)
 - [CHANGELOG.md](/CHANGELOG.md)
 
 

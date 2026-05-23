@@ -1,0 +1,307 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-text-analytics
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata in-database text analytics and AI function patterns for NLP, text classification, sentiment analysis, embeddings, PII detection, and LLM integration"
+  labels:
+    vendor: teradata
+    category: text-analytics
+    maturity: production
+
+spec:
+  entries:
+    - name: ngram
+      description: "Extract n-gram sequences from text using NGramSplitter for phrase analysis and text feature generation"
+      trigger_conditions:
+        - "user asks about n-grams or text tokenization"
+        - "user asks about extracting word phrases from text"
+        - "user mentions bigrams, trigrams, or unigrams"
+        - "user asks about text preprocessing for analytics"
+        - "user asks about common phrase detection in documents"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/text/ngram.yaml
+
+        N-gram types:
+        - Unigrams (1-gram): individual words
+        - Bigrams (2-gram): two-word phrases
+        - Trigrams (3-gram): three-word phrases
+        - Higher-order: 4+ word sequences
+      priority: 75
+      tags:
+        - text
+        - ngram
+        - tokenization
+        - nlp
+        - teradata
+
+    - name: text_classifier
+      description: "In-database Naive Bayes text classification using TD_NaiveBayesTextClassifierTrainer and Predict"
+      trigger_conditions:
+        - "user asks about text classification with native functions"
+        - "user asks about naive bayes text classifier"
+        - "user mentions document categorization or topic classification"
+        - "user asks about spam detection or sentiment with traditional ML"
+        - "user asks about training a text classifier in Teradata"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/text/text_classifier.yaml
+
+        Model types:
+        - Multinomial: uses token frequency counts
+        - Bernoulli: uses token presence/absence
+
+        Input must be pre-tokenized via NGramSplitter or TextParser.
+      priority: 75
+      tags:
+        - text
+        - classification
+        - naive-bayes
+        - nlp
+        - teradata
+
+    - name: sentiment
+      description: "Native sentiment analysis using TD_SentimentExtractor with WordNet dictionary-based scoring"
+      trigger_conditions:
+        - "user asks about native sentiment analysis without LLM"
+        - "user asks about TD_SentimentExtractor"
+        - "user mentions dictionary-based sentiment scoring"
+        - "user asks about polarity detection in text"
+        - "user asks about document-level or sentence-level sentiment"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/text/sentiment.yaml
+
+        Sentiment output:
+        - Polarity: POS (positive), NEG (negative), NEU (neutral)
+        - Scores: 0 (neutral), 1 (above neutral), 2 (highest)
+        - Handles negation (e.g., "not happy" flips polarity)
+        - English only
+      priority: 70
+      tags:
+        - text
+        - sentiment
+        - nlp
+        - dictionary-based
+        - teradata
+
+    - name: ner
+      description: "Named entity recognition using TD_NERExtractor with dictionary and regex-based matching"
+      trigger_conditions:
+        - "user asks about named entity recognition or NER"
+        - "user asks about extracting person, organization, or location names"
+        - "user mentions entity extraction from text"
+        - "user asks about TD_NERExtractor"
+        - "user asks about dictionary-based or rule-based entity matching"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/text/ner.yaml
+
+        Entity matching approaches:
+        - Dictionary (DICT): match against known entity terms
+        - Rule (RULE): match using regex patterns
+        - Both can be combined in a single query
+        - Returns entity text, type, word position, and context
+      priority: 75
+      tags:
+        - text
+        - ner
+        - entity-extraction
+        - nlp
+        - teradata
+
+    - name: tfidf
+      description: "Compute TF-IDF vectors from text using TD_TFIDF for document similarity and topic discovery"
+      trigger_conditions:
+        - "user asks about TF-IDF or term frequency"
+        - "user asks about document similarity or text vectorization"
+        - "user mentions text feature vectors for clustering"
+        - "user asks about TD_TFIDF"
+        - "user asks about inverse document frequency weighting"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/text/tfidf.yaml
+
+        TF-IDF output feeds into:
+        - Cosine similarity for document comparison
+        - K-means clustering for topic discovery
+        - K-NN for nearest-neighbor classification
+        - LDA for topic modeling
+
+        Input must be pre-tokenized via TextParser or NGramSplitter.
+      priority: 75
+      tags:
+        - text
+        - tfidf
+        - vectorization
+        - nlp
+        - teradata
+
+    - name: ai_sentiment
+      description: "LLM-powered sentiment analysis using AI_AnalyzeSentiment for customer reviews and social media"
+      trigger_conditions:
+        - "user asks about AI-powered or LLM-based sentiment analysis"
+        - "user asks about AI_AnalyzeSentiment"
+        - "user mentions sentiment analysis with higher accuracy than dictionary"
+        - "user asks about customer review sentiment tracking"
+        - "user asks about brand perception or social media monitoring"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/ai_sentiment.yaml
+
+        Key use cases:
+        - Customer review sentiment tracking
+        - Social media monitoring
+        - Support ticket prioritization by tone
+        - Brand perception analysis
+        - Survey response classification
+
+        Requires an authorization object for the LLM provider.
+      priority: 80
+      tags:
+        - ai-functions
+        - sentiment
+        - llm
+        - nlp
+        - teradata
+
+    - name: ai_ask_llm
+      description: "RAG-style question answering using AI_AskLLM with database table context"
+      trigger_conditions:
+        - "user asks about querying an LLM with database context"
+        - "user asks about AI_AskLLM or RAG in Teradata"
+        - "user mentions document interrogation with LLM"
+        - "user asks about combining LLM queries with stored data"
+        - "user asks about knowledge extraction from unstructured text"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/ai_ask_llm.yaml
+
+        Key use cases:
+        - RAG-style question answering against stored documents
+        - Document interrogation and analysis
+        - Templated analysis across database rows
+        - Contextual summarization with specific questions
+
+        Requires both InputTable and ContextTable with PARTITION BY.
+      priority: 85
+      tags:
+        - ai-functions
+        - rag
+        - llm
+        - question-answering
+        - teradata
+
+    - name: ai_text_classifier
+      description: "LLM-powered text classification using AI_TextClassifier for single-label and multi-label categorization"
+      trigger_conditions:
+        - "user asks about LLM-based text classification"
+        - "user asks about AI_TextClassifier"
+        - "user mentions categorizing support tickets or documents with LLM"
+        - "user asks about intent detection or content tagging with AI"
+        - "user asks about multi-label text classification"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/ai_text_classifier.yaml
+
+        Classification modes:
+        - Single-label: one best matching category
+        - Multi-label: all matching categories
+
+        Key use cases:
+        - Support ticket routing
+        - Content tagging and categorization
+        - Intent detection in customer messages
+        - Compliance category assignment
+      priority: 80
+      tags:
+        - ai-functions
+        - classification
+        - llm
+        - nlp
+        - teradata
+
+    - name: ai_pii
+      description: "LLM-powered PII detection and masking using AI_MaskPII and AI_RecognizePIIEntities"
+      trigger_conditions:
+        - "user asks about PII detection or data masking"
+        - "user asks about AI_MaskPII or AI_RecognizePIIEntities"
+        - "user mentions GDPR, CCPA, or HIPAA compliance"
+        - "user asks about finding personal data in text columns"
+        - "user asks about automated data masking for non-production environments"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/ai_pii.yaml
+
+        Two complementary functions:
+        - AI_MaskPII: detect PII and return masked text (asterisks)
+        - AI_RecognizePIIEntities: detect PII and return entity metadata
+
+        Key use cases:
+        - Data privacy compliance (GDPR, CCPA, HIPAA)
+        - PII discovery in unstructured text
+        - Audit reporting of PII exposure
+      priority: 85
+      tags:
+        - ai-functions
+        - pii
+        - privacy
+        - compliance
+        - teradata
+
+    - name: ai_summarize
+      description: "LLM-powered text summarization using AI_TextSummarize with multi-level compression"
+      trigger_conditions:
+        - "user asks about text summarization with LLM"
+        - "user asks about AI_TextSummarize"
+        - "user mentions creating executive summaries from documents"
+        - "user asks about compressing verbose text for dashboards"
+        - "user asks about generating abstracts or condensing feedback"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/ai_summarize.yaml
+
+        Key features:
+        - Multi-level summarization (progressive compression)
+        - Summarize long documents or articles
+        - Create executive summaries from detailed reports
+        - Condense customer feedback into key points
+
+        Requires an authorization object for the LLM provider.
+      priority: 80
+      tags:
+        - ai-functions
+        - summarization
+        - llm
+        - nlp
+        - teradata
+
+    - name: authorization_objects
+      description: "Create and manage authorization objects for AI function credentials (Azure, AWS, GCP, NVIDIA)"
+      trigger_conditions:
+        - "user asks about setting up AI function authorization"
+        - "user asks about authorization objects or CREATE AUTHORIZATION"
+        - "user mentions configuring API keys for AI functions"
+        - "user asks about connecting Teradata to Azure OpenAI, Bedrock, or Vertex AI"
+        - "user asks about prerequisites for AI_* functions"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ai_functions/authorization_objects.yaml
+
+        Supported providers:
+        - Azure OpenAI (ApiBase, ApiKey, ApiVersion)
+        - AWS Bedrock (AccessKey, SecretKey, optional SessionKey)
+        - Google Cloud / Vertex AI (Project, Region, AccessToken)
+        - NVIDIA NIM (ApiBase, ApiKey)
+        - LiteLLM proxy (ApiBase, ApiKey)
+
+        Prerequisite for all AI_* functions.
+      priority: 90
+      tags:
+        - ai-functions
+        - authorization
+        - credentials
+        - setup
+        - teradata

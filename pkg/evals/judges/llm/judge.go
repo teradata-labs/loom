@@ -63,6 +63,10 @@ type Evidence struct {
 	Success       bool
 	ExecutionTime int64
 	Model         string
+	// Criteria, when non-empty, switches the judge to a generic criteria-driven
+	// prompt that uses this text as the rubric. When empty, the hardcoded
+	// SQL-oriented prompt template is used (legacy path).
+	Criteria string
 }
 
 // NewJudge creates a new judge instance
@@ -111,12 +115,63 @@ func (j *Judge) Judge(ctx context.Context, evidence *Evidence) (*Verdict, error)
 	return verdict, nil
 }
 
-// buildJudgePrompt constructs the evaluation prompt
-// Uses hardcoded prompt template
+// buildJudgePrompt constructs the evaluation prompt.
+// When evidence.Criteria is set, a generic criteria-driven prompt is used so the
+// judge config's custom rubric is actually honored. Otherwise the legacy
+// SQL-oriented hardcoded template is used.
 func (j *Judge) buildJudgePrompt(evidence *Evidence) string {
-
-	// Fall back to hardcoded prompt (always available)
+	if evidence.Criteria != "" {
+		return j.buildJudgePromptGeneric(evidence)
+	}
 	return j.buildJudgePromptHardcoded(evidence)
+}
+
+// buildJudgePromptGeneric builds a criteria-driven evaluation prompt.
+// Use when the caller has supplied custom criteria via JudgeConfig.Criteria.
+func (j *Judge) buildJudgePromptGeneric(evidence *Evidence) string {
+	var sb strings.Builder
+
+	sb.WriteString("Evaluate the agent's response against the supplied criteria.\n\n")
+
+	sb.WriteString("## CONTEXT\n")
+	if evidence.Query != "" {
+		sb.WriteString(evidence.Query)
+		sb.WriteString("\n\n")
+	}
+
+	sb.WriteString("## AGENT'S RESPONSE\n")
+	if evidence.Response != "" {
+		sb.WriteString(evidence.Response)
+	} else {
+		sb.WriteString("(empty)")
+	}
+	sb.WriteString("\n\n")
+
+	sb.WriteString("## EVALUATION CRITERIA\n")
+	sb.WriteString(evidence.Criteria)
+	sb.WriteString("\n\n")
+
+	sb.WriteString(`## EVALUATION TASK
+
+Apply the criteria above to the agent's response. Return ONLY a JSON object with this structure (the fields are fixed for backward compatibility; interpret them as follows given the custom criteria):
+{
+  "factual_accuracy": <overall 0-100 score reflecting the criteria>,
+  "hallucination_score": <0-100, higher means more fabricated content>,
+  "query_quality": 100,
+  "completeness": <overall 0-100 score reflecting the criteria>,
+  "verdict": "PASS|FAIL|PARTIAL",
+  "reasoning": "<2-3 sentence explanation grounded in the criteria>",
+  "issues": ["<specific problem 1>", "<specific problem 2>"]
+}
+
+Scoring guidance:
+- Set factual_accuracy and completeness to the score dictated by the criteria for this response.
+- Set verdict = PASS if factual_accuracy >= 80, FAIL if < 50, otherwise PARTIAL.
+- query_quality is not meaningful for criteria-driven evaluation; return 100.
+- hallucination_score reflects content beyond the criteria that appears fabricated; 0 if none.
+`)
+
+	return sb.String()
 }
 
 // buildJudgePromptHardcoded constructs the evaluation prompt (fallback)

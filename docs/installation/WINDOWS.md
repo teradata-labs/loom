@@ -1,6 +1,6 @@
 # Windows Installation Guide for Loom
 
-Complete guide for installing Loom on Windows with multiple installation methods.
+Guide for installing Loom on Windows with multiple installation methods.
 
 ## Quick Install (Recommended)
 
@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
 **What it does**:
 - ✅ Checks/installs prerequisites (Go, Just, Buf)
 - ✅ Builds `looms.exe` and `loom.exe`
-- ✅ Installs 90+ patterns to `$LOOM_DATA_DIR/patterns/`
+- ✅ Installs 100+ patterns to `$LOOM_DATA_DIR/patterns/`
 - ✅ Creates configuration file
 - ✅ Sets up environment variables
 - ✅ Interactive LLM provider setup
@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
 
 ---
 
-### Option 2: Package Managers (Coming Soon)
+### Option 2: Package Managers (📋 Planned)
 
 Once published to package repositories, you'll be able to install with one command:
 
@@ -69,7 +69,7 @@ choco install loom
 1. **Go 1.25+**
    ```powershell
    # With winget
-   winget install GoLang.Go
+   winget install Golang.Go
 
    # With Chocolatey
    choco install golang
@@ -113,10 +113,13 @@ go run ./cmd/generate-weaver
 go build -tags fts5 -o bin/looms.exe ./cmd/looms
 go build -tags fts5 -o bin/loom.exe ./cmd/loom
 
+# Optional: Build MCP bridge (for Model Context Protocol integration)
+go build -tags fts5 -o bin/loom-mcp.exe ./cmd/loom-mcp
+
 # Install patterns
 xcopy /E /I /Y patterns %LOOM_DATA_DIR%\patterns
 
-# Add to PATH (PowerShell - Admin required)
+# Add to PATH (PowerShell - no admin required, sets for current user)
 $binDir = "$PWD\bin"
 [Environment]::SetEnvironmentVariable("Path", "$binDir;$env:Path", "User")
 ```
@@ -127,7 +130,7 @@ Download from [GitHub Releases](https://github.com/teradata-labs/loom/releases):
 
 ```powershell
 # Download binaries
-$version = "1.0.1"
+$version = "1.2.0"
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/looms-windows-amd64.exe.zip" -OutFile looms.zip
 
@@ -156,10 +159,14 @@ $env:Path = [Environment]::GetEnvironmentVariable("Path", "User")
 
 ```powershell
 # Set provider (choose one)
-looms config set llm.provider anthropic     # Claude
-looms config set llm.provider bedrock       # AWS Bedrock
-looms config set llm.provider openai        # GPT-4
-looms config set llm.provider ollama        # Local models
+looms config set llm.provider anthropic      # Claude (direct API)
+looms config set llm.provider bedrock        # AWS Bedrock
+looms config set llm.provider openai         # OpenAI (GPT-4, o1)
+looms config set llm.provider azure-openai   # Azure OpenAI
+looms config set llm.provider mistral        # Mistral AI
+looms config set llm.provider gemini         # Google Gemini
+looms config set llm.provider huggingface    # HuggingFace
+looms config set llm.provider ollama         # Local models (Ollama)
 
 # Set API key (interactive prompt)
 looms config set-key anthropic_api_key
@@ -183,7 +190,8 @@ database:
 
 llm:
   provider: "anthropic"
-  anthropic_api_key: "sk-ant-..."
+  # API keys should be stored in the system keyring, not in this file.
+  # Use: looms config set-key anthropic_api_key
 ```
 
 ---
@@ -214,7 +222,7 @@ loom --thread weaver
 # The weaver will:
 # 1. Analyze your requirements
 # 2. Select appropriate patterns
-# 3. Generate complete YAML configuration
+# 3. Generate the YAML configuration
 # 4. Activate the agent thread
 ```
 
@@ -292,11 +300,11 @@ When releasing a new version, update and submit package manifests:
 #### 1. Update Scoop Manifests
 
 ```powershell
-cd scoop
+cd packaging/windows/scoop
 
 # Update version in loom.json and loom-server.json
 # Calculate SHA256 hashes
-$version = "1.0.1"
+$version = "1.2.0"
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
 (Get-FileHash loom.zip -Algorithm SHA256).Hash
 
@@ -307,7 +315,7 @@ Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$ver
 #### 2. Update winget Manifests
 
 ```powershell
-cd winget
+cd packaging/windows/winget
 
 # Update version in all three YAML files
 # Update InstallerSha256 with calculated hashes
@@ -320,7 +328,7 @@ winget validate --manifest .
 #### 3. Update Chocolatey Package
 
 ```powershell
-cd chocolatey
+cd packaging/windows/chocolatey
 
 # Update version in loom.nuspec
 # Update checksums in tools/chocolateyinstall.ps1
@@ -329,7 +337,7 @@ choco pack
 choco install loom -source . -y
 
 # Push to Chocolatey (requires API key)
-choco push loom.1.0.1.nupkg --source https://push.chocolatey.org/
+choco push loom.1.2.0.nupkg --source https://push.chocolatey.org/
 ```
 
 See individual README files in `packaging/windows/scoop/`, `packaging/windows/winget/`, and `packaging/windows/chocolatey/` directories for detailed instructions.
@@ -357,7 +365,7 @@ looms --help
 loom --help
 
 # Test configuration
-looms config list
+looms config show
 
 # Test pattern installation
 Get-ChildItem -Path "$env:LOOM_DATA_DIR\patterns" -Filter "*.yaml" -Recurse
@@ -421,4 +429,4 @@ Found an issue with Windows installation? Please report it:
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE)
+Apache 2.0 - See [LICENSE](../../LICENSE)

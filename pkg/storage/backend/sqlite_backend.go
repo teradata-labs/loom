@@ -22,10 +22,12 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/sqlite"
+	"github.com/teradata-labs/loom/pkg/task"
 )
 
 // SQLiteBackend implements StorageBackend by wrapping existing SQLite stores.
@@ -36,6 +38,10 @@ type SQLiteBackend struct {
 	artifactStore     artifacts.ArtifactStore
 	resultStore       storage.ResultStore
 	humanRequestStore shuttle.HumanRequestStore
+	graphMemoryStore  memory.GraphMemoryStore
+	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
+	taskStore         task.TaskStore
+	taskDB            *sql.DB // owned connection for task store; closed in Close()
 	migrator          *sqlite.Migrator
 	dbPath            string
 	tracer            observability.Tracer
@@ -141,12 +147,48 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		)
 	}
 
+	// Create graph memory store (uses same DB path, separate connection).
+	graphMemDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for graph memory: %w", err),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	tc := agent.GetTokenCounter()
+	graphMemoryStore := sqlite.NewGraphMemoryStore(graphMemDB, tc, tracer)
+
+	// Create task store (uses same DB path, separate connection).
+	taskDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for task store: %w", err),
+			graphMemDB.Close(),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	taskStore := sqlite.NewTaskStore(taskDB, tracer)
+
 	return &SQLiteBackend{
 		sessionStore:      sessionStore,
 		errorStore:        errorStore,
 		artifactStore:     artifactStore,
 		resultStore:       resultStore,
 		humanRequestStore: humanStore,
+		graphMemoryStore:  graphMemoryStore,
+		graphMemDB:        graphMemDB,
+		taskStore:         taskStore,
+		taskDB:            taskDB,
 		migrator:          migrator,
 		dbPath:            dbPath,
 		tracer:            tracer,
@@ -250,11 +292,33 @@ func (b *SQLiteBackend) Close() error {
 	if err := b.humanRequestStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("human request store close: %w", err)
 	}
+	if b.graphMemDB != nil {
+		if err := b.graphMemDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("graph memory db close: %w", err)
+		}
+	}
+	if b.taskDB != nil {
+		if err := b.taskDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("task db close: %w", err)
+		}
+	}
 
 	return firstErr
+}
+
+// GraphMemoryStore implements GraphMemoryProvider.
+func (b *SQLiteBackend) GraphMemoryStore() memory.GraphMemoryStore {
+	return b.graphMemoryStore
+}
+
+// TaskStore implements TaskStoreProvider.
+func (b *SQLiteBackend) TaskStore() task.TaskStore {
+	return b.taskStore
 }
 
 // Compile-time checks
 var _ StorageBackend = (*SQLiteBackend)(nil)
 var _ MigrationInspector = (*SQLiteBackend)(nil)
 var _ StorageDetailProvider = (*SQLiteBackend)(nil)
+var _ GraphMemoryProvider = (*SQLiteBackend)(nil)
+var _ TaskStoreProvider = (*SQLiteBackend)(nil)

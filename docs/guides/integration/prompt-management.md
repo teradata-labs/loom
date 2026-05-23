@@ -1,7 +1,7 @@
 
 # Prompt Management Guide
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -20,6 +20,14 @@
   - [Example 3: A/B Test Variants](#example-3-ab-test-variants)
 - [Troubleshooting](#troubleshooting)
 
+## Feature Status
+
+- ✅ File-based prompt loading via `FileRegistry`
+- ✅ Variable interpolation with `{{.variable}}` syntax
+- ✅ Hot-reload via `fsnotify` (Watch)
+- ✅ A/B testing with variant selectors (Hash, Random, Weighted, Explicit)
+- ✅ Prompt caching via `CachedRegistry`
+- ✅ Prompt injection sanitization
 
 ## Overview
 
@@ -27,29 +35,26 @@ Manage prompts externally using YAML files with hot-reload, variable interpolati
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
-- Prompt YAML files in `prompts/` directory
+- Loom v1.2.0+
+- Prompt YAML files using frontmatter format (see [YAML Format](#yaml-format))
 
 ## Quick Start
 
 Create a prompt file at `prompts/agent/system.yaml`:
 
 ```yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Help users interact with data systems through natural language queries.
-      Backend Type: {{.backend_type}}
-      Available Tools: {{.tool_count}} registered tools
-    variables:
-      backend_type:
-        type: 1  # STRING
-        required: true
-      tool_count:
-        type: 2  # INT
-        required: true
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Base system prompt for agents
+tags: [agent, system]
+variants: [default]
+variables: [backend_type, tool_count]
+---
+Help users interact with data systems through natural language queries.
+Backend Type: {{.backend_type}}
+Available Tools: {{.tool_count}} registered tools
 ```
 
 Load and use in your agent:
@@ -58,8 +63,13 @@ Load and use in your agent:
 import "github.com/teradata-labs/loom/pkg/prompts"
 
 registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
 agent := agent.NewAgent(backend, llm, agent.WithPrompts(registry))
 ```
+
+> **Note:** You must call `Reload()` after creating a `FileRegistry` to load prompt files from disk. `NewFileRegistry()` only initializes the struct.
 
 ## Configuration
 
@@ -68,47 +78,52 @@ agent := agent.NewAgent(backend, llm, agent.WithPrompts(registry))
 ```
 prompts/
 ├── agent/
-│   └── system.yaml         # System prompts
+│   ├── system.yaml            # Key: "agent.system" (default variant)
+│   └── system.concise.yaml   # Key: "agent.system" (concise variant)
 ├── tools/
-│   ├── sql.yaml            # SQL tool descriptions
-│   ├── file.yaml           # File tool descriptions
-│   └── rest_api.yaml       # REST API tool descriptions
+│   └── execute_sql.yaml       # Key: "tools.execute_sql"
 ├── errors/
-│   └── validation.yaml     # Validation error messages
+│   └── validation.yaml
 └── guidance/
-    └── self_correction.yaml # Self-correction guidance
+    └── self_correction.yaml
 ```
+
+Prompt keys are derived from the `key` field in the YAML frontmatter metadata, not from the file path. Variants are determined by the filename: `system.yaml` is the "default" variant, `system.concise.yaml` is the "concise" variant.
 
 ### YAML Format
 
+Prompt files use YAML frontmatter separated by `---` delimiters:
+
 ```yaml
-name: <prompt-name>
-namespace: <namespace>
-prompts:
-  - id: <prompt-id>
-    content: |
-      Prompt content with {{.variable}} placeholders
-    variables:
-      variable_name:
-        type: 1  # 1=STRING, 2=INT, 3=BOOL
-        required: true
-    tags:
-      - tag1
-      - tag2
-    metadata:
-      version: "v1.0"
+---
+key: <dot.separated.key>
+version: <semver>
+author: <email-or-username>
+description: <what this prompt does>
+tags: [tag1, tag2]
+variants: [default, concise, verbose]
+variables: [var1, var2]
+created_at: 2025-01-01T00:00:00Z
+updated_at: 2025-01-01T00:00:00Z
+---
+Prompt content with {{.var1}} and {{.var2}} placeholders.
 ```
+
+The metadata section (between `---` markers) contains structured fields. The content section (after the second `---`) is the actual prompt text with `{{.variable}}` interpolation placeholders.
 
 ## Common Tasks
 
 ### Load Prompts from YAML Files
 
-Create a FileRegistry and load prompts:
+Create a FileRegistry, reload from disk, and retrieve prompts:
 
 ```go
 registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
 
-prompt, err := registry.Get(ctx, "system", map[string]interface{}{
+prompt, err := registry.Get(ctx, "agent.system", map[string]interface{}{
     "backend_type": "postgres",
     "tool_count":   5,
 })
@@ -121,41 +136,47 @@ fmt.Println(prompt)
 
 ### Use Variable Interpolation
 
-Define variables in your prompt YAML:
+Variables use `{{.variable_name}}` syntax in prompt content. All string values are escaped to prevent prompt injection attacks (control characters removed, HTML entities escaped, injection patterns sanitized).
+
+Define variables in your prompt YAML frontmatter:
 
 ```yaml
-content: |
-  Connected to {{.backend_type}} database.
-  Available tables: {{.table_count}}
-  User: {{.user_name}}
-variables:
-  backend_type:
-    type: 1
-    required: true
-  table_count:
-    type: 2
-    required: true
-  user_name:
-    type: 1
-    required: false
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: System prompt with variables
+tags: [agent]
+variants: [default]
+variables: [backend_type, table_count, user_name]
+---
+Connected to {{.backend_type}} database.
+Available tables: {{.table_count}}
+User: {{.user_name}}
 ```
 
 Pass variables when loading:
 
 ```go
-prompt, _ := registry.Get(ctx, "system", map[string]interface{}{
+prompt, _ := registry.Get(ctx, "agent.system", map[string]interface{}{
     "backend_type": "postgres",
     "table_count":  42,
     "user_name":    "alice",
 })
 ```
 
+If a variable is not provided, the `{{.variable_name}}` placeholder is kept as-is in the output.
+
 ### Enable Hot-Reload
 
-Watch for prompt file changes:
+Watch for prompt file changes using `fsnotify`:
 
 ```go
-ctx := context.Background()
+registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
 updates, err := registry.Watch(ctx)
 if err != nil {
     log.Fatal(err)
@@ -168,50 +189,67 @@ go func() {
 }()
 ```
 
+The `Watch()` method monitors the prompts directory and all subdirectories. When YAML files are created, modified, or deleted, it automatically calls `Reload()` and sends a `PromptUpdate` on the channel.
+
 ### Set Up A/B Testing
 
-Define variants in your prompt file:
+#### Define Variants as Separate Files
 
-```yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Default system prompt content...
-    variants:
-      concise: |
-        Short and concise prompt content...
-      verbose: |
-        Detailed and verbose prompt content...
-```
+Create separate files for each variant. The variant name is extracted from the filename:
 
-Select a specific variant:
+- `system.yaml` -- "default" variant
+- `system.concise.yaml` -- "concise" variant
+- `system.verbose.yaml` -- "verbose" variant
+
+Each file uses the same `key` in its frontmatter so they are grouped together.
+
+#### Select a Specific Variant
 
 ```go
 // Get default variant
-prompt, _ := registry.Get(ctx, "system", vars)
+prompt, _ := registry.Get(ctx, "agent.system", vars)
 
 // Get specific variant
-prompt, _ := registry.GetWithVariant(ctx, "system", "concise", vars)
+prompt, _ := registry.GetWithVariant(ctx, "agent.system", "concise", vars)
 ```
 
-Configure automatic variant selection:
+#### Use Automatic Variant Selection
+
+Wrap a `FileRegistry` with an `ABTestingRegistry` for automatic selection:
 
 ```go
-// Hash-based selection (deterministic per session)
-selector := prompts.NewHashBasedSelector("session_id", map[string]float64{
-    "default": 0.6,
-    "concise": 0.2,
-    "verbose": 0.2,
-})
+fileRegistry := prompts.NewFileRegistry("./prompts")
+if err := fileRegistry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
 
-// Random selection
-selector := prompts.NewRandomSelector(map[string]float64{
-    "default": 0.6,
-    "concise": 0.2,
-    "verbose": 0.2,
-})
+// Hash-based selection (deterministic per session)
+selector := prompts.NewHashSelector()
+abRegistry := prompts.NewABTestingRegistry(fileRegistry, selector)
+
+// Automatically selects variant based on session ID in context
+ctx = prompts.WithSessionID(ctx, "session-123")
+prompt, _ := abRegistry.Get(ctx, "agent.system", vars)
+```
+
+Available selectors:
+
+```go
+// Hash-based: same session always gets the same variant (deterministic)
+selector := prompts.NewHashSelector()
+
+// Random: uniform random selection (pass 0 for random seed)
+selector := prompts.NewRandomSelector(0)
+
+// Weighted: weighted random selection
+// Weights are relative (don't need to sum to 100)
+selector := prompts.NewWeightedSelector(map[string]int{
+    "default": 4,      // 80% (4/5)
+    "experimental": 1, // 20% (1/5)
+}, 0)
+
+// Explicit: always returns a specific variant
+selector := prompts.NewExplicitSelector("concise")
 ```
 
 ## Examples
@@ -221,34 +259,37 @@ selector := prompts.NewRandomSelector(map[string]float64{
 Create `prompts/agent/system.yaml`:
 
 ```yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Help users interact with {{.backend_type}} data systems.
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Base system prompt for SQL agents
+tags: [agent, system, sql]
+variants: [default]
+variables: [backend_type, tool_count]
+created_at: 2025-01-01T00:00:00Z
+updated_at: 2025-01-17T00:00:00Z
+---
+Help users interact with {{.backend_type}} data systems.
 
-      Available Tools: {{.tool_count}}
+Available Tools: {{.tool_count}}
 
-      Guidelines:
-      1. Discover schema before querying
-      2. Warn about expensive operations
-      3. Use patterns from the library
-      4. Auto-correct errors
-    variables:
-      backend_type:
-        type: 1
-        required: true
-      tool_count:
-        type: 2
-        required: true
+Guidelines:
+1. Discover schema before querying
+2. Warn about expensive operations
+3. Use patterns from the library
+4. Auto-correct errors
 ```
 
 Load in your code:
 
 ```go
 registry := prompts.NewFileRegistry("./prompts")
-prompt, _ := registry.Get(ctx, "system", map[string]interface{}{
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+prompt, _ := registry.Get(ctx, "agent.system", map[string]interface{}{
     "backend_type": "postgres",
     "tool_count":   5,
 })
@@ -256,132 +297,174 @@ prompt, _ := registry.Get(ctx, "system", map[string]interface{}{
 
 ### Example 2: Tool Descriptions
 
-Create `prompts/tools/sql.yaml`:
+Create `prompts/tools/execute_sql.yaml`:
 
 ```yaml
-name: tools
-namespace: loom
-prompts:
-  - id: execute_sql
-    content: |
-      Execute a SQL query against the database.
+---
+key: tools.execute_sql
+version: 1.0.0
+author: developer@example.com
+description: SQL execution tool description
+tags: [tool, sql]
+variants: [default]
+variables: []
+---
+Execute a SQL query against the database.
 
-      When to use:
-      - Retrieve data from tables
-      - Aggregate or analyze data
+When to use:
+- Retrieve data from tables
+- Aggregate or analyze data
 
-      Prerequisites:
-      - Call get_table_schema first
+Prerequisites:
+- Call get_table_schema first
 
-      Arguments:
-      - sql (required): The SQL query
-      - limit (optional): Max rows (default: 100)
+Arguments:
+- sql (required): The SQL query
+- limit (optional): Max rows (default: 100)
 ```
 
 ### Example 3: A/B Test Variants
 
-Create `prompts/agent/system.yaml` with variants:
+Create the default variant at `prompts/agent/system.yaml`:
 
 ```yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Help users interact with {{.backend_type}} data systems through natural language.
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: System prompt for agents
+tags: [agent, system]
+variants: [default, concise, verbose]
+variables: [backend_type]
+---
+Help users interact with {{.backend_type}} data systems through natural language.
 
-      Capabilities: {{.capabilities}}
-
-      Guidelines:
-      1. Schema Discovery: Understand data structures first
-      2. Cost Awareness: Estimate expensive operations
-      3. Pattern Usage: Use validated patterns
-      4. Error Recovery: Auto-detect and fix errors
-    variants:
-      concise: |
-        Query {{.backend_type}} data efficiently.
-        Guidelines: schema first, cost check, use patterns.
-      verbose: |
-        Help users interact with {{.backend_type}} data systems through natural language
-        with detailed explanations and step-by-step guidance.
-
-        Your capabilities: {{.capabilities}}
-
-        Operating Principles:
-
-        1. Schema Discovery First
-           Always understand table structures before generating queries.
-
-        2. Cost-Conscious Operations
-           Estimate query costs and warn about expensive operations.
-
-        3. Pattern Library Integration
-           Use pre-validated patterns from the library.
-
-        4. Autonomous Error Recovery
-           Analyze errors and generate fixes automatically.
+Guidelines:
+1. Schema Discovery: Understand data structures first
+2. Cost Awareness: Estimate expensive operations
+3. Pattern Usage: Use validated patterns
+4. Error Recovery: Auto-detect and fix errors
 ```
 
-Configure A/B testing:
+Create the concise variant at `prompts/agent/system.concise.yaml`:
 
 ```yaml
-# config.yaml
-prompts:
-  ab_testing:
-    enabled: true
-    variant_selection: hash
-    hash_key: session_id
-    splits:
-      default: 0.6
-      concise: 0.2
-      verbose: 0.2
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Concise system prompt variant
+tags: [agent, system]
+variants: [default, concise, verbose]
+variables: [backend_type]
+---
+Query {{.backend_type}} data efficiently.
+Guidelines: schema first, cost check, use patterns.
+```
+
+Create the verbose variant at `prompts/agent/system.verbose.yaml`:
+
+```yaml
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Verbose system prompt variant
+tags: [agent, system]
+variants: [default, concise, verbose]
+variables: [backend_type]
+---
+Help users interact with {{.backend_type}} data systems through natural language
+with detailed explanations and step-by-step guidance.
+
+Operating Principles:
+
+1. Schema Discovery First
+   Always understand table structures before generating queries.
+
+2. Cost-Conscious Operations
+   Estimate query costs and warn about expensive operations.
+
+3. Pattern Library Integration
+   Use pre-validated patterns from the library.
+
+4. Autonomous Error Recovery
+   Analyze errors and generate fixes automatically.
+```
+
+Configure A/B testing in Go:
+
+```go
+fileRegistry := prompts.NewFileRegistry("./prompts")
+if err := fileRegistry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+// Use weighted selector: 60% default, 20% concise, 20% verbose
+selector := prompts.NewWeightedSelector(map[string]int{
+    "default": 60,
+    "concise": 20,
+    "verbose": 20,
+}, 0)
+abRegistry := prompts.NewABTestingRegistry(fileRegistry, selector)
+
+// Session ID determines variant (consistent for same session with HashSelector)
+ctx = prompts.WithSessionID(ctx, sessionID)
+prompt, _ := abRegistry.Get(ctx, "agent.system", map[string]interface{}{
+    "backend_type": "postgres",
+})
 ```
 
 ## Troubleshooting
 
 ### Prompt Not Found
 
-1. Check the file exists:
+1. Check the file exists and uses frontmatter format:
    ```bash
    ls prompts/agent/system.yaml
+   head -5 prompts/agent/system.yaml  # Should start with ---
    ```
 
-2. Verify the prompt ID matches:
+2. Verify the `key` field in the frontmatter matches what you request:
    ```bash
-   grep "id:" prompts/agent/system.yaml
+   grep "key:" prompts/agent/system.yaml
    ```
 
-3. Check the registry path:
+3. Verify `Reload()` was called after creating the registry:
    ```go
-   registry := prompts.NewFileRegistry("./prompts")  // Correct path?
+   registry := prompts.NewFileRegistry("./prompts")
+   if err := registry.Reload(ctx); err != nil {
+       log.Fatal(err)  // Check this error!
+   }
    ```
 
 ### Variable Not Replaced
 
 1. Check variable name matches (case-sensitive):
    ```yaml
-   content: |
-     {{.backend_type}}  # Must match variable name
-   variables:
-     backend_type:      # Exact match required
-       type: 1
+   ---
+   variables: [backend_type]
+   ---
+   {{.backend_type}}  # Must match variable name exactly
    ```
 
 2. Verify variable is passed when loading:
    ```go
-   registry.Get(ctx, "system", map[string]interface{}{
-       "backend_type": "postgres",  // Key must match
+   registry.Get(ctx, "agent.system", map[string]interface{}{
+       "backend_type": "postgres",  // Key must match placeholder name
    })
    ```
 
+3. Note: Missing variables are left as `{{.variable_name}}` in the output (not replaced).
+
 ### Hot-Reload Not Working
 
-1. Verify fsnotify is detecting changes:
+1. Verify Watch is detecting changes:
    ```go
    updates, _ := registry.Watch(ctx)
    go func() {
        for update := range updates {
-           log.Printf("Detected: %s", update.Key)
+           log.Printf("Detected: %s (%s)", update.Key, update.Action)
        }
    }()
    ```
@@ -389,3 +472,17 @@ prompts:
 2. Check file is in watched directory
 
 3. On some systems, editors create new files instead of modifying (try saving directly)
+
+### Frontmatter Parse Error
+
+If you see `invalid format: expected YAML frontmatter with --- separator`, ensure your YAML file has the correct structure:
+
+```yaml
+---
+key: my.prompt.key
+version: 1.0.0
+---
+Prompt content here.
+```
+
+The file must have exactly two `---` delimiters: one before the metadata and one after. Content before the first `---` is ignored.

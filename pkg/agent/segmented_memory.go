@@ -98,6 +98,17 @@ type SegmentedMemory struct {
 	tokenCount      int           // Actual token count of current context
 	tokenCountDirty bool          // Whether token count needs recalculation
 
+	// Per-layer token count caches (avoids full recalculation on every AddMessage)
+	cachedROMTokens      int  // Tokens in ROM layer (changes only on init)
+	cachedKernelTokens   int  // Tokens in kernel layer (tools + results + schemas)
+	cachedL1Tokens       int  // Tokens in L1 messages
+	cachedL2Tokens       int  // Tokens in L2 summary
+	cachedPatternTokens  int  // Tokens in pattern content
+	cachedSkillTokens    int  // Tokens in skill content
+	cachedPromotedTokens int  // Tokens in promoted context
+	kernelDirty          bool // Whether kernel layer needs recounting
+	l1Dirty              bool // Whether L1 needs full recount (e.g., after compression)
+
 	// Memory compression
 	compressor MemoryCompressor // LLM-powered compression (optional)
 
@@ -196,12 +207,12 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
 		maxL1Tokens:        profile.MaxL1Tokens,           // Use profile value (token-based)
 		minL1Messages:      profile.MinL1Messages,         // Use profile value (minimum for recency)
-		maxToolResults:     1,                             // Database-backed: keep only immediate previous result
+		maxToolResults:     5,                             // Keep last 5 tool results in kernel for richer context
 		compressionProfile: profile,                       // Store profile for adaptive compression
 	}
 
-	// Initialize token count with ROM layer
-	sm.updateTokenCount()
+	// Initialize all per-layer token caches
+	sm.fullRecount()
 	sm.tokenCountDirty = false
 	return sm
 }
@@ -309,15 +320,32 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 
 	sm.l1Messages = append(sm.l1Messages, msg)
 
-	// Recalculate token count if dirty (from schema operations) or after adding message
-	// This ensures accurate budget tracking for compression decisions
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
+	// Incremental L1 token update: count only the new message's tokens
+	// instead of recounting ALL messages. This avoids O(n) tiktoken calls
+	// on every AddMessage.
+	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
+	if len(msg.ToolCalls) > 0 {
+		msgTokens += sm.tokenCounter.CountTokens(fmt.Sprintf("%v", msg.ToolCalls))
+	}
+	if msg.ToolResult != nil {
+		msgTokens += sm.tokenCounter.CountTokens(fmt.Sprintf("%v", *msg.ToolResult))
+	}
+	sm.cachedL1Tokens += msgTokens
+
+	// If other layers were dirtied (e.g., schema operations between messages),
+	// do a full recount to pick up those changes too.
+	if sm.tokenCountDirty {
+		sm.fullRecount()
+		sm.tokenCountDirty = false
+	} else {
+		// Fast path: just update the total from cached layer values
+		sm.updateTokenCount()
+	}
 
 	// Check if we need to compress based on two criteria:
 	// 1. L1 exceeds token budget (token-based, not message-based)
 	// 2. Overall token budget exceeds warning threshold (profile-dependent)
-	l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	l1Tokens := sm.cachedL1Tokens
 	budgetUsage := sm.tokenBudget.UsagePercentage()
 	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
 	shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
@@ -350,6 +378,10 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 			sm.l1Messages = sm.l1Messages[toCompressCount:]
 
 			sm.compressToL2(ctx, toCompress)
+			// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
+			sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+			sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+			sm.l1Dirty = false
 			sm.updateTokenCount()
 			sm.tokenCountDirty = false
 
@@ -372,86 +404,184 @@ func min(a, b int) int {
 // Returns adjusted compression count that doesn't split tool pairs.
 // Must hold lock when calling this method.
 //
-// CRITICAL: Tool pairs must NEVER be compressed because compression converts them to text summaries,
-// losing the tool_use/tool_result block structure that Bedrock/Anthropic API requires.
-// Instead, we EXCLUDE tool pairs from compression entirely.
+// CRITICAL: Tool pairs must NEVER be split because compression converts them to
+// text summaries, losing the tool_use/tool_result block structure that the
+// Bedrock/Anthropic API requires. For parallel tool calls (one assistant message
+// with N tool_use blocks), ALL N tool_result messages must stay with their
+// assistant — compressing even one tool_result orphans it from the API's
+// perspective.
 func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	if toCompressCount >= len(sm.l1Messages) {
 		return toCompressCount
 	}
 
-	// Check if we're splitting a tool_use/tool_result pair
-	// The compression boundary should be after a complete exchange:
-	// 1. User message
-	// 2. Assistant message (possibly with tool_use blocks)
-	// 3. Tool result messages (role=tool with tool_use_id)
-	//
-	// If the message at boundary-1 is an assistant with tool_calls,
-	// and the message at boundary is a tool result (role=tool),
-	// we need to EXCLUDE the assistant from compression to keep the pair in L1.
+	// Build a set of tool_call IDs for each assistant message, and a reverse
+	// map from tool_use_id → assistant index, so we can reason about complete
+	// groups rather than individual messages.
+	type toolGroup struct {
+		assistantIdx int
+		toolCallIDs  map[string]struct{}
+	}
 
-	boundaryIdx := toCompressCount
+	// Collect all tool groups in the full message list.
+	var groups []toolGroup
+	assistantForToolID := make(map[string]int) // tool_use_id → index into groups
 
-	// Check if previous message is assistant with tool calls
-	if boundaryIdx > 0 && boundaryIdx < len(sm.l1Messages) {
-		prevMsg := sm.l1Messages[boundaryIdx-1]
-		currMsg := sm.l1Messages[boundaryIdx]
+	for i, msg := range sm.l1Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			g := toolGroup{
+				assistantIdx: i,
+				toolCallIDs:  make(map[string]struct{}, len(msg.ToolCalls)),
+			}
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					g.toolCallIDs[tc.ID] = struct{}{}
+					assistantForToolID[tc.ID] = len(groups)
+				}
+			}
+			groups = append(groups, g)
+		}
+	}
 
-		// If prev is assistant with tool_use and curr is tool result,
-		// we're splitting a pair - EXCLUDE the assistant from compression
-		if prevMsg.Role == "assistant" && len(prevMsg.ToolCalls) > 0 && currMsg.Role == "tool" {
-			// Move boundary back to exclude the assistant message
-			toCompressCount--
-
-			// Also check if there are more assistant messages with tool_calls before this
-			// and exclude them as well to preserve complete tool interaction sequences
-			for toCompressCount > 0 {
-				checkMsg := sm.l1Messages[toCompressCount-1]
-				if checkMsg.Role == "assistant" && len(checkMsg.ToolCalls) > 0 {
-					// Check if there are tool results after this assistant
-					hasToolResults := false
-					for i := toCompressCount; i < len(sm.l1Messages); i++ {
-						if sm.l1Messages[i].Role == "tool" {
-							hasToolResults = true
-							break
-						}
-						// Stop checking if we hit a user message (start of new exchange)
-						if sm.l1Messages[i].Role == "user" {
-							break
-						}
-					}
-					if hasToolResults {
-						toCompressCount--
-					} else {
-						break
-					}
-				} else {
-					break
+	// For each group, find the index of its last tool_result in the message list.
+	// A group is "complete" only when all its tool_results are present.
+	groupLastToolIdx := make(map[int]int, len(groups))
+	groupFoundCount := make(map[int]int, len(groups))
+	for i, msg := range sm.l1Messages {
+		if msg.Role == "tool" && msg.ToolUseID != "" {
+			if gIdx, ok := assistantForToolID[msg.ToolUseID]; ok {
+				groupFoundCount[gIdx]++
+				if i > groupLastToolIdx[gIdx] {
+					groupLastToolIdx[gIdx] = i
 				}
 			}
 		}
 	}
 
-	// Final safety check: scan backwards from boundary to ensure we're not
-	// leaving orphaned tool results in L1 after compression
-	for i := toCompressCount; i < len(sm.l1Messages); i++ {
-		if sm.l1Messages[i].Role == "tool" {
-			// Found a tool message that would remain in L1
-			// Check if its corresponding assistant is being compressed
-			for j := i - 1; j >= 0; j-- {
-				if sm.l1Messages[j].Role == "assistant" && len(sm.l1Messages[j].ToolCalls) > 0 {
-					if j < toCompressCount {
-						// The assistant is being compressed but tool result would stay
-						// Move boundary to exclude this assistant
-						toCompressCount = j
+	// Walk backward from the proposed boundary to find a safe cut point.
+	// A boundary is safe when it doesn't fall inside any tool group — i.e.,
+	// it's not between an assistant(tool_calls) and any of its tool_results,
+	// and it's not between two tool_results of the same parallel call.
+	changed := true
+	for changed {
+		changed = false
+
+		for gIdx, g := range groups {
+			lastToolIdx, hasResults := groupLastToolIdx[gIdx]
+			isComplete := hasResults && groupFoundCount[gIdx] == len(g.toolCallIDs)
+
+			if g.assistantIdx < toCompressCount {
+				// Assistant would be compressed.
+				if !isComplete {
+					// Incomplete group: pull boundary back to exclude assistant.
+					toCompressCount = g.assistantIdx
+					changed = true
+				} else if lastToolIdx >= toCompressCount {
+					// Assistant compressed but some tool_results stay in L1 — pull back.
+					toCompressCount = g.assistantIdx
+					changed = true
+				}
+				// If assistant AND all its results are compressed, that's fine.
+			} else {
+				// Assistant stays in L1.
+				if hasResults {
+					// Some tool_results might be on the compressed side of the boundary.
+					for i := g.assistantIdx + 1; i < len(sm.l1Messages) && i <= lastToolIdx; i++ {
+						if sm.l1Messages[i].Role == "tool" && sm.l1Messages[i].ToolUseID != "" {
+							if _, belongs := g.toolCallIDs[sm.l1Messages[i].ToolUseID]; belongs {
+								if i < toCompressCount {
+									// This tool_result would be compressed but its assistant stays.
+									toCompressCount = g.assistantIdx
+									changed = true
+									break
+								}
+							}
+						}
 					}
-					break
 				}
 			}
 		}
 	}
 
 	return toCompressCount
+}
+
+// ReplayMessages bulk-loads messages into L1 without per-message compression.
+// This MUST be used instead of calling AddMessage in a loop when restoring a
+// session from the database. Per-message AddMessage triggers compression after
+// each addition, which can fire BETWEEN an assistant tool_use message and its
+// corresponding tool_result — the tool_result hasn't been replayed yet so
+// adjustCompressionBoundary can't protect the pair. The result is an orphaned
+// tool_result in L1 whose tool_use was already compressed to L2 text, causing
+// the Anthropic/Bedrock API to reject the request.
+//
+// ReplayMessages loads all messages first, then runs a single compression pass
+// where the full history is present and tool pairs can be properly preserved.
+func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Message) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if len(messages) == 0 {
+		return
+	}
+
+	// Bulk-load all messages into L1 without triggering per-message compression.
+	sm.l1Messages = append(sm.l1Messages, messages...)
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+
+	// Now run compression with the complete message set so
+	// adjustCompressionBoundary can see all tool_use/tool_result pairs.
+	l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	budgetUsage := sm.tokenBudget.UsagePercentage()
+	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
+	shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
+
+	if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
+		criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
+
+		// Compress in batches (same adaptive logic as AddMessage) until we're
+		// under budget or can't compress further. A single giant batch could
+		// overwhelm the LLM summarizer, so we iterate.
+		for {
+			var toCompressCount int
+			budgetUsage = sm.tokenBudget.UsagePercentage()
+			l1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+			if l1Tokens <= sm.maxL1Tokens && budgetUsage <= warningThreshold {
+				break
+			}
+			if len(sm.l1Messages) <= sm.minL1Messages {
+				break
+			}
+
+			if budgetUsage > criticalThreshold {
+				toCompressCount = min(sm.compressionProfile.CriticalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			} else if budgetUsage > warningThreshold {
+				toCompressCount = min(sm.compressionProfile.WarningBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			} else {
+				toCompressCount = min(sm.compressionProfile.NormalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			}
+
+			if toCompressCount <= 0 {
+				break
+			}
+
+			toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
+			if toCompressCount <= 0 {
+				break // adjustCompressionBoundary reduced to 0 — nothing safe to compress
+			}
+
+			tokensBefore := sm.tokenCount
+			toCompress := sm.l1Messages[:toCompressCount]
+			sm.l1Messages = sm.l1Messages[toCompressCount:]
+			sm.compressToL2(ctx, toCompress)
+			sm.updateTokenCount()
+			sm.tokenCountDirty = false
+
+			tokensSaved := tokensBefore - sm.tokenCount
+			sm.logCompressionEvent(len(toCompress), tokensSaved)
+		}
+	}
 }
 
 // AddToolResult adds a tool execution result to kernel layer.
@@ -474,6 +604,8 @@ func (sm *SegmentedMemory) AddToolResult(result CachedToolResult) {
 		}
 	}
 
+	sm.recountKernel()
+	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }
@@ -521,8 +653,8 @@ func (sm *SegmentedMemory) CacheSchema(key, schema string) {
 		}
 	}
 
-	// Mark token count as dirty for lazy recalculation
-	// Token counting is expensive and not critical for schema caching
+	// Mark kernel dirty for lazy recalculation
+	sm.kernelDirty = true
 	sm.tokenCountDirty = true
 }
 
@@ -827,13 +959,75 @@ func (sm *SegmentedMemory) containsToolCall(msg Message) bool {
 }
 
 // updateTokenCount calculates actual token usage across all memory layers (must hold lock).
+// Uses per-layer caching to avoid expensive tiktoken calls when layers haven't changed.
+// ROM tokens are computed once at construction. Kernel, pattern, skill, L2, and promoted
+// layers are recounted only when their dirty flags are set. L1 is recounted only when
+// l1Dirty is set (e.g., after compression removes messages).
 func (sm *SegmentedMemory) updateTokenCount() {
+	// ROM layer — cached at construction, never changes
+	// (cachedROMTokens is set in constructor and after full recount)
+
+	// Kernel layer — recount only when dirty
+	if sm.kernelDirty {
+		sm.recountKernel()
+		sm.kernelDirty = false
+	}
+
+	// L1 layer — recount only when dirty (compression removed messages)
+	if sm.l1Dirty {
+		sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+		sm.l1Dirty = false
+	}
+
+	// Sum all cached layer values
+	count := sm.cachedROMTokens +
+		sm.cachedKernelTokens +
+		sm.cachedL1Tokens +
+		sm.cachedL2Tokens +
+		sm.cachedPatternTokens +
+		sm.cachedSkillTokens +
+		sm.cachedPromotedTokens
+
+	sm.tokenCount = count
+
+	// Update token budget usage
+	sm.tokenBudget.Reset()
+	sm.tokenBudget.Use(count)
+}
+
+// fullRecount forces a complete recalculation of all layer caches (must hold lock).
+// Used during initialization and when tokenCountDirty is set by operations that
+// change layers without updating their specific cache (backwards compatibility).
+func (sm *SegmentedMemory) fullRecount() {
+	sm.cachedROMTokens = sm.tokenCounter.CountTokens(sm.romContent)
+	sm.recountKernel()
+	sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+	sm.cachedPatternTokens = sm.tokenCounter.CountTokens(sm.patternContent)
+	sm.cachedSkillTokens = sm.tokenCounter.CountTokens(sm.skillContent)
+	if len(sm.promotedContext) > 0 {
+		sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
+	} else {
+		sm.cachedPromotedTokens = 0
+	}
+	sm.kernelDirty = false
+	sm.l1Dirty = false
+
+	sm.tokenCount = sm.cachedROMTokens +
+		sm.cachedKernelTokens +
+		sm.cachedL1Tokens +
+		sm.cachedL2Tokens +
+		sm.cachedPatternTokens +
+		sm.cachedSkillTokens +
+		sm.cachedPromotedTokens
+
+	sm.tokenBudget.Reset()
+	sm.tokenBudget.Use(sm.tokenCount)
+}
+
+// recountKernel recalculates kernel layer tokens (must hold lock).
+func (sm *SegmentedMemory) recountKernel() {
 	count := 0
-
-	// ROM layer
-	count += sm.tokenCounter.CountTokens(sm.romContent)
-
-	// Kernel layer
 	if len(sm.tools) > 0 {
 		count += sm.tokenCounter.CountTokens(fmt.Sprintf("Available tools: %s", strings.Join(sm.tools, ", ")))
 	}
@@ -841,29 +1035,7 @@ func (sm *SegmentedMemory) updateTokenCount() {
 	for key, schema := range sm.schemaCache {
 		count += sm.tokenCounter.CountTokens(fmt.Sprintf("%s: %s", key, schema))
 	}
-
-	// L1 layer (messages)
-	count += sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-
-	// L2 layer (summary)
-	count += sm.tokenCounter.CountTokens(sm.l2Summary)
-
-	// Pattern content
-	count += sm.tokenCounter.CountTokens(sm.patternContent)
-
-	// Skill content
-	count += sm.tokenCounter.CountTokens(sm.skillContent)
-
-	// Promoted context (from swap layer)
-	if len(sm.promotedContext) > 0 {
-		count += sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
-	}
-
-	sm.tokenCount = count
-
-	// Update token budget usage
-	sm.tokenBudget.Reset()
-	sm.tokenBudget.Use(count)
+	sm.cachedKernelTokens = count
 }
 
 // InjectPattern injects a formatted pattern into the message stream.
@@ -875,7 +1047,8 @@ func (sm *SegmentedMemory) InjectPattern(patternContent string, patternName stri
 
 	sm.patternContent = patternContent
 	sm.patternName = patternName
-	sm.tokenCountDirty = true
+	sm.cachedPatternTokens = sm.tokenCounter.CountTokens(patternContent)
+	sm.updateTokenCount()
 
 	if sm.tracer != nil {
 		sm.tracer.RecordMetric("patterns.injected", 1.0, map[string]string{
@@ -891,7 +1064,8 @@ func (sm *SegmentedMemory) InjectSkills(content string, names []string) {
 	defer sm.mu.Unlock()
 	sm.skillContent = content
 	sm.skillNames = names
-	sm.tokenCountDirty = true
+	sm.cachedSkillTokens = sm.tokenCounter.CountTokens(content)
+	sm.updateTokenCount()
 }
 
 // GetMessagesForLLM builds the full message list for the LLM call.
@@ -1027,13 +1201,68 @@ func (sm *SegmentedMemory) GetTokenCount() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Recalculate if dirty (lazy evaluation for performance)
+	// Recalculate if dirty (lazy evaluation for performance).
+	// tokenCountDirty means a layer changed via an operation that didn't update
+	// its specific cache — do a full recount for correctness.
 	if sm.tokenCountDirty {
-		sm.updateTokenCount()
+		sm.fullRecount()
 		sm.tokenCountDirty = false
 	}
 
 	return sm.tokenCount
+}
+
+// GetActivePattern returns the name of the currently injected pattern (empty if none).
+func (sm *SegmentedMemory) GetActivePattern() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.patternName
+}
+
+// GetTokenBudgetMax returns the total token budget (context window size).
+func (sm *SegmentedMemory) GetTokenBudgetMax() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	_, _, total := sm.tokenBudget.GetUsage()
+	return total
+}
+
+// ResetContext clears the entire context window: L1 messages, L2 summary, promoted context,
+// findings cache, schema cache, and tool results. ROM and kernel (tools list) are preserved
+// since they are structural, not conversational. Pattern and skill injections are also cleared
+// so the next turn can re-evaluate them fresh.
+func (sm *SegmentedMemory) ResetContext() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Clear conversational layers
+	sm.l1Messages = sm.l1Messages[:0]
+	sm.l2Summary = ""
+	sm.promotedContext = sm.promotedContext[:0]
+
+	// Clear caches (they're per-conversation artifacts)
+	sm.findingsCache = make(map[string]Finding)
+	sm.schemaCache = make(map[string]string)
+	sm.schemaAccessLog = make(map[string]time.Time)
+	sm.toolResults = sm.toolResults[:0]
+
+	// Clear pattern and skill injections so next turn re-evaluates
+	sm.patternContent = ""
+	sm.patternName = ""
+	sm.skillContent = ""
+	sm.skillNames = nil
+
+	// Reset swap counters
+	sm.swapEvictionCount = 0
+	sm.swapRetrievalCount = 0
+
+	// Full recount after reset
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+
+	if sm.tracer != nil {
+		sm.tracer.RecordMetric("memory.context_reset", 1.0, nil)
+	}
 }
 
 // GetL1MessageCount returns number of messages in L1 cache.
@@ -1043,12 +1272,38 @@ func (sm *SegmentedMemory) GetL1MessageCount() int {
 	return len(sm.l1Messages)
 }
 
+// FlushToSwap forces the full compression pipeline: L1 → L2 → swap.
+// Ensures all conversation content is persisted to searchable storage.
+// Call this when a session ends or before cross-session queries.
+func (sm *SegmentedMemory) FlushToSwap(ctx context.Context) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Step 1: Compress any remaining L1 messages into L2.
+	if len(sm.l1Messages) > 0 {
+		sm.compressToL2(ctx, sm.l1Messages)
+		sm.l1Messages = sm.l1Messages[:0]
+	}
+
+	// Step 2: Evict L2 to swap storage so it's searchable.
+	if sm.l2Summary != "" && sm.swapEnabled {
+		if err := sm.evictL2ToSwap(ctx); err != nil {
+			return fmt.Errorf("flush L2 to swap: %w", err)
+		}
+	}
+
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+	return nil
+}
+
 // ClearL2 clears the L2 summary cache.
 func (sm *SegmentedMemory) ClearL2() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	sm.l2Summary = ""
+	sm.cachedL2Tokens = 0
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }
@@ -1062,12 +1317,40 @@ func (sm *SegmentedMemory) CompactMemory(ctx context.Context) (int, int) {
 
 	if len(sm.l1Messages) > 0 {
 		// Track metrics before compression
-		messageCount := len(sm.l1Messages)
 		tokensBefore := sm.tokenCount
 
-		sm.compressToL2(ctx, sm.l1Messages)
-		sm.l1Messages = sm.l1Messages[:0] // Clear L1
-		sm.updateTokenCount()
+		// Find the last user message — keep it and any subsequent
+		// assistant/tool messages in L1 so downstream consumers
+		// (GetMessagesForLLM, convertMessagesToConverse) always have
+		// at least one user-role message to work with.
+		lastUserIdx := -1
+		for i := len(sm.l1Messages) - 1; i >= 0; i-- {
+			if sm.l1Messages[i].Role == "user" {
+				lastUserIdx = i
+				break
+			}
+		}
+
+		var messageCount int
+		if lastUserIdx >= 0 {
+			// Compress everything before the last user message.
+			messageCount = lastUserIdx
+			sm.compressToL2(ctx, sm.l1Messages[:lastUserIdx])
+			// Keep the last user message and everything after it in L1.
+			remaining := make([]Message, len(sm.l1Messages[lastUserIdx:]))
+			copy(remaining, sm.l1Messages[lastUserIdx:])
+			sm.l1Messages = remaining
+		} else {
+			// No user message found — compress all (original behavior).
+			messageCount = len(sm.l1Messages)
+			sm.compressToL2(ctx, sm.l1Messages)
+			sm.l1Messages = sm.l1Messages[:0]
+		}
+
+		// L1 shrank and L2 grew — do a full recount so per-layer token caches
+		// (cachedL1Tokens, cachedL2Tokens) stay consistent with the incremental
+		// updateTokenCount scheme.
+		sm.fullRecount()
 		sm.tokenCountDirty = false
 
 		// Calculate token savings
@@ -1161,10 +1444,10 @@ func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 		"tool_result_max":    sm.maxToolResults,
 		"schema_cache_count": len(sm.schemaCache),
 		"schema_cache_max":   sm.maxSchemas,
-		"rom_token_count":    sm.tokenCounter.CountTokens(sm.romContent),
-		"kernel_token_count": sm.getKernelTokens(),
-		"l1_token_count":     sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages),
-		"l2_token_count":     sm.tokenCounter.CountTokens(sm.l2Summary),
+		"rom_token_count":    sm.cachedROMTokens,
+		"kernel_token_count": sm.cachedKernelTokens,
+		"l1_token_count":     sm.cachedL1Tokens,
+		"l2_token_count":     sm.cachedL2Tokens,
 		"budget_warning":     sm.getBudgetWarning(),
 	}
 }
@@ -1327,10 +1610,39 @@ func (sm *SegmentedMemory) PromoteMessagesToContext(messages []Message) error {
 			promotedTokens, available-used)
 	}
 
-	// Add to promoted context
-	sm.promotedContext = append(sm.promotedContext, messages...)
+	// Sanitize promoted messages: strip tool_use/tool_result blocks that would
+	// break the Anthropic/Bedrock API's strict tool_use→tool_result pairing rules.
+	// Promoted context comes from prior sessions where tool IDs are meaningless.
+	sanitized := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "tool" {
+			continue // Drop tool_result messages entirely — results from another session are noise.
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Keep the text content but drop the tool_calls block.
+			summary := m.Content
+			if summary == "" {
+				// If the assistant message was ONLY tool calls with no text, summarize.
+				var names []string
+				for _, tc := range m.ToolCalls {
+					names = append(names, tc.Name)
+				}
+				summary = fmt.Sprintf("[Used tools: %s]", strings.Join(names, ", "))
+			}
+			sanitized = append(sanitized, Message{
+				Role:      "assistant",
+				Content:   summary,
+				Timestamp: m.Timestamp,
+			})
+			continue
+		}
+		sanitized = append(sanitized, m)
+	}
 
-	// Update token count
+	sm.promotedContext = append(sm.promotedContext, sanitized...)
+
+	// Update promoted cache and totals
+	sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 
@@ -1344,6 +1656,7 @@ func (sm *SegmentedMemory) ClearPromotedContext() {
 	defer sm.mu.Unlock()
 
 	sm.promotedContext = sm.promotedContext[:0]
+	sm.cachedPromotedTokens = 0
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }
@@ -1511,4 +1824,79 @@ func (sm *SegmentedMemory) formatCandidatesForReranking(candidates []Message) st
 		fmt.Fprintf(&sb, "[%d] %s: %s\n", i, msg.Role, preview)
 	}
 	return sb.String()
+}
+
+// TrimLastN removes the last N messages from L1, respecting tool_use/tool_result
+// pair boundaries. If removing a message would orphan a tool result (or leave an
+// assistant message without its subsequent tool results), the boundary is expanded
+// to include the full pair. Returns the actual number of messages removed.
+func (sm *SegmentedMemory) TrimLastN(n int) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if n <= 0 || len(sm.l1Messages) == 0 {
+		return 0
+	}
+
+	// Clamp to available messages.
+	if n > len(sm.l1Messages) {
+		n = len(sm.l1Messages)
+	}
+
+	// Walk backward to find the cut point, expanding to respect pair boundaries.
+	cutIdx := len(sm.l1Messages) - n
+
+	// If the cut lands on a "tool" message, walk backward to include its
+	// preceding assistant message (which holds the tool_use blocks).
+	for cutIdx > 0 && sm.l1Messages[cutIdx].Role == "tool" {
+		cutIdx--
+	}
+
+	removed := len(sm.l1Messages) - cutIdx
+	sm.l1Messages = sm.l1Messages[:cutIdx]
+
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+
+	return removed
+}
+
+// AggressiveTrim keeps only the last keepLastN messages in L1 and clears L2
+// summaries entirely. Used as a last-resort recovery when token budget is
+// critically exceeded even after normal compression. Returns before and after
+// token counts for observability.
+func (sm *SegmentedMemory) AggressiveTrim(keepLastN int) (beforeTokens, afterTokens int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	beforeTokens = sm.tokenCount
+
+	if keepLastN < 0 {
+		keepLastN = 0
+	}
+
+	// Trim L1 to last keepLastN messages, respecting pair boundaries.
+	if len(sm.l1Messages) > keepLastN {
+		cutIdx := len(sm.l1Messages) - keepLastN
+		// Expand forward if we'd cut into a tool-result block.
+		for cutIdx < len(sm.l1Messages) && sm.l1Messages[cutIdx].Role == "tool" {
+			cutIdx++
+		}
+		if cutIdx >= len(sm.l1Messages) {
+			// Edge case: all remaining messages are tool results; keep them all.
+			cutIdx = 0
+		}
+		remaining := make([]Message, len(sm.l1Messages[cutIdx:]))
+		copy(remaining, sm.l1Messages[cutIdx:])
+		sm.l1Messages = remaining
+	}
+
+	// Clear L2 entirely.
+	sm.l2Summary = ""
+
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+	afterTokens = sm.tokenCount
+
+	return beforeTokens, afterTokens
 }

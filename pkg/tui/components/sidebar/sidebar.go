@@ -53,6 +53,7 @@ type Sidebar interface {
 	SetSession(sessionID, agentID string, currentModel *loomv1.ModelInfo) tea.Cmd
 	SetCompactMode(bool)
 	SetTokensAndCost(tokens int64, cost float64)
+	SetContextState(used, max int64)
 }
 
 type sidebarCmp struct {
@@ -63,9 +64,11 @@ type sidebarCmp struct {
 	client        *client.Client
 
 	// Current session info
-	currentModel *loomv1.ModelInfo
-	tokens       int64
-	cost         float64
+	currentModel      *loomv1.ModelInfo
+	tokens            int64
+	cost              float64
+	contextTokensUsed int64 // Server-reported context window fill
+	contextTokensMax  int64 // Server-reported context window capacity
 
 	// Agents list
 	agentsList []agents.AgentInfo
@@ -283,15 +286,26 @@ func (m *sidebarCmp) currentModelBlock() string {
 	parts := []string{modelInfo}
 
 	// Add token and cost info if available
-	if m.tokens > 0 && m.currentModel.ContextWindow > 0 {
-		parts = append(
-			parts,
-			"  "+m.formatTokensAndCost(
-				m.tokens,
-				int64(m.currentModel.ContextWindow),
-				m.cost,
-			),
-		)
+	if m.tokens > 0 || m.contextTokensUsed > 0 {
+		// Prefer server-reported context state over model config
+		ctxWindow := int64(m.currentModel.ContextWindow)
+		if m.contextTokensMax > 0 {
+			ctxWindow = m.contextTokensMax
+		}
+		ctxUsed := m.tokens
+		if m.contextTokensUsed > 0 {
+			ctxUsed = m.contextTokensUsed
+		}
+		if ctxWindow > 0 {
+			parts = append(
+				parts,
+				"  "+m.formatTokensAndCost(
+					ctxUsed,
+					ctxWindow,
+					m.cost,
+				),
+			)
+		}
 	}
 
 	return lipgloss.JoinVertical(
@@ -363,4 +377,10 @@ func (m *sidebarCmp) SetCompactMode(compact bool) {
 func (m *sidebarCmp) SetTokensAndCost(tokens int64, cost float64) {
 	m.tokens = tokens
 	m.cost = cost
+}
+
+// SetContextState updates the server-reported context window state.
+func (m *sidebarCmp) SetContextState(used, max int64) {
+	m.contextTokensUsed = used
+	m.contextTokensMax = max
 }

@@ -22,13 +22,15 @@ import (
 type ParallelExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ParallelPattern
+	workflowID   string
 }
 
 // NewParallelExecutor creates a new parallel executor.
-func NewParallelExecutor(orchestrator *Orchestrator, pattern *loomv1.ParallelPattern) *ParallelExecutor {
+func NewParallelExecutor(orchestrator *Orchestrator, pattern *loomv1.ParallelPattern, workflowID string) *ParallelExecutor {
 	return &ParallelExecutor{
 		orchestrator: orchestrator,
 		pattern:      pattern,
+		workflowID:   workflowID,
 	}
 }
 
@@ -233,9 +235,8 @@ func (e *ParallelExecutor) executeTaskWithSpan(ctx context.Context, task *loomv1
 		agentSpan.SetAttribute("task.number", fmt.Sprintf("%d", taskIndex+1))
 	}
 
-	// Execute agent conversation
-	// Use a unique session ID for this task
-	sessionID := fmt.Sprintf("parallel_%s_task_%d_%d", task.AgentId, taskIndex, time.Now().UnixNano())
+	// Execute agent conversation with deterministic session ID
+	sessionID := fmt.Sprintf("%s-task%d-%s", e.workflowID, taskIndex+1, task.AgentId)
 	response, err := ag.Chat(ctx, sessionID, task.Prompt)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)

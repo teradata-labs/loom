@@ -1,0 +1,249 @@
+# === METADATA START ===
+name: explain_analysis
+title: "EXPLAIN Plan Analysis"
+description: |
+  Analyze and interpret Teradata EXPLAIN output to identify query performance issues.
+  EXPLAIN validates syntax and previews the execution plan without running the query.
+
+  This pattern covers:
+  - EXPLAIN and DYNAMIC EXPLAIN templates
+  - 17+ phrase interpretations (green flags, warnings, critical issues)
+  - Severity classification for plan elements
+  - Step-by-step plan reading workflow
+
+  **Always EXPLAIN before executing non-trivial queries.** EXPLAIN catches syntax
+  errors and performance problems cheaply — before they consume resources or trigger
+  circuit breakers.
+
+category: performance
+difficulty: intermediate
+teradata_function: EXPLAIN
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
+use_cases:
+  - Validate query syntax before execution
+  - Identify performance bottlenecks in query plans
+  - Detect missing statistics causing bad optimizer estimates
+  - Find product joins (Cartesian explosions) before they happen
+  - Verify primary index access patterns
+  - Diagnose data skew from EXPLAIN output
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: sql_query
+    type: string
+    # LLM-HINT: The full SQL query to explain; will be prefixed with EXPLAIN or DYNAMIC EXPLAIN
+    required: true
+    description: "The SQL query to analyze"
+    example: "SELECT * FROM db.orders WHERE customer_id = 123"
+
+  - name: database
+    type: string
+    # LLM-HINT: Database for statistics collection templates
+    required: false
+    description: "Database for statistics collection"
+    example: "analytics"
+
+  - name: table
+    type: string
+    # LLM-HINT: Table for statistics collection templates
+    required: false
+    description: "Table for statistics collection"
+    example: "orders"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === EXPLAIN TEMPLATE ===
+  # LLM-HINT: Use for most queries; validates syntax and shows static execution plan
+  explain:
+    description: "Standard EXPLAIN — validate syntax and preview execution plan"
+    sql: |
+      EXPLAIN {{sql_query}};
+    required_parameters:
+      - sql_query
+
+  # === DYNAMIC_EXPLAIN TEMPLATE ===
+  # LLM-HINT: Better for correlated subqueries, multi-level nesting, or queries where intermediate sizes vary
+  dynamic_explain:
+    description: "DYNAMIC EXPLAIN — better estimates for complex queries"
+    sql: |
+      -- DYNAMIC EXPLAIN: better for correlated subqueries, multi-level nesting,
+      -- or queries where intermediate sizes dramatically change the plan
+      DYNAMIC EXPLAIN {{sql_query}};
+    required_parameters:
+      - sql_query
+
+  # === COLLECT_STATS TEMPLATE ===
+  # LLM-HINT: Run when EXPLAIN shows 'no confidence' or 'low confidence' on key columns
+  collect_statistics:
+    description: "Collect statistics to fix 'no confidence' EXPLAIN estimates"
+    sql: |
+      -- Single column statistics
+      COLLECT STATISTICS ON {{database}}.{{table}} COLUMN ({{column}});
+
+      -- Composite statistics (for multi-column join/filter conditions)
+      COLLECT STATISTICS ON {{database}}.{{table}} COLUMN ({{column1}}, {{column2}});
+
+      -- Primary index statistics
+      COLLECT STATISTICS ON {{database}}.{{table}} INDEX ({{pi_column}});
+    required_parameters:
+      - database
+      - table
+
+  # === SKEW_CHECK TEMPLATE ===
+  # LLM-HINT: Run when EXPLAIN shows (group_amps) on few AMPs; detects PI skew
+  skew_check:
+    description: "Check for AMP skew on a table's primary index"
+    sql: |
+      -- Check row distribution across AMPs
+      SELECT
+        Hashamp() + 1 AS amp,
+        COUNT(*) AS row_count
+      FROM {{database}}.{{table}}
+      GROUP BY Hashamp()
+      ORDER BY row_count DESC;
+    required_parameters:
+      - database
+      - table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "EXPLAIN Before Complex Query"
+    description: "Validate a join query before execution"
+    parameters:
+      sql_query: |
+        SELECT o.order_id, c.name, o.amount
+        FROM analytics.orders o
+        JOIN analytics.customers c ON o.customer_id = c.id
+        WHERE o.order_date >= CURRENT_DATE - 30
+    expected_result: |
+      EXPLAIN output will show:
+      1. Access method for orders table (scan vs index lookup)
+      2. Join strategy (hash join, merge join, or nested join)
+      3. Whether orders are filtered before or after join
+      4. Confidence levels for row estimates
+      5. Spool usage and data redistribution steps
+
+  - name: "Fix No-Confidence Estimates"
+    description: "Collect statistics when EXPLAIN shows no confidence"
+    parameters:
+      database: "analytics"
+      table: "orders"
+    expected_result: |
+      After COLLECT STATISTICS on the filter/join columns,
+      re-EXPLAIN should show 'high confidence' estimates and
+      potentially a different (better) execution plan.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "EXPLAIN shows 'estimated with no confidence'"
+    cause: "No statistics collected on the columns used in WHERE/JOIN conditions"
+    solution: "COLLECT STATISTICS ON db.table COLUMN (column_name); then re-EXPLAIN"
+
+  - error: "Product join on large tables"
+    cause: "Missing or incorrect JOIN condition causing Cartesian product"
+    solution: "Verify JOIN ON clause matches the correct columns. If intentional, add a comment explaining why."
+
+  - error: "All-rows scan on large table"
+    cause: "No primary index match for WHERE clause; no usable secondary index"
+    solution: "Check if WHERE column matches PI. Consider adding secondary index or rewriting query to filter on PI."
+
+  - error: "Massive intermediate spool"
+    cause: "Large redistribution before aggregation or join"
+    solution: "Filter early — push WHERE clauses closer to base tables. Consider volatile tables for intermediate results."
+
+  - error: "(group_amps) on very few AMPs"
+    cause: "Data skew — most rows hash to same AMP(s) due to low-cardinality PI"
+    solution: "Run skew_check template. Consider changing PI to higher-cardinality column."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## EXPLAIN Analysis Best Practices
+
+  ### 1. Always EXPLAIN First
+  Run EXPLAIN before executing any non-trivial query:
+  ```
+  1. Write the query
+  2. EXPLAIN the query
+  3. Read the plan for red flags
+  4. Fix any issues and re-EXPLAIN
+  5. Execute only after plan looks clean
+  ```
+
+  ### 2. EXPLAIN Phrase Quick Reference
+
+  **Green Flags (efficient plan):**
+  - `single-AMP RETRIEVE by way of the unique primary index` — best-case access
+  - `estimated with high confidence` — good statistics, reliable estimates
+  - `estimated with index join confidence` — optimizer used index stats
+  - `duplicated on all AMPs` on a small table — correct broadcast optimization
+  - `execute the following steps in parallel` — concurrent execution
+  - `Spool (Last Use)` — spool freed promptly (good memory management)
+
+  **Warning Signs (investigate):**
+  - `estimated with low confidence` — partial or stale statistics
+  - `redistributed by hash code` on large spool (>500 MB) — expensive data movement
+  - Steps consuming 5-15% of total estimated time
+  - Secondary index scans with large result sets
+  - Multiple sequential redistributions
+  - Missing partition elimination on partitioned tables
+  - `eliminating duplicate rows` — DISTINCT overhead
+
+  **Critical Issues (fix before executing):**
+  - `estimated with no confidence` on large tables — missing statistics entirely
+  - `product join` on large tables — potential Cartesian explosion
+  - `all-rows scan` on very large tables (>1M rows) without clear reason
+  - Steps consuming >15% of total estimated time
+  - `(group_amps)` materializing on very few AMPs — severe skew
+  - Massive intermediate spool (>1 GB estimated)
+
+  ### 3. Join Types in EXPLAIN
+
+  | Join Type | When It's Good | When It's Bad |
+  |-----------|---------------|---------------|
+  | `hash join` | Standard large-table join | If inputs poorly sized |
+  | `merge join` | Inputs already sorted by join key | If sort step added |
+  | `nested join` | Small outer input, indexed inner | Large outer input |
+  | `product join` | Intentional Cartesian (rare) | Almost always a bug |
+  | `RowHash match scan` | Join driven by rowhash ordering | Expected behavior |
+
+  ### 4. When to Use DYNAMIC EXPLAIN
+  Use DYNAMIC EXPLAIN instead of EXPLAIN for:
+  - Correlated subqueries
+  - Multi-level nested queries
+  - Queries where intermediate result sizes vary dramatically
+  - Cases where static EXPLAIN gives unrealistic estimates
+
+  ### 5. Statistics Strategy
+  Missing stats → bad plans → slow queries. Collect statistics on:
+  - **Primary index columns** — always
+  - **JOIN columns** — both sides of every join
+  - **WHERE clause columns** — filter predicates
+  - **Composite statistics** — for multi-column conditions
+  - Refresh periodically as data changes
+
+  ### 6. Reading EXPLAIN Step by Step
+  1. Start from the bottom (innermost operation)
+  2. Follow spool numbers — each step creates or reads a spool
+  3. Look for confidence levels on each estimate
+  4. Check for data redistribution steps (hash redistribution = data movement)
+  5. Verify parallel execution where expected
+  6. Sum up estimated time — find the dominant steps
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - query_tuning
+  - statistics_collection
+  - pi_skew_detection
+  - sql_basics
+# === RELATED_PATTERNS END ===

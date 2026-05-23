@@ -185,3 +185,84 @@ spec:
         - performance
         - capacity-planning
         - teradata
+
+    - name: geospatial
+      description: "Geospatial analytics using ST_Geometry types, spatial predicates, distance calculations, and spatial operations"
+      trigger_conditions:
+        - "user asks about geospatial or spatial analysis"
+        - "user asks about location-based queries or proximity search"
+        - "user mentions ST_Geometry, ST_Point, or ST_Polygon"
+        - "user asks about distance calculations between coordinates"
+        - "user asks about buffer zones, containment, or intersection tests"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/geospatial/geometry_basics.yaml
+        patterns/teradata/geospatial/spatial_relationships.yaml
+        patterns/teradata/geospatial/spatial_operations.yaml
+
+        Key use cases:
+        - Store locator and proximity search
+        - Geofencing and containment checks
+        - Distance calculations (planar, spherical, spheroidal)
+        - Buffer zones and spatial aggregation
+        - Tessellation with MGRS grid partitioning
+      priority: 75
+      tags:
+        - analytics
+        - geospatial
+        - spatial
+        - location
+        - teradata
+
+    - name: hypothesis_testing
+      description: "Statistical hypothesis testing using TD_ANOVA, TD_ChiSq, TD_FTest, and TD_ZTest"
+      trigger_conditions:
+        - "user asks about hypothesis testing or statistical significance"
+        - "user asks about ANOVA or comparing group means"
+        - "user mentions chi-square test or independence testing"
+        - "user asks about A/B test significance or p-value"
+        - "user asks about comparing variances or sample means"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/hypothesis_testing/anova.yaml
+        patterns/teradata/hypothesis_testing/statistical_tests.yaml
+
+        Key use cases:
+        - Comparing average spend across customer segments (ANOVA)
+        - Testing independence between categorical variables (Chi-Square)
+        - Comparing variances of two samples (F-Test)
+        - Testing sample mean differences (Z-Test)
+        - A/B test result evaluation
+      priority: 70
+      tags:
+        - analytics
+        - statistics
+        - hypothesis-testing
+        - significance
+        - teradata
+
+    - name: association
+      description: "Frequent itemset mining and pairwise item affinity using TD_Apriori and TD_CFilter"
+      trigger_conditions:
+        - "user asks about market basket analysis"
+        - "user asks about association rules or frequent itemsets"
+        - "user mentions product recommendations or co-purchase patterns"
+        - "user asks about collaborative filtering or item affinity"
+        - "user asks about Apriori or support/confidence/lift metrics"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/association/apriori.yaml
+        patterns/teradata/association/collaborative_filtering.yaml
+
+        Key use cases:
+        - Market basket analysis (items bought together)
+        - Product recommendation via co-occurrence
+        - Association rules with support, confidence, and lift
+        - Pairwise item affinity scoring with z-score
+      priority: 75
+      tags:
+        - analytics
+        - association-rules
+        - market-basket
+        - recommendation
+        - teradata

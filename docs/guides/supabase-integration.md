@@ -1,6 +1,6 @@
 # Supabase Integration Guide
 
-**Status:** ✅ Implemented (v1.1.0)
+**Status:** ✅ Implemented (v1.2.0)
 
 Loom integrates with Supabase in two ways:
 
@@ -52,9 +52,20 @@ supabase:
 
 ### 3. Reference in your agent config
 
+In your agent YAML (under `spec`):
+
 ```yaml
-backends:
-  - path: backends/supabase.yaml
+spec:
+  backend_path: backends/supabase.yaml
+```
+
+Or in multi-agent config (under `agents.agents.<name>`):
+
+```yaml
+agents:
+  agents:
+    my-agent:
+      backend_path: backends/supabase.yaml
 ```
 
 ## Configuration Reference
@@ -154,13 +165,14 @@ The Supabase backend automatically excludes internal schemas from `ListResources
 - `extensions`, `graphql`, `graphql_public` — Extension schemas
 - `pgbouncer`, `pgsodium`, `pgsodium_masks`, `vault` — Infrastructure
 - `_realtime`, `_analytics` — Internal analytics
+- `net`, `cron`, `_supavisor`, `dbdev` — Supabase background services
 - `pg_*`, `information_schema` — Postgres system schemas
 
 Only user-created schemas (typically `public`) are shown.
 
 ## Part 2: Supabase as Storage Backend
 
-**Status:** ✅ Implemented (v1.1.0)
+**Status:** ✅ Implemented (v1.2.0)
 **Verified:** PostgreSQL 17.6 on Supabase
 
 Use Supabase PostgreSQL for Loom's internal storage instead of SQLite. This stores sessions, agents, conversation history, and state in your Supabase database.
@@ -170,10 +182,6 @@ Use Supabase PostgreSQL for Loom's internal storage instead of SQLite. This stor
 Set `storage.backend: postgres` and provide your Supabase connection string:
 
 #### Option 1: Environment Variable (Recommended)
-
-```bash
-export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
-```
 
 ```bash
 export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT_REF:DB_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
@@ -197,8 +205,8 @@ storage:
   postgres:
     dsn: "postgresql://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
     pool:
-      max_connections: 10
-      min_connections: 2
+      max_connections: 25
+      min_connections: 5
       max_idle_time_seconds: 300
   migration:
     auto_migrate: true
@@ -243,10 +251,10 @@ Customize connection pool settings:
 storage:
   postgres:
     pool:
-      max_connections: 10         # Maximum connections (default: 10)
-      min_connections: 2           # Minimum idle connections (default: 2)
+      max_connections: 25         # Maximum connections (default: 25)
+      min_connections: 5           # Minimum idle connections (default: 5)
       max_idle_time_seconds: 300   # Idle connection timeout (default: 300)
-      max_lifetime_seconds: 1800   # Connection lifetime (default: 1800)
+      max_lifetime_seconds: 3600   # Connection lifetime (default: 3600)
       health_check_interval_seconds: 30  # Health check interval (default: 30)
 ```
 
@@ -254,14 +262,15 @@ storage:
 
 Tables are created automatically when `migration.auto_migrate: true`. The following tables are created:
 
-- `agents` - Agent configurations
 - `sessions` - Conversation sessions
 - `messages` - Conversation history
+- `tool_executions` - Tool execution logs
+- `memory_snapshots` - Memory snapshot storage
 - `artifacts` - File storage metadata
+- `agent_errors` - Error tracking
+- `sql_result_metadata` - SQL result metadata
 - `human_requests` - Human-in-the-loop requests
-- `errors` - Error tracking
-- `results` - Operation results
-- `admin_settings` - Admin configuration
+- `schema_migrations` - Migration version tracking
 
 ### Environment Variable Mapping
 

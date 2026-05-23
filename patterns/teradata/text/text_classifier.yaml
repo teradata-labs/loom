@@ -1,0 +1,336 @@
+# === METADATA START ===
+name: text_classifier
+title: "Naive Bayes Text Classification"
+description: |
+  In-database text classification using Naive Bayes. Follows the Trainer/Predict
+  pattern (equivalent to Fit/Transform): train a model on labeled, pre-tokenized
+  documents with TD_NaiveBayesTextClassifierTrainer, then score new documents with
+  TD_NaiveBayesTextClassifierPredict.
+
+  Model types:
+  - Multinomial (default): Uses token frequency counts
+  - Bernoulli: Uses token presence/absence per document
+
+  Input must be pre-tokenized. Use TD_NgramSplitter or TD_TextParser to produce
+  one token per row before passing to these functions.
+
+category: text
+difficulty: intermediate
+teradata_function: NaiveBayesTextClassifierTrainer
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - classification
+  - analytics
+use_cases:
+  # --- Use Case 1: Document Categorization ---
+  - Categorize documents into predefined topics
+
+  # --- Use Case 2: Spam Detection ---
+  - Classify messages as spam or not-spam
+
+  # --- Use Case 3: Support Ticket Routing ---
+  - Route support tickets to correct department based on content
+
+  # --- Use Case 4: Content Tagging ---
+  - Auto-tag content with topic labels
+
+  # --- Use Case 5: Language Detection ---
+  - Classify documents by language or dialect
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing text data and model tables"
+    example: "text_analytics"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Pre-tokenized training data; one token per row with category labels
+    required: true
+    description: "Table of pre-tokenized, labeled training documents (one token per row)"
+    example: "training_tokens"
+
+  # --- Parameter 3: Predict Table ---
+  - name: predict_table
+    type: string
+    # LLM-HINT: Pre-tokenized documents to classify; one token per row
+    required: false
+    description: "Table of pre-tokenized documents to classify (one token per row)"
+    example: "new_doc_tokens"
+
+  # --- Parameter 4: Token Column ---
+  - name: token_column
+    type: string
+    # LLM-HINT: Column containing individual tokens (words); input must already be tokenized
+    required: true
+    description: "Column containing individual tokens"
+    example: "token"
+
+  # --- Parameter 5: Category Column ---
+  - name: category_column
+    type: string
+    # LLM-HINT: Column with document labels/classes used for training (e.g., 'spam', 'ham')
+    required: true
+    description: "Column containing document category labels"
+    example: "category"
+
+  # --- Parameter 6: Doc ID Column ---
+  - name: doc_id_column
+    type: string
+    # LLM-HINT: Unique document identifier; required for Predict and for Bernoulli model training
+    required: true
+    description: "Unique document identifier column"
+    example: "doc_id"
+
+  # --- Parameter 7: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: Table name to persist the trained model for later prediction
+    required: false
+    description: "Table name to store the trained model"
+    example: "nb_model"
+
+  # --- Parameter 8: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'Multinomial' (default, uses token counts) or 'Bernoulli' (uses token presence/absence)
+    required: false
+    description: "Model type: Multinomial (default) or Bernoulli"
+    example: "Multinomial"
+
+  # --- Parameter 9: Top K ---
+  - name: top_k
+    type: integer
+    # LLM-HINT: Number of top predicted categories to return; mutually exclusive with responses
+    required: false
+    description: "Return top K predicted categories"
+    example: "3"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_MODEL TEMPLATE ===
+  # LLM-HINT: Use to train a Naive Bayes model and persist it to a table for later prediction
+  train_model:
+    description: "Train a Naive Bayes text classifier and persist the model"
+    sql: |
+      -- Train Naive Bayes text classifier and save model
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_NaiveBayesTextClassifierTrainer(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TokenColumn('{{token_column}}')
+                  DocCategoryColumn('{{category_column}}')
+                  ModelType('{{model_type}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - token_column
+      - category_column
+      - model_table
+      - model_type
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: Use to classify new documents against a trained model; requires model table from train_model
+  predict:
+    description: "Predict categories for new documents using a trained model"
+    sql: |
+      -- Classify documents using trained Naive Bayes model
+      SELECT * FROM TD_NaiveBayesTextClassifierPredict(
+          ON {{database}}.{{predict_table}} AS PredictorValues
+              PARTITION BY {{doc_id_column}}
+          ON {{database}}.{{model_table}} AS Model DIMENSION
+          USING
+              InputTokenColumn('{{token_column}}')
+              DocIDColumns('{{doc_id_column}}')
+              ModelType('{{model_type}}')
+              TopK({{top_k}})
+              OutputProb('true')
+      ) AS t
+      ORDER BY {{doc_id_column}};
+    required_parameters:
+      - database
+      - predict_table
+      - model_table
+      - token_column
+      - doc_id_column
+      - model_type
+      - top_k
+
+  # === TRAIN_AND_PREDICT TEMPLATE ===
+  # LLM-HINT: Use for end-to-end classification: tokenize, train, and predict in one query flow
+  train_and_predict:
+    description: "Tokenize source text, train a model, and classify new documents"
+    sql: |
+      -- Step 1: Tokenize training documents
+      CREATE TABLE {{database}}.training_tokens AS (
+          SELECT * FROM TD_TextParser(
+              ON {{database}}.{{training_table}}
+              USING
+                  TextColumn('{{text_column}}')
+                  ConvertToLowerCase('true')
+                  RemoveStopWords('false')
+                  OutputByWord('true')
+                  Accumulate('{{doc_id_column}}', '{{category_column}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Train Naive Bayes model
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_NaiveBayesTextClassifierTrainer(
+              ON {{database}}.training_tokens AS InputTable
+              USING
+                  TokenColumn('token')
+                  DocCategoryColumn('{{category_column}}')
+                  ModelType('{{model_type}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 3: Tokenize new documents
+      CREATE TABLE {{database}}.predict_tokens AS (
+          SELECT * FROM TD_TextParser(
+              ON {{database}}.{{predict_table}}
+              USING
+                  TextColumn('{{text_column}}')
+                  ConvertToLowerCase('true')
+                  RemoveStopWords('false')
+                  OutputByWord('true')
+                  Accumulate('{{doc_id_column}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 4: Predict categories
+      SELECT * FROM TD_NaiveBayesTextClassifierPredict(
+          ON {{database}}.predict_tokens AS PredictorValues
+              PARTITION BY {{doc_id_column}}
+          ON {{database}}.{{model_table}} AS Model DIMENSION
+          USING
+              InputTokenColumn('token')
+              DocIDColumns('{{doc_id_column}}')
+              ModelType('{{model_type}}')
+              TopK({{top_k}})
+              OutputProb('true')
+      ) AS t
+      ORDER BY {{doc_id_column}};
+    required_parameters:
+      - database
+      - training_table
+      - predict_table
+      - text_column
+      - doc_id_column
+      - category_column
+      - model_table
+      - model_type
+      - top_k
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Support Ticket Classification"
+    description: "Train a model on labeled support tickets, then classify incoming tickets"
+    parameters:
+      database: "helpdesk"
+      training_table: "labeled_ticket_tokens"
+      predict_table: "new_ticket_tokens"
+      token_column: "token"
+      category_column: "department"
+      doc_id_column: "ticket_id"
+      model_table: "ticket_nb_model"
+      model_type: "Multinomial"
+      top_k: 3
+    expected_result: |
+      Predicted categories per ticket:
+      - ticket_id: 1001, prediction: "billing" (prob: 0.72)
+      - ticket_id: 1002, prediction: "technical" (prob: 0.85)
+      - ticket_id: 1003, prediction: "shipping" (prob: 0.61)
+
+      Top-K returns runner-up categories for ambiguous tickets.
+
+  - name: "Spam Detection"
+    description: "Binary classification of email messages as spam or ham"
+    parameters:
+      database: "email_analytics"
+      training_table: "email_tokens_labeled"
+      predict_table: "incoming_email_tokens"
+      token_column: "token"
+      category_column: "label"
+      doc_id_column: "email_id"
+      model_table: "spam_nb_model"
+      model_type: "Bernoulli"
+      top_k: 1
+    expected_result: |
+      Predicted labels per email:
+      - email_id: 5001, prediction: "spam" (prob: 0.93)
+      - email_id: 5002, prediction: "ham" (prob: 0.88)
+
+      Bernoulli model works well for binary classification
+      where token presence/absence matters more than frequency.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Input not tokenized"
+    cause: "Passing raw text instead of pre-tokenized data (one token per row)"
+    solution: "Use TD_TextParser or TD_NgramSplitter to tokenize text before training or prediction"
+
+  - error: "ModelType mismatch between Trainer and Predict"
+    cause: "Using Multinomial for training but Bernoulli for prediction (or vice versa)"
+    solution: "Ensure ModelType argument matches between TD_NaiveBayesTextClassifierTrainer and TD_NaiveBayesTextClassifierPredict"
+
+  - error: "Missing DocIDColumn for Bernoulli model"
+    cause: "Bernoulli model requires DocIDColumn during training to track per-document token presence"
+    solution: "Add DocIDColumn('doc_id_col') to the Trainer USING clause when ModelType is Bernoulli"
+
+  - error: "PARTITION BY ANY on Predict"
+    cause: "Using PARTITION BY ANY instead of PARTITION BY doc_id_column on the PredictorValues input"
+    solution: "TD_NaiveBayesTextClassifierPredict requires PARTITION BY the document ID column, not PARTITION BY ANY"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Text Classification Best Practices
+
+  ### 1. Pre-tokenize Input
+  - Always tokenize with TD_TextParser or TD_NgramSplitter first
+  - Use consistent tokenization settings for training and prediction
+  - Convert to lowercase for consistency
+
+  ### 2. Choose the Right Model Type
+  - Multinomial: Best for multi-class with varying document lengths
+  - Bernoulli: Best for binary classification or short documents
+
+  ### 3. Training Data Quality
+  - Ensure balanced class distribution when possible
+  - Use sufficient examples per category (50+ tokens per class)
+  - Clean and normalize text before tokenization
+
+  ### 4. Persist the Model
+  - Always save the model to a table with CREATE TABLE ... WITH DATA
+  - This avoids re-training on every prediction run
+  - Re-train periodically as new labeled data becomes available
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: N-Gram Tokenization ---
+  - ngram
+
+  # --- Pattern 2: TF-IDF Vectors ---
+  - tfidf
+
+  # --- Pattern 3: Sentiment Analysis ---
+  - sentiment
+
+  # --- Pattern 4: Named Entity Recognition ---
+  - ner
+# === RELATED_PATTERNS END ===

@@ -32,6 +32,9 @@ teradata_function: P_XAGXB, P_XBGXA
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Navigate from table to related tables
   - Discover all tables in relationship cluster
@@ -521,7 +524,7 @@ best_practices: |
   - **Kernel Layer**: Cache relationship graph structure (adjacency list)
   - **L1 Cache**: Keep recent navigation paths (last 5-8 queries) for quick re-traversal
   - **L2 Compressed**: Archive discovered clusters and join paths
-  - **Swap Layer**: Store complete navigation history; use recall_conversation to reference relationship explorations from earlier analyses
+  - **Swap Layer**: Store complete navigation history; use conversation_memory to reference relationship explorations from earlier analyses
   This enables efficient graph traversal and reuse of discovered connection patterns.
 # === BEST_PRACTICES END ===
 

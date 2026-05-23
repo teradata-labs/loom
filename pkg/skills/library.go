@@ -19,6 +19,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,19 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"gopkg.in/yaml.v3"
 )
+
+// keywordSaturationCount is the number of distinct keyword matches that
+// saturate the FindByKeywords confidence to 1.0. Beyond this, additional
+// matches don't raise the score.
+//
+// The previous behavior — score = matches / len(keywords) — broke on imported
+// skills with large auto-generated keyword lists (32 entries each), because a
+// realistic 1-3 keyword hit produced a score around 0.03-0.10 while the
+// orchestrator's MinAutoConfidence floor (default 0.7) demanded ≥23 hits in
+// one user message. With 5 as the saturation count, hitting 4+ distinctive
+// keywords clears the default floor; hitting just 1 still scores ~0.2 and is
+// rejected, keeping noise low.
+const keywordSaturationCount = 5
 
 // Library manages skill discovery, loading, caching, and search.
 // It supports three tiers of skill sources in order of precedence:
@@ -298,8 +312,13 @@ func (l *Library) FindByKeywords(msg string) []*ScoredSkill {
 
 	var results []*ScoredSkill
 
+	now := time.Now()
 	for _, skill := range l.skillCache {
 		if len(skill.Trigger.Keywords) == 0 {
+			continue
+		}
+		// Skip skills whose confidence has decayed below 0.1 (too stale).
+		if skill.EffectiveConfidence(now) < 0.1 {
 			continue
 		}
 		matches := 0
@@ -314,7 +333,11 @@ func (l *Library) FindByKeywords(msg string) []*ScoredSkill {
 		if matches == 0 {
 			continue
 		}
-		score := float64(matches) / float64(len(skill.Trigger.Keywords))
+		// Score by saturation, not by keyword-list coverage. See
+		// keywordSaturationCount for rationale.
+		denom := math.Min(float64(len(skill.Trigger.Keywords)), float64(keywordSaturationCount))
+		score := math.Min(1.0, float64(matches)/denom)
+		score *= skill.EffectiveConfidence(now)
 		results = append(results, &ScoredSkill{Skill: skill, Score: score})
 	}
 

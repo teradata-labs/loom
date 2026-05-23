@@ -1203,3 +1203,242 @@ func TestToolFiltering_ErrorDetailVariation(t *testing.T) {
 	//     allowedTools["get_error_details"] = true
 	// }
 }
+
+// TestBuildAgent_PatternConfigFromProto verifies that pattern config values from
+// the proto AgentConfig (parsed from YAML) are applied to the agent, rather than
+// silently falling back to DefaultPatternConfig().
+func TestBuildAgent_PatternConfigFromProto(t *testing.T) {
+	tests := []struct {
+		name           string
+		patterns       *loomv1.PatternConfig
+		wantEnabled    bool
+		wantMinConf    float64
+		wantMaxPerTurn int
+		wantTracking   bool
+		wantLLMClass   bool
+	}{
+		{
+			name: "custom values applied",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0.9,
+				MaxPatternsPerTurn: 3,
+				EnableTracking:     false,
+				UseLlmClassifier:   false,
+			},
+			wantEnabled:    true,
+			wantMinConf:    0.9,
+			wantMaxPerTurn: 3,
+			wantTracking:   false,
+			wantLLMClass:   false,
+		},
+		{
+			name: "disabled patterns",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            false,
+				MinConfidence:      0.5,
+				MaxPatternsPerTurn: 2,
+				EnableTracking:     true,
+				UseLlmClassifier:   true,
+			},
+			wantEnabled:    false,
+			wantMinConf:    0.5,
+			wantMaxPerTurn: 2,
+			wantTracking:   true,
+			wantLLMClass:   true,
+		},
+		{
+			name:           "nil patterns uses defaults",
+			patterns:       nil,
+			wantEnabled:    DefaultPatternConfig().Enabled,
+			wantMinConf:    DefaultPatternConfig().MinConfidence,
+			wantMaxPerTurn: DefaultPatternConfig().MaxPatternsPerTurn,
+			wantTracking:   DefaultPatternConfig().EnableTracking,
+			wantLLMClass:   DefaultPatternConfig().UseLLMClassifier,
+		},
+		{
+			name: "zero min_confidence uses default",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0, // zero should keep default
+				MaxPatternsPerTurn: 5,
+				EnableTracking:     true,
+				UseLlmClassifier:   false,
+			},
+			wantEnabled:    true,
+			wantMinConf:    DefaultPatternConfig().MinConfidence,
+			wantMaxPerTurn: 5,
+			wantTracking:   true,
+			wantLLMClass:   false,
+		},
+		{
+			name: "zero max_patterns_per_turn uses default",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0.85,
+				MaxPatternsPerTurn: 0, // zero should keep default
+				EnableTracking:     true,
+				UseLlmClassifier:   true,
+			},
+			wantEnabled:    true,
+			wantMinConf:    0.85,
+			wantMaxPerTurn: DefaultPatternConfig().MaxPatternsPerTurn,
+			wantTracking:   true,
+			wantLLMClass:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, _ := createTestRegistry(t)
+			ctx := context.Background()
+
+			config := &loomv1.AgentConfig{
+				Name:        "pattern-test",
+				Description: "Test agent for pattern config",
+				Llm: &loomv1.LLMConfig{
+					Provider: "",
+					Model:    "",
+				},
+				SystemPrompt: "test",
+				Behavior: &loomv1.BehaviorConfig{
+					MaxToolExecutions: 10,
+					MaxTurns:          5,
+					Patterns:          tc.patterns,
+				},
+			}
+
+			agent, err := registry.buildAgent(ctx, config)
+			require.NoError(t, err)
+			require.NotNil(t, agent)
+			require.NotNil(t, agent.config.PatternConfig, "PatternConfig should never be nil")
+
+			pc := agent.config.PatternConfig
+			assert.Equal(t, tc.wantEnabled, pc.Enabled, "Enabled mismatch")
+			assert.InDelta(t, tc.wantMinConf, pc.MinConfidence, 0.001, "MinConfidence mismatch")
+			assert.Equal(t, tc.wantMaxPerTurn, pc.MaxPatternsPerTurn, "MaxPatternsPerTurn mismatch")
+			assert.Equal(t, tc.wantTracking, pc.EnableTracking, "EnableTracking mismatch")
+			assert.Equal(t, tc.wantLLMClass, pc.UseLLMClassifier, "UseLLMClassifier mismatch")
+		})
+	}
+}
+
+// TestResolvePrimaryLLMConfig covers the active_provider fallback that ties
+// AgentConfig.ActiveProvider into the named-pool selector used by
+// createLLMProvider. The function must never return nil and must not mutate
+// the caller's proto.
+func TestResolvePrimaryLLMConfig(t *testing.T) {
+	cases := []struct {
+		name         string
+		in           *loomv1.AgentConfig
+		wantProvider string
+		wantSamePtr  bool // whether the returned config should be the input's Llm pointer
+	}{
+		{
+			name:         "nil config returns empty non-nil",
+			in:           nil,
+			wantProvider: "",
+		},
+		{
+			name:         "no llm, no active provider returns empty non-nil",
+			in:           &loomv1.AgentConfig{},
+			wantProvider: "",
+		},
+		{
+			name:         "no llm, active provider synthesises selector",
+			in:           &loomv1.AgentConfig{ActiveProvider: "fast"},
+			wantProvider: "fast",
+		},
+		{
+			name:         "inline llm with provider wins, active provider ignored",
+			in:           &loomv1.AgentConfig{Llm: &loomv1.LLMConfig{Provider: "inline"}, ActiveProvider: "fast"},
+			wantProvider: "inline",
+			wantSamePtr:  true,
+		},
+		{
+			name:         "empty inline llm + active provider yields merged copy",
+			in:           &loomv1.AgentConfig{Llm: &loomv1.LLMConfig{Model: "claude-haiku-4-5-20251001"}, ActiveProvider: "fast"},
+			wantProvider: "fast",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origLlm := (*loomv1.LLMConfig)(nil)
+			if tc.in != nil {
+				origLlm = tc.in.Llm
+			}
+			got := resolvePrimaryLLMConfig(tc.in)
+			require.NotNil(t, got, "resolved config must never be nil")
+			assert.Equal(t, tc.wantProvider, got.Provider)
+
+			if tc.wantSamePtr {
+				assert.Same(t, origLlm, got, "should return the inline pointer when no merge is needed")
+			}
+			// Caller's inline Llm must not be mutated.
+			if tc.in != nil && tc.in.Llm != nil && !tc.wantSamePtr {
+				assert.NotSame(t, tc.in.Llm, got, "merged copy must not alias caller proto")
+				if tc.in.ActiveProvider != "" && tc.in.Llm.Provider == "" {
+					assert.Empty(t, tc.in.Llm.Provider, "must not mutate caller proto")
+				}
+			}
+		})
+	}
+}
+
+// TestRegistry_TaskManagerInjection verifies that SetTaskManager threads the
+// task subsystem through buildAgent so the skills-overhaul Phase D emitter
+// becomes reachable. Before this wire-up, every agent created via the
+// registry path silently skipped task emission because a.taskManager stayed
+// nil — the architecture doc claimed Phase 8 ("CreateTaskIdempotent
+// integration") was complete but the registry never called WithTaskBoard.
+func TestRegistry_TaskManagerInjection(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	ctx := context.Background()
+
+	// Build a real task.Manager on a migrated, in-memory SQLite store so the
+	// test exercises the actual constructor pathway. Using a real Manager
+	// (not a stub) protects us from drift between the registry contract and
+	// task.Manager's surface area.
+	store, mgr, dec := newTaskSubsystem(t)
+	_ = store // closed via t.Cleanup inside newTaskSubsystem
+
+	t.Run("manager wires through to built agent", func(t *testing.T) {
+		registry.SetTaskManager(mgr, dec)
+
+		cfg := createTestAgentConfig("with-task-mgr")
+		// Skills must be enabled for the emitter auto-wire branch (agent.go:284)
+		// to fire — that branch is what makes the test meaningful.
+		cfg.Skills = &loomv1.SkillsConfig{Enabled: true}
+
+		ag, err := registry.buildAgent(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, ag)
+
+		assert.Same(t, mgr, ag.taskManager,
+			"registry must propagate its task.Manager into the agent")
+		assert.Same(t, dec, ag.taskDecomposer,
+			"registry must propagate its task.Decomposer into the agent")
+		require.NotNil(t, ag.taskBoardConfig,
+			"taskBoardConfig must be non-nil so emitter boardID fallback is well-defined")
+		assert.False(t, ag.taskBoardConfig.Enabled,
+			"per-agent tool surfacing stays opt-in when YAML omits memory.task_board")
+		assert.NotNil(t, ag.skillTaskEmitter,
+			"skill task emitter must auto-construct once both subsystems are wired")
+	})
+
+	t.Run("no manager wired leaves emitter nil", func(t *testing.T) {
+		registry.SetTaskManager(nil, nil)
+
+		cfg := createTestAgentConfig("no-task-mgr")
+		cfg.Skills = &loomv1.SkillsConfig{Enabled: true}
+
+		ag, err := registry.buildAgent(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, ag)
+
+		assert.Nil(t, ag.taskManager,
+			"agent must not pick up a stale task manager when registry has none")
+		assert.Nil(t, ag.skillTaskEmitter,
+			"emitter must stay nil when no manager is available (legacy v1.2.0 parity)")
+	})
+}

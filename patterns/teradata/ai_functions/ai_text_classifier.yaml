@@ -1,0 +1,425 @@
+# === METADATA START ===
+name: ai_text_classifier
+title: "AI Text Classifier"
+description: |
+  Classify text into user-defined categories using LLM-powered classification.
+  AI_TextClassifier supports both single-label (one best match) and multi-label
+  (all matching categories) classification modes.
+
+  AI_TextClassifier is ideal for:
+  - Support ticket routing by category
+  - Content tagging and categorization
+  - Topic classification for documents
+  - Intent detection in customer messages
+  - Compliance category assignment
+
+  Requires an authorization object configured for the target LLM provider.
+  All functions are schema-qualified under TD_SYSFNLIB.
+
+category: ai_functions
+difficulty: intermediate
+teradata_function: AI_TextClassifier
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - text_analysis
+  - classification
+use_cases:
+  # --- Use Case 1: Support Ticket Routing ---
+  - Route support tickets to the correct team based on content classification
+
+  # --- Use Case 2: Content Tagging ---
+  - Tag articles or documents with topic categories
+
+  # --- Use Case 3: Email Classification ---
+  - Classify emails by intent (inquiry, complaint, feedback, request)
+
+  # --- Use Case 4: Compliance Categorization ---
+  - Assign compliance or regulatory categories to documents
+
+  # --- Use Case 5: Multi-Topic Research ---
+  - Tag research papers with multiple applicable topics
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the text data"
+    example: "support_center"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain a text column
+    required: true
+    description: "Table or view with text data to classify"
+    example: "support_tickets"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column containing text to classify; must be VARCHAR, CHAR, or CLOB
+    required: true
+    description: "Column containing the text to classify (VARCHAR, CHAR, or CLOB)"
+    example: "ticket_text"
+
+  # --- Parameter 4: Labels ---
+  - name: labels
+    type: string
+    # LLM-HINT: Python-style list as a string; e.g., '[billing, technical, shipping]'; spaces after commas allowed
+    required: true
+    description: "Classification labels as a Python-style list string"
+    example: "[billing, technical, shipping, returns, account]"
+
+  # --- Parameter 5: Multi Label ---
+  - name: multi_label
+    type: string
+    # LLM-HINT: 'false' (default) = single best label; 'true' = all matching labels comma-separated
+    required: false
+    default: "false"
+    description: "Enable multi-label classification ('true' or 'false')"
+    example: "false"
+
+  # --- Parameter 6: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: Fully qualified authorization object name; must be created first
+    required: true
+    description: "Authorization object for LLM provider (e.g., db.td_gen_azure_auth)"
+    example: "ai_credentials.td_gen_azure_auth"
+
+  # --- Parameter 7: Provider ---
+  - name: provider
+    type: string
+    # LLM-HINT: ApiType value: 'azure', 'aws', 'gcp', 'nim', or 'litellm'
+    required: true
+    description: "LLM provider type for ApiType"
+    example: "azure"
+
+  # --- Parameter 8: Deployment/Model ---
+  - name: deployment_id
+    type: string
+    # LLM-HINT: Azure uses DeploymentId; AWS/GCP use ModelName
+    required: true
+    description: "Model deployment identifier"
+    example: "gpt-4o"
+
+  # --- Parameter 9: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable to carry through to output
+    required: false
+    description: "Columns to carry through from input to output"
+    example: '["ticket_id", "submitted_date"]'
+
+  # --- Parameter 10: Region (AWS/GCP) ---
+  - name: region
+    type: string
+    # LLM-HINT: Required for AWS Bedrock; not used for Azure
+    required: false
+    description: "AWS region for Bedrock or GCP region"
+    example: "us-east-1"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === SINGLE_LABEL TEMPLATE ===
+  # LLM-HINT: Default mode; assigns exactly one label per row; Labels argument is a Python-style list string
+  single_label:
+    description: "Single-label classification (one best-matching category per row)"
+    sql: |
+      -- Classify text into one of the specified categories
+      -- Output: Labels (single best match), Message (errors if any)
+      -- NOTE: Labels is both the USING argument (input list) and output column name
+      SELECT * FROM TD_SYSFNLIB.AI_TextClassifier(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Labels('[{{labels}}]')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - labels
+      - accumulate_columns_quoted
+
+  # === MULTI_LABEL TEMPLATE ===
+  # LLM-HINT: Assigns all matching labels comma-separated; useful when items belong to multiple categories
+  multi_label:
+    description: "Multi-label classification (all matching categories per row)"
+    sql: |
+      -- Classify text with multiple labels
+      -- MultiLabel('true') returns all matching labels, comma-separated
+      SELECT * FROM TD_SYSFNLIB.AI_TextClassifier(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Labels('[{{labels}}]')
+              MultiLabel('true')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - labels
+      - accumulate_columns_quoted
+
+  # === CLASSIFICATION_WITH_COUNTS TEMPLATE ===
+  # LLM-HINT: Aggregates classification results for distribution analysis; useful for dashboards
+  classification_with_counts:
+    description: "Classify text and aggregate label distribution"
+    sql: |
+      -- Classify text and count label distribution
+      SELECT
+          t.Labels AS category,
+          COUNT(*) AS total_count,
+          CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS pct
+      FROM TD_SYSFNLIB.AI_TextClassifier(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Labels('[{{labels}}]')
+      ) AS t
+      GROUP BY t.Labels
+      ORDER BY total_count DESC;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - labels
+
+  # === BATCH_CLASSIFICATION TEMPLATE ===
+  # LLM-HINT: Persists classification results to a table; avoids repeated LLM calls
+  batch_classification:
+    description: "Batch classification with results persisted to a table"
+    sql: |
+      -- Persist classification results for downstream processing
+      CREATE TABLE {{database}}.{{table}}_classified AS (
+          SELECT * FROM TD_SYSFNLIB.AI_TextClassifier(
+              ON {{database}}.{{table}} AS InputTable
+              USING
+                  ApiType('{{provider}}')
+                  AUTHORIZATION({{auth_object}})
+                  DeploymentId('{{deployment_id}}')
+                  TextColumn('{{text_column}}')
+                  Labels('[{{labels}}]')
+                  MultiLabel('{{multi_label}}')
+                  Accumulate({{accumulate_columns_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - labels
+      - multi_label
+      - accumulate_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Support Ticket Routing ---
+  - name: "Support Ticket Routing"
+    description: "Classify support tickets into department categories"
+    parameters:
+      database: "support"
+      table: "support_tickets"
+      text_column: "ticket_text"
+      labels: "billing, technical, shipping, returns, account"
+      multi_label: "false"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["ticket_id", "submitted_date"]
+    expected_result: |
+      ticket_id | submitted_date | Labels    | Message
+      ----------|----------------|-----------|--------
+      T-1001    | 2024-03-15     | billing   | NULL
+      T-1002    | 2024-03-15     | technical | NULL
+      T-1003    | 2024-03-16     | returns   | NULL
+
+      Each ticket assigned to exactly one category for routing.
+
+  # --- Example 2: Multi-Topic Research Tagging ---
+  - name: "Multi-Topic Research Tagging"
+    description: "Tag research abstracts with multiple applicable topics"
+    parameters:
+      database: "research"
+      table: "research_abstracts"
+      text_column: "abstract_text"
+      labels: "climate, energy, policy, economics, technology, public-health"
+      multi_label: "true"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["paper_id", "journal"]
+    expected_result: |
+      paper_id | journal          | Labels                    | Message
+      ---------|------------------|---------------------------|--------
+      P-101    | Nature Energy    | energy, climate, policy   | NULL
+      P-102    | Lancet           | public-health, economics  | NULL
+      P-103    | IEEE Transactions| technology, energy        | NULL
+
+      Multi-label mode returns all matching categories, comma-separated.
+
+  # --- Example 3: Email Intent Classification ---
+  - name: "Email Intent Classification"
+    description: "Classify customer emails by intent for workflow automation"
+    parameters:
+      database: "communications"
+      table: "customer_emails"
+      text_column: "email_body"
+      labels: "inquiry, complaint, feedback, request, cancellation, praise"
+      multi_label: "false"
+      auth_object: "ai_credentials.td_gen_aws_auth"
+      provider: "aws"
+      deployment_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+      region: "us-east-1"
+      accumulate_columns: ["email_id", "received_date", "sender"]
+    expected_result: |
+      Emails classified by primary intent for automated routing.
+      Cancellation and complaint intents can trigger escalation workflows.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Invalid Labels Format ---
+  - error: "Labels argument causes parsing error"
+    cause: "Labels not formatted as a Python-style list string"
+    solution: "Pass labels as a string containing a Python-style list: Labels('[billing, technical, shipping]'). Spaces after commas are allowed"
+
+  # --- Error 2: Missing Authorization Object ---
+  - error: "Function fails with authorization or authentication error"
+    cause: "Authorization object does not exist or lacks EXECUTE permission"
+    solution: "Create the authorization object first (see authorization_objects pattern) and grant EXECUTE"
+
+  # --- Error 3: Labels Name Collision ---
+  - error: "Confusion between Labels input argument and Labels output column"
+    cause: "Labels is both the USING argument (category list) and the output column name"
+    solution: "They are distinct. The argument is your input list; the output column is the assigned label(s). Alias the output if needed: t.Labels AS assigned_category"
+
+  # --- Error 4: Too Many Labels ---
+  - error: "Classification results are inconsistent or low quality"
+    cause: "Too many labels for the LLM to distinguish reliably"
+    solution: "Limit to 10-15 well-defined, non-overlapping labels. Use multi-label mode if categories naturally overlap"
+
+  # --- Error 5: PARTITION BY Causes Error ---
+  - error: "Adding PARTITION BY causes an error"
+    cause: "AI_TextClassifier manages parallelism internally and does not support PARTITION BY"
+    solution: "Remove any PARTITION BY clause from the ON clause"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## AI Text Classifier Best Practices
+
+  ### 1. Define Clear, Non-Overlapping Labels
+  Labels should be distinct and well-defined:
+  ```sql
+  -- Good: clear categories
+  Labels('[billing, technical-support, shipping, returns, account-management]')
+
+  -- Bad: overlapping categories
+  Labels('[support, help, assistance, customer-service]')
+  ```
+
+  ### 2. Choose Single vs Multi-Label Deliberately
+  - **Single-label** (default): Best for routing, where each item needs one destination
+  - **Multi-label**: Best for tagging, where items naturally belong to multiple categories
+  ```sql
+  -- Single-label for routing
+  MultiLabel('false')  -- or omit (default)
+
+  -- Multi-label for tagging
+  MultiLabel('true')
+  ```
+
+  ### 3. Keep Labels Concise
+  Short, descriptive labels work best:
+  ```sql
+  -- Good
+  Labels('[billing, technical, shipping]')
+
+  -- Avoid verbose labels
+  Labels('[billing and payment issues, technical problems and bugs]')
+  ```
+
+  ### 4. Limit Label Count
+  10-15 labels is a practical maximum. Beyond that, LLM accuracy decreases.
+  Consider hierarchical classification (broad category first, then sub-category)
+  for fine-grained taxonomies.
+
+  ### 5. Use Accumulate for Traceability
+  Always include key columns:
+  ```sql
+  Accumulate('ticket_id', 'submitted_date', 'priority')
+  ```
+
+  ### 6. Persist Results
+  LLM calls are expensive. Save classification results:
+  ```sql
+  CREATE TABLE classified_tickets AS (...) WITH DATA;
+  ```
+
+  ### 7. Authorization Setup First
+  Create and test the authorization object before running classification.
+  See the authorization_objects pattern for provider-specific setup.
+
+  ### 8. No PARTITION BY
+  AI_TextClassifier manages parallelism internally.
+  Do not add a PARTITION BY clause.
+
+  ### 9. Alias the Output Column
+  Since Labels is both input and output, alias for clarity:
+  ```sql
+  SELECT t.Labels AS assigned_category, ... FROM ...
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Authorization Objects (prerequisite) ---
+  - authorization_objects
+
+  # --- Pattern 2: AI Sentiment ---
+  - ai_sentiment
+
+  # --- Pattern 3: AI Text Summarize ---
+  - ai_summarize
+
+  # --- Pattern 4: AI Ask LLM ---
+  - ai_ask_llm
+
+  # --- Pattern 5: AI PII ---
+  - ai_pii
+# === RELATED_PATTERNS END ===

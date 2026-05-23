@@ -7,7 +7,7 @@ weight: 30
 
 Administrative gRPC service for cross-tenant visibility and system management in multi-tenant PostgreSQL deployments.
 
-**Available since**: v1.1.0
+**Available since**: v1.2.0
 **Backend requirement**: PostgreSQL only (SQLite backends do not expose AdminService)
 **Transport**: gRPC only (not registered on the HTTP gateway)
 
@@ -40,7 +40,7 @@ Administrative gRPC service for cross-tenant visibility and system management in
 | Service | `AdminService` (proto: `loom.v1.AdminService`) |
 | Auth mechanism | Bearer token via `x-admin-token` gRPC metadata header |
 | Token source | `LOOM_ADMIN_TOKEN` environment variable |
-| Empty token behavior | All admin endpoints are **unprotected** (dev mode) |
+| Empty token behavior | Admin service is **not registered** unless `server.insecure_admin: true` |
 | Backend | PostgreSQL only; SQLite backends silently skip registration |
 | RLS bypass | All admin endpoints bypass Row-Level Security |
 | HTTP gateway | Not available; gRPC only |
@@ -73,7 +73,7 @@ The AdminService uses a static bearer token for access control. The token is pas
 **Environment variable**: `LOOM_ADMIN_TOKEN`
 
 **Type**: `string`
-**Default**: `""` (empty -- auth disabled)
+**Default**: `""` (empty -- service not registered unless `server.insecure_admin: true`)
 **Required**: No (but strongly recommended for any non-local deployment)
 
 The token is read once at server startup in `cmd/looms/cmd_serve.go` and passed to `NewAdminServer`. Changing the environment variable requires a server restart to take effect.
@@ -86,13 +86,27 @@ looms serve --config server.yaml
 
 ### Security Warning: Empty Token
 
-If `LOOM_ADMIN_TOKEN` is not set or is set to an empty string, **all admin endpoints are accessible without any authentication**. The server logs a warning at startup:
+If `LOOM_ADMIN_TOKEN` is not set or is set to an empty string, behavior depends on the `server.insecure_admin` configuration field (default: `false`):
+
+**When `server.insecure_admin` is `false` (default):** The admin service is **not registered at all**. No admin endpoints are available. The server logs an error at startup:
 
 ```
-WARN  LOOM_ADMIN_TOKEN not set; admin endpoints are unprotected
+ERROR  LOOM_ADMIN_TOKEN not set and server.insecure_admin is not enabled; skipping admin service registration. Set LOOM_ADMIN_TOKEN or set server.insecure_admin=true in config to run admin endpoints without authentication
 ```
 
-This behavior exists for local development convenience. It is not suitable for any deployment where the gRPC port is reachable by untrusted clients. Admin endpoints bypass RLS and expose data across all tenants.
+**When `server.insecure_admin` is `true`:** Admin endpoints are registered **without any authentication**. The server logs a warning at startup:
+
+```
+WARN  LOOM_ADMIN_TOKEN not set and insecure_admin is enabled; admin endpoints are unprotected
+```
+
+The `insecure_admin` mode exists for local development convenience. It is not suitable for any deployment where the gRPC port is reachable by untrusted clients. Admin endpoints bypass RLS and expose data across all tenants.
+
+```yaml
+# server.yaml -- enable unauthenticated admin (development only!)
+server:
+  insecure_admin: true
+```
 
 ### Best Practices for Production
 
@@ -313,7 +327,7 @@ import (
 )
 
 func main() {
-	conn, err := grpc.NewClient("localhost:50051",
+	conn, err := grpc.NewClient("localhost:60051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -338,7 +352,7 @@ func main() {
 	}
 	fmt.Printf("Total sessions: %d\n", sessions.TotalCount)
 	for _, s := range sessions.Sessions {
-		fmt.Printf("  Session %s (user: %s)\n", s.SessionId, s.UserId)
+		fmt.Printf("  Session %s (name: %s, state: %s)\n", s.Id, s.Name, s.State)
 	}
 
 	// Get system stats
@@ -358,17 +372,17 @@ func main() {
 grpcurl -plaintext \
   -H "x-admin-token: your-secret-token-here" \
   -d '{"limit": 10, "offset": 0}' \
-  localhost:50051 loom.v1.AdminService/ListAllSessions
+  localhost:60051 loom.v1.AdminService/ListAllSessions
 
 # Count sessions by user
 grpcurl -plaintext \
   -H "x-admin-token: your-secret-token-here" \
-  localhost:50051 loom.v1.AdminService/CountSessionsByUser
+  localhost:60051 loom.v1.AdminService/CountSessionsByUser
 
 # Get system stats
 grpcurl -plaintext \
   -H "x-admin-token: your-secret-token-here" \
-  localhost:50051 loom.v1.AdminService/GetSystemStats
+  localhost:60051 loom.v1.AdminService/GetSystemStats
 ```
 
 ### Token Validation Failure
@@ -376,7 +390,7 @@ grpcurl -plaintext \
 ```bash
 # Missing token -- returns PERMISSION_DENIED
 grpcurl -plaintext \
-  localhost:50051 loom.v1.AdminService/GetSystemStats
+  localhost:60051 loom.v1.AdminService/GetSystemStats
 
 # Output:
 # ERROR:
@@ -390,6 +404,6 @@ grpcurl -plaintext \
 
 - [TLS Reference](tls.md) -- Encrypting gRPC connections (prevents token interception in transit)
 - [Streaming Reference](streaming.md) -- LoomService streaming RPCs
-- Proto definition: `proto/loom/v1/loom.proto`, lines 584-601 (AdminService)
+- Proto definition: `proto/loom/v1/loom.proto`, lines 598-616 (AdminService)
 - Implementation: `pkg/server/admin_server.go`
 - Server wiring: `cmd/looms/cmd_serve.go` (search for `LOOM_ADMIN_TOKEN`)

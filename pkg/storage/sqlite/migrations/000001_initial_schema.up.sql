@@ -23,7 +23,7 @@
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
-    applied_at INTEGER NOT NULL,
+    applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     description TEXT
 );
 
@@ -262,10 +262,3 @@ CREATE TRIGGER IF NOT EXISTS artifacts_fts5_delete AFTER DELETE ON artifacts
 BEGIN
     DELETE FROM artifacts_fts5 WHERE artifact_id = OLD.id;
 END;
-
--- ============================================================================
--- Record this migration
--- ============================================================================
-
-INSERT INTO schema_migrations (version, applied_at, description)
-VALUES (1, strftime('%s', 'now'), 'initial_schema');

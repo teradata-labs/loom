@@ -20,6 +20,10 @@ teradata_function: Sessionize
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   # --- Use Case 1: Web Analytics ---
   - Web analytics session identification

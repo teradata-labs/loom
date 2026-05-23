@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
@@ -60,9 +61,7 @@ func TestNewExecutor(t *testing.T) {
 	reg := NewRegistry()
 	exec := NewExecutor(reg)
 
-	if exec == nil {
-		t.Fatal("Expected non-nil executor")
-	}
+	require.NotNil(t, exec, "Expected non-nil executor")
 
 	if exec.registry != reg {
 		t.Error("Expected executor to use provided registry")

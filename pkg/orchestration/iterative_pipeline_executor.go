@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -45,6 +44,7 @@ type IterativePipelineExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.IterativeWorkflowPattern
 	messageBus   *communication.MessageBus
+	workflowID   string
 
 	// Track iterations and restart state
 	currentIteration int
@@ -66,11 +66,13 @@ func NewIterativePipelineExecutor(
 	orchestrator *Orchestrator,
 	pattern *loomv1.IterativeWorkflowPattern,
 	messageBus *communication.MessageBus,
+	workflowID string,
 ) *IterativePipelineExecutor {
 	return &IterativePipelineExecutor{
 		orchestrator:     orchestrator,
 		pattern:          pattern,
 		messageBus:       messageBus,
+		workflowID:       workflowID,
 		currentIteration: 0,
 		restartRequests:  make(chan *loomv1.RestartRequest, 10),
 		restartResponses: make(map[string]chan *loomv1.RestartResponse),
@@ -101,7 +103,7 @@ func truncateStageOutput(output string, maxBytes int, memoryKey string) (string,
 // Execute runs the iterative pipeline with restart coordination.
 func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	startTime := time.Now()
-	workflowID := fmt.Sprintf("iterative-pipeline-%s", uuid.New().String()[:8])
+	workflowID := e.workflowID
 
 	// Start workflow-level span
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.iterative_pipeline")
@@ -129,7 +131,7 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 	if e.pattern.RestartPolicy == nil || !e.pattern.RestartPolicy.Enabled {
 		e.orchestrator.logger.Info("Restart policy disabled, executing as standard pipeline")
 		// Fall back to standard pipeline execution
-		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline)
+		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 		return executor.Execute(ctx)
 	}
 
@@ -252,7 +254,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		e.orchestrator.tracer.EndSpan(promptSpan)
 
 		// Execute stage with retry logic for validation failures
-		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline)
+		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 
 		// Retry configuration from restart policy
 		// Read directly from proto to detect explicit 0 (skip validation)
@@ -559,7 +561,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	}
 
 	// Calculate total cost
-	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline)
+	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	cost := executor.calculateCost(allResults)
 
 	return &loomv1.WorkflowResult{
@@ -581,7 +583,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 // For hybrid context passing (v3.13+), also prepends a SharedMemory context header that lists
 // available stage outputs agents can fetch via shared_memory_read tool.
 func (e *IterativePipelineExecutor) buildStagePromptWithStructuredContext(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
-	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline)
+	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	basePrompt := executor.buildStagePromptWithContext(stage, previousOutput, allOutputs, e.structuredContext)
 
 	// Prepend SharedMemory context header if there are previous stages

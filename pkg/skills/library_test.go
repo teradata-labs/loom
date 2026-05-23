@@ -17,6 +17,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -255,8 +256,77 @@ func TestLibrary_FindByKeywords(t *testing.T) {
 	results := lib.FindByKeywords("help me write a sql query for the database")
 	require.NotEmpty(t, results)
 	assert.Equal(t, "sql-help", results[0].Skill.Name)
-	// sql-help matches 3/3 keywords -> score 1.0
+	// sql-help matches 3/3 keywords -> denom=min(3,5)=3, score=min(1.0, 3/3)=1.0.
 	assert.InDelta(t, 1.0, results[0].Score, 0.01)
+}
+
+// TestLibrary_FindByKeywords_LongKeywordList locks the saturation-based
+// scoring against regression. Imported skills carry up to 32 keywords (see
+// cmd/loom/skills_import.go). Before the saturation fix, matching N hits out
+// of 32 produced score = N/32 — too small to clear the orchestrator's default
+// 0.7 floor without an unrealistic 23+ keyword hits in one user message.
+//
+// With saturation=5: matching 4 distinctive keywords yields 4/5 = 0.8, which
+// clears the default floor; matching 1 yields 0.2 (still rejected as noise).
+func TestLibrary_FindByKeywords_LongKeywordList(t *testing.T) {
+	// Construct a 32-keyword skill mimicking imported teradata-* skills.
+	keywords := make([]string, 32)
+	for i := range keywords {
+		keywords[i] = fmt.Sprintf("kw%02d", i+1)
+	}
+	lib := NewLibrary(WithSearchPaths())
+	lib.Register(&Skill{
+		Name:    "long-keywords",
+		Trigger: SkillTrigger{Keywords: keywords},
+	})
+
+	tests := []struct {
+		name      string
+		message   string
+		minScore  float64 // exclusive lower bound on the produced score
+		passes070 bool    // whether the score clears MinAutoConfidence default
+	}{
+		{
+			name:      "single keyword hit",
+			message:   "I am writing about kw01 today",
+			minScore:  0.15, // 1/5 = 0.2 minus epsilon
+			passes070: false,
+		},
+		{
+			name:      "two keyword hits",
+			message:   "kw01 and kw02 together",
+			minScore:  0.35, // 2/5 = 0.4
+			passes070: false,
+		},
+		{
+			name:      "four keyword hits clears 0.7 floor",
+			message:   "kw01 kw02 kw03 kw04 in one message",
+			minScore:  0.75, // 4/5 = 0.8
+			passes070: true,
+		},
+		{
+			name:      "five+ keyword hits saturates at 1.0",
+			message:   "kw01 kw02 kw03 kw04 kw05 kw06 kw07",
+			minScore:  0.99,
+			passes070: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			results := lib.FindByKeywords(tc.message)
+			require.NotEmpty(t, results, "expected at least one match")
+			score := results[0].Score
+			assert.Greater(t, score, tc.minScore,
+				"score %.3f below expected lower bound %.3f", score, tc.minScore)
+			assert.LessOrEqual(t, score, 1.0,
+				"score must never exceed 1.0; got %.3f", score)
+			if tc.passes070 {
+				assert.GreaterOrEqual(t, score, 0.7,
+					"score %.3f must clear default MinAutoConfidence", score)
+			}
+		})
+	}
 }
 
 func TestLibrary_ListByDomain(t *testing.T) {

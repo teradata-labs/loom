@@ -21,9 +21,40 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SkillWriteHook is invoked after a skill YAML is successfully written
+// to disk by create_skill or update_skill. Used by cmd/looms/cmd_serve.go
+// to trigger Registry.ReloadAllSkillRouters so the new/changed skill
+// becomes routable without a server restart.
+//
+// The hook receives the bare skill name (no .yaml extension) and the
+// absolute path of the written YAML. Errors are logged by the caller;
+// a hook failure does not roll back the write.
+type SkillWriteHook func(skillName, filePath string)
+
+// AgentManagementToolOption configures an AgentManagementTool. Functional
+// options keep the zero-arg constructor working for existing callers
+// while letting cmd_serve.go inject side-effect handlers.
+type AgentManagementToolOption func(*AgentManagementTool)
+
+// WithSkillWriteHook installs a callback fired after a successful skill
+// write (create_skill or update_skill). When unset, writes complete
+// silently — same behavior as before this option existed.
+func WithSkillWriteHook(hook SkillWriteHook) AgentManagementToolOption {
+	return func(t *AgentManagementTool) {
+		t.skillWriteHook = hook
+	}
+}
+
 // AgentManagementTool provides agent and workflow YAML management with validation.
 // This tool is designed for meta-agents like weaver that create and manage agent/workflow configurations.
-type AgentManagementTool struct{}
+type AgentManagementTool struct {
+	// skillWriteHook fires after create_skill / update_skill writes
+	// succeed. nil means "no-op", which is the default zero-value
+	// behavior. The cmd/looms/cmd_serve.go wiring sets this to a
+	// closure that calls Registry.ReloadAllSkillRouters so weaver-
+	// authored skills become routable without a server restart.
+	skillWriteHook SkillWriteHook
+}
 
 // K8sStyleAgentConfig represents the K8s-style agent YAML format.
 // This is a local copy to avoid import cycle with pkg/agent.
@@ -45,8 +76,18 @@ type WorkflowConfig struct {
 }
 
 // NewAgentManagementTool creates a new agent management tool.
-func NewAgentManagementTool() *AgentManagementTool {
-	return &AgentManagementTool{}
+//
+// Options:
+//   - WithSkillWriteHook: install a callback fired after a successful
+//     skill YAML write. Used by cmd/looms/cmd_serve.go to trigger
+//     Registry.ReloadAllSkillRouters so weaver-authored skills become
+//     routable without a server restart.
+func NewAgentManagementTool(opts ...AgentManagementToolOption) *AgentManagementTool {
+	t := &AgentManagementTool{}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *AgentManagementTool) Name() string {
@@ -78,20 +119,64 @@ This tool is intended for meta-agents that generate configurations (like weaver)
 }
 
 func (t *AgentManagementTool) InputSchema() *shuttle.JSONSchema {
-	// Build union schema for all action types
-	// This enables structured JSON validation for create/update actions
-	// while preserving simple string-based read/list/validate/delete actions
+	// Union schema covering every action variant. The LLM needs to see
+	// each action-specific parameter documented or it can't reliably
+	// construct calls — Bedrock-side schema-aware sampling especially
+	// benefits from explicit property declarations. Discriminator pattern:
+	// `action` decides which other properties are meaningful per call.
 	return &shuttle.JSONSchema{
 		Type:        "object",
-		Description: "Parameters for agent/workflow management - supports both structured (create_agent, create_workflow, update_agent, update_workflow) and simple actions (read, list, validate, delete)",
+		Description: "Parameters for agent/workflow/skill management. Supports structured creation (create_agent / create_workflow / create_skill with a config object), structured update, simple read/list/validate/delete with a type filter, preset + template scaffolding (presets / apply_preset / templates / apply_template), and discover for pattern config introspection.",
 		Properties: map[string]*shuttle.JSONSchema{
-			"action": shuttle.NewStringSchema("Action to perform").
-				WithEnum("create_agent", "create_workflow", "update_agent", "update_workflow", "read", "list", "validate", "delete"),
+			"action": shuttle.NewStringSchema("Operation to perform").
+				WithEnum(
+					"create_agent", "create_workflow", "create_skill",
+					"update_agent", "update_workflow", "update_skill",
+					"read", "list", "validate", "delete",
+					"presets", "apply_preset",
+					"templates", "apply_template",
+				),
+
+			// Discriminator-dependent fields. Specific actions require
+			// specific subsets; the handler validates per-action.
+			"config": shuttle.NewObjectSchema(
+				"Structured agent / workflow / skill config (for create_*, update_*).",
+				map[string]*shuttle.JSONSchema{},
+				nil,
+			),
+			"name": shuttle.NewStringSchema(
+				"Resource name (for read, list, validate, delete, update_*, apply_preset, apply_template).",
+			),
+			"type": shuttle.NewStringSchema(
+				"Resource kind for read/list/validate/delete: 'agent', 'workflow', or 'skill'.",
+			).WithEnum("agent", "workflow", "skill"),
+
+			// apply_preset-specific.
+			"preset": shuttle.NewStringSchema(
+				"Preset id for apply_preset. One of: personal_assistant, research_analyst, teradata_analyst, creative_writer, ui_specialist, task_automator, quick_chat, coordinator.",
+			).WithEnum(
+				"personal_assistant", "research_analyst", "teradata_analyst",
+				"creative_writer", "ui_specialist", "task_automator",
+				"quick_chat", "coordinator",
+			),
+			"system_prompt": shuttle.NewStringSchema(
+				"Direct task-oriented system prompt for the agent being created. Required for apply_preset.",
+			),
+
+			// apply_template-specific.
+			"workflow_name": shuttle.NewStringSchema(
+				"Workflow name for apply_template. Optional; defaults to the template id.",
+			),
+			"agent_name_overrides": shuttle.NewObjectSchema(
+				"Optional map of slot index (as string) → custom agent name for apply_template.",
+				map[string]*shuttle.JSONSchema{},
+				nil,
+			),
+			"active_provider": shuttle.NewStringSchema(
+				"Optional named-pool LLM provider to assign on every created agent (apply_preset / apply_template).",
+			),
 		},
 		Required: []string{"action"},
-		// Note: Use discriminator pattern - specific fields depend on action value
-		// For structured actions (create_agent, etc.), use "config" field
-		// For simple actions (read, list, etc.), use "type", "name", "content" fields
 	}
 }
 
@@ -124,13 +209,13 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 		}, nil
 	}
 
-	// SECURITY: Guide agent is READ-ONLY (can only list and read)
-	if agentID == "guide" && action != "list" && action != "read" {
+	// SECURITY: Guide agent is READ-ONLY (can only list, read, presets, templates)
+	if agentID == "guide" && action != "list" && action != "read" && action != "presets" && action != "templates" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:    "UNAUTHORIZED",
-				Message: fmt.Sprintf("Guide agent is read-only. Only 'list' and 'read' actions are allowed, not '%s'", action),
+				Message: fmt.Sprintf("Guide agent is read-only. Only 'list', 'read', 'presets', 'templates' actions are allowed, not '%s'", action),
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
@@ -142,10 +227,22 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 		return t.executeCreateAgent(ctx, params, start)
 	case "create_workflow":
 		return t.executeCreateWorkflow(ctx, params, start)
+	case "create_skill":
+		return t.executeCreateSkill(ctx, params, start)
+	case "presets":
+		return t.executePresets(start)
+	case "apply_preset":
+		return t.executeApplyPreset(params, start)
+	case "templates":
+		return t.executeTemplates(start)
+	case "apply_template":
+		return t.executeApplyTemplate(params, start)
 	case "update_agent":
 		return t.executeUpdateAgent(ctx, params, start)
 	case "update_workflow":
 		return t.executeUpdateWorkflow(ctx, params, start)
+	case "update_skill":
+		return t.executeUpdateSkill(ctx, params, start)
 	case "read", "list", "validate", "delete":
 		// These actions require "type" parameter for backward compatibility
 		configType, ok := params["type"].(string)
@@ -161,12 +258,12 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 		}
 
 		// Validate type
-		if configType != "agent" && configType != "workflow" {
+		if configType != "agent" && configType != "workflow" && configType != "skill" {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
 					Code:    "INVALID_PARAMS",
-					Message: fmt.Sprintf("invalid type: %s (must be 'agent' or 'workflow')", configType),
+					Message: fmt.Sprintf("invalid type: %s (must be 'agent', 'workflow', or 'skill')", configType),
 				},
 				ExecutionTimeMs: time.Since(start).Milliseconds(),
 			}, nil
@@ -423,6 +520,8 @@ func (t *AgentManagementTool) executeRead(ctx context.Context, configType string
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}
@@ -434,7 +533,7 @@ func (t *AgentManagementTool) executeRead(ctx context.Context, configType string
 	}
 	filePath := filepath.Join(dir, filename)
 
-	// Read file - path validated and restricted to $LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/
+	// Read file - path validated and restricted to $LOOM_DATA_DIR/agents/, $LOOM_DATA_DIR/skills/, or $LOOM_DATA_DIR/workflows/
 	content, err := os.ReadFile(filePath) // #nosec G304 -- Path is validated and sanitized above
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -476,6 +575,8 @@ func (t *AgentManagementTool) executeList(ctx context.Context, configType string
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}
@@ -591,6 +692,8 @@ func (t *AgentManagementTool) executeDelete(ctx context.Context, configType stri
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}

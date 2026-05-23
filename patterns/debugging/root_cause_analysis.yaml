@@ -12,6 +12,8 @@ backend_type: debugging
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - troubleshooting
 use_cases:
   - Production incident investigation
   - SQL query performance issues

@@ -1,0 +1,320 @@
+# === METADATA START ===
+name: sql_basics
+title: "Teradata SQL Basics & Dialect Differences"
+description: |
+  Essential Teradata SQL syntax and dialect differences from PostgreSQL/MySQL.
+  Covers SELECT, QUALIFY, CTEs, DDL patterns, set operations, and common gotchas
+  that trip up developers coming from other databases.
+
+  Critical Teradata-specific syntax:
+  - QUALIFY — filter on window function results without subqueries
+  - REPLACE VIEW — Teradata uses REPLACE VIEW, not CREATE OR REPLACE VIEW
+  - SAMPLE — native random sampling (rows or percentage)
+  - MINUS — Teradata uses MINUS, not EXCEPT
+  - <> — Teradata uses <> for not-equal, not !=
+  - Reserved words in table operators must be double-quoted inside string arguments
+
+category: core
+difficulty: beginner
+teradata_function: null
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - query_generation
+use_cases:
+  - Write correct Teradata SQL syntax
+  - Avoid common dialect mistakes from PostgreSQL/MySQL habits
+  - Use QUALIFY for window function filtering
+  - Create views, tables, and volatile tables
+  - Handle reserved words in table operator clauses
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Target database"
+    example: "analytics"
+
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Target table"
+    example: "events"
+
+  - name: partition_column
+    type: string
+    # LLM-HINT: Column to partition by in QUALIFY examples
+    required: false
+    description: "Column for partitioning in window functions"
+    example: "customer_id"
+
+  - name: order_column
+    type: string
+    # LLM-HINT: Column to order by in QUALIFY examples
+    required: false
+    description: "Column for ordering in window functions"
+    example: "event_timestamp"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === QUALIFY_DEDUP TEMPLATE ===
+  # LLM-HINT: Most common QUALIFY use case; keeps latest row per partition key
+  qualify_dedup:
+    description: "Deduplicate rows using QUALIFY — keep most recent per key"
+    sql: |
+      -- Keep most recent row per partition key (no subquery needed)
+      SELECT *,
+        ROW_NUMBER() OVER (
+          PARTITION BY {{partition_column}}
+          ORDER BY {{order_column}} DESC
+        ) AS rn
+      FROM {{database}}.{{table}}
+      QUALIFY rn = 1;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - order_column
+
+  # === QUALIFY_TOPN TEMPLATE ===
+  # LLM-HINT: Top N per group using QUALIFY + RANK; RANK handles ties, ROW_NUMBER does not
+  qualify_topn:
+    description: "Get top N rows per group using QUALIFY"
+    sql: |
+      -- Top 3 per partition (using RANK to handle ties)
+      SELECT *,
+        RANK() OVER (
+          PARTITION BY {{partition_column}}
+          ORDER BY {{order_column}} DESC
+        ) AS rnk
+      FROM {{database}}.{{table}}
+      QUALIFY rnk <= 3;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - order_column
+
+  # === SAMPLE TEMPLATE ===
+  # LLM-HINT: SAMPLE n for row count, SAMPLE 0.xx for percentage; no ORDER BY needed
+  sample:
+    description: "Random sampling — by row count or percentage"
+    sql: |
+      -- Fixed number of random rows
+      SELECT * FROM {{database}}.{{table}} SAMPLE 100;
+
+      -- Percentage-based sample (5%)
+      SELECT * FROM {{database}}.{{table}} SAMPLE 0.05;
+
+      -- Deterministic top N (requires ORDER BY)
+      SELECT TOP 10 * FROM {{database}}.{{table}} ORDER BY {{order_column}};
+    required_parameters:
+      - database
+      - table
+
+  # === REPLACE_VIEW TEMPLATE ===
+  # LLM-HINT: CRITICAL — Teradata uses REPLACE VIEW, NOT CREATE OR REPLACE VIEW
+  replace_view:
+    description: "Create or replace a view (Teradata syntax)"
+    sql: |
+      -- CORRECT Teradata syntax (create or replace in one statement)
+      REPLACE VIEW {{database}}.{{view_name}} AS
+      SELECT {{columns}}
+      FROM {{database}}.{{table}}
+      WHERE {{condition}};
+
+      -- Create only (fails if view already exists)
+      -- CREATE VIEW {{database}}.{{view_name}} AS SELECT ...;
+    required_parameters:
+      - database
+      - table
+
+  # === VOLATILE_TABLE TEMPLATE ===
+  # LLM-HINT: Session-scoped temp tables; auto-dropped at session end; ON COMMIT PRESERVE ROWS required
+  volatile_table:
+    description: "Create a session-scoped volatile table"
+    sql: |
+      CREATE VOLATILE TABLE tmp_{{table}} AS (
+        SELECT *
+        FROM {{database}}.{{table}}
+        WHERE {{condition}}
+      ) WITH DATA
+      ON COMMIT PRESERVE ROWS;
+
+      -- Use in subsequent queries within this session
+      SELECT * FROM tmp_{{table}};
+    required_parameters:
+      - database
+      - table
+
+  # === CTAS TEMPLATE ===
+  # LLM-HINT: CREATE TABLE ... AS ... WITH DATA copies rows; WITH NO DATA copies schema only
+  ctas:
+    description: "Create table from query results (CTAS)"
+    sql: |
+      -- Copy rows
+      CREATE TABLE {{database}}.{{new_table}} AS (
+        SELECT * FROM {{database}}.{{table}} WHERE {{condition}}
+      ) WITH DATA;
+
+      -- Copy schema only (no rows)
+      CREATE TABLE {{database}}.{{new_table}} AS (
+        SELECT * FROM {{database}}.{{table}} WHERE 1=0
+      ) WITH NO DATA;
+
+      -- NoPI staging table (when access pattern unknown)
+      CREATE MULTISET TABLE {{database}}.{{new_table}}, NO PRIMARY INDEX AS (
+        SELECT * FROM {{database}}.{{table}} WHERE 1=0
+      );
+    required_parameters:
+      - database
+      - table
+
+  # === RESERVED_WORDS_IN_OPERATORS TEMPLATE ===
+  # LLM-HINT: Double-quote reserved words INSIDE single-quoted string arguments to table operators
+  reserved_words:
+    description: "Handle reserved words in table operator clauses"
+    sql: |
+      -- WRONG: 'type' is reserved — Teradata will reject or misparse
+      -- USING IDColumn('id') Accumulate('type', 'value')
+
+      -- CORRECT: double-quote reserved words inside string literal
+      -- USING IDColumn('id') Accumulate('"type"', '"value"')
+
+      -- Common reserved words as column names:
+      -- type, date, time, timestamp, value, name, format,
+      -- title, level, mode, status, class, key, index,
+      -- year, month, day, hour, minute, second
+
+      -- When in doubt, quote it. Double-quoting a non-reserved word is harmless.
+      SELECT "type", "date", "value"
+      FROM {{database}}.{{table}}
+      SAMPLE 5;
+    required_parameters:
+      - database
+      - table
+
+  # === OPERATOR_DIFFERENCES TEMPLATE ===
+  # LLM-HINT: Quick reference for syntax that differs from PostgreSQL/MySQL
+  operator_differences:
+    description: "Teradata operator differences from PostgreSQL/MySQL"
+    sql: |
+      -- Not-equal: use <> (not !=)
+      SELECT * FROM {{database}}.{{table}} WHERE status <> 'active';
+
+      -- Set difference: use MINUS (not EXCEPT)
+      SELECT id FROM {{database}}.table_a
+      MINUS
+      SELECT id FROM {{database}}.table_b;
+
+      -- String concatenation: use || (not +)
+      SELECT first_name || ' ' || last_name AS full_name
+      FROM {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Deduplicate Events"
+    description: "Keep only the most recent event per customer"
+    parameters:
+      database: "analytics"
+      table: "customer_events"
+      partition_column: "customer_id"
+      order_column: "event_timestamp"
+    expected_result: |
+      Uses QUALIFY with ROW_NUMBER to keep one row per customer_id,
+      ordered by event_timestamp DESC. No subquery needed — QUALIFY
+      filters directly on the window function result.
+
+  - name: "Create View (Teradata Syntax)"
+    description: "Replace a view using correct Teradata DDL"
+    parameters:
+      database: "reporting"
+      table: "orders"
+    expected_result: |
+      REPLACE VIEW reporting.active_orders AS
+      SELECT * FROM reporting.orders WHERE status <> 'cancelled';
+
+      Note: CREATE OR REPLACE VIEW is NOT valid Teradata syntax.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "CREATE OR REPLACE VIEW fails"
+    cause: "PostgreSQL/MySQL syntax — not valid in Teradata"
+    solution: "Use REPLACE VIEW db.view_name AS SELECT ... (single statement creates or replaces)"
+
+  - error: "!= not recognized"
+    cause: "Teradata uses <> for not-equal, not !="
+    solution: "Replace != with <> in all WHERE/HAVING clauses"
+
+  - error: "EXCEPT not recognized"
+    cause: "Teradata uses MINUS for set difference, not EXCEPT"
+    solution: "Replace EXCEPT with MINUS"
+
+  - error: "Reserved word as column name in table operator"
+    cause: "Column names like 'type', 'date', 'value' are reserved and must be quoted in operator clauses"
+    solution: "Double-quote inside single quotes: Accumulate('\"type\"', '\"value\"')"
+
+  - error: "String concatenation with + fails"
+    cause: "Teradata uses || for string concatenation, not +"
+    solution: "Use || operator: first_name || ' ' || last_name"
+
+  - error: "VOLATILE TABLE disappears"
+    cause: "Volatile tables are session-scoped — they are dropped when the session ends"
+    solution: "This is expected. Recreate in each session, or use a permanent table for persistence."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Teradata SQL Best Practices
+
+  ### 1. Use QUALIFY Instead of Subqueries
+  QUALIFY filters on window function results directly — cleaner and often faster:
+  ```sql
+  -- Instead of: SELECT * FROM (SELECT *, ROW_NUMBER() OVER (...) AS rn FROM t) WHERE rn = 1
+  -- Use: SELECT *, ROW_NUMBER() OVER (...) AS rn FROM t QUALIFY rn = 1
+  ```
+
+  ### 2. Use CTEs for Multi-Step Logic
+  CTEs (WITH clause) are equivalent to derived tables but more readable:
+  ```sql
+  WITH base AS (SELECT ... FROM db.t WHERE ...),
+       agg  AS (SELECT id, SUM(val) FROM base GROUP BY id)
+  SELECT * FROM agg;
+  ```
+
+  ### 3. Always Use ANSI Joins
+  Never use old-style comma joins. Always use explicit INNER/LEFT/RIGHT JOIN with ON clause.
+
+  ### 4. Filter Early
+  Push WHERE clauses as close to the base table as possible to reduce data movement.
+
+  ### 5. Use SAMPLE for Exploration
+  Use SAMPLE (not SELECT TOP without ORDER BY) for quick data exploration.
+  SAMPLE returns random rows; TOP without ORDER BY is non-deterministic.
+
+  ### 6. Volatile Tables for Intermediate Results
+  Use volatile tables for session-scoped intermediate results that will be
+  referenced multiple times. They avoid re-executing expensive subqueries.
+
+  ### 7. NoPI for Staging
+  Use NO PRIMARY INDEX for staging/load tables when you don't know the
+  access pattern yet. This avoids skew from a bad PI choice.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - data_types_casting
+  - explain_analysis
+  - query_tuning
+# === RELATED_PATTERNS END ===

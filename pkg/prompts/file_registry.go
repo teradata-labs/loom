@@ -37,7 +37,9 @@ import (
 //	  tools/
 //	    execute_sql.yaml     # Key: "tools.execute_sql"
 //
-// YAML format:
+// Supports two YAML formats:
+//
+// Format 1 (frontmatter):
 //
 //	---
 //	key: agent.system
@@ -49,6 +51,26 @@ import (
 //	variables: [backend_type, session_id, cost_threshold]
 //	---
 //	You are a {{.backend_type}} agent...
+//
+// Format 2 (nested):
+//
+//	---
+//	name: agent
+//	namespace: loom
+//	---
+//	prompts:
+//	  - id: system
+//	    content: |
+//	      You are a {{.backend_type}} agent...
+//	    tags: [agent, system]
+//	    metadata:
+//	      version: "v1.0"
+//	      description: "Base system prompt"
+//
+// Key derivation for nested format: name[.namespace_suffix].id
+// where namespace_suffix is the namespace with the "loom" prefix stripped.
+// Example: name="errors", namespace="loom.llm", id="timeout" -> "errors.llm.timeout"
+// Example: name="agent", namespace="loom", id="system" -> "agent.system"
 type FileRegistry struct {
 	rootDir string
 	mu      sync.RWMutex
@@ -61,7 +83,7 @@ type filePrompt struct {
 	variants map[string]string // variant name -> content
 }
 
-// promptFile represents a single YAML file.
+// promptFile represents a single YAML file in frontmatter format.
 type promptFile struct {
 	Metadata struct {
 		Key         string    `yaml:"key"`
@@ -75,6 +97,35 @@ type promptFile struct {
 		UpdatedAt   time.Time `yaml:"updated_at"`
 	} `yaml:"metadata"`
 	Content string `yaml:"content"`
+}
+
+// nestedPromptFile represents a YAML file in nested format with frontmatter
+// containing name/namespace and a body containing multiple prompt entries.
+type nestedPromptFile struct {
+	Name      string `yaml:"name"`
+	Namespace string `yaml:"namespace"`
+}
+
+// nestedPromptBody represents the body section of a nested prompt file.
+type nestedPromptBody struct {
+	Prompts []nestedPromptEntry `yaml:"prompts"`
+}
+
+// nestedPromptEntry represents a single prompt within a nested prompt file.
+type nestedPromptEntry struct {
+	ID        string                 `yaml:"id"`
+	Content   string                 `yaml:"content"`
+	Tags      []string               `yaml:"tags"`
+	Variables map[string]interface{} `yaml:"variables"`
+	Metadata  map[string]interface{} `yaml:"metadata"`
+}
+
+// loadedPrompt represents a prompt loaded from a nested file, ready to be
+// added to the registry.
+type loadedPrompt struct {
+	key      string
+	metadata PromptMetadata
+	content  string
 }
 
 // NewFileRegistry creates a new file-based prompt registry.
@@ -175,23 +226,26 @@ func (r *FileRegistry) Reload(ctx context.Context) error {
 			return nil
 		}
 
-		// Load the file
-		prompt, variant, err := r.loadFile(path)
+		// Load the file - may return multiple prompts (nested format)
+		// or a single prompt (frontmatter format)
+		prompts, variant, err := r.loadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to load %s: %w", path, err)
 		}
 
-		// Get or create the prompt entry
-		key := prompt.metadata.Key
-		if _, ok := newPrompts[key]; !ok {
-			newPrompts[key] = &filePrompt{
-				metadata: prompt.metadata,
-				variants: make(map[string]string),
+		for _, prompt := range prompts {
+			// Get or create the prompt entry
+			key := prompt.metadata.Key
+			if _, ok := newPrompts[key]; !ok {
+				newPrompts[key] = &filePrompt{
+					metadata: prompt.metadata,
+					variants: make(map[string]string),
+				}
 			}
-		}
 
-		// Add this variant
-		newPrompts[key].variants[variant] = prompt.variants[variant]
+			// Add this variant
+			newPrompts[key].variants[variant] = prompt.variants[variant]
+		}
 
 		return nil
 	})
@@ -353,11 +407,18 @@ func (r *FileRegistry) extractKeyFromPath(path string) string {
 }
 
 // loadFile loads a single YAML file and extracts the variant name.
+// Returns a slice of filePrompt entries (nested format may yield multiple)
+// and the variant name derived from the filename.
 //
 // Variant detection:
 //   - "system.yaml" -> default variant
 //   - "system.concise.yaml" -> "concise" variant
-func (r *FileRegistry) loadFile(path string) (*filePrompt, string, error) {
+//
+// Format detection:
+//   - If frontmatter has a "key" field, it's frontmatter format (single prompt).
+//   - If frontmatter has "name"/"namespace" and the body starts with "prompts:",
+//     it's nested format (multiple prompts).
+func (r *FileRegistry) loadFile(path string) ([]*filePrompt, string, error) {
 	// Read file
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -370,40 +431,159 @@ func (r *FileRegistry) loadFile(path string) (*filePrompt, string, error) {
 		return nil, "", fmt.Errorf("invalid format: expected YAML frontmatter with --- separator")
 	}
 
-	// Parse metadata (second part, first is empty)
+	// Extract variant from filename
+	variant := extractVariant(path)
+
+	// Try frontmatter format first: parse the frontmatter section
 	var pf promptFile
 	if err := yaml.Unmarshal([]byte(parts[1]), &pf.Metadata); err != nil {
 		return nil, "", fmt.Errorf("failed to parse metadata: %w", err)
 	}
 
-	// Content is the third part (after second ---)
-	pf.Content = strings.TrimSpace(parts[2])
-
-	// Extract variant from filename
-	variant := extractVariant(path)
-
-	// Build metadata
-	metadata := PromptMetadata{
-		Key:         pf.Metadata.Key,
-		Version:     pf.Metadata.Version,
-		Author:      pf.Metadata.Author,
-		Description: pf.Metadata.Description,
-		Tags:        pf.Metadata.Tags,
-		Variants:    pf.Metadata.Variants,
-		Variables:   pf.Metadata.Variables,
-		CreatedAt:   pf.Metadata.CreatedAt,
-		UpdatedAt:   pf.Metadata.UpdatedAt,
+	// If we got a key from frontmatter, this is frontmatter format
+	if pf.Metadata.Key != "" {
+		content := strings.TrimSpace(parts[2])
+		metadata := PromptMetadata{
+			Key:         pf.Metadata.Key,
+			Version:     pf.Metadata.Version,
+			Author:      pf.Metadata.Author,
+			Description: pf.Metadata.Description,
+			Tags:        pf.Metadata.Tags,
+			Variants:    pf.Metadata.Variants,
+			Variables:   pf.Metadata.Variables,
+			CreatedAt:   pf.Metadata.CreatedAt,
+			UpdatedAt:   pf.Metadata.UpdatedAt,
+		}
+		prompt := &filePrompt{
+			metadata: metadata,
+			variants: map[string]string{
+				variant: content,
+			},
+		}
+		return []*filePrompt{prompt}, variant, nil
 	}
 
-	// Build prompt
-	prompt := &filePrompt{
-		metadata: metadata,
-		variants: map[string]string{
-			variant: pf.Content,
-		},
+	// No key found -- try nested format
+	body := strings.TrimSpace(parts[2])
+	if strings.HasPrefix(body, "prompts:") {
+		loaded, err := r.loadNestedFile([]byte(parts[1]), []byte(body), path)
+		if err != nil {
+			return nil, "", err
+		}
+
+		prompts := make([]*filePrompt, 0, len(loaded))
+		for _, lp := range loaded {
+			prompts = append(prompts, &filePrompt{
+				metadata: lp.metadata,
+				variants: map[string]string{
+					variant: lp.content,
+				},
+			})
+		}
+		return prompts, variant, nil
 	}
 
-	return prompt, variant, nil
+	return nil, "", fmt.Errorf("invalid format: frontmatter has no 'key' and body does not start with 'prompts:'")
+}
+
+// loadNestedFile parses a nested-format prompt file.
+//
+// The frontmatter contains name and namespace. The body contains a list of
+// prompt entries under the "prompts:" key. Each entry produces a separate
+// prompt with key derived as: name[.namespace_suffix].id
+//
+// Namespace suffix derivation: strip the "loom" prefix from namespace.
+//   - namespace="loom"               -> suffix="" -> key="name.id"
+//   - namespace="loom.llm"           -> suffix="llm" -> key="name.llm.id"
+//   - namespace="loom.self_correction" -> suffix="self_correction" -> key="name.self_correction.id"
+func (r *FileRegistry) loadNestedFile(frontmatter, body []byte, path string) ([]loadedPrompt, error) {
+	// Parse frontmatter for name/namespace
+	var header nestedPromptFile
+	if err := yaml.Unmarshal(frontmatter, &header); err != nil {
+		return nil, fmt.Errorf("failed to parse nested frontmatter: %w", err)
+	}
+
+	if header.Name == "" {
+		return nil, fmt.Errorf("nested format requires 'name' in frontmatter")
+	}
+
+	// Parse body for prompt entries
+	var nb nestedPromptBody
+	if err := yaml.Unmarshal(body, &nb); err != nil {
+		return nil, fmt.Errorf("failed to parse nested body: %w", err)
+	}
+
+	if len(nb.Prompts) == 0 {
+		return nil, fmt.Errorf("nested format has no prompts in %s", path)
+	}
+
+	// Derive namespace suffix: strip "loom" prefix
+	namespaceSuffix := deriveNamespaceSuffix(header.Namespace)
+
+	var results []loadedPrompt
+	for _, entry := range nb.Prompts {
+		if entry.ID == "" {
+			return nil, fmt.Errorf("nested prompt entry missing 'id' in %s", path)
+		}
+
+		// Build key: name[.suffix].id
+		key := buildNestedKey(header.Name, namespaceSuffix, entry.ID)
+
+		// Extract variable names from the variables map
+		var varNames []string
+		for vName := range entry.Variables {
+			varNames = append(varNames, vName)
+		}
+
+		// Extract version and description from metadata map
+		version := ""
+		description := ""
+		if entry.Metadata != nil {
+			if v, ok := entry.Metadata["version"]; ok {
+				version = fmt.Sprintf("%v", v)
+			}
+			if d, ok := entry.Metadata["description"]; ok {
+				description = fmt.Sprintf("%v", d)
+			}
+		}
+
+		results = append(results, loadedPrompt{
+			key: key,
+			metadata: PromptMetadata{
+				Key:         key,
+				Version:     version,
+				Description: description,
+				Tags:        entry.Tags,
+				Variables:   varNames,
+			},
+			content: strings.TrimSpace(entry.Content),
+		})
+	}
+
+	return results, nil
+}
+
+// deriveNamespaceSuffix strips the "loom" prefix from a namespace.
+// "loom" -> "", "loom.llm" -> "llm", "loom.self_correction" -> "self_correction"
+func deriveNamespaceSuffix(namespace string) string {
+	if namespace == "loom" || namespace == "" {
+		return ""
+	}
+	if strings.HasPrefix(namespace, "loom.") {
+		return strings.TrimPrefix(namespace, "loom.")
+	}
+	// If namespace doesn't start with "loom", use it as-is
+	return namespace
+}
+
+// buildNestedKey constructs the prompt key from name, namespace suffix, and id.
+// name="errors", suffix="llm", id="timeout" -> "errors.llm.timeout"
+// name="agent", suffix="", id="system" -> "agent.system"
+func buildNestedKey(name, suffix, id string) string {
+	if suffix == "" {
+		return name + "." + id
+	}
+	return name + "." + suffix + "." + id
 }
 
 // extractVariant extracts the variant name from a filename.

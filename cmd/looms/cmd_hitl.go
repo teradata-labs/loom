@@ -15,13 +15,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -126,20 +129,22 @@ func init() {
 	hitlCmd.AddCommand(hitlShowCmd)
 	hitlCmd.AddCommand(hitlRespondCmd)
 
+	defaultHITLDB := filepath.Join(loomconfig.GetLoomDataDir(), "hitl.db")
+
 	// List command flags
 	hitlListCmd.Flags().StringVar(&hitlSessionID, "session", "", "Filter by session ID")
 	hitlListCmd.Flags().StringVar(&hitlAgentID, "agent", "", "Filter by agent ID")
-	hitlListCmd.Flags().StringVar(&hitlDBPath, "db", "./loom.db", "Path to SQLite database")
+	hitlListCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
 
 	// Show command flags
-	hitlShowCmd.Flags().StringVar(&hitlDBPath, "db", "./loom.db", "Path to SQLite database")
+	hitlShowCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
 
 	// Respond command flags
 	hitlRespondCmd.Flags().StringVar(&hitlStatus, "status", "approved", "Response status (approved, rejected, responded)")
 	hitlRespondCmd.Flags().StringVar(&hitlMessage, "message", "", "Response message (required)")
 	hitlRespondCmd.Flags().StringVar(&hitlData, "data", "", "Response data as JSON (optional)")
 	hitlRespondCmd.Flags().StringVar(&hitlRespondedBy, "by", "", "Who is responding (default: current user)")
-	hitlRespondCmd.Flags().StringVar(&hitlDBPath, "db", "./loom.db", "Path to SQLite database")
+	hitlRespondCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
 
 	_ = hitlRespondCmd.MarkFlagRequired("message")
 }
@@ -373,10 +378,10 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	// Parse response data if provided
 	var responseData map[string]interface{}
 	if hitlData != "" {
-		// Simple JSON parsing (in production, use proper JSON parsing)
-		// For now, just pass nil
-		responseData = nil
-		fmt.Fprintf(os.Stderr, "Warning: --data flag not yet implemented\n")
+		if err := json.Unmarshal([]byte(hitlData), &responseData); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing --data JSON: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Determine respondedBy

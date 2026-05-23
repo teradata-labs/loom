@@ -1,0 +1,492 @@
+# === METADATA START ===
+name: uaf_concepts
+title: "UAF (Unbounded Array Framework) Architecture"
+description: |
+  Reference pattern for the Unbounded Array Framework (UAF), Teradata's native table
+  operator framework for time series analysis, digital signal processing, and spatial
+  analytics. UAF functions operate on series (1D), matrices (2D), and Analytic Result
+  Tables (ARTs) rather than ordinary row-oriented tables.
+
+  This pattern covers the foundational concepts required by all other UAF-based patterns:
+  - SERIES_SPEC, MATRIX_SPEC, ART_SPEC, GENSERIES_SPEC input specifications
+  - The EXECUTE FUNCTION INTO ART execution pattern
+  - ART layers (ARTPRIMARY, ARTFITRESIDUALS, ARTFITMETADATA, ARTMODEL, etc.)
+  - TD_EXTRACT_RESULTS for retrieving auxiliary ART layers
+  - ART chaining for multi-step pipelines (Estimate -> Validate -> Forecast)
+
+category: timeseries
+difficulty: advanced
+teradata_function: UAF
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - forecasting
+  - query_generation
+use_cases:
+  - Time series forecasting pipelines (ARIMA, Holt-Winters, exponential smoothing)
+  - Digital signal processing (FFT, wavelet transforms, convolution)
+  - Regression on ordered sequences (linear, multivariate)
+  - Seasonal decomposition and normalization
+  - Multi-step ART-chained analytical workflows
+  - Spectral analysis and frequency domain operations
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Table Name ---
+  - name: table_name
+    type: string
+    # LLM-HINT: Source table, view, derived table, or ART for UAF functions
+    required: true
+    description: "Source table containing the series or matrix data"
+    example: "sales_ts"
+
+  # --- Parameter 2: Series ID ---
+  - name: series_id
+    type: string
+    # LLM-HINT: One or more columns identifying each distinct series instance
+    required: true
+    description: "Column(s) that uniquely identify each series (e.g., store_id, sensor_id)"
+    example: "store_id"
+
+  # --- Parameter 3: Row Axis Column ---
+  - name: row_axis_column
+    type: string
+    # LLM-HINT: Index column; use TIMECODE for date/timestamp, SEQUENCE for integer/float
+    required: true
+    description: "Column used as the row axis index (date/timestamp or sequence number)"
+    example: "seq_no"
+
+  # --- Parameter 4: Row Axis Type ---
+  - name: row_axis_type
+    type: string
+    # LLM-HINT: TIMECODE for date/timestamp columns, SEQUENCE for integer/float columns
+    required: true
+    description: "Type of row axis: TIMECODE (date/timestamp) or SEQUENCE (integer/float)"
+    example: "SEQUENCE"
+
+  # --- Parameter 5: Payload Field ---
+  - name: payload_field
+    type: string
+    # LLM-HINT: The numeric data column(s) to analyze
+    required: true
+    description: "Data field(s) containing the values to analyze"
+    example: "sales_amt"
+
+  # --- Parameter 6: Payload Content ---
+  - name: payload_content
+    type: string
+    # LLM-HINT: REAL for standard floats, MULTIVAR_REAL for vectors, COMPLEX for complex numbers
+    required: true
+    description: "Numeric type of payload: REAL, COMPLEX, MULTIVAR_REAL, MULTIVAR_COMPLEX, AMPL_PHASE_RADIANS, AMPL_PHASE_DEGREES"
+    example: "REAL"
+
+  # --- Parameter 7: ART Name ---
+  - name: art_name
+    type: string
+    # LLM-HINT: Name for the output ART table; use VOLATILE for session-scoped tables
+    required: true
+    description: "Name for the Analytic Result Table output"
+    example: "my_result_art"
+
+  # --- Parameter 8: ART Layer ---
+  - name: art_layer
+    type: string
+    # LLM-HINT: ARTPRIMARY (default), ARTFITMETADATA, ARTFITRESIDUALS, ARTMODEL, ARTVALDATA, etc.
+    required: false
+    description: "ART layer to extract: ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS, ARTMODEL, ARTVALDATA, ARTCPDATA, ARTMETADATA, ARTSELMETRICS, ARTSTATSDATA"
+    example: "ARTFITMETADATA"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === SERIES_SPEC TEMPLATE ===
+  # LLM-HINT: Foundation input spec for 1D series data; used by most UAF functions
+  series_spec_basic:
+    description: "Basic SERIES_SPEC for feeding 1D series data to UAF functions"
+    sql: |
+      -- SERIES_SPEC references a 1D series in any Teradata table, view, or ART layer.
+      -- This is the most common input specification for UAF functions.
+      SERIES_SPEC(
+          TABLE_NAME({{table_name}}),
+          ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+          SERIES_ID({{series_id}}),
+          PAYLOAD(FIELDS({{payload_field}}), CONTENT({{payload_content}}))
+      )
+
+      -- With optional INTERVAL (required by TD_SEASONALNORMALIZE, TD_UNNORMALIZE):
+      -- SERIES_SPEC(
+      --     TABLE_NAME({{table_name}}),
+      --     ROW_AXIS(TIMECODE({{row_axis_column}})),
+      --     SERIES_ID({{series_id}}),
+      --     PAYLOAD(FIELDS({{payload_field}}), CONTENT(REAL)),
+      --     INTERVAL(CAL_MONTHS(1))
+      -- )
+    required_parameters:
+      - table_name
+      - row_axis_type
+      - row_axis_column
+      - series_id
+      - payload_field
+      - payload_content
+
+  # === EXECUTE_INTO_ART TEMPLATE ===
+  # LLM-HINT: Standard execution pattern for all UAF functions; creates an ART output table
+  execute_into_art:
+    description: "Standard EXECUTE FUNCTION INTO ART pattern used by all UAF functions"
+    sql: |
+      -- Standard call form: writes results to an Analytic Result Table (ART).
+      -- Use VOLATILE for session-scoped tables (auto-dropped at session end).
+      EXECUTE FUNCTION INTO VOLATILE ART({{art_name}})
+      TD_FUNCTION_NAME(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{payload_field}}), CONTENT({{payload_content}}))
+          ),
+          FUNC_PARAMS(...)
+      );
+
+      -- Retrieve primary results directly:
+      SELECT * FROM {{art_name}};
+
+      -- Or use permanent ART (persists across sessions):
+      -- EXECUTE FUNCTION INTO ART({{art_name}})
+      -- TD_FUNCTION_NAME(...);
+    required_parameters:
+      - art_name
+      - table_name
+      - row_axis_type
+      - row_axis_column
+      - series_id
+      - payload_field
+      - payload_content
+
+  # === EXTRACT_RESULTS TEMPLATE ===
+  # LLM-HINT: Retrieves auxiliary layers from multi-layer ARTs; ARTPRIMARY can use SELECT directly
+  extract_results:
+    description: "Extract auxiliary ART layers using TD_EXTRACT_RESULTS"
+    sql: |
+      -- TD_EXTRACT_RESULTS retrieves any layer from a multi-layer ART.
+      -- ARTPRIMARY can be queried with SELECT *; auxiliary layers require this function.
+
+      -- Retrieve fit metadata (R-squared, AIC, MAE, MSE, MAPE, etc.)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME({{art_name}}), LAYER(ARTFITMETADATA))
+      );
+
+      -- Retrieve residuals (ACTUAL_VALUE, CALC_VALUE, RESIDUAL)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME({{art_name}}), LAYER(ARTFITRESIDUALS))
+      );
+
+      -- Retrieve model context (binary model consumed by downstream functions)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME({{art_name}}), LAYER(ARTMODEL))
+      );
+    required_parameters:
+      - art_name
+
+  # === ART_CHAINING TEMPLATE ===
+  # LLM-HINT: Core pipeline pattern; output ART from one function feeds into the next via ART_SPEC
+  art_chaining_pipeline:
+    description: "Chain ART outputs as inputs for multi-step UAF pipelines"
+    sql: |
+      -- ART chaining: results from one UAF function feed into the next via ART_SPEC.
+      -- This is the standard pattern for multi-step analytical pipelines.
+
+      -- Step 1: Estimate model (writes to ART)
+      EXECUTE FUNCTION INTO VOLATILE ART(step1_art)
+      TD_ARIMAESTIMATE(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{payload_field}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              NONSEASONAL(MODEL_ORDER(1,0,1)),
+              FIT_PERCENTAGE(70), FIT_METRICS(1), RESIDUALS(1)
+          )
+      );
+
+      -- Step 2: Validate (consumes ART from step 1 via ART_SPEC)
+      EXECUTE FUNCTION INTO VOLATILE ART(step2_art)
+      TD_ARIMAVALIDATE(
+          ART_SPEC(TABLE_NAME(step1_art)),
+          FUNC_PARAMS(FIT_METRICS(1), RESIDUALS(1))
+      );
+
+      -- Step 3: Forecast (consumes validated ART from step 2)
+      EXECUTE FUNCTION INTO VOLATILE ART(step3_art)
+      TD_ARIMAFORECAST(
+          ART_SPEC(TABLE_NAME(step2_art)),
+          FUNC_PARAMS(FORECAST_PERIODS(12))
+      );
+
+      -- Step 4: Retrieve forecast results
+      SELECT * FROM step3_art;
+    required_parameters:
+      - table_name
+      - row_axis_column
+      - series_id
+      - payload_field
+
+  # === GENSERIES_SPEC TEMPLATE ===
+  # LLM-HINT: Generates synthetic series without a pre-existing table; useful for test signals
+  genseries_spec:
+    description: "Generate synthetic series data using GENSERIES_SPEC (no table required)"
+    sql: |
+      -- GENSERIES_SPEC generates an arithmetic sequence of values programmatically.
+      -- Indexed starting at 0, incrementing by 1. Single series input only.
+
+      EXECUTE FUNCTION INTO VOLATILE ART({{art_name}})
+      TD_FUNCTION_NAME(
+          GENSERIES_SPEC(
+              INSTANCE_NAMES('{"series_name": "test_signal"}'),
+              DT(VARCHAR(30)),
+              GEN_PAYLOAD(
+                  1.0,     -- start_value (FLOAT)
+                  0.5,     -- offset_value (FLOAT) - increment per entry
+                  100      -- num_entries (INTEGER) - total entries to generate
+              )
+          ),
+          FUNC_PARAMS(...)
+      );
+
+      SELECT * FROM {{art_name}};
+    required_parameters:
+      - art_name
+
+  # === MATRIX_SPEC TEMPLATE ===
+  # LLM-HINT: Input spec for 2D matrix data; used by 2D FFT, 2D DWT, 2D convolution
+  matrix_spec_basic:
+    description: "Basic MATRIX_SPEC for feeding 2D matrix data to UAF functions"
+    sql: |
+      -- MATRIX_SPEC references a 2D matrix in any Teradata table, view, or ART layer.
+      -- Used by TD_DFFT2, TD_DWT2D, TD_CONVOLVE2, and other 2D functions.
+      MATRIX_SPEC(
+          TABLE_NAME({{table_name}}),
+          ROW_AXIS(SEQUENCE(row_idx)),
+          COLUMN_AXIS(SEQUENCE(col_idx)),
+          MATRIX_ID({{series_id}}),
+          PAYLOAD(FIELDS({{payload_field}}), CONTENT({{payload_content}}))
+      )
+    required_parameters:
+      - table_name
+      - series_id
+      - payload_field
+      - payload_content
+
+  # === COLUMN_RENAME TEMPLATE ===
+  # LLM-HINT: Rename output columns using COLUMNS() clause before writing to ART
+  column_rename:
+    description: "Rename output columns before writing to ART using the COLUMNS() clause"
+    sql: |
+      -- The COLUMNS() clause renames output columns in the same statement.
+      -- Place between EXECUTE FUNCTION and INTO.
+      EXECUTE FUNCTION COLUMNS(OUT_{{payload_field}} AS {{payload_field}})
+      INTO VOLATILE ART({{art_name}})
+      TD_FUNCTION_NAME(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{payload_field}}), CONTENT({{payload_content}}))
+          ),
+          FUNC_PARAMS(...)
+      );
+    required_parameters:
+      - art_name
+      - table_name
+      - row_axis_type
+      - row_axis_column
+      - series_id
+      - payload_field
+      - payload_content
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Full ARIMA Pipeline with ART Chaining ---
+  - name: "Full ARIMA Pipeline with ART Chaining"
+    description: "Demonstrates the complete Estimate -> Validate -> Forecast pipeline using ART chaining"
+    parameters:
+      table_name: "sales_ts"
+      series_id: "store_id"
+      row_axis_column: "seq_no"
+      row_axis_type: "SEQUENCE"
+      payload_field: "sales_amt"
+      payload_content: "REAL"
+    expected_result: |
+      Three ART tables created in sequence:
+      - arima_est: coefficient table with COEFF_NAME, COEFF_VALUE
+      - arima_val: model selection metrics (AIC, SBIC, MSE)
+      - arima_fcst: forecast values with prediction intervals (LO_80, HI_80, LO_95, HI_95)
+
+      Each step consumes the previous ART via ART_SPEC(TABLE_NAME(...)).
+
+  # --- Example 2: Multi-layer ART Extraction ---
+  - name: "Multi-layer ART Extraction"
+    description: "Extract different layers from a multi-layer ART produced by TD_ARIMAESTIMATE"
+    parameters:
+      table_name: "sales_ts"
+      art_name: "arima_est"
+      art_layer: "ARTFITMETADATA"
+    expected_result: |
+      TD_ARIMAESTIMATE produces a five-layer ART:
+      - ARTPRIMARY: Coefficients (INDEX, COEFF_NAME, COEFF_VALUE)
+      - ARTFITMETADATA: Goodness-of-fit (R-squared, AIC, MAE, MSE, MAPE)
+      - ARTFITRESIDUALS: Residuals (ACTUAL_VALUE, CALC_VALUE, RESIDUAL)
+      - ARTMODEL: Binary model context (consumed by TD_ARIMAVALIDATE)
+      - ARTVALDATA: Holdout validation data
+
+      Use SELECT * for ARTPRIMARY; use TD_EXTRACT_RESULTS for all other layers.
+
+  # --- Example 3: Seasonal Normalization Pipeline ---
+  - name: "Seasonal Normalization Pipeline"
+    description: "Normalize seasonal data, model, then unnormalize forecasts back to original scale"
+    parameters:
+      table_name: "sales_ts"
+      series_id: "store_id"
+      row_axis_column: "sale_date"
+      row_axis_type: "TIMECODE"
+      payload_field: "sales"
+      payload_content: "REAL"
+    expected_result: |
+      Pipeline: TD_SEASONALNORMALIZE -> model -> forecast -> TD_UNNORMALIZE
+
+      TD_SEASONALNORMALIZE produces two-layer ART:
+      - ARTPRIMARY: Normalized series ((value - mean) / SD per interval)
+      - ARTMETADATA: Per-interval MEAN and SD (consumed by TD_UNNORMALIZE)
+
+      The INTERVAL parameter must match between normalization and unnormalization calls.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing EXECUTE FUNCTION INTO ART Wrapper ---
+  - error: "UAF function called without INTO ART wrapper"
+    cause: "Most UAF functions require EXECUTE FUNCTION INTO [VOLATILE] ART(name) syntax"
+    solution: "Wrap the function call: EXECUTE FUNCTION INTO VOLATILE ART(result_name) TD_FUNCTION_NAME(...);"
+
+  # --- Error 2: Attempting SELECT on Auxiliary ART Layer ---
+  - error: "SELECT * from ART returns only primary layer data"
+    cause: "SELECT * on an ART retrieves ARTPRIMARY only; auxiliary layers are not visible"
+    solution: "Use TD_EXTRACT_RESULTS with ART_SPEC(TABLE_NAME(art_name), LAYER(layer_name)) for ARTFITMETADATA, ARTFITRESIDUALS, ARTMODEL, etc."
+
+  # --- Error 3: ART_SPEC Used with Incompatible Function ---
+  - error: "Function does not accept ART_SPEC input"
+    cause: "Not all UAF functions accept ART_SPEC; some require SERIES_SPEC or MATRIX_SPEC only"
+    solution: "Check individual function documentation for supported input spec types. Use SERIES_SPEC referencing the ART table if ART_SPEC is not accepted."
+
+  # --- Error 4: Missing INTERVAL in SERIES_SPEC ---
+  - error: "INTERVAL required for TD_SEASONALNORMALIZE or TD_UNNORMALIZE"
+    cause: "TD_SEASONALNORMALIZE and TD_UNNORMALIZE require INTERVAL in SERIES_SPEC; most other functions do not"
+    solution: "Add INTERVAL(CAL_MONTHS(1)) or appropriate time duration to the SERIES_SPEC. The INTERVAL must match between normalize and unnormalize calls."
+
+  # --- Error 5: Payload Content Mismatch ---
+  - error: "Payload content type mismatch between chained functions"
+    cause: "Downstream function expects different content type than upstream function produced"
+    solution: "Verify CONTENT type compatibility. REAL is most common for time series. Use MULTIVAR_REAL for multi-field payloads. COMPLEX for frequency domain data."
+
+  # --- Error 6: Volatile ART Not Found ---
+  - error: "Volatile ART table not found in subsequent query"
+    cause: "Volatile ARTs are session-scoped and dropped when the session ends"
+    solution: "Ensure all pipeline steps execute within the same session. Use permanent ARTs (omit VOLATILE) if results must persist across sessions."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## UAF Architecture Best Practices
+
+  ### 1. Input Specification Selection
+  **Choose the right spec type:**
+  - `SERIES_SPEC`: 1D series data (time series, signals) - most common
+  - `MATRIX_SPEC`: 2D data (correlation matrices, images)
+  - `ART_SPEC`: Chaining output from a previous UAF function
+  - `GENSERIES_SPEC`: Synthetic test signals without pre-existing tables
+
+  **ROW_AXIS selection:**
+  - `TIMECODE(column)`: When the index is a DATE or TIMESTAMP column
+  - `SEQUENCE(column)`: When the index is an integer or float column
+
+  ### 2. ART Management
+  **Use VOLATILE ARTs for intermediate results:**
+  ```sql
+  EXECUTE FUNCTION INTO VOLATILE ART(intermediate_result)
+  TD_FUNCTION_NAME(...);
+  ```
+  - Session-scoped: auto-dropped at session end
+  - Slightly faster than permanent ARTs
+  - Ideal for pipeline intermediate steps
+
+  **Use permanent ARTs for final results:**
+  ```sql
+  EXECUTE FUNCTION INTO ART(final_result)
+  TD_FUNCTION_NAME(...);
+  ```
+  - Persists across sessions
+  - Required when results must be shared or audited
+
+  ### 3. ART Layer Extraction
+  **Always check which layers a function produces:**
+
+  | Function | Layers |
+  |----------|--------|
+  | TD_ARIMAESTIMATE | ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS, ARTMODEL, ARTVALDATA |
+  | TD_ARIMAVALIDATE | ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS, ARTMODEL |
+  | TD_HOLT_WINTERS_FORECASTER | ARTPRIMARY, ARTFITMETADATA, ARTSELMETRICS, ARTFITRESIDUALS |
+  | TD_MAMEAN | ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS |
+  | TD_SIMPLEEXP | ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS |
+  | TD_SEASONALNORMALIZE | ARTPRIMARY, ARTMETADATA |
+  | TD_LINEAR_REGR | ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS |
+
+  **Extract auxiliary layers with TD_EXTRACT_RESULTS:**
+  ```sql
+  EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+      ART_SPEC(TABLE_NAME(my_art), LAYER(ARTFITMETADATA))
+  );
+  ```
+
+  ### 4. Pipeline Design
+  **Follow the standard UAF pipeline pattern:**
+  1. Prepare data (differencing, normalization)
+  2. Estimate model (writes multi-layer ART)
+  3. Validate model (consumes ART, produces new ART)
+  4. Generate forecasts (consumes validated ART)
+  5. Extract results (TD_EXTRACT_RESULTS for auxiliary layers)
+
+  **Enable diagnostics during development:**
+  ```sql
+  FUNC_PARAMS(..., FIT_METRICS(1), RESIDUALS(1))
+  ```
+  - FIT_METRICS(1) generates ARTFITMETADATA layer
+  - RESIDUALS(1) generates ARTFITRESIDUALS layer
+  - Disable in production for performance if not needed
+
+  ### 5. SERIES_ID Design
+  **Use meaningful series identifiers:**
+  - Single column: `SERIES_ID(store_id)` for one grouping dimension
+  - Multiple columns: `SERIES_ID(region, store_id)` for hierarchical grouping
+  - Each unique combination of SERIES_ID values defines a separate series instance
+  - UAF functions process each series instance independently
+
+  ### 6. PAYLOAD Content Types
+  **Match content type to your data:**
+  - `REAL`: Standard floating-point (most time series)
+  - `MULTIVAR_REAL`: Vector of reals (multiple fields in one payload)
+  - `COMPLEX`: Complex numbers (frequency domain, FFT output)
+  - `AMPL_PHASE_RADIANS/DEGREES`: Complex in polar form (spectral analysis)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - arima
+  - holt_winters
+  - moving_average
+  - signal_processing
+# === RELATED_PATTERNS END ===

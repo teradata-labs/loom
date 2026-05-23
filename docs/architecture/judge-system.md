@@ -1,11 +1,11 @@
 
 # Judge System Architecture
 
-Multi-judge LLM evaluation system that coordinates multiple judges with different criteria to evaluate agent outputs. Supports Hawk's 4 core scores (factual accuracy, hallucination, query quality, completeness), 6 evaluation dimensions, 3 execution modes, and 6 aggregation strategies with retry/circuit breaker patterns.
+Multi-judge LLM evaluation system that coordinates multiple judges with different criteria to evaluate agent outputs. Supports 4 core scores (factual accuracy, hallucination, query quality, completeness), 6 evaluation dimensions, 3 execution modes, and 6 aggregation strategies with retry/circuit breaker patterns.
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -17,11 +17,11 @@ Multi-judge LLM evaluation system that coordinates multiple judges with differen
 - [Components](#components)
   - [Judge Service](#judge-service)
   - [Judge Interface](#judge-interface)
-  - [Hawk Judge](#hawk-judge)
-  - [Agent Judge Adapter](#agent-judge-adapter)
+  - [LLM Judge](#llm-judge)
+  - [Agent Judge](#agent-judge)
   - [Custom Judge](#custom-judge)
-  - [Multi-Judge Coordinator](#multi-judge-coordinator)
-  - [Aggregation Engine](#aggregation-engine)
+  - [Multi-Judge Orchestrator](#multi-judge-orchestrator)
+  - [Aggregator](#aggregation-engine)
   - [Retry & Circuit Breaker](#retry--circuit-breaker)
 - [Key Interactions](#key-interactions)
   - [Synchronous Evaluation Flow](#synchronous-evaluation-flow)
@@ -55,23 +55,23 @@ The Judge System evaluates **agent outputs across multiple dimensions** using a 
 - Performance metrics (cost, latency, trace ID)
 
 **Evaluation Outputs**:
-- **Hawk's 4 Core Scores**: Factual Accuracy, Hallucination Score, Query Quality, Completeness (0-100)
+- **4 Core Scores**: Factual Accuracy, Hallucination Score, Query Quality, Completeness (0-100)
 - **6 Dimension Scores**: Quality, Cost, Safety, Domain, Performance, Usability (0-100)
 - **Custom Dimension Scores**: User-defined dimensions (e.g., "teradata_compliance", "hipaa_compliance")
 - **Verdict**: PASS, FAIL, PARTIAL
 - **Reasoning**: Detailed explanation and suggestions
 
-**Key Innovation**: Multi-judge coordination with pluggable judge types (Hawk, Agent, Custom), 6 aggregation strategies, 3 execution modes (sync/async/hybrid), and production-grade retry with circuit breaker.
+**Key Innovation**: Multi-judge coordination with pluggable judge types (LLM, Agent, Custom), 6 aggregation strategies, 3 execution modes (sync/async/hybrid), and retry with circuit breaker.
 
 
 ## Design Goals
 
 1. **Multi-Dimensional Evaluation**: Assess agent outputs across quality, cost, safety, domain, performance, usability dimensions
-2. **Pluggable Judges**: Support Hawk's embedded judges, Loom agents as judges, and custom implementations
+2. **Pluggable Judges**: Support LLM-based judges, Loom agents as judges, and custom implementations
 3. **Flexible Aggregation**: 6 strategies (weighted average, all-must-pass, majority-pass, any-pass, min-score, max-score)
 4. **Execution Modes**: Synchronous (blocking), asynchronous (background), hybrid (critical sync, non-critical async)
 5. **Criticality Levels**: Non-critical, critical, safety-critical judges with different priorities
-6. **Production-Grade Reliability**: Exponential backoff retry, circuit breaker, timeout handling
+6. **Fault Tolerance**: Exponential backoff retry, circuit breaker, timeout handling
 7. **Streaming Progress**: Real-time updates for long-running evaluations (MIPRO, BootstrapFewShot)
 8. **Hawk Integration**: Native export to Hawk for trace correlation and historical analysis
 
@@ -100,19 +100,19 @@ graph TB
             JS4[GetJudgeHistory]
         end
 
-        subgraph MultiJudgeCoordinator["Multi-Judge Coordinator"]
+        subgraph MultiJudgeOrchestrator["Multi-Judge Orchestrator"]
             MJC1[Judge selection and orchestration]
-            MJC2[Parallel/sequential execution]
+            MJC2[Parallel execution (Fork-Join)]
             MJC3[Result aggregation]
         end
 
         subgraph Judges["Judges"]
-            HawkJudge[Hawk Judge<br/>embedded]
-            AgentJudge[Agent Judge<br/>adapter]
-            CustomJudge[Custom Judge<br/>plugin]
+            LLMJudge[LLM Judge<br/>LLM-as-a-judge ✅]
+            AgentJudge[Agent Judge<br/>placeholder ⚠️]
+            CustomJudge[Custom Judge<br/>interface only 📋]
         end
 
-        subgraph AggregationEngine["Aggregation Engine"]
+        subgraph Aggregator["Aggregator"]
             AE1[Weighted average majority-pass min/max]
             AE2[Dimension score calculation]
         end
@@ -157,7 +157,7 @@ graph TB
 │            ▼               ▼               ▼                  ▼              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │  Multi-Judge  │  │  Aggregation │  │  Retry   │  │  History   │        │  │
-│  │  Coordinator  │  │  Engine      │  │  Handler │  │  Store     │        │  │
+│  │  Orchestrator │  │  Aggregator  │  │  Retry   │  │  Store     │        │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │          │                 │                 │                               │
 │          ▼                 ▼                 ▼                               │
@@ -171,7 +171,7 @@ graph TB
 │  │     └─ Sort by criticality (safety-critical → critical)     │          │  │
 │  │                                                              │         │  │
 │  │  2. Execution Orchestration                                 │          │  │
-│  │     ├─ SYNCHRONOUS: Sequential execution, block response    │          │  │
+│  │     ├─ SYNCHRONOUS: Parallel execution, block until all complete  │     │  │
 │  │     ├─ ASYNCHRONOUS: Goroutines, background execution       │          │  │
 │  │     └─ HYBRID: Critical sync, non-critical async            │          │  │
 │  │                                                              │         │  │
@@ -203,7 +203,7 @@ graph TB
 │  │  }                                                          │          │  │
 │  │                                                              │         │  │
 │  │  Implementations:                                           │          │  │
-│  │    ├─ HawkJudge: Uses Hawk's embedded judge library        │           │  │
+│  │    ├─ LLMJudge: Uses LLM-as-a-judge via llmjudge.Judge     │           │  │
 │  │    ├─ AgentJudge: Wraps Loom agent as judge                │           │  │
 │  │    └─ CustomJudge: User-provided implementation            │           │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
@@ -212,12 +212,12 @@ graph TB
 │  │                  Judge Registry (Thread-Safe)                │         │  │
 │  │                                                              │         │  │
 │  │  mu sync.RWMutex                                            │          │  │
-│  │  judges map[string]*JudgeConfig                             │          │  │
+│  │  judges map[string]Judge                                    │          │  │
 │  │                                                              │         │  │
 │  │  Methods:                                                   │          │  │
-│  │    Register(config) → judgeID                               │          │  │
-│  │    Get(judgeID) → *JudgeConfig                              │          │  │
-│  │    List() → []*JudgeConfig                                  │          │  │
+│  │    Register(judge) → error                                  │          │  │
+│  │    Get(judgeID) → (Judge, error)                            │          │  │
+│  │    List() → []*JudgeInfo                                    │          │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -229,24 +229,24 @@ graph TB
 
 **Responsibility**: gRPC service endpoint for multi-judge evaluation.
 
-**Core Interface** (`proto/loom/v1/judge.proto:16`):
+**Core Interface** (`proto/loom/v1/judge.proto:17`):
 ```protobuf
 service JudgeService {
-  // Evaluate with multiple judges (blocking)
+  // EvaluateWithJudges runs multiple judges against an agent output
   rpc EvaluateWithJudges(EvaluateRequest) returns (EvaluateResponse);
 
-  // Evaluate with streaming progress (for long-running evals)
+  // EvaluateWithJudgesStream runs multiple judges with streaming progress updates
   rpc EvaluateWithJudgesStream(EvaluateRequest) returns (stream EvaluateProgress);
 
-  // Register a new judge configuration
+  // RegisterJudge registers a new judge configuration
   rpc RegisterJudge(RegisterJudgeRequest) returns (RegisterJudgeResponse);
 
-  // Retrieve historical judge evaluations
+  // GetJudgeHistory retrieves historical judge evaluations
   rpc GetJudgeHistory(GetJudgeHistoryRequest) returns (GetJudgeHistoryResponse);
 }
 ```
 
-**Request Structure** (`proto/loom/v1/judge.proto:32`):
+**Request Structure** (`proto/loom/v1/judge.proto:33`):
 ```protobuf
 message EvaluateRequest {
   EvaluationContext context = 1;        // Agent output and context
@@ -259,7 +259,7 @@ message EvaluateRequest {
 }
 ```
 
-**EvaluationContext** (`proto/loom/v1/judge.proto:56`):
+**EvaluationContext** (`proto/loom/v1/judge.proto:57`):
 ```protobuf
 message EvaluationContext {
   string agent_id = 1;              // Agent that generated output
@@ -275,7 +275,7 @@ message EvaluationContext {
 }
 ```
 
-**Response Structure** (`proto/loom/v1/judge.proto:89`):
+**Response Structure** (`proto/loom/v1/judge.proto:90`):
 ```protobuf
 message EvaluateResponse {
   bool passed = 1;                          // Overall verdict
@@ -301,10 +301,19 @@ message EvaluateResponse {
 
 **Responsibility**: Unified API for evaluating agent outputs across different judge types.
 
-**Core Interface** (`pkg/evals/judges/judge.go:11`):
+**Core Interface** (`pkg/evals/judges/judge.go:37-61`):
+
+✅ Implemented
 ```go
 type Judge interface {
-    Evaluate(ctx context.Context, evalCtx *EvaluationContext) (*JudgeResult, error)
+    ID() string
+    Name() string
+    Criteria() []string
+    Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error)
+    Weight() float64
+    Criticality() loomv1.JudgeCriticality
+    Dimensions() []loomv1.JudgeDimension
+    Config() *loomv1.JudgeConfig
 }
 ```
 
@@ -320,63 +329,40 @@ result, err := judge.Evaluate(ctx, evalCtx)
 ```
 
 **Rationale**:
-- **Pluggable**: Multiple implementations (Hawk, Agent, Custom)
-- **Simple contract**: Single method reduces implementation complexity
+- **Pluggable**: Multiple implementations (LLMJudge, AgentJudge, Custom)
+- **Rich metadata**: 8 methods provide identity, configuration, and evaluation capabilities
 - **Context-based**: Timeout and cancellation via Go context
-- **No state**: Stateless interface enables concurrent execution
+- **Aggregation-aware**: Weight, Criticality, and Dimensions enable the Aggregator to combine results intelligently
 
 
-### Hawk Judge
+### LLM Judge
 
-**Responsibility**: Evaluate agent outputs using Hawk's embedded judge library.
+**Responsibility**: Evaluate agent outputs using an LLM provider (LLM-as-a-judge pattern).
 
-**Core Structure** (planned in `pkg/evals/judges/hawk_judge.go`):
+✅ Implemented
+
+**Core Structure** (`pkg/evals/judges/judge.go:72-78`):
 ```go
-type HawkJudge struct {
-    config   *JudgeConfig
-    hawkClient *hawk.Client // Hawk API client
-}
-
-func (h *HawkJudge) Evaluate(ctx context.Context, evalCtx *EvaluationContext) (*JudgeResult, error) {
-    // 1. Build Hawk evaluation request
-    hawkReq := &hawk.EvaluateRequest{
-        Prompt:   evalCtx.Prompt,
-        Response: evalCtx.Response,
-        Criteria: h.config.Criteria,
-    }
-
-    // 2. Call Hawk's judge API
-    hawkResp, err := h.hawkClient.Evaluate(ctx, hawkReq)
-    if err != nil {
-        return nil, fmt.Errorf("hawk evaluation failed: %w", err)
-    }
-
-    // 3. Map Hawk response to JudgeResult
-    result := &JudgeResult{
-        JudgeID:           h.config.ID,
-        JudgeName:         h.config.Name,
-        JudgeModel:        "hawk-embedded",
-        Criteria:          h.config.Criteria,
-        FactualAccuracy:   hawkResp.FactualAccuracy,
-        HallucinationScore: hawkResp.HallucinationScore,
-        QueryQuality:      hawkResp.QueryQuality,
-        Completeness:      hawkResp.Completeness,
-        OverallScore:      h.calculateOverallScore(hawkResp),
-        Verdict:           h.determineVerdict(hawkResp),
-        Reasoning:         hawkResp.Reasoning,
-        Issues:            hawkResp.Issues,
-        Suggestions:       hawkResp.Suggestions,
-        DimensionScores:   h.extractDimensionScores(hawkResp),
-    }
-
-    return result, nil
+type LLMJudge struct {
+    id          string
+    llmJudge    *llmjudge.Judge
+    config      *loomv1.JudgeConfig
+    tracer      observability.Tracer
+    llmProvider types.LLMProvider
 }
 ```
 
-**Hawk's 4 Core Scores** (`proto/loom/v1/judge.proto:130`):
+The LLMJudge wraps `pkg/evals/judges/llm.Judge` and maps its verdicts to Loom's multi-judge framework with dimensions, criticality, and aggregation. It supports per-judge LLM configuration via `JudgeConfig.LlmConfig` with a provider factory pattern.
+
+**LLM Resolution Order**:
+1. `config.LlmConfig` (full LLMConfig with provider/model/params) -- requires factory
+2. `config.Model` (simple model string override) -- ⚠️ not yet wired
+3. `llmProvider` (the fallback, typically the agent's judge role LLM)
+
+**4 Core Scores** (`proto/loom/v1/judge.proto:131`):
 ```protobuf
 message JudgeResult {
-    // Hawk's 4 core scores (0-100)
+    // 4 core scores (0-100)
     int32 factual_accuracy = 5;       // How accurate is the response?
     int32 hallucination_score = 6;    // Lower is better (0 = no hallucination)
     int32 query_quality = 7;          // How well does it address the query?
@@ -384,143 +370,96 @@ message JudgeResult {
 }
 ```
 
-**Overall Score Calculation**:
+**Overall Score Calculation** (`pkg/evals/judges/judge.go:268-271`):
 ```go
-func (h *HawkJudge) calculateOverallScore(resp *hawk.EvaluateResponse) float64 {
-    // Weighted combination of 4 core scores
-    // Hallucination inverted (100 - score) since lower is better
-    return (resp.FactualAccuracy * 0.3) +
-           ((100 - resp.HallucinationScore) * 0.3) +
-           (resp.QueryQuality * 0.2) +
-           (resp.Completeness * 0.2)
-}
+// Equal-weight average of 4 core scores
+// Hallucination inverted (100 - score) since lower is better
+overallScore := (float64(verdict.FactualAccuracy) +
+    (100.0 - float64(verdict.HallucinationScore)) +
+    float64(verdict.QueryQuality) +
+    float64(verdict.Completeness)) / 4.0
 ```
 
 **Rationale**:
-- **Hawk integration**: Reuses existing Hawk evaluation infrastructure
+- **LLM-as-a-judge**: Uses any configured LLM provider for evaluation
 - **4 core dimensions**: Factual accuracy, hallucination, query quality, completeness
-- **Production-tested**: Hawk's judges battle-tested in production
+- **Equal-weight scoring**: Simple average avoids arbitrary weight tuning
+- **Per-judge LLM**: Each judge can use a different LLM provider/model via `JudgeConfig.LlmConfig`
 
-**Status**: 🚧 Implementation planned (Hawk API integration in progress)
+**Status**: The LLMJudge is the implemented judge type. A direct Hawk API integration is not yet implemented.
 
 
-### Agent Judge Adapter
+### Agent Judge
 
-**Responsibility**: Wrap a Loom agent as a judge implementation.
+⚠️ Partial -- `AgentJudge.Evaluate()` returns placeholder results (score=80, verdict="PASS", reasoning="Agent-based evaluation not yet fully implemented"). See `pkg/evals/judges/judge.go:410-446`.
 
-**Core Structure** (`pkg/evals/judges/judge_agent_adapter.go:207`):
+**Responsibility**: Use a Loom agent as a judge implementation.
+
+There are two related constructs:
+
+1. **`AgentJudge`** (`pkg/evals/judges/judge.go:319-324`): Implements the `Judge` interface, holds an `*agent.Agent` reference. Its `Evaluate()` method currently returns placeholder results.
+2. **`JudgeAgentAdapter`** (`pkg/evals/judges/judge_agent_adapter.go:38-42`): Wraps a `Judge` to make it usable in the orchestration Fork-Join pattern by exposing a `Chat()` method compatible with the agent interface.
+
+**AgentJudge Structure** (`pkg/evals/judges/judge.go:319-324`):
 ```go
 type AgentJudge struct {
-    config *JudgeConfig
-    agent  *agent.Agent // Loom agent instance
+    id     string
+    agent  *agent.Agent
+    config *loomv1.JudgeConfig
+    tracer observability.Tracer
 }
+```
 
-func NewAgentJudge(config *JudgeConfig, agent *agent.Agent) *AgentJudge {
-    return &AgentJudge{
-        config: config,
-        agent:  agent,
+**Constructor** (`pkg/evals/judges/judge.go:327`):
+```go
+func NewAgentJudge(agent *agent.Agent, config *loomv1.JudgeConfig, tracer observability.Tracer) (*AgentJudge, error)
+```
+
+**Current Evaluate Implementation** (`pkg/evals/judges/judge.go:410-446`):
+```go
+func (a *AgentJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error) {
+    // ... tracing setup ...
+
+    evaluationPrompt := a.buildEvaluationPrompt(evalCtx)
+
+    // Currently returns placeholder results
+    // TODO: Implement agent execution once agent package is integrated
+    result := &loomv1.JudgeResult{
+        JudgeId:      a.ID(),
+        JudgeName:    a.Name(),
+        JudgeModel:   "agent-judge",
+        OverallScore: 80.0, // Placeholder
+        Verdict:      "PASS",
+        Reasoning:    "Agent-based evaluation not yet fully implemented",
     }
-}
 
-func (aj *AgentJudge) Evaluate(ctx context.Context, evalCtx *EvaluationContext) (*JudgeResult, error) {
-    // 1. Build judge prompt from template
-    judgePrompt := aj.buildJudgePrompt(evalCtx)
-
-    // 2. Invoke agent conversation
-    agentResp, err := aj.agent.Conversation(ctx, judgePrompt)
-    if err != nil {
-        return nil, fmt.Errorf("agent judge conversation failed: %w", err)
-    }
-
-    // 3. Parse agent response into structured JudgeResult
-    result, err := aj.parseAgentResponse(agentResp)
-    if err != nil {
-        return nil, fmt.Errorf("failed to parse judge response: %w", err)
-    }
-
-    // 4. Populate metadata
-    result.JudgeID = aj.config.ID
-    result.JudgeName = aj.config.Name
-    result.JudgeModel = aj.agent.LLMProvider.ModelName()
-    result.ExecutionTimeMs = agentResp.Latency.Milliseconds()
-    result.CostUsd = agentResp.Cost
-
+    _ = evaluationPrompt
     return result, nil
 }
 ```
 
-**Judge Prompt Template** (from config):
-```yaml
-criteria: |
-  Evaluate the agent's response for:
-  1. Factual Accuracy: Are the facts correct?
-  2. Query Quality: Does it address the user's question?
-  3. Completeness: Is the response complete?
-  4. Safety: Are there any safety concerns?
-
-  Provide scores (0-100) and reasoning.
-
-custom_prompt: |
-  You are evaluating an agent's response.
-
-  User Prompt: {{.Prompt}}
-  Agent Response: {{.Response}}
-  Pattern Used: {{.PatternUsed}}
-  Tools Used: {{.ToolsUsed}}
-
-  {{.Criteria}}
-
-  Respond in JSON format:
-  {
-    "factual_accuracy": <score 0-100>,
-    "query_quality": <score 0-100>,
-    "completeness": <score 0-100>,
-    "hallucination_score": <score 0-100>,
-    "overall_score": <score 0-100>,
-    "verdict": "PASS|FAIL|PARTIAL",
-    "reasoning": "...",
-    "issues": ["issue1", "issue2"],
-    "suggestions": ["suggestion1", "suggestion2"],
-    "dimension_scores": {
-      "quality": <score 0-100>,
-      "safety": <score 0-100>,
-      "domain": <score 0-100>
-    }
-  }
-```
-
-**Response Parsing**:
+**Evaluation Prompt** (built by `buildEvaluationPrompt` at `judge.go:449-475`):
 ```go
-func (aj *AgentJudge) parseAgentResponse(resp *agent.Response) (*JudgeResult, error) {
-    var parsed struct {
-        FactualAccuracy    int32              `json:"factual_accuracy"`
-        QueryQuality       int32              `json:"query_quality"`
-        Completeness       int32              `json:"completeness"`
-        HallucinationScore int32              `json:"hallucination_score"`
-        OverallScore       float64            `json:"overall_score"`
-        Verdict            string             `json:"verdict"`
-        Reasoning          string             `json:"reasoning"`
-        Issues             []string           `json:"issues"`
-        Suggestions        []string           `json:"suggestions"`
-        DimensionScores    map[string]float64 `json:"dimension_scores"`
-    }
+func (a *AgentJudge) buildEvaluationPrompt(evalCtx *loomv1.EvaluationContext) string {
+    return fmt.Sprintf(`Evaluate this agent output:
 
-    if err := json.Unmarshal([]byte(resp.Content), &parsed); err != nil {
-        return nil, fmt.Errorf("invalid JSON response: %w", err)
-    }
+Prompt: %s
+Response: %s
+Pattern Used: %s
+Tools Used: %v
+Cost: $%.4f
+Latency: %dms
 
-    return &JudgeResult{
-        FactualAccuracy:    parsed.FactualAccuracy,
-        QueryQuality:       parsed.QueryQuality,
-        Completeness:       parsed.Completeness,
-        HallucinationScore: parsed.HallucinationScore,
-        OverallScore:       parsed.OverallScore,
-        Verdict:            parsed.Verdict,
-        Reasoning:          parsed.Reasoning,
-        Issues:             parsed.Issues,
-        Suggestions:        parsed.Suggestions,
-        DimensionScores:    parsed.DimensionScores,
-    }, nil
+Criteria: %s
+
+Provide a structured evaluation with:
+1. Overall score (0-100)
+2. Verdict (PASS/FAIL/PARTIAL)
+3. Reasoning
+4. Specific issues (if any)
+5. Suggestions for improvement`,
+        evalCtx.Prompt, evalCtx.Response, evalCtx.PatternUsed,
+        evalCtx.ToolsUsed, evalCtx.CostUsd, evalCtx.LatencyMs, a.config.Criteria)
 }
 ```
 
@@ -531,17 +470,20 @@ func (aj *AgentJudge) parseAgentResponse(resp *agent.Response) (*JudgeResult, er
 - **Self-evaluation**: Loom agents can evaluate other Loom agents
 
 **Trade-off**:
-- ✅ Flexible: Any Loom agent can be a judge
+- ✅ Flexible: Any Loom agent can be a judge (when fully implemented)
 - ✅ Observable: Full tracing of judge execution
-- ❌ Slower: LLM invocation adds latency (~1-5s vs Hawk's ~100-500ms)
+- ❌ Not yet functional: Returns placeholder results (score=80, verdict="PASS")
+- ❌ Slower: Full agent conversation loop adds latency (~1-5s per evaluation)
 - ❌ Consistency: LLM judges less deterministic than rule-based
 
 
 ### Custom Judge
 
+📋 Planned -- No `CustomJudge` struct exists in the codebase. Users can implement the `Judge` interface directly.
+
 **Responsibility**: User-provided judge implementation for specialized evaluation logic.
 
-**Core Structure** (example):
+**Example** (conceptual -- users implement the `Judge` interface themselves):
 ```go
 type CustomJudge struct {
     config *JudgeConfig
@@ -608,44 +550,51 @@ registry.Register(&JudgeConfig{
 - **Integration**: Easy to integrate existing validation logic
 
 
-### Multi-Judge Coordinator
+### Multi-Judge Orchestrator
+
+**Build Tag**: Requires `//go:build hawk` tag. Only compiled when building with `-tags hawk`.
 
 **Responsibility**: Orchestrate execution of multiple judges and coordinate results.
 
-**Core Structure** (planned in `pkg/evals/judges/coordinator.go`):
+**Core Structure** (`pkg/evals/judges/orchestrator.go`):
 ```go
-type Coordinator struct {
-    registry *JudgeRegistry
-    retryHandler *RetryHandler
-    tracer   observability.Tracer
+type Orchestrator struct {
+    registry     *Registry
+    aggregator   *Aggregator
+    tracer       observability.Tracer
+    logger       *zap.Logger
+    workflowOrch *orchestration.Orchestrator
+    hawkExporter *observability.HawkJudgeExporter
 }
 
-func (c *Coordinator) Evaluate(ctx context.Context, req *EvaluateRequest) (*EvaluateResponse, error) {
-    ctx, span := c.tracer.StartSpan(ctx, "judge.coordinator.evaluate")
-    defer c.tracer.EndSpan(span)
+func (o *Orchestrator) Evaluate(ctx context.Context, req *loomv1.EvaluateRequest) (*loomv1.EvaluateResponse, error) {
+    ctx, span := o.tracer.StartSpan(ctx, observability.SpanJudgeOrchestration)
+    defer o.tracer.EndSpan(span)
 
     // 1. Load judge configurations
-    judges, err := c.loadJudges(ctx, req.JudgeIds)
+    judges, err := o.registry.GetJudges(req.JudgeIds)
     if err != nil {
-        return nil, fmt.Errorf("failed to load judges: %w", err)
+        return nil, fmt.Errorf("failed to get judges: %w", err)
     }
 
-    // 2. Sort by criticality (safety-critical → critical → non-critical)
-    sort.Slice(judges, func(i, j int) bool {
-        return judges[i].Criticality > judges[j].Criticality
-    })
+    // 2. Classify by criticality (safety-critical/critical vs non-critical)
+    criticalJudges, nonCriticalJudges := o.classifyByCriticality(judges)
 
     // 3. Execute judges based on execution mode
-    var results []*JudgeResult
+    var allVerdicts []*loomv1.JudgeResult
     switch req.ExecutionMode {
     case loomv1.ExecutionMode_EXECUTION_MODE_SYNCHRONOUS:
-        results, err = c.executeSynchronous(ctx, judges, req.Context)
+        allVerdicts, err = o.executeSyncJudges(ctx, judges, req.Context, req.FailFast, nil)
     case loomv1.ExecutionMode_EXECUTION_MODE_ASYNCHRONOUS:
-        results, err = c.executeAsynchronous(ctx, judges, req.Context)
+        allVerdicts, err = o.executeAsyncJudges(ctx, judges, req.Context, nil)
     case loomv1.ExecutionMode_EXECUTION_MODE_HYBRID:
-        results, err = c.executeHybrid(ctx, judges, req.Context)
+        // Critical sync, non-critical async in background
+        allVerdicts, err = o.executeSyncJudges(ctx, criticalJudges, req.Context, req.FailFast, nil)
+        if len(nonCriticalJudges) > 0 {
+            go o.executeAsyncJudges(context.Background(), nonCriticalJudges, req.Context, nil)
+        }
     default:
-        return nil, fmt.Errorf("unknown execution mode: %v", req.ExecutionMode)
+        allVerdicts, err = o.executeSyncJudges(ctx, judges, req.Context, req.FailFast, nil)
     }
 
     if err != nil {
@@ -653,109 +602,77 @@ func (c *Coordinator) Evaluate(ctx context.Context, req *EvaluateRequest) (*Eval
     }
 
     // 4. Aggregate results
-    response := c.aggregateResults(results, req.Aggregation)
+    aggregated := o.aggregator.Aggregate(allVerdicts, judges, req.Aggregation)
+    finalVerdict := o.aggregator.ComputeFinalVerdict(aggregated, allVerdicts)
 
     // 5. Export to Hawk if enabled
-    if req.ExportToHawk {
-        go c.exportToHawk(context.Background(), req.Context, response)
-    }
-
-    return response, nil
-}
-```
-
-**Synchronous Execution**:
-```go
-func (c *Coordinator) executeSynchronous(ctx context.Context, judges []*JudgeConfig, evalCtx *EvaluationContext) ([]*JudgeResult, error) {
-    var results []*JudgeResult
-    for _, judgeConfig := range judges {
-        judge := c.registry.GetJudge(judgeConfig.ID)
-
-        // Execute with retry
-        result, err := c.retryHandler.ExecuteWithRetry(ctx, func() (*JudgeResult, error) {
-            return judge.Evaluate(ctx, evalCtx)
-        }, judgeConfig.RetryConfig)
-
-        if err != nil {
-            // Record error but continue (unless fail_fast)
-            result = &JudgeResult{
-                JudgeID: judgeConfig.ID,
-                Error:   err.Error(),
-                Verdict: "FAIL",
-            }
-        }
-
-        results = append(results, result)
-    }
-    return results, nil
-}
-```
-
-**Asynchronous Execution**:
-```go
-func (c *Coordinator) executeAsynchronous(ctx context.Context, judges []*JudgeConfig, evalCtx *EvaluationContext) ([]*JudgeResult, error) {
-    var wg sync.WaitGroup
-    resultCh := make(chan *JudgeResult, len(judges))
-
-    for _, judgeConfig := range judges {
-        wg.Add(1)
-        go func(jc *JudgeConfig) {
-            defer wg.Done()
-
-            judge := c.registry.GetJudge(jc.ID)
-            result, err := c.retryHandler.ExecuteWithRetry(ctx, func() (*JudgeResult, error) {
-                return judge.Evaluate(ctx, evalCtx)
-            }, jc.RetryConfig)
-
-            if err != nil {
-                result = &JudgeResult{
-                    JudgeID: jc.ID,
-                    Error:   err.Error(),
-                    Verdict: "FAIL",
-                }
-            }
-
-            resultCh <- result
-        }(judgeConfig)
-    }
-
-    wg.Wait()
-    close(resultCh)
-
-    var results []*JudgeResult
-    for result := range resultCh {
-        results = append(results, result)
-    }
-
-    return results, nil
-}
-```
-
-**Hybrid Execution** (critical sync, non-critical async):
-```go
-func (c *Coordinator) executeHybrid(ctx context.Context, judges []*JudgeConfig, evalCtx *EvaluationContext) ([]*JudgeResult, error) {
-    var criticalJudges, nonCriticalJudges []*JudgeConfig
-
-    for _, jc := range judges {
-        if jc.Criticality >= loomv1.JudgeCriticality_JUDGE_CRITICALITY_CRITICAL {
-            criticalJudges = append(criticalJudges, jc)
-        } else {
-            nonCriticalJudges = append(nonCriticalJudges, jc)
+    if req.ExportToHawk && o.hawkExporter != nil {
+        for _, verdict := range allVerdicts {
+            o.hawkExporter.ExportJudgeResult(ctx, verdict)
         }
     }
 
-    // Execute critical judges synchronously (blocking)
-    criticalResults, err := c.executeSynchronous(ctx, criticalJudges, evalCtx)
-    if err != nil {
-        return nil, fmt.Errorf("critical judge execution failed: %w", err)
+    return &loomv1.EvaluateResponse{Passed: finalVerdict == "PASS", ...}, nil
+}
+```
+
+**Synchronous Execution** (runs judges in parallel using Fork-Join pattern):
+```go
+// executeSyncJudges runs judges in parallel using goroutines.
+// Despite the name "sync", this method runs all judges concurrently
+// and collects results via a buffered channel (Fork-Join pattern).
+func (o *Orchestrator) executeSyncJudges(
+    ctx context.Context,
+    judges []Judge,
+    evalCtx *loomv1.EvaluationContext,
+    failFast bool,
+    stream chan<- *loomv1.EvaluateProgress,
+) ([]*loomv1.JudgeResult, error) {
+    resultChan := make(chan judgeResult, len(judges))
+
+    // Fork: Start all judge evaluations in parallel
+    for _, judge := range judges {
+        go func(j Judge) {
+            wrappedJudge := o.wrapJudgeWithRetry(j)
+            verdict, err := wrappedJudge.Evaluate(ctx, evalCtx)
+            resultChan <- judgeResult{verdict: verdict, err: err, judge: j}
+        }(judge)
     }
 
-    // Execute non-critical judges asynchronously (background)
-    nonCriticalResults, _ := c.executeAsynchronous(ctx, nonCriticalJudges, evalCtx)
-
-    // Combine results
-    return append(criticalResults, nonCriticalResults...), nil
+    // Join: Collect results
+    verdicts := make([]*loomv1.JudgeResult, 0, len(judges))
+    for i := 0; i < len(judges); i++ {
+        result := <-resultChan
+        if result.err != nil {
+            if failFast {
+                return nil, fmt.Errorf("judge %s failed (fail-fast): %w", result.judge.Name(), result.err)
+            }
+            continue
+        }
+        verdicts = append(verdicts, result.verdict)
+    }
+    return verdicts, nil
 }
+```
+
+**Asynchronous Execution** (same parallel implementation, no fail-fast):
+```go
+// executeAsyncJudges is identical to executeSyncJudges but without fail-fast.
+func (o *Orchestrator) executeAsyncJudges(
+    ctx context.Context,
+    judges []Judge,
+    evalCtx *loomv1.EvaluationContext,
+    stream chan<- *loomv1.EvaluateProgress,
+) ([]*loomv1.JudgeResult, error) {
+    return o.executeSyncJudges(ctx, judges, evalCtx, false, stream)
+}
+```
+
+**Hybrid Execution** (critical parallel, non-critical async in background):
+```go
+// In hybrid mode, critical judges run in parallel (blocking),
+// non-critical judges run in background goroutines (fire-and-forget).
+// Only critical judge results are returned in the immediate response.
 ```
 
 **Rationale**:
@@ -765,37 +682,42 @@ func (c *Coordinator) executeHybrid(ctx context.Context, judges []*JudgeConfig, 
 - **Observable**: Full tracing of multi-judge execution
 
 
-### Aggregation Engine
+### Aggregator
+
+**Build Tag**: Requires `//go:build hawk` tag.
 
 **Responsibility**: Combine multiple judge verdicts into a single evaluation result.
 
-**Core Structure** (planned in `pkg/evals/judges/aggregation.go`):
+**Core Structure** (`pkg/evals/judges/aggregator.go`):
 ```go
-type AggregationEngine struct{}
+type Aggregator struct {
+    config *AggregatorConfig
+}
 
-func (ae *AggregationEngine) Aggregate(results []*JudgeResult, strategy loomv1.AggregationStrategy, judgeWeights map[string]float64) *EvaluateResponse {
+func (a *Aggregator) Aggregate(verdicts []*loomv1.JudgeResult, judges []Judge, strategy loomv1.AggregationStrategy) *loomv1.AggregatedJudgeMetrics {
     switch strategy {
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_WEIGHTED_AVERAGE:
-        return ae.weightedAverage(results, judgeWeights)
+        return a.weightedAverage(verdicts, judges)
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_ALL_MUST_PASS:
-        return ae.allMustPass(results)
+        return a.allMustPass(verdicts)
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_MAJORITY_PASS:
-        return ae.majorityPass(results)
+        return a.majorityPass(verdicts)
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_ANY_PASS:
-        return ae.anyPass(results)
+        return a.anyPass(verdicts)
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_MIN_SCORE:
-        return ae.minScore(results)
+        return a.minScore(verdicts, strategy)
     case loomv1.AggregationStrategy_AGGREGATION_STRATEGY_MAX_SCORE:
-        return ae.maxScore(results)
+        return a.maxScore(verdicts, strategy)
     default:
-        return ae.weightedAverage(results, judgeWeights) // Default
+        return a.weightedAverage(verdicts, judges) // Default
     }
 }
 ```
 
-**Aggregation Strategies** (`proto/loom/v1/judge.proto:295`):
+**Aggregation Strategies** (`proto/loom/v1/judge.proto:301`):
 ```protobuf
 enum AggregationStrategy {
+  AGGREGATION_STRATEGY_UNSPECIFIED = 0;
   AGGREGATION_STRATEGY_WEIGHTED_AVERAGE = 1; // Weighted avg of scores
   AGGREGATION_STRATEGY_ALL_MUST_PASS = 2;    // All judges must pass
   AGGREGATION_STRATEGY_MAJORITY_PASS = 3;    // >50% must pass
@@ -807,30 +729,27 @@ enum AggregationStrategy {
 
 **See [Algorithms](#algorithms) section for detailed implementations.**
 
-**Dimension Score Aggregation**:
+**Dimension Score Aggregation** (performed inside `weightedAverage`, not as a separate method):
 ```go
-func (ae *AggregationEngine) aggregateDimensionScores(results []*JudgeResult) map[string]float64 {
-    dimensionSums := make(map[string]float64)
-    dimensionCounts := make(map[string]int)
+// Inside weightedAverage():
+dimensionScoresSum := make(map[string]float64)
+dimensionCounts := make(map[string]int)
 
-    for _, result := range results {
-        for dim, score := range result.DimensionScores {
-            dimensionSums[dim] += score
-            dimensionCounts[dim]++
-        }
+for _, verdict := range verdicts {
+    for dim, score := range verdict.DimensionScores {
+        dimensionScoresSum[dim] += score
+        dimensionCounts[dim]++
     }
+}
 
-    avgScores := make(map[string]float64)
-    for dim, sum := range dimensionSums {
-        avgScores[dim] = sum / float64(dimensionCounts[dim])
-    }
-
-    return avgScores
+avgDimensionScores := make(map[string]float64)
+for dim, sum := range dimensionScoresSum {
+    avgDimensionScores[dim] = sum / float64(dimensionCounts[dim])
 }
 ```
 
 **Rationale**:
-- **6 strategies**: Different use cases (quality gates, comprehensive feedback, etc.)
+- **6 strategies**: Different use cases (quality gates, detailed feedback, etc.)
 - **Dimension-aware**: Quality, cost, safety, domain scores aggregated separately
 - **Weighted**: Critical judges weighted higher than non-critical
 - **Statistical**: Std dev, min/max, pass rate calculated for analysis
@@ -838,34 +757,38 @@ func (ae *AggregationEngine) aggregateDimensionScores(results []*JudgeResult) ma
 
 ### Retry & Circuit Breaker
 
+**Build Tag**: Requires `//go:build hawk` tag.
+
 **Responsibility**: Handle transient failures with exponential backoff retry and prevent cascading failures with circuit breaker.
 
-**Core Structure** (planned in `pkg/evals/judges/retry.go`):
+**Core Structure** (`pkg/evals/judges/retry.go`):
 ```go
-type RetryHandler struct {
-    circuitBreakers map[string]*CircuitBreaker // Per-judge circuit breakers
-    mu              sync.RWMutex
+type RetryableJudge struct {
+    judge          Judge
+    retryConfig    *loomv1.RetryConfig
+    circuitBreaker *CircuitBreaker
+    logger         *zap.Logger
 }
 
 type CircuitBreaker struct {
-    state            CircuitState
-    failureCount     int
-    successCount     int
-    lastFailureTime  time.Time
-    config           *CircuitBreakerConfig
-    mu               sync.Mutex
+    config          *loomv1.CircuitBreakerConfig
+    state           CircuitState
+    failureCount    int32
+    successCount    int32
+    lastStateChange time.Time
+    mu              sync.RWMutex
 }
 
 type CircuitState int
 
 const (
-    StateClosed CircuitState = iota // Normal operation
-    StateOpen                        // Failing, reject requests
-    StateHalfOpen                    // Testing recovery
+    CircuitClosed  CircuitState = iota // Normal operation
+    CircuitOpen                         // Failing, reject requests
+    CircuitHalfOpen                     // Testing recovery
 )
 ```
 
-**Retry Configuration** (`proto/loom/v1/judge.proto:452`):
+**Retry Configuration** (`proto/loom/v1/judge.proto:458`):
 ```protobuf
 message RetryConfig {
   int32 max_attempts = 1;          // Max 3 attempts
@@ -877,7 +800,7 @@ message RetryConfig {
 }
 ```
 
-**Circuit Breaker Configuration** (`proto/loom/v1/judge.proto:473`):
+**Circuit Breaker Configuration** (`proto/loom/v1/judge.proto:479`):
 ```protobuf
 message CircuitBreakerConfig {
   int32 failure_threshold = 1;  // 5 consecutive failures → open
@@ -901,41 +824,40 @@ message CircuitBreakerConfig {
 ### Synchronous Evaluation Flow
 
 ```
-Client         JudgeService     Coordinator      Judges           Hawk
-  │                  │                │              │               │          
-  ├─ EvaluateWithJudges ─────────────▶│              │               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Load Judges │               │          
-  │                  │                ├─ Sort by criticality          │         
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 1 ───▶│               │          
-  │                  │                │  (sync)      │               │          
-  │                  │                │◀─ Result 1 ──┤               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 2 ───▶│               │          
-  │                  │                │  (sync)      │               │          
-  │                  │                │◀─ Result 2 ──┤               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 3 ───▶│               │          
-  │                  │                │  (sync)      │               │          
-  │                  │                │◀─ Result 3 ──┤               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Aggregate Results           │          
-  │                  │                ├─ Calculate dimension scores  │          
-  │                  │                ├─ Determine verdict           │          
-  │                  │                │              │               │          
-  │                  │                ├─ Export ─────┼───────────────▶│         
-  │                  │                │              │               │          
-  │                  │◀─ Response ────┤              │               │          
-  │◀─ EvaluateResponse ───────────────┤              │               │          
-  │                  │                │              │               │          
+Client         JudgeService     Orchestrator     Judges           Hawk
+  │                  │                │              │               │
+  ├─ EvaluateWithJudges ─────────────▶│              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Load Judges │               │
+  │                  │                ├─ Classify by criticality     │
+  │                  │                │              │               │
+  │                  │                ├─ Judge 1 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                ├─ Judge 2 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                ├─ Judge 3 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                │              │               │
+  │                  │                │◀─ Result 2 ──┤               │
+  │                  │                │◀─ Result 1 ──┤               │
+  │                  │                │◀─ Result 3 ──┤               │
+  │                  │                │              │               │
+  │                  │                ├─ Aggregate Results           │
+  │                  │                ├─ Calculate dimension scores  │
+  │                  │                ├─ Determine verdict           │
+  │                  │                │              │               │
+  │                  │                ├─ Export ─────┼───────────────▶│
+  │                  │                │              │               │
+  │                  │◀─ Response ────┤              │               │
+  │◀─ EvaluateResponse ───────────────┤              │               │
+  │                  │                │              │               │
 ```
 
 **Properties**:
 - **Synchronous**: Client blocks until all judges complete
-- **Sequential**: Judges execute one at a time (no parallelism)
-- **Order**: Criticality-sorted (safety-critical → critical → non-critical)
-- **Latency**: Sum of individual judge latencies + aggregation overhead
+- **Parallel**: Judges execute concurrently via goroutines (Fork-Join pattern)
+- **Criticality-aware**: Safety-critical and critical judges classified separately
+- **Latency**: Max of individual judge latencies + aggregation overhead (parallel execution)
 
 **Use Case**: Critical evaluations where all judge verdicts are required before proceeding (e.g., safety gates).
 
@@ -943,76 +865,78 @@ Client         JudgeService     Coordinator      Judges           Hawk
 ### Asynchronous Evaluation Flow
 
 ```
-Client         JudgeService     Coordinator      Judges           Hawk
-  │                  │                │              │               │          
-  ├─ EvaluateWithJudges ─────────────▶│              │               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Load Judges │               │          
-  │                  │                ├─ Spawn goroutines            │          
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 1 ───▶│               │          
-  │                  │                │  (goroutine) │               │          
-  │                  │                ├─ Judge 2 ───▶│               │          
-  │                  │                │  (goroutine) │               │          
-  │                  │                ├─ Judge 3 ───▶│               │          
-  │                  │                │  (goroutine) │               │          
-  │                  │                │              │               │          
-  │                  │                │◀─ Result 2 ──┤               │          
-  │                  │                │◀─ Result 1 ──┤               │          
-  │                  │                │◀─ Result 3 ──┤               │          
-  │                  │                │              │               │          
-  │                  │                ├─ Wait for all (sync.WaitGroup)│         
-  │                  │                ├─ Aggregate Results           │          
-  │                  │                ├─ Export ─────┼───────────────▶│         
-  │                  │                │              │               │          
-  │                  │◀─ Response ────┤              │               │          
-  │◀─ EvaluateResponse ───────────────┤              │               │          
+Client         JudgeService     Orchestrator     Judges           Hawk
+  │                  │                │              │               │
+  ├─ EvaluateWithJudges ─────────────▶│              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Load Judges │               │
+  │                  │                ├─ Spawn goroutines            │
+  │                  │                │              │               │
+  │                  │                ├─ Judge 1 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                ├─ Judge 2 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                ├─ Judge 3 ───▶│               │
+  │                  │                │  (goroutine) │               │
+  │                  │                │              │               │
+  │                  │                │◀─ Result 2 ──┤               │
+  │                  │                │◀─ Result 1 ──┤               │
+  │                  │                │◀─ Result 3 ──┤               │
+  │                  │                │              │               │
+  │                  │                ├─ Collect via buffered channel │
+  │                  │                ├─ Aggregate Results           │
+  │                  │                ├─ Export ─────┼───────────────▶│
+  │                  │                │              │               │
+  │                  │◀─ Response ────┤              │               │
+  │◀─ EvaluateResponse ───────────────┤              │               │
   │                  │                │              │               │          
 ```
 
 **Properties**:
-- **Asynchronous**: Client blocks until all judges complete, but judges run in parallel
-- **Parallel**: Judges execute concurrently (goroutines)
+- **Parallel**: Judges execute concurrently (goroutines), same as sync mode
+- **No fail-fast**: Unlike sync mode, never aborts early on failure (always collects all results)
 - **Latency**: Max of individual judge latencies + aggregation overhead (not sum)
 - **Concurrency**: N goroutines (1 per judge)
 
-**Use Case**: Background evaluation, post-response analysis, batch evaluation.
+**Note**: Despite the name, async mode still blocks the RPC call until all judges complete. The difference from sync mode is only the absence of fail-fast behavior. True fire-and-forget execution only happens for non-critical judges in hybrid mode.
+
+**Use Case**: Evaluation where all judge results are desired even if some fail.
 
 
 ### Streaming Evaluation Flow
 
 ```
-Client         JudgeService     Coordinator      Judges           Hawk
-  │                  │                │              │               │          
-  ├─ EvaluateWithJudgesStream ───────▶│              │               │          
-  │◀─ stream opened ───────────────────┤              │               │         
-  │                  │                │              │               │          
-  │                  │                ├─ Load Judges │               │          
-  │                  │                ├─ Judge 1 ───▶│               │          
-  │◀─ JudgeStarted ──────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                │◀─ Result 1 ──┤               │          
-  │◀─ JudgeCompleted ────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 2 ───▶│               │          
-  │◀─ JudgeStarted ──────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                │◀─ Result 2 ──┤               │          
-  │◀─ JudgeCompleted ────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                ├─ Judge 3 ───▶│               │          
-  │◀─ JudgeStarted ──────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                │◀─ Result 3 ──┤               │          
-  │◀─ JudgeCompleted ────────────────┤              │               │           
-  │                  │                │              │               │          
-  │                  │                ├─ Aggregate Results           │          
-  │                  │                ├─ Export ─────┼───────────────▶│         
-  │◀─ EvaluationCompleted ───────────┤              │               │           
+Client         JudgeService     Orchestrator     Judges           Hawk
+  │                  │                │              │               │
+  ├─ EvaluateWithJudgesStream ───────▶│              │               │
+  │◀─ stream opened ───────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Load Judges │               │
+  │                  │                ├─ Judge 1 ───▶│               │
+  │◀─ JudgeStarted ──────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                │◀─ Result 1 ──┤               │
+  │◀─ JudgeCompleted ────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Judge 2 ───▶│               │
+  │◀─ JudgeStarted ──────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                │◀─ Result 2 ──┤               │
+  │◀─ JudgeCompleted ────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Judge 3 ───▶│               │
+  │◀─ JudgeStarted ──────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                │◀─ Result 3 ──┤               │
+  │◀─ JudgeCompleted ────────────────┤              │               │
+  │                  │                │              │               │
+  │                  │                ├─ Aggregate Results           │
+  │                  │                ├─ Export ─────┼───────────────▶│
+  │◀─ EvaluationCompleted ───────────┤              │               │
   │                  │                │              │               │          
 ```
 
-**Progress Events** (`proto/loom/v1/judge.proto:489`):
+**Progress Events** (`proto/loom/v1/judge.proto:495`):
 ```protobuf
 message EvaluateProgress {
   oneof progress {
@@ -1036,7 +960,7 @@ message EvaluateProgress {
 ### Retry with Circuit Breaker Flow
 
 ```
-Coordinator    RetryHandler    CircuitBreaker    Judge (LLM)
+Orchestrator   RetryableJudge  CircuitBreaker    Judge (LLM)
   │                  │                │              │                          
   ├─ Execute Judge ──▶│                │              │                         
   │                  ├─ Check Circuit ▶│              │                         
@@ -1111,7 +1035,7 @@ Closed ────5 failures───▶ Open ────1 min cooldown──�
 
 ### JudgeResult
 
-**Definition** (`proto/loom/v1/judge.proto:116`):
+**Definition** (`proto/loom/v1/judge.proto:117`):
 ```protobuf
 message JudgeResult {
   // Identifiers
@@ -1120,7 +1044,7 @@ message JudgeResult {
   string judge_model = 3; // e.g., "claude-sonnet-4-5"
   repeated string criteria = 4;
 
-  // Hawk's 4 core scores (0-100)
+  // 4 core scores (0-100)
   int32 factual_accuracy = 5;
   int32 hallucination_score = 6; // Lower is better
   int32 query_quality = 7;
@@ -1152,7 +1076,7 @@ message JudgeResult {
 ∀ dimension_score ∈ dimension_scores.values():
     0.0 ≤ dimension_score ≤ 100.0
 
-overall_score = weighted_combination(factual_accuracy, hallucination_score, query_quality, completeness)
+overall_score = (factual_accuracy + (100 - hallucination_score) + query_quality + completeness) / 4.0
 
 verdict ∈ {"PASS", "FAIL", "PARTIAL"}
 ```
@@ -1160,7 +1084,7 @@ verdict ∈ {"PASS", "FAIL", "PARTIAL"}
 
 ### EvaluateResponse
 
-**Definition** (`proto/loom/v1/judge.proto:89`):
+**Definition** (`proto/loom/v1/judge.proto:90`):
 ```protobuf
 message EvaluateResponse {
   bool passed = 1;                          // Overall verdict
@@ -1174,7 +1098,7 @@ message EvaluateResponse {
 }
 ```
 
-**AggregatedJudgeMetrics** (`proto/loom/v1/judge.proto:167`):
+**AggregatedJudgeMetrics** (`proto/loom/v1/judge.proto:168`):
 ```protobuf
 message AggregatedJudgeMetrics {
   double weighted_average_score = 1;
@@ -1192,7 +1116,7 @@ message AggregatedJudgeMetrics {
 
 ### JudgeConfig
 
-**Definition** (`proto/loom/v1/judge.proto:248`):
+**Definition** (`proto/loom/v1/judge.proto:249`):
 ```protobuf
 message JudgeConfig {
   string id = 1;                      // Unique identifier
@@ -1209,21 +1133,24 @@ message JudgeConfig {
   string custom_dimension_name = 20;  // Custom dimension name (if dimensions contains CUSTOM)
   string custom_dimension_description = 21; // Custom dimension description
   RetryConfig retry_config = 30;      // Retry configuration
+  LLMConfig llm_config = 31;          // Full LLM config (overrides model field 8)
 }
 ```
 
-**Judge Types** (`proto/loom/v1/judge.proto:346`):
+**Judge Types** (`proto/loom/v1/judge.proto:352`):
 ```protobuf
 enum JudgeType {
-  JUDGE_TYPE_HAWK = 1;    // Hawk's embedded judge library
+  JUDGE_TYPE_UNSPECIFIED = 0;
+  JUDGE_TYPE_HAWK = 1;    // LLM-as-a-judge (uses LLMJudge implementation)
   JUDGE_TYPE_AGENT = 2;   // Loom agent as judge
   JUDGE_TYPE_CUSTOM = 3;  // User-provided implementation
 }
 ```
 
-**Judge Dimensions** (`proto/loom/v1/judge.proto:360`):
+**Judge Dimensions** (`proto/loom/v1/judge.proto:366`):
 ```protobuf
 enum JudgeDimension {
+  JUDGE_DIMENSION_UNSPECIFIED = 0;
   JUDGE_DIMENSION_QUALITY = 1;      // Quality and correctness
   JUDGE_DIMENSION_COST = 2;         // Cost efficiency
   JUDGE_DIMENSION_SAFETY = 3;       // Safety and guardrails
@@ -1234,9 +1161,10 @@ enum JudgeDimension {
 }
 ```
 
-**Criticality Levels** (`proto/loom/v1/judge.proto:332`):
+**Criticality Levels** (`proto/loom/v1/judge.proto:338`):
 ```protobuf
 enum JudgeCriticality {
+  JUDGE_CRITICALITY_UNSPECIFIED = 0;
   JUDGE_CRITICALITY_NON_CRITICAL = 1;      // Can run async
   JUDGE_CRITICALITY_CRITICAL = 2;          // Must run sync
   JUDGE_CRITICALITY_SAFETY_CRITICAL = 3;   // Highest priority, blocks everything
@@ -1254,7 +1182,7 @@ enum JudgeCriticality {
 
 **Algorithm**:
 ```go
-func (ae *AggregationEngine) weightedAverage(results []*JudgeResult, judgeWeights map[string]float64) *EvaluateResponse {
+func (a *Aggregator) weightedAverage(results []*JudgeResult, judgeWeights map[string]float64) *EvaluateResponse {
     totalWeight := 0.0
     weightedSum := 0.0
 
@@ -1307,7 +1235,7 @@ Final Score = (170 + 90 + 75) / (2.0 + 1.0 + 1.0) = 335 / 4.0 = 83.75
 
 **Algorithm**:
 ```go
-func (ae *AggregationEngine) majorityPass(results []*JudgeResult) *EvaluateResponse {
+func (a *Aggregator) majorityPass(results []*JudgeResult) *EvaluateResponse {
     passCount := 0
     totalCount := len(results)
 
@@ -1348,42 +1276,43 @@ func (ae *AggregationEngine) majorityPass(results []*JudgeResult) *EvaluateRespo
 
 **Solution**: Exponential backoff with doubling delay.
 
-**Algorithm**:
+**Algorithm** (simplified from `pkg/evals/judges/retry.go:112-199`):
 ```go
-func (rh *RetryHandler) ExecuteWithRetry(ctx context.Context, fn func() (*JudgeResult, error), config *RetryConfig) (*JudgeResult, error) {
-    backoff := time.Duration(config.InitialBackoffMs) * time.Millisecond
-    maxBackoff := time.Duration(config.MaxBackoffMs) * time.Millisecond
+func (rj *RetryableJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error) {
+    // Check circuit breaker first
+    if !rj.circuitBreaker.AllowRequest() {
+        return nil, fmt.Errorf("circuit breaker open for judge %s", rj.judge.Name())
+    }
 
     var lastErr error
-    for attempt := 0; attempt <= config.MaxAttempts; attempt++ {
-        // Execute function
-        result, err := fn()
+    maxAttempts := rj.retryConfig.MaxAttempts
 
-        // Success
+    for attempt := int32(0); attempt <= maxAttempts; attempt++ {
+        result, err := rj.judge.Evaluate(ctx, evalCtx)
+
         if err == nil {
+            rj.circuitBreaker.RecordSuccess()
             return result, nil
-        }
-
-        // Check if retryable
-        if !isRetryable(err, config.RetryOnStatus) {
-            return nil, fmt.Errorf("non-retryable error: %w", err)
         }
 
         lastErr = err
 
-        // Last attempt, don't wait
-        if attempt == config.MaxAttempts {
+        if !rj.isRetryable(err) {
+            rj.circuitBreaker.RecordFailure()
+            return nil, fmt.Errorf("non-retryable error: %w", err)
+        }
+
+        if attempt == maxAttempts {
+            rj.circuitBreaker.RecordFailure()
             break
         }
 
-        // Wait with exponential backoff
+        // Exponential backoff: initialBackoff * (multiplier ^ attempt)
+        backoff := rj.calculateBackoff(attempt)
         select {
         case <-time.After(backoff):
-            backoff = time.Duration(float64(backoff) * config.BackoffMultiplier)
-            if backoff > maxBackoff {
-                backoff = maxBackoff
-            }
         case <-ctx.Done():
+            rj.circuitBreaker.RecordFailure()
             return nil, ctx.Err()
         }
     }
@@ -1415,88 +1344,71 @@ Total time: 7s (max)
 
 **Solution**: Circuit breaker with 3 states (Closed, Open, HalfOpen).
 
-**Algorithm**:
+**Algorithm** (actual implementation uses separate methods, not an `Execute` wrapper):
 ```go
-func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() (*JudgeResult, error)) (*JudgeResult, error) {
+// AllowRequest checks if the circuit breaker allows a request to proceed.
+// Handles state transitions from Open -> HalfOpen when cooldown expires.
+func (cb *CircuitBreaker) AllowRequest() bool {
     cb.mu.Lock()
+    defer cb.mu.Unlock()
 
-    // Check circuit state
     switch cb.state {
-    case StateClosed:
-        cb.mu.Unlock()
-        return cb.executeClosed(ctx, fn)
-
-    case StateOpen:
-        // Check if cooldown elapsed
-        if time.Since(cb.lastFailureTime) < time.Duration(cb.config.ResetTimeoutMs)*time.Millisecond {
-            cb.mu.Unlock()
-            return nil, ErrCircuitOpen
+    case CircuitClosed:
+        return true
+    case CircuitOpen:
+        resetTimeout := time.Duration(cb.config.ResetTimeoutMs) * time.Millisecond
+        if time.Since(cb.lastStateChange) > resetTimeout {
+            cb.state = CircuitHalfOpen
+            cb.successCount = 0
+            cb.failureCount = 0
+            cb.lastStateChange = time.Now()
+            return true
         }
-
-        // Transition to HalfOpen
-        cb.state = StateHalfOpen
-        cb.successCount = 0
-        cb.mu.Unlock()
-        return cb.executeHalfOpen(ctx, fn)
-
-    case StateHalfOpen:
-        cb.mu.Unlock()
-        return cb.executeHalfOpen(ctx, fn)
+        return false // Still open, block request
+    case CircuitHalfOpen:
+        return true
+    default:
+        return true
     }
-
-    cb.mu.Unlock()
-    return nil, ErrUnknownState
 }
 
-func (cb *CircuitBreaker) executeClosed(ctx context.Context, fn func() (*JudgeResult, error)) (*JudgeResult, error) {
-    result, err := fn()
-
+// RecordSuccess records a successful evaluation.
+// In HalfOpen: increments success count, closes circuit at threshold.
+func (cb *CircuitBreaker) RecordSuccess() {
     cb.mu.Lock()
     defer cb.mu.Unlock()
-
-    if err != nil {
-        cb.failureCount++
-        cb.lastFailureTime = time.Now()
-
-        // Open circuit if threshold reached
-        if cb.failureCount >= cb.config.FailureThreshold {
-            cb.state = StateOpen
-            return nil, ErrCircuitOpen
-        }
-
-        return nil, err
-    }
-
-    // Success, reset failure count
     cb.failureCount = 0
-    return result, nil
+
+    switch cb.state {
+    case CircuitHalfOpen:
+        cb.successCount++
+        if cb.successCount >= cb.config.SuccessThreshold {
+            cb.state = CircuitClosed
+            cb.successCount = 0
+            cb.lastStateChange = time.Now()
+        }
+    }
 }
 
-func (cb *CircuitBreaker) executeHalfOpen(ctx context.Context, fn func() (*JudgeResult, error)) (*JudgeResult, error) {
-    result, err := fn()
-
+// RecordFailure records a failed evaluation.
+// In Closed: opens circuit at threshold.
+// In HalfOpen: reopens circuit immediately.
+func (cb *CircuitBreaker) RecordFailure() {
     cb.mu.Lock()
     defer cb.mu.Unlock()
+    cb.failureCount++
+    cb.successCount = 0
 
-    if err != nil {
-        // Failed in HalfOpen, reopen circuit
-        cb.state = StateOpen
-        cb.lastFailureTime = time.Now()
-        cb.failureCount++
-        return nil, ErrCircuitOpen
+    switch cb.state {
+    case CircuitClosed:
+        if cb.failureCount >= cb.config.FailureThreshold {
+            cb.state = CircuitOpen
+            cb.lastStateChange = time.Now()
+        }
+    case CircuitHalfOpen:
+        cb.state = CircuitOpen
+        cb.lastStateChange = time.Now()
     }
-
-    // Success in HalfOpen
-    cb.successCount++
-
-    // Close circuit if success threshold reached
-    if cb.successCount >= cb.config.SuccessThreshold {
-        cb.state = StateClosed
-        cb.failureCount = 0
-        cb.successCount = 0
-    }
-
-    return result, nil
 }
 ```
 
@@ -1533,8 +1445,8 @@ HalfOpen (test recovery)
 **Chosen**: Multi-judge with aggregation strategies
 
 **Rationale**:
-- **Comprehensive evaluation**: No single judge covers all dimensions (quality, cost, safety, domain)
-- **Robustness**: One judge's failure doesn't invalidate entire evaluation
+- **Multi-dimensional evaluation**: No single judge covers all dimensions (quality, cost, safety, domain)
+- **Resilience**: One judge's failure doesn't invalidate entire evaluation
 - **Flexibility**: Different aggregation strategies for different use cases
 
 **Alternatives**:
@@ -1553,8 +1465,8 @@ HalfOpen (test recovery)
    - ❌ More complex implementation
 
 **Consequences**:
-- ✅ Comprehensive multi-dimensional evaluation
-- ✅ Production-grade fault tolerance
+- ✅ Multi-dimensional evaluation across quality, cost, safety
+- ✅ Fault tolerance via retry and circuit breaker per judge
 - ❌ Latency: 3-5 judges × 1-5s each = 3-25s (mitigated by async execution)
 
 
@@ -1591,37 +1503,36 @@ HalfOpen (test recovery)
 - ❌ Complexity: 3 execution paths to maintain
 
 
-### Decision 3: Hawk Judge vs. Agent Judge vs. Custom Judge
+### Decision 3: LLM Judge vs. Agent Judge vs. Custom Judge
 
-**Chosen**: Pluggable judge interface with 3 implementations
+**Chosen**: Pluggable judge interface with 3 types (1 fully implemented, 1 partial, 1 planned)
 
 **Rationale**:
-- **Hawk Judge**: Production-tested, 4 core scores, deterministic
-- **Agent Judge**: Flexible LLM-as-judge, custom criteria, full observability
-- **Custom Judge**: Domain-specific logic (SQL safety, API compliance), fast execution
+- **LLM Judge** ✅: LLM-as-a-judge evaluation, 4 core scores, configurable per-judge LLM
+- **Agent Judge** ⚠️: Wraps a Loom agent as judge, custom criteria, full observability (not yet fully implemented -- returns placeholder results)
+- **Custom Judge** 📋: Domain-specific logic (SQL safety, API compliance), fast execution (no built-in struct; users implement `Judge` interface directly)
 
 **Alternatives**:
-1. **Hawk Judge only**:
-   - ✅ Production-tested, reliable
+1. **LLM Judge only**:
+   - ✅ Flexible criteria via LLM prompts
    - ✅ 4 core scores (factual accuracy, hallucination, query quality, completeness)
-   - ❌ Limited to Hawk's criteria (can't customize)
-   - ❌ Requires Hawk service
-
-2. **LLM-as-judge only**:
-   - ✅ Flexible criteria via prompts
-   - ✅ Modern evaluation pattern
    - ❌ High latency (1-5s per judge)
    - ❌ Less deterministic (LLM variance)
-   - ❌ No production-tested baseline
+
+2. **Agent Judge only**:
+   - ✅ Reuses agent infrastructure
+   - ✅ Full observability
+   - ❌ Higher latency (full agent conversation loop)
+   - ❌ Not yet fully implemented (returns placeholder results)
 
 3. **Pluggable (current choice)**:
-   - ✅ Hawk for production baseline (factual accuracy, hallucination)
-   - ✅ Agent for custom criteria (domain-specific evaluation)
+   - ✅ LLM Judge for standard evaluation (factual accuracy, hallucination)
+   - ✅ Agent Judge for custom criteria (domain-specific evaluation, when fully implemented)
    - ✅ Custom for fast rule-based checks (SQL safety, API compliance)
    - ❌ More complex: 3 implementations to maintain
 
 **Consequences**:
-- ✅ Best-of-all-worlds: Hawk's reliability + Agent's flexibility + Custom's speed
+- ✅ Multiple evaluation approaches: LLM's scoring + Agent's flexibility + Custom's speed
 - ✅ Users choose judge type per dimension
 - ❌ Maintenance: 3 judge implementations
 
@@ -1631,7 +1542,7 @@ HalfOpen (test recovery)
 **Chosen**: 6 strategies (weighted average, all-must-pass, majority-pass, any-pass, min-score, max-score)
 
 **Rationale**:
-- **Different use cases**: Quality gates (all-must-pass), comprehensive feedback (weighted average), voting (majority-pass)
+- **Different use cases**: Quality gates (all-must-pass), detailed feedback (weighted average), voting (majority-pass)
 - **Flexibility**: Users choose strategy per evaluation context
 
 **Alternatives**:
@@ -1648,7 +1559,7 @@ HalfOpen (test recovery)
 
 **Use Case Mapping**:
 ```
-weighted_average: General-purpose comprehensive evaluation
+weighted_average: General-purpose multi-dimensional evaluation
 all_must_pass: Safety gates (all dimensions must pass)
 majority_pass: Democratic voting (>50% judges must agree)
 any_pass: At least one judge must pass (minimum bar)
@@ -1657,7 +1568,7 @@ max_score: Optimistic (strongest judge determines score)
 ```
 
 **Consequences**:
-- ✅ Comprehensive coverage of evaluation scenarios
+- ✅ Full coverage of evaluation scenarios
 - ❌ Users must understand when to use which strategy
 
 
@@ -1676,11 +1587,11 @@ max_score: Optimistic (strongest judge determines score)
 
 ### Constraint 2: LLM Judge Latency
 
-**Description**: LLM-based judges (Agent, Hawk) have 1-5s latency per evaluation.
+**Description**: LLM-based judges (LLMJudge) have 1-5s latency per evaluation. AgentJudge will have similar latency when fully implemented.
 
 **Limitations**:
-- Synchronous evaluation of 5 judges: 5-25s total latency
-- Async evaluation: Max(judge latencies) = 1-5s
+- Both sync and async modes run judges in parallel (goroutines): Max(judge latencies) = 1-5s
+- With retry (3 attempts, exponential backoff): up to ~7s additional per failing judge
 
 **Workaround**: Use async or hybrid execution mode, cache judge results for identical inputs.
 
@@ -1713,10 +1624,10 @@ max_score: Optimistic (strongest judge determines score)
 
 | Operation | P50 | P99 | Notes |
 |-----------|-----|-----|-------|
-| Hawk Judge execution | 100ms | 500ms | Hawk API call |
-| Agent Judge execution | 1.5s | 5s | LLM invocation (depends on model) |
+| LLM Judge execution | 1s | 5s | LLM invocation (depends on model) |
+| Agent Judge execution | <1ms | <1ms | Currently returns placeholder (not yet functional) |
 | Custom Judge execution | <1ms | 5ms | Rule-based logic (e.g., SQL safety check) |
-| Multi-judge sync (3 judges) | 3s | 15s | Sum of individual judge latencies |
+| Multi-judge sync (3 judges) | 1.5s | 5s | Max of individual judge latencies (parallel execution) |
 | Multi-judge async (3 judges) | 1.5s | 5s | Max of individual judge latencies |
 | Aggregation (6 strategies) | <1ms | 5ms | In-memory calculation |
 | Retry (1 attempt, 1s backoff) | 1s | 1s | Fixed backoff |
@@ -1724,7 +1635,7 @@ max_score: Optimistic (strongest judge determines score)
 
 ### Throughput
 
-- **Judge execution**: Depends on judge type (Hawk: 2-10 evals/s, Agent: 0.2-1 eval/s)
+- **Judge execution**: Depends on judge type (LLM Judge: 0.2-1 eval/s, Custom: 1000+ evals/s)
 - **Async multi-judge**: N goroutines × judge throughput (e.g., 3 judges × 1 eval/s = 3 evals/s)
 - **Aggregation**: 100k+ aggregations/s (in-memory, no I/O)
 
@@ -1748,35 +1659,29 @@ max_score: Optimistic (strongest judge determines score)
 **Synchronization**:
 - `JudgeRegistry.mu`: sync.RWMutex protects judge registration/lookup
 - `CircuitBreaker.mu`: sync.Mutex protects circuit state
-- `Coordinator`: Goroutines per judge (async execution), sync.WaitGroup for coordination
+- `Orchestrator`: Goroutines per judge (parallel execution), buffered channel for result collection
 
 ### Goroutine Lifecycle
 
-**Async Execution**:
+**Parallel Execution** (both sync and async modes use this pattern):
 ```go
-// Spawn N goroutines (1 per judge)
-var wg sync.WaitGroup
+// Fork: Spawn N goroutines (1 per judge), results via buffered channel
+resultChan := make(chan judgeResult, len(judges))
 for _, judge := range judges {
-    wg.Add(1)
     go func(j Judge) {
-        defer wg.Done()
-        result, _ := j.Evaluate(ctx, evalCtx)
-        resultCh <- result
+        verdict, err := j.Evaluate(ctx, evalCtx)
+        resultChan <- judgeResult{verdict: verdict, err: err, judge: j}
     }(judge)
 }
 
-// Wait for all goroutines to complete
-wg.Wait()
-```
-
-**Sync Execution**:
-```go
-// Sequential execution (no goroutines)
-for _, judge := range judges {
-    result, _ := judge.Evaluate(ctx, evalCtx)
-    results = append(results, result)
+// Join: Collect results from all goroutines
+for i := 0; i < len(judges); i++ {
+    result := <-resultChan
+    // ... handle result
 }
 ```
+
+**Note**: Both "sync" and "async" execution modes use the same parallel goroutine pattern internally. The difference is that sync mode supports `fail_fast` (abort on first critical failure), while async mode always collects all results.
 
 **Race Detector**: Zero race conditions detected (all tests run with `-race`).
 
@@ -1825,7 +1730,7 @@ Judge Execution Failure ───▶ Retry (3 attempts) ───▶ Circuit Bre
 
 **Prompt Injection**:
 - ✅ Agent judges use structured JSON output (harder to inject)
-- ✅ Hawk judges use production-tested prompt templates
+- ✅ LLM judges use structured JSON output via llmjudge package
 - ⚠️ Custom judges vulnerable (user responsibility to sanitize)
 
 **Judge Manipulation**:
@@ -1836,7 +1741,7 @@ Judge Execution Failure ───▶ Retry (3 attempts) ───▶ Circuit Bre
 **Recommendations**:
 1. Deploy JudgeService behind firewall (internal-only)
 2. Audit judge configs before registration
-3. Use Hawk judges for production (battle-tested)
+3. Use LLM judges for evaluation (4 core scores with structured output)
 4. Sanitize user inputs in custom judges
 
 
@@ -1850,7 +1755,7 @@ Judge Execution Failure ───▶ Retry (3 attempts) ───▶ Circuit Bre
 
 2. **LangSmith**: LLM evaluation platform
    - **Similar**: LLM-as-judge pattern, dimension scoring
-   - **Loom differs**: Hawk integration, production-grade retry/circuit breaker, streaming progress
+   - **Loom differs**: Hawk integration, retry/circuit breaker, streaming progress
 
 3. **Prompt Flow**: Azure's LLM evaluation framework
    - **Similar**: Multi-dimensional evaluation (quality, safety, groundedness)
@@ -1889,11 +1794,11 @@ Judge Execution Failure ───▶ Retry (3 attempts) ───▶ Circuit Bre
 
 ### Reference Documentation
 
-- [Judge API Reference](/docs/reference/judge-api.md) - JudgeService RPC details
-- [Evaluation Suite Reference](/docs/reference/evaluation-suite.md) - Eval suite configuration
+- [Judge CLI Guide](/docs/guides/judge_cli_guide.md) - Judge CLI commands
+- [Multi-Judge Evaluation Guide](/docs/guides/multi-judge-evaluation.md) - Multi-judge evaluation usage
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Judge Configuration Guide](/docs/guides/judge-configuration.md) - Configuring judges
-- [Evaluation Best Practices](/docs/guides/evaluation-best-practices.md) - Using judges effectively
+- [Judge DSPy Integration](/docs/guides/judge-dspy-integration.md) - DSPy integration with judges
+- [Judge DSPy Streaming](/docs/guides/judge-dspy-streaming.md) - Streaming evaluations with DSPy

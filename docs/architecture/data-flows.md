@@ -5,7 +5,9 @@ End-to-end data flows showing how information moves through Loom's multi-layered
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+
+**Status Indicators**: ✅ Verified against codebase | ⚠️ Simplified or approximate | 📋 Conceptual (not directly reflected in code)
 
 
 ## Table of Contents
@@ -41,12 +43,12 @@ Loom's architecture involves complex data flows across 10+ subsystems. This docu
 
 1. **Agent Conversation Flow**: User message → LLM invocation → tool execution → response
 2. **Tool Execution Flow**: Tool call → backend query → result processing → memory storage
-3. **Memory Management Flow**: Message addition → L1 cache → L2 compression → SQLite persistence
-4. **Pattern Matching Flow**: Query → TF-IDF search → pattern selection → prompt injection
-5. **Reference-Based Data Passing**: Large result → compression → shared memory → reference ID
+3. **Memory Management Flow**: Message addition → L1 cache → L2 compression → Swap eviction → SQLite persistence
+4. **Pattern Matching Flow**: Query → keyword-based search → pattern selection → prompt injection
+5. **Reference-Based Data Passing**: Large result → gzip compression → shared memory → reference ID
 6. **Multi-Agent Workflow Flow**: YAML load → pattern routing → stage execution → result merge
 7. **Session Recovery Flow**: Crash → session load → memory reconstruction → resume
-8. **Pattern Hot-Reload Flow**: File change → fsnotify → YAML parse → atomic swap
+8. **Pattern Hot-Reload Flow**: File change → fsnotify → YAML parse → debounced reload
 9. **Observability Trace Flow**: Span creation → attribute collection → batch export → Hawk
 10. **Cost Attribution Flow**: Token counting → pricing calculation → aggregation → trace export
 
@@ -76,7 +78,6 @@ flowchart TB
         LLM[LLM]
         Backend[Backend]
         Hawk[Hawk]
-        Promptio[Promptio]
     end
 
     subgraph LoomSystem["Loom System"]
@@ -96,7 +97,6 @@ flowchart TB
     LLM --> LoomSystem
     Backend --> LoomSystem
     Hawk --> LoomSystem
-    Promptio --> LoomSystem
 ```
 
 **Data Flow Direction**:
@@ -113,14 +113,14 @@ flowchart TB
 - Pattern matching (query → matcher → patterns → prompt)
 
 ### 2. State Management Flows
-- Memory management (messages → L1 → L2 → SQLite)
+- Memory management (messages → L1 → L2 → Swap → SQLite)
 - Session persistence (session → SQLite → recovery)
-- Shared memory (large data → compression → cache → disk)
+- Shared memory (large data → gzip compression → LRU cache → overflow handler)
 
 ### 3. Configuration Flows
-- Pattern hot-reload (file change → fsnotify → parser → agent)
-- Agent config reload (YAML edit → watcher → validation → swap)
-- Prompt versioning (promptio → cache → memory ROM)
+- Pattern hot-reload (file change → fsnotify → parser → debounced reload)
+- Agent config reload (YAML edit → watcher → validation → reload)
+- Prompt versioning (FileRegistry → cache → memory ROM)
 
 ### 4. Observability Flows
 - Trace export (span creation → buffering → batch → Hawk)
@@ -227,22 +227,22 @@ Client         Agent        Memory       Pattern      LLM         Executor     B
   │              │             │            │           │           │           
 ```
 
-**Data Transformations**:
+**Data Transformations** ⚠️:
 1. **User message** → String (UTF-8, 1-10K chars typical)
-2. **Pattern match** → Matched pattern + score (TF-IDF cosine similarity)
-3. **Context build** → Concatenated messages (ROM 5K + Kernel 2K + L1 10K + L2 3K ≈ 20K tokens)
+2. **Pattern match** → Matched pattern + score (keyword-based scoring with optional LLM re-ranking)
+3. **Context build** → Concatenated messages (ROM + Kernel + L1 + L2 + Swap within 180K token budget; 200K context - 20K output reserve)
 4. **LLM request** → JSON with messages array + tools array
 5. **LLM response** → Streaming chunks → final Response proto
-6. **Tool calls** → Parallel goroutine execution → aggregated results
-7. **L1 overflow** → LLM summarization → compressed L2 entry
-8. **Session persist** → SQLite row (session_id, messages JSONB, metadata)
+6. **Tool calls** → Sequential execution with deduplication → aggregated results
+7. **L1 overflow** → LLM summarization (or simple extraction fallback) → compressed L2 entry
+8. **Session persist** → SQLite row (id, agent_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
 
-**Performance Metrics**:
-- **P50 latency**: 1.2s (LLM call dominates)
-- **P99 latency**: 3.5s (tool execution + LLM)
-- **Token usage**: 20K input, 500 output (typical)
-- **Cost**: $0.015-0.045 per turn (Claude Sonnet 4.5)
-- **Memory**: 50KB session state (10 messages)
+**Performance Metrics** 📋:
+- **P50 latency**: ~1.2s (LLM call dominates)
+- **P99 latency**: ~3.5s (tool execution + LLM)
+- **Token usage**: ~20K input, ~500 output (typical)
+- **Cost**: ~$0.015-0.045 per turn (Claude Sonnet 4.5 at $3/$15 per 1M tokens)
+- **Memory**: ~50KB session state (10 messages)
 
 
 ### Tool Execution Flow
@@ -306,14 +306,14 @@ LLM Response    Executor     Tool A       Tool B       Backend A    Backend B   
   │               │            │            │            │            │         
 ```
 
-**Data Transformations**:
+**Data Transformations** ⚠️:
 1. **Tool calls** → Parallel goroutine spawning (N goroutines for N tools)
 2. **Input validation** → JSON schema validation against tool definition
 3. **Backend execution** → Backend-specific query/API call
-4. **Large result** → Size check (>100KB) → compression (gzip) → SharedMemory → Reference ID
-5. **Tool error** → Stack trace (3K chars) → ErrorStore → Summary (100 chars) + Error ID
+4. **Large result** → Size check against configurable threshold (default: inline everything, per-agent override via `SharedMemoryThresholdBytes`) → gzip compression (threshold: 1MB) → SharedMemory → Reference ID
+5. **Tool error** → ErrorStore → Summary + Error ID
 6. **Result aggregation** → Channel collection → ordered by completion
-7. **Timeout handling** → Context cancellation after 30s → partial results returned
+7. **Timeout handling** → Context cancellation → partial results returned
 
 **Error Handling**:
 - **Validation error**: Return immediately with error, no backend call
@@ -331,7 +331,7 @@ LLM Response    Executor     Tool A       Tool B       Backend A    Backend B   
 
 ### Memory Management Flow
 
-**Description**: Segmented memory lifecycle from message addition to L2 compression and SQLite persistence.
+**Description**: Segmented memory lifecycle from message addition to L2 compression, swap eviction, and SQLite persistence.
 
 **Sequence Diagram**:
 ```
@@ -388,36 +388,41 @@ Agent         Memory       L1 Cache     L2 Archive    LLM          SQLite       
   │             │             │            │            │            │          
 ```
 
-**Memory Budget Calculation**:
+**Memory Budget Calculation** ⚠️:
 ```
-Total Context: 200,000 tokens (Claude Sonnet 4.5)
-Reserved Output: 8,000 tokens
-Available Input: 192,000 tokens
+Total Context: 200,000 tokens (Claude Sonnet 4.5 default)
+Reserved Output: 20,000 tokens
+Available Input: 180,000 tokens
 
-Memory Allocation:
-├─ ROM (30%): 57,600 tokens                                                     
-│  ├─ System prompt: 2,000 tokens                                              │
-│  ├─ Tool definitions: 3,000 tokens (30 tools)                                │
-│  └─ Pattern library: 52,600 tokens (cached)                                  │
-│                                                                              │
-├─ Kernel (10%): 19,200 tokens                                                  
-│  ├─ Task context: 500 tokens                                                 │
-│  ├─ User preferences: 200 tokens                                             │
-│  └─ Session metadata: 18,500 tokens                                          │
-│                                                                              │
-├─ L1 Cache (50%): 96,000 tokens                                                
-│  └─ Recent messages: 10-15 messages (6K-9K tokens each)                      │
-│                                                                              │
-└─ L2 Archive (10%): 19,200 tokens                                              
-   └─ Compressed summaries: 5-10 summaries (2K-4K tokens each)                  
+Memory Layers (not fixed percentages — adaptive based on workload profile):
+├─ ROM: Static documentation/prompts (never changes during session)
+│  ├─ System prompt
+│  ├─ Tool definitions
+│  └─ Pattern content (cached)
+│
+├─ Kernel: Tool definitions, recent results, schema cache
+│  ├─ Tool results (max 5 kept in kernel)
+│  ├─ Schema discoveries (LRU cache, max 10)
+│  └─ Verified findings (working memory, max 100)
+│
+├─ L1 Cache: Recent messages (token-based eviction, not message count)
+│  └─ Balanced profile: ~6,400 max tokens (min 4 messages)
+│  └─ Data-intensive: ~4,000 max tokens (min 3 messages)
+│  └─ Conversational: ~9,600 max tokens (min 6 messages)
+│
+├─ L2 Archive: Compressed summaries (max 5,000 tokens before swap eviction)
+│  └─ LLM-summarized older messages
+│
+└─ Swap: Database-backed long-term storage (optional, enables "forever conversations")
+   └─ L2 summaries evicted when exceeding maxL2Tokens threshold
 ```
 
-**Eviction Policy**:
-1. **Trigger**: L1.TokenCount() > L1.Budget OR L1.MessageCount() > 10
-2. **Selection**: Oldest 5 messages by timestamp (FIFO)
-3. **Compression**: LLM summarization (10:1 ratio typical)
-4. **Storage**: L2 append + SQLite persist
-5. **Cleanup**: Remove evicted messages from L1
+**Eviction Policy** ✅:
+1. **Trigger**: L1 token count exceeds `maxL1Tokens` (profile-dependent) OR token budget usage exceeds warning threshold percentage (e.g., 60% for balanced profile)
+2. **Selection**: Adaptive batch sizing — normal/warning/critical batch sizes from compression profile (e.g., balanced: 3/5/7 messages)
+3. **Compression**: LLM summarization if compressor configured, otherwise simple extraction fallback
+4. **Storage**: L2 append; if L2 exceeds `maxL2Tokens` (default 5,000) and swap enabled, evict L2 to swap (SQLite)
+5. **Cleanup**: Remove evicted messages from L1, maintain `minL1Messages` minimum (e.g., 4 for balanced)
 
 **Performance Metrics**:
 - **Compression latency**: 800ms-1.5s (LLM call)
@@ -428,82 +433,91 @@ Memory Allocation:
 
 ### Pattern Matching Flow
 
-**Description**: TF-IDF-based pattern selection from library with confidence scoring.
+**Description**: Keyword-based pattern selection from library with intent classification and confidence scoring.
 
 **Sequence Diagram**:
 ```
-Agent       Orchestrator   PatternLib    TF-IDF      Patterns     Scorer      Memory
-  │             │              │          Index        YAML         │           
-  ├─ Match ────▶│              │            │           │           │           
-  │  Pattern    │              │            │           │           │           
-  │  query="show sales"        │            │           │           │           
-  │             │              │            │           │           │           
-  │             ├─ Search ─────▶│            │           │           │          
-  │             │              │            │           │           │           
-  │             │              ├─ Tokenize ─▶│           │           │          
-  │             │              │  ["show", "sales"]      │           │          
-  │             │              │◀─ Tokens ───┤           │           │          
-  │             │              │            │           │           │           
-  │             │              ├─ Compute ───▶│           │           │         
-  │             │              │  TF-IDF     │           │           │          
-  │             │              │◀─ Vector ────┤           │           │         
-  │             │              │  [0.3, 0.7, ...]         │           │         
-  │             │              │            │           │           │           
-  │             │              ├─ Cosine ────▶│           │           │         
-  │             │              │  Similarity │           │           │          
-  │             │              │◀─ Scores ────┤           │           │         
-  │             │              │  [0.85, 0.72, 0.31, ...]│           │          
-  │             │              │            │           │           │           
-  │             │              ├─ Top-K ──────┤           │           │         
-  │             │              │  (k=3)      │           │           │          
-  │             │              │◀─ Patterns ──┤           │           │         
-  │             │              │  [{id, score}, ...]      │           │         
-  │             │              │            │           │           │           
-  │             │              ├─ Load ───────┼───────────▶│           │        
-  │             │              │  Pattern    │           │           │          
-  │             │              │  YAML       │           │           │          
-  │             │              │◀─ Content ───┼───────────┤           │         
-  │             │              │            │           │           │           
-  │             │              ├─ Evaluate ───┼───────────┼──────────▶│         
-  │             │              │  Confidence │           │           │          
-  │             │              │◀─ Score ─────┼───────────┼───────────┤         
-  │             │              │  0.92       │           │           │          
-  │             │              │            │           │           │           
-  │             │◀─ Pattern ───┤            │           │           │           
-  │             │  (best match)│            │           │           │           
-  │             │            │           │           │           │           │  
+Agent       Orchestrator   PatternLib    Keyword     Patterns     Scorer      Memory
+  │             │              │          Matcher      YAML         │
+  ├─ Match ────▶│              │            │           │           │
+  │  Pattern    │              │            │           │           │
+  │  query="show sales"        │            │           │           │
+  │             │              │            │           │           │
+  │             ├─ Search ─────▶│            │           │           │
+  │             │              │            │           │           │
+  │             │              ├─ Extract ───▶│           │           │
+  │             │              │  Keywords   │           │           │
+  │             │              │  ["show", "sales"]      │           │
+  │             │              │◀─ Keywords ──┤           │           │
+  │             │              │            │           │           │
+  │             │              ├─ Match ─────▶│           │           │
+  │             │              │  Against    │           │           │
+  │             │              │  Index      │           │           │
+  │             │              │◀─ Hits ──────┤           │           │
+  │             │              │            │           │           │
+  │             │              ├─ Score ─────▶│           │           │
+  │             │              │  Intent +   │           │           │
+  │             │              │  Keywords   │           │           │
+  │             │              │◀─ Scores ────┤           │           │
+  │             │              │  [0.85, 0.72, 0.31, ...]│           │
+  │             │              │            │           │           │
+  │             │              ├─ Top-K ──────┤           │           │
+  │             │              │  (k=3)      │           │           │
+  │             │              │◀─ Patterns ──┤           │           │
+  │             │              │  [{id, score}, ...]      │           │
+  │             │              │            │           │           │
+  │             │              ├─ Load ───────┼───────────▶│           │
+  │             │              │  Pattern    │           │           │
+  │             │              │  YAML       │           │           │
+  │             │              │◀─ Content ───┼───────────┤           │
+  │             │              │            │           │           │
+  │             │              ├─ Evaluate ───┼───────────┼──────────▶│
+  │             │              │  Confidence │           │           │
+  │             │              │◀─ Score ─────┼───────────┼───────────┤
+  │             │              │  0.92       │           │           │
+  │             │              │            │           │           │
+  │             │◀─ Pattern ───┤            │           │           │
+  │             │  (best match)│            │           │           │
+  │             │            │           │           │           │           │
   │             ├─ Inject ─────┼────────────┼───────────┼───────────┼──────────▶
   │             │  Pattern    │            │           │           │           │
   │             │  into ROM   │            │           │           │           │
-  │◀─ Pattern ──┤            │           │           │           │           │  
-  │  Matched    │            │           │           │           │           │  
-  │             │            │           │           │           │           │  
+  │◀─ Pattern ──┤            │           │           │           │           │
+  │  Matched    │            │           │           │           │           │
+  │             │            │           │           │           │           │
 ```
 
-**TF-IDF Calculation**:
+**Keyword-Based Scoring** (from `pkg/patterns/orchestrator.go`):
 ```
 Query: "show sales by region"
-Tokenize: ["show", "sales", "by", "region"]
+Keywords: ["show", "sales", "region"] (stop words filtered)
 
-Pattern 1: "Display sales metrics grouped by geographic region"
-  TF-IDF: [0.3, 0.8, 0.2, 0.9]
-  Cosine Similarity: 0.85
+Intent Classification: defaultIntentClassifier → analytics (0.85 confidence)
 
-Pattern 2: "Analyze revenue data per territory"
-  TF-IDF: [0.1, 0.7, 0.1, 0.6]
-  Cosine Similarity: 0.72
+Pattern 1: "sales_by_region" (category: analytics)
+  Category matches intent (analytics):    +0.5
+  Keyword match rate (3/3 matched):       +0.5
+  Name contains "sales":                  +0.2
+  Title contains "region":                +0.1
+  Total Score: 1.3 → normalized confidence: 0.85
 
-Pattern 3: "Create user account with role assignment"
-  TF-IDF: [0.0, 0.0, 0.1, 0.0]
-  Cosine Similarity: 0.12
+Pattern 2: "revenue_analysis" (category: analytics)
+  Category matches intent (analytics):    +0.5
+  Keyword match rate (1/3 matched):       +0.17
+  Total Score: 0.67 → normalized confidence: 0.72
+
+Pattern 3: "user_management" (category: admin)
+  Category does not match intent:         +0.0
+  Keyword match rate (0/3 matched):       +0.0
+  Total Score: 0.0 → filtered out
 
 Result: Pattern 1 selected (highest score: 0.85)
 ```
 
 **Performance Metrics**:
 - **Index build**: 89-143ms (59 patterns, 11 libraries)
-- **Search latency**: 5-15ms (TF-IDF lookup + scoring)
-- **Memory overhead**: 2MB (TF-IDF vectors + pattern cache)
+- **Search latency**: 5-15ms (keyword matching + scoring)
+- **Memory overhead**: 2MB (pattern index + pattern cache)
 - **Match accuracy**: 92% (validated via Judge system)
 
 
@@ -528,9 +542,9 @@ Backend     Executor    SharedMem    Policy       Compression   Agent        LLM
   │            │  REFERENCE │           │               │          │           │
   │            │  (>10KB)   │           │               │          │           │
   │            │           │           │               │          │           │ 
-  │            ├─ Compress ─┼───────────┼───────────────▶│          │           
+  │            ├─ Compress ─┼───────────┼───────────────▶│          │
   │            │  Data      │           │               │          │           │
-  │            │  (zstd)    │           │               │          │           │
+  │            │  (gzip)    │           │               │          │           │
   │            │◀─ Compressed┼───────────┼───────────────┤          │           
   │            │  120KB     │           │               │          │           │
   │            │  (91% savings)         │               │          │           │
@@ -564,41 +578,43 @@ Backend     Executor    SharedMem    Policy       Compression   Agent        LLM
   │            │           │           │               │          │           │ 
 ```
 
-**Token Savings**:
+**Token Savings** ✅:
 ```
 Before (Value Semantics):
-├─ Result Size: 1.3MB JSON                                                      
-├─ Token Count: ~15,000 tokens                                                  
-├─ Context Budget: Exceeded (max 8K for results)                                
-└─ Outcome: Truncation or failure                                               
+├─ Result Size: 1.3MB JSON
+├─ Token Count: ~15,000 tokens
+├─ Context Budget: May exceed available budget
+└─ Outcome: Truncation or failure
 
 After (Reference Semantics):
 ├─ Reference ID: "ref_abc123"
-├─ Token Count: ~50 tokens
+├─ Token Count: ~50 tokens (metadata only)
 ├─ Savings: 99.67%
-└─ Outcome: Full data available on-demand via query_tool_result()                 
+└─ Outcome: Full data available on-demand via query_tool_result tool
 ```
 
-**Storage Tiers**:
-1. **Memory Tier** (1GB LRU cache):
+**Storage Tiers** ✅:
+1. **Memory Tier** (1GB LRU cache, configurable via `DefaultMaxMemoryBytes`):
    - Hot data: <1ms retrieval
-   - Compressed: >1MB auto-compress with zstd
+   - Compressed: >=1MB auto-compress with gzip (`DefaultCompressionThreshold`)
    - Checksum: SHA-256 for integrity
-   - Reference counting: Prevent premature eviction
+   - LRU eviction: Evicts least-recently-used entries when cache is full
 
-2. **Disk Tier** (10GB filesystem):
+2. **Disk Tier** (overflow handler):
    - Cold data: 5-15ms retrieval
-   - Auto-promotion: Disk → memory on access
-   - TTL cleanup: 1 hour default
-   - Atomic writes: temp + rename
+   - TTL cleanup: 1 hour default (`DefaultTTLSeconds`)
+   - Overflow handler: Pluggable interface for disk-based storage
 
-**Policy Decision**:
+**Policy Decision** ✅:
 ```
-message_type: "tool_result"
-policy: AUTO_PROMOTE
-threshold: 10KB
+SharedMemoryThresholdBytes (per-agent config):
+  -1 = inline everything (default — no references created)
+   0 = always reference (all tool results stored in SharedMemory)
+  >0 = reference if result exceeds N bytes
 
-if size > 10KB:
+if threshold == -1:
+    semantics = VALUE (always inline)
+elif threshold == 0 OR size > threshold:
     semantics = REFERENCE
     → Store in SharedMemory
     → Return reference ID
@@ -758,28 +774,32 @@ Server Crash   Server Start  SessionStore  Memory       Agent        Client
   │               │              │           │            │            │        
 ```
 
-**SQLite Schema**:
+**SQLite Schema** ✅ (from `pkg/agent/session_store.go` and `pkg/storage/sqlite/migrations/`):
 ```sql
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    name TEXT,
+    agent_id TEXT,
+    parent_session_id TEXT,
+    context_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    messages TEXT NOT NULL,  -- JSON array
-    l2_summaries TEXT,       -- JSON array
-    metadata TEXT            -- JSON object
+    total_cost_usd REAL DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
-
-CREATE INDEX idx_sessions_updated ON sessions(updated_at);
 ```
 
-**Recovery Algorithm**:
-1. **Server start**: Load all session IDs from SQLite
+Note: Messages are stored in a separate `messages` table, not as a JSON column within sessions. L2 summaries are managed in-memory by `SegmentedMemory` and evicted to swap storage via `SaveMemorySnapshot`.
+
+**Recovery Algorithm** ⚠️:
+1. **Server start**: Session store initialized with SQLite schema migration
 2. **Client request**: Extract sessionID from request
-3. **Session load**: Query SQLite by sessionID
+3. **Session load**: Query SQLite sessions table + messages table by sessionID
 4. **Memory reconstruction**:
-   - Parse messages JSON → Message[] array
-   - Last 10 messages → L1 cache
-   - Parse l2_summaries JSON → L2 archive
+   - Load messages from messages table → Message[] array
+   - Recent messages → L1 cache (based on compression profile limits)
+   - Retrieve L2 snapshots from swap storage if enabled
    - Rebuild ROM (system prompt, tools, patterns)
 5. **Resume conversation**: Agent continues from last message
 
@@ -792,7 +812,7 @@ CREATE INDEX idx_sessions_updated ON sessions(updated_at);
 
 ### Pattern Hot-Reload Flow
 
-**Description**: Zero-downtime pattern library updates via fsnotify and atomic swap.
+**Description**: Zero-downtime pattern library updates via fsnotify and debounced reload.
 
 **Sequence Diagram**:
 ```
@@ -807,7 +827,7 @@ User       Filesystem    fsnotify     Server      YAML Parser  Validator   Agent
   │             │  teradata-analytics.yaml│             │           │          │
   │             │            │           │             │           │          │ 
   │             │            ├─ Debounce ─┤             │           │          │
-  │             │            │  (100ms)   │             │           │          │
+  │             │            │  (500ms)   │             │           │          │
   │             │            │           │             │           │          │ 
   │             │            ├─ Parse ────┼────────────▶│           │          │
   │             │            │  YAML      │             │           │          │
@@ -819,43 +839,44 @@ User       Filesystem    fsnotify     Server      YAML Parser  Validator   Agent
   │             │            │◀─ Valid ───┼─────────────┼───────────┤          │
   │             │            │           │             │           │          │ 
   │             │            ├─ Build ────┤             │           │          │
-  │             │            │  TF-IDF    │             │           │          │
+  │             │            │  Pattern   │             │           │          │
   │             │            │  Index     │             │           │          │
   │             │            │◀─ Index ───┤             │           │          │
   │             │            │  (89-143ms)│             │           │          │
   │             │            │           │             │           │          │ 
-  │             │            ├─ Swap ─────┼─────────────┼───────────┼─────────▶│
-  │             │            │  Atomic    │             │           │          │
-  │             │            │  (CAS)     │             │           │          │
+  │             │            ├─ Update ───┼─────────────┼───────────┼─────────▶│
+  │             │            │  Library   │             │           │          │
+  │             │            │  Cache     │             │           │          │
   │             │            │◀─ OK ──────┼─────────────┼───────────┼──────────┤
-  │             │            │           │             │           │          │ 
-  │             │            ├─ Broadcast ┤             │           │          │
-  │             │            │  Event     │             │           │          │
-  │             │            │  PatternUpdateEvent       │           │          
+  │             │            │           │             │           │          │
+  │             │            ├─ Callback ─┤             │           │          │
+  │             │            │  OnUpdate  │             │           │          │
+  │             │            │  (if set)  │             │           │
   │             │            │           │             │           │          │ 
   │◀─ Response ──┼────────────┤           │             │           │          │
   │  "Pattern library reloaded (59 patterns, 89ms)"     │           │          │
   │             │            │           │             │           │          │ 
 ```
 
-**Atomic Swap**:
-```go
-// Old approach (not atomic)
-library.patterns = newPatterns  // ❌ Race condition
-
-// Atomic approach (CAS)
-old := atomic.LoadPointer(&library.patterns)
-new := &PatternLibrary{patterns: newPatterns, index: newIndex}
-atomic.CompareAndSwapPointer(&library.patterns, old, unsafe.Pointer(new))
-// ✅ Thread-safe, zero downtime
+**Debounced Reload** ✅ (from `pkg/patterns/hotreload.go`):
+```
+// Hot reload uses fsnotify + debounce timer pattern:
+// 1. fsnotify detects file change
+// 2. Debounce timer (500ms default) prevents rapid-fire reloads
+// 3. Pattern file validated (YAML parse + required fields check)
+// 4. Library cache updated with new/modified pattern
+// 5. Pattern index rebuilt for search
+//
+// Thread-safety via sync.Mutex on debounce timers,
+// Library methods use their own synchronization.
 ```
 
-**Performance Metrics**:
+**Performance Metrics** 📋:
 - **File watch notification**: 10-15ms
-- **YAML parse**: 45-60ms (59 patterns)
-- **TF-IDF index rebuild**: 20-40ms
-- **Atomic swap**: <1ms (pointer update)
-- **Total reload**: 89-143ms (P50-P99)
+- **Debounce delay**: 500ms (configurable via `HotReloadConfig.DebounceMs`)
+- **YAML parse + validation**: 45-60ms (per pattern)
+- **Pattern index rebuild**: 20-40ms
+- **Total reload** (after debounce): 89-143ms (P50-P99)
 - **Frequency**: <1 reload/minute typical
 
 
@@ -922,29 +943,29 @@ Agent       Tracer      Buffer      Flusher     HTTP Client   Hawk
   │            │           │           │             │          │               
 ```
 
-**Batch Export Logic**:
+**Batch Export Logic** ✅ (from `pkg/observability/hawk.go`):
 ```
-Trigger Conditions:
-1. Buffer full (len >= 100)
-2. Timer tick (every 10s)
+Trigger Conditions (HawkTracer):
+1. Buffer full (len >= BatchSize, default: 100)
+2. Timer tick (every FlushInterval, default: 10s)
 3. Explicit Flush()
 4. Server shutdown
 
 Export Flow:
-1. Drain buffer (atomic swap)
-2. Redact PII (email, phone, SSN, card)
-3. Remove credentials (api_key, password, token)
+1. Drain buffer
+2. PII redaction (if PrivacyConfig.RedactPII enabled): email, phone, SSN patterns
+3. Credential removal (if PrivacyConfig.RedactCredentials enabled): password, api_key, token fields
 4. Marshal to JSON
-5. HTTP POST to Hawk
-6. Retry on failure (3 attempts, exponential backoff)
+5. HTTP POST to Hawk endpoint (e.g., /v1/traces)
+6. Retry on failure (MaxRetries, default: 3, exponential backoff from RetryBackoff, default: 1s)
 ```
 
-**Performance Metrics**:
-- **Span creation**: <1µs (UUID + context)
-- **EndSpan**: 10µs (PII redaction) or <1µs (no redaction)
-- **Buffer add**: <1µs (mutex + append)
-- **Flush latency**: 15-50ms (100 spans → JSON → HTTP)
-- **Retry schedule**: 0s, 1s, 2s, 4s (exponential)
+**Performance Metrics** 📋:
+- **Span creation**: <1us (UUID + context)
+- **EndSpan**: ~10us (PII redaction if enabled) or <1us (no redaction)
+- **Buffer add**: <1us (mutex + append)
+- **Flush latency**: 15-50ms (100 spans -> JSON -> HTTP)
+- **Retry schedule**: 1s, 2s, 4s, 8s... (exponential backoff, default 3 retries)
 
 
 ### Cost Attribution Flow
@@ -965,11 +986,11 @@ LLM Provider  TokenCounter  CostCalc   Agent      Span        Hawk
   │              │◀─ Verified ─┤          │          │          │               
   │              │  1200 + 350 = 1550     │          │          │               
   │              │             │          │          │          │               
-  │              ├─ Calculate ─┼─────────▶│          │          │               
-  │              │  Cost       │          │          │          │               
-  │              │  Model: claude-sonnet-4.5        │          │                
-  │              │  Input: 1200 × $3/1M = $0.0036   │          │                
-  │              │  Output: 350 × $15/1M = $0.0053  │          │                
+  │              ├─ Calculate ─┼─────────▶│          │          │
+  │              │  Cost       │          │          │          │
+  │              │  Model: claude-sonnet-4-5         │          │
+  │              │  Input: 1200 × $3/1M = $0.0036   │          │
+  │              │  Output: 350 × $15/1M = $0.0053  │          │
   │              │◀─ Cost ─────┼──────────┤          │          │               
   │              │  $0.0089    │          │          │          │               
   │              │             │          │          │          │               
@@ -986,36 +1007,39 @@ LLM Provider  TokenCounter  CostCalc   Agent      Span        Hawk
   │              │  - conversation.turns: 3          │          │               
   │              │  - conversation.tokens.total: 4650│          │               
   │              │  - conversation.cost.usd: 0.0267  │          │               
-  │              │  - llm.model: claude-sonnet-4.5   │          │               
+  │              │  - llm.model: claude-sonnet-4-5   │          │               
   │              │             │          │          │          │               
 ```
 
-**Pricing Table** (as of v1.0.0-beta.1):
+**Pricing Table** ✅ (from `pkg/llm/factory/model_catalog.go`):
 ```
 Model                     Input $/1M    Output $/1M
-───────────────────────────────────────────────────                             
-claude-sonnet-4.5         $3.00         $15.00
-claude-opus-4.5           $15.00        $75.00
-claude-haiku-4.0          $0.25         $1.25
-bedrock-sonnet-4.5        $3.00         $15.00
-ollama-llama3             $0.00         $0.00 (local)
+───────────────────────────────────────────────────
+claude-sonnet-4-6         $3.00         $15.00
+claude-sonnet-4-5         $3.00         $15.00
+claude-opus-4-5           $5.00         $25.00
+claude-opus-4-1           $15.00        $75.00
+claude-haiku-4-5          $1.00         $5.00
+ollama (local)            $0.00         $0.00
 ```
 
-**Cost Calculation**:
-```go
-func CalculateCost(inputTokens, outputTokens int, model string) float64 {
-    pricing := GetPricing(model)
-    inputCost := float64(inputTokens) * pricing.InputPer1M / 1_000_000
-    outputCost := float64(outputTokens) * pricing.OutputPer1M / 1_000_000
-    return inputCost + outputCost
-}
+**Cost Calculation** ✅ (each LLM provider implements `calculateCost` as a method):
+```
+// Anthropic example (from pkg/llm/anthropic/client.go):
+// func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64
+//
+// Claude Sonnet 4.5/4.6 pricing:
+//   Input: $3 per million tokens
+//   Output: $15 per million tokens
+//   Cache write: $3.75 per million tokens (1.25x input)
+//   Cache read: $0.30 per million tokens (0.10x input)
 
-// Example: Claude Sonnet 4.5
-inputTokens = 1200
-outputTokens = 350
-inputCost = 1200 * 3.00 / 1_000_000 = $0.0036
-outputCost = 350 * 15.00 / 1_000_000 = $0.0053
-totalCost = $0.0089
+Example (no caching):
+  inputTokens = 1200
+  outputTokens = 350
+  inputCost = 1200 * 3.00 / 1_000_000 = $0.0036
+  outputCost = 350 * 15.00 / 1_000_000 = $0.0053
+  totalCost = $0.0089
 ```
 
 **Attribution Levels**:
@@ -1028,71 +1052,87 @@ totalCost = $0.0089
 
 ## Data Structures
 
-### Flow Message
+### Message ✅
 
-**Definition**:
+**Definition** (from `proto/loom/v1/loom.proto`):
 ```protobuf
-message FlowMessage {
-  string id = 1;                    // Unique message ID
-  string session_id = 2;            // Session context
-  string role = 3;                  // "user" | "assistant" | "system"
-  string content = 4;               // Message text
-  repeated ToolCall tool_calls = 5; // LLM-requested tool invocations
-  repeated ToolResult tool_results = 6; // Tool execution results
-  TokenUsage usage = 7;             // Token counts and cost
-  int64 timestamp = 8;              // Unix timestamp
+message Message {
+  string id = 1;                    // Message ID
+  string role = 2;                  // "user" | "assistant" | "tool"
+  string content = 3;               // Content
+  int64 timestamp = 4;              // Timestamp
+  repeated ToolCall tool_calls = 5; // Tool calls (if applicable)
+  CostInfo cost = 6;                // Cost for this message
 }
 ```
 
-### ToolResult
+### ToolCall ✅
 
-**Definition**:
+**Definition** (from `proto/loom/v1/loom.proto`):
 ```protobuf
-message ToolResult {
-  string tool_id = 1;               // Tool call ID
-  string tool_name = 2;             // Tool identifier
-
-  oneof result {
-    string content = 3;             // Inline result (value semantics)
-    Reference reference = 4;         // Stored result (reference semantics)
-    ToolError error = 5;            // Execution error
-  }
-
-  int64 duration_ms = 6;            // Execution time
-  map<string, string> metadata = 7;
+message ToolCall {
+  string name = 1;                  // Tool name
+  string args_json = 2;             // Arguments (JSON)
+  string result_json = 3;           // Result (JSON)
+  int64 duration_ms = 4;            // Duration (milliseconds)
+  bool success = 5;                 // Success status
+  string error = 6;                 // Error message (if failed)
 }
 ```
 
-### SessionState
+### Session ✅
 
-**Definition**:
+**Definition** (from `proto/loom/v1/loom.proto`):
 ```protobuf
-message SessionState {
-  string id = 1;
-  repeated Message messages = 2;   // Full message history
-  Memory memory = 3;                // Segmented memory state
-  map<string, string> metadata = 4;
-  int64 created_at = 5;
-  int64 updated_at = 6;
-  TokenUsage cumulative_usage = 7; // Session-wide token/cost tracking
+message Session {
+  string id = 1;                    // Session ID
+  string name = 2;                  // Session name
+  string backend = 3;               // Backend type
+  int64 created_at = 4;             // Creation timestamp
+  int64 updated_at = 5;             // Last activity timestamp
+  string state = 6;                 // Session state (active, idle, closed)
+  double total_cost_usd = 7;        // Total cost so far
+  int32 conversation_count = 8;     // Total number of messages
+  map<string, string> metadata = 9; // Metadata
 }
 ```
 
-### TraceSpan
+### Span ✅
 
-**Definition**:
+**Definition** (from `proto/loom/v1/loom.proto`):
 ```protobuf
-message TraceSpan {
-  string trace_id = 1;              // Shared across trace tree
-  string span_id = 2;               // Unique per span
-  string parent_id = 3;             // Links to parent
-  string name = 4;                  // Operation name
-  int64 start_time = 5;
-  int64 end_time = 6;
-  int64 duration_ms = 7;
-  map<string, interface{}> attributes = 8; // Key-value metadata
-  repeated Event events = 9;        // Timestamped log entries
-  Status status = 10;               // OK | Error | Unset
+message Span {
+  string id = 1;                    // Span ID
+  string parent_id = 2;             // Parent span ID
+  string name = 3;                  // Span name
+  int64 start_time_us = 4;          // Start timestamp (Unix microseconds)
+  int64 end_time_us = 5;            // End timestamp (Unix microseconds)
+  int64 duration_us = 6;            // Duration (microseconds)
+  string status = 7;                // Status (ok, error)
+  map<string, string> attributes = 8; // Attributes (key-value pairs)
+  repeated SpanEvent events = 9;    // Events within this span
+}
+```
+
+### CostInfo ✅
+
+**Definition** (from `proto/loom/v1/loom.proto`):
+```protobuf
+message CostInfo {
+  double total_cost_usd = 1;        // Total cost (USD)
+  LLMCost llm_cost = 2;             // LLM cost breakdown
+  double backend_cost_usd = 3;      // Backend execution cost (if applicable)
+}
+
+message LLMCost {
+  int32 total_tokens = 1;           // Total tokens used
+  int32 input_tokens = 2;           // Input tokens
+  int32 output_tokens = 3;          // Output tokens
+  double cost_usd = 4;              // Cost for this LLM usage (USD)
+  string model = 5;                 // Model used
+  string provider = 6;              // Provider
+  int32 cache_read_input_tokens = 7;     // Tokens served from prompt cache
+  int32 cache_creation_input_tokens = 8; // Tokens written to prompt cache
 }
 ```
 
@@ -1105,10 +1145,10 @@ message TraceSpan {
 |------|-----------|------------|
 | Agent conversation | 1 conversation/1.2s | LLM API latency |
 | Tool execution | 100+ tools/s | Goroutine spawning |
-| Pattern matching | 1000+ queries/s | TF-IDF index lookup |
+| Pattern matching | 1000+ queries/s | Keyword index lookup |
 | Memory persistence | 200 writes/s | SQLite transaction |
 | Trace export | 100 spans/request | HTTP batch size |
-| Pattern hot-reload | <1 reload/min | Filesystem watch |
+| Pattern hot-reload | <1 reload/min | Filesystem watch (500ms debounce) |
 
 ### Latency (End-to-End)
 
@@ -1117,11 +1157,11 @@ message TraceSpan {
 | Agent conversation | 1.2s | 3.5s | LLM API call (800ms) + tool execution (400ms) |
 | Tool execution | 500ms | 1.6s | Backend query |
 | Memory management | 15ms | 45ms | SQLite write |
-| Pattern matching | 5ms | 15ms | TF-IDF search |
-| Reference storage | 10ms | 35ms | Compression (zstd) |
+| Pattern matching | 5ms | 15ms | Keyword-based search |
+| Reference storage | 10ms | 35ms | Compression (gzip) |
 | Workflow execution | 5.3s | 12s | N × stage_latency (sequential) |
 | Session recovery | 15ms | 45ms | SQLite load + JSON parse |
-| Pattern hot-reload | 89ms | 143ms | TF-IDF index rebuild |
+| Pattern hot-reload | 89ms | 143ms | Pattern index rebuild |
 | Trace export | 15ms | 50ms | HTTP POST |
 
 ### Data Volume
@@ -1146,7 +1186,7 @@ message TraceSpan {
 | Session state (RAM) | 50KB | 500KB | 10-50 messages |
 | SharedMemory (memory tier) | 100MB | 1GB | LRU cache |
 | SharedMemory (disk tier) | 1GB | 10GB | Filesystem |
-| Pattern library (RAM) | 2MB | 10MB | TF-IDF index + patterns |
+| Pattern library (RAM) | 2MB | 10MB | Keyword index + patterns |
 | Trace buffer | 200KB | 1MB | 100 spans |
 
 ### CPU Usage
@@ -1155,10 +1195,10 @@ message TraceSpan {
 |-----------|-----|-------------|
 | LLM invocation | 1% | Network-bound (waiting) |
 | Tool execution | 5-20% | Goroutine-based (parallel) |
-| Pattern matching | 2-5% | TF-IDF vectorization |
+| Pattern matching | 2-5% | Keyword matching |
 | Memory compression | 10-30% | LLM API call |
 | Trace export | 1-3% | JSON serialization |
-| Pattern hot-reload | 15-40% | TF-IDF index rebuild |
+| Pattern hot-reload | 15-40% | Pattern index rebuild |
 
 
 ## Related Work
@@ -1206,15 +1246,15 @@ message TraceSpan {
 - [Multi-Agent Orchestration](multi-agent.md) - Workflow patterns
 - [Communication System](communication-system-design.md) - Tri-modal messaging
 - [Observability Architecture](observability.md) - Hawk integration
-- [Pattern System](pattern-system.md) - TF-IDF matching
+- [Pattern System](pattern-system.md) - Keyword-based pattern matching
 
 ### Reference Documentation
 
-- [Agent API Reference](/docs/reference/agent-api.md) - Agent RPC definitions
-- [Workflow API Reference](/docs/reference/workflow-api.md) - Orchestration RPCs
 - [CLI Reference](/docs/reference/cli.md) - Command-line tools
+- [Streaming Reference](/docs/reference/streaming.md) - Streaming API details
+- [Tool Registry](/docs/reference/tool-registry.md) - Tool registration and management
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Building Workflows](/docs/guides/multi-agent-workflows.md) - Workflow creation
+- [Memory Management](/docs/guides/memory-management.md) - Memory configuration guide

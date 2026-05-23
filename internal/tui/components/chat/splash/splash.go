@@ -272,14 +272,22 @@ Once the server is running, the TUI will automatically connect.`
 
 	case "weaver":
 		title = "✨ Weaver"
-		description = `The weaver analyzes your natural language requirements and creates
-specialized threads with appropriate patterns, tools, and capabilities.
-Tell it what you need, and it will design and deploy custom agents for you.
+		description = `The weaver creates custom agents and workflows from natural language.
+
+Two Ways to Create:
+  1. Quick Start - Describe what you need, weaver creates it immediately
+  2. /agent-plan - Guided planning with structured questions
+
+Weaver also recommends skills to enhance your agents:
+  • sql-optimization for database performance
+  • code-review for security and quality
+  • multi-agent-coordinator for orchestration
+  • And more based on your use case
 
 Examples:
   • "Create a SQL query analyzer for PostgreSQL"
-  • "Monitor REST APIs and track rate limits"
-  • "Build a log file parser with error detection"`
+  • "Build a multi-agent workflow for data processing"
+  • "/agent-plan" (for guided planning mode)`
 
 	case "mender":
 		title = "🪡 Mender"

@@ -152,6 +152,3 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     description TEXT
 );
-
-INSERT INTO schema_migrations (version, description) VALUES (1, 'initial schema')
-ON CONFLICT (version) DO NOTHING;

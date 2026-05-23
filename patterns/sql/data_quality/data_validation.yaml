@@ -20,6 +20,9 @@ teradata_function: SQL_CASE_STATEMENTS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - ETL pipeline validation (catch errors before load)
   - API input validation (reject invalid requests)

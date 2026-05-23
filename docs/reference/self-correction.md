@@ -1,9 +1,9 @@
 
 # Self-Correction and Error Recovery Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for Loom's self-correction system - error analysis, retry strategies, circuit breakers, and automatic recovery patterns.
+Technical reference for Loom's self-correction system - error analysis, retry strategies, circuit breakers, and automatic recovery patterns.
 
 
 ## Table of Contents
@@ -33,7 +33,7 @@ Complete technical reference for Loom's self-correction system - error analysis,
 |-----------|---------|----------|-------|
 | **GuardrailEngine** | Pre-flight validation, error analysis, correction suggestions | `pkg/fabric/guardrails.go` | Thread-safe |
 | **CircuitBreaker** | Prevent cascading failures, exponential backoff | `pkg/fabric/circuit_breaker.go` | Per-tool isolation |
-| **Error Classifier** | Categorize errors for targeted corrections | `pkg/fabric/guardrails.go` | Stateless |
+| **Error Classifier** | Categorize errors for targeted corrections | `pkg/fabric/guardrails.go` (`InferErrorType`), `pkg/fabric/circuit_breaker.go` (`ClassifyError`) | Stateless |
 | **Correction Generator** | Generate SQL fixes, retry strategies | `pkg/fabric/guardrails.go` | Context-aware |
 
 
@@ -44,9 +44,11 @@ Complete technical reference for Loom's self-correction system - error analysis,
 | `syntax_error` | "syntax" in message | Check parentheses, reserved keywords, commas | Medium | Yes (with rewrite) |
 | `table_not_found` | "table"/"object" + "not found" | Verify table name, schema qualification | High | Yes (after schema discovery) |
 | `column_not_found` | "column" + "not found" | Call GetTableSchema for actual column names | High | Yes (after schema) |
-| `permission_denied` | "permission"/"access denied" | Check grants, database access, ownership | High | No (requires manual fix) |
+| `permission_denied` | "permission"/"access denied"/"does not have" | Check grants, database access, ownership | High | No (requires manual fix) |
 | `timeout` | "timeout"/"exceeded" | Add WHERE clause, indexes, pagination | Medium | Yes (with query optimization) |
 | `unknown` | None of above | Generic retry with error context | Low | Limited (3 attempts max) |
+
+**Note**: `ClassifyError` (in `circuit_breaker.go`) also returns `"connection"` for errors containing `"connect"` or `"network"`, and `"success"` for nil errors. These types are not returned by `InferErrorType`.
 
 
 ### Circuit Breaker States
@@ -66,32 +68,32 @@ Complete technical reference for Loom's self-correction system - error analysis,
 ### Configuration Defaults
 
 ```yaml
-# Agent configuration (self-correction enabled by default)
+# Agent YAML configuration (self-correction enabled by default)
+# Circuit breaker and guardrails sub-fields are configured via Go API only
 agent:
-  self_correction:
-    enabled: true  # Default: true
-    circuit_breaker:
-      failure_threshold: 5        # Failures before opening circuit
-      success_threshold: 2        # Successes to close from half-open
-      timeout: 30s                # Base timeout for exponential backoff
-    guardrails:
-      max_retry_attempts: 3       # Maximum correction attempts per error
-      preflight_validation: true  # Run validators before execution
+  config:
+    enable_self_correction: true  # Default: true (boolean toggle)
 ```
+
+**Go-level defaults** (not configurable via YAML):
+- Circuit breaker failure threshold: 5
+- Circuit breaker success threshold: 2
+- Circuit breaker base timeout: 30s
+- Max retry attempts: 3
 
 **Go API**:
 ```go
 // Self-correction enabled by default
-agent := agent.NewAgent(backend, llm)
+ag := agent.NewAgent(backend, llmProvider)
 
 // Explicit configuration
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithGuardrails(customGuardrails),
     agent.WithCircuitBreakers(customBreakers),
 )
 
 // Disable self-correction
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithoutSelfCorrection(),
 )
 ```
@@ -101,17 +103,18 @@ agent := agent.NewAgent(backend, llm,
 
 Loom's self-correction system provides **automatic error recovery** through three integrated components:
 
-1. **Guardrails Engine**: Pre-flight validation and error analysis
-2. **Circuit Breakers**: Cascading failure prevention with exponential backoff
-3. **Correction Generator**: Intelligent retry strategies based on error type
+1. ✅ **Guardrails Engine**: Pre-flight validation and error analysis (`pkg/fabric/guardrails.go`)
+2. ✅ **Circuit Breakers**: Cascading failure prevention with exponential backoff (`pkg/fabric/circuit_breaker.go`)
+3. ✅ **Correction Generator**: Error-type-based retry strategies (`pkg/fabric/guardrails.go`)
 
-**Key Features**:
-- **Automatic retry** for recoverable errors (syntax, schema mismatches)
-- **Fail-fast** for unrecoverable errors (permissions, rate limits)
-- **Per-tool isolation** - one failing tool doesn't block others
-- **Exponential backoff** - prevent overwhelming failing systems
-- **Error history tracking** - learn from repeated failures
-- **Confidence scoring** - prioritize high-confidence corrections
+**Features**:
+- ✅ **Automatic retry** for recoverable errors (syntax, schema mismatches)
+- ✅ **Fail-fast** for unrecoverable errors (permissions, rate limits)
+- ✅ **Per-tool isolation** - one failing tool doesn't block others
+- ✅ **Exponential backoff** - prevent overwhelming failing systems
+- ✅ **Error history tracking** - tracks repeated failures per session
+- ✅ **Confidence scoring** - prioritize high-confidence corrections
+- ⚠️ **YAML configuration** - boolean toggle only (`enable_self_correction`); detailed sub-config requires Go API
 
 **Implementation**: `pkg/fabric/` (guardrails.go, circuit_breaker.go)
 **Available Since**: v0.7.0
@@ -699,7 +702,7 @@ messageLower := strings.ToLower(errorMessage)
 
 // Priority order (most specific first):
 1. "syntax" → "syntax_error"
-2. "permission" / "access denied" → "permission_denied"
+2. "permission" / "access denied" / "does not have" → "permission_denied"
 3. "column" + ("not found" / "does not exist") → "column_not_found"
 4. "table"/"object" + ("not found" / "does not exist") → "table_not_found"
 5. "timeout" / "exceeded" → "timeout"
@@ -734,7 +737,20 @@ InferErrorType("", "User does not have SELECT permission on table sales")
 func ClassifyError(err error) string
 ```
 
-**Similar to `InferErrorType` but operates on Go `error` type**:
+**Operates on Go `error` type. Note: priority order differs from `InferErrorType`**:
+
+**Classification priority**:
+1. `nil` error → `"success"`
+2. `"syntax"` → `"syntax_error"`
+3. `"timeout"` → `"timeout"`
+4. `"connect"` / `"network"` → `"connection"`
+5. `"permission"` / `"access denied"` → `"permission_denied"`
+6. `"not found"` / `"does not exist"` + `"table"` / `"object"` → `"table_not_found"`
+7. `"not found"` / `"does not exist"` + `"column"` → `"column_not_found"`
+8. None of above → `"unknown"`
+
+**Key difference from `InferErrorType`**: `ClassifyError` checks `timeout` before `permission_denied`, and adds `"connection"` detection for `"connect"` / `"network"` messages. `InferErrorType` checks `permission_denied` (including `"does not have"`) before either `column_not_found` or `table_not_found`, before `timeout`.
+
 ```go
 err := backend.ExecuteQuery(ctx, sql)
 errorType := fabric.ClassifyError(err)
@@ -743,7 +759,7 @@ switch errorType {
 case "syntax_error":
     // Handle syntax errors
 case "connection":
-    // Handle connection errors
+    // Handle connection errors (not returned by InferErrorType)
 case "permission_denied":
     // Handle permission errors
 }
@@ -971,13 +987,13 @@ if analysis.ErrorType == "timeout" {
 
 ```go
 // Default (self-correction enabled)
-agent := agent.NewAgent(backend, llm)
+ag := agent.NewAgent(backend, llmProvider)
 
 // Custom guardrails
 customGuardrails := fabric.NewGuardrailEngine()
 customGuardrails.RegisterValidator(myValidator)
 
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithGuardrails(customGuardrails),
 )
 
@@ -989,12 +1005,12 @@ customConfig := fabric.CircuitBreakerConfig{
 }
 customBreakers := fabric.NewCircuitBreakerManager(customConfig)
 
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithCircuitBreakers(customBreakers),
 )
 
 // Disable self-correction entirely
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithoutSelfCorrection(),
 )
 ```
@@ -1002,9 +1018,19 @@ agent := agent.NewAgent(backend, llm,
 
 ### YAML Configuration
 
-**Not yet implemented** (planned for v1.1.0)
+✅ **Basic toggle implemented** via `enable_self_correction` boolean in agent YAML configs.
 
-**Planned structure**:
+⚠️ **Detailed sub-configuration** (circuit breaker thresholds, guardrail validators, retry policies) is **not configurable via YAML** -- these require Go API options (`WithGuardrails`, `WithCircuitBreakers`).
+
+**Current YAML** (as of v1.2.0):
+```yaml
+agents:
+  - id: sql-agent
+    config:
+      enable_self_correction: true  # Boolean toggle (default: true)
+```
+
+📋 **Planned YAML structure** (not yet implemented):
 ```yaml
 agents:
   - id: sql-agent
@@ -1039,17 +1065,32 @@ agents:
 
 ```protobuf
 message WeaveResponse {
-  string message = 1;
-  repeated ToolCall tool_calls = 2;
-  bool final = 3;
-  string session_id = 4;
+  // Generated response text
+  string text = 1;
+
+  // Execution result (domain-specific)
+  ExecutionResult result = 2;
+
+  // Session ID used
+  string session_id = 3;
+
+  // Trace ID for observability
+  string trace_id = 4;
+
+  // Cost attribution
   CostInfo cost = 5;
+
+  // Execution metadata
   ExecutionMetadata metadata = 6;
 
   // Self-correction attempts (if any)
   repeated SelfCorrectionAttempt corrections = 7;
 
+  // Agent ID that handled this request
   string agent_id = 8;
+
+  // Context window state after this response
+  ContextState context_state = 9;
 }
 ```
 
@@ -1064,14 +1105,14 @@ message SelfCorrectionAttempt {
   // Correction strategy applied
   string strategy = 2;
 
-  // Was correction successful?
-  bool successful = 3;
+  // Whether correction succeeded
+  bool success = 3;
 
-  // Confidence level (high, medium, low)
-  string confidence = 4;
+  // Duration of correction (milliseconds)
+  int64 duration_ms = 4;
 
-  // Time taken for correction
-  int64 duration_ms = 5;
+  // Token cost of correction
+  LLMCost cost = 5;
 }
 ```
 
@@ -1082,9 +1123,12 @@ message SelfCorrectionAttempt {
     {
       "original_error": "Table 'sales' does not exist",
       "strategy": "schema_discovery",
-      "successful": true,
-      "confidence": "high",
-      "duration_ms": 423
+      "success": true,
+      "duration_ms": 423,
+      "cost": {
+        "input_tokens": 150,
+        "output_tokens": 42
+      }
     }
   ]
 }
@@ -1095,14 +1139,14 @@ message SelfCorrectionAttempt {
 
 ```protobuf
 enum ExecutionStage {
-  EXECUTION_STAGE_UNKNOWN = 0;
+  EXECUTION_STAGE_UNSPECIFIED = 0;
   EXECUTION_STAGE_PATTERN_SELECTION = 1;
   EXECUTION_STAGE_SCHEMA_DISCOVERY = 2;
   EXECUTION_STAGE_LLM_GENERATION = 3;
   EXECUTION_STAGE_TOOL_EXECUTION = 4;
-  EXECUTION_STAGE_HUMAN_IN_THE_LOOP = 9;
+  EXECUTION_STAGE_HUMAN_IN_THE_LOOP = 9; // Waiting for human response
   EXECUTION_STAGE_GUARDRAIL_CHECK = 5;
-  EXECUTION_STAGE_SELF_CORRECTION = 6;  // Self-correction in progress
+  EXECUTION_STAGE_SELF_CORRECTION = 6;   // Self-correction in progress
   EXECUTION_STAGE_COMPLETED = 7;
   EXECUTION_STAGE_FAILED = 8;
 }
@@ -1121,14 +1165,22 @@ enum ExecutionStage {
 
 ```protobuf
 message ExecutionMetadata {
-  int32 turns = 1;
+  // Pattern selected
+  string pattern_name = 1;
+
+  // Number of LLM calls
   int32 llm_calls = 2;
+
+  // Number of tool executions
   int32 tool_executions = 3;
 
   // Number of self-correction attempts
   int32 correction_attempts = 4;
 
+  // Total execution time (milliseconds)
   int64 total_duration_ms = 5;
+
+  // Guardrail checks performed
   repeated string guardrails_checked = 6;
 }
 ```
@@ -1137,7 +1189,7 @@ message ExecutionMetadata {
 ```json
 {
   "metadata": {
-    "turns": 2,
+    "pattern_name": "sql_query",
     "llm_calls": 3,
     "tool_executions": 2,
     "correction_attempts": 1,
@@ -1154,15 +1206,15 @@ message ExecutionMetadata {
 
 ```go
 // Good: Use defaults (self-correction enabled)
-agent := agent.NewAgent(backend, llm)
+ag := agent.NewAgent(backend, llmProvider)
 
 // Avoid: Disabling without good reason
-agent := agent.NewAgent(backend, llm,
+ag := agent.NewAgent(backend, llmProvider,
     agent.WithoutSelfCorrection(), // Only if you have custom error handling
 )
 ```
 
-**Why**: Self-correction significantly improves success rate and user experience.
+**Why**: Self-correction allows the agent to recover from common errors (wrong table names, syntax issues) without requiring user intervention.
 
 
 ### 2. Register Backend-Specific Validators
@@ -1171,6 +1223,10 @@ agent := agent.NewAgent(backend, llm,
 // PostgreSQL example
 type PostgresValidator struct {
     db *sql.DB
+}
+
+func (v *PostgresValidator) Name() string {
+    return "postgres_validator"
 }
 
 func (v *PostgresValidator) Validate(ctx context.Context, sql string) []fabric.Issue {
@@ -1348,8 +1404,8 @@ if len(corrections) > 0 {
         logger.Info("self_correction_attempt",
             zap.String("original_error", correction.OriginalError),
             zap.String("strategy", correction.Strategy),
-            zap.Bool("successful", correction.Successful),
-            zap.String("confidence", correction.Confidence))
+            zap.Bool("success", correction.Success),
+            zap.Int64("duration_ms", correction.DurationMs))
     }
 }
 ```
@@ -1658,18 +1714,18 @@ Error: User does not have DELETE permission on table sales
 ## See Also
 
 ### Reference Documentation
-- [Guardrails API](./guardrails-api.md) - Pre-flight validation API (planned)
-- [Circuit Breaker API](./circuit-breaker-api.md) - Circuit breaker detailed API (planned)
-- [Agent Reference](./agent-reference.md) - Agent configuration options (planned)
+- 📋 Guardrails API - Pre-flight validation API (planned, not yet written)
+- 📋 Circuit Breaker API - Circuit breaker detailed API (planned, not yet written)
+- 📋 Agent Reference - Agent configuration options (planned, not yet written)
 
 ### Guides
-- [Error Handling Guide](../guides/error-handling.md) - Error handling best practices (planned)
-- [Pattern Library Guide](../guides/pattern-library-guide.md) - Using patterns for error prevention
-- [Agent Configuration Guide](../guides/agent-configuration.md) - Configure self-correction
+- 📋 Error Handling Guide - Error handling best practices (planned, not yet written)
+- ✅ [Pattern Library Guide](../guides/pattern-library-guide.md) - Using patterns for error prevention
+- 📋 Agent Configuration Guide - Configure self-correction (planned, not yet written)
 
 ### Architecture Documentation
-- [Self-Correction Architecture](../architecture/self-correction.md) - Design decisions (planned)
-- [Agent System Design](../architecture/agent-system-design.md) - Overall agent architecture
+- 📋 Self-Correction Architecture - Design decisions (planned, not yet written)
+- ✅ [Agent System Design](../architecture/agent-system-design.md) - Overall agent architecture
 
 ### External Resources
 - [Circuit Breaker Pattern](https://martinfowler.com/bliki/CircuitBreaker.html) - Martin Fowler's article

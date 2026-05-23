@@ -41,6 +41,8 @@ tags: [parsing, extraction, pdf, excel, csv, document]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - document
 use_cases:
   - Extract text from PDF documents
   - Parse CSV and Excel files into structured data

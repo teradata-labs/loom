@@ -1,0 +1,402 @@
+# === METADATA START ===
+name: column_transformer
+title: "Pipeline Transform (TD_ColumnTransformer)"
+description: |
+  Apply multiple Fit/Transform operations to an input table in a single pass using
+  TD_ColumnTransformer. Instead of chaining individual Transform calls sequentially,
+  TD_ColumnTransformer accepts up to 10 different fit model tables as DIMENSION inputs
+  and applies all transformations at once.
+
+  Supported fit table inputs (all optional, include only what you need):
+  - BincodeFitTable: bin numeric columns (from TD_BinCodeFit)
+  - FunctionFitTable: apply numeric functions like log, sigmoid (from TD_FunctionFit)
+  - NonLinearCombineFitTable: generate non-linear feature combinations (from TD_NonLinearCombineFit)
+  - OneHotEncodingFitTable: one-hot encode categoricals (from TD_OneHotEncodingFit)
+  - OrdinalEncodingFitTable: ordinal encode categoricals (from TD_OrdinalEncodingFit)
+  - OutlierFilterFitTable: filter outliers (from TD_OutlierFilterFit)
+  - PolynomialFeaturesFitTable: generate polynomial features (from TD_PolynomialFeaturesFit)
+  - RowNormalizeFitTable: normalize rows (from TD_RowNormalizeFit)
+  - ScaleFitTable: scale numeric columns (from TD_ScaleFit)
+  - SimpleImputeFitTable: impute missing values (from TD_SimpleImputeFit)
+
+  This is the recommended approach for production preprocessing pipelines where
+  multiple transforms need to be applied consistently and efficiently.
+
+category: data_prep
+difficulty: intermediate
+teradata_function: TD_ColumnTransformer
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - feature_engineering
+  - pipeline
+use_cases:
+  # --- Use Case 1: Full Preprocessing Pipeline ---
+  - Apply imputation, scaling, and encoding in a single pass for ML preprocessing
+
+  # --- Use Case 2: Scoring Pipeline ---
+  - Apply the same preprocessing steps to new data using persisted fit models
+
+  # --- Use Case 3: Impute + Scale ---
+  - Impute missing values and scale numeric features in one operation
+
+  # --- Use Case 4: Scale + Encode ---
+  - Scale numeric features and one-hot encode categoricals together
+
+  # --- Use Case 5: Complex Feature Engineering ---
+  - Combine binning, polynomial features, and scaling in a single transform pass
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the source tables and fit models"
+    example: "ml_db"
+
+  # --- Parameter 2: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Maps to {{input_table}}; the data to transform
+    required: true
+    description: "Table to apply all transformations to"
+    example: "customer_features"
+
+  # --- Parameter 3: Scale Fit Table ---
+  - name: scale_fit_table
+    type: string
+    # LLM-HINT: Output of TD_ScaleFit; optional, include only if scaling is needed
+    required: false
+    description: "Persisted output of TD_ScaleFit (optional)"
+    example: "scale_fit_model"
+
+  # --- Parameter 4: OneHot Fit Table ---
+  - name: onehot_fit_table
+    type: string
+    # LLM-HINT: Output of TD_OneHotEncodingFit; optional, include only if encoding is needed
+    required: false
+    description: "Persisted output of TD_OneHotEncodingFit (optional)"
+    example: "onehot_fit_model"
+
+  # --- Parameter 5: Impute Fit Table ---
+  - name: impute_fit_table
+    type: string
+    # LLM-HINT: Output of TD_SimpleImputeFit; optional, include only if imputation is needed
+    required: false
+    description: "Persisted output of TD_SimpleImputeFit (optional)"
+    example: "impute_fit_model"
+
+  # --- Parameter 6: Bincode Fit Table ---
+  - name: bincode_fit_table
+    type: string
+    # LLM-HINT: Output of TD_BinCodeFit; optional, include only if binning is needed
+    required: false
+    description: "Persisted output of TD_BinCodeFit (optional)"
+    example: "bincode_fit_model"
+
+  # --- Parameter 7: Ordinal Fit Table ---
+  - name: ordinal_fit_table
+    type: string
+    # LLM-HINT: Output of TD_OrdinalEncodingFit; optional, include only if ordinal encoding is needed
+    required: false
+    description: "Persisted output of TD_OrdinalEncodingFit (optional)"
+    example: "ordinal_fit_model"
+
+  # --- Parameter 8: Row ID Column ---
+  - name: row_id_column
+    type: string
+    # LLM-HINT: Optional; adds a unique row ID column to the output for tracking
+    required: false
+    description: "Column name for auto-generated unique row IDs in output"
+    example: "row_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === IMPUTE_SCALE_ENCODE TEMPLATE ===
+  # LLM-HINT: Most common pipeline: impute nulls, scale numerics, encode categoricals in one pass
+  impute_scale_encode:
+    description: "Full preprocessing: impute missing values, scale numerics, one-hot encode categoricals"
+    sql: |
+      -- Step 1: Fit individual models (run once on training data)
+      -- Imputation fit
+      CREATE TABLE {{database}}.{{impute_fit_table}} AS (
+          SELECT * FROM TD_SimpleImputeFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{numeric_columns_quoted}})
+                  Statistic('MEDIAN')
+          ) AS t
+      ) WITH DATA;
+
+      -- Scale fit
+      CREATE TABLE {{database}}.{{scale_fit_table}} AS (
+          SELECT * FROM TD_ScaleFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{numeric_columns_quoted}})
+                  ScaleMethod('STD')
+          ) AS t
+      ) WITH DATA;
+
+      -- One-hot encoding fit
+      CREATE TABLE {{database}}.{{onehot_fit_table}} AS (
+          SELECT * FROM TD_OneHotEncodingFit(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IsInputDense('true')
+                  TargetColumn({{categorical_columns_quoted}})
+                  Approach('AUTO')
+                  CategoryCounts({{category_counts}})
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Apply all transforms in a single pass
+      SELECT * FROM TD_ColumnTransformer(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{impute_fit_table}}  AS SimpleImputeFitTable DIMENSION
+          ON {{database}}.{{scale_fit_table}}   AS ScaleFitTable DIMENSION
+          ON {{database}}.{{onehot_fit_table}}  AS OneHotEncodingFitTable DIMENSION
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - input_table
+      - impute_fit_table
+      - scale_fit_table
+      - onehot_fit_table
+      - numeric_columns_quoted
+      - categorical_columns_quoted
+      - category_counts
+
+  # === SCALE_AND_ENCODE TEMPLATE ===
+  # LLM-HINT: Scale numerics and encode categoricals; no imputation (assumes no NULLs)
+  scale_and_encode:
+    description: "Scale numeric features and one-hot encode categoricals in one pass"
+    sql: |
+      -- Apply scaling and encoding using pre-fitted models
+      SELECT * FROM TD_ColumnTransformer(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{scale_fit_table}}   AS ScaleFitTable DIMENSION
+          ON {{database}}.{{onehot_fit_table}}  AS OneHotEncodingFitTable DIMENSION
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - scale_fit_table
+      - onehot_fit_table
+
+  # === FULL_PIPELINE TEMPLATE ===
+  # LLM-HINT: All 10 fit tables shown; remove the ON clauses you do not need
+  full_pipeline:
+    description: "Full pipeline template with all possible fit table inputs (remove unused ones)"
+    sql: |
+      -- TD_ColumnTransformer with all possible fit table inputs
+      -- Remove any ON clause for transforms you do not need
+      SELECT * FROM TD_ColumnTransformer(
+          ON {{database}}.{{input_table}} AS InputTable
+          -- Numeric transforms
+          ON {{database}}.{{impute_fit_table}}       AS SimpleImputeFitTable DIMENSION
+          ON {{database}}.{{scale_fit_table}}        AS ScaleFitTable DIMENSION
+          ON {{database}}.{{bincode_fit_table}}      AS BincodeFitTable DIMENSION
+          ON {{database}}.{{function_fit_table}}     AS FunctionFitTable DIMENSION
+          ON {{database}}.{{rownorm_fit_table}}      AS RowNormalizeFitTable DIMENSION
+          -- Encoding transforms
+          ON {{database}}.{{onehot_fit_table}}       AS OneHotEncodingFitTable DIMENSION
+          ON {{database}}.{{ordinal_fit_table}}      AS OrdinalEncodingFitTable DIMENSION
+          -- Feature generation
+          ON {{database}}.{{poly_fit_table}}         AS PolynomialFeaturesFitTable DIMENSION
+          ON {{database}}.{{nlc_fit_table}}          AS NonLinearCombineFitTable DIMENSION
+          -- Outlier handling
+          ON {{database}}.{{outlier_fit_table}}      AS OutlierFilterFitTable DIMENSION
+          USING
+              FillRowIDColumnName('{{row_id_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+
+  # === SCORING_PIPELINE TEMPLATE ===
+  # LLM-HINT: Apply saved fit models to new production data for consistent preprocessing
+  scoring_pipeline:
+    description: "Apply pre-fitted transforms to new production data for scoring"
+    sql: |
+      -- Production scoring: apply the same preprocessing to new data
+      -- All fit tables were created during training; no refitting needed
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT * FROM TD_ColumnTransformer(
+              ON {{database}}.{{input_table}} AS InputTable
+              ON {{database}}.{{impute_fit_table}}  AS SimpleImputeFitTable DIMENSION
+              ON {{database}}.{{scale_fit_table}}   AS ScaleFitTable DIMENSION
+              ON {{database}}.{{onehot_fit_table}}  AS OneHotEncodingFitTable DIMENSION
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - input_table
+      - output_table
+      - impute_fit_table
+      - scale_fit_table
+      - onehot_fit_table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Impute + Scale + Encode ---
+  - name: "Customer Churn Preprocessing Pipeline"
+    description: "Preprocess customer data for churn prediction: impute NULLs, scale numeric features, encode categorical features"
+    parameters:
+      database: "churn_db"
+      training_table: "customers_train"
+      input_table: "customers_test"
+      impute_fit_table: "churn_impute_fit"
+      scale_fit_table: "churn_scale_fit"
+      onehot_fit_table: "churn_onehot_fit"
+      numeric_columns: ["tenure_months", "monthly_charges", "total_charges"]
+      categorical_columns: ["contract_type", "payment_method"]
+      category_counts: [3, 4]
+    expected_result: |
+      Pipeline processes test data in a single pass:
+
+      1. SimpleImputeFitTable: NULLs in tenure_months, monthly_charges, total_charges
+         replaced with training-data medians
+      2. ScaleFitTable: Z-score standardization using training-data mean/stddev
+      3. OneHotEncodingFitTable: contract_type and payment_method encoded as binary columns
+
+      Output columns:
+        tenure_months (scaled) | monthly_charges (scaled) | total_charges (scaled) |
+        contract_type_Monthly | contract_type_OneYear | contract_type_TwoYear |
+        payment_method_CreditCard | payment_method_BankTransfer | ...
+
+      Same fit models applied to both train and test for consistency.
+
+  # --- Example 2: Scale + Bin for Reporting ---
+  - name: "Transaction Feature Engineering"
+    description: "Scale transaction amounts and bin them into categories in one pass"
+    parameters:
+      database: "finance_db"
+      input_table: "transactions"
+      scale_fit_table: "txn_scale_fit"
+      bincode_fit_table: "txn_bincode_fit"
+    expected_result: |
+      TD_ColumnTransformer applies both transforms:
+
+      Input:
+        txn_id | amount
+        T001   | 25.50
+        T002   | 1250.00
+        T003   | 8500.00
+
+      Output (scaled + binned):
+        txn_id | amount_scaled | amount_binned
+        T001   | -0.95         | low
+        T002   |  0.22         | medium
+        T003   |  1.85         | high
+
+      Both fit models were created separately and combined here for single-pass application.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Fit Table Schema Mismatch ---
+  - error: "TD_ColumnTransformer fails with column not found or schema mismatch"
+    cause: "A fit table was created against a different set of columns than what the input table contains. The fit model references column names that do not exist in InputTable."
+    solution: "Verify that every column referenced in each fit model exists in the InputTable. Use the same column names across training and scoring tables."
+
+  # --- Error 2: Duplicate Transform Types ---
+  - error: "Multiple fit tables of the same type causes an error"
+    cause: "TD_ColumnTransformer allows only one of each fit table type, except NonLinearCombineFitTable (which allows multiple)."
+    solution: "Combine multiple transforms of the same type into a single fit. For example, scale all numeric columns in one TD_ScaleFit call rather than making separate fits per column."
+
+  # --- Error 3: Transform Order Confusion ---
+  - error: "Output values are unexpected; transforms applied in wrong order"
+    cause: "TD_ColumnTransformer applies transforms in a fixed internal order. If you expect imputation before scaling, confirm the function handles this correctly."
+    solution: "TD_ColumnTransformer handles the order internally. SimpleImputeFitTable runs before ScaleFitTable. If you need explicit ordering, chain individual Transform calls instead."
+
+  # --- Error 4: Missing Fit Table ---
+  - error: "Fit table referenced in ON clause does not exist"
+    cause: "The fit model table was created as VOLATILE and the session ended, or it was never created."
+    solution: "Always persist fit tables as permanent tables using CREATE TABLE ... WITH DATA. Verify tables exist before running TD_ColumnTransformer."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## TD_ColumnTransformer Best Practices
+
+  ### 1. Fit Models Separately, Transform Together
+  Run each Fit function separately on your training data and persist the results
+  as permanent tables. Then use TD_ColumnTransformer to apply all transforms in
+  a single pass. This gives you:
+  - Individual control over each transform's parameters
+  - Ability to update one transform without refitting all
+  - Auditability of each preprocessing step
+
+  ### 2. Use for Both Training and Scoring
+  ```sql
+  -- Training: fit + transform
+  -- (fit each model individually, then combine)
+  CREATE TABLE db.train_processed AS (
+      SELECT * FROM TD_ColumnTransformer(
+          ON db.train AS InputTable
+          ON db.impute_fit AS SimpleImputeFitTable DIMENSION
+          ON db.scale_fit AS ScaleFitTable DIMENSION
+          ON db.encode_fit AS OneHotEncodingFitTable DIMENSION
+      ) AS t
+  ) WITH DATA;
+
+  -- Scoring: same models, different data
+  SELECT * FROM TD_ColumnTransformer(
+      ON db.new_data AS InputTable
+      ON db.impute_fit AS SimpleImputeFitTable DIMENSION
+      ON db.scale_fit AS ScaleFitTable DIMENSION
+      ON db.encode_fit AS OneHotEncodingFitTable DIMENSION
+  ) AS t;
+  ```
+
+  ### 3. Only Include Fit Tables You Need
+  Every ON clause is optional. Include only the transforms your pipeline requires.
+  Fewer transforms = simpler queries and easier debugging.
+
+  ### 4. Use FillRowIDColumnName for Tracking
+  Add FillRowIDColumnName to generate a unique row ID in the output. This helps
+  trace transformed rows back to the original input, especially when column names
+  change through encoding.
+
+  ### 5. Version Your Fit Models
+  Name fit tables with version or date suffixes:
+  ```sql
+  CREATE TABLE db.scale_fit_v2_20260401 AS (...) WITH DATA;
+  ```
+  This enables model versioning and rollback if a new preprocessing step
+  degrades model performance.
+
+  ### 6. Validate Output Schema
+  After running TD_ColumnTransformer, verify the output has the expected columns:
+  ```sql
+  SELECT TOP 5 * FROM TD_ColumnTransformer(...) AS t;
+  ```
+  Check that all expected encoded, scaled, and imputed columns are present.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Feature Scaling ---
+  - scale_transform
+
+  # --- Pattern 2: One-Hot Encoding ---
+  - one_hot_encoding
+
+  # --- Pattern 3: Binning ---
+  - bincode
+
+  # --- Pattern 4: Fit/Transform Architecture ---
+  - fit_transform_pattern
+
+  # --- Pattern 5: SMOTE ---
+  - smote
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,233 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: teradata-vector-rag
+  title: Teradata Vector Search & RAG
+  description: End-to-end RAG workflow on Teradata Vantage — authorization, embedding generation, vector normalization, HNSW indexing, and similarity search
+  version: "1.0.0"
+  domain: teradata
+  author: loom
+  labels:
+    category: database
+    backend: teradata
+trigger:
+  slash_commands:
+    - /td-rag
+    - /td-vector
+  keywords:
+    - embeddings
+    - semantic search
+    - vector search
+    - RAG
+    - similarity
+    - nearest neighbor
+    - HNSW
+    - cosine similarity
+  intent_categories:
+    - analytics
+    - search
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Guide the user through the end-to-end Retrieval-Augmented Generation (RAG) workflow
+    using native Teradata Vantage functions. All vector operations run in-database.
+
+    ## Step 1: Create Authorization Objects
+
+    External embedding APIs require credentials stored as Teradata authorization objects.
+    These grant the database permission to call external services (Azure OpenAI, AWS Bedrock,
+    GCP Vertex AI, NVIDIA NIM, etc.).
+
+    ```sql
+    CREATE AUTHORIZATION my_auth
+    USER 'api_key_or_access_key'
+    PASSWORD 'secret_key';
+    ```
+
+    Grant access to the user or role that will call the embedding function:
+    ```sql
+    GRANT EXECUTE FUNCTION ON TD_SYSFNLIB.AI_TextEmbeddings TO my_user;
+    ```
+
+    For provider-specific authorization patterns (Azure, Bedrock, GCP, NIM):
+    - Topic: authorization-objects, llm-providers
+
+    ## Step 2: Generate Embeddings
+
+    Three approaches for generating embeddings in Teradata:
+
+    **Cloud API embeddings (AI_TextEmbeddings):**
+    ```sql
+    SELECT * FROM AI_TextEmbeddings(
+        ON my_table
+        USING
+            Content('text_column')
+            Authorization('my_auth')
+            Provider('Azure')
+            Model('text-embedding-ada-002')
+            OutputColumn('embedding')
+    ) AS t;
+    ```
+
+    **In-database ONNX embeddings (ONNXEmbeddings — BYOM):**
+    For air-gapped environments or when you want to avoid API calls. Load an ONNX
+    embedding model into a BYOM table, then score in-database:
+    - Topic: byom-model-loading, embeddings
+
+    **Pre-trained word embeddings (TD_WordEmbeddings):**
+    For lightweight embedding needs without external APIs.
+    - Topic: text-analytics
+
+    Persist embeddings to a table — never regenerate on every query:
+    ```sql
+    CREATE TABLE my_embeddings AS (
+        SELECT id, text_column, embedding
+        FROM AI_TextEmbeddings(...) AS t
+    ) WITH DATA;
+    ```
+
+    Use VECTOR or Vector32 data type for the embedding column.
+    - Topic: embeddings, data-types-casting
+
+    ## Step 3: Normalize Vectors
+
+    For cosine similarity search, vectors must be L2-normalized (unit length):
+
+    ```sql
+    SELECT * FROM TD_VectorNormalize(
+        ON my_embeddings
+        USING
+            TargetColumns('embedding')
+            Approach('UNITVECTOR')
+    ) AS t;
+    ```
+
+    After normalization, dot product equals cosine similarity — enabling efficient index use.
+    - Topic: data-prep (TD_VectorNormalize)
+
+    ## Step 4: Build HNSW Index
+
+    For approximate nearest neighbor search on large embedding tables, build an HNSW index:
+
+    ```sql
+    SELECT * FROM TD_HNSW(
+        ON my_normalized_embeddings AS InputTable
+        USING
+            IDColumn('id')
+            TargetColumn('embedding')
+            M(16)
+            efConstruction(200)
+            DistanceMetric('COSINE')
+            OUT TABLE IndexTable(my_hnsw_index)
+    ) AS t;
+    ```
+
+    Parameters:
+    - M: number of bi-directional links per element (higher = more accurate, more memory)
+    - efConstruction: search depth during build (higher = better index, slower build)
+    - DistanceMetric: COSINE, EUCLIDEAN, or INNER_PRODUCT
+    - Topic: vector-search
+
+    ## Step 5: Query with Similarity Search
+
+    **Approximate search with HNSW index (fast, for large tables):**
+    ```sql
+    SELECT * FROM TD_HNSWPredict(
+        ON (SELECT embedding FROM AI_TextEmbeddings(
+            ON (SELECT 'user query text' AS text_column) AS InputTable
+            USING ...
+        ) AS t) AS QueryTable
+        ON my_hnsw_index AS IndexTable DIMENSION
+        USING
+            IDColumn('id')
+            TopK(10)
+            efSearch(100)
+    ) AS dt;
+    ```
+
+    **Exact search with TD_VectorDistance (precise, for smaller tables):**
+    ```sql
+    SELECT * FROM TD_VectorDistance(
+        ON my_normalized_embeddings AS TargetTable
+        ON query_embedding AS ReferenceTable DIMENSION
+        USING
+            TargetIDColumn('id')
+            TargetFeatureColumns('embedding')
+            RefIDColumn('query_id')
+            RefFeatureColumns('embedding')
+            DistanceMeasure('COSINE')
+            TopK(10)
+    ) AS dt;
+    ```
+
+    - Topic: vector-search
+
+    ## Step 6: Assemble RAG Response
+
+    Once you have the top-K similar documents:
+    1. Join back to the source table to retrieve full text content
+    2. Pass the retrieved context to an LLM for answer generation
+    3. Return the answer with source references
+
+    ```sql
+    WITH similar AS (
+        SELECT * FROM TD_HNSWPredict(...) AS dt
+    )
+    SELECT s.similarity_score, d.text_column, d.metadata
+    FROM similar s
+    JOIN my_documents d ON s.id = d.id
+    ORDER BY s.similarity_score DESC;
+    ```
+
+    ## Choosing Between HNSW and VectorDistance
+    - TD_VectorDistance: exact results, no index needed. Use for tables under ~100K rows.
+    - TD_HNSW / TD_HNSWPredict: approximate results, much faster at scale. Use for 100K+ rows.
+    - For KMeans-based IVF pattern (partition then search): see vector-search topic.
+  constraints:
+    - Always create authorization objects before calling external embedding APIs
+    - Persist embeddings to a table — never regenerate on every query
+    - Normalize vectors (L2 / UNITVECTOR) before cosine similarity search
+    - Use HNSW index for tables over 100K rows — exact search does not scale
+    - Never return raw embedding vectors to the agent — return IDs, scores, and metadata
+    - Use VECTOR or Vector32 data type for embedding columns
+  output_format: |
+    ## RAG Pipeline Plan
+    **Embedding source**: [cloud API / ONNX / pre-trained]
+    **Index type**: [HNSW / exact / IVF]
+    **Table size**: [estimated row count]
+
+    ### Setup SQL
+    ```sql
+    -- authorization, embedding generation, normalization, index creation
+    ```
+
+    ### Query SQL
+    ```sql
+    -- similarity search with result assembly
+    ```
+
+    ### Notes
+    [Provider-specific details, parameter tuning guidance]
+  examples:
+    - user_input: "Set up semantic search over my product descriptions"
+      expected_output: "Create auth object -> Generate embeddings with AI_TextEmbeddings -> Normalize with TD_VectorNormalize -> Build HNSW index -> Query with TD_HNSWPredict"
+      explanation: "Full RAG pipeline using native functions — embeddings and search all run in-database"
+    - user_input: "I need to search 50K documents by meaning, not keywords"
+      expected_output: "Generate embeddings, normalize, use TD_VectorDistance for exact cosine similarity search (50K rows is within exact search range)"
+      explanation: "Under 100K rows, exact search is fast enough and gives precise results"
+tools:
+  required_tools: []
+  preferred_order:
+    - execute_sql
+    - explain_query
+    - get_syntax_help
+  excluded_tools: []
+  mcp_servers: []
+pattern_refs:
+  - teradata-vector-search
+  - authorization_objects
+skill_refs: []
+max_prompt_tokens: 0
+sticky: false
+backend: teradata

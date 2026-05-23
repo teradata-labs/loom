@@ -16,60 +16,75 @@ metadata:
 
 spec:
 
+  rom: "weaver"
+
+  # The weaver's instructions are deliberately short. The detailed
+  # how-to for each of the three creation flows lives in skills that
+  # activate only when relevant:
+  #   - weaver-presets        (slash: /preset)     scaffolds a single agent
+  #   - weaver-templates      (slash: /template)   scaffolds an N-agent workflow
+  #   - weaver-from-scratch   (slash: /from-scratch)  custom path when neither fits
+  # This keeps per-turn context small while making each creation path
+  # discoverable. The skills are auto-bound below.
   system_prompt: |
-    You are the Weaver, a meta-agent that creates agent and workflow YAML configurations.
-    You translate user requirements into Loom agent and workflow definitions.
+    Create agents, workflows, and skills for users via the agent_management
+    tool. Three flows are available; route the user to the right one:
 
-    ## Guidelines
+    1. Single agent in a common role → use the preset flow.
+       Hint phrases: "personal assistant", "research analyst", "SQL agent",
+       "creative writer", "UI / dashboard agent", "task automator",
+       "quick chat", "coordinator". Slash: /preset.
 
-    - Follow the YOUR Workflow section for best results.
-    - Use the agent_management tool to create, update, read, list, and validate agent/workflow YAMLs
-    - The agent_management tool automatically validates YAML and writes to the correct directories (agents/ or workflows/)
-    - When validation errors occur, read the error messages carefully and fix the YAML
+    2. Multi-agent workflow that matches a curated pattern → use the
+       template flow. Hint phrases: "research report", "data to dashboard",
+       "competitive intel", "data quality audit", "performance report",
+       "deep research". Slash: /template.
 
-    ## File Discovery
+    3. Anything that neither preset nor template covers → use the
+       from-scratch flow. Slash: /from-scratch.
 
-    - Use agent_management with action="list" to discover user's agents/workflows in $LOOM_DATA_DIR
-    - Use shell_execute to view canonical reference files ($LOOM_DATA_DIR/examples/reference)
-    - agent_management list automatically searches $LOOM_DATA_DIR/agents and $LOOM_DATA_DIR/workflows
+    Each flow has its own skill that loads detailed instructions and
+    JSON examples when the slash command or relevant keywords fire.
 
-    ## Workflow Creation
+    ## Tools
+    - agent_management: presets, apply_preset, templates, apply_template,
+      create_agent, update_agent, create_workflow, update_workflow,
+      create_skill, update_skill, read, list, validate, delete, discover.
+    - tool_search: discover registered tool names (do NOT guess).
+    - shell_execute: view reference YAMLs under $LOOM_DATA_DIR/examples/reference.
 
-    - For multi-agent workflows: Create agents FIRST, then workflow references them
-    - For orchestration workflows: Use type field (debate, pipeline, parallel, fork-join)
-    - Agent names in workflows must match existing .yaml filenames
-    - Use workflow-namespaced agents as described in the canonical reference files
-
-    ## LLM Configuration (IMPORTANT)
-
-    - **DO NOT include "llm" field** in agent configs unless user EXPLICITLY requests a specific provider/model
-    - Agents inherit the global LLM provider from server config
-    - Only add "llm" section if user says: "use anthropic", "use bedrock", "use gpt-4", etc.
-    - Default behavior: omit "llm" field entirely to use server default
-
-    ## YOUR Workflow
-    1. Assess the users' intent
-    2. If multi-agent system, determine workflow type: coordination (spec.entrypoint) for free-form collaboration, or orchestration (spec.type) for structured patterns like debate/pipeline/parallel
-    3. Use shell_execute to find a relevant example agent or workflow as inspiration
-    4. Find relevant tools for the agents you craft by using tool_search. If no relevant tools exist, give them tool_search and move on.
-    5. Create base agents with agent_management (action="create", type="agent") - one call per agent
-    6. Create workflow with agent_management (action="create", type="workflow") that references the agents
-    7. If validation errors occur, use the returned errors to fix the YAML, then retry
-    8. Create user documentation in workspace showing how to use what you built
-    9. Verify with agent_management (action="list") to confirm agents/workflows were created
-    10. use shell_execute to run `loom --help` to give the user EXACT commands on how to run their newly created agent.
-    11. let the user know that he can always come back to you for changes
+    ## House rules
+    - ALWAYS confirm choices with the user before mutating disk
+      (apply_preset, apply_template, create_*).
+    - NEVER use role-prompting in system prompts ("You are an expert...").
+      Give direct task instructions.
+    - NEVER set llm.provider on a created agent unless the user explicitly
+      asks for a specific model.
+    - NEVER list auto-injected tools (workspace, query_tool_result,
+      conversation_memory, session_memory, get_error_details, publish,
+      shared_memory_*, send_message) in tool lists.
 
   tools:
     - agent_management
     - shell_execute
     - tool_search
+    - task_board
 
   memory:
     type: sqlite
     max_history: 1000
     memory_compression:
       workload_profile: balanced
+    # Track the weaver's own work as kanban tasks. The slash-triggered
+    # skills (weaver-presets / weaver-templates / weaver-from-scratch)
+    # each emit a task_template that materialises onto this board so the
+    # weaver can claim → update → close each step as it goes. Skills'
+    # idempotency keys ({skill,session,step}) prevent re-emission across
+    # turns within the same session.
+    task_board:
+      enabled: true
+      default_board_id: weaver-board
+      context_budget_tokens: 600
 
   config:
     max_turns: 1000
@@ -77,10 +92,31 @@ spec:
     enable_self_correction: true
     max_context_tokens: 200000  # Make explicit
     reserved_output_tokens: 20000
+    skills:
+      enabled: true
+      tasks_enabled: true
+      skill_task_board_id: weaver-board
+      # Bind the three creation-flow skills declaratively. EAGER means
+      # the binding always resolves into discovery; the per-skill trigger
+      # (slash command + keywords + HYBRID mode) decides whether the
+      # skill activates this turn. weaver-creation stays ALWAYS-on for
+      # baseline YAML hygiene rules.
+      bindings:
+        - name: weaver-creation
+          mode: SKILL_BINDING_MODE_EAGER
+          priority: 100
+        - name: weaver-presets
+          mode: SKILL_BINDING_MODE_EAGER
+          priority: 80
+        - name: weaver-templates
+          mode: SKILL_BINDING_MODE_EAGER
+          priority: 80
+        - name: weaver-from-scratch
+          mode: SKILL_BINDING_MODE_EAGER
+          priority: 60
     patterns:
       enabled: true                 # Enable pattern-guided learning
       use_llm_classifier: true     # Use LLM-based classifier (more accurate, ~300ms latency)
       min_confidence: 0.75          # Confidence threshold for pattern selection
       max_patterns_per_turn: 1      # Inject one pattern per turn
       enable_tracking: true         # Track pattern effectiveness for learning
-

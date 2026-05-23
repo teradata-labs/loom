@@ -94,6 +94,60 @@ func (MergeStrategy) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{0}
 }
 
+// ScheduledSessionMode controls session lifecycle for scheduled workflow executions.
+type ScheduledSessionMode int32
+
+const (
+	// Default: each execution starts fresh (random workflow_id).
+	ScheduledSessionMode_SCHEDULED_SESSION_MODE_UNSPECIFIED ScheduledSessionMode = 0
+	// Each cron tick creates fresh sessions for all agents.
+	ScheduledSessionMode_SCHEDULED_SESSION_MODE_NEW ScheduledSessionMode = 1
+	// Each cron tick resumes agent sessions from the previous execution.
+	// The scheduler sets workflow_id to a stable value derived from the schedule ID.
+	ScheduledSessionMode_SCHEDULED_SESSION_MODE_RESUME ScheduledSessionMode = 2
+)
+
+// Enum value maps for ScheduledSessionMode.
+var (
+	ScheduledSessionMode_name = map[int32]string{
+		0: "SCHEDULED_SESSION_MODE_UNSPECIFIED",
+		1: "SCHEDULED_SESSION_MODE_NEW",
+		2: "SCHEDULED_SESSION_MODE_RESUME",
+	}
+	ScheduledSessionMode_value = map[string]int32{
+		"SCHEDULED_SESSION_MODE_UNSPECIFIED": 0,
+		"SCHEDULED_SESSION_MODE_NEW":         1,
+		"SCHEDULED_SESSION_MODE_RESUME":      2,
+	}
+)
+
+func (x ScheduledSessionMode) Enum() *ScheduledSessionMode {
+	p := new(ScheduledSessionMode)
+	*p = x
+	return p
+}
+
+func (x ScheduledSessionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ScheduledSessionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_orchestration_proto_enumTypes[1].Descriptor()
+}
+
+func (ScheduledSessionMode) Type() protoreflect.EnumType {
+	return &file_loom_v1_orchestration_proto_enumTypes[1]
+}
+
+func (x ScheduledSessionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ScheduledSessionMode.Descriptor instead.
+func (ScheduledSessionMode) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{1}
+}
+
 // WorkflowPattern defines orchestration patterns for multi-agent coordination.
 // This message uses a oneof to represent different workflow patterns,
 // enabling type-safe pattern selection and composition.
@@ -110,7 +164,13 @@ type WorkflowPattern struct {
 	//	*WorkflowPattern_PairProgramming
 	//	*WorkflowPattern_TeacherStudent
 	//	*WorkflowPattern_Iterative
-	Pattern       isWorkflowPattern_Pattern `protobuf_oneof:"pattern"`
+	Pattern isWorkflowPattern_Pattern `protobuf_oneof:"pattern"`
+	// Stable workflow ID for session determinism across scheduled executions.
+	// If set, executors use this as the workflowID prefix instead of generating a random UUID.
+	// This makes agent session IDs deterministic (e.g., "{workflow_id}-stage1-{agent_id}"),
+	// enabling conversation continuity across cron ticks.
+	// If empty, executors generate a random UUID (default behavior).
+	WorkflowId    string `protobuf:"bytes,10,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -231,6 +291,13 @@ func (x *WorkflowPattern) GetIterative() *IterativeWorkflowPattern {
 		}
 	}
 	return nil
+}
+
+func (x *WorkflowPattern) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
 }
 
 type isWorkflowPattern_Pattern interface {
@@ -386,8 +453,10 @@ type ForkJoinPattern struct {
 	MergeStrategy MergeStrategy `protobuf:"varint,3,opt,name=merge_strategy,json=mergeStrategy,proto3,enum=loom.v1.MergeStrategy" json:"merge_strategy,omitempty"`
 	// Optional: Timeout for all parallel executions
 	TimeoutSeconds int32 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Optional: Output validation policy applied to each agent's output.
+	AgentOutputPolicy *OutputPolicy `protobuf:"bytes,5,opt,name=agent_output_policy,json=agentOutputPolicy,proto3" json:"agent_output_policy,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ForkJoinPattern) Reset() {
@@ -446,6 +515,13 @@ func (x *ForkJoinPattern) GetTimeoutSeconds() int32 {
 		return x.TimeoutSeconds
 	}
 	return 0
+}
+
+func (x *ForkJoinPattern) GetAgentOutputPolicy() *OutputPolicy {
+	if x != nil {
+		return x.AgentOutputPolicy
+	}
+	return nil
 }
 
 // PipelinePattern executes agents sequentially where each agent's output
@@ -520,10 +596,23 @@ type PipelineStage struct {
 	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	// Prompt template (can include {{previous}} or {{history}} placeholders)
 	PromptTemplate string `protobuf:"bytes,2,opt,name=prompt_template,json=promptTemplate,proto3" json:"prompt_template,omitempty"`
-	// Optional: Validation function to check output before proceeding
+	// Optional: LLM-based validation — asks an LLM if the output meets criteria.
+	// Use {{output}} placeholder to reference the stage output.
 	ValidationPrompt string `protobuf:"bytes,3,opt,name=validation_prompt,json=validationPrompt,proto3" json:"validation_prompt,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Optional: Retry policy when validation fails (schema or LLM validation).
+	// Each retry includes the failure reason and expected format in the prompt.
+	// Each retry uses a fresh session ID.
+	RetryPolicy *OutputRetryPolicy `protobuf:"bytes,4,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
+	// Optional: JSON Schema for validating stage output.
+	// Instant, free, deterministic validation — no LLM call required.
+	// When both output_schema and validation_prompt are set, schema is checked
+	// first (cheap), then validation_prompt only if schema passes (semantic check).
+	OutputSchema string `protobuf:"bytes,5,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
+	// Optional: Unified output validation policy. When set, takes precedence
+	// over the legacy validation_prompt + output_schema + retry_policy fields.
+	OutputPolicy  *OutputPolicy `protobuf:"bytes,6,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PipelineStage) Reset() {
@@ -575,6 +664,27 @@ func (x *PipelineStage) GetValidationPrompt() string {
 		return x.ValidationPrompt
 	}
 	return ""
+}
+
+func (x *PipelineStage) GetRetryPolicy() *OutputRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
+	}
+	return nil
+}
+
+func (x *PipelineStage) GetOutputSchema() string {
+	if x != nil {
+		return x.OutputSchema
+	}
+	return ""
+}
+
+func (x *PipelineStage) GetOutputPolicy() *OutputPolicy {
+	if x != nil {
+		return x.OutputPolicy
+	}
+	return nil
 }
 
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
@@ -1005,7 +1115,9 @@ type AgentTask struct {
 	// Task-specific prompt
 	Prompt string `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	// Optional: Task metadata
-	Metadata      map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Metadata map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional: Output validation policy for this task's output.
+	OutputPolicy  *OutputPolicy `protobuf:"bytes,4,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1061,6 +1173,13 @@ func (x *AgentTask) GetMetadata() map[string]string {
 	return nil
 }
 
+func (x *AgentTask) GetOutputPolicy() *OutputPolicy {
+	if x != nil {
+		return x.OutputPolicy
+	}
+	return nil
+}
+
 // ConditionalPattern routes execution based on an agent's decision.
 // A classifier agent evaluates the condition and selects the workflow branch.
 type ConditionalPattern struct {
@@ -1073,6 +1192,10 @@ type ConditionalPattern struct {
 	Branches map[string]*WorkflowPattern `protobuf:"bytes,3,rep,name=branches,proto3" json:"branches,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional: Default branch if condition doesn't match any branch
 	DefaultBranch *WorkflowPattern `protobuf:"bytes,4,opt,name=default_branch,json=defaultBranch,proto3" json:"default_branch,omitempty"`
+	// Optional: Retry policy when condition output doesn't match any branch key.
+	// On retry, the agent receives a prompt listing valid branch keys and its
+	// previous failed output. Each retry uses a fresh session ID.
+	RetryPolicy   *OutputRetryPolicy `protobuf:"bytes,5,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1131,6 +1254,13 @@ func (x *ConditionalPattern) GetBranches() map[string]*WorkflowPattern {
 func (x *ConditionalPattern) GetDefaultBranch() *WorkflowPattern {
 	if x != nil {
 		return x.DefaultBranch
+	}
+	return nil
+}
+
+func (x *ConditionalPattern) GetRetryPolicy() *OutputRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
 	}
 	return nil
 }
@@ -1926,7 +2056,9 @@ type ScheduleConfig struct {
 	// Default: 3600 (1 hour)
 	MaxExecutionSeconds int32 `protobuf:"varint,5,opt,name=max_execution_seconds,json=maxExecutionSeconds,proto3" json:"max_execution_seconds,omitempty"`
 	// Variables to pass to workflow execution
-	Variables     map[string]string `protobuf:"bytes,6,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Variables map[string]string `protobuf:"bytes,6,rep,name=variables,proto3" json:"variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Session mode for workflow agents (NEW = fresh each tick, RESUME = continue previous)
+	SessionMode   ScheduledSessionMode `protobuf:"varint,7,opt,name=session_mode,json=sessionMode,proto3,enum=loom.v1.ScheduledSessionMode" json:"session_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2003,6 +2135,13 @@ func (x *ScheduleConfig) GetVariables() map[string]string {
 	return nil
 }
 
+func (x *ScheduleConfig) GetSessionMode() ScheduledSessionMode {
+	if x != nil {
+		return x.SessionMode
+	}
+	return ScheduledSessionMode_SCHEDULED_SESSION_MODE_UNSPECIFIED
+}
+
 // ScheduledWorkflow represents a workflow with automatic execution schedule.
 // Schedules can be created via YAML files or RPC calls.
 type ScheduledWorkflow struct {
@@ -2028,9 +2167,11 @@ type ScheduledWorkflow struct {
 	// Created timestamp (Unix seconds)
 	CreatedAt int64 `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// Last updated timestamp (Unix seconds)
-	UpdatedAt     int64 `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	UpdatedAt int64 `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Workflow ID used in the last execution (for RESUME mode tracking)
+	LastWorkflowId string `protobuf:"bytes,12,opt,name=last_workflow_id,json=lastWorkflowId,proto3" json:"last_workflow_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ScheduledWorkflow) Reset() {
@@ -2140,6 +2281,13 @@ func (x *ScheduledWorkflow) GetUpdatedAt() int64 {
 	return 0
 }
 
+func (x *ScheduledWorkflow) GetLastWorkflowId() string {
+	if x != nil {
+		return x.LastWorkflowId
+	}
+	return ""
+}
+
 // ScheduleStats tracks execution statistics for a scheduled workflow.
 type ScheduleStats struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2235,7 +2383,7 @@ var File_loom_v1_orchestration_proto protoreflect.FileDescriptor
 
 const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\n" +
-	"\x1bloom/v1/orchestration.proto\x12\aloom.v1\x1a\x1bloom/v1/collaboration.proto\"\xc3\x04\n" +
+	"\x1bloom/v1/orchestration.proto\x12\aloom.v1\x1a\x1bloom/v1/collaboration.proto\"\xe4\x04\n" +
 	"\x0fWorkflowPattern\x120\n" +
 	"\x06debate\x18\x01 \x01(\v2\x16.loom.v1.DebatePatternH\x00R\x06debate\x127\n" +
 	"\tfork_join\x18\x02 \x01(\v2\x18.loom.v1.ForkJoinPatternH\x00R\bforkJoin\x126\n" +
@@ -2245,27 +2393,34 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x05swarm\x18\x06 \x01(\v2\x15.loom.v1.SwarmPatternH\x00R\x05swarm\x12L\n" +
 	"\x10pair_programming\x18\a \x01(\v2\x1f.loom.v1.PairProgrammingPatternH\x00R\x0fpairProgramming\x12I\n" +
 	"\x0fteacher_student\x18\b \x01(\v2\x1e.loom.v1.TeacherStudentPatternH\x00R\x0eteacherStudent\x12A\n" +
-	"\titerative\x18\t \x01(\v2!.loom.v1.IterativeWorkflowPatternH\x00R\titerativeB\t\n" +
+	"\titerative\x18\t \x01(\v2!.loom.v1.IterativeWorkflowPatternH\x00R\titerative\x12\x1f\n" +
+	"\vworkflow_id\x18\n" +
+	" \x01(\tR\n" +
+	"workflowIdB\t\n" +
 	"\apattern\"\xc7\x01\n" +
 	"\rDebatePattern\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1b\n" +
 	"\tagent_ids\x18\x02 \x03(\tR\bagentIds\x12\x16\n" +
 	"\x06rounds\x18\x03 \x01(\x05R\x06rounds\x12=\n" +
 	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x16.loom.v1.MergeStrategyR\rmergeStrategy\x12,\n" +
-	"\x12moderator_agent_id\x18\x05 \x01(\tR\x10moderatorAgentId\"\xae\x01\n" +
+	"\x12moderator_agent_id\x18\x05 \x01(\tR\x10moderatorAgentId\"\xf5\x01\n" +
 	"\x0fForkJoinPattern\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x1b\n" +
 	"\tagent_ids\x18\x02 \x03(\tR\bagentIds\x12=\n" +
 	"\x0emerge_strategy\x18\x03 \x01(\x0e2\x16.loom.v1.MergeStrategyR\rmergeStrategy\x12'\n" +
-	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\"\x94\x01\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12E\n" +
+	"\x13agent_output_policy\x18\x05 \x01(\v2\x15.loom.v1.OutputPolicyR\x11agentOutputPolicy\"\x94\x01\n" +
 	"\x0fPipelinePattern\x12%\n" +
 	"\x0einitial_prompt\x18\x01 \x01(\tR\rinitialPrompt\x12.\n" +
 	"\x06stages\x18\x02 \x03(\v2\x16.loom.v1.PipelineStageR\x06stages\x12*\n" +
-	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\x80\x01\n" +
+	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\xa0\x02\n" +
 	"\rPipelineStage\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12'\n" +
 	"\x0fprompt_template\x18\x02 \x01(\tR\x0epromptTemplate\x12+\n" +
-	"\x11validation_prompt\x18\x03 \x01(\tR\x10validationPrompt\"\x86\x02\n" +
+	"\x11validation_prompt\x18\x03 \x01(\tR\x10validationPrompt\x12=\n" +
+	"\fretry_policy\x18\x04 \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\x12#\n" +
+	"\routput_schema\x18\x05 \x01(\tR\foutputSchema\x12:\n" +
+	"\routput_policy\x18\x06 \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\"\x86\x02\n" +
 	"\x18IterativeWorkflowPattern\x124\n" +
 	"\bpipeline\x18\x01 \x01(\v2\x18.loom.v1.PipelinePatternR\bpipeline\x12%\n" +
 	"\x0emax_iterations\x18\x02 \x01(\x05R\rmaxIterations\x12=\n" +
@@ -2300,19 +2455,21 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x0fParallelPattern\x12(\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x12.loom.v1.AgentTaskR\x05tasks\x12=\n" +
 	"\x0emerge_strategy\x18\x02 \x01(\x0e2\x16.loom.v1.MergeStrategyR\rmergeStrategy\x12'\n" +
-	"\x0ftimeout_seconds\x18\x03 \x01(\x05R\x0etimeoutSeconds\"\xb9\x01\n" +
+	"\x0ftimeout_seconds\x18\x03 \x01(\x05R\x0etimeoutSeconds\"\xf5\x01\n" +
 	"\tAgentTask\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12<\n" +
-	"\bmetadata\x18\x03 \x03(\v2 .loom.v1.AgentTask.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\x03 \x03(\v2 .loom.v1.AgentTask.MetadataEntryR\bmetadata\x12:\n" +
+	"\routput_policy\x18\x04 \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8b\x03\n" +
 	"\x12ConditionalPattern\x12,\n" +
 	"\x12condition_agent_id\x18\x01 \x01(\tR\x10conditionAgentId\x12)\n" +
 	"\x10condition_prompt\x18\x02 \x01(\tR\x0fconditionPrompt\x12E\n" +
 	"\bbranches\x18\x03 \x03(\v2).loom.v1.ConditionalPattern.BranchesEntryR\bbranches\x12?\n" +
-	"\x0edefault_branch\x18\x04 \x01(\v2\x18.loom.v1.WorkflowPatternR\rdefaultBranch\x1aU\n" +
+	"\x0edefault_branch\x18\x04 \x01(\v2\x18.loom.v1.WorkflowPatternR\rdefaultBranch\x12=\n" +
+	"\fretry_policy\x18\x05 \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\x1aU\n" +
 	"\rBranchesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12.\n" +
 	"\x05value\x18\x02 \x01(\v2\x18.loom.v1.WorkflowPatternR\x05value:\x028\x01\"\xfe\x06\n" +
@@ -2393,17 +2550,18 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"m\n" +
 	"\x17ExecuteWorkflowResponse\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12/\n" +
-	"\x06result\x18\x02 \x01(\v2\x17.loom.v1.WorkflowResultR\x06result\"\xba\x02\n" +
+	"\x06result\x18\x02 \x01(\v2\x17.loom.v1.WorkflowResultR\x06result\"\xfc\x02\n" +
 	"\x0eScheduleConfig\x12\x12\n" +
 	"\x04cron\x18\x01 \x01(\tR\x04cron\x12\x1a\n" +
 	"\btimezone\x18\x02 \x01(\tR\btimezone\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12&\n" +
 	"\x0fskip_if_running\x18\x04 \x01(\bR\rskipIfRunning\x122\n" +
 	"\x15max_execution_seconds\x18\x05 \x01(\x05R\x13maxExecutionSeconds\x12D\n" +
-	"\tvariables\x18\x06 \x03(\v2&.loom.v1.ScheduleConfig.VariablesEntryR\tvariables\x1a<\n" +
+	"\tvariables\x18\x06 \x03(\v2&.loom.v1.ScheduleConfig.VariablesEntryR\tvariables\x12@\n" +
+	"\fsession_mode\x18\a \x01(\x0e2\x1d.loom.v1.ScheduledSessionModeR\vsessionMode\x1a<\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc4\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xee\x03\n" +
 	"\x11ScheduledWorkflow\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
 	"\rworkflow_name\x18\x02 \x01(\tR\fworkflowName\x12\x1b\n" +
@@ -2418,7 +2576,8 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\x03R\tupdatedAt\"\x8b\x02\n" +
+	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12(\n" +
+	"\x10last_workflow_id\x18\f \x01(\tR\x0elastWorkflowId\"\x8b\x02\n" +
 	"\rScheduleStats\x12)\n" +
 	"\x10total_executions\x18\x01 \x01(\x05R\x0ftotalExecutions\x123\n" +
 	"\x15successful_executions\x18\x02 \x01(\x05R\x14successfulExecutions\x12+\n" +
@@ -2436,7 +2595,11 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\vCONCATENATE\x10\x03\x12\t\n" +
 	"\x05FIRST\x10\x04\x12\b\n" +
 	"\x04BEST\x10\x05\x12\v\n" +
-	"\aSUMMARY\x10\x06B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\aSUMMARY\x10\x06*\x81\x01\n" +
+	"\x14ScheduledSessionMode\x12&\n" +
+	"\"SCHEDULED_SESSION_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aSCHEDULED_SESSION_MODE_NEW\x10\x01\x12!\n" +
+	"\x1dSCHEDULED_SESSION_MODE_RESUME\x10\x02B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_orchestration_proto_rawDescOnce sync.Once
@@ -2450,100 +2613,109 @@ func file_loom_v1_orchestration_proto_rawDescGZIP() []byte {
 	return file_loom_v1_orchestration_proto_rawDescData
 }
 
-var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_loom_v1_orchestration_proto_goTypes = []any{
 	(MergeStrategy)(0),               // 0: loom.v1.MergeStrategy
-	(*WorkflowPattern)(nil),          // 1: loom.v1.WorkflowPattern
-	(*DebatePattern)(nil),            // 2: loom.v1.DebatePattern
-	(*ForkJoinPattern)(nil),          // 3: loom.v1.ForkJoinPattern
-	(*PipelinePattern)(nil),          // 4: loom.v1.PipelinePattern
-	(*PipelineStage)(nil),            // 5: loom.v1.PipelineStage
-	(*IterativeWorkflowPattern)(nil), // 6: loom.v1.IterativeWorkflowPattern
-	(*RestartPolicy)(nil),            // 7: loom.v1.RestartPolicy
-	(*RestartRequest)(nil),           // 8: loom.v1.RestartRequest
-	(*RestartResponse)(nil),          // 9: loom.v1.RestartResponse
-	(*ParallelPattern)(nil),          // 10: loom.v1.ParallelPattern
-	(*AgentTask)(nil),                // 11: loom.v1.AgentTask
-	(*ConditionalPattern)(nil),       // 12: loom.v1.ConditionalPattern
-	(*WorkflowResult)(nil),           // 13: loom.v1.WorkflowResult
-	(*DebateResult)(nil),             // 14: loom.v1.DebateResult
-	(*AgentResult)(nil),              // 15: loom.v1.AgentResult
-	(*AgentExecutionCost)(nil),       // 16: loom.v1.AgentExecutionCost
-	(*WorkflowCost)(nil),             // 17: loom.v1.WorkflowCost
-	(*WorkflowExecution)(nil),        // 18: loom.v1.WorkflowExecution
-	(*ExecuteWorkflowRequest)(nil),   // 19: loom.v1.ExecuteWorkflowRequest
-	(*ExecuteWorkflowResponse)(nil),  // 20: loom.v1.ExecuteWorkflowResponse
-	(*ScheduleConfig)(nil),           // 21: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),        // 22: loom.v1.ScheduledWorkflow
-	(*ScheduleStats)(nil),            // 23: loom.v1.ScheduleStats
-	nil,                              // 24: loom.v1.RestartRequest.ParametersEntry
-	nil,                              // 25: loom.v1.AgentTask.MetadataEntry
-	nil,                              // 26: loom.v1.ConditionalPattern.BranchesEntry
-	nil,                              // 27: loom.v1.WorkflowResult.MetadataEntry
-	nil,                              // 28: loom.v1.WorkflowResult.ModelsUsedEntry
-	nil,                              // 29: loom.v1.AgentResult.MetadataEntry
-	nil,                              // 30: loom.v1.WorkflowCost.AgentCostsUsdEntry
-	nil,                              // 31: loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	nil,                              // 32: loom.v1.ScheduleConfig.VariablesEntry
-	(*SwarmPattern)(nil),             // 33: loom.v1.SwarmPattern
-	(*PairProgrammingPattern)(nil),   // 34: loom.v1.PairProgrammingPattern
-	(*TeacherStudentPattern)(nil),    // 35: loom.v1.TeacherStudentPattern
-	(*SwarmResult)(nil),              // 36: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),    // 37: loom.v1.PairProgrammingResult
-	(*TeacherStudentResult)(nil),     // 38: loom.v1.TeacherStudentResult
-	(*CollaborationMetrics)(nil),     // 39: loom.v1.CollaborationMetrics
-	(*DebateRound)(nil),              // 40: loom.v1.DebateRound
+	(ScheduledSessionMode)(0),        // 1: loom.v1.ScheduledSessionMode
+	(*WorkflowPattern)(nil),          // 2: loom.v1.WorkflowPattern
+	(*DebatePattern)(nil),            // 3: loom.v1.DebatePattern
+	(*ForkJoinPattern)(nil),          // 4: loom.v1.ForkJoinPattern
+	(*PipelinePattern)(nil),          // 5: loom.v1.PipelinePattern
+	(*PipelineStage)(nil),            // 6: loom.v1.PipelineStage
+	(*IterativeWorkflowPattern)(nil), // 7: loom.v1.IterativeWorkflowPattern
+	(*RestartPolicy)(nil),            // 8: loom.v1.RestartPolicy
+	(*RestartRequest)(nil),           // 9: loom.v1.RestartRequest
+	(*RestartResponse)(nil),          // 10: loom.v1.RestartResponse
+	(*ParallelPattern)(nil),          // 11: loom.v1.ParallelPattern
+	(*AgentTask)(nil),                // 12: loom.v1.AgentTask
+	(*ConditionalPattern)(nil),       // 13: loom.v1.ConditionalPattern
+	(*WorkflowResult)(nil),           // 14: loom.v1.WorkflowResult
+	(*DebateResult)(nil),             // 15: loom.v1.DebateResult
+	(*AgentResult)(nil),              // 16: loom.v1.AgentResult
+	(*AgentExecutionCost)(nil),       // 17: loom.v1.AgentExecutionCost
+	(*WorkflowCost)(nil),             // 18: loom.v1.WorkflowCost
+	(*WorkflowExecution)(nil),        // 19: loom.v1.WorkflowExecution
+	(*ExecuteWorkflowRequest)(nil),   // 20: loom.v1.ExecuteWorkflowRequest
+	(*ExecuteWorkflowResponse)(nil),  // 21: loom.v1.ExecuteWorkflowResponse
+	(*ScheduleConfig)(nil),           // 22: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),        // 23: loom.v1.ScheduledWorkflow
+	(*ScheduleStats)(nil),            // 24: loom.v1.ScheduleStats
+	nil,                              // 25: loom.v1.RestartRequest.ParametersEntry
+	nil,                              // 26: loom.v1.AgentTask.MetadataEntry
+	nil,                              // 27: loom.v1.ConditionalPattern.BranchesEntry
+	nil,                              // 28: loom.v1.WorkflowResult.MetadataEntry
+	nil,                              // 29: loom.v1.WorkflowResult.ModelsUsedEntry
+	nil,                              // 30: loom.v1.AgentResult.MetadataEntry
+	nil,                              // 31: loom.v1.WorkflowCost.AgentCostsUsdEntry
+	nil,                              // 32: loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	nil,                              // 33: loom.v1.ScheduleConfig.VariablesEntry
+	(*SwarmPattern)(nil),             // 34: loom.v1.SwarmPattern
+	(*PairProgrammingPattern)(nil),   // 35: loom.v1.PairProgrammingPattern
+	(*TeacherStudentPattern)(nil),    // 36: loom.v1.TeacherStudentPattern
+	(*OutputPolicy)(nil),             // 37: loom.v1.OutputPolicy
+	(*OutputRetryPolicy)(nil),        // 38: loom.v1.OutputRetryPolicy
+	(*SwarmResult)(nil),              // 39: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),    // 40: loom.v1.PairProgrammingResult
+	(*TeacherStudentResult)(nil),     // 41: loom.v1.TeacherStudentResult
+	(*CollaborationMetrics)(nil),     // 42: loom.v1.CollaborationMetrics
+	(*DebateRound)(nil),              // 43: loom.v1.DebateRound
 }
 var file_loom_v1_orchestration_proto_depIdxs = []int32{
-	2,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
-	3,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
-	4,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	10, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
-	12, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
-	33, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
-	34, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
-	35, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
-	6,  // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
+	3,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
+	4,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
+	5,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	11, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
+	13, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
+	34, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
+	35, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
+	36, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
+	7,  // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
 	0,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
 	0,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	5,  // 11: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
-	4,  // 12: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	7,  // 13: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
-	24, // 14: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
-	11, // 15: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
-	0,  // 16: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	25, // 17: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
-	26, // 18: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
-	1,  // 19: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
-	15, // 20: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
-	27, // 21: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
-	17, // 22: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
-	14, // 23: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
-	36, // 24: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
-	37, // 25: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
-	38, // 26: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
-	39, // 27: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
-	28, // 28: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
-	40, // 29: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
-	29, // 30: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
-	16, // 31: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
-	30, // 32: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
-	1,  // 33: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
-	13, // 34: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
-	1,  // 35: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	31, // 36: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	13, // 37: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
-	32, // 38: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
-	1,  // 39: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
-	21, // 40: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
-	23, // 41: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
-	1,  // 42: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
-	43, // [43:43] is the sub-list for method output_type
-	43, // [43:43] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	37, // 11: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
+	6,  // 12: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
+	38, // 13: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	37, // 14: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
+	5,  // 15: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	8,  // 16: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
+	25, // 17: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
+	12, // 18: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
+	0,  // 19: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	26, // 20: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
+	37, // 21: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
+	27, // 22: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
+	2,  // 23: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
+	38, // 24: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	16, // 25: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
+	28, // 26: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
+	18, // 27: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
+	15, // 28: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
+	39, // 29: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
+	40, // 30: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
+	41, // 31: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
+	42, // 32: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
+	29, // 33: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
+	43, // 34: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
+	30, // 35: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
+	17, // 36: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
+	31, // 37: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
+	2,  // 38: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
+	14, // 39: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
+	2,  // 40: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	32, // 41: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	14, // 42: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
+	33, // 43: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
+	1,  // 44: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
+	2,  // 45: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
+	22, // 46: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
+	24, // 47: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
+	2,  // 48: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
+	49, // [49:49] is the sub-list for method output_type
+	49, // [49:49] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_orchestration_proto_init() }
@@ -2574,7 +2746,7 @@ func file_loom_v1_orchestration_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_orchestration_proto_rawDesc), len(file_loom_v1_orchestration_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   0,

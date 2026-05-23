@@ -19,14 +19,20 @@ import (
 	"sync"
 	"time"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -102,8 +108,28 @@ type Agent struct {
 	// Pattern orchestration
 	orchestrator *patterns.Orchestrator
 
-	// Skill orchestration
+	// Skill orchestration. The skillOrchestrator manages activation lifecycle
+	// and prompt injection. The discovery component (when present) is the
+	// new entry point introduced by the skills overhaul: it composes
+	// binding resolution, the hierarchical PageIndex router, and the FTS5
+	// fallback. When discovery is nil, runConversationLoop falls back to
+	// the legacy MatchSkills filter path for backward compatibility.
 	skillOrchestrator *skills.Orchestrator
+	skillDiscovery    *discovery.Discovery
+	// skillTaskEmitter materializes tasks for newly-activated skills onto
+	// the agent's task board. nil means skill activations do not emit tasks
+	// (legacy behavior).
+	skillTaskEmitter *skilltasks.Emitter
+	// skillsTurnState tracks which skills were activated in the current
+	// turn so phase D can emit tasks only for the newly-activated set.
+	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
+
+	// End-of-turn hygiene enforcement for skill-emitted tasks. Constructed
+	// when both skillOrchestrator and taskManager are present; runs at the
+	// conversation-loop return path to audit IN_PROGRESS / BLOCKED /
+	// OPEN-unstarted tasks left dirty by an active skill.
+	hygieneAuditor  *hygiene.Auditor
+	hygieneEnforcer *hygiene.Enforcer
 
 	// Inter-agent communication (optional)
 	refStore     communication.ReferenceStore // Reference storage for agent-to-agent communication
@@ -125,6 +151,13 @@ type Agent struct {
 	// SQL result store for queryable large SQL results
 	sqlResultStore storage.ResultStore
 
+	// Configurable shared memory threshold for large tool results.
+	// -1 = use storage.DefaultSharedMemoryThreshold; 0 = always reference; >0 = byte threshold
+	sharedMemoryThreshold int64
+
+	// Maximum tool results to keep in conversation kernel. 0 = use default (5).
+	maxToolResults int
+
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
@@ -144,6 +177,26 @@ type Agent struct {
 	// Lazy tool sets: registered only when trigger(userMessage) returns true.
 	// Guarded by a.mu.
 	lazyToolSets []lazyToolSet
+
+	// Graph-backed episodic memory (optional).
+	graphMemoryStore  memory.GraphMemoryStore
+	graphMemoryConfig *loomv1.GraphMemoryConfig
+	embedder          memory.Embedder // vector embeddings for semantic search (optional)
+
+	// Task decomposition and kanban (optional).
+	taskManager     *task.Manager
+	taskDecomposer  *task.Decomposer
+	taskBoardConfig *loomv1.TaskBoardConfig
+
+	// Graph memory automatic extraction (mirrors finding extraction pattern).
+	enableGraphMemoryExtraction        bool
+	graphExtractionCadence             int
+	graphToolExecutionsSinceExtraction int
+	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+
+	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
+	graphConversationExtractionCadence int // 0 = disabled
+	graphTurnsSinceExtraction          int
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -171,6 +224,12 @@ type Config struct {
 
 	// MaxToolExecutions is the maximum number of tool executions per conversation
 	MaxToolExecutions int
+
+	// MaxIterations caps tool calls executed per single LLM response (per-turn).
+	// When the LLM emits more tool calls than this limit in one response, only
+	// MaxIterations are executed; the rest receive "turn_limit_exceeded" errors.
+	// 0 = use default (10).
+	MaxIterations int
 
 	// SystemPrompt is the direct system prompt text (takes precedence over SystemPromptKey)
 	SystemPrompt string
@@ -217,6 +276,14 @@ type Config struct {
 	// hits the output token limit AND returns truncated tool calls before the
 	// circuit breaker fires. 0 uses the default (8). -1 disables the CB entirely.
 	OutputTokenCBThreshold int
+
+	// EnableSelfHealing enables Tier 1 automatic recovery (context trimming,
+	// tool disabling) before errors propagate to the caller. Default: true.
+	EnableSelfHealing bool
+
+	// RecoveryConfig holds tunables for the self-healing orchestrator.
+	// Nil uses DefaultRecoveryConfig().
+	RecoveryConfig *RecoveryConfig
 }
 
 // PatternConfig holds pattern injection configuration
@@ -260,8 +327,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		MaxTurns:          25,
 		MaxToolExecutions: 50,
+		MaxIterations:     10,
 		SystemPromptKey:   "agent.system.base",
 		EnableTracing:     true,
+		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
 		Retry: RetryConfig{
 			Enabled:      true,

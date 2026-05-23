@@ -1,0 +1,346 @@
+# === METADATA START ===
+name: naive_bayes
+title: "Naive Bayes Classifier"
+description: |
+  Train and score Naive Bayes classifiers using TD_NaiveBayes and TD_NaiveBayesPredict.
+  A probabilistic classifier based on Bayes' theorem that assumes conditional independence
+  between features given the class label. Supports both numeric and categorical inputs in
+  dense (one column per feature) or sparse (attribute name/value pairs) format.
+
+  Naive Bayes is suitable for:
+  - Text classification (spam, sentiment, topic)
+  - Fast baseline classification
+  - High-dimensional sparse data
+  - Multi-class problems
+  - Real-time scoring (lightweight model)
+
+category: ml
+difficulty: beginner
+teradata_function: TD_NaiveBayes
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Text Classification ---
+  - Text or document classification (spam, sentiment, topic)
+
+  # --- Use Case 2: Multi-Class Classification ---
+  - Multi-class label prediction
+
+  # --- Use Case 3: Fast Baseline ---
+  - Quick baseline model before trying complex algorithms
+
+  # --- Use Case 4: Mixed Feature Types ---
+  - Classification with both numeric and categorical features
+
+  # --- Use Case 5: Real-Time Scoring ---
+  - Low-latency scoring (small model footprint)
+
+  # --- Use Case 6: Customer Categorization ---
+  - Customer type or segment classification
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training and scoring data"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Can contain numeric and/or categorical columns
+    required: true
+    description: "Table with labeled training data"
+    example: "email_features"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: Must have same columns as training
+    required: false
+    description: "Table with new data to score"
+    example: "new_emails"
+
+  # --- Parameter 4: Numeric Inputs ---
+  - name: numeric_inputs
+    type: array[string]
+    # LLM-HINT: Numeric feature columns; at least one of NumericInputs or CategoricalInputs required
+    required: false
+    description: "Numeric feature columns"
+    example: '["word_count", "link_count", "avg_word_length"]'
+
+  # --- Parameter 5: Categorical Inputs ---
+  - name: categorical_inputs
+    type: array[string]
+    # LLM-HINT: Categorical feature columns; at least one of NumericInputs or CategoricalInputs required
+    required: false
+    description: "Categorical feature columns"
+    example: '["sender_domain", "has_attachment", "language"]'
+
+  # --- Parameter 6: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Target class column; supports multi-class
+    required: true
+    description: "Target column to predict"
+    example: "email_type"
+
+  # --- Parameter 7: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier for Predict
+    required: true
+    description: "Unique identifier column"
+    example: "email_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_DENSE TEMPLATE ===
+  # LLM-HINT: Dense input format; one column per feature; at least one of NumericInputs or CategoricalInputs required
+  train_dense:
+    description: "Train Naive Bayes with dense input (one column per feature)"
+    sql: |
+      -- Train Naive Bayes classifier (dense input) and persist model
+      -- LLM-HINT: At least one of NumericInputs or CategoricalInputs is required
+      -- LLM-HINT: No OUT TABLE -- capture model via CREATE TABLE AS
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_NaiveBayes(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  ResponseColumn('{{response_column}}')
+                  NumericInputs({{numeric_inputs_quoted}})
+                  CategoricalInputs({{categorical_inputs_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - response_column
+      - numeric_inputs_quoted
+      - categorical_inputs_quoted
+
+  # === TRAIN_NUMERIC_ONLY TEMPLATE ===
+  # LLM-HINT: When all features are numeric; simpler than mixed-type training
+  train_numeric_only:
+    description: "Train Naive Bayes with numeric features only"
+    sql: |
+      -- Train Naive Bayes with numeric features only
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_NaiveBayes(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  ResponseColumn('{{response_column}}')
+                  NumericInputs({{numeric_inputs_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - response_column
+      - numeric_inputs_quoted
+
+  # === PREDICT_DENSE TEMPLATE ===
+  # LLM-HINT: Score using dense format; ModelTable is DIMENSION; include matching NumericInputs/CategoricalInputs
+  predict_dense:
+    description: "Score new data using a trained Naive Bayes model (dense)"
+    sql: |
+      -- Score new data with Naive Bayes model
+      -- LLM-HINT: NumericInputs and CategoricalInputs must match training
+      SELECT * FROM TD_NaiveBayesPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              NumericInputs({{numeric_inputs_quoted}})
+              CategoricalInputs({{categorical_inputs_quoted}})
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - numeric_inputs_quoted
+      - categorical_inputs_quoted
+      - response_column
+
+  # === PREDICT_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Outputs per-class probabilities and log-likelihoods
+  predict_with_probabilities:
+    description: "Score with per-class probabilities"
+    sql: |
+      -- Score with per-class probabilities for confidence ranking
+      -- LLM-HINT: Responses lists the class values to output probabilities for
+      SELECT * FROM TD_NaiveBayesPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              NumericInputs({{numeric_inputs_quoted}})
+              CategoricalInputs({{categorical_inputs_quoted}})
+              OutputProb('true')
+              Responses({{response_values}})
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - numeric_inputs_quoted
+      - categorical_inputs_quoted
+      - response_values
+      - response_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Email Classification ---
+  - name: "Email Classification (Spam vs Legitimate)"
+    description: "Classify emails using Naive Bayes with mixed feature types"
+    parameters:
+      database: "email"
+      training_table: "email_features"
+      scoring_table: "incoming_emails"
+      model_table: "nb_spam_model"
+      numeric_inputs: ["word_count", "link_count", "caps_ratio"]
+      categorical_inputs: ["sender_domain", "has_attachment"]
+      response_column: "email_type"
+      id_column: "email_id"
+    expected_result: |
+      Model output (stored as model table):
+        class | variable       | type        | category | cnt  | sum    | sumsq
+        spam  | word_count     | NUMERIC     | NULL     | 2500 | 125000 | 8750000
+        spam  | sender_domain  | CATEGORICAL | unknown  | 1800 | NULL   | NULL
+        ham   | word_count     | NUMERIC     | NULL     | 7500 | 600000 | 52000000
+        ham   | sender_domain  | CATEGORICAL | gmail    | 5000 | NULL   | NULL
+
+      Predict output:
+        email_id | Prediction | email_type
+        E1001    | spam       | spam
+        E1002    | ham        | ham
+
+  # --- Example 2: Customer Segment Classification ---
+  - name: "Customer Segment Prediction"
+    description: "Predict customer segment from profile data"
+    parameters:
+      database: "crm"
+      training_table: "customer_profiles"
+      scoring_table: "new_customers"
+      model_table: "nb_segment_model"
+      numeric_inputs: ["age", "annual_income", "account_balance"]
+      categorical_inputs: ["region", "account_type"]
+      response_column: "segment"
+      id_column: "customer_id"
+    expected_result: |
+      Multi-class prediction output:
+        customer_id | Prediction | segment
+        C5001       | premium    | premium
+        C5002       | standard   | standard
+        C5003       | budget     | premium    <-- misclassification
+
+      Use OutputProb('true') with Responses to see per-class probabilities
+      for better insight into misclassifications.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Input Type ---
+  - error: "At least one of NumericInputs or CategoricalInputs is required"
+    cause: "Dense format requires at least one of NumericInputs or CategoricalInputs to be specified."
+    solution: "Specify NumericInputs, CategoricalInputs, or both. Ensure column names match the training table."
+
+  # --- Error 2: Input Mismatch Train vs Predict ---
+  - error: "Prediction fails or gives wrong results"
+    cause: "NumericInputs and CategoricalInputs in Predict do not match those used in training."
+    solution: "Use the exact same NumericInputs and CategoricalInputs in both TD_NaiveBayes and TD_NaiveBayesPredict."
+
+  # --- Error 3: Numeric Column in CategoricalInputs ---
+  - error: "Too many categories or unexpected model size"
+    cause: "A numeric column specified as CategoricalInputs creates one category per distinct value."
+    solution: "Put numeric columns in NumericInputs. Only truly categorical columns (finite set of values) in CategoricalInputs."
+
+  # --- Error 4: Model Not Persisted ---
+  - error: "Model not available for scoring"
+    cause: "TD_NaiveBayes has no OUT TABLE clause. Running SELECT * without CREATE TABLE loses the model."
+    solution: "Always wrap in CREATE TABLE AS (...) WITH DATA to persist the model."
+
+  # --- Error 5: Sparse Format Column Naming ---
+  - error: "Attribute column not found"
+    cause: "Sparse format requires specific column names: 'attribute_column' for names, 'value_column' for values."
+    solution: "Rename columns to match: AttributeNameColumn('attr_name_col'), AttributeValueColumn('attr_value_col')."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Naive Bayes Best Practices
+
+  ### 1. When to Use Naive Bayes
+  - Fast baseline before trying complex models (XGBoost, SVM)
+  - Text classification on bag-of-words or TF-IDF features
+  - Many features relative to samples (high-dimensional sparse data)
+  - Real-time scoring where model size matters (NB models are small)
+  - Multi-class problems with many classes
+
+  ### 2. Dense vs Sparse Format
+  **Dense (one column per feature):**
+  - Use when data is in standard table format
+  - Specify NumericInputs and/or CategoricalInputs separately
+  - Better for structured data with fixed schema
+
+  **Sparse (attribute name/value pairs):**
+  - Use for text features (each word is an attribute)
+  - Use AttributeNameColumn + AttributeValueColumn
+  - Better for variable-length feature sets
+
+  ### 3. Feature Type Selection
+  - Numeric features assume Gaussian distribution per class
+  - Categorical features use frequency-based probability
+  - Misclassifying a numeric column as categorical creates spurious categories
+  - When in doubt, check cardinality: < 20 distinct values = probably categorical
+
+  ### 4. Handling Missing Data
+  - NB can handle some missing values better than tree-based methods
+  - Still recommended to impute or remove rows with excessive NULLs
+  - Missing categorical values create a 'NULL' category (may or may not be desired)
+
+  ### 5. Feature Independence Assumption
+  - NB assumes features are conditionally independent given the class
+  - Highly correlated features can degrade performance
+  - Consider removing redundant features or using PCA first
+  - Despite the assumption, NB often performs well in practice
+
+  ### 6. Model Comparison
+  Always compare NB against other classifiers:
+  - TD_XGBoost: usually better accuracy, more compute
+  - TD_DecisionForest: handles nonlinear relationships
+  - TD_SVM: better for high-dimensional linear separation
+  - TD_GLM (Binomial): interpretable coefficients for binary problems
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: XGBoost ---
+  - xgboost
+
+  # --- Pattern 2: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 3: GLM ---
+  - glm
+
+  # --- Pattern 4: SVM ---
+  - svm
+# === RELATED_PATTERNS END ===

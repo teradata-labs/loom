@@ -60,6 +60,10 @@ examples:
       pattern: "John%"
     expected_result: "B-tree index sufficient"
 
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Optimize email domain searches"
   - "Speed up name pattern matching"

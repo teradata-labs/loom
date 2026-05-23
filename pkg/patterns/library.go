@@ -92,6 +92,7 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 			"sql/timeseries",
 			"sql/data_quality",
 			"sql/text",
+			"weaver",
 		},
 		tracer: observability.NewNoOpTracer(),
 	}
@@ -444,6 +445,33 @@ func (lib *Library) ListAll() []PatternSummary {
 		}
 	}
 
+	// Include dynamically registered patterns (via Register()) that aren't
+	// already covered by embedded/filesystem indexing.
+	lib.mu.RLock()
+	for name, p := range lib.patternCache {
+		alreadyIndexed := false
+		for _, s := range summaries {
+			if s.Name == name {
+				alreadyIndexed = true
+				break
+			}
+		}
+		if !alreadyIndexed {
+			summaries = append(summaries, PatternSummary{
+				Name:            p.Name,
+				Title:           p.Title,
+				Description:     p.Description,
+				Category:        p.Category,
+				Difficulty:      p.Difficulty,
+				BackendType:     p.BackendType,
+				BackendFunction: p.BackendFunction,
+				UseCases:        p.UseCases,
+				Intents:         p.Intents,
+			})
+		}
+	}
+	lib.mu.RUnlock()
+
 	// Cache the index
 	lib.mu.Lock()
 	lib.patternIndex = summaries
@@ -554,6 +582,7 @@ func (lib *Library) createSummary(pattern *Pattern) PatternSummary {
 		Difficulty:      pattern.Difficulty,
 		BackendType:     pattern.BackendType,
 		UseCases:        pattern.UseCases,
+		Intents:         pattern.Intents,
 		BackendFunction: pattern.BackendFunction,
 	}
 }
@@ -784,6 +813,11 @@ func (lib *Library) Search(query string) []PatternSummary {
 			searchText += " " + strings.ToLower(useCase)
 		}
 
+		// Add declared intents to searchable text
+		for _, intent := range p.Intents {
+			searchText += " " + strings.ToLower(intent)
+		}
+
 		// Count keyword matches
 		matchCount := 0
 		for _, keyword := range filteredKeywords {
@@ -871,6 +905,16 @@ func (lib *Library) ClearCache() {
 		"patterns_cleared": fmt.Sprintf("%d", cacheSize),
 		"index_cleared":    fmt.Sprintf("%d", indexSize),
 	})
+}
+
+// Register adds a dynamically-created pattern directly to the library cache.
+// This enables programmatic registration without requiring a file on disk.
+// If a pattern with the same name already exists it is overwritten.
+func (lib *Library) Register(pattern *Pattern) {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+	lib.patternCache[pattern.Name] = pattern
+	lib.indexInitialized = false // invalidate cached index so ListAll() re-scans
 }
 
 // AddSearchPath adds a custom search path for pattern discovery.

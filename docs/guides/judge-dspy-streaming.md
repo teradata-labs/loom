@@ -1,7 +1,7 @@
 
 # Judge Streaming Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -23,9 +23,18 @@
 
 Get real-time progress updates during long-running judge evaluations, useful for MIPRO and BootstrapFewShot compilations.
 
+### Feature Status
+
+- ✅ `JudgeStarted` progress events
+- ✅ `JudgeCompleted` progress events
+- ✅ `EvaluationCompleted` progress events
+- ⚠️ `ExampleCompleted` progress events (defined in proto, not yet emitted by orchestrator)
+- ✅ Context cancellation and timeouts
+- ✅ Concurrent streaming evaluations (race-free)
+
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - At least one judge registered
 - Loom server running: `looms serve`
 
@@ -37,7 +46,7 @@ Stream evaluation progress:
 stream := make(chan *loomv1.EvaluateProgress, 10)
 
 go func() {
-    resp, err := orchestrator.EvaluateStream(ctx, req, stream)
+    resp, err := orch.EvaluateStream(ctx, req, stream)
     close(stream)
 }()
 
@@ -57,12 +66,12 @@ for progress := range stream {
 
 ### Progress Message Types
 
-| Message | When Sent | Contains |
-|---------|-----------|----------|
-| `JudgeStarted` | Before evaluation | Judge ID, example number |
-| `JudgeCompleted` | After evaluation | Judge ID, result, duration |
-| `ExampleCompleted` | After all judges for example | Cumulative score, pass/fail |
-| `EvaluationCompleted` | At end | Final result, total duration |
+| Message | When Sent | Contains | Status |
+|---------|-----------|----------|--------|
+| `JudgeStarted` | Before evaluation | Judge ID, example number | ✅ |
+| `JudgeCompleted` | After evaluation | Judge ID, result, duration | ✅ |
+| `ExampleCompleted` | After all judges for example | Cumulative score, pass/fail | ⚠️ Proto-defined, not yet emitted |
+| `EvaluationCompleted` | At end | Final result, total duration | ✅ |
 
 ### Channel Buffer Size
 
@@ -112,10 +121,12 @@ func handleProgress(progress *loomv1.EvaluateProgress) {
     case *loomv1.EvaluateProgress_JudgeCompleted:
         fmt.Printf("[DONE] Judge %s: score=%.1f (%dms)\n",
             p.JudgeCompleted.JudgeId,
-            p.JudgeCompleted.Result.Score,
+            p.JudgeCompleted.Result.OverallScore,
             p.JudgeCompleted.DurationMs)
 
     case *loomv1.EvaluateProgress_ExampleCompleted:
+        // ⚠️ ExampleCompleted is defined in proto but not yet emitted by the orchestrator.
+        // This handler is included for forward compatibility.
         fmt.Printf("[EXAMPLE] %d/%d complete (score: %.1f)\n",
             p.ExampleCompleted.ExampleNumber+1,
             p.ExampleCompleted.TotalExamples,
@@ -182,9 +193,11 @@ func main() {
 
     // Create request
     req := &loomv1.EvaluateRequest{
-        AgentId:  "sql-agent",
-        Prompt:   "Generate a query",
-        Response: "SELECT * FROM users",
+        Context: &loomv1.EvaluationContext{
+            AgentId:  "sql-agent",
+            Prompt:   "Generate a query",
+            Response: "SELECT * FROM users",
+        },
         JudgeIds: []string{"quality-judge", "safety-judge"},
     }
 
@@ -196,7 +209,7 @@ func main() {
         if err != nil {
             log.Printf("Error: %v", err)
         } else {
-            log.Printf("Final score: %.1f", resp.AggregatedScore)
+            log.Printf("Final score: %.1f", resp.FinalScore)
         }
         close(stream)
     }()
@@ -209,7 +222,7 @@ func main() {
         case *loomv1.EvaluateProgress_JudgeCompleted:
             fmt.Printf("<< Judge %s: %.0f/100\n",
                 p.JudgeCompleted.JudgeId,
-                p.JudgeCompleted.Result.Score)
+                p.JudgeCompleted.Result.OverallScore)
         case *loomv1.EvaluateProgress_EvaluationCompleted:
             fmt.Printf("Done! (%.2fs)\n",
                 float64(p.EvaluationCompleted.TotalDurationMs)/1000)
@@ -219,6 +232,11 @@ func main() {
 ```
 
 ### Example 2: Progress Bar UI
+
+> **Note:** This example uses `ExampleCompleted` events which are defined in the proto
+> but not yet emitted by the orchestrator (⚠️ partial implementation). The progress bar
+> will only update once `ExampleCompleted` emission is implemented. Currently, you can
+> track progress via `JudgeStarted`/`JudgeCompleted` events instead.
 
 ```go
 package main
@@ -258,7 +276,7 @@ func evaluateWithProgress(ctx context.Context, orch *judges.Orchestrator, req *l
 
         case *loomv1.EvaluateProgress_EvaluationCompleted:
             fmt.Printf("\nComplete! Score: %.1f\n",
-                p.EvaluationCompleted.FinalResult.AggregatedScore)
+                p.EvaluationCompleted.FinalResult.FinalScore)
         }
     }
 
@@ -319,9 +337,9 @@ The `EvaluationCompleted` message contains the final result:
 ```go
 case *loomv1.EvaluateProgress_EvaluationCompleted:
     result := p.EvaluationCompleted.FinalResult
-    fmt.Printf("Score: %.1f, Verdict: %s\n",
-        result.AggregatedScore,
-        result.Verdict)
+    fmt.Printf("Score: %.1f, Passed: %v\n",
+        result.FinalScore,
+        result.Passed)
 ```
 
 ### Slow Progress Updates
