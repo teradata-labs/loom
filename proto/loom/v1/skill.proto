@@ -313,10 +313,20 @@ message SkillTaskTemplate {
     string acceptance_criteria = 3;
     TaskCategory category = 4;
     TaskPriority priority = 5;
-    // Indices into SkillTaskTemplate.steps that must complete before this
-    // step is unblocked. Materialized as TASK_DEPENDENCY_TYPE_BLOCKS edges.
-    repeated int32 depends_on = 6;
+    // Field 6 was `repeated int32 depends_on` (index-based). Reserved to
+    // prevent reuse; replaced by string-based depends_on_ids (field 9).
+    reserved 6;
+    reserved "depends_on";
     string estimated_effort = 7;
+    // Stable identifier for this step within the template (e.g. "analyze-plan").
+    // Used by WorkflowTaskBlueprint steps and WorkflowRef dependency graphs to
+    // reference steps by name rather than position. Should be unique within the
+    // parent SkillTaskTemplate.
+    string id = 8;
+    // IDs of sibling steps (Step.id values) that must complete before this
+    // step is unblocked. Replaces the deprecated index-based depends_on field.
+    // Materialized as TASK_DEPENDENCY_TYPE_BLOCKS edges on the task board.
+    repeated string depends_on_ids = 9;
   }
   repeated Step steps = 1;
   // Title of the parent task created to group emitted children.
