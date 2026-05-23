@@ -14,6 +14,8 @@
 
 package plugins
 
+import "strings"
+
 // Plugin is the runtime representation of a LoomPlugin loaded from YAML or the registry.
 // Field names mirror the proto definition; the loader converts YAML → Plugin.
 type Plugin struct {
@@ -24,6 +26,19 @@ type Plugin struct {
 	Author      string            `json:"author,omitempty"`
 	Domains     []string          `json:"domains,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
+
+	// Type is the capability category for listing and discovery.
+	// Valid values: "domain" | "integration" | "meta" | "analysis" | "utility".
+	Type string `json:"type,omitempty"`
+
+	// RiskLevel is the combined risk of this plugin's capability surface,
+	// independent of individual component risk levels.
+	// Valid values: "low" | "medium" | "high" | "restricted".
+	RiskLevel string `json:"risk_level,omitempty"`
+
+	// RequireApproval blocks ActivatePlugin for high/restricted plugins unless
+	// the caller holds explicit approval. Mirrors the skill gate in agent.go.
+	RequireApproval bool `json:"require_approval,omitempty"`
 
 	Trigger PluginTrigger `json:"trigger"`
 
@@ -43,6 +58,16 @@ type Plugin struct {
 
 	// SourcePath is the file path this plugin was loaded from (not serialized).
 	SourcePath string `json:"-"`
+}
+
+// IsHighRisk returns true if the plugin's combined risk level is HIGH or RESTRICTED.
+// Matches the skill-level check in pkg/agent so the same activation gate applies.
+func (p *Plugin) IsHighRisk() bool {
+	switch strings.ToUpper(p.RiskLevel) {
+	case "HIGH", "RESTRICTED":
+		return true
+	}
+	return false
 }
 
 // PluginTrigger is the unified invocation surface. A single slash command or

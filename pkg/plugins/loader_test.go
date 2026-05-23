@@ -54,6 +54,9 @@ metadata:
   domains: [teradata, sql, performance]
   labels:
     surface: teradata
+  type: domain
+  risk_level: medium
+  require_approval: true
 trigger:
   slash_commands: [/td-perf, /explain-plan]
   keywords: [slow query, explain plan, query optimization]
@@ -142,6 +145,34 @@ func TestParsePlugin_Full(t *testing.T) {
 
 	assert.Equal(t, "LAZY", p.DefaultBindingMode)
 	assert.True(t, p.Resolution.ResynthesizeOnActivation)
+
+	assert.Equal(t, "domain", p.Type)
+	assert.Equal(t, "medium", p.RiskLevel)
+	assert.True(t, p.RequireApproval)
+	assert.False(t, p.IsHighRisk()) // "medium" is not high/restricted
+}
+
+func TestPlugin_IsHighRisk(t *testing.T) {
+	cases := []struct {
+		riskLevel string
+		want      bool
+	}{
+		{"high", true},
+		{"HIGH", true},
+		{"restricted", true},
+		{"RESTRICTED", true},
+		{"medium", false},
+		{"low", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		p := &plugins.Plugin{
+			Name:        "x",
+			Description: "d",
+			RiskLevel:   tc.riskLevel,
+		}
+		assert.Equal(t, tc.want, p.IsHighRisk(), "risk_level=%q", tc.riskLevel)
+	}
 }
 
 func TestParsePlugin_ValidationErrors(t *testing.T) {
@@ -190,6 +221,11 @@ func TestParsePlugin_ValidationErrors(t *testing.T) {
 			yaml:    "apiVersion: loom/v1\nkind: Plugin\nmetadata:\n  name: my-plugin\n  description: d\nskills:\n  - name: s\ndefault_binding_mode: SOMETIMES\n",
 			wantErr: "default_binding_mode",
 		},
+		{
+			name:    "invalid type",
+			yaml:    "apiVersion: loom/v1\nkind: Plugin\nmetadata:\n  name: my-plugin\n  description: d\n  type: widget\nskills:\n  - name: s\n",
+			wantErr: "metadata.type",
+		},
 	}
 
 	for _, tc := range cases {
@@ -229,6 +265,9 @@ func TestPluginToYAML_RoundTrip(t *testing.T) {
 	require.Len(t, loaded.SkillRefs, len(original.SkillRefs))
 	assert.Equal(t, original.SkillRefs[1].Synthesize, loaded.SkillRefs[1].Synthesize)
 	assert.Equal(t, original.SkillRefs[1].Description, loaded.SkillRefs[1].Description)
+	assert.Equal(t, original.Type, loaded.Type)
+	assert.Equal(t, original.RiskLevel, loaded.RiskLevel)
+	assert.Equal(t, original.RequireApproval, loaded.RequireApproval)
 }
 
 func TestLoadPluginDir(t *testing.T) {

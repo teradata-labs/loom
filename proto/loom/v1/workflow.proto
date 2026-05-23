@@ -694,6 +694,21 @@ message PluginMeta {
 
   // Minimum Loom server version required (semver, e.g. "1.2.0").
   string min_loom_version = 12;
+
+  // Capability category for listing and discovery.
+  // Valid values: "domain" | "integration" | "meta" | "analysis" | "utility".
+  string type = 13;
+
+  // Risk classification for the combined plugin capability surface.
+  // Valid values: "low" | "medium" | "high" | "restricted".
+  // Activation is blocked for "high" and "restricted" when require_approval=true.
+  // Set independently of component risk levels — a plugin may combine low-risk
+  // components that together represent a higher-risk capability surface.
+  string risk_level = 14;
+
+  // When true, ActivatePlugin requires explicit approval for risk_level high/restricted.
+  // Mirrors the skill-level approval gate in the agent runtime (agent.go:IsHighRisk).
+  bool require_approval = 15;
 }
 
 // PluginTrigger is the unified invocation surface for a LoomPlugin.

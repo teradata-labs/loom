@@ -42,6 +42,16 @@ var validBindingModes = map[string]bool{
 	"ALWAYS": true,
 }
 
+// validPluginTypes is the controlled vocabulary for plugin.type.
+var validPluginTypes = map[string]bool{
+	"":            true, // unspecified is allowed
+	"domain":      true,
+	"integration": true,
+	"meta":        true,
+	"analysis":    true,
+	"utility":     true,
+}
+
 // ─── YAML structs ─────────────────────────────────────────────────────────────
 
 // pluginYAML is the top-level YAML document for a plugin file.
@@ -64,13 +74,16 @@ type pluginYAML struct {
 }
 
 type pluginMetaYAML struct {
-	Name        string            `yaml:"name"`
-	Title       string            `yaml:"title"`
-	Description string            `yaml:"description"`
-	Version     string            `yaml:"version"`
-	Author      string            `yaml:"author"`
-	Domains     []string          `yaml:"domains"`
-	Labels      map[string]string `yaml:"labels"`
+	Name            string            `yaml:"name"`
+	Title           string            `yaml:"title"`
+	Description     string            `yaml:"description"`
+	Version         string            `yaml:"version"`
+	Author          string            `yaml:"author"`
+	Domains         []string          `yaml:"domains"`
+	Labels          map[string]string `yaml:"labels"`
+	Type            string            `yaml:"type"`
+	RiskLevel       string            `yaml:"risk_level"`
+	RequireApproval bool              `yaml:"require_approval"`
 }
 
 type pluginTriggerYAML struct {
@@ -192,13 +205,16 @@ func PluginToYAML(p *Plugin) ([]byte, error) {
 		APIVersion: "loom/v1",
 		Kind:       "Plugin",
 		Metadata: pluginMetaYAML{
-			Name:        p.Name,
-			Title:       p.Title,
-			Description: p.Description,
-			Version:     p.Version,
-			Author:      p.Author,
-			Domains:     p.Domains,
-			Labels:      p.Labels,
+			Name:            p.Name,
+			Title:           p.Title,
+			Description:     p.Description,
+			Version:         p.Version,
+			Author:          p.Author,
+			Domains:         p.Domains,
+			Labels:          p.Labels,
+			Type:            p.Type,
+			RiskLevel:       p.RiskLevel,
+			RequireApproval: p.RequireApproval,
 		},
 		Trigger: pluginTriggerYAML{
 			SlashCommands: p.Trigger.SlashCommands,
@@ -279,6 +295,11 @@ func validatePluginYAML(py *pluginYAML, sourcePath string) error {
 		}
 	}
 
+	// Validate type.
+	if !validPluginTypes[strings.ToLower(py.Metadata.Type)] {
+		return fmt.Errorf("plugins: %s: metadata.type %q is not valid (domain|integration|meta|analysis|utility)", loc, py.Metadata.Type)
+	}
+
 	// Validate binding mode.
 	if !validBindingModes[strings.ToUpper(py.DefaultBindingMode)] {
 		return fmt.Errorf("plugins: %s: default_binding_mode %q is not valid (EAGER|LAZY|ALWAYS)", loc, py.DefaultBindingMode)
@@ -306,6 +327,9 @@ func convertPlugin(py *pluginYAML) *Plugin {
 		Author:             py.Metadata.Author,
 		Domains:            py.Metadata.Domains,
 		Labels:             py.Metadata.Labels,
+		Type:               strings.ToLower(py.Metadata.Type),
+		RiskLevel:          py.Metadata.RiskLevel,
+		RequireApproval:    py.Metadata.RequireApproval,
 		RequiredSkillNames: py.RequiredSkillNames,
 		RequiredToolNames:  py.RequiredToolNames,
 		DefaultBindingMode: normalizeMode(py.DefaultBindingMode, "LAZY"),
