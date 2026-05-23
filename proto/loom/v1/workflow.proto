@@ -1,0 +1,906 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/api/annotations.proto";
+import "loom/v1/agent_config.proto";
+import "loom/v1/orchestration.proto";
+import "loom/v1/skill.proto";
+import "loom/v1/task.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// LoomWorkflow is a declarative capability bundle that assembles skills, agents,
+// ephemeral agents, MCP tools, and tasks around a specific Job To Be Done (JTBD).
+//
+// Distinct from WorkflowPattern (orchestration.proto), which describes HOW agents
+// collaborate (pipeline, debate, swarm, etc.). LoomWorkflow describes WHAT capability
+// set is deployed and WHY — the full context of a job, not just its execution topology.
+//
+// A LoomWorkflow can be used standalone (activate, run, deactivate) or packaged inside
+// a LoomPlugin for distribution and reuse across deployments.
+message LoomWorkflow {
+  // Identity, version, and discovery metadata.
+  WorkflowMeta meta = 1;
+
+  // The job this workflow serves — why it exists and what success looks like.
+  JobToBeDone jtbd = 2;
+
+  // Skills to activate when this workflow runs. Skills inject domain knowledge,
+  // constraints, and task templates into participating agents.
+  repeated WorkflowSkillRef skills = 3;
+
+  // Agents participating in this workflow and their roles.
+  repeated WorkflowAgentRef agents = 4;
+
+  // MCP tool groups scoped to this workflow. Controls which external tools are
+  // available to which agents during execution.
+  repeated WorkflowMCPGroup mcp_groups = 5;
+
+  // Task blueprint: the initial task structure created when this workflow activates.
+  // Steps may be authored explicitly or generated via LLM decomposition.
+  WorkflowTaskBlueprint task_blueprint = 6;
+
+  // Ephemeral agent policies: conditions under which the workflow dynamically
+  // spawns short-lived sub-agents (judges, domain experts, moderators, etc.).
+  repeated EphemeralAgentPolicy ephemeral_policies = 7;
+
+  // Orchestration pattern governing how agents in this workflow collaborate.
+  // Optional — when absent, the primary agent executes without coordination.
+  WorkflowPattern orchestration = 8;
+
+  // What activates this workflow (slash command, schedule, API call, or event).
+  WorkflowTrigger trigger = 9;
+
+  // Runtime constraints: timeouts, cost budgets, concurrency limits, and retries.
+  WorkflowExecutionPolicy execution = 10;
+
+  // Expected outputs: what this workflow produces and where they go.
+  repeated WorkflowOutput outputs = 11;
+
+  // Lifecycle state: current status and activation history.
+  WorkflowLifecycle lifecycle = 12;
+}
+
+// WorkflowMeta holds identity, versioning, and discovery metadata for a LoomWorkflow.
+message WorkflowMeta {
+  // Stable UUID. Assigned on first registration; never changes.
+  string id = 1;
+
+  // Machine-readable identifier. Used in slash commands and API references.
+  // Example: "teradata-query-optimizer"
+  string name = 2;
+
+  // Human-readable display name.
+  string title = 3;
+
+  // What this workflow does and when to use it.
+  string description = 4;
+
+  // Semantic version (e.g. "1.0.0"). Increment on breaking changes to JTBD or outputs.
+  string version = 5;
+
+  // Primary domain this workflow targets (e.g. "teradata", "analytics", "data-engineering").
+  string domain = 6;
+
+  // Arbitrary key-value labels for filtering and routing.
+  map<string, string> labels = 7;
+
+  // Author or owning team.
+  string author = 8;
+
+  // Unix epoch ms: when this workflow was first registered.
+  int64 created_at_ms = 9;
+
+  // Unix epoch ms: when this workflow definition was last modified.
+  int64 updated_at_ms = 10;
+
+  // Parent workflow ID for hierarchical composition. Empty if top-level.
+  string parent_workflow_id = 11;
+
+  // Free-form tags for search and discovery.
+  repeated string tags = 12;
+}
+
+// JobToBeDone captures the intent, context, and success criteria of a workflow.
+// Modelled after the JTBD framework: a job is what a user is trying to accomplish,
+// defined by its outcome — not the steps taken to get there.
+//
+// JTBD data is used for:
+//   - Skill and agent routing (domain + functional_jobs)
+//   - Task decomposition (success_criteria → acceptance criteria)
+//   - LLM prompt injection (outcome + context_vars)
+//   - Evaluation (success_criteria → judge rubric)
+message JobToBeDone {
+  // Short JTBD statement. Example: "Optimize slow Teradata queries for production load"
+  string title = 1;
+
+  // Full description of the job including background and motivation.
+  string description = 2;
+
+  // What the user has when the job is complete. Drives acceptance criteria.
+  // Example: "A reviewed SQL rewrite with EXPLAIN plan validation and cost estimate"
+  string outcome = 3;
+
+  // Measurable conditions that must hold when the job is done.
+  // Maps directly to Task.acceptance_criteria and OutputPolicy.acceptance_criteria.
+  repeated string success_criteria = 4;
+
+  // Domain of expertise required to do this job (e.g. "teradata", "sql", "ml-ops").
+  string domain = 5;
+
+  // Discrete functional sub-jobs that make up this JTBD.
+  // Example: ["parse query plan", "identify bottlenecks", "suggest rewrites", "validate changes"]
+  repeated string functional_jobs = 6;
+
+  // Variables available for template interpolation in skill prompts and task blueprints.
+  // Keys are variable names; values are defaults (overridden at activation time).
+  map<string, string> context_vars = 7;
+
+  // Temporal scope of this job — one query, a multi-turn session, a project, or ongoing.
+  JobScope scope = 8;
+
+  // The persona doing this job (e.g. "DBA", "data analyst", "platform engineer").
+  // Used to tune skill prompt tone and depth.
+  string persona = 9;
+}
+
+// JobScope describes the temporal extent and continuity of a JTBD.
+enum JobScope {
+  JOB_SCOPE_UNSPECIFIED = 0;
+
+  // A single query or request. Workflow activates, runs, and is done.
+  JOB_SCOPE_QUERY = 1;
+
+  // A multi-turn conversation session. Workflow persists across turns until closed.
+  JOB_SCOPE_SESSION = 2;
+
+  // A multi-session project. Workflow persists across sessions with shared memory.
+  JOB_SCOPE_PROJECT = 3;
+
+  // Continuous monitoring or background operation. Never deactivates autonomously.
+  JOB_SCOPE_CONTINUOUS = 4;
+}
+
+// WorkflowSkillRef links a named skill into the workflow and configures how it activates.
+message WorkflowSkillRef {
+  // Name of the skill to activate (must match Skill.metadata.name).
+  string skill_name = 1;
+
+  // Activation mode override. When UNSPECIFIED, uses the skill's own default.
+  SkillActivationMode activation_mode = 2;
+
+  // Agent IDs that receive this skill. Empty = inject into all agents in this workflow.
+  repeated string target_agent_ids = 3;
+
+  // If true, workflow activation fails when the skill cannot be found.
+  bool required = 4;
+
+  // Activation priority relative to other skills in this workflow. Higher = first.
+  int32 priority = 5;
+
+  // Runtime config overrides applied on top of the skill's base configuration.
+  // Keys are skill config field paths (e.g. "max_prompt_tokens").
+  map<string, string> config_overrides = 6;
+}
+
+// WorkflowAgentRef binds an agent into the workflow with a specific role and binding mode.
+message WorkflowAgentRef {
+  // ID of an existing registered agent.
+  string agent_id = 1;
+
+  // Semantic role within this workflow (e.g. "primary", "judge", "domain-expert", "reviewer").
+  // Used by orchestration patterns (debate moderator, fork/join merger, etc.).
+  string role = 2;
+
+  // How the agent is attached to this workflow.
+  WorkflowAgentBinding binding = 3;
+
+  // Agent config field overrides applied only while this workflow is active.
+  // Keys are dot-path field names (e.g. "behavior.max_iterations").
+  map<string, string> config_overrides = 4;
+
+  // Additional skill names injected into this agent beyond the workflow-level skill refs.
+  repeated string additional_skills = 5;
+
+  // When true, this agent is the primary executor. Exactly one agent should be primary.
+  bool primary = 6;
+}
+
+// WorkflowAgentBinding controls the lifecycle of an agent relative to its workflow.
+enum WorkflowAgentBinding {
+  WORKFLOW_AGENT_BINDING_UNSPECIFIED = 0;
+
+  // Use an existing long-lived agent. It persists after the workflow ends.
+  WORKFLOW_AGENT_BINDING_PERSISTENT = 1;
+
+  // Spawn a new agent for this workflow and destroy it when the workflow ends.
+  WORKFLOW_AGENT_BINDING_EPHEMERAL = 2;
+
+  // Borrow an agent from a pool; return it when the workflow ends.
+  WORKFLOW_AGENT_BINDING_BORROWED = 3;
+}
+
+// WorkflowMCPGroup scopes a set of MCP tools to specific agents in the workflow.
+// Allows different agents to have access to different external tool sets.
+message WorkflowMCPGroup {
+  // Logical name for this tool group (e.g. "database-tools", "code-execution").
+  string group_name = 1;
+
+  // MCP server names whose tools are included. Servers must already be registered.
+  repeated string server_names = 2;
+
+  // Specific tool names to expose. Empty = expose all tools from server_names.
+  repeated string tool_names = 3;
+
+  // Agent IDs that get access to this group. Empty = all agents in this workflow.
+  repeated string agent_ids = 4;
+
+  // If true, workflow activation fails when any server in server_names is unreachable.
+  bool required = 5;
+}
+
+// WorkflowTaskBlueprint defines the initial task structure created when the workflow activates.
+// Steps can be authored explicitly (mirroring SkillTaskTemplate) or generated by the
+// LLM decomposer using the JTBD outcome as the decomposition goal.
+message WorkflowTaskBlueprint {
+  // Display name for the task board created for this workflow.
+  string board_name = 1;
+
+  // Task decomposition strategy. Controls ordering and parallelism of generated tasks.
+  DecomposeStrategy strategy = 2;
+
+  // Explicit task steps. When non-empty, the decomposer is skipped.
+  // Reuses SkillTaskTemplate.Step: title, objective, acceptance_criteria,
+  // category, priority, depends_on, estimated_effort.
+  repeated SkillTaskTemplate.Step steps = 3;
+
+  // When true and steps is empty, invoke the LLM decomposer to generate tasks.
+  bool auto_decompose = 4;
+
+  // Go template for the decomposer prompt. Available vars: .JTBD, .Domain, .Outcome.
+  // When empty, the decomposer uses the JTBD outcome directly.
+  string decompose_goal_template = 5;
+
+  // Maximum number of tasks the blueprint may emit. Default: 8.
+  int32 max_tasks = 6;
+
+  // Emit tasks immediately on workflow activation. When false, emit on first Weave call.
+  bool emit_on_activation = 7;
+
+  // Board configuration: WIP limits, context budget, default decomposition depth.
+  TaskBoardConfig board_config = 8;
+}
+
+// WorkflowTrigger controls what activates a LoomWorkflow.
+message WorkflowTrigger {
+  oneof trigger {
+    // Activate via slash command or keyword match in a Weave query.
+    WorkflowSlashTrigger slash = 1;
+
+    // Activate on a cron schedule. Reuses ScheduleConfig from orchestration.proto.
+    ScheduleConfig schedule = 2;
+
+    // Activate when a named event is published to the message bus.
+    WorkflowEventTrigger event = 3;
+
+    // Activate only via explicit ActivateWorkflow RPC call.
+    WorkflowAPITrigger api = 4;
+  }
+}
+
+// WorkflowSlashTrigger activates a workflow via slash command or keyword match.
+message WorkflowSlashTrigger {
+  // Slash commands that activate this workflow (e.g. ["/analyze-query"]).
+  repeated string commands = 1;
+
+  // Keywords that trigger activation when detected in a Weave query.
+  repeated string keywords = 2;
+
+  // Minimum confidence score required for keyword-based activation (0.0–1.0).
+  float min_confidence = 3;
+}
+
+// WorkflowEventTrigger activates a workflow when a specific event is published on the bus.
+message WorkflowEventTrigger {
+  // Event type name to subscribe to (e.g. "query.slow_detected", "task.board.full").
+  string event_type = 1;
+
+  // CEL expression for filtering events. Empty = match all events of event_type.
+  // Available fields depend on the event schema.
+  string filter_expression = 2;
+
+  // Static metadata attached to the activation context when triggered by this event.
+  map<string, string> event_metadata = 3;
+}
+
+// WorkflowAPITrigger marks that this workflow is only activated via explicit API call.
+// No automatic triggering from slash commands, keywords, schedules, or events.
+message WorkflowAPITrigger {}
+
+// WorkflowExecutionPolicy constrains runtime resource usage for a LoomWorkflow.
+message WorkflowExecutionPolicy {
+  // Maximum wall-clock seconds before the workflow execution is forcibly terminated.
+  int32 timeout_seconds = 1;
+
+  // Maximum USD to spend on LLM calls across all agents in this workflow.
+  double cost_budget_usd = 2;
+
+  // Maximum conversation turns per agent per activation.
+  int32 max_turns_per_agent = 3;
+
+  // Maximum number of agents running concurrently during this workflow.
+  int32 max_concurrent_agents = 4;
+
+  // Tool permission mode for agents in this workflow.
+  // Maps to loom.v1.PermissionMode: 0=unspecified, 1=ask_before, 2=auto_accept, 3=plan.
+  // When unspecified (0), each agent uses its own configured permission mode.
+  int32 permission_mode = 5;
+
+  // When true, the first agent or task failure terminates the entire workflow.
+  bool fail_fast = 6;
+
+  // Maximum retries for transient failures before the workflow errors out.
+  int32 max_retries = 7;
+}
+
+// WorkflowOutput declares an artifact or result this workflow is expected to produce.
+message WorkflowOutput {
+  // Machine-readable output name (e.g. "optimized_query", "performance_report").
+  string name = 1;
+
+  // Human-readable description of what this output contains.
+  string description = 2;
+
+  // JSON Schema describing the expected output structure. Empty = unstructured text.
+  string schema_json = 3;
+
+  // Output type determines serialization and routing behaviour.
+  WorkflowOutputType type = 4;
+
+  // Where to persist this output (file path, table name, artifact ID prefix, etc.).
+  // Empty = return inline in WeaveResponse.
+  string destination = 5;
+
+  // When true, workflow execution is considered failed if this output is not produced.
+  bool required = 6;
+}
+
+// WorkflowOutputType classifies the expected output of a workflow.
+enum WorkflowOutputType {
+  WORKFLOW_OUTPUT_TYPE_UNSPECIFIED = 0;
+  WORKFLOW_OUTPUT_TYPE_TEXT = 1;
+  WORKFLOW_OUTPUT_TYPE_JSON = 2;
+  WORKFLOW_OUTPUT_TYPE_SQL = 3;
+  WORKFLOW_OUTPUT_TYPE_ARTIFACT = 4;
+  WORKFLOW_OUTPUT_TYPE_TASK_BOARD = 5;
+  WORKFLOW_OUTPUT_TYPE_REPORT = 6;
+  WORKFLOW_OUTPUT_TYPE_CODE = 7;
+  WORKFLOW_OUTPUT_TYPE_CHART = 8;
+}
+
+// WorkflowLifecycle tracks the current state and activation history of a LoomWorkflow.
+message WorkflowLifecycle {
+  WorkflowStatus status = 1;
+
+  // Unix epoch ms: when the workflow was last activated.
+  int64 activated_at_ms = 2;
+
+  // Unix epoch ms: when the workflow was last deactivated. Zero if currently active.
+  int64 deactivated_at_ms = 3;
+
+  // Session ID that triggered the current (or most recent) activation.
+  string activated_by_session = 4;
+
+  // Execution ID of the currently running workflow execution. Empty if not running.
+  string active_execution_id = 5;
+
+  // Number of times this workflow has been activated since registration.
+  int64 activation_count = 6;
+
+  // Last error encountered during activation or execution. Empty if no errors.
+  string last_error = 7;
+}
+
+// WorkflowStatus represents the lifecycle state of a LoomWorkflow definition.
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+
+  // Created but not yet validated or activated.
+  WORKFLOW_STATUS_DRAFT = 1;
+
+  // Registered and available for activation.
+  WORKFLOW_STATUS_ACTIVE = 2;
+
+  // Currently executing (at least one active execution).
+  WORKFLOW_STATUS_RUNNING = 3;
+
+  // Temporarily suspended. Can be resumed via ActivateWorkflow.
+  WORKFLOW_STATUS_PAUSED = 4;
+
+  // Superseded by a newer version. Existing executions complete; no new activations.
+  WORKFLOW_STATUS_DEPRECATED = 5;
+
+  // Removed from active inventory. Definition preserved for audit.
+  WORKFLOW_STATUS_ARCHIVED = 6;
+}
+
+// ---------------------------------------------------------------------------
+// LoomPlugin: distribution format for bundling workflows, skills, and dependencies
+// ---------------------------------------------------------------------------
+
+// LoomPlugin packages one or more LoomWorkflows together with their skills, agent
+// templates, and MCP server definitions for installation in a Loom deployment.
+//
+// A plugin is the unit of distribution: everything needed to deliver a JTBD
+// capability to a new environment is in one place.
+//
+// Example: a "Teradata Performance" plugin bundles:
+//   - workflows: [query-optimizer, plan-analyzer, index-advisor]
+//   - skills: [teradata-sql, explain-plan, statistics-refresh]
+//   - agent_templates: [dba-agent template with ROM="TD"]
+//   - mcp_servers: [teradata-mcp-server definition]
+message LoomPlugin {
+  // Plugin identity, versioning, and provenance.
+  PluginMeta meta = 1;
+
+  // Workflows bundled in this plugin.
+  repeated LoomWorkflow workflows = 2;
+
+  // Skills bundled in this plugin. Installed into the skill registry on install.
+  repeated Skill skills = 3;
+
+  // Agent configuration templates. Instantiated by PluginInstallPolicy if
+  // create_default_agent is true, or available for manual agent creation.
+  repeated AgentConfig agent_templates = 4;
+
+  // MCP server definitions required by this plugin's workflows and skills.
+  repeated PluginMCPServerDef mcp_servers = 5;
+
+  // Installation behaviour: what gets auto-configured when the plugin is installed.
+  PluginInstallPolicy install = 6;
+}
+
+// PluginMeta holds identity, versioning, and provenance for a LoomPlugin.
+message PluginMeta {
+  // Stable UUID. Assigned on first registration.
+  string id = 1;
+
+  // Unique machine-readable identifier (e.g. "teradata-performance").
+  string name = 2;
+
+  // Human-readable display name.
+  string title = 3;
+
+  // What this plugin does and what problems it solves.
+  string description = 4;
+
+  // Semantic version string (e.g. "1.2.0").
+  string version = 5;
+
+  // Author or owning team.
+  string author = 6;
+
+  // Domains this plugin targets (e.g. ["teradata", "sql", "performance"]).
+  repeated string domains = 7;
+
+  // Arbitrary key-value labels for discovery and filtering.
+  map<string, string> labels = 8;
+
+  // Installation status of this plugin in the current deployment.
+  PluginStatus status = 9;
+
+  // IDs or names of other plugins this plugin depends on.
+  repeated string dependencies = 10;
+
+  // URL of the source repository or documentation.
+  string source_url = 11;
+
+  // Minimum Loom server version required (semver, e.g. "1.2.0").
+  string min_loom_version = 12;
+}
+
+// PluginMCPServerDef defines an MCP server that must be available for a plugin to operate.
+// On install, the server is registered with the Loom MCP manager if not already present.
+message PluginMCPServerDef {
+  // Logical name used to reference this server in WorkflowMCPGroup.server_names.
+  string name = 1;
+
+  // Transport protocol: "stdio", "http", "sse", or "streamable-http".
+  string transport = 2;
+
+  // Command to launch the MCP server process (for stdio transport).
+  string command = 3;
+
+  // Arguments for the server command.
+  repeated string args = 4;
+
+  // Environment variables injected into the server process.
+  map<string, string> env = 5;
+
+  // Base URL for HTTP/SSE/streamable-http transports.
+  string url = 6;
+
+  // Working directory for the server process.
+  string working_dir = 7;
+}
+
+// PluginInstallPolicy controls what gets automatically configured when a plugin is installed.
+message PluginInstallPolicy {
+  // Automatically register bundled skills into the skill registry.
+  bool auto_register_skills = 1;
+
+  // Automatically register and start bundled MCP servers.
+  bool auto_configure_mcp = 2;
+
+  // Create a default agent from the first agent_template in the plugin.
+  bool create_default_agent = 3;
+
+  // Name for the default agent created when create_default_agent is true.
+  // When empty, uses the plugin name.
+  string default_agent_name = 4;
+
+  // Default config values applied to all agent_templates during installation.
+  // Keys are dot-path field names. These are overridden by values in each template.
+  map<string, string> config_defaults = 5;
+
+  // When true, overwrite existing skills and agents with the same name.
+  // When false, skip installation of already-existing components.
+  bool overwrite_existing = 6;
+}
+
+// PluginStatus tracks the installation state of a LoomPlugin.
+enum PluginStatus {
+  PLUGIN_STATUS_UNSPECIFIED = 0;
+
+  // Known but not installed in this deployment.
+  PLUGIN_STATUS_AVAILABLE = 1;
+
+  // Installed (skills registered, agents created, MCP servers configured).
+  PLUGIN_STATUS_INSTALLED = 2;
+
+  // Installed and at least one workflow is currently active.
+  PLUGIN_STATUS_ACTIVE = 3;
+
+  // Superseded by a newer version.
+  PLUGIN_STATUS_DEPRECATED = 4;
+
+  // Installation failed. See last_error for details.
+  PLUGIN_STATUS_ERROR = 5;
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowService: CRUD, activation, and plugin management
+// ---------------------------------------------------------------------------
+
+// WorkflowService manages LoomWorkflow definitions and LoomPlugin installation.
+// Workflow execution is handled by LoomService.ExecuteWorkflow/StreamWorkflow.
+service WorkflowService {
+
+  // --- Workflow CRUD ---
+
+  // Register a new LoomWorkflow definition.
+  rpc RegisterWorkflow(RegisterWorkflowRequest) returns (RegisterWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows"
+      body: "*"
+    };
+  }
+
+  // Retrieve a workflow by ID or name.
+  rpc GetWorkflow(GetWorkflowRequest) returns (LoomWorkflow) {
+    option (google.api.http) = {get: "/v1/workflows/{workflow_id}"};
+  }
+
+  // List registered workflows with optional filters.
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse) {
+    option (google.api.http) = {get: "/v1/workflows"};
+  }
+
+  // Update a workflow definition. Increments internal revision.
+  rpc UpdateWorkflow(UpdateWorkflowRequest) returns (LoomWorkflow) {
+    option (google.api.http) = {
+      put: "/v1/workflows/{workflow.meta.id}"
+      body: "*"
+    };
+  }
+
+  // Delete a workflow definition. Fails if the workflow is currently running.
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse) {
+    option (google.api.http) = {delete: "/v1/workflows/{workflow_id}"};
+  }
+
+  // --- Lifecycle ---
+
+  // Activate a workflow: wire agents, inject skills, configure MCP tools, and
+  // optionally emit the task blueprint. Returns the activation state.
+  rpc ActivateWorkflow(ActivateWorkflowRequest) returns (ActivateWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows/{workflow_id}/activate"
+      body: "*"
+    };
+  }
+
+  // Deactivate a workflow: detach skills, release borrowed agents, and close the
+  // task board if ephemeral_on_deactivate is true in the blueprint.
+  rpc DeactivateWorkflow(DeactivateWorkflowRequest) returns (DeactivateWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows/{workflow_id}/deactivate"
+      body: "*"
+    };
+  }
+
+  // Get the current lifecycle status of a workflow.
+  rpc GetWorkflowStatus(GetWorkflowStatusRequest) returns (WorkflowLifecycle) {
+    option (google.api.http) = {get: "/v1/workflows/{workflow_id}/status"};
+  }
+
+  // --- Plugin Management ---
+
+  // Register a LoomPlugin definition without installing it.
+  rpc RegisterPlugin(RegisterPluginRequest) returns (RegisterPluginResponse) {
+    option (google.api.http) = {
+      post: "/v1/plugins"
+      body: "*"
+    };
+  }
+
+  // Install a registered plugin: register skills, configure MCP servers, and
+  // create agents per PluginInstallPolicy. Streams installation progress.
+  rpc InstallPlugin(InstallPluginRequest) returns (stream InstallPluginProgress) {
+    option (google.api.http) = {
+      post: "/v1/plugins/{plugin_id}/install"
+      body: "*"
+    };
+  }
+
+  // Uninstall a plugin: deactivate workflows and optionally remove agents and skills.
+  rpc UninstallPlugin(UninstallPluginRequest) returns (UninstallPluginResponse) {
+    option (google.api.http) = {
+      post: "/v1/plugins/{plugin_id}/uninstall"
+      body: "*"
+    };
+  }
+
+  // Retrieve a plugin definition by ID or name.
+  rpc GetPlugin(GetPluginRequest) returns (LoomPlugin) {
+    option (google.api.http) = {get: "/v1/plugins/{plugin_id}"};
+  }
+
+  // List registered plugins with optional filters.
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse) {
+    option (google.api.http) = {get: "/v1/plugins"};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Request / Response messages
+// ---------------------------------------------------------------------------
+
+message RegisterWorkflowRequest {
+  LoomWorkflow workflow = 1;
+}
+
+message RegisterWorkflowResponse {
+  LoomWorkflow workflow = 1;
+}
+
+message GetWorkflowRequest {
+  // Workflow UUID or name.
+  string workflow_id = 1;
+}
+
+message ListWorkflowsRequest {
+  // Filter by domain (e.g. "teradata").
+  string domain = 1;
+
+  // Filter by status.
+  WorkflowStatus status = 2;
+
+  // Filter by label key-value pairs. All supplied labels must match.
+  map<string, string> labels = 3;
+
+  // Filter by agent ID — return workflows that reference this agent.
+  string agent_id = 4;
+
+  // Pagination page size.
+  int32 page_size = 5;
+
+  // Pagination token from a previous ListWorkflows response.
+  string page_token = 6;
+}
+
+message ListWorkflowsResponse {
+  repeated LoomWorkflow workflows = 1;
+  string next_page_token = 2;
+  int32 total = 3;
+}
+
+message UpdateWorkflowRequest {
+  LoomWorkflow workflow = 1;
+}
+
+message DeleteWorkflowRequest {
+  string workflow_id = 1;
+}
+
+message DeleteWorkflowResponse {
+  bool success = 1;
+}
+
+message ActivateWorkflowRequest {
+  // Workflow to activate.
+  string workflow_id = 1;
+
+  // Session to activate within. Agents, skills, and tasks are scoped to this session.
+  // When empty, a new session is created.
+  string session_id = 2;
+
+  // Agent ID to use as the primary executor. Overrides WorkflowAgentRef.primary.
+  string agent_id = 3;
+
+  // Runtime context variables. Merged with (and override) JobToBeDone.context_vars.
+  map<string, string> context = 4;
+
+  // When true, emit the task blueprint immediately regardless of emit_on_activation.
+  bool force_emit_tasks = 5;
+
+  // When true, log activation steps for debugging without actually wiring components.
+  bool dry_run = 6;
+}
+
+message ActivateWorkflowResponse {
+  // The updated workflow with lifecycle fields populated.
+  LoomWorkflow workflow = 1;
+
+  // Session ID the workflow was activated in.
+  string session_id = 2;
+
+  // IDs of tasks emitted by the task blueprint. Empty if no tasks were emitted.
+  repeated string task_ids = 3;
+
+  // IDs of skills successfully injected.
+  repeated string activated_skill_names = 4;
+
+  // MCP servers connected during activation.
+  repeated string connected_mcp_servers = 5;
+
+  // Warnings raised during activation (e.g. optional components unavailable).
+  repeated string warnings = 6;
+}
+
+message DeactivateWorkflowRequest {
+  string workflow_id = 1;
+  string session_id = 2;
+
+  // When true, close all open tasks on the workflow's task board.
+  bool close_tasks = 3;
+
+  // Reason for deactivation. Stored in lifecycle.last_error if status ends in error.
+  string reason = 4;
+}
+
+message DeactivateWorkflowResponse {
+  LoomWorkflow workflow = 1;
+}
+
+message GetWorkflowStatusRequest {
+  string workflow_id = 1;
+}
+
+message RegisterPluginRequest {
+  LoomPlugin plugin = 1;
+}
+
+message RegisterPluginResponse {
+  LoomPlugin plugin = 1;
+}
+
+message InstallPluginRequest {
+  string plugin_id = 1;
+
+  // Overrides for PluginInstallPolicy.
+  bool overwrite_existing = 2;
+
+  // Specific agent ID to create the default agent under. Optional.
+  string target_agent_id = 3;
+}
+
+// InstallPluginProgress reports incremental installation status.
+message InstallPluginProgress {
+  oneof event {
+    InstallPluginBanner banner = 1;
+    InstallPluginStepResult step = 2;
+    InstallPluginSummary summary = 3;
+  }
+}
+
+message InstallPluginBanner {
+  string plugin_name = 1;
+  string version = 2;
+  int32 total_steps = 3;
+  bool dry_run = 4;
+}
+
+message InstallPluginStepResult {
+  string component = 1;        // e.g. "skill:teradata-sql", "mcp:teradata-server"
+  InstallOutcome outcome = 2;
+  string detail = 3;
+  string error = 4;
+}
+
+enum InstallOutcome {
+  INSTALL_OUTCOME_UNSPECIFIED = 0;
+  INSTALL_OUTCOME_INSTALLED = 1;
+  INSTALL_OUTCOME_SKIPPED = 2;  // already exists and overwrite_existing=false
+  INSTALL_OUTCOME_OVERWRITTEN = 3;
+  INSTALL_OUTCOME_FAILED = 4;
+}
+
+message InstallPluginSummary {
+  int32 installed = 1;
+  int32 skipped = 2;
+  int32 failed = 3;
+  bool success = 4;
+  string error = 5;
+}
+
+message UninstallPluginRequest {
+  string plugin_id = 1;
+
+  // Remove skills registered by this plugin from the skill registry.
+  bool remove_skills = 2;
+
+  // Delete agents created by this plugin's install policy.
+  bool remove_agents = 3;
+
+  // Disconnect MCP servers registered by this plugin.
+  bool remove_mcp_servers = 4;
+}
+
+message UninstallPluginResponse {
+  bool success = 1;
+  int32 removed_skills = 2;
+  int32 removed_agents = 3;
+  int32 removed_mcp_servers = 4;
+  repeated string errors = 5;
+}
+
+message GetPluginRequest {
+  // Plugin UUID or name.
+  string plugin_id = 1;
+}
+
+message ListPluginsRequest {
+  // Filter by domain.
+  string domain = 1;
+
+  // Filter by status.
+  PluginStatus status = 2;
+
+  // Filter by labels.
+  map<string, string> labels = 3;
+
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListPluginsResponse {
+  repeated LoomPlugin plugins = 1;
+  string next_page_token = 2;
+  int32 total = 3;
+}
