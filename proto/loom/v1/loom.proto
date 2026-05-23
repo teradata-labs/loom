@@ -334,7 +334,22 @@ service LoomService {
 
   // Workflow Orchestration RPCs
 
-  // ExecuteWorkflow executes a multi-agent workflow pattern.
+  // ExecuteWorkflow is the execution engine primitive: takes an inline WorkflowPattern
+  // and runs it immediately against the specified agent registry. No prior registration
+  // is required — the pattern definition is passed in the request body.
+  //
+  // This is the shared execution primitive that all higher-level activation paths
+  // converge on. CapabilityService.ActivateWorkflow and CapabilityService.ActivatePlugin
+  // resolve their registered entities (LoomWorkflow, LoomPlugin) and delegate here
+  // via executeWorkflowInternalWithProgress.
+  //
+  // Use ExecuteWorkflow directly for:
+  //   - Ad-hoc / dynamic orchestration where the pattern is constructed at runtime
+  //     (e.g. weaver building a one-off multi-agent run, integration tests).
+  //   - Callers that have a WorkflowPattern but no registered LoomWorkflow.
+  //
+  // Use CapabilityService.ActivateWorkflow or ActivatePlugin for registered, versioned,
+  // lifecycle-managed workflows and plugins.
   rpc ExecuteWorkflow(ExecuteWorkflowRequest) returns (ExecuteWorkflowResponse) {
     option (google.api.http) = {
       post: "/v1/workflows:execute"
@@ -342,7 +357,9 @@ service LoomService {
     };
   }
 
-  // StreamWorkflow executes a workflow and streams progress updates.
+  // StreamWorkflow is the streaming variant of ExecuteWorkflow: same execution engine,
+  // same inline WorkflowPattern input, but returns a stream of WorkflowProgress events
+  // instead of a single response. Use when the caller needs real-time execution updates.
   rpc StreamWorkflow(ExecuteWorkflowRequest) returns (stream WorkflowProgress) {
     option (google.api.http) = {
       post: "/v1/workflows:stream"

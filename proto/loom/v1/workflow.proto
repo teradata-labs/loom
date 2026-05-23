@@ -1020,8 +1020,26 @@ enum ValidationSeverity {
 //
 // Named "CapabilityService" rather than "WorkflowService" to avoid collision with
 // the existing WorkflowService RPCs in LoomService (workflow execution/streaming).
-// CapabilityService handles capability *definitions* (CRUD, activation, plugins);
-// LoomService handles capability *execution* (Weave, Stream, ExecuteWorkflow).
+//
+// Execution model — two distinct layers:
+//
+//   CapabilityService (this service) — lifecycle layer:
+//     Manages registered entities (CRUD, activation, plugins). ActivateWorkflow and
+//     ActivatePlugin are the entry points. Their server implementations resolve the
+//     registered LoomWorkflow, inject its skills/agents/MCP groups, and delegate to
+//     the execution engine (executeWorkflowInternalWithProgress).
+//
+//   LoomService — execution engine:
+//     ExecuteWorkflow/StreamWorkflow take an inline WorkflowPattern and run it
+//     directly. This is the shared primitive that both the public ExecuteWorkflow RPC
+//     and the CapabilityService activation handlers converge on. Use ExecuteWorkflow
+//     for ad-hoc/dynamic orchestration (e.g. weaver internals, testing); use
+//     ActivateWorkflow or ActivatePlugin for registered, lifecycle-managed workflows.
+//
+//   Call graph (when CapabilityService is implemented):
+//     ActivatePlugin  → resolves LoomPlugin  → ActivateWorkflow (per workflow_ref)
+//     ActivateWorkflow → resolves LoomWorkflow → executeWorkflowInternalWithProgress
+//     ExecuteWorkflow (public RPC) ──────────→ executeWorkflowInternalWithProgress
 service CapabilityService {
 
   // ─── Workflow CRUD ───────────────────────────────────────────────────────────
@@ -1063,10 +1081,19 @@ service CapabilityService {
 
   // ─── Workflow Lifecycle ───────────────────────────────────────────────────────
 
-  // ActivateWorkflow wires a single workflow's agents, skills, and MCP tools and
-  // optionally emits the task blueprint. Prefer ActivatePlugin for plugin-delivered
-  // workflows; use this RPC directly only for standalone workflows (those registered
-  // without a parent plugin) or advanced per-workflow control.
+  // ActivateWorkflow wires a registered LoomWorkflow's agents, skills, and MCP tools
+  // into a session and optionally emits the task blueprint.
+  //
+  // Implementation note: resolve the LoomWorkflow by workflow_id, inject its skills
+  // and agent refs, build an ExecuteWorkflowRequest from LoomWorkflow.orchestration,
+  // and call executeWorkflowInternalWithProgress. Do NOT implement a separate execution
+  // path — converge on the existing engine.
+  //
+  // When to use:
+  //   - Standalone workflows: registered without a parent plugin.
+  //   - Per-workflow control: when you need fine-grained activation of one workflow
+  //     inside a plugin rather than activating the whole plugin.
+  //   - Prefer ActivatePlugin for plugin-delivered workflows (it calls this internally).
   //
   // Supports idempotent activation via activation_key (same key = same activation).
   // Supports optimistic-locking via expected_generation to prevent double-activation.
