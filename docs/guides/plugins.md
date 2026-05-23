@@ -20,6 +20,8 @@ A **plugin** is the unit of invocation in Loom. One slash command or keyword act
   - [Activate a plugin](#activate-a-plugin)
   - [Bind a plugin to an agent](#bind-a-plugin-to-an-agent)
 - [Reference Failures and Synthesis](#reference-failures-and-synthesis)
+- [Governance and Risk](#governance-and-risk)
+- [MCP and Claude Integration](#mcp-and-claude-integration)
 - [API Reference](#api-reference)
 - [Troubleshooting](#troubleshooting)
 - [Implementation Status](#implementation-status)
@@ -118,6 +120,9 @@ metadata:
   domains: [teradata, sql, performance]
   labels:
     surface: teradata             # arbitrary key-value tags for filtering
+  type: domain                   # domain|integration|meta|analysis|utility
+  risk_level: low                # low|medium|high|restricted (default: unset)
+  require_approval: false        # if true, blocks activation for high/restricted
 
 trigger:
   slash_commands: [/td-opt, /slow-query]  # what users type to invoke
@@ -180,6 +185,16 @@ resolution:
 | `metadata.description` | Required. |
 | At least one ref | `workflows`, `skills`, `agents`, or `mcp_tools` must be non-empty. |
 | `description` on synthesize refs | Required when `synthesize: true`. |
+
+### Optional governance fields
+
+| Field | Values | Default |
+|---|---|---|
+| `metadata.type` | `domain` `integration` `meta` `analysis` `utility` | unset |
+| `metadata.risk_level` | `low` `medium` `high` `restricted` | unset |
+| `metadata.require_approval` | `true` / `false` | `false` |
+
+`type` is validated at parse time — an unrecognised value is a loader error. `risk_level` is free-form and case-insensitive; the activation gate treats `high` and `restricted` as blocked when `require_approval: true`.
 
 ---
 
@@ -244,19 +259,20 @@ loom plugin list
 Expected output:
 
 ```
-NAME                    VERSION  STATUS     DOMAINS              TRIGGER
-teradata-optimizer      1.0.0    INSTALLED  teradata,sql         /td-opt, /slow-query
-data-quality-monitor    1.1.0    INSTALLED  teradata,data        /dq-check
-my-plugin               1.0.0    REGISTERED  —                   /my-plugin
+NAME                    VERSION  STATUS      TYPE         RISK    TRIGGER
+teradata-optimizer      1.0.0    INSTALLED   domain       low     /td-opt, /slow-query
+data-quality-monitor    1.1.0    INSTALLED   domain       low     /dq-check
+my-plugin               1.0.0    REGISTERED  —            —       /my-plugin
 
 3 plugins (2 installed, 1 registered)
 ```
 
-Filter by status or domain:
+Filter by status, domain, or type:
 
 ```bash
 loom plugin list --status installed
 loom plugin list --domain teradata
+loom plugin list --type integration
 ```
 
 ### Read plugin details
@@ -270,6 +286,8 @@ Expected output:
 ```
 Plugin: teradata-optimizer v1.0.0
 Status: INSTALLED
+Type:   domain
+Risk:   low  (require_approval: false)
 Description: Analyze and optimize slow Teradata SQL queries using EXPLAIN plans and rule-based rewrites.
 Domains: teradata, sql, performance
 
@@ -435,6 +453,91 @@ If a component existed at install but was later deleted, the `resolution` block 
 
 ---
 
+## Governance and Risk
+
+### Risk levels
+
+`risk_level` classifies the combined capability surface of the plugin — independent of its individual component risk levels. A plugin that bundles three individually low-risk components (read schema, format as CSV, send email) may represent a higher combined risk than any component alone.
+
+| `risk_level` | Meaning |
+|---|---|
+| `low` | Read-only or informational capabilities. No side effects. |
+| `medium` | Writes to internal systems or modifies agent state. |
+| `high` | Writes to external systems, executes code, or accesses sensitive data. |
+| `restricted` | Restricted to explicitly approved operators. Blocked by default. |
+
+### Approval gate
+
+When `require_approval: true`, `ActivatePlugin` is blocked for `high` and `restricted` plugins unless the caller holds explicit approval. This mirrors the skill-level gate already in the agent runtime.
+
+```yaml
+metadata:
+  risk_level: high
+  require_approval: true   # activation blocked until an operator approves
+```
+
+Plugins with `risk_level: low` or `medium` and no `require_approval` activate without a gate.
+
+### Component risk still applies
+
+Setting a low `risk_level` on the plugin does not override component-level risk. If a bundled skill has `risk_level: high`, the skill gate in the agent runtime still applies when that skill activates. Plugin governance is additive.
+
+---
+
+## MCP and Claude Integration
+
+### Loom as an MCP consumer
+
+Plugins reference MCP tools via `mcp_tools`. Any MCP server — Claude Desktop extensions, VS Code tools, custom servers — can be wired into a Loom plugin and used by its workflows and skills.
+
+```yaml
+mcp_tools:
+  - tool_name: github_search    # from a GitHub MCP server
+    required: true
+  - tool_name: github_pr_read
+    required: true
+```
+
+Use `type: integration` for plugins whose primary purpose is wrapping an external MCP server:
+
+```yaml
+metadata:
+  name: github-tools
+  type: integration
+  description: Wraps the GitHub MCP server with Loom skills for code review workflows.
+```
+
+### Loom as an MCP server
+
+`loom-mcp` is a binary that exposes the entire Loom capability surface as an MCP server. Claude Desktop, VS Code, and any MCP client can add it as a tool provider:
+
+```json
+// Claude Desktop config
+{
+  "mcpServers": {
+    "loom": {
+      "command": "/usr/local/bin/loom-mcp",
+      "args": ["--grpc-addr", "localhost:60051"]
+    }
+  }
+}
+```
+
+From the MCP client's perspective, all Loom workflows and skills are available as tools. From Loom's perspective, the client is just another agent calling `ActivatePlugin` and `Weave`.
+
+### Relationship summary
+
+| | MCP / Claude plugin | Loom plugin |
+|---|---|---|
+| **Abstraction** | Protocol — defines how tools are called | Bundle — packages capabilities together |
+| **Unit** | A server exposing named tools | Workflows + skills + MCP tools + agents under one trigger |
+| **Orchestration** | None | Workflows, multi-agent, task decomposition |
+| **Authoring** | Implement a server (code) | Write YAML, or use `/plugin` in the weaver |
+
+They are complementary: a Loom plugin can consume MCP tools from any Claude plugin, and Loom itself is available as a Claude plugin via `loom-mcp`.
+
+---
+
 ## API Reference
 
 All plugin operations go through `CapabilityService` (gRPC) or its REST gateway:
@@ -496,6 +599,14 @@ A `required: true` component was deleted after install. Options:
 - Verify the agent has `skills.router_enabled: true` in its config — keyword detection requires the router.
 - For slash commands: confirm the exact command matches (e.g. `/td-opt` not `/tdopt`).
 
+### `activation blocked: require_approval=true`
+
+The plugin has `risk_level: high` or `restricted` and `require_approval: true`. An operator must explicitly approve the plugin before it can be activated. To test locally before getting approval, temporarily set `require_approval: false` in the YAML and re-install.
+
+### `metadata.type "widget" is not valid`
+
+`type` must be one of: `domain`, `integration`, `meta`, `analysis`, `utility`. Remove the field entirely if the plugin doesn't fit a category — it is optional.
+
 ### Weaver writes YAML but `loom plugin install` fails
 
 The weaver writes to `plugins/<name>.yaml` relative to the working directory. The server looks for plugins in `$LOOM_DATA_DIR/plugins/`. Move the file:
@@ -515,9 +626,12 @@ loom plugin install my-plugin
 | `proto/loom/v1/permissions.proto` — `PermissionMode` enum (used by workflows) | ✅ Done |
 | `proto/loom/v1/agent_config.proto` — `AgentConfig.plugin_ids` field | ✅ Done |
 | `pkg/plugins` — YAML loader, types, round-trip serialization | ✅ Done |
+| `pkg/plugins` — `type`, `risk_level`, `require_approval` + `IsHighRisk()` | ✅ Done |
 | `embedded/skills/weaver-plugin.yaml` — `/plugin` weaver skill | ✅ Done |
+| `cmd/loom-mcp` — exposes Loom as an MCP server for Claude Desktop / VS Code | ✅ Done |
 | `CapabilityService` server implementation | 📋 Planned |
 | `loom plugin` CLI subcommands | 📋 Planned |
+| Approval gate wired into `ActivatePlugin` for high/restricted plugins | 📋 Planned |
 | Synthesis pipeline (auto-generate skills/agents at install) | 📋 Planned |
 | Plugin hot-reload from `plugins/` directory | 📋 Planned |
 | Plugin activation wired into agent session start | 📋 Planned |
