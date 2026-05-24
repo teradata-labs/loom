@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ type Config struct {
 	Model             string        // Required: e.g., llama3.1, mistral, qwen2.5-coder
 	MaxTokens         int           // Default: model-aware (4096 for 7B/8B, 6144 for 13B-32B, 8192 for 70B+)
 	Temperature       float64       // Default: 0.8
-	Timeout           time.Duration // Default: 120s
+	Timeout           time.Duration // Response header timeout. Default: 300s. Total generation time is bounded by caller context.
 	ToolMode          ToolMode      // Default: auto (detect native support)
 	RateLimiterConfig llm.RateLimiterConfig
 }
@@ -133,7 +134,7 @@ func NewClient(cfg Config) *Client {
 		cfg.Temperature = 0.8
 	}
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 120 * time.Second
+		cfg.Timeout = 300 * time.Second
 	}
 	if cfg.ToolMode == "" {
 		cfg.ToolMode = ToolModeAuto
@@ -153,7 +154,16 @@ func NewClient(cfg Config) *Client {
 		toolMode:    cfg.ToolMode,
 		rateLimiter: rateLimiter,
 		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ResponseHeaderTimeout: cfg.Timeout,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConns:          10,
+				MaxIdleConnsPerHost:   2,
+			},
 		},
 	}
 }
@@ -257,35 +267,10 @@ func (c *Client) probeToolSupport() (bool, bool) {
 }
 
 // Chat sends a conversation to Ollama and returns the response.
+// Internally uses streaming so that the response header timeout applies to
+// first-token arrival rather than total generation time.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
-	// Convert messages to Ollama format
-	apiMessages := c.convertMessages(messages)
-
-	// Build request
-	req := chatRequest{
-		Model:    c.model,
-		Messages: apiMessages,
-		Stream:   false,
-		Options: map[string]interface{}{
-			"temperature": c.temperature,
-			"num_predict": c.maxTokens,
-		},
-	}
-
-	// Add tools if native support is available
-	if c.supportsNativeTools() && len(tools) > 0 {
-		c.toolNameMap = make(map[string]string)
-		req.Tools = c.convertTools(tools)
-	}
-
-	// Call API
-	resp, err := c.callAPI(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama API call failed: %w", err)
-	}
-
-	// Convert response
-	return c.convertResponse(resp), nil
+	return c.ChatStream(ctx, messages, tools, nil)
 }
 
 // convertTools converts shuttle.Tool to Ollama tool format.
@@ -641,59 +626,70 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}, nil
 }
 
-// callAPI makes the HTTP request to Ollama.
-func (c *Client) callAPI(ctx context.Context, req chatRequest) (*chatResponse, error) {
-	// Marshal request
-	body, err := json.Marshal(req)
+// HealthCheck checks that the Ollama server is reachable and that the
+// configured model is available. Uses /api/tags to avoid triggering model
+// loading during startup preflight.
+func (c *Client) HealthCheck(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/api/tags", nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return fmt.Errorf("failed to create health check request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/chat", bytes.NewReader(body))
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to query ollama tags: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("health check failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
+	var payload interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return fmt.Errorf("failed to parse tags response: %w", err)
+	}
 
-	// Send request with rate limiting if enabled
-	var httpResp *http.Response
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+	model := c.model
+	if containsStringValue(payload, model) {
+		return nil
+	}
+
+	if strings.HasSuffix(model, ":latest") {
+		baseModel := strings.TrimSuffix(model, ":latest")
+		if containsStringValue(payload, baseModel) {
+			return nil
 		}
-		httpResp = result.(*http.Response)
-	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+
+	if !strings.HasSuffix(model, ":latest") {
+		if containsStringValue(payload, model+":latest") {
+			return nil
 		}
 	}
-	defer func() { _ = httpResp.Body.Close() }()
 
-	// Read response
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+	return fmt.Errorf("model %q not found in ollama tags response", model)
+}
+
+func containsStringValue(value interface{}, target string) bool {
+	switch v := value.(type) {
+	case string:
+		return v == target
+	case []interface{}:
+		for _, item := range v {
+			if containsStringValue(item, target) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for _, item := range v {
+			if containsStringValue(item, target) {
+				return true
+			}
+		}
 	}
-
-	// Check status
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	// Parse response
-	var resp chatResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &resp, nil
+	return false
 }
 
 // Ollama API types

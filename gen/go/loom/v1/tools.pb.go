@@ -150,10 +150,9 @@ type SearchToolsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Natural language query describing what the agent needs.
 	// Examples:
-	//
-	//	"send a slack notification"
-	//	"query a postgres database"
-	//	"read and parse a JSON file"
+	//   "send a slack notification"
+	//   "query a postgres database"
+	//   "read and parse a JSON file"
 	Query string `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
 	// Search mode controlling accuracy vs speed.
 	Mode SearchMode `protobuf:"varint,2,opt,name=mode,proto3,enum=loom.v1.SearchMode" json:"mode,omitempty"`
