@@ -415,61 +415,6 @@ func (c *Client) cleanJSONString(s string) string {
 	return s
 }
 
-// convertResponse converts Ollama response to agent format.
-func (c *Client) convertResponse(resp *chatResponse) *llmtypes.LLMResponse {
-	// Parse tool calls if present
-	var toolCalls []llmtypes.ToolCall
-	if len(resp.Message.ToolCalls) > 0 {
-		toolCalls = make([]llmtypes.ToolCall, len(resp.Message.ToolCalls))
-		for i, tc := range resp.Message.ToolCalls {
-			// Parse function arguments (may be string or map)
-			var params map[string]interface{}
-			switch args := tc.Function.Arguments.(type) {
-			case string:
-				// Clean JSON string (strip backticks, trim whitespace)
-				cleanedArgs := c.cleanJSONString(args)
-
-				// Parse JSON string
-				if err := json.Unmarshal([]byte(cleanedArgs), &params); err != nil {
-					// Log parsing error with raw JSON for debugging
-					fmt.Printf("WARNING: Failed to parse tool arguments for %s: %v\nRaw JSON: %s\nCleaned JSON: %s\n",
-						tc.Function.Name, err, args, cleanedArgs)
-					// Use empty params as fallback
-					params = make(map[string]interface{})
-				}
-			case map[string]interface{}:
-				params = args
-			default:
-				params = make(map[string]interface{})
-			}
-
-			toolCalls[i] = llmtypes.ToolCall{
-				ID:    tc.ID,
-				Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
-				Input: params,
-			}
-		}
-	}
-
-	return &llmtypes.LLMResponse{
-		Content:    resp.Message.Content,
-		ToolCalls:  toolCalls,
-		StopReason: "stop",
-		Usage: llmtypes.Usage{
-			InputTokens:  resp.PromptEvalCount,
-			OutputTokens: resp.EvalCount,
-			TotalTokens:  resp.PromptEvalCount + resp.EvalCount,
-			CostUSD:      0, // Ollama is free (local)
-		},
-		Metadata: map[string]interface{}{
-			"model":         resp.Model,
-			"eval_duration": resp.EvalDuration,
-			"native_tools":  c.supportsNativeTools(),
-			"tool_mode":     string(c.toolMode),
-		},
-	}
-}
-
 // ChatStream implements token-by-token streaming for Ollama.
 // This method uses Ollama's /api/chat endpoint with stream=true to stream tokens
 // as they are generated. The tokenCallback is called for each token received.
