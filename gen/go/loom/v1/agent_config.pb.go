@@ -242,6 +242,7 @@ type AgentConfig struct {
 	//   - "TD" or "teradata": Load Teradata SQL guidance (embedded TD.rom)
 	//   - "auto": Auto-detect based on backend configuration (default)
 	//   - "": No ROM (empty system prompt only)
+	//
 	// If not specified, defaults to "auto" which detects ROM from backend path
 	Rom string `protobuf:"bytes,10,opt,name=rom,proto3" json:"rom,omitempty"`
 	// Automatic finding extraction configuration
@@ -702,8 +703,9 @@ type LLMRateLimitConfig struct {
 	// Maximum input+output tokens per minute for token-based throttling.
 	// 0 = use default (40000 TPM).
 	// Set this to match your API tier:
-	//   Anthropic free: 30000, Tier 1: 100000
-	//   Bedrock: varies by model (40000-400000)
+	//
+	//	Anthropic free: 30000, Tier 1: 100000
+	//	Bedrock: varies by model (40000-400000)
 	TokensPerMinute int64 `protobuf:"varint,3,opt,name=tokens_per_minute,json=tokensPerMinute,proto3" json:"tokens_per_minute,omitempty"`
 	// Burst capacity: maximum concurrent requests allowed before queuing.
 	// 0 = use default (5).

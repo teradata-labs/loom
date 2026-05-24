@@ -2615,16 +2615,17 @@ func (x *TuningSummary) GetEstimatedLatencyReductionMs() int64 {
 // and eval suites.
 //
 // Example YAML:
-//   apiVersion: loom/v1
-//   kind: LearningAgentConfig
-//   metadata:
-//     name: market-intel-learner
-//   spec:
-//     enabled: true
-//     autonomy_level: AUTONOMY_HUMAN_APPROVAL
-//     analysis_interval: "1h"
-//     watch_eval_suites:
-//       - eval-suites/market-intel-judges.yaml
+//
+//	apiVersion: loom/v1
+//	kind: LearningAgentConfig
+//	metadata:
+//	  name: market-intel-learner
+//	spec:
+//	  enabled: true
+//	  autonomy_level: AUTONOMY_HUMAN_APPROVAL
+//	  analysis_interval: "1h"
+//	  watch_eval_suites:
+//	    - eval-suites/market-intel-judges.yaml
 type LearningAgentConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique name for this learning agent configuration
@@ -2851,7 +2852,8 @@ type ImprovementPolicy struct {
 	// Allowed improvement types
 	// If empty, all types are allowed
 	// Values: "prompt_append", "prompt_replace", "tool_add", "source_add",
-	//         "parameter_tune", "pattern_add", "pattern_remove"
+	//
+	//	"parameter_tune", "pattern_add", "pattern_remove"
 	AllowedChangeTypes []string `protobuf:"bytes,4,rep,name=allowed_change_types,json=allowedChangeTypes,proto3" json:"allowed_change_types,omitempty"`
 	// Maximum impact level for auto-apply (only if autonomy_level = AUTONOMY_FULL)
 	// Improvements above this level always require human approval
@@ -2935,7 +2937,8 @@ type NotificationConfig struct {
 	EmailAddresses []string `protobuf:"bytes,2,rep,name=email_addresses,json=emailAddresses,proto3" json:"email_addresses,omitempty"`
 	// Which events to notify on
 	// Values: "improvement_generated", "improvement_applied", "improvement_rejected",
-	//         "improvement_failed", "circuit_breaker_open", "circuit_breaker_closed"
+	//
+	//	"improvement_failed", "circuit_breaker_open", "circuit_breaker_closed"
 	NotifyOn []string `protobuf:"bytes,3,rep,name=notify_on,json=notifyOn,proto3" json:"notify_on,omitempty"`
 	// Include detailed improvement info in notifications (default: true)
 	IncludeDetails bool `protobuf:"varint,4,opt,name=include_details,json=includeDetails,proto3" json:"include_details,omitempty"`
