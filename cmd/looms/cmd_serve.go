@@ -1491,6 +1491,47 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
 				}
 
+				// Wire per-role LLMs if declared in YAML. These route auxiliary
+				// work (memory extraction, classification) to a separate provider
+				// — critical when the primary is a single-slot local model.
+				// Mirrors the registry path at pkg/agent/registry.go ~600.
+				var staticClassifierLLM agent.LLMProvider
+				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
+					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
+					if err != nil {
+						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
+							zap.Error(err),
+							zap.String("provider", cfg.CompressorLlm.Provider),
+							zap.String("model", cfg.CompressorLlm.Model))
+					} else {
+						if tracer != nil {
+							compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+						}
+						agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
+						logger.Info("    Compressor LLM configured",
+							zap.String("provider", cfg.CompressorLlm.Provider),
+							zap.String("model", cfg.CompressorLlm.Model))
+					}
+				}
+				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
+					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
+					if err != nil {
+						logger.Warn("    Failed to create classifier LLM, router will use primary",
+							zap.Error(err),
+							zap.String("provider", cfg.ClassifierLlm.Provider),
+							zap.String("model", cfg.ClassifierLlm.Model))
+					} else {
+						if tracer != nil {
+							classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+						}
+						staticClassifierLLM = classLLM
+						agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
+						logger.Info("    Classifier LLM configured",
+							zap.String("provider", cfg.ClassifierLlm.Provider),
+							zap.String("model", cfg.ClassifierLlm.Model))
+					}
+				}
+
 				// Wire skills (orchestrator + Discovery + hierarchical router)
 				// via the shared agent.BuildSkillsOptions helper. This is the
 				// single source of truth used by both this static-YAML loader
@@ -1500,15 +1541,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				if agentCfg.SkillsConfig != nil && agentCfg.SkillsConfig.Enabled {
 					if registry != nil {
 						agentOpts = append(agentOpts,
-							registry.BuildSkillsOptions(agentCfg.SkillsConfig, nil, agentLLMProvider, cfg.Name)...)
+							registry.BuildSkillsOptions(agentCfg.SkillsConfig, staticClassifierLLM, agentLLMProvider, cfg.Name)...)
 					} else {
 						agentOpts = append(agentOpts,
 							agent.BuildSkillsOptions(agent.SkillsWiringDeps{
-								SkillsConfig: agentCfg.SkillsConfig,
-								PrimaryLLM:   agentLLMProvider,
-								AgentName:    cfg.Name,
-								Tracer:       tracer,
-								Logger:       logger,
+								SkillsConfig:  agentCfg.SkillsConfig,
+								ClassifierLLM: staticClassifierLLM,
+								PrimaryLLM:    agentLLMProvider,
+								AgentName:     cfg.Name,
+								Tracer:        tracer,
+								Logger:        logger,
 							})...)
 					}
 				}
