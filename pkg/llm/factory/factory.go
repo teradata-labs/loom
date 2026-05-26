@@ -86,9 +86,10 @@ type FactoryConfig struct {
 	HuggingFaceModel string
 
 	// Common settings
-	MaxTokens   int
-	Temperature float64
-	Timeout     int // seconds
+	MaxTokens       int
+	Temperature     float64
+	Timeout         int  // seconds
+	TimeoutExplicit bool // true when timeout_seconds was explicitly configured
 }
 
 // NewProviderFactory creates a new provider factory.
@@ -100,9 +101,6 @@ type FactoryConfig struct {
 func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	if config.Temperature == 0 {
 		config.Temperature = 1.0
-	}
-	if config.Timeout == 0 {
-		config.Timeout = 60
 	}
 
 	return &ProviderFactory{
@@ -227,12 +225,17 @@ func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error
 		model = "llama3.2"
 	}
 
+	var timeout time.Duration
+	if f.config.TimeoutExplicit {
+		timeout = time.Duration(f.config.Timeout) * time.Second
+	}
+
 	return ollama.NewClient(ollama.Config{
 		Endpoint:    endpoint,
 		Model:       model,
 		MaxTokens:   f.resolveMaxOutput("ollama", model),
 		Temperature: f.config.Temperature,
-		Timeout:     time.Duration(f.config.Timeout) * time.Second,
+		Timeout:     timeout,
 	}), nil
 }
 
