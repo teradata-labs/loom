@@ -319,6 +319,11 @@ type LLMConfig struct {
 	MaxTokens   int     `mapstructure:"max_tokens"`
 	Timeout     int     `mapstructure:"timeout_seconds"`
 
+	// ConcurrencyLimit bounds the number of in-flight LLM calls across the
+	// whole server. 1 fully serialises (recommended for a single local
+	// Ollama slot); higher values allow parallelism (default: 2).
+	ConcurrencyLimit int `mapstructure:"concurrency_limit"`
+
 	// Client-side rate limiting (applies to the server's default provider)
 	// Zero values use provider defaults. Example loom.yaml:
 	//   llm:
@@ -1043,6 +1048,7 @@ func setDefaults() {
 	viper.SetDefault("llm.temperature", 1.0)
 	viper.SetDefault("llm.max_tokens", 4096)
 	viper.SetDefault("llm.timeout_seconds", 0)
+	viper.SetDefault("llm.concurrency_limit", 2)
 
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
@@ -1092,12 +1098,17 @@ func setDefaults() {
 	viper.SetDefault("tools.permissions.default_action", "deny")
 	viper.SetDefault("tools.permissions.timeout_seconds", 300)
 
-	// Tool injection defaults. tools.minimal=true suppresses the five
-	// always-on auto-injected tools (shell_execute, workspace, tool_search,
-	// graph_memory, task_board) so an agent only sees what its YAML
-	// declares. Default false preserves all existing behavior — set
-	// explicitly via --minimal-tools or tools.minimal: true in config.
+	// Tool injection defaults.
+	//   tools.minimal=true suppresses the five always-on auto-injected tools
+	//     (shell_execute, workspace, tool_search, graph_memory, task_board).
+	//     Communication and UI app tools are still injected.
+	//   tools.none=true is stricter: ALSO suppresses communication
+	//     (send_message, publish, shared_memory_*) and UI app tools, so an
+	//     agent ends up with EXACTLY what its YAML lists. tools.none implies
+	//     tools.minimal semantics.
+	// Default both false to preserve existing behavior.
 	viper.SetDefault("tools.minimal", false)
+	viper.SetDefault("tools.none", false)
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
