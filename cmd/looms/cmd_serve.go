@@ -1217,9 +1217,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		HuggingFaceModel: config.LLM.HuggingFaceModel,
 
 		// Common settings
-		MaxTokens:   config.LLM.MaxTokens,
-		Temperature: config.LLM.Temperature,
-		Timeout:     config.LLM.Timeout,
+		MaxTokens:       config.LLM.MaxTokens,
+		Temperature:     config.LLM.Temperature,
+		Timeout:         config.LLM.Timeout,
+		TimeoutExplicit: config.LLM.Timeout != 0,
 	})
 	logger.Info("LLM provider factory created for dynamic model switching")
 
