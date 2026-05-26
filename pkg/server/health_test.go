@@ -95,6 +95,26 @@ func TestValidateProviders_DistinctProvidersAllPinged(t *testing.T) {
 	assert.Equal(t, int64(1), llm3.calls.Load())
 }
 
+type healthCheckingLLM struct {
+	countingLLM
+	healthCalls atomic.Int64
+}
+
+func (m *healthCheckingLLM) HealthCheck(_ context.Context) error {
+	m.healthCalls.Add(1)
+	return nil
+}
+
+func TestValidateProviders_UsesHealthCheckerWhenAvailable(t *testing.T) {
+	llm := &healthCheckingLLM{countingLLM: countingLLM{name: "ollama", model: "llama3"}}
+	ag := agent.NewAgent(&mockBackend{}, llm)
+
+	err := ValidateProviders(context.Background(), map[string]*agent.Agent{"agent1": ag})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), llm.calls.Load(), "Chat should not be called when HealthCheck is available")
+	assert.Equal(t, int64(1), llm.healthCalls.Load(), "HealthCheck should be invoked exactly once")
+}
+
 func TestValidateProviders_ReportsFailures(t *testing.T) {
 	llmOK := &countingLLM{name: "bedrock", model: "claude-3"}
 	llmBad := &countingLLM{name: "ollama", model: "llama3", err: errors.New("connection refused")}
