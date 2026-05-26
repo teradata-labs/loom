@@ -1,0 +1,109 @@
+# Researcher agent tuned for a single local Ollama model.
+#
+# Pairs with examples/config/local-ollama.yaml. The server profile sets
+# tools.none=true and concurrency_limit=1; this agent declares its tools
+# explicitly and (optionally) routes auxiliary LLM work to a separate
+# compressor model so the primary Ollama slot stays free for user turns.
+#
+# Place this file in $LOOM_DATA_DIR/agents/ before starting `looms serve`.
+
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: ollama-researcher
+  version: "1.0.0"
+  description: Local-Ollama-backed researcher that uses shell_execute and http_request to investigate questions.
+  labels:
+    profile: local-ollama
+    tools: shell,http
+
+spec:
+  # Primary LLM. Falls back to the server's llm: block when fields are
+  # unset; override here for an agent that should use a different model
+  # than the server default.
+  llm:
+    temperature: 0.1
+    max_tokens: 1024
+
+  # Per-role LLM for auxiliary work. Routes graph-memory entity extraction,
+  # finding extraction, and search-query distillation HERE instead of the
+  # primary. Use a smaller / faster / cheaper model — these tasks don't
+  # need primary-tier quality, and offloading them keeps the user-facing
+  # Ollama slot free.
+  #
+  # If you don't set compressor_llm, the primary LLM handles auxiliary work
+  # too — fine when memory.graph_memory.enabled is also false. With
+  # graph_memory.enabled: true (the default in this template) and a
+  # primary that's a single local model, you almost certainly want a
+  # compressor_llm declared.
+  compressor_llm:
+    provider: ollama
+    model: llama3.2:latest          # 3B, sub-second inference
+
+  # Optional: separate LLM for the skill hierarchical router and pattern
+  # classification. Same rationale as compressor_llm but for classifier
+  # work. Unused while config.skills.enabled is false (the default below).
+  #
+  # classifier_llm:
+  #   provider: ollama
+  #   model: llama3.2:latest
+
+  system_prompt: |
+    You investigate questions by calling tools. Available tools:
+      - shell_execute(command): run a shell command and return stdout
+      - http_request(method, url, ...): fetch a URL
+
+    Rules:
+    1. ALWAYS use a tool to get real data. Never guess file contents or counts.
+    2. Plan briefly, then call ONE tool. After the result, decide the next step.
+    3. When you have the answer, reply with a short summary (1-3 sentences)
+       that includes the actual data the tool returned, and stop. Do not call
+       more tools after answering.
+
+  # Only the tools this agent actually needs. The server-level
+  # `tools.none: true` in local-ollama.yaml suppresses auto-injection of
+  # the basic, communication, and UI app tools — so this list is what the
+  # model sees in its chat request. Keeping the tool count low is what
+  # lets a local 7B-30B model stay focused on the actual task.
+  tools:
+    - shell_execute
+    - http_request
+
+  memory:
+    type: sqlite
+    max_history: 50
+
+    # Graph memory adds an LLM-driven entity/relationship extraction step
+    # after every turn. Safe to leave enabled even under tools.none — the
+    # graph_memory TOOL is hidden from the LLM, but the EXTRACTOR runs in
+    # the background and routes through compressor_llm when declared. To
+    # opt out of extraction entirely, set enabled: false.
+    graph_memory:
+      enabled: true
+
+  config:
+    # Local models drift after a handful of turns. Keep loops short.
+    max_turns: 8
+    max_tool_executions: 12
+    max_context_tokens: 8000
+    reserved_output_tokens: 1024
+
+    # Pattern guidance fires extra LLM calls to pick + apply patterns from
+    # the library. Off for this profile.
+    patterns:
+      enabled: false
+
+    # Skill router (hierarchical skill discovery) summarises subtree nodes
+    # via LLM at startup. Off for this profile so the local model is not
+    # tied up generating skill-tree descriptions before serving traffic.
+    # tasks_enabled: false also suppresses skill-driven task emissions.
+    # To re-enable: declare a classifier_llm above and flip these to true.
+    skills:
+      enabled: false
+      tasks_enabled: false
+
+# Note: self-correction (guardrails + circuit breakers) is enabled by
+# default in agent.NewAgent() and currently has no YAML opt-out — only the
+# Go option WithoutSelfCorrection() disables it. On a local single-slot
+# model this means tool-execution errors will still trigger an extra
+# correction LLM call. Track with a future YAML opt-out.

@@ -1,0 +1,97 @@
+# Loom server config tuned for a single local Ollama model.
+#
+# Why a separate profile?
+# Ollama on a developer machine has ONE inference slot (or very few). The
+# default Loom server fans every user turn out into several background LLM
+# calls: graph-memory extraction, memory-search query distillation, skill
+# router subtree summarisation, etc. Those calls hit the same model, queue
+# behind each other, and starve the user-facing turn. Symptoms: empty
+# assistant responses, multi-minute first-token latency, models "narrating"
+# tools instead of calling them.
+#
+# This profile fixes that two ways:
+#   1. tools.none=true       → no auto-injected tools; agents see only what
+#                              their YAML declares.
+#   2. concurrency_limit=1   → fully serialise LLM calls so background work
+#                              backs off when a user turn is in flight.
+#
+# For the auxiliary LLM work itself, see the paired agent template
+# (examples/reference/agents/ollama-researcher.yaml) — it shows how to
+# declare a separate `compressor_llm` so memory extraction, finding
+# extraction, and search-query distillation route OFF the primary Ollama
+# slot. Without that, this profile keeps those background paths disabled
+# at the agent level.
+#
+# Usage:
+#   LOOM_DATA_DIR=$HOME/.loom-local ./bin/looms serve \
+#     --config examples/config/local-ollama.yaml --yolo
+
+server:
+  host: 127.0.0.1
+  port: 60051
+  enable_reflection: true
+
+llm:
+  provider: ollama
+  ollama_endpoint: http://localhost:11434
+  # Pick a model well-trained for native tool calls. qwen3:30b-a3b and
+  # qwen2.5:14b have been the most reliable in local testing; llama3.1:8b
+  # and llama3.2 work but emit non-standard tool-call syntax under some
+  # prompts.
+  ollama_model: qwen3:30b-a3b
+  temperature: 0.3
+  max_tokens: 2048
+
+  # Response-header timeout. 0 means use the Ollama client default (300s),
+  # which is plenty for first-byte even on cold model loads. The body
+  # stream is bounded only by the caller context, so a long generation
+  # will not be killed mid-stream.
+  timeout_seconds: 0
+
+  # Bounds in-flight LLM calls across the whole server. Set to 1 for a
+  # single local Ollama slot — background extraction / classification
+  # work will then wait its turn behind the user-facing chat rather than
+  # contending for the model. Default in stock looms is 2.
+  concurrency_limit: 1
+
+# database.path defaults to $LOOM_DATA_DIR/loom.db; leaving unset is usually
+# what you want so the same SQLite file is reused for sessions, comm store,
+# and the agent registry. Override only if you need a different location.
+database:
+  driver: sqlite
+
+# Observability adds tracing overhead on the hot path; off by default for a
+# local single-GPU profile. Turn back on when you actually need traces.
+observability:
+  enabled: false
+
+logging:
+  level: info
+  format: text
+
+tools:
+  # tools.none=true: do NOT auto-inject ANY tools. Agents only get what
+  # their YAML explicitly lists. Suppresses shell_execute, workspace,
+  # tool_search, graph_memory, task_board (the "minimal" set) AND the
+  # communication tools (send_message, publish, shared_memory_*) AND the
+  # UI app tools that are normally added unconditionally. Also hides the
+  # progressive-disclosure tools (conversation_memory, session_memory,
+  # get_error_details, query_tool_result) from the LLM.
+  #
+  # IMPORTANT: This controls only what TOOLS the LLM sees in its tool list.
+  # Subsystems still run: graph memory extractor, task manager, error
+  # store, SQL result store. Background work (entity extraction, finding
+  # extraction, search-query distillation) routes through compressor_llm
+  # when an agent declares one — see the paired agent template for an
+  # example.
+  #
+  # If you want SOME auto-injection (shell_execute + workspace for every
+  # agent but no comm/UI tools), use tools.minimal=true instead.
+  none: true
+
+  permissions:
+    # Local dev: skip permission prompts.
+    yolo: true
+    require_approval: false
+    default_action: deny
+    timeout_seconds: 60
