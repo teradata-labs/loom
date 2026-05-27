@@ -1,0 +1,56 @@
+# Normalize line endings to LF for all text files.
+# This prevents false diffs on Windows when core.autocrlf=true.
+
+# Default: auto-detect text files and normalize to LF
+* text=auto eol=lf
+
+# Explicitly mark source/config text files as LF
+*.go        text eol=lf
+*.proto     text eol=lf
+*.json      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.toml      text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+*.sh        text eol=lf
+*.sql       text eol=lf
+*.py        text eol=lf
+*.js        text eol=lf
+*.ts        text eol=lf
+*.html      text eol=lf
+*.xml       text eol=lf
+*.tmpl      text eol=lf
+*.rb        text eol=lf
+*.ps1       text eol=lf
+*.nuspec    text eol=lf
+*.env       text eol=lf
+*.lock      text eol=lf
+*.golden    text eol=lf
+*.tsv       text eol=lf
+*.csv       text eol=lf
+Justfile    text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf
+*.gitignore  text eol=lf
+*.gitmodules text eol=lf
+*.dockerignore text eol=lf
+VERSION     text eol=lf
+
+# Binary files — never touch line endings
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.xlsx  binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+
+# .asc = PGP ASCII-armored text; .rom = UTF-8 text prompts — treat as text
+*.asc   text eol=lf
+*.rom   text eol=lf
