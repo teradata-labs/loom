@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"go.uber.org/zap"
 
@@ -274,11 +275,15 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 	if cmd, rest := ParseSlashCommand(userMsg); cmd != "" {
 		if skill, ok := o.library.FindBySlashCommand(cmd); ok {
 			if o.isSkillAllowed(skill.Name, config) {
+				triggerVal := cmd
+				if rest != "" {
+					triggerVal = cmd + " " + rest
+				}
 				results = append(results, &MatchResult{
 					Skill:        skill,
 					Confidence:   1.0,
 					TriggerType:  "slash_command",
-					TriggerValue: cmd + " " + rest,
+					TriggerValue: triggerVal,
 				})
 			}
 		}
@@ -611,10 +616,19 @@ func ParseSlashCommand(msg string) (cmd string, rest string) {
 	if len(msg) == 0 || msg[0] != '/' {
 		return "", ""
 	}
-	parts := strings.SplitN(msg, " ", 2)
-	cmd = strings.ToLower(parts[0])
-	if len(parts) > 1 {
-		rest = parts[1]
+	
+	// Find first unicode space
+	i := strings.IndexFunc(msg, unicode.IsSpace)
+	if i == -1 {
+		cmd = strings.ToLower(msg)
+	} else {
+		cmd = strings.ToLower(msg[:i])
+		rest = strings.TrimSpace(msg[i:]) 
+	}
+	
+	// Rejects just "/" or instances where a space immediately followed the slash (e.g. "/ help")
+	if len(cmd) <= 1 { 
+		return "", ""
 	}
 	return cmd, rest
 }
