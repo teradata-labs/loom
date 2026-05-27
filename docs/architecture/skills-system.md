@@ -465,10 +465,10 @@ Skills can be authored as Loom YAML directly, or imported from Anthropic-style A
        |
        v
   +----------------------------------------+
-  | parse.go: parseSkill                   |
+  | parse.go: ReadSkill                    |
   |   YAML frontmatter + body separation   |
   |   reference file resolution            |
-  | → []*Skill (importer-internal type)    |
+  | → *Skill (importer-internal type)      |
   +----------------------------------------+
        |
        | (optional, when classify=true)
@@ -484,7 +484,7 @@ Skills can be authored as Loom YAML directly, or imported from Anthropic-style A
        |
        v
   +----------------------------------------+
-  | render.go: renderSkill                 |
+  | render.go: RenderYAML                  |
   |   importer.Skill → loom/v1 Skill YAML  |
   |   per-source format normalization      |
   |   keyword extraction                   |
@@ -539,14 +539,15 @@ Full design (taxonomy validator, graph-aware classifier, source-format adapters)
        |
        v
   +-----------------------------+
-  | extractSkillName(path)      |
-  | Library.LoadFromFile(path)  |
-  | Library.swap(new skill)     |
+  | validateSkill(path)         |
+  | Library.RemoveFromCache(n)  |
+  |   (next Load reads disk)    |
+  | OnUpdate callback fires     |
   +-----------------------------+
        |
        v
-  Router index marked dirty
-  IndexBuilder.Rebuild on next access
+  index.HotReloadHandler invoked
+  IndexBuilder.Rebuild → Router cache cleared
 ```
 
 **Scope**: hot reload applies only to skill YAML files. Skill *bindings* (declared on agent configs) require an agent reload to pick up. The `SkillsImportService` complements hot reload by triggering an explicit router rebuild after a write completes — it does not depend on fsnotify, and so works even when the server's `skills_dir` is on a volume that doesn't emit reliable filesystem events (some Docker bind mounts, NFS).
@@ -683,14 +684,15 @@ pkg/skills/
   +-- loader.go             YAML parser (file → Skill struct)
   +-- library.go            In-memory skill cache + FTS5 search
   +-- orchestrator.go       Activation, eviction, formatting
-  +-- hotreload.go          fsnotify watcher → Library.swap (debounced)
+  +-- hotreload.go          fsnotify watcher → cache invalidation (debounced)
   +-- format.go             FormatActiveSkillsForLLM (Phase E)
   |
   +-- discovery/
   |     +-- discovery.go    4-phase pipeline (slash → router → FTS5 → always)
   |
   +-- binding/
-  |     +-- resolver.go     Binding resolution (exact/glob/label → mode)
+  |     +-- binding.go      MatchBinding (exact / FQN / glob / label / version)
+  |     +-- resolver.go     Resolver.Resolve + legacy enabled/disabled shim
   |
   +-- index/
   |     +-- builder.go      Build skill tree from Library
@@ -698,6 +700,7 @@ pkg/skills/
   |     +-- cache.go        Per-session decision cache (LRU, 5min TTL)
   |     +-- store.go        Persistence interface (memory, SQL)
   |     +-- node.go         SkillIndexNode utilities
+  |     +-- hotreload.go    HotReloadHandler (debounced rebuild → router → cache)
   |
   +-- tasks/
   |     +-- emitter.go      Task materialization (template or LLM decomp)
@@ -713,9 +716,10 @@ pkg/skills/
   |     +-- types.go        Skill, SkillResult, Outcome
   |
   +-- hygiene/                                    [PR #184]
-        +-- auditor.go      Audit(session, cfg) → Report
-        +-- enforcer.go     Enforce(report, retries, max) → Outcome
+        +-- auditor.go      Audit(ctx, sessionID, cfg) → (*Report, error)
+        +-- enforcer.go     Enforce(ctx, report, retryCount, maxRetries) → (*EnforcementOutcome, error)
         +-- report.go       Violation kinds + FormatToolMessage
+        +-- doc.go          Package overview
 
 
 pkg/agent/agent.go
