@@ -108,7 +108,7 @@ func TestClient_Chat_SimpleText(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, "llama3.1", req.Model)
-		assert.False(t, req.Stream)
+		assert.True(t, req.Stream)
 		assert.Len(t, req.Messages, 1)
 		assert.Equal(t, "user", req.Messages[0].Role)
 		assert.Equal(t, "Hello!", req.Messages[0].Content)
@@ -570,6 +570,90 @@ func TestClient_SupportsNativeTools_ExplicitModes(t *testing.T) {
 
 	client = NewClient(Config{Model: "llama3.1", ToolMode: ToolModePrompt})
 	assert.False(t, client.supportsNativeTools())
+}
+
+func TestClient_HealthCheck_Succeeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/tags", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string][]string{
+			"tags": {"llama3.1", "qwen3:8b"},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "llama3.1"})
+	require.NoError(t, client.HealthCheck(context.Background()))
+}
+
+func TestClient_SlowBodyDoesNotTimeOut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/chat", r.URL.Path)
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		w.Header().Set("Content-Type", "application/json")
+		firstChunk := chatResponse{
+			Model: "llama3.1",
+			Message: ollamaMessage{
+				Role:    "assistant",
+				Content: "Hello",
+			},
+			Done:            false,
+			PromptEvalCount: 0,
+			EvalCount:       0,
+		}
+		_ = json.NewEncoder(w).Encode(firstChunk)
+		flusher.Flush()
+		time.Sleep(2 * time.Second)
+		secondChunk := chatResponse{
+			Model: "llama3.1",
+			Message: ollamaMessage{
+				Role:    "assistant",
+				Content: " world",
+			},
+			Done:            true,
+			PromptEvalCount: 0,
+			EvalCount:       0,
+		}
+		_ = json.NewEncoder(w).Encode(secondChunk)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "llama3.1", Timeout: 100 * time.Millisecond, ToolMode: ToolModePrompt})
+
+	resp, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "Hello"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Hello world", resp.Content)
+}
+
+func TestClient_StuckHeadersTimesOut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"llama3.1","message":{"role":"assistant","content":"hi"},"done":true,"prompt_eval_count":0,"eval_count":0}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "llama3.1", Timeout: 100 * time.Millisecond, ToolMode: ToolModePrompt})
+	_, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout")
+}
+
+func TestClient_UnreachableServerFailsFast(t *testing.T) {
+	client := NewClient(Config{
+		Endpoint: "http://203.0.113.1:65535", // TEST-NET-3 non-routable
+		Model:    "llama3.1",
+		Timeout:  60 * time.Second, // much larger than dial timeout
+		ToolMode: ToolModePrompt,
+	})
+
+	start := time.Now()
+	_, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 20*time.Second, "should fail via dial timeout, not header timeout")
 }
 
 func TestClient_GetDefaultMaxTokens_30B(t *testing.T) {

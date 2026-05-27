@@ -191,6 +191,14 @@ type LLMProvider interface {
 	Model() string
 }
 
+// HealthChecker is an optional interface providers can implement to supply a
+// lightweight reachability check. ValidateProviders uses this instead of a
+// full Chat "ping" when available, which avoids side-effects like model
+// loading on providers such as Ollama.
+type HealthChecker interface {
+	HealthCheck(ctx context.Context) error
+}
+
 // TokenCallback is called for each token/chunk during streaming.
 // Implementations should be lightweight and non-blocking.
 type TokenCallback func(token string)

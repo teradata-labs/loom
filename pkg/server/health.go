@@ -73,9 +73,15 @@ func ValidateProviders(ctx context.Context, agents map[string]*agent.Agent) erro
 			checkCtx, cancel := context.WithTimeout(gCtx, 10*time.Second)
 			defer cancel()
 
-			_, err := entry.provider.Chat(checkCtx, []types.Message{
-				{Role: "user", Content: "ping"},
-			}, nil)
+			var err error
+			if hc, ok := entry.provider.(types.HealthChecker); ok {
+				err = hc.HealthCheck(checkCtx)
+			} else {
+				_, err = entry.provider.Chat(checkCtx, []types.Message{
+					{Role: "user", Content: "ping"},
+				}, nil)
+			}
+
 			if err != nil {
 				agentList := entry.agents
 				sort.Strings(agentList)
