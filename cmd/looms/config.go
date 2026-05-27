@@ -1046,7 +1046,7 @@ func setDefaults() {
 	viper.SetDefault("llm.huggingface_model", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 	viper.SetDefault("llm.temperature", 1.0)
 	viper.SetDefault("llm.max_tokens", 4096)
-	viper.SetDefault("llm.timeout_seconds", 60)
+	viper.SetDefault("llm.timeout_seconds", 0)
 
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")

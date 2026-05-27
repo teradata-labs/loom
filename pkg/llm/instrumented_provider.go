@@ -57,6 +57,15 @@ func (p *InstrumentedProvider) Model() string {
 	return p.provider.Model()
 }
 
+// HealthCheck delegates optional provider health checks through the instrumented wrapper.
+func (p *InstrumentedProvider) HealthCheck(ctx context.Context) error {
+	if hc, ok := p.provider.(llmtypes.HealthChecker); ok {
+		return hc.HealthCheck(ctx)
+	}
+	_, err := p.provider.Chat(ctx, []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+	return err
+}
+
 // Chat sends a conversation to the LLM and captures detailed observability data.
 func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	// Start span — propagate context so the LLM span is a proper child
