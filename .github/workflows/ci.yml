@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.go-version == '1.25'
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v5
         with:
           files: ./coverage.out
           flags: unittests
@@ -371,7 +371,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
