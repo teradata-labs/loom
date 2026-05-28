@@ -616,18 +616,18 @@ func ParseSlashCommand(msg string) (cmd string, rest string) {
 	if len(msg) == 0 || msg[0] != '/' {
 		return "", ""
 	}
-	
+
 	// Find first unicode space
 	i := strings.IndexFunc(msg, unicode.IsSpace)
 	if i == -1 {
 		cmd = strings.ToLower(msg)
 	} else {
 		cmd = strings.ToLower(msg[:i])
-		rest = strings.TrimSpace(msg[i:]) 
+		rest = strings.TrimSpace(msg[i:])
 	}
-	
+
 	// Rejects just "/" or instances where a space immediately followed the slash (e.g. "/ help")
-	if len(cmd) <= 1 { 
+	if len(cmd) <= 1 {
 		return "", ""
 	}
 	return cmd, rest
