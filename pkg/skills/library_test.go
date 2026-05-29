@@ -492,3 +492,50 @@ func TestScoreSkill(t *testing.T) {
 		})
 	}
 }
+
+// TestLibrary_FindByKeywords_KeywordlessFallback covers skills that carry NO
+// trigger keywords (the common shape for SKILL.md bundles, which have a
+// name/title/description and a rich body but no curated keyword list).
+// Previously such skills were skipped outright by FindByKeywords, so — with no
+// router LLM configured — they were undiscoverable through every path. They
+// must now surface via free-text relevance over name/title/description.
+func TestLibrary_FindByKeywords_KeywordlessFallback(t *testing.T) {
+	lib := NewLibrary(WithSearchPaths())
+	lib.Register(&Skill{
+		Name:        "teradata-geospatial",
+		Title:       "Teradata Geospatial Analysis",
+		Description: "Compute distance and spatial relationships between geospatial points in Teradata.",
+		// No keywords, no slash commands.
+		Trigger: SkillTrigger{},
+	})
+	lib.Register(&Skill{
+		Name:        "weaver-presets",
+		Title:       "Agent Preset Scaffolding",
+		Description: "Apply curated single-agent presets from the weaver.",
+		Trigger:     SkillTrigger{},
+	})
+
+	results := lib.FindByKeywords("how do I compute geospatial distance in teradata")
+	require.NotEmpty(t, results, "keyword-less but relevant skill must be discoverable")
+	assert.Equal(t, "teradata-geospatial", results[0].Skill.Name)
+	for _, r := range results {
+		assert.NotEqual(t, "weaver-presets", r.Skill.Name,
+			"keyword-less skill with no relevance must not surface")
+	}
+}
+
+// TestLibrary_FindByKeywords_KeywordPathUnchanged guards that adding the
+// keyword-less fallback did not alter scoring for skills that DO declare
+// keywords (the saturation-based path).
+func TestLibrary_FindByKeywords_KeywordPathUnchanged(t *testing.T) {
+	lib := NewLibrary(WithSearchPaths())
+	lib.Register(&Skill{
+		Name:    "sql-help",
+		Trigger: SkillTrigger{Keywords: []string{"sql", "query", "database"}},
+	})
+
+	results := lib.FindByKeywords("help me write a sql query for the database")
+	require.NotEmpty(t, results)
+	assert.Equal(t, "sql-help", results[0].Skill.Name)
+	assert.InDelta(t, 1.0, results[0].Score, 0.01)
+}

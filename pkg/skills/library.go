@@ -314,29 +314,45 @@ func (l *Library) FindByKeywords(msg string) []*ScoredSkill {
 
 	now := time.Now()
 	for _, skill := range l.skillCache {
-		if len(skill.Trigger.Keywords) == 0 {
-			continue
-		}
 		// Skip skills whose confidence has decayed below 0.1 (too stale).
 		if skill.EffectiveConfidence(now) < 0.1 {
 			continue
 		}
-		matches := 0
-		for _, kw := range skill.Trigger.Keywords {
-			kwLower := strings.ToLower(kw)
-			// Check if the keyword (which may be multi-word) appears as a token match
-			// or as a substring of the message.
-			if msgTokenSet[kwLower] || strings.Contains(strings.ToLower(msg), kwLower) {
-				matches++
+
+		var score float64
+		if len(skill.Trigger.Keywords) > 0 {
+			matches := 0
+			for _, kw := range skill.Trigger.Keywords {
+				kwLower := strings.ToLower(kw)
+				// Check if the keyword (which may be multi-word) appears as a token match
+				// or as a substring of the message.
+				if msgTokenSet[kwLower] || strings.Contains(strings.ToLower(msg), kwLower) {
+					matches++
+				}
+			}
+			if matches == 0 {
+				continue
+			}
+			// Score by saturation, not by keyword-list coverage. See
+			// keywordSaturationCount for rationale.
+			denom := math.Min(float64(len(skill.Trigger.Keywords)), float64(keywordSaturationCount))
+			score = math.Min(1.0, float64(matches)/denom)
+		} else {
+			// Fallback for skills with no explicit trigger keywords (common
+			// for SKILL.md bundles, which carry a name/title/description and a
+			// rich body but no curated keyword list). Without this they can
+			// never surface through the keyword path and — when no router LLM
+			// is configured — become wholly undiscoverable. Score by free-text
+			// relevance over name/title/description/domain, mirroring
+			// Library.Search. scoreSkill normalizes by query length and adds a
+			// name/title boost that can exceed 1.0, so clamp for parity with
+			// the keyword branch.
+			score = math.Min(1.0, scoreSkill(skill, msgTokens))
+			if score <= 0 {
+				continue
 			}
 		}
-		if matches == 0 {
-			continue
-		}
-		// Score by saturation, not by keyword-list coverage. See
-		// keywordSaturationCount for rationale.
-		denom := math.Min(float64(len(skill.Trigger.Keywords)), float64(keywordSaturationCount))
-		score := math.Min(1.0, float64(matches)/denom)
+
 		score *= skill.EffectiveConfidence(now)
 		results = append(results, &ScoredSkill{Skill: skill, Score: score})
 	}
