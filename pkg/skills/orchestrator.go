@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -577,7 +578,39 @@ func (o *Orchestrator) FormatActiveSkillsForLLM(sessionID string, maxTokens int)
 		}
 
 		if usedChars+fLen+separatorLen > maxChars {
-			continue // skip this skill, it doesn't fit
+			// The skill doesn't fit in the remaining budget. Previously it was
+			// dropped outright — but a skill whose body alone exceeds the whole
+			// budget (common for SKILL.md-derived skills, which carry their
+			// full markdown body, 5–10k chars) would then never reach the
+			// model AT ALL, even though it was discovered and activated. That
+			// silent starvation looks like "discovery isn't working".
+			//
+			// Instead, when nothing has been included yet, inject a truncated
+			// form of this (highest-priority, FIFO-first) skill so the model
+			// still gets its identity and leading instructions. Later skills
+			// are still skipped to preserve multi-skill packing for the common
+			// case where earlier skills fit.
+			if included == 0 {
+				if truncated := truncateForBudget(formatted, maxChars); truncated != "" {
+					sb.WriteString(truncated)
+					usedChars += len(truncated)
+					included++
+					if o.logger != nil {
+						o.logger.Debug("skill body truncated to fit injection budget",
+							zap.String("skill", a.Skill.Name),
+							zap.Int("skill_chars", fLen),
+							zap.Int("budget_chars", maxChars))
+					}
+					continue
+				}
+			}
+			if o.logger != nil {
+				o.logger.Debug("active skill skipped: exceeds remaining injection budget",
+					zap.String("skill", a.Skill.Name),
+					zap.Int("skill_chars", fLen),
+					zap.Int("remaining_chars", maxChars-usedChars-separatorLen))
+			}
+			continue
 		}
 
 		if included > 0 {
@@ -589,6 +622,28 @@ func (o *Orchestrator) FormatActiveSkillsForLLM(sessionID string, maxTokens int)
 	}
 
 	return sb.String()
+}
+
+// truncateForBudget shortens skill text to fit within maxChars, appending a
+// marker so the model knows the body was cut. Returns "" when maxChars is too
+// small to carry a useful amount of content. The cut is made on a UTF-8 rune
+// boundary so the result is always valid UTF-8.
+func truncateForBudget(text string, maxChars int) string {
+	const marker = "\n…[skill truncated to fit context budget]"
+	if maxChars <= len(marker) {
+		return ""
+	}
+	if len(text) <= maxChars {
+		return text
+	}
+	keep := maxChars - len(marker)
+	for keep > 0 && !utf8.RuneStart(text[keep]) {
+		keep--
+	}
+	if keep == 0 {
+		return ""
+	}
+	return text[:keep] + marker
 }
 
 // CleanupSession removes all state for a session.

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -677,4 +678,47 @@ func TestOrchestrator_LogsActivationLifecycle(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected an 'activated' entry for skill-a with trigger=slash; got %v", observed.All())
+}
+
+// TestFormatActiveSkills_TruncatesOversizedSkill covers the case where a single
+// activated skill's body exceeds the entire injection budget. Previously the
+// skill was dropped wholesale, yielding an empty injection — so a discovered
+// and activated skill never reached the model. It must now be truncated to fit
+// (identity + leading instructions preserved) rather than vanishing.
+func TestFormatActiveSkills_TruncatesOversizedSkill(t *testing.T) {
+	lib := NewLibrary(WithSearchPaths())
+	orch := NewOrchestrator(lib)
+
+	orch.ActivateSkill("s", &Skill{
+		Name:   "huge-skill",
+		Title:  "Huge Skill",
+		Prompt: SkillPrompt{Instructions: strings.Repeat("teradata sentiment analysis. ", 400)}, // ~11k chars
+	}, "test", "", 1.0)
+
+	// 200-token budget = 800 chars, far smaller than the skill body.
+	out := orch.FormatActiveSkillsForLLM("s", 200)
+
+	require.NotEmpty(t, out, "oversized single skill must be truncated, not dropped")
+	assert.LessOrEqual(t, len(out), 800, "truncated output must respect the budget")
+	assert.Contains(t, out, "Huge Skill", "skill identity (title) must survive truncation")
+	assert.Contains(t, out, "truncated to fit", "truncation marker must be present")
+	assert.True(t, utf8.ValidString(out), "truncated output must be valid UTF-8")
+}
+
+// TestFormatActiveSkills_FitsWithoutTruncation guards that normal-sized skills
+// within budget are injected verbatim (no marker).
+func TestFormatActiveSkills_FitsWithoutTruncation(t *testing.T) {
+	lib := NewLibrary(WithSearchPaths())
+	orch := NewOrchestrator(lib)
+
+	orch.ActivateSkill("s", &Skill{
+		Name:   "small-skill",
+		Title:  "Small Skill",
+		Prompt: SkillPrompt{Instructions: "Do the thing."},
+	}, "test", "", 1.0)
+
+	out := orch.FormatActiveSkillsForLLM("s", 1000)
+	require.NotEmpty(t, out)
+	assert.Contains(t, out, "Do the thing.")
+	assert.NotContains(t, out, "truncated to fit")
 }
