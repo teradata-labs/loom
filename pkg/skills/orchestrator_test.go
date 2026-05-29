@@ -79,6 +79,20 @@ func TestOrchestrator_MatchSkills_SlashCommand(t *testing.T) {
 			msg:       "please review this code",
 			wantMatch: false,
 		},
+		{
+			name:      "newline-separated slash command",
+			msg:       "/review\nsome code here",
+			wantMatch: true,
+			wantCmd:   "slash_command",
+			wantTrigV: "/review some code here",
+		},
+		{
+			name:      "slash command with no rest (no trailing space)",
+			msg:       "/review",
+			wantMatch: true,
+			wantCmd:   "slash_command",
+			wantTrigV: "/review",
+		},
 	}
 
 	for _, tc := range tests {
@@ -91,6 +105,7 @@ func TestOrchestrator_MatchSkills_SlashCommand(t *testing.T) {
 				assert.Equal(t, "code-review", results[0].Skill.Name)
 				assert.Equal(t, tc.wantCmd, results[0].TriggerType)
 				assert.Equal(t, 1.0, results[0].Confidence)
+				assert.Equal(t, tc.wantTrigV, results[0].TriggerValue)
 			} else {
 				// MANUAL mode skill should not match without slash command.
 				for _, r := range results {
@@ -578,6 +593,70 @@ func TestParseSlashCommand(t *testing.T) {
 			msg:      "/code-review my PR",
 			wantCmd:  "/code-review",
 			wantRest: "my PR",
+		},
+		// --- whitespace-separator variants (the newline bug fix) ---
+		{
+			name:     "newline separator",
+			msg:      "/review-py\nload this file",
+			wantCmd:  "/review-py",
+			wantRest: "load this file",
+		},
+		{
+			name:     "tab separator",
+			msg:      "/code-review\tcheck my PR",
+			wantCmd:  "/code-review",
+			wantRest: "check my PR",
+		},
+		{
+			name:     "CRLF separator",
+			msg:      "/review\r\nsome content",
+			wantCmd:  "/review",
+			wantRest: "some content",
+		},
+		{
+			name:     "carriage return only",
+			msg:      "/review\rsome content",
+			wantCmd:  "/review",
+			wantRest: "some content",
+		},
+		{
+			name:     "multiple spaces between cmd and rest",
+			msg:      "/review    lots of spaces",
+			wantCmd:  "/review",
+			wantRest: "lots of spaces",
+		},
+		{
+			name:     "newline then indented rest",
+			msg:      "/review\n  indented content",
+			wantCmd:  "/review",
+			wantRest: "indented content",
+		},
+		{
+			name:     "tab then spaces before rest",
+			msg:      "/review\t   spaced args",
+			wantCmd:  "/review",
+			wantRest: "spaced args",
+		},
+		{
+			name:     "command only with trailing newline",
+			msg:      "/help\n",
+			wantCmd:  "/help",
+			wantRest: "",
+		},
+		{
+			// TrimSpace at the top of ParseSlashCommand strips trailing whitespace
+			// from the whole message before splitting, so trailing spaces on rest
+			// are not preserved — same behaviour as the original space-only split.
+			name:     "trailing whitespace on msg is trimmed",
+			msg:      "/review this code   ",
+			wantCmd:  "/review",
+			wantRest: "this code",
+		},
+		{
+			name:     "uppercase command with newline separator",
+			msg:      "/REVIEW\nsome code",
+			wantCmd:  "/review",
+			wantRest: "some code",
 		},
 	}
 

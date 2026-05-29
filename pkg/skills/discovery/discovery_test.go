@@ -103,6 +103,32 @@ func TestDiscovery_SlashCommand_FilteredByBinding(t *testing.T) {
 	assert.Empty(t, got, "slash hit on out-of-binding skill must not surface")
 }
 
+func TestDiscovery_SlashCommand_NewlineSeparated(t *testing.T) {
+	a := mkSkill("a", "", []string{"/a"}, nil)
+	lib := libraryWith(t, a)
+	d := New(lib, binding.NewResolver(lib))
+
+	cfg := &skills.SkillsConfig{
+		Enabled:  true,
+		Bindings: []skills.SkillBinding{{Name: "a", Mode: skills.BindingLazy}},
+	}
+
+	for _, msg := range []string{
+		"/a\ncheck this for me",
+		"/a\tcheck this with tab",
+		"/a\r\ncheck this with CRLF",
+	} {
+		got, err := d.Discover(context.Background(), "s", msg, cfg)
+		require.NoError(t, err)
+		require.Len(t, got, 1, "msg: %q", msg)
+		assert.Equal(t, "a", got[0].Skill.Name)
+		assert.Equal(t, "slash_command", got[0].TriggerType)
+		assert.Equal(t, 1.0, got[0].Confidence)
+		// discovery.go sets TriggerValue: cmd (without rest)
+		assert.Equal(t, "/a", got[0].TriggerValue)
+	}
+}
+
 func TestDiscovery_FTSFallback_WhenNoRouter(t *testing.T) {
 	a := mkSkill("sql-tune", "", nil, []string{"slow query", "tune query"})
 	b := mkSkill("pr", "", nil, []string{"review pr"})
