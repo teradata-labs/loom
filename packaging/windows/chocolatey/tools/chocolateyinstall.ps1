@@ -9,12 +9,13 @@
 #   1. Downloads official Loom binaries from GitHub releases
 #   2. Verifies checksums against known-good SHA256 hashes
 #   3. Extracts binaries to Chocolatey tools directory
-#   4. Downloads pattern library from official GitHub repository
+#   4. Installs the pattern library bundled inside this package
 #   5. Creates user data directory (~\.loom)
 #
 # Security measures:
-#   - All downloads verified with SHA256 checksums
-#   - Downloads only from official github.com/teradata-labs repository
+#   - Binary downloads verified with SHA256 checksums (Checksum64)
+#   - Downloads only from official github.com/teradata-labs releases
+#   - Pattern library is bundled in the package, not downloaded (no remote file)
 #   - No code execution from downloaded files during install
 #   - Uses Chocolatey's built-in security functions
 # ==============================================================================
@@ -31,7 +32,7 @@ $packageArgs = @{
   packageName   = $packageName
   unzipLocation = $toolsDir
   url64bit      = "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip"
-  checksum64    = 'BE703E160C598EF13C2577C30D3316460F1BC05C0B72E9847A893C50248AD799' # loom TUI
+  checksum64    = 'F4EF42BF76EE231235D89E514C3F0AA4866F3006FA7730FB8EE2ABC1CFD48F35' # loom TUI
   checksumType64= 'sha256'
 }
 
@@ -41,7 +42,7 @@ Install-ChocolateyZipPackage @packageArgs
 # SECURITY: Download official looms server binary from GitHub releases
 # Checksum verified against official release artifacts
 $packageArgs['url64bit'] = "https://github.com/teradata-labs/loom/releases/download/v$version/looms-windows-amd64.exe.zip"
-$packageArgs['checksum64'] = '447E9ED55077354539276BEF2512CD88E76E41027BBA9E968F457E4CF16BFF0B' # looms server
+$packageArgs['checksum64'] = '4C011824B431E44A3AE039541C614E0E2B05D528162666220F3CF5949A6E105E' # looms server
 
 # Download and extract looms server
 Install-ChocolateyZipPackage @packageArgs
@@ -60,45 +61,20 @@ $patternsDir = Join-Path $loomDataDir 'patterns'
 Write-Host "Creating Loom data directory at $loomDataDir..." -ForegroundColor Green
 New-Item -ItemType Directory -Force -Path $patternsDir | Out-Null
 
-# SECURITY: Download pattern library from official GitHub repository
-# This downloads the source archive to extract YAML pattern files
-# No code execution - only YAML configuration files are copied
-Write-Host "Downloading patterns..." -ForegroundColor Green
-$patternsUrl = "https://github.com/teradata-labs/loom/archive/refs/tags/v$version.zip"
-$tempZip = Join-Path $env:TEMP 'loom-patterns.zip'
-$tempExtract = Join-Path $env:TEMP 'loom-extract'
+# Install pattern library from the files bundled inside this package.
+# Patterns ship in the .nupkg itself (tools\patterns), so there is no remote
+# download and nothing to checksum at install time. Only YAML configuration
+# files are copied; no code is executed.
+$patternsSource = Join-Path $toolsDir 'patterns'
 
-try {
-    # Use Chocolatey helper for better security integration
-    Get-ChocolateyWebFile -PackageName $packageName `
-        -FileFullPath $tempZip `
-        -Url $patternsUrl `
-        -Url64bit $patternsUrl `
-        -Checksum 'ad439929d1991e9f215680b8fc5c5c5c3c0517dfed32290985d01366c110137d' `
-        -ChecksumType 'sha256'
-
-    # Extract and find patterns directory
-    Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
-
-    # Find the patterns directory (handle different archive structures)
-    $extractedDir = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
-    $patternsSource = Join-Path $extractedDir.FullName 'patterns'
-
-    if (Test-Path $patternsSource) {
-        # Copy only YAML files (not executables) for additional security
-        Copy-Item -Path "$patternsSource\*" -Destination $patternsDir -Recurse -Force
-        $patternCount = (Get-ChildItem -Path $patternsDir -Filter "*.yaml" -Recurse).Count
-        Write-Host "OK: Installed $patternCount pattern files to $patternsDir" -ForegroundColor Green
-    } else {
-        Write-Warning "Patterns directory not found in archive, skipping pattern installation"
-    }
-} catch {
-    Write-Warning "Failed to download patterns: $_"
+if (Test-Path $patternsSource) {
+    Write-Host "Installing patterns..." -ForegroundColor Green
+    Copy-Item -Path "$patternsSource\*" -Destination $patternsDir -Recurse -Force
+    $patternCount = (Get-ChildItem -Path $patternsDir -Filter "*.yaml" -Recurse).Count
+    Write-Host "OK: Installed $patternCount pattern files to $patternsDir" -ForegroundColor Green
+} else {
+    Write-Warning "Bundled patterns not found at $patternsSource, skipping pattern installation"
     Write-Host "You can manually download patterns from: https://github.com/teradata-labs/loom/tree/main/patterns"
-} finally {
-    # Cleanup temporary files
-    if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
-    if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
 }
 
 # Set user environment variable for Loom data directory (only if not already set)

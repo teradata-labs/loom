@@ -94,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skills slash commands** (#195) — unicode base-splitting so multi-byte delimiters parse correctly
 - **Quickstart shell detection** (#179) — reads the `SHELL` environment variable instead of guessing from the script runtime
 - **Chocolatey package icon** — restored the `iconUrl` (removed in v1.0.x when it pointed at a non-existent file) using a committed `packaging/icon.png` served via a tag-pinned jsDelivr CDN URL; the version manager keeps the pinned tag in sync on every bump
+- **Chocolatey package install** — the pattern library is now bundled inside the package instead of downloaded at install time, removing an unvalidated remote download flagged by Chocolatey moderation (the patterns archive was fetched via `Url64bit` with no `Checksum64`). Also corrected the bundled binary SHA256 checksums, which did not match the published v1.3.0 Windows artifacts and would have failed verification at install
 - **Test hermeticity** — `pkg/shuttle/builtin` web-search tests now clear ambient search-provider API keys (`TAVILY_API_KEY`, etc.) via `TestMain`, so results no longer depend on the developer's environment
 - **`.gitattributes`** (#194) — enforces LF line endings to eliminate false diffs on Windows clones with `autocrlf=true`
 

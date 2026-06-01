@@ -70,5 +70,8 @@ Then describe what you need:
   <files>
     <file src="tools\**" target="tools" />
     <file src="LICENSE.txt" target="LICENSE.txt" />
+    <!-- Pattern library is bundled in the package (not downloaded at install time),
+         so there is no remote file requiring a checksum. -->
+    <file src="..\..\..\patterns\**" target="tools\patterns" />
   </files>
 </package>
