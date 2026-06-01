@@ -157,6 +157,7 @@ The task system provides persistent, dependency-aware work decomposition and kan
 - `GetReadyFront`, `GetBlockedTasks`
 - `GetTaskByIdempotencyKey` (partial unique index on non-empty `skill_idempotency_key`)
 - `HasOpenSkillTasks` (prefix match on idempotency key for stickiness checking)
+- `ListBySkillRun` (prefix match on idempotency key, returns full task list regardless of status; used by the end-of-turn hygiene auditor in PR #184)
 
 **Schema Invariants**:
 - `tasks.board_id` foreign-keys `task_boards(id)`. Empty board_id is NULL (board-less tasks).
@@ -201,6 +202,18 @@ The task system provides persistent, dependency-aware work decomposition and kan
 **Idempotency**: All emitted tasks carry a `SkillIdempotencyKey` of the form `skill:<name>|sess:<sessionID>|step:<index>`. On re-activation, existing tasks are returned instead of duplicates being created. The decomposer fallback additionally plants a "marker" task that gates re-decomposition (since LLM output is non-deterministic across runs).
 
 **ensureBoard**: Before emitting tasks, the emitter guarantees the referenced board exists. A concurrent-safe probe-then-create pattern handles races between multiple goroutines.
+
+### Hygiene Auditor (`pkg/skills/hygiene/auditor.go`)
+
+**Responsibility**: Inspects every active skill's tasks at end-of-turn and classifies any task in an incoherent state as a `Violation`. The auditor is a *reader* of the task system, not a writer; it depends only on `Manager.ListBySkillRun` and the orchestrator's active-skill set.
+
+**Trigger**: Called by `pkg/agent/hygiene.go::runEndOfTurnHygiene` at the no-tool-call return path of `runConversationLoop`. Runs once per turn, after the LLM produces its final text-only response.
+
+**Scope**: Only tasks emitted by currently-active skills are audited (matched via `SkillIdempotencyKey` prefix `skill:<name>|sess:<sessionID>|`). Tasks the agent created directly via `TaskBoardTool` with no idempotency key are out of scope.
+
+**Companion**: `pkg/skills/hygiene/enforcer.go` applies the resolved `HygienePolicy` (`REQUIRE_FIX` / `AUTO_FIX` / `WARN_ONLY`). Under `AUTO_FIX`, the enforcer calls `Manager.TransitionTask` and `Manager.UpdateTask` to repair board state with `[hygiene]`-prefixed notes for audit clarity.
+
+Full design — three violation kinds, bounded retry, fallthrough semantics — is documented in [`skill-hygiene.md`](./skill-hygiene.md).
 
 ---
 

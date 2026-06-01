@@ -198,6 +198,66 @@ pattern, _ := library.Load("revenue_aggregation")
 
 See [Pattern Library Guide](./pattern-library-guide/) for details.
 
+## Skill Catalog Management
+
+✅ Import Anthropic-style Agent Skill directories into the Loom catalog and have them become routable on the next chat turn.
+
+> **Available since:** v1.2.0+ (PRs #182, #183)
+
+### Bulk Import
+
+Walk a directory tree of Anthropic-style skills (`<name>/SKILL.md` + optional `references/*.md`) and convert each one to a loom/v1 YAML on the server:
+
+```bash
+loom skills import ~/Projects/agent-skills
+```
+
+Expected output:
+```
+[1/12] teradata-sql-tuning      wrote   path=skills/teradata-sql-tuning.yaml
+[2/12] teradata-statistics      wrote   path=skills/teradata-statistics.yaml
+...
+[12/12] release-checklist       skip    reason=destination exists
+Done: 11 wrote, 0 would-write, 1 skip, 0 fail
+```
+
+### Add a Single Skill (with classification)
+
+When `--classify` is set, the server runs a graph-aware LLM classifier that sees the live catalog and tends to join existing buckets rather than invent parallel siblings:
+
+```bash
+loom skills add ~/Projects/teradata-recovery --classify
+```
+
+### Re-Classify an Existing Skill
+
+```bash
+loom skills classify teradata-statistics --taxonomy ~/my-taxonomy.yaml
+```
+
+After every successful write the server reloads all running agents' routers so the new tree is routable on the next chat turn — no server restart required.
+
+See [Skills Import Guide](./skills-import-guide.md) for the full workflow and [CLI Reference](../reference/cli.md#loom-skills) for all flags.
+
+## End-of-Turn Skill Hygiene
+
+✅ Catches skill-emitted tasks left in an incoherent state before the agent returns control to you.
+
+> **Available since:** v1.2.0+ (PR #184)
+
+When a skill activates and emits tasks onto the kanban board, the agent is expected to either complete them, defer them with a reason, or surface a blocking question to you. If a turn ends with tasks still `IN_PROGRESS`, `BLOCKED` without a question surfaced, or `OPEN` never started, the hygiene auditor catches it.
+
+The default policy (`REQUIRE_FIX`) injects a structured message asking the agent to resolve each violation and re-runs the turn, capped at 2 retries before falling through to deterministic machine repair (`AUTO_FIX`). The audit is fully observable — every response carries `hygiene_*` metadata when violations were found:
+
+```
+hygiene_policy: HYGIENE_POLICY_REQUIRE_FIX
+hygiene_violations_found: 2
+hygiene_by_kind: {open_unstarted: 1, in_progress_orphan: 1}
+hygiene_resolved: 0
+```
+
+Configure under `spec.config.skills.hygiene` — see [Agent Configuration Reference](../reference/agent-configuration.md#hygieneconfig) for fields, and [`skill-hygiene.md`](../architecture/skill-hygiene.md) for design rationale.
+
 ## Real-Time Streaming
 
 ✅ Stream execution progress to build responsive UIs.

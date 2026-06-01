@@ -31,6 +31,10 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 - **Hot-Reload Integration**: Saves to `$LOOM_DATA_DIR/agents/`, `$LOOM_DATA_DIR/workflows/`, and `$LOOM_DATA_DIR/skills/` for immediate availability
 - **Automatic Namespacing**: Workflow-scoped agents use `<workflow-name>:<role>` pattern to prevent conflicts
 
+**What the weaver does NOT do**:
+- **Bulk skill ingestion** is handled by the separate [`SkillsImportService`](./skills-import.md) gRPC service (and its `loom skills import` CLI client), not by the weaver. The weaver's `create_skill` tool is for conversational one-at-a-time authoring; importing a directory tree of Anthropic-style Agent Skills goes through `BulkImportSkills` instead.
+- **End-of-turn task-board hygiene** for weaver-emitted creation tasks is enforced by the agent runtime's [Phase F hygiene auditor](./skill-hygiene.md), not by the weaver itself. The weaver is subject to it like any other agent that activates a skill.
+
 **Design Philosophy**: **Minimalism over complexity**. The weaver is a standard agent using standard RPCs (`Weave`/`StreamWeave`). No special services, no conflict resolution system, no multi-stage pipeline.
 
 

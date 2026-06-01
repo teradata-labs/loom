@@ -109,6 +109,10 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom mcp tools` | List tools from MCP server | `<server-name>` |
 | `loom providers list` | List LLM providers | |
 | `loom providers switch` | Switch active LLM provider | `<provider-name>`, `--session`, `--thread` |
+| `loom skills import` | Bulk-import Anthropic-style skills via `SkillsImportService` | `<src-dir>`, `--out`, `--dry-run`, `--force`, `--classify`, `--taxonomy`, `--zip` |
+| `loom skills add` | Add a single skill (dir or zip) via `SkillsImportService` | `<path>`, `--out`, `--force`, `--classify`, `--taxonomy`, `--zip` |
+| `loom skills classify` | Re-classify an existing skill in the catalog | `<skill-name>`, `--taxonomy` |
+| `loom skills migrate` | Migrate a legacy `enabled_skills`/`disabled_skills` config to bindings | `<agent.yaml>` |
 
 
 ## Global Server Flags
@@ -1199,6 +1203,181 @@ Switch to a different provider:
 loom providers switch cheap
 loom providers switch fast --session sess_abc123
 ```
+
+
+### loom skills
+
+**Available since**: v1.2.0+ (PRs #182, #183)
+
+Manage the server's skill catalog. The `import`, `add`, and `classify` subcommands are thin gRPC clients of `SkillsImportService` — all transformation, classification, and writes happen on the server, which holds the classifier credentials, the persisted index, and the wired router subsystems that need to be reloaded after writes. `migrate` is a local YAML transform with no server dependency.
+
+**Usage:**
+```bash
+loom skills <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `import <src-dir>` | Walk a tree of Anthropic-style Agent Skill directories and convert each to a loom/v1 YAML on the server. Streams per-skill progress. |
+| `add <path>` | Add a single skill from a directory or `.zip` archive. |
+| `classify <skill-name>` | Re-classify an already-imported skill's `parent_index_path` using the graph-aware classifier. |
+| `migrate <agent.yaml>` | Convert a legacy `enabled_skills`/`disabled_skills` agent config to the new `bindings` block. Prints to stdout. |
+
+**Source delivery for `import` and `add`**: when `--server` resolves to a loopback address (default: `127.0.0.1:60051`), the CLI sends the source path via `src_dir` and the server reads it directly. For non-loopback servers, the CLI zips the source tree client-side and uploads it. `--zip` forces zip mode regardless of address.
+
+---
+
+#### loom skills import
+
+Bulk-import Anthropic-style Agent Skill directories. The server walks `<src-dir>` for subdirectories containing a `SKILL.md` file and converts each one into a loom/v1 Skill YAML.
+
+**Usage:**
+```bash
+loom skills import <src-dir> [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--out` | string | `""` | Server-side output directory. Empty uses the server's default (`$LOOM_SKILLS_DIR` or `~/.loom/skills`). |
+| `--dry-run` | bool | `false` | Server reports what would be written; no files written. |
+| `--force` | bool | `false` | Overwrite existing destination YAML files. |
+| `--classify` | bool | `false` | Server runs the graph-aware LLM classifier to assign `parent_index_path`. Requires `LOOM_CLASSIFY_PROVIDER` + the provider's standard creds on the server. |
+| `--taxonomy` | string | `""` | Path to a custom taxonomy YAML; only consulted with `--classify`. File contents are uploaded to the server. |
+| `--zip` | bool | `false` | Zip `<src-dir>` and upload to the server even when the server is on a loopback address. |
+
+**Behavior**:
+- Reference markdown files under `<skill>/references/` are inlined into the generated `prompt.instructions` under labeled `## Reference: <basename>` sections.
+- Cross-skill markdown links of the form `[name](../<other>/SKILL.md)` are extracted into `skill_refs` (capped at 3).
+- Trigger keywords are synthesized from the skill name and any `## When to Use` bullets.
+- `<name>/SKILL.md` ending in `-skill-index` becomes a parent-index meta skill (`mode: ALWAYS`, `domain: meta-agent`).
+- `agent-skill-builder` is skipped (meta-tooling for authoring skills).
+- After a successful import, the server reloads all running agents' routers so newly imported skills are routable on the next chat turn.
+
+**Examples:**
+
+```bash
+# Default destination (server's $LOOM_SKILLS_DIR or ~/.loom/skills)
+loom skills import ~/Projects/skills
+
+# Custom server-side output directory
+loom skills import ~/Projects/skills --out /custom/server-side/path
+
+# Dry run (server reports what would be written)
+loom skills import ~/Projects/skills --dry-run
+
+# Force zip upload (e.g., for a non-loopback dev server)
+loom skills import ~/Projects/skills --zip
+
+# Classify against a custom taxonomy
+loom skills import ~/Projects/skills --classify --taxonomy ~/my-taxonomy.yaml
+```
+
+---
+
+#### loom skills add
+
+Add a single skill from a directory or zip archive.
+
+**Usage:**
+```bash
+loom skills add <path> [flags]
+```
+
+`<path>` is either a directory containing exactly one `<name>/` subdirectory holding `SKILL.md` (+ optional `references/*.md`), or a `.zip` file with the same shape.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--out` | string | `""` | Server-side output directory. Empty uses the server's default. |
+| `--force` | bool | `false` | Overwrite existing destination YAML if a skill with this name already exists in the catalog. |
+| `--classify` | bool | `false` | Server runs `ClassifyAgainstGraph`: the classifier sees the live catalog and tends to join existing buckets. |
+| `--taxonomy` | string | `""` | Path to a custom taxonomy YAML; only consulted with `--classify`. |
+| `--zip` | bool | `false` | Zip the source and upload (forced for non-loopback servers). |
+
+**Examples:**
+
+```bash
+# Add from a directory
+loom skills add ~/Projects/skills/teradata-recovery
+
+# Add from a zip archive
+loom skills add ~/Downloads/teradata-recovery.zip
+
+# Add and classify in one shot
+loom skills add ~/Projects/skills/teradata-recovery --classify
+```
+
+---
+
+#### loom skills classify
+
+Re-classify an already-imported skill's `parent_index_path` using the graph-aware classifier. Useful after hand-editing a skill or after a taxonomy change.
+
+**Usage:**
+```bash
+loom skills classify <skill-name> [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--taxonomy` | string | `""` | Path to a custom taxonomy YAML (uploaded to the server). Empty uses the server's default seed. |
+
+**Errors:**
+
+| gRPC Code | Condition |
+|---|---|
+| `FailedPrecondition` | Server has no classifier provider configured (`LOOM_CLASSIFY_PROVIDER` + creds missing). |
+| `NotFound` | No skill with the given name exists in the server's `skills_dir`. |
+
+**Behavior**: The server reads the skill from `skills_dir`, builds a `GraphContext` from the live router index, runs the graph-aware classifier, writes the updated YAML back, and triggers a router rebuild. When the persisted index has not been built yet (fresh server, pre-warm), the server builds it inline before reading — the first call after boot may therefore be slower than subsequent ones.
+
+**Examples:**
+
+```bash
+# Re-classify with the server's default taxonomy
+loom skills classify teradata-statistics
+
+# Re-classify against a custom taxonomy
+loom skills classify teradata-statistics --taxonomy ~/my-taxonomy.yaml
+```
+
+---
+
+#### loom skills migrate
+
+**Available since**: v1.2.0 (skills overhaul Phase 11)
+
+Migrate a legacy `enabled_skills`/`disabled_skills` agent config to the new `bindings` block. Local YAML transformation; no server contact.
+
+**Usage:**
+```bash
+loom skills migrate <agent.yaml>
+```
+
+**Behavior**:
+- `enabled_skills` present → emits `bindings:` with `mode: EAGER` (preserves v1.2.0 behavior).
+- `enabled_skills` empty → no bindings synthesized; runtime applies the LAZY default minus `disabled_skills`.
+- The original `enabled_skills`/`disabled_skills` keys are retained as a fallback shim.
+- Output goes to stdout; redirect to a file to write.
+
+**Examples:**
+
+```bash
+# Preview migrated config
+loom skills migrate examples/agent.yaml
+
+# Write to a new file
+loom skills migrate examples/agent.yaml > examples/agent-migrated.yaml
+```
+
+**See also**: [`skills-import.md`](../architecture/skills-import.md) (importer internals + taxonomy format), [`skills-import-guide.md`](../guides/skills-import-guide.md) (workflow guide).
 
 
 ## Environment Variables

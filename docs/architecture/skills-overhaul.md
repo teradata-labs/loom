@@ -108,8 +108,21 @@ pkg/skills/
     emitter.go               # EmitForActivation (template OR decomposer)
   discovery/                 # ✅ Phase 7
     discovery.go             # Top-level Discover() composing slash → router → FTS5
+  importer/                  # ✅ Deferred D (PR #182, #183)
+    parse.go                 # SKILL.md + references → importer.Skill
+    classify.go              # Graph-aware classifier (LLM + taxonomy validator)
+    taxonomy.go              # Valid parent_index_path validator
+    graph.go                 # GraphContext from live router index
+    render.go                # importer.Skill → loom/v1 YAML
+    pipeline.go              # RunFromDir / RunFromSkills / ProcessSkill
+  hygiene/                   # ✅ Deferred E (PR #184)
+    auditor.go               # Audit(session, cfg) → Report (skill-scoped)
+    enforcer.go              # Enforce(report, retries, max) → Outcome
+    report.go                # ViolationKind taxonomy + FormatToolMessage
 
-cmd/loom/skills.go           # ✅ Phase 11 - `loom skills migrate`
+cmd/loom/skills.go                  # ✅ Phase 11 - `loom skills migrate`
+cmd/loom/skills_import.go           # ✅ Deferred D - `loom skills import / add / classify`
+                                    #     (gRPC client of SkillsImportService)
 
 proto/loom/v1/skill.proto    # ✅ Phase 1 - SkillBinding, SkillTaskTemplate, SkillIndexNode, SkillIndex
 proto/loom/v1/agent_config.proto  # SkillsConfig refers to skill.proto messages
@@ -148,6 +161,8 @@ remaining gaps from the design plan:
 | A | Router wiring in registry + `router_model_override` honored | ✅ |
 | B | `SkillToolConfig` enforcement (`required_tools`, `excluded_tools`) | ✅ |
 | C | Sticky-while-open-tasks eviction policy | ✅ |
+| D | Anthropic-style skill import + `SkillsImportService` gRPC (PR #182, #183) | ✅ |
+| E | End-of-turn task-board hygiene (PR #184) | ✅ |
 
 **Deferred A** (`pkg/agent/registry.go` `warmSkillIndex`): the registry now
 constructs a full `index.Builder` + `index.MemoryStore` + `index.Router` +
@@ -179,6 +194,31 @@ skill is sticky, `MaxConcurrentSkills` overflows for that turn rather
 than abandoning in-flight work. `WithMaxConcurrentSkills` also fixes a
 pre-existing bug where `ActivateSkill` ignored config and used a
 hardcoded cap of 3.
+
+**Deferred D** (`pkg/skills/importer/` + `proto/loom/v1/skills_import.proto`
++ `cmd/looms/cmd_serve.go` registration): Anthropic-style Agent Skill
+directories (`<name>/SKILL.md` + `references/*.md`) can be imported into
+the Loom catalog through a four-stage pipeline (parse → optional
+graph-aware classify → render → write). The pipeline is fronted by
+`SkillsImportService` — a peer service of `LoomService` exposing
+`BulkImportSkills` (server-streaming), `AddSkill`, and `ClassifySkill`.
+Each successful write triggers an explicit router index rebuild so newly
+imported skills become routable on the next chat turn, independent of
+fsnotify (which is unreliable on some Docker bind mounts and NFS). The
+`loom skills` CLI subcommands are thin gRPC clients of this service. Full
+design lives in [`skills-import.md`](./skills-import.md).
+
+**Deferred E** (`pkg/skills/hygiene/` + `pkg/agent/hygiene.go` +
+`HygieneConfig` on `SkillsConfig`): end-of-turn task-board audit for
+skill-emitted tasks. At the no-tool-call return path of
+`runConversationLoop`, the auditor classifies any skill task in
+`IN_PROGRESS`, `BLOCKED`, or `OPEN`-unstarted state as a violation;
+the enforcer applies the resolved `HygienePolicy` (default
+`REQUIRE_FIX`: inject a synthetic user message and re-run the LLM
+turn, capped at `max_retries=2` before falling through to `AUTO_FIX`).
+Scope is strictly skill-emitted tasks via `SkillIdempotencyKey` prefix;
+tasks created ad-hoc through `TaskBoardTool` are out of scope. Full
+design lives in [`skill-hygiene.md`](./skill-hygiene.md).
 
 ### Wiring Requirements
 
