@@ -491,6 +491,42 @@ func WithoutSelfCorrection() Option {
 	}
 }
 
+// WithoutBuiltinTool suppresses the named builtin tool from surfacing to the
+// LLM. The corresponding subsystem (e.g. the graph memory extractor, task
+// manager, error store) keeps running — only the tool definition is hidden
+// from the agent's tool list.
+//
+// Used by the server to enforce tools.minimal / tools.none policy without
+// disabling subsystem wiring. Pass one name per call; call repeatedly to
+// suppress multiple tools.
+//
+// Currently honoured for: graph_memory, task_board, conversation_memory,
+// session_memory, get_error_details, query_tool_result. Other tools either
+// are registered eagerly by the caller (cmd_serve) and can be omitted there,
+// or are not subject to suppression.
+func WithoutBuiltinTool(name string) Option {
+	return func(a *Agent) {
+		if name == "" {
+			return
+		}
+		if a.suppressedBuiltinTools == nil {
+			a.suppressedBuiltinTools = make(map[string]bool)
+		}
+		a.suppressedBuiltinTools[name] = true
+	}
+}
+
+// isBuiltinToolSuppressed reports whether the named tool has been suppressed
+// via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
+// discipline because the suppression map is set at construction and not
+// mutated afterwards.
+func (a *Agent) isBuiltinToolSuppressed(name string) bool {
+	if len(a.suppressedBuiltinTools) == 0 {
+		return false
+	}
+	return a.suppressedBuiltinTools[name]
+}
+
 // WithName sets the agent name in the configuration.
 func WithName(name string) Option {
 	return func(a *Agent) {
@@ -706,12 +742,19 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 	return out
 }
 
-// RegisterTool registers a tool with the agent.
+// RegisterTool registers a tool with the agent. Honours the
+// WithoutBuiltinTool suppression set: if the tool's name has been
+// suppressed via that option, the registration is silently skipped so
+// the LLM never sees the tool. Subsystems that drive the tool keep
+// running — only the surface is hidden.
 func (a *Agent) RegisterTool(tool shuttle.Tool) {
+	if tool != nil && a.isBuiltinToolSuppressed(tool.Name()) {
+		return
+	}
 	a.tools.Register(tool)
 }
 
-// RegisterTools registers multiple tools.
+// RegisterTools registers multiple tools, honouring per-name suppression.
 func (a *Agent) RegisterTools(tools ...shuttle.Tool) {
 	for _, tool := range tools {
 		a.RegisterTool(tool)
@@ -1086,6 +1129,9 @@ Guidelines:
 
 // checkAndRegisterTaskBoardTool implements progressive disclosure for the task_board tool.
 func (a *Agent) checkAndRegisterTaskBoardTool() {
+	if a.isBuiltinToolSuppressed("task_board") {
+		return
+	}
 	if a.tools.IsRegistered("task_board") {
 		return
 	}
@@ -3090,6 +3136,9 @@ func (a *Agent) analyzeError(result *shuttle.Result, err error) *fabric.ErrorAna
 // checkAndRegisterConversationMemoryTool implements progressive disclosure for conversation_memory tool.
 // Registers the tool after first L2 swap event, when long-term storage becomes relevant.
 func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
+	if a.isBuiltinToolSuppressed("conversation_memory") {
+		return
+	}
 	// Skip if tool already registered
 	if a.tools.IsRegistered("conversation_memory") {
 		return
@@ -3131,6 +3180,9 @@ func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
 // checkAndRegisterSessionMemoryTool implements progressive disclosure for session_memory tool.
 // Registers the tool after 3+ sessions accumulate, when session management becomes relevant.
 func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
+	if a.isBuiltinToolSuppressed("session_memory") {
+		return
+	}
 	// Skip if tool already registered
 	if a.tools.IsRegistered("session_memory") {
 		return
@@ -3170,7 +3222,14 @@ func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
 
 // checkAndRegisterGraphMemoryTool implements progressive disclosure for the graph_memory tool.
 // Registers the tool immediately if a graph memory store is configured and enabled.
+//
+// The graph memory SUBSYSTEM (store + extractor) runs whenever
+// graphMemoryStore is non-nil and graphMemoryConfig.Enabled is true — the
+// server can suppress the TOOL surface here without disabling the subsystem.
 func (a *Agent) checkAndRegisterGraphMemoryTool() {
+	if a.isBuiltinToolSuppressed("graph_memory") {
+		return
+	}
 	if a.tools.IsRegistered("graph_memory") {
 		return
 	}
@@ -3519,8 +3578,9 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			})
 
 			if storeErr == nil {
-				// Progressive disclosure: Register get_error_details tool after first error
-				if !a.tools.IsRegistered("get_error_details") {
+				// Progressive disclosure: Register get_error_details tool after first
+				// error, unless the server has suppressed it (tools.none).
+				if !a.tools.IsRegistered("get_error_details") && !a.isBuiltinToolSuppressed("get_error_details") {
 					errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
 					if a.prompts != nil {
 						errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
@@ -3561,8 +3621,9 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				})
 
 				if storeErr == nil {
-					// Progressive disclosure: Register get_error_details tool after first error
-					if !a.tools.IsRegistered("get_error_details") {
+					// Progressive disclosure: Register get_error_details tool after first
+					// error, unless the server has suppressed it (tools.none).
+					if !a.tools.IsRegistered("get_error_details") && !a.isBuiltinToolSuppressed("get_error_details") {
 						errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
 						if a.prompts != nil {
 							errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
@@ -3668,8 +3729,9 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 						a.refTracker.PinForSession(sessionID, dataRef.Id)
 					}
 
-					// Progressive disclosure: Register query_tool_result after first large result
-					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil {
+					// Progressive disclosure: Register query_tool_result after first large
+					// result, unless the server has suppressed it (tools.none).
+					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
 						queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
 						if a.prompts != nil {
 							queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
@@ -4231,9 +4293,10 @@ func (a *Agent) SetSQLResultStore(sqlStore storage.ResultStore) {
 		a.executor.SetSQLResultStore(sqlStore)
 	}
 
-	// Register query_tool_result tool if not already registered
-	// v1.0.1: Pass both SQL and memory stores
-	if sqlStore != nil && a.tools != nil {
+	// Register query_tool_result tool if not already registered, unless the
+	// server has suppressed it (tools.none). The SQL result store stays
+	// wired regardless — agent subsystems can still write to it.
+	if sqlStore != nil && a.tools != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
 		queryTool := shuttle.Tool(NewQueryToolResultTool(sqlStore, a.sharedMemory))
 		if a.prompts != nil {
 			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")

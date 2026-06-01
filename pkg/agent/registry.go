@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
@@ -102,6 +103,22 @@ type Registry struct {
 	// always-on whenever a manager is present. Protected by mu.
 	taskManager    *task.Manager
 	taskDecomposer *task.Decomposer
+
+	// graphMemoryStore + graphMemoryEmbedder are the server-level graph
+	// memory subsystem handles injected by cmd_serve.go. When set, every
+	// agent built through buildAgent gets WithGraphMemoryStore wired so
+	// the extractor and recall paths run. The per-agent
+	// memory.graph_memory.enabled flag in YAML can opt out for that
+	// specific agent. tools.minimal/none on the server controls only
+	// tool surfacing — see suppressedBuiltinTools below. Protected by mu.
+	graphMemoryStore    memory.GraphMemoryStore
+	graphMemoryEmbedder memory.Embedder
+
+	// suppressedBuiltinTools is the server-level tool-surface policy. Each
+	// agent built through buildAgent receives WithoutBuiltinTool for every
+	// entry. Subsystems (extractor, task manager, error store) keep running
+	// regardless. Set by SetSuppressedBuiltinTools. Protected by mu.
+	suppressedBuiltinTools []string
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -236,6 +253,40 @@ func (r *Registry) SetTaskManager(manager *task.Manager, decomposer *task.Decomp
 	r.taskDecomposer = decomposer
 	r.logger.Info("Task manager configured in registry",
 		zap.Bool("decomposer_present", decomposer != nil))
+}
+
+// SetGraphMemoryStore injects the server-level graph memory subsystem into
+// the registry. Every agent built through buildAgent will receive
+// WithGraphMemoryStore so the extractor and recall paths run. The per-agent
+// memory.graph_memory.enabled flag in YAML can opt out for a specific agent.
+//
+// tools.minimal / tools.none on the server control only TOOL surfacing via
+// SetSuppressedBuiltinTools — they do NOT disable the subsystem here.
+//
+// Safe to call concurrently with other registry operations. Must be called
+// before agents are loaded or created to take effect for those agents.
+func (r *Registry) SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.graphMemoryStore = store
+	r.graphMemoryEmbedder = embedder
+	r.logger.Info("Graph memory store configured in registry",
+		zap.Bool("store_present", store != nil),
+		zap.Bool("embedder_present", embedder != nil))
+}
+
+// SetSuppressedBuiltinTools configures the server-level tool-surface policy.
+// Every agent built through buildAgent receives WithoutBuiltinTool(name) for
+// each name in the slice. Subsystems are unaffected.
+//
+// Safe to call concurrently with other registry operations. Must be called
+// before agents are loaded or created to take effect for those agents.
+func (r *Registry) SetSuppressedBuiltinTools(names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suppressedBuiltinTools = append(r.suppressedBuiltinTools[:0], names...)
+	r.logger.Info("Suppressed builtin tools configured in registry",
+		zap.Strings("tools", r.suppressedBuiltinTools))
 }
 
 // LoadAgents loads all agent configurations from the agents directory and workflows
@@ -714,6 +765,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	r.mu.RLock()
 	taskMgr := r.taskManager
 	taskDec := r.taskDecomposer
+	gmStore := r.graphMemoryStore
+	gmEmbedder := r.graphMemoryEmbedder
+	suppressedTools := append([]string(nil), r.suppressedBuiltinTools...)
 	r.mu.RUnlock()
 	if taskMgr != nil {
 		tbCfg := config.GetMemory().GetTaskBoard()
@@ -721,6 +775,30 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
 		}
 		opts = append(opts, WithTaskBoard(taskMgr, taskDec, tbCfg))
+	}
+
+	// Wire graph memory SUBSYSTEM when the server has registered a store
+	// and the agent didn't explicitly disable it in YAML. tools.minimal /
+	// tools.none gates only TOOL surfacing — the extractor runs regardless
+	// and routes through the agent's compressor_llm when declared.
+	if gmStore != nil {
+		gmCfg := config.GetMemory().GetGraphMemory()
+		explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+		if !explicitlyDisabled {
+			if gmCfg == nil {
+				gmCfg = DefaultGraphMemoryConfig()
+			}
+			opts = append(opts, WithGraphMemoryStore(gmStore, gmCfg))
+			if gmEmbedder != nil {
+				opts = append(opts, WithEmbedder(gmEmbedder))
+			}
+		}
+	}
+
+	// Apply server-level tool-surface policy. WithoutBuiltinTool hides a
+	// tool from the LLM's tool list without disabling its subsystem.
+	for _, name := range suppressedTools {
+		opts = append(opts, WithoutBuiltinTool(name))
 	}
 
 	// Create memory with session storage for trace persistence
