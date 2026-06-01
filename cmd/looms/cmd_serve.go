@@ -154,6 +154,119 @@ func builtinToolsToSuppress() []string {
 	return suppressed
 }
 
+// registerYAMLBuiltinTools registers tools declared in cfg.Tools.Builtin onto
+// ag. Single source of truth for tool-name → registration-path policy, used by
+// both the static loader (cold start) and the agent-config hot-reload watcher.
+// Keeping both call sites on this helper prevents the two paths from drifting
+// (which silently dropped YAML-declared shell_execute on hot reload under
+// tools.minimal/none — see PR review feedback).
+//
+// Two categories of YAML-declared tool names get filtered:
+//
+//  1. autoRegisteredTools (shell_execute, workspace, tool_search) — added by
+//     dedicated auto-registration paths when those paths are enabled. The
+//     YAML mention is a duplicate. When tools.minimal/none has disabled the
+//     auto path, the YAML mention IS honoured (fall through and register).
+//
+//  2. otherMechanismTools — wired through their own subsystems (memory/swap,
+//     communication, presentation, UI app, visualization, HITL). They cannot
+//     be constructed from builtin.ByName alone because they need subsystem
+//     references. The YAML mention is metadata only; logged at debug so the
+//     skip is traceable rather than silent.
+//
+// agent_management gets the post-write hook so create_skill / update_skill
+// rebuild the skill router on the next chat turn.
+//
+// contact_human registration is intentionally not done here — see
+// registerContactHumanFromYAML, which needs the shared HITL store.
+//
+// indent controls the leading spaces on log lines so each call site keeps
+// its existing log indentation. agentManagementLogTag distinguishes the
+// boot-time log line from the hot-reload one.
+func registerYAMLBuiltinTools(
+	ag *agent.Agent,
+	cfg *loomv1.AgentConfig,
+	registry *agent.Registry,
+	logger *zap.Logger,
+	indent string,
+	agentManagementLogTag string,
+) {
+	if cfg.Tools == nil || len(cfg.Tools.Builtin) == 0 {
+		return
+	}
+
+	autoRegisteredTools := map[string]bool{
+		"shell_execute": true, // Auto-registered when !tools.minimal/none
+		"workspace":     true, // Auto-registered when !tools.minimal/none
+		"tool_search":   true, // Auto-registered when !tools.minimal/none and toolRegistry available
+	}
+	otherMechanismTools := map[string]string{
+		"recall_conversation":             "memory/swap layer",
+		"clear_recalled_context":          "memory/swap layer",
+		"search_conversation":             "memory/swap layer",
+		"get_tool_result":                 "async tool result retrieval",
+		"get_error_details":               "error details retrieval",
+		"delegate_to_agent":               "coordination subsystem",
+		"send_message":                    "communication subsystem (MessageQueue)",
+		"shared_memory_write":             "communication subsystem (SharedMemoryStore)",
+		"shared_memory_read":              "communication subsystem (SharedMemoryStore)",
+		"top_n_query":                     "presentation subsystem",
+		"group_by_query":                  "presentation subsystem",
+		"generate_visualization":          "visualization subsystem",
+		"generate_workflow_visualization": "visualization subsystem",
+		"create_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"list_component_types":            "UI app subsystem (AppCompiler/AppProvider)",
+		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+	}
+
+	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
+	for _, toolName := range cfg.Tools.Builtin {
+		if subsystem, ok := otherMechanismTools[toolName]; ok {
+			// Subsystem-wired tool. The YAML mention is metadata only; the
+			// actual registration (if any) happens via the named subsystem.
+			// Logged at debug so the skip is traceable instead of silent —
+			// without this, a user wondering why their YAML's send_message
+			// "doesn't work" gets no signal from the boot log.
+			logger.Debug(indent+"YAML lists subsystem-wired tool; skipping YAML registration",
+				zap.String("name", toolName),
+				zap.String("wired_via", subsystem))
+			continue
+		}
+		// Auto-registered tools are skipped here only when the auto-registration
+		// path will actually run. Under tools.minimal/none, fall through and
+		// register via the YAML-declared path so explicit declarations are
+		// honoured. This is the fix the cold-start path got in PR #193; the
+		// hot-reload path used to short-circuit on toolName=="shell_execute"
+		// unconditionally and silently dropped the YAML tool on reload.
+		if autoRegisteredTools[toolName] && !toolsMinimalActive() {
+			continue
+		}
+
+		var tool shuttle.Tool
+		if toolName == "agent_management" && registry != nil {
+			hook := func(skillName, filePath string) {
+				reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+				logger.Info(agentManagementLogTag+": skill write triggered router reload",
+					zap.String("skill", skillName),
+					zap.String("file", filePath),
+					zap.Int("reloaded", reloaded),
+					zap.Int("failed", failed))
+			}
+			tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+		} else {
+			tool = builtin.ByName(toolName)
+		}
+		if tool != nil {
+			ag.RegisterTool(tool)
+			logger.Info(indent+"  Tool registered", zap.String("name", toolName))
+		} else {
+			logger.Warn(indent+"  Unknown builtin tool", zap.String("name", toolName))
+		}
+	}
+}
+
 // createPermissionChecker creates a PermissionChecker based on configuration.
 // Returns nil if tool permissions are not configured.
 func createPermissionChecker(config *Config, logger *zap.Logger) *shuttle.PermissionChecker {
@@ -1649,86 +1762,10 @@ func runServe(cmd *cobra.Command, args []string) {
 					logger.Info("    tools.minimal=true: skipping auto-registration of shell_execute and workspace")
 				}
 
-				// Register builtin tools if specified
-				if cfg.Tools != nil && len(cfg.Tools.Builtin) > 0 {
-					logger.Info("    Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
-					for _, toolName := range cfg.Tools.Builtin {
-						// Two categories of YAML-declared tool names get skipped here:
-						//   1. autoRegisteredTools - these are added by other code
-						//      paths when those paths are active, so the YAML
-						//      declaration is a duplicate. When tools.minimal or
-						//      tools.none disables the auto path, we honour the
-						//      YAML declaration instead.
-						//   2. otherMechanismTools - these are wired through their
-						//      own subsystem (memory/swap layer, coordination,
-						//      HITL store). Always skip; the YAML declaration is
-						//      only metadata.
-						autoRegisteredTools := map[string]bool{
-							"shell_execute": true, // Auto-registered when !tools.minimal/none
-							"workspace":     true, // Auto-registered when !tools.minimal/none
-							"tool_search":   true, // Auto-registered when !tools.minimal/none and toolRegistry available
-						}
-						otherMechanismTools := map[string]bool{
-							"recall_conversation":             true, // Registered with memory/swap layer
-							"clear_recalled_context":          true, // Registered with memory/swap layer
-							"search_conversation":             true, // Registered with memory/swap layer
-							"get_tool_result":                 true, // Async tool result retrieval
-							"get_error_details":               true, // Error details retrieval
-							"delegate_to_agent":               true, // Coordination tool (registered elsewhere)
-							"send_message":                    true, // Communication tool (requires MessageQueue)
-							"shared_memory_write":             true, // Communication tool (requires SharedMemoryStore)
-							"shared_memory_read":              true, // Communication tool (requires SharedMemoryStore)
-							"top_n_query":                     true, // Presentation tool
-							"group_by_query":                  true, // Presentation tool
-							"generate_visualization":          true, // Visualization tool
-							"generate_workflow_visualization": true, // Visualization tool
-							"create_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"contact_human":                   true, // HITL tool (registered with shared SQLite store)
-						}
-						if otherMechanismTools[toolName] {
-							continue
-						}
-						// Auto-registered tools are skipped here only when the
-						// auto-registration path will actually run. Under
-						// tools.minimal/none, fall through and register via the
-						// YAML-declared path so explicit declarations are honoured.
-						if autoRegisteredTools[toolName] && !toolsMinimalActive() {
-							continue
-						}
-						// spawn_agent removed
-
-						// agent_management writes skill YAMLs via
-						// create_skill / update_skill. After a successful
-						// write we want every running agent's router to
-						// pick up the new skill on the next chat turn,
-						// without a server restart. Wire a post-write hook
-						// to Registry.ReloadAllSkillRouters; the tool runs
-						// the hook synchronously in its Execute path.
-						var tool shuttle.Tool
-						if toolName == "agent_management" && registry != nil {
-							hook := func(skillName, filePath string) {
-								reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
-								logger.Info("agent_management: skill write triggered router reload",
-									zap.String("skill", skillName),
-									zap.String("file", filePath),
-									zap.Int("reloaded", reloaded),
-									zap.Int("failed", failed))
-							}
-							tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
-						} else {
-							tool = builtin.ByName(toolName)
-						}
-						if tool != nil {
-							ag.RegisterTool(tool)
-							logger.Info("      Tool registered", zap.String("name", toolName))
-						} else {
-							logger.Warn("      Unknown builtin tool", zap.String("name", toolName))
-						}
-					}
-				}
+				// Register builtin tools declared in YAML. Shared with the
+				// hot-reload path via registerYAMLBuiltinTools so the two
+				// paths cannot drift.
+				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
 
 				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
 				if cfg.Tools != nil {
@@ -2931,39 +2968,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Info("  tools.minimal=true: skipping auto-registration of shell_execute and workspace")
 			}
 
-			// Register builtin tools if specified
-			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
-				logger.Info("  Registering builtin tools", zap.Int("count", len(agentConfig.Tools.Builtin)))
-				for _, toolName := range agentConfig.Tools.Builtin {
-					// Skip tools that are registered separately
-					if toolName == "shell_execute" || toolName == "contact_human" {
-						continue
-					}
-					// spawn_agent removed
-
-					// Mirror the boot path's agent_management wiring: the
-					// hot-reload path also needs the post-write hook so
-					// reloaded weaver agents trigger router rebuilds.
-					var tool shuttle.Tool
-					if toolName == "agent_management" && registry != nil {
-						hook := func(skillName, filePath string) {
-							reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
-							logger.Info("agent_management (reload): skill write triggered router reload",
-								zap.String("skill", skillName),
-								zap.String("file", filePath),
-								zap.Int("reloaded", reloaded),
-								zap.Int("failed", failed))
-						}
-						tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
-					} else {
-						tool = builtin.ByName(toolName)
-					}
-					if tool != nil {
-						newAgent.RegisterTool(tool)
-						logger.Info("    Tool registered", zap.String("name", toolName))
-					}
-				}
-			}
+			// Register builtin tools declared in YAML. Shared with the
+			// cold-start path via registerYAMLBuiltinTools so the two paths
+			// cannot drift — this previously short-circuited unconditionally
+			// on toolName=="shell_execute" and silently dropped YAML-declared
+			// shell_execute on hot reload under tools.minimal/none.
+			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
 
 			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
 			if agentConfig.Tools != nil {
