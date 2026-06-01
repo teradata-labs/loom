@@ -107,7 +107,10 @@ func (a *Agent) extractFindingsAsync(ctx context.Context, sessionID string) {
 	// Build extraction prompt
 	prompt := buildExtractionPrompt(recentMessages)
 
-	// Call LLM to extract findings
+	// Call LLM to extract findings. Use compressorLLM if available — finding
+	// extraction is an auxiliary memory-management task, not user-facing
+	// reasoning. Local single-slot deployments benefit from routing this off
+	// the primary model.
 	messages := []types.Message{
 		{
 			Role:    "user",
@@ -115,7 +118,11 @@ func (a *Agent) extractFindingsAsync(ctx context.Context, sessionID string) {
 		},
 	}
 
-	response, err := a.llm.Chat(extractCtx, messages, nil)
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+	response, err := llmProvider.Chat(extractCtx, messages, nil)
 	if err != nil {
 		// Silently fail - extraction is best-effort
 		return

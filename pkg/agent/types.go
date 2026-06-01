@@ -173,6 +173,17 @@ type Agent struct {
 	// Guarded by a.mu.
 	lazyToolSets []lazyToolSet
 
+	// suppressedBuiltinTools blocks agent-internal progressive-disclosure
+	// registrations (graph_memory, task_board, conversation_memory,
+	// session_memory) and runtime registrations (get_error_details,
+	// query_tool_result) from surfacing those tools to the LLM. Subsystems
+	// themselves (extractor, task manager, error store) keep running.
+	//
+	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
+	// the single source of truth for which tools should be surfaced —
+	// agent code only consults this map.
+	suppressedBuiltinTools map[string]bool
+
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
