@@ -255,6 +255,7 @@ func TestChocolateySpec(t *testing.T) {
   <metadata>
     <id>loom</id>
     <version>1.2.3</version>
+    <iconUrl>https://cdn.jsdelivr.net/gh/teradata-labs/loom@v1.2.3/packaging/icon.png</iconUrl>
     <releaseNotes>https://github.com/teradata-labs/loom/releases/tag/v1.2.3</releaseNotes>
   </metadata>
 </package>
@@ -285,6 +286,9 @@ func TestChocolateySpec(t *testing.T) {
 
 			assert.Contains(t, result, "<version>2.0.0</version>")
 			assert.Contains(t, result, "https://github.com/teradata-labs/loom/releases/tag/v2.0.0")
+			// iconUrl pinned tag must track the version on bump (no stale tag).
+			assert.Contains(t, result, "https://cdn.jsdelivr.net/gh/teradata-labs/loom@v2.0.0/packaging/icon.png")
+			assert.NotContains(t, result, "loom@v1.2.3/packaging/icon.png")
 		})
 	}
 }

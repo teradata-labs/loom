@@ -237,6 +237,12 @@ func updateChocolateySpec(path string, version Version) error {
 	re2 := regexp.MustCompile(`<releaseNotes>https://github\.com/teradata-labs/loom/releases/tag/v[0-9]+\.[0-9]+\.[0-9]+</releaseNotes>`)
 	text = re2.ReplaceAllString(text, fmt.Sprintf("<releaseNotes>%s</releaseNotes>", releaseNotesURL))
 
+	// Update iconUrl pinned tag (jsDelivr CDN serves the icon from the release tag).
+	// Pinning to a tag keeps the URL immutable per release; this rewrite keeps it
+	// pointing at the current version on every bump.
+	re3 := regexp.MustCompile(`(<iconUrl>https://cdn\.jsdelivr\.net/gh/teradata-labs/loom@)v[0-9]+\.[0-9]+\.[0-9]+(/packaging/icon\.png</iconUrl>)`)
+	text = re3.ReplaceAllString(text, fmt.Sprintf("${1}%s${2}", version.WithV()))
+
 	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
