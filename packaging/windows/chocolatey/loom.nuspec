@@ -2,12 +2,13 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>loom</id>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <packageSourceUrl>https://github.com/teradata-labs/loom/tree/main/packaging/windows/chocolatey</packageSourceUrl>
     <owners>Teradata Labs</owners>
     <title>Loom AI Agent Framework</title>
     <authors>Teradata Labs</authors>
     <projectUrl>https://github.com/teradata-labs/loom</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/teradata-labs/loom@v1.3.0/packaging/icon.png</iconUrl>
     <licenseUrl>https://github.com/teradata-labs/loom/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <docsUrl>https://github.com/teradata-labs/loom#readme</docsUrl>
@@ -64,7 +65,7 @@ Then describe what you need:
 - Quickstart: https://github.com/teradata-labs/loom#quick-start
 - Documentation: https://github.com/teradata-labs/loom/tree/main/docs
     ]]></description>
-    <releaseNotes>https://github.com/teradata-labs/loom/releases/tag/v1.2.0</releaseNotes>
+    <releaseNotes>https://github.com/teradata-labs/loom/releases/tag/v1.3.0</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
