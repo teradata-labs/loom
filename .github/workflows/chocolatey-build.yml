@@ -22,6 +22,9 @@ jobs:
   build-and-test:
     name: Build and Test Chocolatey Package
     runs-on: windows-latest
+    # Backstop: the asset wait can take ~15 min; the rest (pack/install/test/
+    # uninstall) is fast. 30 min leaves headroom without letting a hung run idle.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -46,34 +49,43 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Waiting for release v${{ steps.version.outputs.version }} assets to be available..."
-          $maxAttempts = 30
+          # The release workflow builds 12 binaries (Windows builds alone take 4+ min
+          # each) plus the combined package and SLSA jobs, so the Windows checksum files
+          # can take well over 5 minutes to appear. Wait up to ~15 minutes (90 x 10s).
+          $maxAttempts = 90
+          $sleepSeconds = 10
           $attempt = 0
           $found = $false
+
+          $loomUrl = "https://github.com/teradata-labs/loom/releases/download/v${{ steps.version.outputs.version }}/loom-windows-amd64.exe.zip.sha256"
+          $loomsUrl = "https://github.com/teradata-labs/loom/releases/download/v${{ steps.version.outputs.version }}/looms-windows-amd64.exe.zip.sha256"
 
           while ($attempt -lt $maxAttempts -and -not $found) {
             $attempt++
             Write-Host "Attempt $attempt/$maxAttempts..."
 
+            # Check if both checksum files exist. A missing asset returns 404, which
+            # throws under ErrorActionPreference='Stop'; catch it and keep polling.
             try {
-              # Check if both checksum files exist
-              $loomUrl = "https://github.com/teradata-labs/loom/releases/download/v${{ steps.version.outputs.version }}/loom-windows-amd64.exe.zip.sha256"
-              $loomsUrl = "https://github.com/teradata-labs/loom/releases/download/v${{ steps.version.outputs.version }}/looms-windows-amd64.exe.zip.sha256"
-
-              $loomCheck = Invoke-WebRequest -Uri $loomUrl -Method Head -ErrorAction SilentlyContinue
-              $loomsCheck = Invoke-WebRequest -Uri $loomsUrl -Method Head -ErrorAction SilentlyContinue
+              $loomCheck = Invoke-WebRequest -Uri $loomUrl -Method Head
+              $loomsCheck = Invoke-WebRequest -Uri $loomsUrl -Method Head
 
               if ($loomCheck.StatusCode -eq 200 -and $loomsCheck.StatusCode -eq 200) {
                 Write-Host "✓ Release assets are available!"
                 $found = $true
+                break
               }
             } catch {
-              Write-Host "Assets not ready yet, waiting 10 seconds..."
-              Start-Sleep -Seconds 10
+              Write-Host "Assets not ready yet ($($_.Exception.Message))"
             }
+
+            # Always wait between attempts so we never busy-loop.
+            Start-Sleep -Seconds $sleepSeconds
           }
 
           if (-not $found) {
-            throw "Release assets not available after $maxAttempts attempts. Please ensure the release workflow has completed."
+            $waited = [math]::Round(($maxAttempts * $sleepSeconds) / 60, 1)
+            throw "Release assets not available after $maxAttempts attempts (~$waited min). Please ensure the release workflow has completed."
           }
 
       - name: Update checksums from release
