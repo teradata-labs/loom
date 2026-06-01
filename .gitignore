@@ -81,6 +81,7 @@ website/resources/
 /loom
 /loom-standalone
 /loom-mcp
+/loom-bench-harness
 bin/loom
 bin/looms
 bin/loom-standalone
