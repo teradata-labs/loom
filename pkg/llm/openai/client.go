@@ -251,9 +251,12 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []ToolCall
 				for _, tc := range msg.ToolCalls {
-					// Marshal input to JSON string
+					// Marshal input to JSON string.
+					// Guard against nil Input — json.Marshal(nil) returns "null"
+					// (no error), which LiteLLM forwards to Vertex AI as a non-dict
+					// tool_use.input, causing a 400 "Input should be a valid dictionary".
 					argsJSON, err := json.Marshal(tc.Input)
-					if err != nil {
+					if err != nil || string(argsJSON) == "null" {
 						// Fallback to empty object
 						argsJSON = []byte("{}")
 					}
