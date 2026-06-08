@@ -8733,6 +8733,26 @@
         "serviceRoleKey": {
           "type": "string",
           "title": "Supabase service role key (for server-side access)"
+        },
+        "projectRef": {
+          "type": "string",
+          "description": "Supabase project reference (e.g. \"abcdefghijklmnop\")."
+        },
+        "databasePassword": {
+          "type": "string",
+          "description": "Database password. SENSITIVE: prefer the LOOM_SUPABASE_DB_PASSWORD env var\nor the keyring over committing it to YAML."
+        },
+        "region": {
+          "type": "string",
+          "description": "Project region (e.g. \"us-east-1\"), used to construct the default pooler host."
+        },
+        "poolerHost": {
+          "type": "string",
+          "description": "Explicit pooler host override (e.g. \"aws-0-us-east-1.pooler.supabase.com\").\nThe aws-N prefix varies per project; set this from the dashboard when the\nregion-derived default does not match."
+        },
+        "database": {
+          "type": "string",
+          "description": "Database name (default: \"postgres\")."
         }
       },
       "description": "SupabaseConfig configures Supabase-specific features.\nSTATUS: Planned. Proto scaffold only — no implementation exists yet.\nThis message is reserved for a future PR that adds Supabase-hosted PostgreSQL support."

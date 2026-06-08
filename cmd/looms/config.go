@@ -454,6 +454,26 @@ type PostgresConfig struct {
 	// Require X-User-ID header on all requests (default: true).
 	// When false, requests without X-User-ID use default_user_id or "default-user".
 	RequireUserID bool `mapstructure:"require_user_id"`
+
+	// Supabase configures storage by Supabase project (session-mode pooler DSN)
+	// instead of a raw DSN/host. Takes precedence over host fields but not `dsn`.
+	Supabase SupabaseStorageConfig `mapstructure:"supabase"`
+}
+
+// SupabaseStorageConfig configures Loom storage against a Supabase project.
+// When enabled, a session-mode (port 5432) pooler DSN is derived from these
+// fields. database_password is sensitive: prefer LOOM_SUPABASE_DB_PASSWORD or
+// the keyring over YAML.
+type SupabaseStorageConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`
+	ProjectRef       string `mapstructure:"project_ref"`
+	DatabasePassword string `mapstructure:"database_password"`
+	Region           string `mapstructure:"region"`
+	PoolerHost       string `mapstructure:"pooler_host"`
+	Database         string `mapstructure:"database"`
+	ProjectURL       string `mapstructure:"project_url"`
+	AnonKey          string `mapstructure:"anon_key"`
+	ServiceRoleKey   string `mapstructure:"service_role_key"`
 }
 
 // PostgresPoolConfig holds PostgreSQL connection pool configuration.
@@ -1011,6 +1031,12 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Derive Supabase auth issuer/JWKS URL from the project ref when not set.
 	deriveSupabaseAuthDefaults(&config)
 
+	// Convenience env var for the Supabase storage DB password (shorter than the
+	// nested LOOM_STORAGE_POSTGRES_SUPABASE_DATABASE_PASSWORD).
+	if v := os.Getenv("LOOM_SUPABASE_DB_PASSWORD"); v != "" {
+		config.Storage.Postgres.Supabase.DatabasePassword = v
+	}
+
 	// Fix MCP environment variable case (Viper lowercases all keys)
 	// This must be done after unmarshal to restore original case from YAML
 	configFile := viper.ConfigFileUsed()
@@ -1104,6 +1130,13 @@ func setDefaults() {
 	viper.SetDefault("storage.postgres.pool.max_idle_time_seconds", 300)
 	viper.SetDefault("storage.postgres.pool.max_lifetime_seconds", 3600)
 	viper.SetDefault("storage.postgres.pool.health_check_interval_seconds", 30)
+	// Supabase storage keys (registered so AutomaticEnv binds them on Unmarshal).
+	viper.SetDefault("storage.postgres.supabase.enabled", false)
+	viper.SetDefault("storage.postgres.supabase.project_ref", "")
+	viper.SetDefault("storage.postgres.supabase.database_password", "")
+	viper.SetDefault("storage.postgres.supabase.region", "")
+	viper.SetDefault("storage.postgres.supabase.pooler_host", "")
+	viper.SetDefault("storage.postgres.supabase.database", "")
 	viper.SetDefault("storage.migration.auto_migrate", true)
 	viper.SetDefault("storage.postgres.soft_delete.grace_period_seconds", 2592000)   // 30 days
 	viper.SetDefault("storage.postgres.soft_delete.cleanup_interval_seconds", 86400) // 1 day
@@ -1269,6 +1302,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "supabase_jwt_secret",
 			Setter:     func(c *Config, val string) { c.Server.Auth.Supabase.JWTSecret = val },
 			IsSet:      func(c *Config) bool { return c.Server.Auth.Supabase.JWTSecret != "" },
+		},
+		{
+			KeyringKey: "supabase_db_password",
+			Setter:     func(c *Config, val string) { c.Storage.Postgres.Supabase.DatabasePassword = val },
+			IsSet:      func(c *Config) bool { return c.Storage.Postgres.Supabase.DatabasePassword != "" },
 		},
 		{
 			KeyringKey: "openai_api_key",
@@ -1692,6 +1730,17 @@ func (c *Config) BuildProtoStorageConfig() *loomv1.StorageConfig {
 					CleanupIntervalSeconds: pg.SoftDelete.CleanupIntervalSeconds,
 				},
 				RequireUserId: pg.RequireUserID,
+				Supabase: &loomv1.SupabaseConfig{
+					Enabled:          pg.Supabase.Enabled,
+					ProjectUrl:       pg.Supabase.ProjectURL,
+					AnonKey:          pg.Supabase.AnonKey,
+					ServiceRoleKey:   pg.Supabase.ServiceRoleKey,
+					ProjectRef:       pg.Supabase.ProjectRef,
+					DatabasePassword: pg.Supabase.DatabasePassword,
+					Region:           pg.Supabase.Region,
+					PoolerHost:       pg.Supabase.PoolerHost,
+					Database:         pg.Supabase.Database,
+				},
 			},
 			Migration: &loomv1.MigrationConfig{
 				AutoMigrate:   c.Storage.Migration.AutoMigrate,
