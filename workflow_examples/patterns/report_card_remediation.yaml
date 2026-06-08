@@ -1,0 +1,136 @@
+# Report Card Remediation Pipeline
+#
+# Idea 3 ("closer") of the Loom × Dreambase integration: Dreambase generates a
+# free Report Card (RLS coverage, missing indexes, slow queries); this pipeline
+# ingests those findings and produces actionable remediations — index/RLS DDL, a
+# review-only SQL migration artifact, and kanban tasks — all against the same
+# Supabase database Dreambase reads.
+#
+# Reuses Loom's 12 Postgres analytics patterns (patterns/postgres/analytics/*.yaml)
+# and the auto-injected task_board tool. No new Go code; run via the workflow path.
+#
+# INPUT: the agents expect Report Card findings as JSON in the initial prompt (or
+# in shared memory under 'report_card_findings'). See report_card_sample_findings.json
+# for the expected shape (rls_coverage, missing_indexes, slow_queries).
+#
+# SAFETY: emitted DDL is a REVIEW artifact, never auto-applied. CREATE INDEX
+# CONCURRENTLY cannot run inside a transaction, so the output is NOT a Loom
+# embedded migration — it is a standalone .sql for human review and manual apply.
+
+name: report_card_remediation
+description: Turn a Dreambase Report Card into reviewed index/RLS remediations and kanban tasks
+
+agents:
+  - id: findings_analyst
+    role: Database Findings Analyst
+    goal: Parse and prioritize Report Card findings by severity and impact
+    backstory: |
+      Analyze a Supabase/Postgres health Report Card. Triage findings (RLS gaps,
+      missing indexes, slow queries) by severity and estimated impact. Apply the
+      reasoning in the sequential_scan_detection and missing_index_analysis
+      patterns to interpret seq-scan counts and index gaps.
+
+  - id: remediation_proposer
+    role: Remediation Proposer
+    goal: Propose concrete index, query-rewrite, and RLS remediations for each finding
+    backstory: |
+      For each prioritized finding, propose a specific fix and justify it. Use the
+      missing_index_analysis pattern for index recommendations; query_rewrite,
+      subquery_to_join, like_pattern_optimization, and distinct_elimination for
+      slow-query rewrites; partition_recommendation and vacuum_recommendation
+      where relevant. For RLS-coverage gaps, propose enabling RLS and a
+      user-scoped policy. Be conservative: prefer additive, reversible changes.
+
+  - id: migration_author
+    role: Migration Author
+    goal: Synthesize a single reviewed, idempotent SQL migration from the proposals
+    backstory: |
+      Produce one idempotent SQL file from the proposals. Use
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS for indexes; ENABLE ROW LEVEL
+      SECURITY plus a CREATE POLICY (guarded with a DO/IF NOT EXISTS block) for
+      RLS gaps, matching Loom's own policy style. Emit query rewrites as commented
+      suggestions, not destructive edits. NEVER include DROP. Write the file via
+      the workspace tool as remediation_<date>.sql and also record it as an
+      artifact for provenance. State clearly that CONCURRENTLY must be applied
+      outside a transaction and the file is for human review, not auto-apply.
+
+  - id: task_opener
+    role: Task Opener
+    goal: Open one kanban task per remediation on a dedicated board
+    backstory: |
+      Use the task_board tool to open one task per proposed remediation on a
+      "DB Remediation" board. Title = the finding summary; description = rationale
+      plus the proposed SQL; priority mapped from severity (high->HIGH,
+      medium->MEDIUM, low->LOW); category = IMPLEMENTATION for index/migration
+      work or REVIEW for RLS gaps. Do not close tasks; leave them OPEN.
+
+tasks:
+  - id: analyze_findings
+    agent: findings_analyst
+    description: |
+      Read the Report Card findings JSON (from the prompt or shared memory key
+      'report_card_findings'). Produce a prioritized triage list: for each finding
+      include {category: rls|index|query, table, severity, impact, summary}.
+      Sort by severity (high first) then estimated impact.
+    expected_output: |
+      JSON: {"triage": [{"category","table","severity","impact","summary"}, ...]}
+    context: []
+
+  - id: propose_remediations
+    agent: remediation_proposer
+    description: |
+      For each triaged finding, propose a remediation. For indexes: the exact
+      columns and an index name. For queries: the rewritten SQL and why it is
+      faster. For RLS gaps: the table, the policy predicate, and the role.
+      Reference which analytics pattern informed each proposal.
+    expected_output: |
+      JSON: {"remediations": [{"finding","kind": index|rewrite|rls,
+      "statement","rationale","pattern"}, ...]}
+    context:
+      - analyze_findings
+
+  - id: emit_migration
+    agent: migration_author
+    description: |
+      Synthesize one idempotent SQL file from the remediations. Indexes ->
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS. RLS gaps -> ENABLE ROW LEVEL
+      SECURITY + guarded CREATE POLICY. Query rewrites -> commented suggestions.
+      No DROP statements. Write it with the workspace tool as
+      remediation_<YYYYMMDD>.sql and record an artifact (content_type
+      application/sql, purpose db-remediation). Begin the file with a header
+      noting it is for review and that CONCURRENTLY must run outside a transaction.
+    expected_output: |
+      JSON: {"migration_file","statement_count","artifact_recorded": true,
+      "notes"}
+    context:
+      - propose_remediations
+
+  - id: open_tasks
+    agent: task_opener
+    description: |
+      Using the task_board tool, ensure a "DB Remediation" board exists, then open
+      one OPEN task per remediation with title, description (rationale + SQL),
+      priority from severity, and the appropriate category. Return the created
+      task ids.
+    expected_output: |
+      JSON: {"board","tasks_opened","task_ids": [...]}
+    context:
+      - propose_remediations
+      - emit_migration
+
+workflow:
+  type: pipeline
+
+output:
+  format: json
+  include_context: true
+
+metadata:
+  version: "1.0"
+  category: database_remediation
+  tags:
+    - dreambase
+    - supabase
+    - postgres
+    - remediation
+    - rls

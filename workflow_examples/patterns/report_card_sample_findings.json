@@ -1,0 +1,36 @@
+{
+  "report_card_version": "1.0",
+  "database": "prod-analytics",
+  "generated_at": "2026-06-08T00:00:00Z",
+  "findings": {
+    "rls_coverage": [
+      { "table": "orders", "rls_enabled": false, "severity": "high" },
+      { "table": "events", "rls_enabled": false, "severity": "medium" }
+    ],
+    "missing_indexes": [
+      {
+        "table": "events",
+        "columns": ["user_id", "created_at"],
+        "seq_scans": 14213,
+        "est_rows": 2100000,
+        "severity": "high"
+      },
+      {
+        "table": "orders",
+        "columns": ["customer_id"],
+        "seq_scans": 3120,
+        "est_rows": 480000,
+        "severity": "medium"
+      }
+    ],
+    "slow_queries": [
+      {
+        "query_id": "q-9f3",
+        "calls": 5200,
+        "mean_ms": 840,
+        "query": "SELECT * FROM events WHERE user_id = $1 ORDER BY created_at DESC",
+        "severity": "medium"
+      }
+    ]
+  }
+}
