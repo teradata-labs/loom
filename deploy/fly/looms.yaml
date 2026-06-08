@@ -1,0 +1,57 @@
+# Security-hardened looms config for the public Fly deployment.
+# Loaded via:  looms serve --config /etc/loom/looms.yaml
+# Scalars (storage DSN, LLM key, auth secret, Tavily key) come from env / fly
+# secrets and override values here.
+#
+# WHY THIS FILE IS MANDATORY: Loom's built-in defaults are INSECURE for a public
+# host — tools.permissions.yolo defaults to TRUE and require_approval to FALSE
+# (cmd/looms/config.go), i.e. every tool runs with no gate. This file overrides
+# that to deny-by-default. Do not remove the tools.permissions block.
+
+tools:
+  permissions:
+    yolo: false                 # MUST be false (default is true!). Also keep LOOM_YOLO unset.
+    require_approval: true       # => deny-by-default for anything not in allowed_tools
+    default_action: deny         # must be "deny", not "allow"
+    timeout_seconds: 30
+
+    # Hard blacklist — never runnable; takes precedence over allowed_tools and
+    # over any future require_approval=false slip. These are the host-access /
+    # arbitrary-egress / RCE / amplification tools.
+    disabled_tools:
+      - shell_execute            # RCE; inherits os.Environ() so it can read every secret
+      - file_read                # arbitrary host FS read
+      - file_write               # arbitrary host FS write
+      - workspace                # workspace file write
+      - http_request             # arbitrary outbound HTTP => SSRF + exfiltration
+      - grpc_call                # arbitrary gRPC => SSRF/egress
+      - manage_ephemeral_agents  # sub-agent spawning => resource amplification
+      - agent_management         # meta-agent creation
+      - publish_restart_request  # can request server restarts
+      - shared_memory_write      # cross-session influence
+
+    # Allowlist — the ONLY tools that run. Everything else (all workflow/parsing
+    # tools, etc.) is denied by default. web_search is included intentionally
+    # (Tavily egress, below); the rest touch Loom's own RLS-scoped Postgres, not
+    # the host or arbitrary network.
+    allowed_tools:
+      - web_search               # Tavily (intentional egress to api.tavily.com)
+      - task_board               # opens kanban tasks (demo finale)
+      - graph_memory             # agent memory (Loom-internal)
+      - conversation_memory
+      - session_memory
+      - shared_memory_read
+      - contact_human            # human-in-the-loop signal
+      # - <backend query tool>   # if the agent queries Supabase data (see backends/supabase.yaml).
+      #                            Confirm the exact registered name via an MCP tools/list
+      #                            or the looms startup log, then add it here.
+      # - pipeline / debate / ... # add ONLY the multi-agent workflow tools your demo invokes (host-safe)
+
+  web_search:
+    default_provider: tavily     # Tavily; key comes from TAVILY_API_KEY env (fly secret)
+    timeout_seconds: 30
+
+# storage:, llm:, server.auth:, and agents: are supplied via env / fly secrets
+# (see deploy/fly/README.md) and/or merged from your existing looms.yaml.
+# To give an agent live read access to the Supabase project, add to that agent:
+#   backend_path: /etc/loom/backends/supabase.yaml

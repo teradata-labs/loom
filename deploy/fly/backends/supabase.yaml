@@ -1,0 +1,43 @@
+# Supabase EXECUTION backend — lets an agent query the Supabase project's data
+# as a tool. This is SEPARATE from Loom's storage backend (where Loom persists
+# its own sessions/tasks). Reference it from an agent in looms.yaml via:
+#   backend_path: /etc/loom/backends/supabase.yaml
+#
+# Only add this if the demo needs the agent to read the live database (e.g. to
+# investigate an anomaly or inspect schema for index proposals). If Dreambase
+# passes all data in the prompt, you do NOT need it.
+#
+# SECURITY (critical — the agent runs LLM-generated SQL through this):
+#   * Use a READ-ONLY, least-privilege Postgres role — NOT the project postgres
+#     superuser or service_role. A read-only role + RLS means a malicious or
+#     hallucinated query cannot write, escalate, or read other tenants' rows.
+#   * enable_rls: true scopes queries by the caller's JWT claims (forwarded from
+#     the authenticated MCP edge).
+#   * Provide the read-only role's password via SUPABASE_DB_PASSWORD (fly secret).
+
+apiVersion: loom/v1
+kind: Backend
+name: supabase-data
+type: supabase
+description: Read-only Supabase data source for the agent (RLS-scoped)
+
+supabase:
+  project_ref: ${SUPABASE_PROJECT_REF}
+  api_key: ${SUPABASE_ANON_KEY}            # anon key for RLS context (public, not the service key)
+  database_password: ${SUPABASE_DB_PASSWORD}  # READ-ONLY role's password
+  pooler_mode: transaction                  # fine for the data tool (storage, separately, requires session mode)
+  enable_rls: true                          # scope queries by forwarded JWT claims
+  database: postgres
+  max_pool_size: 10
+  region: ${SUPABASE_REGION}
+  # pooler_host: aws-0-${SUPABASE_REGION}.pooler.supabase.com   # set if the region default doesn't match
+
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 1800
+
+health_check:
+  enabled: true
+  interval_seconds: 60
+  timeout_seconds: 5
+  query: "SELECT 1"

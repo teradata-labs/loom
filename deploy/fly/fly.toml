@@ -1,0 +1,48 @@
+app            = "loom-dreambase"
+primary_region = "dfw"               # Dallas — closest Fly region to Austin
+
+[build]
+  dockerfile = "deploy/fly/Dockerfile"
+
+# Non-secret config. Secrets (DSN, keys, auth secret, Tavily key) go via
+# `fly secrets set` — see deploy/fly/README.md.
+[env]
+  LOOM_SERVER_HOST                    = "127.0.0.1"   # looms loopback => auth works without its own TLS
+  LOOM_SERVER_HTTP_PORT               = "0"           # disable the REST/SSE gateway (its SSE path isn't auth-wired)
+  LOOM_STORAGE_BACKEND                = "postgres"
+  LOOM_STORAGE_MIGRATION_AUTO_MIGRATE = "true"
+  LOOM_LLM_PROVIDER                   = "anthropic"
+  LOOM_SERVER_AUTH_ENABLED            = "true"
+  LOOM_SERVER_AUTH_MODE               = "required"
+  LOOM_SERVER_AUTH_SUPABASE_AUDIENCE  = "authenticated"
+  # NOTE: do NOT set LOOM_YOLO here. looms.yaml forces yolo:false; an env LOOM_YOLO=true would re-open everything.
+
+# Expose ONLY loom-mcp's 8765; Fly terminates TLS at 443. (gRPC 60051 and the
+# REST gateway are NOT exposed.)
+[[services]]
+  internal_port        = 8765
+  protocol             = "tcp"
+  auto_stop_machines   = false        # keep the machine up: in-memory state + background goroutines
+  auto_start_machines  = true
+  min_machines_running = 1            # exactly one instance (in-memory session/agent state is not shared)
+
+  [[services.ports]]
+    port        = 443
+    handlers    = ["tls", "http"]
+    force_https = true
+  # (Port 80 intentionally omitted: a bearer sent to http:// would traverse
+  # plaintext to the edge before any redirect. HTTPS only.)
+
+  [services.concurrency]
+    type       = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+  [[services.tcp_checks]]             # TCP check, not HTTP — loom-mcp GET returns 405 (would read as unhealthy)
+    interval     = "15s"
+    timeout      = "2s"
+    grace_period = "10s"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "1gb"                      # bump if you see OOM under load
