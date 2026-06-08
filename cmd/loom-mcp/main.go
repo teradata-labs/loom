@@ -49,6 +49,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,6 +58,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/server"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
+	loomserver "github.com/teradata-labs/loom/pkg/server"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -192,9 +194,21 @@ func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logg
 	}
 	defer httpSrv.Close()
 
+	// Authenticate the exposed endpoint with Supabase JWTs when configured. The
+	// edge validates the bearer (401 on failure) and forwards the caller identity
+	// to looms on streaming calls (loom_weave). Reads the same LOOM_SERVER_AUTH_*
+	// env vars as looms so a single config drives both.
+	var handler http.Handler = httpSrv
+	if authr, required, enabled := buildEdgeAuthenticator(logger); enabled {
+		handler = authMiddleware(authr, required, logger, httpSrv)
+		logger.Info("HTTP-MCP endpoint authentication enabled (Supabase JWT)", zap.Bool("required", required))
+	} else {
+		logger.Warn("HTTP-MCP endpoint authentication is DISABLED; the endpoint is unauthenticated")
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           httpSrv,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -215,6 +229,97 @@ func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logg
 		os.Exit(1)
 	}
 	logger.Info("server stopped gracefully")
+}
+
+// buildEdgeAuthenticator builds the HTTP-MCP edge authenticator from the same
+// LOOM_SERVER_AUTH_* environment variables looms uses. Returns enabled=false
+// when auth is not configured. JWKS URL and issuer are derived from the project
+// ref when not set (mirrors the looms config derivation).
+func buildEdgeAuthenticator(logger *zap.Logger) (auth *loomserver.Authenticator, required, enabled bool) {
+	if !envBool("LOOM_SERVER_AUTH_ENABLED") {
+		return nil, false, false
+	}
+	ref := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF")
+	jwksURL := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_JWKS_URL")
+	issuer := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_ISSUER")
+	audience := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_AUDIENCE")
+	if audience == "" {
+		audience = "authenticated"
+	}
+	if ref != "" {
+		if jwksURL == "" {
+			jwksURL = fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", ref)
+		}
+		if issuer == "" {
+			issuer = fmt.Sprintf("https://%s.supabase.co/auth/v1", ref)
+		}
+	}
+	var secret []byte
+	if s := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET"); s != "" {
+		secret = []byte(s)
+	}
+	required = os.Getenv("LOOM_SERVER_AUTH_MODE") != "optional"
+
+	authr, err := loomserver.NewAuthenticator(context.Background(), loomserver.AuthConfig{
+		Required:    required,
+		HS256Secret: secret,
+		JWKSURL:     jwksURL,
+		Audience:    audience,
+		Issuer:      issuer,
+		Logger:      logger,
+	})
+	if err != nil {
+		logger.Fatal("failed to initialize HTTP-MCP authenticator", zap.Error(err))
+	}
+	return authr, required, true
+}
+
+// authMiddleware validates the inbound Supabase JWT and forwards the caller
+// identity to looms (on streaming calls). A missing token yields 401 when auth
+// is required; a present-but-invalid token is always 401.
+func authMiddleware(auth *loomserver.Authenticator, required bool, logger *zap.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := edgeBearer(r.Header.Get("Authorization"))
+		if raw == "" {
+			if required {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "authorization bearer token required", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		claims, err := auth.ValidateToken(raw)
+		if err != nil {
+			logger.Debug("edge JWT validation failed", zap.Error(err))
+			http.Error(w, "invalid authentication token", http.StatusUnauthorized)
+			return
+		}
+		sub, _ := claims["sub"].(string)
+		// Forward the bearer (looms re-validates) and the subject as x-user-id
+		// (used when looms auth is disabled). Effective on streaming calls, which
+		// carry the request context through to the bridge's gRPC calls.
+		ctx := server.ContextWithOutgoingAuth(r.Context(), raw, sub)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// envBool reports whether an environment variable is set to a truthy value.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// edgeBearer strips a case-insensitive "Bearer " prefix from an Authorization header.
+func edgeBearer(header string) string {
+	header = strings.TrimSpace(header)
+	if len(header) >= 7 && strings.EqualFold(header[:7], "bearer ") {
+		return strings.TrimSpace(header[7:])
+	}
+	return ""
 }
 
 // setupLogger creates a zap logger that writes to a file (or stderr if no file specified).

@@ -130,7 +130,12 @@ func NewLoomBridge(grpcAddr string, uiRegistry *apps.UIResourceRegistry, logger 
 		return nil, fmt.Errorf("configure transport credentials: %w", err)
 	}
 
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(grpcAddr,
+		grpc.WithTransportCredentials(creds),
+		// Forward the edge-validated caller identity (bearer + x-user-id) to looms.
+		grpc.WithChainUnaryInterceptor(bearerForwardUnaryInterceptor),
+		grpc.WithChainStreamInterceptor(bearerForwardStreamInterceptor),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to looms at %s: %w", grpcAddr, err)
 	}
