@@ -77,13 +77,7 @@ func init() {
 
 func runMCPListCommand(cmd *cobra.Command, args []string) {
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
@@ -146,13 +140,7 @@ func runMCPTestCommand(cmd *cobra.Command, args []string) {
 	serverName := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -240,13 +228,7 @@ func runMCPToolsCommand(cmd *cobra.Command, args []string) {
 	serverName := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
