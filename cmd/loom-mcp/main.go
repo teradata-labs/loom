@@ -13,15 +13,21 @@
 // limitations under the License.
 
 // loom-mcp is a lightweight MCP (Model Context Protocol) server that bridges
-// between MCP clients (like Claude Desktop, VS Code) and a running Loom server.
+// between MCP clients and a running Loom server. It connects to a running looms
+// server via gRPC and exposes all Loom capabilities as MCP tools, plus MCP Apps
+// UI resources (like the conversation viewer).
 //
-// It communicates with MCP clients over stdio (JSON-RPC) and connects to a
-// running looms server via gRPC. All Loom capabilities are exposed as MCP tools,
-// and MCP Apps UI resources (like the conversation viewer) are served as resources.
+// It supports two transports:
+//
+//   - stdio (default): JSON-RPC over stdin/stdout, for Claude Desktop and IDEs.
+//   - http: Streamable HTTP (MCP 2025-03-26) for remote clients. The loom_weave
+//     tool streams progress via POST-response Server-Sent Events. The HTTP
+//     transport has no built-in auth and binds to localhost by default.
 //
 // Usage:
 //
 //	loom-mcp --grpc-addr localhost:60051
+//	loom-mcp --transport http --http-addr 127.0.0.1:8765
 //
 // Claude Desktop configuration (claude_desktop_config.json):
 //
@@ -37,11 +43,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
@@ -57,6 +66,8 @@ const serverName = "loom-mcp"
 
 func main() {
 	grpcAddr := flag.String("grpc-addr", "localhost:60051", "Address of the running looms gRPC server")
+	transportKind := flag.String("transport", "stdio", "MCP transport: stdio (default, for Claude Desktop/IDEs) or http (Streamable HTTP for remote clients)")
+	httpAddr := flag.String("http-addr", "127.0.0.1:8765", "Listen address for --transport=http (localhost-only by default; see security notes)")
 	tlsCert := flag.String("tls-cert", "", "Path to PEM-encoded CA certificate for TLS (enables TLS when set)")
 	tlsSkipVerify := flag.Bool("tls-skip-verify", false, "Skip TLS server certificate verification (NOT recommended for production)")
 	logFile := flag.String("log-file", "", "Log file path (defaults to stderr redirect to /dev/null)")
@@ -69,6 +80,7 @@ func main() {
 
 	logger.Info("starting loom-mcp server",
 		zap.String("grpc_addr", *grpcAddr),
+		zap.String("transport", *transportKind),
 		zap.String("version", version.Get()),
 	)
 
@@ -122,9 +134,6 @@ func main() {
 	// Wire MCP server to bridge so app mutations trigger resource list change notifications.
 	bridge.SetMCPServer(mcpServer)
 
-	// Create stdio transport (reads from stdin, writes to stdout)
-	stdioTransport := transport.NewStdioServerTransport(os.Stdin, os.Stdout)
-
 	// Set up signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -137,7 +146,20 @@ func main() {
 		cancel()
 	}()
 
-	// Run the MCP server
+	switch *transportKind {
+	case "stdio":
+		runStdio(ctx, mcpServer, logger)
+	case "http":
+		runHTTP(ctx, mcpServer, *httpAddr, logger)
+	default:
+		logger.Fatal("unknown transport (use stdio or http)", zap.String("transport", *transportKind))
+	}
+}
+
+// runStdio serves the MCP server over stdio (JSON-RPC on stdin/stdout) — the
+// default, used by Claude Desktop and IDE clients.
+func runStdio(ctx context.Context, mcpServer *server.MCPServer, logger *zap.Logger) {
+	stdioTransport := transport.NewStdioServerTransport(os.Stdin, os.Stdout)
 	logger.Info("MCP server ready, awaiting client connections on stdio")
 	if err := mcpServer.Serve(ctx, stdioTransport); err != nil {
 		if ctx.Err() != nil {
@@ -147,6 +169,52 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// runHTTP serves the MCP server over Streamable HTTP (MCP 2025-03-26) for remote
+// clients. The bridge's loom_weave tool streams progress via POST-response SSE.
+//
+// SECURITY: this transport has no built-in authentication. It binds to localhost
+// by default; exposing it on a network interface (or via a tunnel) without an
+// authenticating layer in front grants unauthenticated access to all MCP tools.
+// Phase 1C adds native Supabase-JWT auth in front of this handler.
+func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logger *zap.Logger) {
+	transport.WarnIfNotLocalhost(logger, addr)
+
+	httpSrv, err := transport.NewStreamableHTTPServer(transport.StreamableHTTPServerConfig{
+		Handler:       func(msg []byte) ([]byte, error) { return mcpServer.HandleMessage(context.Background(), msg) },
+		StreamHandler: mcpServer,
+		Logger:        logger,
+		SessionTTL:    transport.DefaultSessionTTL,
+	})
+	if err != nil {
+		logger.Fatal("failed to create HTTP-MCP transport", zap.Error(err))
+	}
+	defer httpSrv.Close()
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           httpSrv,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Shut the HTTP server down when the context is cancelled (signal received).
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShutdown()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	logger.Info("HTTP-MCP server ready",
+		zap.String("addr", addr),
+		zap.String("endpoint", fmt.Sprintf("POST http://%s/ (Streamable HTTP, MCP 2025-03-26)", addr)),
+	)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("HTTP server error", zap.Error(err))
+		os.Exit(1)
+	}
+	logger.Info("server stopped gracefully")
 }
 
 // setupLogger creates a zap logger that writes to a file (or stderr if no file specified).

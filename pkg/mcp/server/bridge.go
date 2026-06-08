@@ -216,6 +216,22 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 	return handler(ctx, args)
 }
 
+// SupportsStreaming implements StreamingToolProvider. Only loom_weave streams
+// progress today, via the StreamWeave RPC.
+func (b *LoomBridge) SupportsStreaming(name string) bool {
+	return name == "loom_weave"
+}
+
+// CallToolStream implements StreamingToolProvider. For loom_weave it runs the
+// StreamWeave RPC and forwards progress via emit; any other tool falls back to
+// the synchronous CallTool (no progress emitted).
+func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[string]interface{}, _ string, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	if name == "loom_weave" {
+		return b.handleWeaveStream(ctx, args, emit)
+	}
+	return b.CallTool(ctx, name, args)
+}
+
 // ListResources implements ResourceProvider.
 // Returns embedded apps from the local registry merged with dynamic apps from the
 // gRPC server. The server is authoritative for dynamic apps; the local registry is

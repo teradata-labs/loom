@@ -18,7 +18,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -63,6 +65,61 @@ func (b *LoomBridge) handleWeave(ctx context.Context, args map[string]interface{
 	}
 	return &protocol.CallToolResult{
 		Content: []protocol.Content{{Type: "text", Text: body}},
+	}, nil
+}
+
+// handleWeaveStream runs loom_weave over the StreamWeave RPC, forwarding each
+// progress update (0-100) as an MCP progress notification via emit, then returns
+// the final answer assembled from the terminal completion event. Unlike
+// handleWeave it issues no second unary call: StreamWeave's COMPLETED event
+// already carries the full result (see MultiAgentServer.StreamWeave).
+//
+// The routing preamble that handleWeave prepends is intentionally omitted here:
+// the stream does not expose the resolved agent id, and emitting a preamble with
+// an empty id would be misleading. The result is the agent's answer text.
+func (b *LoomBridge) handleWeaveStream(ctx context.Context, args map[string]interface{}, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	prepared := prepareWeaveMCPArgsForProtoJSON(args)
+	req := &loomv1.WeaveRequest{}
+	if len(prepared) > 0 {
+		argsJSON, err := json.Marshal(prepared)
+		if err != nil {
+			return nil, fmt.Errorf("marshal args: %w", err)
+		}
+		if err := protojson.Unmarshal(argsJSON, req); err != nil {
+			return nil, fmt.Errorf("unmarshal args to proto: %w", err)
+		}
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+
+	stream, err := b.client.StreamWeave(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var finalContent string
+	for {
+		prog, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		if p := prog.GetProgress(); p > 0 {
+			_ = emit.EmitProgress(float64(p), 100)
+		}
+		if prog.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+			finalContent = prog.GetPartialContent()
+			if finalContent == "" && prog.GetPartialResult() != nil {
+				finalContent = prog.GetPartialResult().GetDataJson()
+			}
+		}
+	}
+
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: finalContent}},
 	}, nil
 }
 

@@ -44,6 +44,7 @@ type MCPServer struct {
 	clientInfo         *protocol.Implementation     // Stored after initialize
 	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
 	notifyCh           chan []byte                  // Buffered channel for outgoing notifications
+	toolProvider       ToolProvider                 // Registered via WithToolProvider; used for streaming dispatch
 }
 
 // Option configures an MCPServer.
@@ -53,6 +54,7 @@ type Option func(*MCPServer)
 func WithToolProvider(p ToolProvider) Option {
 	return func(s *MCPServer) {
 		s.capabilities.Tools = &protocol.ToolsCapability{}
+		s.toolProvider = p
 		s.RegisterHandler("tools/list", newToolsListHandler(p))
 		s.RegisterHandler("tools/call", newToolsCallHandler(p))
 	}
