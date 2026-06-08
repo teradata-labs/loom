@@ -853,6 +853,24 @@ func exportConfigToEnv(cfg *Config) {
 	}
 }
 
+// buildServerAuthConfig converts the viper auth config into the server package's
+// AuthConfig (decoupled from viper). "optional" mode maps to Required=false.
+func buildServerAuthConfig(config *Config, logger *zap.Logger) server.AuthConfig {
+	sb := config.Server.Auth.Supabase
+	var secret []byte
+	if sb.JWTSecret != "" {
+		secret = []byte(sb.JWTSecret)
+	}
+	return server.AuthConfig{
+		Required:    config.Server.Auth.Mode != "optional",
+		HS256Secret: secret,
+		JWKSURL:     sb.JWKSURL,
+		Audience:    sb.Audience,
+		Issuer:      sb.Issuer,
+		Logger:      logger,
+	}
+}
+
 func runServe(cmd *cobra.Command, args []string) {
 	// Validate configuration
 	if err := config.Validate(); err != nil {
@@ -1985,11 +2003,33 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Warn("SQLite backend does not support user ID requirement; require_user_id ignored")
 	}
 
-	// Create gRPC server with optional TLS and user ID interceptors
+	// Build the interceptor chain. When Supabase-JWT auth is enabled it runs
+	// first and establishes the user identity from the token's subject; the
+	// legacy user-id interceptor then defers to that identity (see extractUserID).
+	// When auth is disabled, only the legacy interceptor runs (unchanged behavior).
+	unaryInterceptors := make([]grpc.UnaryServerInterceptor, 0, 2)
+	streamInterceptors := make([]grpc.StreamServerInterceptor, 0, 2)
+	if config.Server.Auth.Enabled {
+		authr, err := server.NewAuthenticator(context.Background(), buildServerAuthConfig(config, logger))
+		if err != nil {
+			logger.Fatal("failed to initialize Supabase-JWT authenticator", zap.Error(err))
+		}
+		unaryInterceptors = append(unaryInterceptors, authr.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, authr.StreamServerInterceptor())
+		logger.Info("Supabase-JWT authentication enabled",
+			zap.String("mode", config.Server.Auth.Mode),
+			zap.Bool("hs256", config.Server.Auth.Supabase.JWTSecret != ""),
+			zap.Bool("jwks", config.Server.Auth.Supabase.JWKSURL != ""),
+		)
+	}
+	unaryInterceptors = append(unaryInterceptors, server.UserIDUnaryInterceptor(userIDCfg))
+	streamInterceptors = append(streamInterceptors, server.UserIDStreamInterceptor(userIDCfg))
+
+	// Create gRPC server with optional TLS and the interceptor chain.
 	var grpcServer *grpc.Server
 	serverOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(server.UserIDUnaryInterceptor(userIDCfg)),
-		grpc.StreamInterceptor(server.UserIDStreamInterceptor(userIDCfg)),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
 	}
 	if tlsManager != nil {
 		creds := credentials.NewTLS(tlsManager.TLSConfig())

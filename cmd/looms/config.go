@@ -15,6 +15,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +200,26 @@ type ServerConfig struct {
 	TLS              TLSConfig           `mapstructure:"tls"`
 	Clarification    ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
 	CORS             CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
+	Auth             AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
+}
+
+// AuthConfig gates JWT authentication of Loom's gRPC/HTTP endpoints. When
+// disabled (the default), Loom uses the legacy trusted x-user-id header.
+type AuthConfig struct {
+	Enabled  bool               `mapstructure:"enabled"`  // Master switch (default: false)
+	Provider string             `mapstructure:"provider"` // Only "supabase" is supported today
+	Mode     string             `mapstructure:"mode"`     // "required" (reject unauthenticated) or "optional"
+	Supabase SupabaseAuthConfig `mapstructure:"supabase"`
+}
+
+// SupabaseAuthConfig holds Supabase-specific JWT verification settings. The
+// jwt_secret is sensitive and must come from env/keyring, never YAML.
+type SupabaseAuthConfig struct {
+	ProjectRef string `mapstructure:"project_ref"` // Used to derive jwks_url/issuer when blank
+	JWTSecret  string `mapstructure:"jwt_secret"`  // HS256 shared secret (env/keyring only)
+	JWKSURL    string `mapstructure:"jwks_url"`    // Asymmetric keys; auto-derived from project_ref if blank
+	Audience   string `mapstructure:"audience"`    // Expected aud claim (default: "authenticated")
+	Issuer     string `mapstructure:"issuer"`      // Expected iss; auto-derived from project_ref if blank
 }
 
 // CORSServerConfig holds CORS configuration for HTTP endpoints.
@@ -987,6 +1008,9 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Non-fatal: keyring might not be available - user can provide secrets via CLI/env
 	_ = loadSecretsFromKeyring(&config)
 
+	// Derive Supabase auth issuer/JWKS URL from the project ref when not set.
+	deriveSupabaseAuthDefaults(&config)
+
 	// Fix MCP environment variable case (Viper lowercases all keys)
 	// This must be done after unmarshal to restore original case from YAML
 	configFile := viper.ConfigFileUsed()
@@ -1031,6 +1055,17 @@ func setDefaults() {
 	viper.SetDefault("server.cors.exposed_headers", []string{"Content-Length", "Content-Type"})
 	viper.SetDefault("server.cors.allow_credentials", false) // MUST be false with wildcard origins
 	viper.SetDefault("server.cors.max_age", 86400)           // 24 hours
+
+	// Auth (Supabase JWT). Keys are registered (even empty) so AutomaticEnv binds
+	// e.g. LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET on Unmarshal.
+	viper.SetDefault("server.auth.enabled", false)
+	viper.SetDefault("server.auth.provider", "supabase")
+	viper.SetDefault("server.auth.mode", "required")
+	viper.SetDefault("server.auth.supabase.project_ref", "")
+	viper.SetDefault("server.auth.supabase.jwt_secret", "")
+	viper.SetDefault("server.auth.supabase.jwks_url", "")
+	viper.SetDefault("server.auth.supabase.audience", "authenticated")
+	viper.SetDefault("server.auth.supabase.issuer", "")
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
@@ -1231,6 +1266,11 @@ func GetSecretMappings() []SecretMapping {
 			IsSet:      func(c *Config) bool { return c.Observability.HawkAPIKey != "" },
 		},
 		{
+			KeyringKey: "supabase_jwt_secret",
+			Setter:     func(c *Config, val string) { c.Server.Auth.Supabase.JWTSecret = val },
+			IsSet:      func(c *Config) bool { return c.Server.Auth.Supabase.JWTSecret != "" },
+		},
+		{
 			KeyringKey: "openai_api_key",
 			Setter:     func(c *Config, val string) { c.LLM.OpenAIAPIKey = val },
 			IsSet:      func(c *Config) bool { return c.LLM.OpenAIAPIKey != "" },
@@ -1328,6 +1368,65 @@ func GetSecretMappings() []SecretMapping {
 	}
 }
 
+// validateAuth checks the endpoint authentication configuration when enabled.
+func (c *Config) validateAuth() error {
+	a := c.Server.Auth
+	if !a.Enabled {
+		return nil
+	}
+	if a.Provider != "supabase" {
+		return fmt.Errorf("server.auth.provider %q not supported (only \"supabase\")", a.Provider)
+	}
+	if a.Mode != "required" && a.Mode != "optional" {
+		return fmt.Errorf("server.auth.mode must be \"required\" or \"optional\" (got %q)", a.Mode)
+	}
+	if a.Supabase.JWTSecret == "" && a.Supabase.JWKSURL == "" {
+		return fmt.Errorf("server.auth requires a verification source: set server.auth.supabase.jwt_secret (HS256) " +
+			"via LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET/keyring, or server.auth.supabase.project_ref (derives JWKS)")
+	}
+	if a.Supabase.Issuer == "" || a.Supabase.Audience == "" {
+		return fmt.Errorf("server.auth requires issuer and audience: set server.auth.supabase.project_ref to derive them, or set them explicitly")
+	}
+	// Tokens must not traverse a non-loopback interface in plaintext.
+	if !c.Server.TLS.Enabled && !isLoopbackHost(c.Server.Host) {
+		return fmt.Errorf("server.auth.enabled requires TLS when server.host is not loopback (got %q); "+
+			"set server.tls.enabled=true or bind server.host to 127.0.0.1", c.Server.Host)
+	}
+	return nil
+}
+
+// isLoopbackHost reports whether a server host binds only the loopback interface.
+// An empty host binds all interfaces and is therefore NOT loopback.
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	case "":
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// deriveSupabaseAuthDefaults fills in the Supabase JWKS URL and issuer from the
+// project ref when they are not explicitly configured. Supabase exposes its
+// JWKS at https://<ref>.supabase.co/auth/v1/.well-known/jwks.json and signs
+// tokens with issuer https://<ref>.supabase.co/auth/v1.
+func deriveSupabaseAuthDefaults(config *Config) {
+	sb := &config.Server.Auth.Supabase
+	if sb.ProjectRef == "" {
+		return
+	}
+	if sb.JWKSURL == "" {
+		sb.JWKSURL = fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", sb.ProjectRef)
+	}
+	if sb.Issuer == "" {
+		sb.Issuer = fmt.Sprintf("https://%s.supabase.co/auth/v1", sb.ProjectRef)
+	}
+}
+
 // loadSecretsFromKeyring loads API keys from system keyring using the secret mappings.
 // This is extensible - just add more entries to GetSecretMappings().
 func loadSecretsFromKeyring(config *Config) error {
@@ -1416,6 +1515,10 @@ func (c *Config) Validate() error {
 	// Validate server config
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid port: %d (must be 1-65535)", c.Server.Port)
+	}
+
+	if err := c.validateAuth(); err != nil {
+		return err
 	}
 
 	// Validate LLM config
