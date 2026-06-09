@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,11 +35,14 @@ import (
 type fakeStreamHandler struct {
 	progressEvents int    // number of notifications/progress events to emit
 	finalText      string // text payload of the final tools/call result
-	called         bool   // set true when HandleMessageStream is invoked
+	mu             sync.Mutex
+	called         bool // set true when HandleMessageStream is invoked
 }
 
 func (f *fakeStreamHandler) HandleMessageStream(_ context.Context, msg []byte, w SSEWriter) ([]byte, error) {
+	f.mu.Lock()
 	f.called = true
+	f.mu.Unlock()
 	var req struct {
 		ID     *json.RawMessage `json:"id"`
 		Method string           `json:"method"`
@@ -58,6 +62,12 @@ func (f *fakeStreamHandler) HandleMessageStream(_ context.Context, msg []byte, w
 	}
 	final := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":%q}]}}`, id, f.finalText)
 	return []byte(final), nil
+}
+
+func (f *fakeStreamHandler) wasCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.called
 }
 
 // sseEvent is a parsed Server-Sent Event (data payload only).
@@ -148,7 +158,7 @@ func TestStreamableHTTPServer_POST_SSE_HappyPath(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
-	assert.True(t, sh.called, "stream handler should be invoked")
+	assert.True(t, sh.wasCalled(), "stream handler should be invoked")
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -198,7 +208,7 @@ func TestStreamableHTTPServer_POST_NoAcceptSSE_UsesJSON(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-	assert.False(t, sh.called, "stream handler must not be used without Accept: text/event-stream")
+	assert.False(t, sh.wasCalled(), "stream handler must not be used without Accept: text/event-stream")
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(bodyBytes), `"sync":true`)
@@ -232,5 +242,5 @@ func TestStreamableHTTPServer_POST_SSE_InitializeUsesJSON(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 	assert.NotEmpty(t, resp.Header.Get("Mcp-Session-Id"), "initialize must create a session")
-	assert.False(t, sh.called, "initialize must not take the streaming path")
+	assert.False(t, sh.wasCalled(), "initialize must not take the streaming path")
 }
