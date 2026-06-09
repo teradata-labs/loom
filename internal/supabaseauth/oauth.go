@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -169,9 +170,13 @@ func callbackHandler(wantState string, codeCh chan<- string, errCh chan<- error)
 	return mux
 }
 
+// writeBrowserMessage renders a status message as a minimal HTML page on the
+// loopback OAuth callback. msg can embed values from the redirect query string
+// (e.g. the provider's error code), so it is HTML-escaped to prevent reflected
+// XSS — any local process can hit the callback port while login is pending.
 func writeBrowserMessage(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprintf(w, "<!doctype html><html><body style=\"font-family:sans-serif;padding:2rem\"><p>%s</p></body></html>", msg)
+	_, _ = fmt.Fprintf(w, "<!doctype html><html><body style=\"font-family:sans-serif;padding:2rem\"><p>%s</p></body></html>", html.EscapeString(msg))
 }
 
 // exchangeCode swaps a PKCE auth code for tokens at the Supabase token endpoint.

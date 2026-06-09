@@ -174,6 +174,31 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "state mismatch")
 }
 
+// TestCallbackHandlers_EscapeErrorParam is the regression test for the
+// reflected-XSS finding on the loopback OAuth callbacks: the provider-supplied
+// `error` query param is rendered into the browser response and must come back
+// HTML-escaped. Covers both the user-login handler and the Management-OAuth
+// handler, which share the writeBrowserMessage sink.
+func TestCallbackHandlers_EscapeErrorParam(t *testing.T) {
+	const payload = `<script>alert(1)</script>`
+
+	handlers := map[string]http.Handler{
+		"login":      callbackHandler("want-state", make(chan string, 1), make(chan error, 1)),
+		"management": callbackFunc("want-state", make(chan string, 1), make(chan error, 1)),
+	}
+	for name, h := range handlers {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/callback?error="+url.QueryEscape(payload), nil)
+			h.ServeHTTP(rec, req)
+
+			body := rec.Body.String()
+			assert.NotContains(t, body, payload, "error param must be HTML-escaped (reflected XSS)")
+			assert.Contains(t, body, "&lt;script&gt;alert(1)&lt;/script&gt;", "escaped form should still be shown to the user")
+		})
+	}
+}
+
 func TestTokenSource_RefreshesNearExpiry(t *testing.T) {
 	ts := mockSupabase(t, "refresh_token")
 	defer ts.Close()

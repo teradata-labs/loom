@@ -29,7 +29,7 @@ import (
 
 const (
 	keyringServiceLoom  = "loom"
-	mgmtTokenKeyringKey = "supabase_mgmt_token"
+	mgmtTokenKeyringKey = "supabase_mgmt_token" // #nosec G101 -- keyring entry name (lookup key), not a credential
 )
 
 var (

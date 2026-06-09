@@ -73,6 +73,8 @@ func NewStore(dataDir string) *Store {
 // Save persists the session. It tries the keyring first (when enabled) and
 // falls back to the 0600 file on any keyring error.
 func (st *Store) Save(sess *Session) error {
+	// #nosec G117 -- persisting tokens is the session store's purpose; the
+	// marshaled bytes go only to the OS keyring or a 0600 file, never to logs.
 	data, err := json.Marshal(sess)
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
