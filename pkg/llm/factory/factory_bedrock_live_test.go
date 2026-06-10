@@ -60,7 +60,7 @@ func TestBedrock_AnthropicRoutesToStreamingSDK(t *testing.T) {
 		t.Fatalf("factory routed %q to %T, want *bedrock.SDKClient", model, provider)
 	}
 
-	// 2) OLD path (NewClient): ChatStream is stubbed -> callback must never fire.
+	// 2) OLD path (NewClient): ChatStream is stubbed today -> callbacks expected to be 0.
 	oldClient, err := bedrock.NewClient(cfg)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -76,8 +76,11 @@ func TestBedrock_AnthropicRoutesToStreamingSDK(t *testing.T) {
 	newCount, newFirst, newTotal := measureStream(t, newClient, prompt)
 	t.Logf("NEW NewSDKClient (Anthropic SDK): callbacks=%d, firstToken=%v, total=%v", newCount, newFirst, newTotal)
 
+	// The Converse client's ChatStream is a stub today (0 callbacks), but fixing
+	// it is a planned follow-up — a streaming Converse path is progress, not a
+	// regression, so it only logs. The SDK-path assertions below guard the fix.
 	if oldCount != 0 {
-		t.Errorf("OLD path fired %d token callbacks, want 0 (stub returns whole response)", oldCount)
+		t.Logf("NOTE: Converse client fired %d token callbacks — its ChatStream stub appears to stream now; this test's old-path baseline is obsolete", oldCount)
 	}
 	if newCount < 2 {
 		t.Errorf("NEW path fired %d token callbacks, want >=2 (incremental streaming)", newCount)

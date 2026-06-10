@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 // SDKClient implements the LLMProvider interface using the official Anthropic SDK for Bedrock.
@@ -127,7 +128,10 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 		// unconditionally whenever that provider is non-nil (it ignores
 		// AuthSchemePreference), which breaks SigV4/SSO credentials. Clear it so
 		// the middleware signs requests with cfg.Credentials instead.
-		awsCfg.BearerAuthTokenProvider = nil
+		if awsCfg.BearerAuthTokenProvider != nil {
+			zap.L().Warn("ignoring ambient AWS bearer token (AWS_BEARER_TOKEN_BEDROCK or profile bearer setting); signing Bedrock requests with SigV4 credentials instead — set the bearer token in loom's Bedrock config to use bearer auth")
+			awsCfg.BearerAuthTokenProvider = nil
+		}
 	}
 
 	// Initialize rate limiter if enabled

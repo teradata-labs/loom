@@ -224,6 +224,11 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 // isAnthropicBedrockModel reports whether a Bedrock model ID refers to an
 // Anthropic Claude model, including cross-region inference profiles such as
 // "us.anthropic.claude-opus-4-7" or "global.anthropic.claude-opus-4-6-v1".
+// Application inference profile ARNs
+// (arn:aws:bedrock:…:application-inference-profile/<opaque-id>) carry no model
+// hint, so a Claude model behind one falls back to the Converse client — the
+// pre-fix behavior, and those ARNs are not addressable via the Anthropic SDK
+// anyway.
 func isAnthropicBedrockModel(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "anthropic") || strings.Contains(m, "claude")
