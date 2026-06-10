@@ -119,6 +119,15 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 			},
 		)
 		awsCfg.AuthSchemePreference = []string{"httpBearerAuth"}
+	} else {
+		// No loom-configured bearer token: force SigV4. config.LoadDefaultConfig
+		// can auto-resolve a Bedrock bearer token (AWS_BEARER_TOKEN_BEDROCK or a
+		// profile setting) into BearerAuthTokenProvider. Unlike the raw Converse
+		// client, the Anthropic SDK's Bedrock middleware uses bearer auth
+		// unconditionally whenever that provider is non-nil (it ignores
+		// AuthSchemePreference), which breaks SigV4/SSO credentials. Clear it so
+		// the middleware signs requests with cfg.Credentials instead.
+		awsCfg.BearerAuthTokenProvider = nil
 	}
 
 	// Initialize rate limiter if enabled
