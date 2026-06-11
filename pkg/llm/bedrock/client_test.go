@@ -617,6 +617,64 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 	}
 }
 
+// TestSDKClient_RequiresStreaming verifies the non-streaming pre-flight guard:
+// the Anthropic SDK rejects non-streaming Messages.New calls when max_tokens
+// implies >10 minutes of generation (max_tokens > ~21,333) or exceeds the
+// model's non-streaming token cap. Chat must route those through ChatStream.
+func TestSDKClient_RequiresStreaming(t *testing.T) {
+	tests := []struct {
+		name      string
+		modelID   string
+		maxTokens int64
+		want      bool
+	}{
+		{
+			name:      "small max_tokens stays non-streaming",
+			modelID:   "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			maxTokens: 4096,
+			want:      false,
+		},
+		{
+			name:      "default bedrock max_tokens stays non-streaming",
+			modelID:   "us.anthropic.claude-haiku-4-5-20250929-v1:0",
+			maxTokens: DefaultBedrockMaxTokens,
+			want:      false,
+		},
+		{
+			name:      "catalog-sized 64k max_tokens requires streaming",
+			modelID:   "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			maxTokens: 64000,
+			want:      true,
+		},
+		{
+			name:      "catalog-sized 32k max_tokens requires streaming",
+			modelID:   "us.anthropic.claude-opus-4-6-20260301-v1:0",
+			maxTokens: 32000,
+			want:      true,
+		},
+		{
+			name:      "per-model cap: opus 4 bedrock ID above 8192 requires streaming",
+			modelID:   "anthropic.claude-opus-4-20250514-v1:0",
+			maxTokens: 8193,
+			want:      true,
+		},
+		{
+			name:      "per-model cap: opus 4 bedrock ID at 8192 stays non-streaming",
+			modelID:   "anthropic.claude-opus-4-20250514-v1:0",
+			maxTokens: 8192,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &SDKClient{modelID: tt.modelID, maxTokens: tt.maxTokens}
+			assert.Equal(t, tt.want, client.requiresStreaming(),
+				"model=%s max_tokens=%d", tt.modelID, tt.maxTokens)
+		})
+	}
+}
+
 func TestClient_ImplementsInterface(t *testing.T) {
 	var _ types.LLMProvider = (*Client)(nil)
 }
