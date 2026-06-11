@@ -54,30 +54,46 @@
   }
 
   // ---------------------------------------------------------------------------
-  // 2. Theme: Tokyonight dark palette
+  // 2. Theme: Teradata design tokens (dark + light)
   // ---------------------------------------------------------------------------
 
-  const THEME = Object.freeze({
-    bg:          '#1a1b26',
-    surface:     '#24283b',
-    card:        '#292e42',
-    border:      '#3b4261',
-    textPrimary: '#c0caf5',
-    textSecondary: '#565f89',
-    textMuted:   '#414868',
-    fontSans: "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
-    fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-  });
+  const THEMES = {
+    dark: {
+      bg:            '#000712',
+      surface:       '#182032',
+      card:          '#1e273c',
+      border:        '#2a3a5c',
+      textPrimary:   '#e8eaf6',
+      textSecondary: '#8892b0',
+      textMuted:     '#4a5580',
+    },
+    light: {
+      bg:            '#f8f9fb',
+      surface:       '#ffffff',
+      card:          '#eff1f7',
+      border:        '#d0d5e8',
+      textPrimary:   '#1a1a2e',
+      textSecondary: '#555577',
+      textMuted:     '#9090aa',
+    },
+  };
+
+  // Mutable theme — starts on dark, swapped by handleThemeChange.
+  let THEME = {
+    ...THEMES.dark,
+    fontSans: "'Inter', Arial, sans-serif",
+    fontMono: "'Roboto Mono', monospace",
+  };
 
   // Named color map -- accepts named tokens or raw hex passthrough.
-  // These 6 colors match the CSS custom properties in app-template.html.
+  // These colors match Teradata brand / semantic tokens.
   const NAMED_COLORS = Object.freeze({
-    accent:  '#7aa2f7',
-    success: '#9ece6a',
-    warning: '#e0af68',
-    error:   '#f7768e',
-    cyan:    '#7dcfff',
-    magenta: '#bb9af7',
+    accent:  '#0066cc',
+    success: '#287d3c',
+    warning: '#b95000',
+    error:   '#da1414',
+    cyan:    '#006dcc',
+    magenta: '#7b2f8e',
   });
 
   function resolveColor(color, fallback) {
@@ -238,21 +254,11 @@
     if (chartJSPromise) return chartJSPromise;
     chartJSPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      // Try local path first (served by loom-cloud), fall back to CDN.
-      const localPath = '/chart.umd.min.js';
-      const cdnPath = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
-      s.src = localPath;
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+      s.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
+      s.crossOrigin = 'anonymous';
       s.onload = resolve;
-      s.onerror = () => {
-        // Local not available (e.g. standalone Loom), fall back to CDN with SRI.
-        const fallback = document.createElement('script');
-        fallback.src = cdnPath;
-        fallback.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
-        fallback.crossOrigin = 'anonymous';
-        fallback.onload = resolve;
-        fallback.onerror = () => reject(new Error('Failed to load Chart.js'));
-        document.head.appendChild(fallback);
-      };
+      s.onerror = () => reject(new Error('Failed to load Chart.js'));
       document.head.appendChild(s);
     });
     return chartJSPromise;
@@ -272,7 +278,17 @@
     const chartType = CHART_ALLOWED_TYPES.has(props.chartType) ? props.chartType : 'bar';
 
     // Support both flat (props.labels/datasets) and nested (props.data.labels/datasets) formats.
-    const dataObj = (props.data && typeof props.data === 'object') ? props.data : props;
+    let dataObj = (props.data && typeof props.data === 'object') ? props.data : props;
+
+    // Normalize flat top-level array: props.data = [1,2,3]
+    if (Array.isArray(props.data)) {
+      dataObj = { labels: [], datasets: [{ data: props.data }] };
+    }
+    // Normalize missing datasets when a flat .data array is present inside the object
+    if (!Array.isArray(dataObj.datasets) && Array.isArray(dataObj.data)) {
+      dataObj = { labels: dataObj.labels || [], datasets: [{ data: dataObj.data, label: props.title || '' }] };
+    }
+
     const labels = Array.isArray(dataObj.labels) ? dataObj.labels.map(String) : [];
 
     const datasets = [];
@@ -586,6 +602,7 @@
     const table = createElement('table', {
       style: {
         width: '100%',
+        minWidth: '480px',
         borderCollapse: 'collapse',
         fontFamily: THEME.fontMono,
         fontSize: '12px',
@@ -1572,8 +1589,20 @@
 
   function handleThemeChange(params) {
     if (!params || !params.theme) return;
-    // Light theme override could be applied to CSS custom properties here
-    // For now, Tokyonight dark is the only theme
+    const palette = THEMES[params.theme] || THEMES.dark;
+    Object.assign(THEME, palette);
+    const root = document.documentElement;
+    root.style.setProperty('--bg-primary',      THEME.bg);
+    root.style.setProperty('--bg-surface',       THEME.surface);
+    root.style.setProperty('--bg-card',          THEME.card);
+    root.style.setProperty('--border',           THEME.border);
+    root.style.setProperty('--text-primary',     THEME.textPrimary);
+    root.style.setProperty('--text-secondary',   THEME.textSecondary);
+    root.style.setProperty('--text-muted',       THEME.textMuted);
+    document.body.style.backgroundColor = THEME.bg;
+    // Re-render charts — they bake colors at canvas-render time.
+    destroyAllCharts();
+    fullRender();
   }
 
   // ---------------------------------------------------------------------------
