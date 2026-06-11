@@ -193,8 +193,28 @@ func (c *SDKClient) Model() string {
 	return c.modelID
 }
 
+// requiresStreaming reports whether the Anthropic SDK would reject a
+// non-streaming Messages.New call for this client's model + max_tokens.
+// The SDK pre-flights non-streaming requests via CalculateNonStreamingTimeout
+// and errors with "streaming is required for operations that may take longer
+// than 10 minutes" when max_tokens implies >10 minutes of generation
+// (max_tokens > ~21,333) or exceeds the model's non-streaming token cap.
+// Claude models are routinely configured with 32k–64k max output tokens,
+// which trips that guard even for trivial prompts.
+func (c *SDKClient) requiresStreaming() bool {
+	_, err := anthropic.CalculateNonStreamingTimeout(int(c.maxTokens), anthropic.Model(c.modelID), nil)
+	return err != nil
+}
+
 // Chat sends a conversation to Bedrock using the Anthropic SDK and returns the response.
+// When the SDK would refuse the non-streaming API for this max_tokens (see
+// requiresStreaming), the request transparently runs over the streaming API
+// and returns the fully accumulated response instead of erroring.
 func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	if c.requiresStreaming() {
+		return c.ChatStream(ctx, messages, tools, nil)
+	}
+
 	// Convert messages to Anthropic SDK format
 	systemPrompt, sdkMessages := c.convertMessagesToSDK(messages)
 
