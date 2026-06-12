@@ -2,7 +2,9 @@ app            = "loom-dreambase"
 primary_region = "dfw"               # Dallas — closest Fly region to Austin
 
 [build]
-  dockerfile = "deploy/fly/Dockerfile"
+  # Resolved relative to this config file; run `fly deploy -c deploy/fly/fly.toml`
+  # from the REPO ROOT so the build context contains the whole repo.
+  dockerfile = "Dockerfile"
 
 # Non-secret config. Secrets (DSN, keys, auth secret, Tavily key) go via
 # `fly secrets set` — see deploy/fly/README.md.
@@ -11,7 +13,10 @@ primary_region = "dfw"               # Dallas — closest Fly region to Austin
   LOOM_SERVER_HTTP_PORT               = "0"           # disable the REST/SSE gateway (its SSE path isn't auth-wired)
   LOOM_STORAGE_BACKEND                = "postgres"
   LOOM_STORAGE_MIGRATION_AUTO_MIGRATE = "true"
-  LOOM_LLM_PROVIDER                   = "anthropic"
+  # Bedrock via long-term API key: set AWS_BEARER_TOKEN_BEDROCK as a fly secret.
+  LOOM_LLM_PROVIDER                   = "bedrock"
+  LOOM_LLM_BEDROCK_MODEL_ID           = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  LOOM_LLM_BEDROCK_REGION             = "us-west-2"
   LOOM_SERVER_AUTH_ENABLED            = "true"
   LOOM_SERVER_AUTH_MODE               = "required"
   LOOM_SERVER_AUTH_SUPABASE_AUDIENCE  = "authenticated"

@@ -57,7 +57,7 @@ Not exposed: `looms` gRPC `:60051`, REST/SSE gateway `:5006` (disabled via `LOOM
 ```bash
 fly secrets set \
   LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.<ref>:<pw>@<pooler-host>:5432/postgres?sslmode=require" \
-  LOOM_LLM_ANTHROPIC_API_KEY="sk-ant-..." \
+  AWS_BEARER_TOKEN_BEDROCK="ABSK..." \          # Bedrock long-term API key (fly.toml sets provider/model/region); or use LOOM_LLM_ANTHROPIC_API_KEY with LOOM_LLM_PROVIDER=anthropic
   LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF="<ref>" \
   LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET="<jwt-secret>" \   # omit for asymmetric-key projects (JWKS auto-derived)
   LOOM_ADMIN_TOKEN="$(openssl rand -hex 24)" \
