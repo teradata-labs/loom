@@ -260,24 +260,64 @@ func TestRLS_UserIsolation_MemorySnapshots(t *testing.T) {
 		"User B must NOT see User A's memory snapshots")
 }
 
+// ensureRLSWriterRole creates a non-superuser, NOLOGIN role with INSERT rights
+// on sessions/messages (idempotent). The WITH CHECK tests must run their
+// mismatched INSERTs as a role that is actually *subject* to RLS: the local
+// test container's `postgres` user is a superuser with BYPASSRLS, so under it
+// WITH CHECK can never reject and the tests silently assert nothing. Supabase's
+// `postgres` is a plain role, so this mirrors production semantics everywhere.
+func ensureRLSWriterRole(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	err := execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DO $$ BEGIN
+			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'loom_rls_writer') THEN
+				CREATE ROLE loom_rls_writer NOLOGIN;
+			END IF;
+		END $$;`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "GRANT SELECT, INSERT ON sessions, messages TO loom_rls_writer"); err != nil {
+			return err
+		}
+		// messages.id is serial; without sequence USAGE the INSERT fails on the
+		// nextval() permission before the RLS WITH CHECK is ever evaluated.
+		_, err := tx.Exec(ctx, "GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO loom_rls_writer")
+		return err
+	})
+	require.NoError(t, err, "failed to provision loom_rls_writer role")
+}
+
+// execInTxAsWriter runs fn inside a transaction with app.current_user_id set to
+// userID and the RLS-subject loom_rls_writer role active.
+func execInTxAsWriter(t *testing.T, pool *pgxpool.Pool, userID string, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	t.Helper()
+	return execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_user_id', $1, true)", userID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE loom_rls_writer"); err != nil {
+			return err
+		}
+		return fn(ctx, tx)
+	})
+}
+
 // TestRLS_WithCheck_InsertProtection verifies that the RLS WITH CHECK clause
 // prevents a user from inserting rows with a different user_id.
 // The SessionStore always uses the context user_id for inserts (not from the Session struct),
 // so this test validates the defense-in-depth behavior at the database level by
-// attempting a raw INSERT with a mismatched user_id.
+// attempting a raw INSERT with a mismatched user_id as an RLS-subject role.
 func TestRLS_WithCheck_InsertProtection(t *testing.T) {
 	pool := testPool(t)
+	ensureRLSWriterRole(t, pool)
 
 	userA := uniqueID("user-a")
 	userB := uniqueID("user-b")
 	sessionID := uniqueID("sess-withcheck")
 
-	// Set RLS context for User A
-	ctxA := ContextWithUserID(context.Background(), userA)
-
-	// Attempt to insert a session with user_id = userB while RLS context = userA
-	// This should be rejected by the WITH CHECK clause on sessions_user_isolation policy.
-	err := execInTx(ctxA, pool, func(ctx context.Context, tx pgx.Tx) error {
+	// Attempt to insert a session with user_id = userB while RLS context = userA.
+	// This should be rejected by the WITH CHECK clause on sessions_user_isolation.
+	err := execInTxAsWriter(t, pool, userA, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO sessions (id, agent_id, user_id, context_json, created_at, updated_at)
 			VALUES ($1, $2, $3, '{}', NOW(), NOW())`,
@@ -308,6 +348,7 @@ func TestRLS_WithCheck_InsertProtection(t *testing.T) {
 func TestRLS_WithCheck_MessageInsertProtection(t *testing.T) {
 	pool := testPool(t)
 	store := testSessionStore(t, pool)
+	ensureRLSWriterRole(t, pool)
 
 	userA := uniqueID("user-a")
 	userB := uniqueID("user-b")
@@ -316,9 +357,9 @@ func TestRLS_WithCheck_MessageInsertProtection(t *testing.T) {
 	// Create a session as User A (needed for FK constraint)
 	createTestSession(t, store, userA, sessionID, "test-agent")
 
-	// Attempt to insert a message with user_id = userB while RLS context = userA
-	ctxA := ContextWithUserID(context.Background(), userA)
-	err := execInTx(ctxA, pool, func(ctx context.Context, tx pgx.Tx) error {
+	// Attempt to insert a message with user_id = userB while RLS context = userA,
+	// as an RLS-subject role (see ensureRLSWriterRole).
+	err := execInTxAsWriter(t, pool, userA, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO messages (session_id, user_id, role, content, timestamp)
 			VALUES ($1, $2, 'user', 'injected message', NOW())`,
