@@ -55,3 +55,12 @@ tools:
 # (see deploy/fly/README.md) and/or merged from your existing looms.yaml.
 # To give an agent live read access to the Supabase project, add to that agent:
 #   backend_path: /etc/loom/backends/supabase.yaml
+
+# Observability: embedded sqlite spans inside the machine (ephemeral). Without
+# this block the mode defaults to "service", which hard-fails config validation
+# when no hawk_endpoint is set ("observability.hawk_endpoint is required") and
+# crash-loops the machine. Demo telemetry for Dreambase comes from the storage
+# layer (Supabase), not from these spans.
+observability:
+  enabled: true
+  mode: embedded
