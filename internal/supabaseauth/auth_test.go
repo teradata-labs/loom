@@ -112,19 +112,23 @@ func TestLogin_PKCEFlow(t *testing.T) {
 	ts := mockSupabase(t, "pkce")
 	defer ts.Close()
 
-	// OpenBrowser simulates the full provider round-trip: it reads redirect_to +
-	// state from the authorize URL and hits the local callback with a code.
+	// OpenBrowser simulates the provider round-trip the way real GoTrue behaves:
+	// the final redirect to redirect_to carries ONLY the PKCE code — no state
+	// echo. The authorize URL must not carry a client state either; GoTrue
+	// forwards it verbatim to the provider and then rejects its own callback
+	// with bad_oauth_state (live-verified against Supabase).
 	openBrowser := func(authURL string) error {
 		u, err := url.Parse(authURL)
 		if err != nil {
 			return err
 		}
 		redirect := u.Query().Get("redirect_to")
-		state := u.Query().Get("state")
 		assert.Equal(t, "S256", u.Query().Get("code_challenge_method"))
 		assert.NotEmpty(t, u.Query().Get("code_challenge"))
+		assert.False(t, u.Query().Has("state"),
+			"authorize URL must not carry a client state (GoTrue rejects it with bad_oauth_state)")
 		go func() {
-			resp, err := http.Get(redirect + "?code=test-code&state=" + url.QueryEscape(state))
+			resp, err := http.Get(redirect + "?code=test-code")
 			if err == nil {
 				_ = resp.Body.Close()
 			}
@@ -150,7 +154,7 @@ func TestLogin_PKCEFlow(t *testing.T) {
 	assert.Greater(t, sess.ExpiresAt, time.Now().Unix(), "expires_in should yield a future expiry")
 }
 
-func TestLogin_StateMismatchRejected(t *testing.T) {
+func TestLogin_ProviderErrorRejected(t *testing.T) {
 	ts := mockSupabase(t, "pkce")
 	defer ts.Close()
 
@@ -158,8 +162,8 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 		u, _ := url.Parse(authURL)
 		redirect := u.Query().Get("redirect_to")
 		go func() {
-			// Wrong state => callback handler must reject.
-			resp, err := http.Get(redirect + "?code=test-code&state=WRONG")
+			// Provider denial lands on the callback as ?error=... => Login fails.
+			resp, err := http.Get(redirect + "?error=access_denied&error_description=user+cancelled")
 			if err == nil {
 				_ = resp.Body.Close()
 			}
@@ -171,7 +175,7 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 	defer cancel()
 	_, err := Login(ctx, LoginConfig{URL: ts.URL, AnonKey: "test-anon", OpenBrowser: openBrowser})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "state mismatch")
+	assert.Contains(t, err.Error(), "access_denied")
 }
 
 // TestCallbackHandlers_EscapeErrorParam is the regression test for the
@@ -183,7 +187,7 @@ func TestCallbackHandlers_EscapeErrorParam(t *testing.T) {
 	const payload = `<script>alert(1)</script>`
 
 	handlers := map[string]http.Handler{
-		"login":      callbackHandler("want-state", make(chan string, 1), make(chan error, 1)),
+		"login":      callbackHandler(make(chan string, 1), make(chan error, 1)),
 		"management": callbackFunc("want-state", make(chan string, 1), make(chan error, 1)),
 	}
 	for name, h := range handlers {

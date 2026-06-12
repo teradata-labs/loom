@@ -99,10 +99,6 @@ func Login(ctx context.Context, cfg LoginConfig) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate PKCE: %w", err)
 	}
-	state, err := randomToken()
-	if err != nil {
-		return nil, fmt.Errorf("generate state: %w", err)
-	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -112,7 +108,7 @@ func Login(ctx context.Context, cfg LoginConfig) (*Session, error) {
 
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
-	srv := &http.Server{Handler: callbackHandler(state, codeCh, errCh), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: callbackHandler(codeCh, errCh), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -120,8 +116,16 @@ func Login(ctx context.Context, cfg LoginConfig) (*Session, error) {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	authURL := fmt.Sprintf("%s/auth/v1/authorize?provider=%s&redirect_to=%s&code_challenge=%s&code_challenge_method=S256&state=%s",
-		cfg.URL, url.QueryEscape(cfg.Provider), url.QueryEscape(redirectURI), challenge, state)
+	// No client `state` on the authorize URL: GoTrue forwards it verbatim as the
+	// provider state, and then its own /auth/v1/callback rejects the flow with
+	// bad_oauth_state because it expects its self-signed state JWT there.
+	// (Live-verified against Supabase; GoTrue also does not echo any state back
+	// to redirect_to.) Cross-flow code injection is instead prevented by PKCE:
+	// the token exchange fails unless the code was minted for our
+	// code_challenge (RFC 7636) — the protection RFC 8252 prescribes for
+	// native/loopback apps.
+	authURL := fmt.Sprintf("%s/auth/v1/authorize?provider=%s&redirect_to=%s&code_challenge=%s&code_challenge_method=S256",
+		cfg.URL, url.QueryEscape(cfg.Provider), url.QueryEscape(redirectURI), challenge)
 	logf("Opening browser to sign in via %s...\nIf it does not open, visit:\n%s\n", cfg.Provider, authURL)
 	if err := cfg.OpenBrowser(authURL); err != nil {
 		logf("(could not open browser automatically: %v)\n", err)
@@ -143,19 +147,17 @@ func Login(ctx context.Context, cfg LoginConfig) (*Session, error) {
 	return sessionFromToken(tok, cfg.URL, cfg.ProjectRef, cfg.AnonKey), nil
 }
 
-// callbackHandler captures the PKCE code from the OAuth redirect, validating state.
-func callbackHandler(wantState string, codeCh chan<- string, errCh chan<- error) http.Handler {
+// callbackHandler captures the PKCE code from the OAuth redirect. There is no
+// state to validate (see the authorize-URL comment in Login): GoTrue does not
+// support a client state roundtrip, so an injected code is instead neutralized
+// by the PKCE token exchange, which requires our code_verifier.
+func callbackHandler(codeCh chan<- string, errCh chan<- error) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if e := q.Get("error"); e != "" {
 			writeBrowserMessage(w, "Login failed: "+e)
 			errCh <- fmt.Errorf("authorization error: %s: %s", e, q.Get("error_description"))
-			return
-		}
-		if q.Get("state") != wantState {
-			writeBrowserMessage(w, "Login failed: state mismatch")
-			errCh <- fmt.Errorf("state mismatch (possible CSRF)")
 			return
 		}
 		code := q.Get("code")
