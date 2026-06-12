@@ -68,22 +68,25 @@ func NewComponentCatalog() *ComponentCatalog {
 		},
 		{
 			Type:        "chart",
-			Description: "Chart.js chart (bar, line, pie, doughnut, radar, polarArea, scatter, bubble)",
+			Description: "Chart.js chart (bar, line, pie, doughnut, radar, polarArea, scatter, bubble). ALWAYS use the labels+datasets format: labels is the x-axis category array, datasets is an array of series objects each with label, data (numeric array aligned to labels), and color. Never use xKey/yKeys/data object arrays.",
 			Category:    "display",
 			PropsSchema: map[string]interface{}{
-				"type": "object",
+				"type":                 "object",
+				"additionalProperties": false,
 				"properties": map[string]interface{}{
-					"chartType": map[string]interface{}{"type": "string", "enum": []string{"bar", "line", "pie", "doughnut", "radar", "polarArea", "scatter", "bubble"}},
+					"chartType": map[string]interface{}{"type": "string", "enum": []string{"bar", "line", "pie", "doughnut", "radar", "polarArea", "scatter", "bubble"}, "description": "Chart type"},
 					"title":     map[string]interface{}{"type": "string"},
-					"labels":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					"labels":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "X-axis category labels. One entry per data point."},
 					"datasets": map[string]interface{}{
-						"type": "array",
+						"type":        "array",
+						"description": "One object per series. Each data array must be the same length as labels.",
 						"items": map[string]interface{}{
-							"type": "object",
+							"type":                 "object",
+							"additionalProperties": false,
 							"properties": map[string]interface{}{
-								"label": map[string]interface{}{"type": "string"},
-								"data":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}},
-								"color": map[string]interface{}{"type": "string"},
+								"label": map[string]interface{}{"type": "string", "description": "Series name shown in legend"},
+								"data":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}, "description": "Numeric values aligned to labels array"},
+								"color": map[string]interface{}{"type": "string", "description": "Hex color or semantic name: accent, success, warning, error, cyan, magenta"},
 							},
 							"required": []string{"label", "data"},
 						},
@@ -93,7 +96,7 @@ func NewComponentCatalog() *ComponentCatalog {
 				},
 				"required": []string{"chartType", "labels", "datasets"},
 			},
-			ExampleJSON: `{"type":"chart","props":{"chartType":"bar","title":"Monthly Revenue","labels":["Jan","Feb","Mar"],"datasets":[{"label":"Revenue","data":[320,380,410],"color":"accent"}]}}`,
+			ExampleJSON: `{"type":"chart","props":{"chartType":"bar","title":"Revenue by Region","labels":["North","South","East","West"],"datasets":[{"label":"Avg Revenue","data":[5210,4350,5620,4112],"color":"#4F8EF7"},{"label":"Median Revenue","data":[4980,4100,5300,3850],"color":"#34C98B"}]}}`,
 		},
 		{
 			Type:        "table",
@@ -140,17 +143,17 @@ func NewComponentCatalog() *ComponentCatalog {
 		},
 		{
 			Type:        "text",
-			Description: "Text block with optional styling (default, note, warning, error)",
+			Description: "Text block with inline HTML formatting. Use HTML tags for rich text — NEVER use markdown syntax (no **bold**, no *italic*, no bullet hyphens). Supported tags: <strong>, <em>, <br>, <p>, <ul>, <ol>, <li>, <code>. Optional style: default, note, warning, error.",
 			Category:    "display",
 			PropsSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"content": map[string]interface{}{"type": "string"},
+					"content": map[string]interface{}{"type": "string", "description": "HTML string. Use <strong>, <em>, <br>, <p>, <ul>/<ol>/<li>, <code>. No markdown."},
 					"style":   map[string]interface{}{"type": "string", "enum": []string{"default", "note", "warning", "error"}},
 				},
 				"required": []string{"content"},
 			},
-			ExampleJSON: `{"type":"text","props":{"content":"Analysis complete. 3 anomalies detected.","style":"warning"}}`,
+			ExampleJSON: `{"type":"text","props":{"content":"<p><strong>Revenue is up 12%</strong> month-over-month.</p><ul><li>East region leads at $5,620 avg</li><li>West has highest churn at 34%</li></ul>","style":"default"}}`,
 		},
 		{
 			Type:        "code-block",
