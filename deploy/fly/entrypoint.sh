@@ -9,6 +9,20 @@ trap term TERM INT
 looms serve --config /etc/loom/looms.yaml &
 loom_pid=$!
 
+# Gate the public edge on looms readiness. The Fly proxy routes traffic the
+# moment 8765 binds -- including cold auto-starts triggered by an incoming
+# request -- and loom-mcp binds instantly while looms needs ~15s (Supabase
+# migrations + LLM preflight). Without this gate the machine's first requests
+# fail with "dial 127.0.0.1:60051: connection refused".
+waited=0
+until nc -z 127.0.0.1 60051 2>/dev/null; do
+  kill -0 "$loom_pid" 2>/dev/null || { echo "looms exited before listening on 60051" >&2; exit 1; }
+  waited=$((waited + 1))
+  [ "$waited" -ge 120 ] && { echo "timed out waiting for looms on 60051" >&2; exit 1; }
+  sleep 1
+done
+echo "looms ready on 60051 after ${waited}s; starting loom-mcp edge" >&2
+
 loom-mcp --transport=http --http-addr=0.0.0.0:8765 --grpc-addr=127.0.0.1:60051 &
 mcp_pid=$!
 

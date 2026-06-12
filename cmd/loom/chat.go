@@ -52,6 +52,20 @@ func init() {
 }
 
 func runChatCommand(cmd *cobra.Command, args []string) {
+	// Remote-MCP mode: chat with a deployed loom-mcp HTTP edge (no --thread;
+	// the remote weaver routes). Message may come from flag/args or the REPL.
+	if chatRemoteURL != "" {
+		msg := chatMessage
+		if msg == "" && len(args) > 0 {
+			msg = strings.Join(args, " ")
+		}
+		if err := remoteChat(chatRemoteURL, strings.TrimSpace(msg)); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Validate thread is specified
 	if agentID == "" {
 		fmt.Fprintf(os.Stderr, "Error: --thread is required for chat command\n")
