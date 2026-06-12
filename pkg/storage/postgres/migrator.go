@@ -16,11 +16,13 @@ package postgres
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -162,6 +164,15 @@ func (m *Migrator) CurrentVersion(ctx context.Context) (int, error) {
 		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
 	).Scan(&version)
 	if err != nil {
+		// A missing schema_migrations table means no migrations have been applied
+		// yet (a fresh database). Report version 0 instead of erroring, so
+		// introspection — PendingMigrations and `looms upgrade [--dry-run]` —
+		// works during bootstrap. This stays read-only; the table is created at
+		// apply time by ensureMigrationsTable.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
+			return 0, nil
+		}
 		return 0, fmt.Errorf("failed to get current migration version: %w", err)
 	}
 	return version, nil
