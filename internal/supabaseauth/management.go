@@ -16,10 +16,17 @@ package supabaseauth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -95,7 +102,22 @@ func ManagementLogin(ctx context.Context, cfg ManagementConfig) (string, error) 
 	mux := http.NewServeMux()
 	mux.HandleFunc(redirect.Path, callbackFunc(state, codeCh, errCh))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() { _ = srv.Serve(ln) }()
+	if redirect.Scheme == "https" {
+		// The Supabase Management API rejects plain-HTTP redirect URIs outright
+		// ("redirect_uri must use HTTPS"), including loopback, so the local
+		// callback must speak TLS. Serve with an ephemeral self-signed cert;
+		// the browser shows a one-time certificate warning the user clicks
+		// through. The OAuth code is single-use and PKCE-bound, so the
+		// untrusted cert does not weaken the flow.
+		tlsCfg, certErr := ephemeralLoopbackTLS()
+		if certErr != nil {
+			return "", fmt.Errorf("generate loopback TLS certificate: %w", certErr)
+		}
+		srv.TLSConfig = tlsCfg
+		go func() { _ = srv.ServeTLS(ln, "", "") }()
+	} else {
+		go func() { _ = srv.Serve(ln) }()
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -119,6 +141,41 @@ func ManagementLogin(ctx context.Context, cfg ManagementConfig) (string, error) 
 	}
 
 	return exchangeManagementCode(ctx, cfg.HTTPClient, apiBase, cfg, code, verifier)
+}
+
+// ephemeralLoopbackTLS builds a TLS config with a freshly generated,
+// self-signed ECDSA certificate valid only for loopback (127.0.0.1, ::1,
+// localhost) and only for one hour. Public CAs cannot issue for loopback
+// addresses, so a self-signed certificate is the only way to satisfy the
+// Management API's HTTPS-redirect requirement without routing the OAuth code
+// through an external tunnel.
+func ephemeralLoopbackTLS() (*tls.Config, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "loom-cli loopback callback"},
+		NotBefore:    time.Now().Add(-5 * time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+	}, nil
 }
 
 // callbackFunc is the OAuth redirect handler (shared shape with the user-login flow).

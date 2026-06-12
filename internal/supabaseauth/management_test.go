@@ -16,11 +16,13 @@ package supabaseauth
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +122,57 @@ func TestListProjects_ErrorStatus(t *testing.T) {
 	_, err := ListProjects(context.Background(), nil, api.URL, "bad-token")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
+}
+
+// TestManagementLogin_HTTPSLoopback exercises the TLS callback path: the
+// Supabase Management API rejects plain-HTTP redirect URIs ("redirect_uri
+// must use HTTPS"), so the loopback callback must serve an ephemeral
+// self-signed certificate. The browser stub accepts the untrusted cert the
+// way a user clicking through the warning does.
+func TestManagementLogin_HTTPSLoopback(t *testing.T) {
+	redirectURI := "https" + strings.TrimPrefix(freeLoopbackRedirect(t), "http")
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/oauth/token" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, redirectURI, r.Form.Get("redirect_uri"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "mgmt-token"})
+	}))
+	defer api.Close()
+
+	insecureClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- simulates the user accepting the self-signed loopback cert
+	}}
+	openBrowser := func(authURL string) error {
+		u, err := url.Parse(authURL)
+		if err != nil {
+			return err
+		}
+		redirect := u.Query().Get("redirect_uri")
+		assert.True(t, strings.HasPrefix(redirect, "https://"), "redirect_uri must be https")
+		state := u.Query().Get("state")
+		go func() {
+			resp, err := insecureClient.Get(redirect + "?code=the-code&state=" + url.QueryEscape(state))
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	token, err := ManagementLogin(ctx, ManagementConfig{
+		ClientID:     "cid",
+		ClientSecret: "csecret",
+		RedirectURI:  redirectURI,
+		APIBase:      api.URL,
+		OpenBrowser:  openBrowser,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "mgmt-token", token)
 }
