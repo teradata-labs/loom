@@ -213,6 +213,10 @@ func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logg
 	}
 
 	// Shut the HTTP server down when the context is cancelled (signal received).
+	// #nosec G118 -- graceful shutdown MUST use a fresh context: ctx is already
+	// cancelled (that cancellation is what triggers this path), so deriving the
+	// shutdown deadline from it would expire immediately and abort in-flight
+	// requests instead of draining them.
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
