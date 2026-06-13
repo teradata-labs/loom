@@ -24,7 +24,44 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
+
+// startSpinner shows a subtle "weaving…" activity indicator on stderr while the
+// agent does its pre-generation work (memory, skills, planning) before the
+// first token arrives. It returns a stop function that is idempotent and
+// erases the indicator line. When stderr is not a terminal (piped/redirected),
+// it is a no-op so logs and captured output stay clean.
+func startSpinner() (stop func()) {
+	if fi, _ := os.Stderr.Stat(); fi == nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+		start := time.Now()
+		t := time.NewTicker(100 * time.Millisecond)
+		defer t.Stop()
+		i := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				fmt.Fprintf(os.Stderr, "\r\033[2K%c weaving… %.0fs", frames[i%len(frames)], time.Since(start).Seconds())
+				i++
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			close(done)
+			fmt.Fprint(os.Stderr, "\r\033[2K") // erase the spinner line
+		})
+	}
+}
 
 // chatRemoteURL enables remote-MCP chat: instead of gRPC to a local looms,
 // messages go to a deployed loom-mcp Streamable-HTTP edge (e.g. on Fly) as
@@ -64,7 +101,16 @@ func remoteChat(baseURL, message string) error {
 		// it on a fresh line.
 		var shown string
 		streamed := false
+
+		// Activity indicator for the pre-token wait (the agent does memory,
+		// skill, and planning work before generation begins). Cleared the
+		// instant the first token arrives. Not shown when stdout is piped.
+		stopSpinner := startSpinner()
+
 		onText := func(cumulative string) {
+			if !streamed {
+				stopSpinner()
+			}
 			streamed = true
 			switch {
 			case shown == "":
@@ -78,6 +124,7 @@ func remoteChat(baseURL, message string) error {
 		}
 
 		answer, err := rc.weave(q, onText)
+		stopSpinner() // idempotent: covers error / sync-fallback paths where no token arrived
 		if err != nil {
 			if streamed {
 				fmt.Println()
