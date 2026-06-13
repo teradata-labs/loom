@@ -53,8 +53,11 @@ func fakeEdge(t *testing.T) (*httptest.Server, *[]map[string]any) {
 		case "tools/call":
 			calls = append(calls, req.Params.Arguments)
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"t\",\"progress\":1,\"total\":3,\"message\":\"planning\"}}\n\n")
-			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"t\",\"progress\":2,\"total\":3}}\n\n")
+			// Cumulative answer text in the message field, plus a bare-progress
+			// event (no message) that must NOT render as text.
+			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"t\",\"progress\":1,\"message\":\"the\"}}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"t\",\"progress\":2,\"message\":\"the answer\"}}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"t\",\"progress\":3}}\n\n")
 			final := map[string]any{
 				"jsonrpc": "2.0", "id": json.RawMessage(req.ID),
 				"result": map[string]any{
@@ -82,12 +85,12 @@ func TestRemoteClient_WeaveStreamsProgressAndThreadsSession(t *testing.T) {
 	require.NoError(t, rc.initialize())
 	assert.Equal(t, "mcp-sess-1", rc.mcpSession)
 
-	var notes []string
-	answer, err := rc.weave("first question", func(n string) { notes = append(notes, n) })
+	var texts []string
+	answer, err := rc.weave("first question", func(s string) { texts = append(texts, s) })
 	require.NoError(t, err)
 	assert.Equal(t, "the answer", answer)
-	assert.Equal(t, []string{"planning", "progress 2/3"}, notes,
-		"message-bearing and bare progress events should both render")
+	assert.Equal(t, []string{"the", "the answer"}, texts,
+		"cumulative answer text renders; bare-progress events (no message) do not")
 	assert.Equal(t, "weave-sess-42", rc.weaveSession, "sessionId from the WeaveResponse block must be captured")
 
 	_, err = rc.weave("second question", nil)

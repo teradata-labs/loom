@@ -237,6 +237,9 @@ type ProgressNotification struct {
 	ProgressToken string  `json:"progressToken"`
 	Progress      float64 `json:"progress"`
 	Total         float64 `json:"total,omitempty"`
+	// Message is an optional human-readable status (MCP 2025-03-26). loom uses
+	// it to stream the agent's cumulative partial response text as it generates.
+	Message string `json:"message,omitempty"`
 }
 
 // LogNotification sends log messages from server to client

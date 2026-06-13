@@ -107,13 +107,21 @@ func (b *LoomBridge) handleWeaveStream(ctx context.Context, args map[string]inte
 		if recvErr != nil {
 			return nil, recvErr
 		}
-		if p := prog.GetProgress(); p > 0 {
-			_ = emit.EmitProgress(float64(p), 100)
-		}
 		if prog.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
 			finalContent = prog.GetPartialContent()
 			if finalContent == "" && prog.GetPartialResult() != nil {
 				finalContent = prog.GetPartialResult().GetDataJson()
+			}
+			continue
+		}
+		// Stream the agent's answer to the client as it generates: token-stream
+		// events carry the cumulative partial response, forwarded via the MCP
+		// `message` field so the client renders the text forming rather than a
+		// progress bar. Only token-stream content is forwarded (not stage
+		// descriptions) so every message is unambiguously answer text.
+		if prog.GetIsTokenStream() {
+			if pc := prog.GetPartialContent(); pc != "" {
+				_ = emit.EmitMessage(pc)
 			}
 		}
 	}

@@ -40,6 +40,11 @@ type ProgressEmitter interface {
 	// EmitProgress sends one progress update. progress and total are on the
 	// same scale (e.g. 0..100); total may be 0 if unknown.
 	EmitProgress(progress, total float64) error
+	// EmitMessage sends a human-readable status (the MCP progress `message`
+	// field) carrying a monotonically increasing progress counter so the
+	// notification is spec-valid. loom uses this to stream the agent's
+	// cumulative partial response text as it generates.
+	EmitMessage(message string) error
 }
 
 // StreamingToolProvider is an optional extension of ToolProvider for tools that

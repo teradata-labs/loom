@@ -57,13 +57,44 @@ func remoteChat(baseURL, message string) error {
 	fmt.Fprintf(os.Stderr, "Connected to %s (MCP session %s)\n", baseURL, rc.mcpSession)
 
 	turn := func(q string) error {
-		answer, err := rc.weave(q, func(note string) {
-			fmt.Fprintf(os.Stderr, "  · %s\n", note)
-		})
+		// Render the agent's answer as it streams. Each message is the
+		// cumulative partial text for the current LLM call; print the new
+		// suffix live. A message that doesn't extend the current segment marks
+		// a new segment (e.g. the response resuming after a tool call) — start
+		// it on a fresh line.
+		var shown string
+		streamed := false
+		onText := func(cumulative string) {
+			streamed = true
+			switch {
+			case shown == "":
+				fmt.Print(cumulative)
+			case strings.HasPrefix(cumulative, shown):
+				fmt.Print(cumulative[len(shown):])
+			default:
+				fmt.Print("\n" + cumulative)
+			}
+			shown = cumulative
+		}
+
+		answer, err := rc.weave(q, onText)
 		if err != nil {
+			if streamed {
+				fmt.Println()
+			}
 			return err
 		}
-		fmt.Printf("\n%s\n", answer)
+		switch {
+		case !streamed:
+			// Synchronous fallback (server didn't stream): print the answer.
+			fmt.Printf("\n%s\n", answer)
+		case answer != "" && answer != shown:
+			// Final differs from what streamed (e.g. multi-segment); show the
+			// authoritative final answer on its own.
+			fmt.Printf("\n\n%s\n", answer)
+		default:
+			fmt.Println()
+		}
 		return nil
 	}
 
@@ -193,9 +224,9 @@ func (rc *remoteClient) initialize() error {
 	return nil
 }
 
-// weave runs one loom_weave call, invoking onProgress for each streamed
-// notifications/progress event, and returns the final answer text.
-func (rc *remoteClient) weave(query string, onProgress func(string)) (string, error) {
+// weave runs one loom_weave call, invoking onText with the agent's cumulative
+// answer text for each streamed event, and returns the final answer text.
+func (rc *remoteClient) weave(query string, onText func(string)) (string, error) {
 	rc.reqID++
 	args := map[string]any{"query": query}
 	if rc.weaveSession != "" {
@@ -238,9 +269,7 @@ func (rc *remoteClient) weave(query string, onProgress func(string)) (string, er
 		var msg struct {
 			Method string `json:"method"`
 			Params struct {
-				Message  string   `json:"message"`
-				Progress *float64 `json:"progress"`
-				Total    *float64 `json:"total"`
+				Message string `json:"message"`
 			} `json:"params"`
 			ID json.RawMessage `json:"id"`
 		}
@@ -248,18 +277,11 @@ func (rc *remoteClient) weave(query string, onProgress func(string)) (string, er
 			continue
 		}
 		if msg.Method == "notifications/progress" {
-			if onProgress != nil {
-				note := msg.Params.Message
-				if note == "" && msg.Params.Progress != nil {
-					if msg.Params.Total != nil && *msg.Params.Total > 0 {
-						note = fmt.Sprintf("progress %.0f/%.0f", *msg.Params.Progress, *msg.Params.Total)
-					} else {
-						note = fmt.Sprintf("progress %.0f", *msg.Params.Progress)
-					}
-				}
-				if note != "" {
-					onProgress(note)
-				}
+			// The server forwards the agent's cumulative answer text in the
+			// message field; bare-progress events (no message) carry only the
+			// monotonic counter and are not rendered as text.
+			if onText != nil && msg.Params.Message != "" {
+				onText(msg.Params.Message)
 			}
 			continue
 		}

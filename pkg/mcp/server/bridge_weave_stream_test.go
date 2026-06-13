@@ -61,13 +61,19 @@ func (m *streamWeaveMock) StreamWeave(_ context.Context, _ *loomv1.WeaveRequest,
 	return &fakeWeaveStream{events: m.events}, nil
 }
 
-// captureEmitter records the progress values forwarded by handleWeaveStream.
+// captureEmitter records the progress and message events forwarded by handleWeaveStream.
 type captureEmitter struct {
 	progress []float64
+	messages []string
 }
 
 func (c *captureEmitter) EmitProgress(progress, _ float64) error {
 	c.progress = append(c.progress, progress)
+	return nil
+}
+
+func (c *captureEmitter) EmitMessage(message string) error {
+	c.messages = append(c.messages, message)
 	return nil
 }
 
@@ -76,9 +82,9 @@ func newStreamBridge(t *testing.T, mock loomv1.LoomServiceClient) *LoomBridge {
 	return NewLoomBridgeFromClient(mock, apps.NewUIResourceRegistry(), zap.NewNop())
 }
 
-func TestHandleWeaveStream_ForwardsProgressAndFinalContent(t *testing.T) {
+func TestHandleWeaveStream_NonTokenEventsAreNotForwardedAsText(t *testing.T) {
 	mock := &streamWeaveMock{events: []*loomv1.WeaveProgress{
-		{Progress: 30, Message: "thinking"}, // intermediate (stage unspecified)
+		{Progress: 30, Message: "thinking"}, // stage description, not token stream
 		{Stage: loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED, Progress: 100, PartialContent: "final answer"},
 	}}
 	bridge := newStreamBridge(t, mock)
@@ -88,7 +94,26 @@ func TestHandleWeaveStream_ForwardsProgressAndFinalContent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Content, 1)
 	assert.Equal(t, "final answer", res.Content[0].Text)
-	assert.Equal(t, []float64{30, 100}, emit.progress, "every progress>0 event should be forwarded")
+	assert.Empty(t, emit.messages,
+		"only token-stream content is forwarded as text; stage descriptions and the COMPLETED event are not")
+}
+
+func TestHandleWeaveStream_StreamsCumulativeTokenText(t *testing.T) {
+	mock := &streamWeaveMock{events: []*loomv1.WeaveProgress{
+		{IsTokenStream: true, PartialContent: "Hel"},
+		{IsTokenStream: true, PartialContent: "Hello wor"},
+		{IsTokenStream: true, PartialContent: "Hello world"},
+		{Stage: loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED, PartialContent: "Hello world"},
+	}}
+	bridge := newStreamBridge(t, mock)
+	emit := &captureEmitter{}
+
+	res, err := bridge.handleWeaveStream(context.Background(), map[string]interface{}{"query": "hi"}, emit)
+	require.NoError(t, err)
+	require.Len(t, res.Content, 1)
+	assert.Equal(t, "Hello world", res.Content[0].Text)
+	assert.Equal(t, []string{"Hel", "Hello wor", "Hello world"}, emit.messages,
+		"token-stream events forward the cumulative partial text; the client renders the delta")
 }
 
 func TestHandleWeaveStream_FallsBackToPartialResultDataJSON(t *testing.T) {

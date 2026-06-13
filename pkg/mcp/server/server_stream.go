@@ -95,6 +95,7 @@ func extractProgressToken(params json.RawMessage) string {
 type sseProgressEmitter struct {
 	w     transport.SSEWriter
 	token string
+	seq   float64 // monotonic counter for message events (keeps progress spec-valid)
 }
 
 func (e *sseProgressEmitter) EmitProgress(progress, total float64) error {
@@ -105,6 +106,25 @@ func (e *sseProgressEmitter) EmitProgress(progress, total float64) error {
 		ProgressToken: e.token,
 		Progress:      progress,
 		Total:         total,
+	})
+	if err != nil {
+		return err
+	}
+	return e.w.WriteEvent(notif)
+}
+
+// EmitMessage sends a notifications/progress event carrying a status message.
+// Progress increases monotonically (the MCP spec requires it) with total unset,
+// so clients render the message rather than a percentage.
+func (e *sseProgressEmitter) EmitMessage(message string) error {
+	if e.token == "" {
+		return nil
+	}
+	e.seq++
+	notif, err := marshalNotification("notifications/progress", protocol.ProgressNotification{
+		ProgressToken: e.token,
+		Progress:      e.seq,
+		Message:       message,
 	})
 	if err != nil {
 		return err
