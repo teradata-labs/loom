@@ -272,7 +272,9 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		tool("loom_list_models", "List all available LLM models.", objectSchema(), "", mv, ro),
 
 		// Workflow Orchestration
-		tool("loom_execute_workflow", "Execute a multi-agent workflow.", objectSchema(
+		tool("loom_execute_workflow", "Execute a multi-agent workflow (debate, pipeline, parallel, etc.) and stream its progress. The orchestrator wires the agents and their messaging itself — this is the reliable way to run multi-agent work, not ad-hoc ephemeral agents. Provide the workflow as 'workflow_yaml' (a YAML workflow spec with agents+tasks+type; easiest) OR an inline 'pattern'. Returns each agent's final output.", objectSchema(
+			prop("workflow_yaml", "string", "A complete workflow definition in YAML (agents, tasks, and workflow type). The simplest way to specify a workflow; takes precedence over 'pattern'."),
+			prop("pattern", "object", "Inline WorkflowPattern (protojson oneof: debate/pipeline/parallel/...). Use workflow_yaml instead unless you already have a proto pattern."),
 			prop("registry_id", "string", "Agent registry to use for agent lookup"),
 			prop("variables", "object", "Variables for prompt interpolation"),
 			prop("timeout_seconds", "integer", "Execution timeout in seconds"),

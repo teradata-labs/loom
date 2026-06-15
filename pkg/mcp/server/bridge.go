@@ -221,18 +221,22 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 	return handler(ctx, args)
 }
 
-// SupportsStreaming implements StreamingToolProvider. Only loom_weave streams
-// progress today, via the StreamWeave RPC.
+// SupportsStreaming implements StreamingToolProvider. loom_weave streams agent
+// output via StreamWeave; loom_execute_workflow streams multi-agent progress via
+// StreamWorkflow.
 func (b *LoomBridge) SupportsStreaming(name string) bool {
-	return name == "loom_weave"
+	return name == "loom_weave" || name == "loom_execute_workflow"
 }
 
-// CallToolStream implements StreamingToolProvider. For loom_weave it runs the
-// StreamWeave RPC and forwards progress via emit; any other tool falls back to
-// the synchronous CallTool (no progress emitted).
+// CallToolStream implements StreamingToolProvider. loom_weave and
+// loom_execute_workflow run their streaming RPCs and forward progress via emit;
+// any other tool falls back to the synchronous CallTool (no progress emitted).
 func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[string]interface{}, _ string, emit ProgressEmitter) (*protocol.CallToolResult, error) {
-	if name == "loom_weave" {
+	switch name {
+	case "loom_weave":
 		return b.handleWeaveStream(ctx, args, emit)
+	case "loom_execute_workflow":
+		return b.handleWorkflowStream(ctx, args, emit)
 	}
 	return b.CallTool(ctx, name, args)
 }

@@ -25,6 +25,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -129,6 +130,111 @@ func (b *LoomBridge) handleWeaveStream(ctx context.Context, args map[string]inte
 	return &protocol.CallToolResult{
 		Content: []protocol.Content{{Type: "text", Text: finalContent}},
 	}, nil
+}
+
+// handleWorkflowStream runs loom_execute_workflow over the StreamWorkflow RPC,
+// forwarding each WorkflowProgress as a status message (current agent + stage)
+// and returning the agents' final outputs as the result. This is the reliable
+// multi-agent path: the workflow orchestrator wires agents and message queues
+// itself, so it does not depend on an LLM correctly threading ephemeral agent
+// IDs through send_message.
+//
+// The workflow may be supplied as `workflow_yaml` (a YAML workflow spec — far
+// easier for a model to produce than a protojson pattern oneof) or as an inline
+// `pattern` on the request. workflow_yaml wins when both are present.
+func (b *LoomBridge) handleWorkflowStream(ctx context.Context, args map[string]interface{}, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	// workflow_yaml is a convenience arg, not an ExecuteWorkflowRequest field;
+	// pull it out before protojson so the rest unmarshals cleanly.
+	yamlSpec, _ := args["workflow_yaml"].(string)
+	rest := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		if k == "workflow_yaml" {
+			continue
+		}
+		rest[k] = v
+	}
+
+	req := &loomv1.ExecuteWorkflowRequest{}
+	if len(rest) > 0 {
+		argsJSON, err := json.Marshal(rest)
+		if err != nil {
+			return nil, fmt.Errorf("marshal workflow args: %w", err)
+		}
+		if err := protojson.Unmarshal(argsJSON, req); err != nil {
+			return nil, fmt.Errorf("unmarshal workflow args to proto: %w", err)
+		}
+	}
+
+	if strings.TrimSpace(yamlSpec) != "" {
+		pattern, err := orchestration.LoadWorkflowFromYAMLBytes([]byte(yamlSpec))
+		if err != nil {
+			return errorResult(fmt.Sprintf("invalid workflow_yaml: %v", err)), nil
+		}
+		req.Pattern = pattern
+	}
+	if req.GetPattern() == nil {
+		return errorResult("a workflow is required: pass workflow_yaml (a YAML workflow spec) or an inline pattern"), nil
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+
+	stream, err := b.client.StreamWorkflow(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep the latest output per agent (events may repeat/refine partial results),
+	// preserving first-seen order so the final reads as the pipeline ran.
+	latest := make(map[string]string)
+	var order []string
+	for {
+		prog, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		if line := workflowProgressLine(prog); line != "" {
+			_ = emit.EmitMessage(line)
+		}
+		for _, r := range prog.GetPartialResults() {
+			if _, seen := latest[r.GetAgentId()]; !seen {
+				order = append(order, r.GetAgentId())
+			}
+			latest[r.GetAgentId()] = r.GetOutput()
+		}
+	}
+
+	var sb strings.Builder
+	for _, id := range order {
+		if out := strings.TrimSpace(latest[id]); out != "" {
+			fmt.Fprintf(&sb, "## %s\n%s\n\n", id, out)
+		}
+	}
+	final := strings.TrimSpace(sb.String())
+	if final == "" {
+		final = "Workflow completed (no agent output was captured)."
+	}
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: final}},
+	}, nil
+}
+
+// workflowProgressLine renders a WorkflowProgress as a one-line status for the
+// client: "<current-agent>: <message>" (either part may be empty).
+func workflowProgressLine(p *loomv1.WorkflowProgress) string {
+	agent := p.GetCurrentAgentId()
+	msg := p.GetMessage()
+	switch {
+	case agent != "" && msg != "":
+		return agent + ": " + msg
+	case agent != "":
+		return agent
+	default:
+		return msg
+	}
 }
 
 // ============================================================================
