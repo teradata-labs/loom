@@ -344,6 +344,58 @@ func TestRLS_WithCheck_InsertProtection(t *testing.T) {
 	})
 }
 
+// TestRLS_HonorsJWTSub verifies migration 000016: RLS recognizes the caller via
+// the Supabase JWT `sub` claim (request.jwt.claims) when Loom's app.current_user_id
+// GUC is absent — the path an external Supabase/PostgREST consumer (e.g. Dreambase
+// reading the analytics views) uses. Isolation is preserved: a caller sees only
+// rows whose user_id matches its own sub.
+func TestRLS_HonorsJWTSub(t *testing.T) {
+	pool := testPool(t)
+	ensureRLSWriterRole(t, pool)
+
+	userA := uniqueID("jwt-user-a")
+	sessionID := uniqueID("sess-jwt")
+
+	// Insert a session owned by userA via Loom's normal path (app.current_user_id=userA).
+	err := execInTxAsWriter(t, pool, userA, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO sessions (id, agent_id, user_id, context_json, created_at, updated_at)
+			VALUES ($1, $2, $3, '{}', NOW(), NOW())`,
+			sessionID, "test-agent", userA)
+		return err
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, derr := tx.Exec(ctx, "DELETE FROM sessions WHERE id=$1", sessionID)
+			return derr
+		})
+	})
+
+	// Read as the RLS-subject role with ONLY request.jwt.claims set (no
+	// app.current_user_id) — exactly how PostgREST/Supabase authenticates.
+	countAsJWTSub := func(sub string) int {
+		var n int
+		qerr := execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SELECT set_config('request.jwt.claims', $1, true)",
+				fmt.Sprintf(`{"sub":%q}`, sub)); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE loom_rls_writer"); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE id=$1", sessionID).Scan(&n)
+		})
+		require.NoError(t, qerr)
+		return n
+	}
+
+	assert.Equal(t, 1, countAsJWTSub(userA),
+		"a Supabase-authenticated caller with the matching JWT sub must see its own session")
+	assert.Equal(t, 0, countAsJWTSub("someone-else"),
+		"a different JWT sub must not see the session (isolation preserved)")
+}
+
 // TestRLS_WithCheck_MessageInsertProtection verifies WITH CHECK on the messages table.
 func TestRLS_WithCheck_MessageInsertProtection(t *testing.T) {
 	pool := testPool(t)
