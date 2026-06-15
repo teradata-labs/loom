@@ -124,6 +124,8 @@ jobs:
 
       - name: Run tests with race detection
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
@@ -132,9 +134,13 @@ jobs:
 
       - name: Run example tests
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
+          # ./examples/... covers all example packages; the previous explicit
+          # paths (agent-templates, workflows) were stale — the templates moved
+          # under examples/reference and `go test` errored "directory not found".
           go test -tags fts5 -race -v -timeout=5m \
-            ./examples/agent-templates \
-            ./examples/workflows \
+            ./examples/... \
             | tee -a test-output.log
 
       - name: Check for race conditions
@@ -146,6 +152,8 @@ jobs:
 
       - name: Generate coverage report
         run: |
+          # pipefail so a failure in `go tool cover` is not masked by `tee`.
+          set -euo pipefail
           go tool cover -func=coverage.out | tee coverage-report.txt
           COVERAGE=$(grep "total:" coverage-report.txt | awk '{print $3}')
           echo "## Nightly Coverage: $COVERAGE" >> $GITHUB_STEP_SUMMARY
