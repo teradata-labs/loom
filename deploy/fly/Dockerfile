@@ -22,6 +22,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=builder /out/looms    /usr/local/bin/looms
 COPY --from=builder /out/loom-mcp /usr/local/bin/loom-mcp
 COPY deploy/fly/looms.yaml            /etc/loom/looms.yaml
+COPY deploy/fly/looms.lab.yaml        /etc/loom/looms.lab.yaml
 COPY deploy/fly/backends/supabase.yaml /etc/loom/backends/supabase.yaml
 COPY deploy/fly/entrypoint.sh         /entrypoint.sh
 RUN chmod +x /entrypoint.sh

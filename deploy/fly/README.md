@@ -88,3 +88,27 @@ returns the "requires user approval … not yet implemented" denial.
 - `LOOM_YOLO` must NOT be in the env.
 - Use a read-only DB role for `backends/supabase.yaml` if you enable the data tool.
 - Lock down Fly org membership: `fly ssh console` / `fly secrets` = full secret access.
+
+## Lab variant (capability-enabled builder)
+
+`fly.lab.toml` + `looms.lab.yaml` deploy a SECOND app (`loom-dreambase-lab`) that
+re-enables the host-safe capability tools — `workspace` (path-jailed to
+`LOOM_DATA_DIR`), `agent_management`, `manage_ephemeral_agents`, `send_message` —
+so the weaver can CREATE persistent agents and RUN multi-agent workflows online.
+It keeps the real RCE / secret-exfil / SSRF tools hard-disabled (`shell_execute`,
+`file_read`/`file_write`, `http_request`, `grpc_call`), so process secrets stay
+unreadable even with agent creation enabled. Same image, selected via the
+`LOOM_CONFIG=/etc/loom/looms.lab.yaml` env var.
+
+Trust model: auth-required, single-presenter, your own keys/data — NOT a
+general-purpose open service. Created agents persist on a Fly volume.
+
+```bash
+fly apps create loom-dreambase-lab
+fly volumes create loom_lab_data --region dfw --size 1 -a loom-dreambase-lab --yes
+fly secrets set -a loom-dreambase-lab \
+  LOOM_STORAGE_POSTGRES_DSN=... AWS_BEARER_TOKEN_BEDROCK=... \
+  LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF=... LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET=... \
+  LOOM_ADMIN_TOKEN=... TAVILY_API_KEY=...
+fly deploy -c deploy/fly/fly.lab.toml -a loom-dreambase-lab   # from repo root
+```

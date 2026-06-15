@@ -6,7 +6,10 @@ set -eu
 term() { kill -TERM "${loom_pid:-}" "${mcp_pid:-}" 2>/dev/null || true; }
 trap term TERM INT
 
-looms serve --config /etc/loom/looms.yaml &
+# Config is selectable so one image serves both the hardened public edge and
+# the capability-enabled lab. Defaults to the hardened config, so the existing
+# app's behavior is unchanged; fly.lab.toml sets LOOM_CONFIG to the lab overlay.
+looms serve --config "${LOOM_CONFIG:-/etc/loom/looms.yaml}" &
 loom_pid=$!
 
 # Gate the public edge on looms readiness. The Fly proxy routes traffic the

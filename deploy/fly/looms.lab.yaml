@@ -1,0 +1,68 @@
+# Capability-enabled "lab" looms config for an online builder deployment.
+# Loaded via:  looms serve --config /etc/loom/looms.lab.yaml  (set LOOM_CONFIG).
+#
+# DIFFERENCE FROM looms.yaml (the hardened public edge): this re-enables the
+# tools the weaver needs to CREATE persistent agents and RUN multi-agent
+# workflows — but ONLY the ones that are host-safe and cannot read secrets:
+#
+#   - workspace               : path-jailed to LOOM_DATA_DIR (see workspace.go;
+#                               "No user-controlled path traversal possible"),
+#                               so it writes agent YAMLs but cannot read env /
+#                               escape to secrets.
+#   - agent_management        : create persistent agents (writes via workspace).
+#   - manage_ephemeral_agents : spawn in-memory sub-agents for workflows.
+#   - send_message            : inter-agent messaging for multi-agent pipelines.
+#
+# STILL HARD-BLACKLISTED (these are the real RCE / secret-exfil / SSRF vectors,
+# never enable on a secret-bearing machine):
+#   shell_execute  — inherits os.Environ(); reads AWS_BEARER_TOKEN_BEDROCK,
+#                    LOOM_STORAGE_POSTGRES_DSN, the JWT secret, etc.
+#   file_read/file_write — arbitrary host FS (unlike workspace, not jailed).
+#   http_request / grpc_call — arbitrary outbound => SSRF + exfiltration.
+#   publish_restart_request — can restart the server.
+#
+# TRUST MODEL: auth-required (Supabase JWT), single-presenter, your own keys and
+# data. This is NOT a general-purpose open service. Because no enabled tool can
+# read process env, the secrets stay safe even with agent creation enabled.
+
+tools:
+  permissions:
+    yolo: false
+    require_approval: true
+    default_action: deny
+    timeout_seconds: 60          # workflows do more work than a single weave
+
+    disabled_tools:
+      - shell_execute            # RCE; reads every secret via os.Environ()
+      - file_read                # arbitrary host FS read (workspace is the jailed alternative)
+      - file_write               # arbitrary host FS write
+      - http_request             # arbitrary outbound HTTP => SSRF + exfiltration
+      - grpc_call                # arbitrary gRPC => SSRF/egress
+      - publish_restart_request  # can request server restarts
+
+    allowed_tools:
+      # Host-safe capability tools (the point of the lab):
+      - workspace                # jailed to LOOM_DATA_DIR; writes agent YAMLs
+      - agent_management         # create persistent agents
+      - manage_ephemeral_agents  # spawn in-memory agents for workflows
+      - send_message             # inter-agent messaging (multi-agent pipelines)
+      # Same as the hardened edge:
+      - web_search               # Tavily (intentional egress to api.tavily.com)
+      - task_board
+      - graph_memory
+      - conversation_memory
+      - session_memory
+      - shared_memory_read
+      - shared_memory_write      # multi-agent workflows share scratch state
+      - contact_human
+
+  web_search:
+    default_provider: tavily
+    timeout_seconds: 30
+
+# storage:, llm:, server.auth: supplied via env / fly secrets (same as the
+# hardened edge). Created agents persist on the Fly volume mounted at
+# LOOM_DATA_DIR (see fly.lab.toml); storage stays the shared Supabase project.
+observability:
+  enabled: true
+  mode: embedded

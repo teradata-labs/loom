@@ -1,0 +1,65 @@
+app            = "loom-dreambase-lab"
+primary_region = "dfw"               # Dallas — closest Fly region to Austin
+
+[build]
+  # Resolved relative to this config file; run `fly deploy -c deploy/fly/fly.lab.toml`
+  # from the REPO ROOT so the build context contains the whole repo. Same image
+  # as the hardened edge; LOOM_CONFIG (below) selects the lab overlay.
+  dockerfile = "Dockerfile"
+
+# Non-secret config. Secrets (DSN, keys, auth secret, Tavily key) go via
+# `fly secrets set` — same set as the hardened app (see README).
+[env]
+  # Capability-enabled overlay: re-enables workspace/agent_management/
+  # manage_ephemeral_agents/send_message (host-safe) while keeping shell/http/
+  # grpc/file hard-disabled. See deploy/fly/looms.lab.yaml.
+  LOOM_CONFIG                         = "/etc/loom/looms.lab.yaml"
+  # Persist created agents + workspace on the mounted volume (survives restarts).
+  LOOM_DATA_DIR                       = "/data"
+  LOOM_SERVER_HOST                    = "127.0.0.1"
+  LOOM_SERVER_HTTP_PORT               = "0"
+  LOOM_STORAGE_BACKEND                = "postgres"
+  LOOM_STORAGE_MIGRATION_AUTO_MIGRATE = "true"
+  LOOM_LLM_PROVIDER                   = "bedrock"
+  LOOM_LLM_BEDROCK_MODEL_ID           = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  LOOM_LLM_BEDROCK_REGION             = "us-west-2"
+  LOOM_SERVER_AUTH_ENABLED            = "true"
+  LOOM_SERVER_AUTH_MODE               = "required"
+  LOOM_SERVER_AUTH_SUPABASE_AUDIENCE  = "authenticated"
+  # NOTE: do NOT set LOOM_YOLO here. looms.lab.yaml forces yolo:false; an env
+  # LOOM_YOLO=true would re-open EVERY tool (incl. shell_execute) — never set it.
+
+# Persistent volume for agents the weaver creates + the workspace. Storage
+# (sessions/messages/tasks/graph) still goes to the shared Supabase Postgres;
+# only the on-disk agent YAMLs / workspace files live here. Create with:
+#   fly volumes create loom_lab_data --region dfw --size 1 -a loom-dreambase-lab
+[[mounts]]
+  source      = "loom_lab_data"
+  destination = "/data"
+
+# Expose ONLY loom-mcp's 8765; Fly terminates TLS at 443.
+[[services]]
+  internal_port        = 8765
+  protocol             = "tcp"
+  auto_stop_machines   = false        # keep up: in-memory state + the volume pin
+  auto_start_machines  = true
+  min_machines_running = 1            # exactly one (in-memory state + single-writer volume)
+
+  [[services.ports]]
+    port        = 443
+    handlers    = ["tls", "http"]
+    force_https = true
+
+  [services.concurrency]
+    type       = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+  [[services.tcp_checks]]
+    interval     = "15s"
+    timeout      = "2s"
+    grace_period = "10s"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "1gb"
