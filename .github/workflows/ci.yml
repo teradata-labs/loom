@@ -126,6 +126,8 @@ jobs:
 
       - name: Run tests with race detection
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
@@ -134,6 +136,8 @@ jobs:
 
       - name: Run example tests
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
           go test -tags fts5 -race -v -timeout=5m \
             ./examples/agent-templates \
             ./examples/workflows \
@@ -148,6 +152,8 @@ jobs:
 
       - name: Generate coverage report
         run: |
+          # pipefail so a failure in `go tool cover` is not masked by `tee`.
+          set -euo pipefail
           go tool cover -func=coverage.out | tee coverage-report.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
