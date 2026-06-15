@@ -136,9 +136,11 @@ jobs:
         run: |
           # pipefail so a non-zero `go test` exit is not masked by `tee`.
           set -euo pipefail
+          # ./examples/... covers all example packages; the previous explicit
+          # paths (agent-templates, workflows) were stale — the templates moved
+          # under examples/reference and `go test` errored "directory not found".
           go test -tags fts5 -race -v -timeout=5m \
-            ./examples/agent-templates \
-            ./examples/workflows \
+            ./examples/... \
             | tee -a test-output.log
 
       - name: Check for race conditions

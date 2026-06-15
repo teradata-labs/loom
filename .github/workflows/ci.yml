@@ -384,6 +384,11 @@ jobs:
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
+          # Stable category so the analysis registers as the "gosec" code-scanning
+          # configuration. Without it the category defaults to the workflow path
+          # (.github/workflows/ci.yml:security), which the required "Code scanning
+          # results / gosec" check can't find -> neutral "configuration not found".
+          category: gosec
 
   # ============================================================================
   # Job 7: Coverage Check
