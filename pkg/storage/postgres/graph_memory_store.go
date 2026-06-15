@@ -88,7 +88,7 @@ func (s *GraphMemoryStore) CreateEntity(ctx context.Context, entity *memory.Enti
 			`INSERT INTO graph_entities (id, agent_id, name, entity_type, properties_json, owner, user_id, created_at, updated_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			entity.ID, entity.AgentID, entity.Name, entity.EntityType,
-			entity.PropertiesJSON, entity.Owner, userID, now, now,
+			jsonbOrDefault(entity.PropertiesJSON, "{}"), entity.Owner, userID, now, now,
 		)
 		return err
 	})
@@ -132,7 +132,7 @@ func (s *GraphMemoryStore) UpdateEntity(ctx context.Context, entity *memory.Enti
 		tag, err := tx.Exec(ctx,
 			`UPDATE graph_entities SET entity_type = $1, properties_json = $2, updated_at = $3
 			 WHERE agent_id = $4 AND name = $5 AND deleted_at IS NULL`,
-			entity.EntityType, entity.PropertiesJSON, now,
+			entity.EntityType, jsonbOrDefault(entity.PropertiesJSON, "{}"), now,
 			entity.AgentID, entity.Name,
 		)
 		if err != nil {
@@ -307,7 +307,7 @@ func (s *GraphMemoryStore) Relate(ctx context.Context, edge *memory.Edge) (*memo
 			   properties_json = EXCLUDED.properties_json,
 			   updated_at = EXCLUDED.updated_at`,
 			edge.ID, edge.AgentID, edge.SourceID, edge.TargetID, edge.Relation,
-			edge.PropertiesJSON, userID, now, now,
+			jsonbOrDefault(edge.PropertiesJSON, "{}"), userID, now, now,
 		)
 		return err
 	})
@@ -1114,6 +1114,19 @@ func (s *GraphMemoryStore) prepareMemory(mem *memory.Memory) {
 	}
 }
 
+// jsonbOrDefault returns s when it holds a non-blank value, else def. JSONB
+// columns reject an empty string ("") with SQLSTATE 22P02, so any caller that
+// may pass an unset PropertiesJSON (e.g. an entity auto-created by a relate, or
+// a memory stored without explicit properties) must default it to a valid JSON
+// literal. SQLite is lenient about this, which is why it only surfaced on
+// Postgres/Supabase.
+func jsonbOrDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
 // pgInsertMemoryTx inserts a memory row within an existing pgx transaction.
 func pgInsertMemoryTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error {
 	tagsJSON, err := json.Marshal(mem.Tags)
@@ -1132,7 +1145,7 @@ func pgInsertMemoryTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 		mem.ID, mem.AgentID, mem.Content, mem.Summary, mem.MemoryType,
 		mem.Source, mem.SourceID, mem.Owner, mem.MemoryAgentID,
 		string(tagsJSON), mem.Salience, mem.TokenCount, mem.SummaryTokenCount,
-		mem.PropertiesJSON, userID, mem.CreatedAt, mem.ExpiresAt,
+		jsonbOrDefault(mem.PropertiesJSON, "{}"), userID, mem.CreatedAt, mem.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert memory: %w", err)
