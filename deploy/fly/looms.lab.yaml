@@ -50,6 +50,9 @@ tools:
       # SQL + charts. Trust the whole server via prefix; egress is to OpenData
       # only (Loom's MCP client, not arbitrary http_request).
       - "opendata:*"
+      # supabase-write shim — write analysis results into the dedicated
+      # 'dreambase' schema for Dreambase dashboards (no other DB access).
+      - "dbwrite:*"
       # Same as the hardened edge:
       - web_search               # Tavily (intentional egress to api.tavily.com)
       - task_board
@@ -76,6 +79,13 @@ mcp:
     opendata:
       transport: stdio
       command: /usr/local/bin/opendata-mcp
+      enabled: true
+    # Writes agent results into the dedicated 'dreambase' Supabase schema (via
+    # LOOM_STORAGE_POSTGRES_DSN). Scoped: schema-locked, validated table names,
+    # no arbitrary SQL. Lets an agent publish an OpenData join for Dreambase.
+    dbwrite:
+      transport: stdio
+      command: /usr/local/bin/supabase-write-mcp
       enabled: true
 
 # storage:, llm:, server.auth: supplied via env / fly secrets (same as the

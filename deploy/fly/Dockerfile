@@ -15,6 +15,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
 # local MCP server, since OpenData's hosted MCP requires interactive OAuth).
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
     go build -tags fts5 -ldflags="-s -w" -o /out/opendata-mcp ./cmd/opendata-mcp
+# supabase-write-mcp: stdio shim that writes agent results into a dedicated
+# Supabase schema (dreambase) for Dreambase to read.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
+    go build -tags fts5 -ldflags="-s -w" -o /out/supabase-write-mcp ./cmd/supabase-write-mcp
 
 # alpine (not distroless) so the entrypoint shell can supervise two processes.
 FROM alpine:3.20
@@ -26,6 +30,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=builder /out/looms        /usr/local/bin/looms
 COPY --from=builder /out/loom-mcp     /usr/local/bin/loom-mcp
 COPY --from=builder /out/opendata-mcp /usr/local/bin/opendata-mcp
+COPY --from=builder /out/supabase-write-mcp /usr/local/bin/supabase-write-mcp
 COPY deploy/fly/looms.yaml            /etc/loom/looms.yaml
 COPY deploy/fly/looms.lab.yaml        /etc/loom/looms.lab.yaml
 COPY deploy/fly/backends/supabase.yaml /etc/loom/backends/supabase.yaml
