@@ -3522,12 +3522,24 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
+		// Expand ${ENV_VAR} in header values so secrets (e.g. a bearer token for
+		// an authenticated remote MCP server) come from the environment rather
+		// than being committed to the config file.
+		var headers map[string]string
+		if len(serverConfig.Headers) > 0 {
+			headers = make(map[string]string, len(serverConfig.Headers))
+			for k, v := range serverConfig.Headers {
+				headers[k] = os.ExpandEnv(v)
+			}
+		}
+
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
 			Transport:        transport,
 			URL:              serverConfig.URL,
+			Headers:          headers,
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,

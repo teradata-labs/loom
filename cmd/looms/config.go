@@ -650,6 +650,12 @@ type MCPServerConfig struct {
 	// URL is the server URL (required for http/sse/streamable-http transport)
 	URL string `mapstructure:"url"`
 
+	// Headers are extra HTTP headers for http/sse/streamable-http transport.
+	// Values support ${ENV_VAR} expansion at serve time, so secrets (e.g. an
+	// Authorization bearer token) live in the environment, not the config file:
+	//   headers: { Authorization: "Bearer ${OPENDATA_API_KEY}" }
+	Headers map[string]string `mapstructure:"headers"`
+
 	// EnableSessions enables session management (for streamable-http transport)
 	EnableSessions bool `mapstructure:"enable_sessions"`
 

@@ -46,6 +46,10 @@ tools:
       - agent_management         # create persistent agents
       - manage_ephemeral_agents  # spawn in-memory agents for workflows
       - send_message             # inter-agent messaging (multi-agent pipelines)
+      # OpenData (tryopendata.ai) MCP server tools — public-data search + DuckDB
+      # SQL + charts. Trust the whole server via prefix; egress is to OpenData
+      # only (Loom's MCP client, not arbitrary http_request).
+      - "opendata:*"
       # Same as the hardened edge:
       - web_search               # Tavily (intentional egress to api.tavily.com)
       - task_board
@@ -59,6 +63,20 @@ tools:
   web_search:
     default_provider: tavily
     timeout_seconds: 30
+
+# OpenData MCP server (https://tryopendata.ai) — gives agents public-data search,
+# DuckDB SQL, the dataset graph, charts, and exports. The bearer token is read
+# from the OPENDATA_API_KEY env (a Fly secret); it is NOT committed here.
+#   fly secrets set OPENDATA_API_KEY=od_live_... -a loom-dreambase-lab
+mcp:
+  servers:
+    opendata:
+      transport: streamable-http
+      url: https://mcp.tryopendata.ai/mcp
+      headers:
+        Authorization: "Bearer ${OPENDATA_API_KEY}"
+      enable_sessions: true
+      enabled: true
 
 # storage:, llm:, server.auth: supplied via env / fly secrets (same as the
 # hardened edge). Created agents persist on the Fly volume mounted at

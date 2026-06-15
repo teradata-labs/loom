@@ -16,16 +16,51 @@ package shuttle
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // PermissionChecker checks if a tool can be executed based on configuration.
+// Entries in the allow/deny lists match a tool name either exactly or, when the
+// entry ends with "*", by prefix. This lets a whole MCP server's tools be
+// trusted with a single pattern (e.g. "opendata:*" matches "opendata:query"),
+// rather than enumerating every tool name. A bare "*" matches everything.
 type PermissionChecker struct {
 	requireApproval bool
 	yolo            bool
-	allowedTools    map[string]bool // Set of tool names that are always allowed
-	disabledTools   map[string]bool // Set of tool names that are never allowed
+	allowedExact    map[string]bool // tool names always allowed (exact)
+	allowedPrefix   []string        // allowed prefixes from "<prefix>*" entries
+	disabledExact   map[string]bool // tool names never allowed (exact)
+	disabledPrefix  []string        // disabled prefixes from "<prefix>*" entries
 	defaultAction   string          // "allow" or "deny" - default action on timeout/no response
 	timeoutSeconds  int             // How long to wait for user response
+}
+
+// splitPatterns separates a tool-pattern list into exact-match names and
+// prefix patterns (from trailing-"*" entries; a bare "*" yields an empty prefix
+// that matches everything).
+func splitPatterns(list []string) (exact map[string]bool, prefixes []string) {
+	exact = make(map[string]bool)
+	for _, t := range list {
+		if pfx, ok := strings.CutSuffix(t, "*"); ok {
+			prefixes = append(prefixes, pfx)
+		} else {
+			exact[t] = true
+		}
+	}
+	return exact, prefixes
+}
+
+// matchPattern reports whether name matches any exact name or prefix pattern.
+func matchPattern(name string, exact map[string]bool, prefixes []string) bool {
+	if exact[name] {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // PermissionConfig holds permission configuration.
@@ -40,16 +75,9 @@ type PermissionConfig struct {
 
 // NewPermissionChecker creates a new permission checker.
 func NewPermissionChecker(config PermissionConfig) *PermissionChecker {
-	// Convert slices to maps for O(1) lookups
-	allowedMap := make(map[string]bool)
-	for _, tool := range config.AllowedTools {
-		allowedMap[tool] = true
-	}
-
-	disabledMap := make(map[string]bool)
-	for _, tool := range config.DisabledTools {
-		disabledMap[tool] = true
-	}
+	// Split into exact-match sets and prefix patterns (for "<prefix>*" entries).
+	allowedExact, allowedPrefix := splitPatterns(config.AllowedTools)
+	disabledExact, disabledPrefix := splitPatterns(config.DisabledTools)
 
 	// Set defaults
 	if config.DefaultAction == "" {
@@ -62,8 +90,10 @@ func NewPermissionChecker(config PermissionConfig) *PermissionChecker {
 	return &PermissionChecker{
 		requireApproval: config.RequireApproval,
 		yolo:            config.YOLO,
-		allowedTools:    allowedMap,
-		disabledTools:   disabledMap,
+		allowedExact:    allowedExact,
+		allowedPrefix:   allowedPrefix,
+		disabledExact:   disabledExact,
+		disabledPrefix:  disabledPrefix,
 		defaultAction:   config.DefaultAction,
 		timeoutSeconds:  config.TimeoutSeconds,
 	}
@@ -78,12 +108,12 @@ func (pc *PermissionChecker) CheckPermission(ctx context.Context, toolName strin
 	}
 
 	// Check if tool is disabled (blacklist takes precedence)
-	if pc.disabledTools[toolName] {
+	if matchPattern(toolName, pc.disabledExact, pc.disabledPrefix) {
 		return fmt.Errorf("tool '%s' is disabled by configuration (tools.permissions.disabled_tools)", toolName)
 	}
 
 	// Check if tool is in allowed list (whitelist)
-	if pc.allowedTools[toolName] {
+	if matchPattern(toolName, pc.allowedExact, pc.allowedPrefix) {
 		return nil // Always allow whitelisted tools
 	}
 
@@ -108,14 +138,16 @@ func (pc *PermissionChecker) IsYOLOMode() bool {
 	return pc.yolo
 }
 
-// IsToolAllowed returns true if a tool is explicitly allowed (whitelist).
+// IsToolAllowed returns true if a tool is explicitly allowed (whitelist),
+// matching exact names and "<prefix>*" patterns.
 func (pc *PermissionChecker) IsToolAllowed(toolName string) bool {
-	return pc.allowedTools[toolName]
+	return matchPattern(toolName, pc.allowedExact, pc.allowedPrefix)
 }
 
-// IsToolDisabled returns true if a tool is explicitly disabled (blacklist).
+// IsToolDisabled returns true if a tool is explicitly disabled (blacklist),
+// matching exact names and "<prefix>*" patterns.
 func (pc *PermissionChecker) IsToolDisabled(toolName string) bool {
-	return pc.disabledTools[toolName]
+	return matchPattern(toolName, pc.disabledExact, pc.disabledPrefix)
 }
 
 // RequiresApproval returns true if user approval is required for tools.
