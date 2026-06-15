@@ -64,18 +64,18 @@ tools:
     default_provider: tavily
     timeout_seconds: 30
 
-# OpenData MCP server (https://tryopendata.ai) — gives agents public-data search,
-# DuckDB SQL, the dataset graph, charts, and exports. The bearer token is read
-# from the OPENDATA_API_KEY env (a Fly secret); it is NOT committed here.
+# OpenData (https://tryopendata.ai) — gives agents public-data search, DuckDB
+# SQL, and the dataset graph. We run a LOCAL stdio shim (cmd/opendata-mcp) that
+# wraps OpenData's REST API with the od_live_ API key, because OpenData's hosted
+# MCP server (mcp.tryopendata.ai) requires an interactive OAuth flow (Clerk;
+# authorization_code only) that a headless looms server cannot complete. The
+# shim inherits OPENDATA_API_KEY from the process env (a Fly secret):
 #   fly secrets set OPENDATA_API_KEY=od_live_... -a loom-dreambase-lab
 mcp:
   servers:
     opendata:
-      transport: streamable-http
-      url: https://mcp.tryopendata.ai/mcp
-      headers:
-        Authorization: "Bearer ${OPENDATA_API_KEY}"
-      enable_sessions: true
+      transport: stdio
+      command: /usr/local/bin/opendata-mcp
       enabled: true
 
 # storage:, llm:, server.auth: supplied via env / fly secrets (same as the
