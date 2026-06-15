@@ -11,6 +11,7 @@
   - [Stream loom_weave progress over SSE](#task-stream-loom_weave-progress-over-sse)
   - [Authenticate the endpoint with Supabase JWTs](#task-authenticate-the-endpoint-with-supabase-jwts)
   - [Expose the endpoint to a remote client](#task-expose-the-endpoint-to-a-remote-client)
+- [Connecting to the deployed Fly.io edge (Dreambase)](#connecting-to-the-deployed-flyio-edge-dreambase)
 - [Examples](#examples)
 - [Reverse-proxy alternative](#reverse-proxy-alternative)
 - [Troubleshooting](#troubleshooting)
@@ -138,6 +139,77 @@ ngrok http 8765
 ```
 
 Give the remote client the tunnel URL and a bearer token (a Supabase JWT) in its auth header.
+
+## Connecting to the deployed Fly.io edge (Dreambase)
+
+> **Note:** Describes the Loom × Dreambase deployment. Each edge is `loom-mcp --transport=http` behind Fly's HTTPS, with Supabase-JWT auth **required**. Verified against the live deployment on 2026-06-15.
+
+The deployment runs two `loom-mcp` edges, both authenticated with Supabase JWTs from the **shared** project (`nwmawfcqphzaaauzgklx`):
+
+| App | Endpoint | Use |
+|-----|----------|-----|
+| ✅ Public edge (hardened) | `https://loom-dreambase.fly.dev/mcp` | Chat with agents, read ops. Host tools (`shell_execute`, `file_*`, `http_request`) are disabled. |
+| ✅ Lab (capability) | `https://loom-dreambase-lab.fly.dev/mcp` | Build — `loom_create_agent`, `loom_execute_workflow`. |
+
+Both `/` and `/mcp` accept Streamable-HTTP POSTs; prefer `/mcp`.
+
+### Authentication
+
+Every request needs a Supabase JWT for the shared project in the `Authorization` header:
+
+```
+Authorization: Bearer <supabase_access_token>
+```
+
+The edge validates the token against the project JWKS (ES256), issuer `https://nwmawfcqphzaaauzgklx.supabase.co/auth/v1`, audience `authenticated`. A request with **no** or an **invalid** token returns `401`. The token subject (`sub`) is forwarded to `looms`, so Row-Level Security scopes data to that user.
+
+Because Dreambase runs on the **same** Supabase project, a signed-in Dreambase user already holds a valid token — use the session `access_token` (e.g. the `access_token` from `supabase.auth.getSession()`). For CLI use, run `loom login` once.
+
+### Task: Connect with the loom CLI
+
+The simplest path. `loom login` stores a Supabase session (auto-refreshed on use):
+
+```bash
+loom login                                                  # one-time Supabase OAuth
+loom chat --remote https://loom-dreambase.fly.dev/ --stream "What is Loom, in two sentences?"
+```
+
+Expected output:
+
+```
+Connected to https://loom-dreambase.fly.dev/ (MCP session 4f2c…)
+**Loom** is an agentic AI system that uses pattern-guided workflows …
+```
+
+### Task: Connect over raw HTTP (what an app embeds)
+
+Initialize, capture the session id, then call a tool. The `loom_weave` tool streams over SSE when you send `Accept: text/event-stream`:
+
+```bash
+TOKEN="<supabase access_token>"
+URL="https://loom-dreambase.fly.dev/mcp"
+
+# 1. initialize — capture Mcp-Session-Id from the response headers
+SID=$(curl -sD- -o /dev/null -X POST "$URL" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"dreambase","version":"1"}}}' \
+  | tr -d '\r' | awk -F': ' '/^Mcp-Session-Id/{print $2}')
+
+# 2. call loom_weave (streamed)
+curl -sN -X POST "$URL" \
+  -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SID" \
+  -H "Content-Type: application/json" -H "Accept: text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"loom_weave","arguments":{"query":"List the available agents"},"_meta":{"progressToken":"t1"}}}'
+```
+
+The final SSE `data:` event carries the `tools/call` result (a routing header plus a `WeaveResponse` JSON object). A bare request (no token) returns `401`.
+
+### Task: Connect a generic MCP client
+
+Point any Streamable-HTTP MCP client (Claude Desktop, Cursor, MCP SDKs) at the `/mcp` URL and add an `Authorization: Bearer <token>` header. The client gets tools including `loom_weave`, `loom_list_agents`, and (on the lab) `loom_create_agent` / `loom_execute_workflow`.
+
+> **Cost note:** the public edge may be **suspended** to save cost. The first request wakes it (allow ~5–10s); it stays warm afterward. Check status with `fly status -a loom-dreambase`.
 
 ## Examples
 
