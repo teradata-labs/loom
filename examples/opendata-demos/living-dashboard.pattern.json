@@ -1,0 +1,16 @@
+{
+  "_comment": "Demo #4 — scheduled 'living dashboard'. Pass these as arguments to the loom_schedule_workflow MCP tool (requires scheduler.enabled in looms config). Each cron firing re-runs the OpenData snapshot; the run telemetry refreshes in Supabase for Dreambase. agentId is the lab's od-analyst; swap for yours.",
+  "workflow_name": "living-dashboard",
+  "pattern": {
+    "pipeline": {
+      "initialPrompt": "Daily US unemployment snapshot.",
+      "stages": [
+        {
+          "agentId": "0c1a7540-6987-400a-a38f-c7dee8886286",
+          "promptTemplate": "Using OpenData (fred/unemployment-rate), fetch the latest 12 months of US unemployment and report the current rate and whether the last 3 months are rising or falling."
+        }
+      ]
+    }
+  },
+  "schedule": { "cron": "0 13 * * *", "timezone": "UTC", "enabled": true }
+}

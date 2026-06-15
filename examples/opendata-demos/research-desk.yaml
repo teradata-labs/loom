@@ -1,0 +1,24 @@
+# Demo #2 — "Research desk": a 4-agent pipeline over OpenData.
+# data-scout (find datasets) -> query-analyst (DuckDB SQL) -> viz-builder
+# (chart-ready summary) -> critic (verify, no cherry-picking).
+#
+# Run via the loom_execute_workflow MCP tool with workflow_yaml = this file.
+# agent_id values are the lab's current agents (loom_list_agents); swap for yours.
+# pass_full_history threads each stage's output into the next.
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: research-desk
+spec:
+  type: pipeline
+  initial_prompt: "Research question: How has the US unemployment rate trended over the last 24 months, and are the most recent 3 months rising or falling? Use OpenData public datasets only."
+  pass_full_history: true
+  stages:
+    - agent_id: "94f72c34-3c84-482d-b2ef-7c64a4a27fc4"   # data-scout
+      prompt_template: "Scout OpenData for the dataset(s) needed to answer this question: 'How has the US unemployment rate trended over the last 24 months, and are the most recent 3 months rising or falling?' List the provider/dataset path(s) and the key columns (date, value)."
+    - agent_id: "8fd3676e-5576-48e8-8cc8-4fc75e0ba910"   # query-analyst
+      prompt_template: "Using the dataset(s) identified above, run DuckDB SQL via OpenData to get the last 24 months of US unemployment and determine whether the latest 3 months are rising or falling. Return the rows and the exact SQL."
+    - agent_id: "9647c817-468b-49ec-a006-cc9918c0b959"   # viz-builder
+      prompt_template: "Turn the query results above into a chart-ready JSON summary (a line chart of unemployment over time) with a one-sentence caption."
+    - agent_id: "9ee1d558-f15a-4ef7-ac99-b73f930c9f79"   # critic
+      prompt_template: "Review the analysis above: is the dataset authoritative, the SQL correct, and the trend claim supported by the data? Give a VERDICT (sound | needs-work) and list any issues."

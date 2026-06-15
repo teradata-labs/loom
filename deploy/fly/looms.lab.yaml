@@ -84,3 +84,9 @@ mcp:
 observability:
   enabled: true
   mode: embedded
+
+# Workflow scheduler (cron) for the "living dashboard" demo: periodically re-runs
+# an OpenData workflow so the run telemetry refreshes in Supabase for Dreambase.
+# State persists on the volume ($LOOM_DATA_DIR/scheduler.db).
+scheduler:
+  enabled: true
