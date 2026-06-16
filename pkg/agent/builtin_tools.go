@@ -654,12 +654,22 @@ func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string,
 		return t.paginateData(ref, meta, input)
 	}
 
-	// No valid query method provided
+	// No explicit method given. For a plain text result, default to pagination
+	// from offset 0 — returning the first page (bounded to a line window) is what
+	// an agent calling query_tool_result(ref) with no other args expects, and is
+	// far more useful than a hard error. A single-line result, e.g. an OpenData
+	// query's JSON blob, comes back whole. Structured types (json_object,
+	// json_array) still require an explicit method below, so a large array is
+	// never auto-dumped.
+	if meta.DataType == "text" {
+		return t.paginateData(ref, meta, input)
+	}
+
 	return &shuttle.Result{
 		Success: false,
 		Error: &shuttle.Error{
 			Code:       "invalid_input",
-			Message:    fmt.Sprintf("Data type '%s' requires specific query method", meta.DataType),
+			Message:    fmt.Sprintf("Data type '%s' requires a specific query method", meta.DataType),
 			Suggestion: "Check the tool result metadata and retrieval hints for supported query methods (e.g., offset/limit for text, sql for SQL results)",
 		},
 	}, nil

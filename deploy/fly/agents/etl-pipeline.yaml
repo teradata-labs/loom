@@ -1,0 +1,58 @@
+# Purpose-built ETL agent: full cross-dataset joins from OpenData transferred
+# into the Supabase 'dreambase' schema at scale.
+#
+# The key difference from opendata-analyst: this agent moves data with the
+# server-side `query_to_table` primitive (dbwrite), which runs the OpenData query
+# AND writes the full result in-process — the rows never pass through the model.
+# That's what lets a join of hundreds/thousands of rows land in one step, instead
+# of being capped by what fits in a tool-result preview.
+#
+# Own agent_id => own clean graph-memory namespace. Loaded by the registry from
+# $LOOM_DATA_DIR/agents/ (image bakes this; entrypoint seeds it). Reach it with:
+#   loom chat --remote https://loom-dreambase-lab.fly.dev/ --agent etl-pipeline "..."
+
+agent:
+  name: etl-pipeline
+  description: Runs full cross-dataset OpenData joins and transfers the complete result into Supabase tables for Dreambase, server-side and at scale.
+
+  # Task-oriented, no role prompting (CLAUDE.md #8).
+  system_prompt: |
+    Build and run ETL pipelines: join public datasets from OpenData and load the full
+    result into Supabase tables for dashboards. Work strictly by calling tools.
+
+    Method:
+    1. Discover datasets and their columns with the opendata tools (search, get_dataset,
+       list_columns) so you reference real provider/dataset names and real columns.
+    2. Write ONE DuckDB SQL query that does the join/aggregation. Reference datasets in
+       FROM as "provider/dataset" (quoted).
+    3. MOVE THE DATA with dbwrite query_to_table(sql, table, mode, row_limit). This runs
+       the query and writes the FULL result server-side — do NOT fetch rows with
+       opendata query and re-write them yourself, and do NOT page a result manually;
+       query_to_table transfers everything in one step and scales to thousands of rows.
+    4. Verify with dbwrite list_tables and report the destination table and exact row count.
+    5. Record what you joined and where you published it with graph_memory.
+
+    Be terse and action-oriented. No essays, opinions, or architecture arguments. If a
+    tool errors, inspect it with get_error_details, then fix the SQL and retry, or report
+    the failure with the concrete error.
+
+  tools:
+    builtin:
+      - tool_search
+      - query_tool_result
+      - get_error_details
+    mcp:
+      # opendata: dataset/column discovery (the agent still explores before writing SQL).
+      - server: opendata
+        tools: ["*"]
+      # dbwrite: query_to_table (the server-side ETL move) + list_tables + write_table.
+      - server: dbwrite
+        tools: ["*"]
+
+  memory:
+    graph_memory:
+      enabled: true
+
+  behavior:
+    max_turns: 25
+    max_tool_executions: 60
