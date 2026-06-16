@@ -28,9 +28,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -51,6 +54,7 @@ const (
 	serverName      = "supabase-write-mcp"
 	serverVersionID = "0.1.0"
 	maxRows         = 5000
+	odBaseDefault   = "https://api.tryopendata.ai"
 )
 
 // identRe restricts table names to safe SQL identifiers (lowercase, starts with
@@ -80,9 +84,24 @@ func main() {
 	}
 	defer pool.Close()
 
-	p := &provider{pool: pool, schema: schema, logger: logger}
+	// OpenData client for the server-side ETL primitive (query_to_table). Reads
+	// the same OPENDATA_API_KEY the opendata-mcp shim uses (a Fly secret in the
+	// machine env). When unset, query_to_table is simply not offered.
+	odBase := os.Getenv("OPENDATA_API_BASE")
+	if odBase == "" {
+		odBase = odBaseDefault
+	}
+	p := &provider{
+		pool:   pool,
+		schema: schema,
+		logger: logger,
+		odKey:  os.Getenv("OPENDATA_API_KEY"),
+		odBase: strings.TrimRight(odBase, "/"),
+		hc:     &http.Client{Timeout: 90 * time.Second},
+	}
 	mcpServer := server.NewMCPServer(serverName, serverVersionID, logger, server.WithToolProvider(p))
-	logger.Info("supabase-write-mcp stdio server starting", zap.String("schema", schema))
+	logger.Info("supabase-write-mcp stdio server starting",
+		zap.String("schema", schema), zap.Bool("etl_enabled", p.odKey != ""))
 	if err := mcpServer.Serve(ctx, transport.NewStdioServerTransport(os.Stdin, os.Stdout)); err != nil {
 		logger.Fatal("serve failed", zap.Error(err))
 	}
@@ -98,6 +117,11 @@ type provider struct {
 	pool   *pgxpool.Pool
 	schema string
 	logger *zap.Logger
+
+	// OpenData client (for query_to_table). Empty odKey disables that tool.
+	odKey  string
+	odBase string
+	hc     *http.Client
 }
 
 func (p *provider) ListTools(_ context.Context) ([]protocol.Tool, error) {
@@ -108,7 +132,7 @@ func (p *provider) ListTools(_ context.Context) ([]protocol.Tool, error) {
 		}
 		return m
 	}
-	return []protocol.Tool{
+	tools := []protocol.Tool{
 		{
 			Name:        "write_table",
 			Description: fmt.Sprintf("Persist a result set into the Supabase '%s' schema so a dashboard can read it. TWO accepted shapes: (a) 'rows' as an array of flat JSON objects (column -> value); or (b) the DuckDB/OpenData result shape — pass 'columns' (array of names) plus 'rows' as an array of value-arrays (exactly what opendata_query returns). Columns and types are inferred. Use this to publish an analysis (e.g. an OpenData join) for Dreambase.", p.schema),
@@ -124,13 +148,32 @@ func (p *provider) ListTools(_ context.Context) ([]protocol.Tool, error) {
 			Description: fmt.Sprintf("List the tables in the Supabase '%s' schema with their row counts.", p.schema),
 			InputSchema: obj(map[string]interface{}{}),
 		},
-	}, nil
+	}
+	// Server-side ETL: run an OpenData DuckDB query and write its FULL result
+	// straight into the schema, without the rows passing through the model. This
+	// is how you move hundreds/thousands of joined rows — far beyond what fits in
+	// a tool-result preview. Only offered when an OpenData key is configured.
+	if p.odKey != "" {
+		tools = append(tools, protocol.Tool{
+			Name:        "query_to_table",
+			Description: fmt.Sprintf("ETL in one step: run a DuckDB SQL query across OpenData datasets and write its FULL result set into the Supabase '%s' schema, server-side (rows do NOT pass through the model, so this scales to thousands of rows). Reference datasets in FROM as \"provider/dataset\" (quoted), e.g. SELECT ... FROM \"worldbank/population\" p JOIN \"worldbank/gdp\" g USING (country_code, year). Use this for a full table join + transfer.", p.schema),
+			InputSchema: obj(map[string]interface{}{
+				"sql":       map[string]interface{}{"type": "string", "description": "DuckDB SQL to run against OpenData (datasets quoted as \"provider/dataset\")."},
+				"table":     map[string]interface{}{"type": "string", "description": "Destination table name (lowercase letters/digits/underscore)."},
+				"mode":      map[string]interface{}{"type": "string", "description": "'replace' (default; truncate then insert) or 'append'.", "enum": []string{"replace", "append"}},
+				"row_limit": map[string]interface{}{"type": "integer", "description": fmt.Sprintf("Max rows to fetch+write (default 1000, cap %d).", maxRows)},
+			}, "sql", "table"),
+		})
+	}
+	return tools, nil
 }
 
 func (p *provider) CallTool(ctx context.Context, name string, args map[string]interface{}) (*protocol.CallToolResult, error) {
 	switch name {
 	case "write_table":
 		return p.writeTable(ctx, args)
+	case "query_to_table":
+		return p.queryToTable(ctx, args)
 	case "list_tables":
 		return p.listTables(ctx)
 	default:
@@ -253,33 +296,46 @@ func (p *provider) writeTable(ctx context.Context, args map[string]interface{}) 
 	if errMsg != "" {
 		return errResult(errMsg), nil
 	}
+	if errMsg := p.writeRows(ctx, table, mode, cols, rowMaps, colSet); errMsg != "" {
+		return errResult(errMsg), nil
+	}
+	b, _ := json.Marshal(map[string]interface{}{
+		"table": p.schema + "." + table, "rows_written": len(rowMaps), "columns": cols, "mode": mode,
+		"written_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	return textResult(string(b)), nil
+}
 
+// writeRows creates p.schema.table (if needed), truncates on replace, inserts
+// rowMaps with a batched parameterized INSERT, and grants SELECT to the Supabase
+// API roles. Returns a non-empty errMsg on failure. Shared by write_table and
+// query_to_table.
+func (p *provider) writeRows(ctx context.Context, table, mode string, cols []string, rowMaps []map[string]interface{}, colSample map[string]interface{}) string {
 	qSchema := pgx.Identifier{p.schema}.Sanitize()
 	qTable := pgx.Identifier{p.schema, table}.Sanitize()
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return errResult("begin failed: " + err.Error()), nil
+		return "begin failed: " + err.Error()
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+qSchema); err != nil {
-		return errResult("create schema failed: " + err.Error()), nil
+		return "create schema failed: " + err.Error()
 	}
 	colDefs := make([]string, len(cols))
 	for i, c := range cols {
-		colDefs[i] = pgx.Identifier{c}.Sanitize() + " " + pgType(colSet[c])
+		colDefs[i] = pgx.Identifier{c}.Sanitize() + " " + pgType(colSample[c])
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", qTable, strings.Join(colDefs, ", "))); err != nil {
-		return errResult("create table failed: " + err.Error()), nil
+		return "create table failed: " + err.Error()
 	}
 	if mode == "replace" {
 		if _, err := tx.Exec(ctx, "TRUNCATE "+qTable); err != nil {
-			return errResult("truncate failed: " + err.Error()), nil
+			return "truncate failed: " + err.Error()
 		}
 	}
 
-	// Build a batched parameterized INSERT.
 	colIdents := make([]string, len(cols))
 	for i, c := range cols {
 		colIdents[i] = pgx.Identifier{c}.Sanitize()
@@ -298,11 +354,10 @@ func (p *provider) writeTable(ctx context.Context, args map[string]interface{}) 
 	}
 	insert := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", qTable, strings.Join(colIdents, ","), strings.Join(placeholders, ","))
 	if _, err := tx.Exec(ctx, insert, vals...); err != nil {
-		return errResult("insert failed: " + err.Error()), nil
+		return "insert failed: " + err.Error()
 	}
-
 	if err := tx.Commit(ctx); err != nil {
-		return errResult("commit failed: " + err.Error()), nil
+		return "commit failed: " + err.Error()
 	}
 
 	// Best-effort: let the Supabase API roles read it. Done OUTSIDE the tx (on
@@ -312,12 +367,94 @@ func (p *provider) writeTable(ctx context.Context, args map[string]interface{}) 
 		_, _ = p.pool.Exec(ctx, fmt.Sprintf("GRANT USAGE ON SCHEMA %s TO %s", qSchema, role))
 		_, _ = p.pool.Exec(ctx, fmt.Sprintf("GRANT SELECT ON %s TO %s", qTable, role))
 	}
+	return ""
+}
 
+// queryToTable runs a DuckDB query against OpenData server-side and writes the
+// FULL result into the schema — the rows never pass through the model, so this
+// scales far past a tool-result preview. It reuses write_table's reshape
+// (buildRowMaps) and writeRows.
+func (p *provider) queryToTable(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if p.odKey == "" {
+		return errResult("query_to_table unavailable: OPENDATA_API_KEY is not configured"), nil
+	}
+	sql, _ := args["sql"].(string)
+	if strings.TrimSpace(sql) == "" {
+		return errResult("'sql' is required"), nil
+	}
+	table, _ := args["table"].(string)
+	if !identRe.MatchString(table) {
+		return errResult(fmt.Sprintf("invalid table name %q: must match %s", table, identRe.String())), nil
+	}
+	mode, _ := args["mode"].(string)
+	if mode == "" {
+		mode = "replace"
+	}
+	if mode != "replace" && mode != "append" {
+		return errResult("mode must be 'replace' or 'append'"), nil
+	}
+	rowLimit := 1000
+	if v, ok := args["row_limit"].(float64); ok && v > 0 {
+		rowLimit = int(v)
+	}
+	if rowLimit > maxRows {
+		rowLimit = maxRows
+	}
+
+	columns, rows, errMsg := p.queryOpenData(ctx, sql, rowLimit)
+	if errMsg != "" {
+		return errResult(errMsg), nil
+	}
+	// Reuse the exact reshape write_table uses for the DuckDB/OpenData shape.
+	cols, rowMaps, colSet, errMsg := buildRowMaps(map[string]interface{}{"columns": columns, "rows": rows})
+	if errMsg != "" {
+		return errResult("OpenData result not writable: " + errMsg), nil
+	}
+	if errMsg := p.writeRows(ctx, table, mode, cols, rowMaps, colSet); errMsg != "" {
+		return errResult(errMsg), nil
+	}
 	b, _ := json.Marshal(map[string]interface{}{
 		"table": p.schema + "." + table, "rows_written": len(rowMaps), "columns": cols, "mode": mode,
-		"written_at": time.Now().UTC().Format(time.RFC3339),
+		"source": "opendata", "written_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	return textResult(string(b)), nil
+}
+
+// queryOpenData POSTs a DuckDB query to OpenData's /v1/query and returns the raw
+// columns + rows (the {"columns":[...],"rows":[[...]]} shape) for buildRowMaps.
+func (p *provider) queryOpenData(ctx context.Context, sql string, rowLimit int) (columns []interface{}, rows []interface{}, errMsg string) {
+	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "row_limit": rowLimit})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.odBase+"/v1/query", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, "build OpenData request: " + err.Error()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.odKey)
+	resp, err := p.hc.Do(req)
+	if err != nil {
+		return nil, nil, "OpenData request failed: " + err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		snippet := string(raw)
+		if len(snippet) > 300 {
+			snippet = snippet[:300]
+		}
+		return nil, nil, fmt.Sprintf("OpenData returned HTTP %d: %s", resp.StatusCode, snippet)
+	}
+	var parsed struct {
+		Columns []interface{} `json:"columns"`
+		Rows    []interface{} `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, nil, "parse OpenData response: " + err.Error()
+	}
+	if len(parsed.Columns) == 0 || len(parsed.Rows) == 0 {
+		return nil, nil, "OpenData query returned no rows (check the SQL and dataset names)"
+	}
+	return parsed.Columns, parsed.Rows, ""
 }
 
 // pgType infers a Postgres column type from a sample JSON value.
