@@ -311,6 +311,51 @@ func TestConvertAndQuery_JSONArray(t *testing.T) {
 	assert.NotContains(t, names, "David")
 }
 
+// TestQuerySQLResult_BareReferenceID reproduces the dbwrite:query read-back:
+// the MCP adapter stores a {columns, rows-as-value-arrays} result in the SQL
+// store (DATABASE location) and tells the model to call query_tool_result with
+// just the DataRef. A bare reference_id (no sql, no offset) must return the
+// first page of rows rather than erroring.
+func TestQuerySQLResult_BareReferenceID(t *testing.T) {
+	ctx := context.Background()
+
+	sqlStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
+		DBPath:     ":memory:",
+		TTLSeconds: 3600,
+	})
+	require.NoError(t, err)
+	defer func() { _ = sqlStore.Close() }()
+
+	tool := &QueryToolResultTool{sqlStore: sqlStore}
+
+	// Exactly the shape the MCP adapter hands to sqlStore.Store: explicit
+	// columns plus rows as value-arrays (what dbwrite:query / opendata_query return).
+	const refID = "mcp_dbwrite_test"
+	_, err = sqlStore.Store(ctx, refID, map[string]interface{}{
+		"columns": []interface{}{"country_code", "gdp"},
+		"rows": []interface{}{
+			[]interface{}{"USA", "2.1e13"},
+			[]interface{}{"CHN", "1.47e13"},
+			[]interface{}{"JPN", "5.0e12"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Bare reference_id in the DataRef[id, DATABASE] form the adapter advertises,
+	// with NO sql and NO offset — the previous behavior errored here.
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"reference_id": "DataRef[" + refID + ", DATABASE]",
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success, "bare reference_id should return the first page, got error: %v", res.Error)
+
+	resultMap, ok := res.Data.(map[string]interface{})
+	require.True(t, ok, "result.Data should be a map")
+	rows, ok := resultMap["rows"].([][]interface{})
+	require.True(t, ok, "result should carry rows")
+	require.Len(t, rows, 3, "all 3 stored rows fit under the default page size")
+}
+
 func TestConvertAndQuery_CSV(t *testing.T) {
 	ctx := context.Background()
 

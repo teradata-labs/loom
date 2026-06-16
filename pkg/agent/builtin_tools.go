@@ -587,13 +587,15 @@ func (t *QueryToolResultTool) querySQLResult(ctx context.Context, refID string, 
 		}
 		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", meta.TableName, limit, offsetInt)
 	} else {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "Must provide 'sql' query or 'offset'/'limit' for pagination",
-			},
-		}, nil
+		// Neither 'sql' nor 'offset' given: return the first page rather than
+		// erroring. A bare reference_id is the common call (the model just wants
+		// to see the stored rows), so default to a capped page and let the model
+		// paginate or run SQL if it needs more.
+		limit := 100
+		if l, ok := input["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d", meta.TableName, limit)
 	}
 
 	// Execute query

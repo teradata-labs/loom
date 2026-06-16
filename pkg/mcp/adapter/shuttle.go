@@ -344,8 +344,15 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 						"columns":       len(columns),
 						"stored_in_sql": true,
 					},
-					Data: fmt.Sprintf("Query returned %d rows (%d columns). Use query_tool_result to filter/paginate.",
-						len(rows), len(columns)),
+					// The reference ID + DATABASE location MUST be surfaced here: the
+					// agent keeps small inline messages verbatim, so this string is the
+					// only place the model learns what to pass to query_tool_result. The
+					// DataRef[id, DATABASE] form is exactly what that tool parses to route
+					// to the SQL store; "FROM results" is rewritten to the backing table.
+					Data: fmt.Sprintf("Query returned %d rows (%d columns), stored as DataRef[%s, DATABASE]. "+
+						"To read the rows call query_tool_result with reference_id=\"DataRef[%s, DATABASE]\" and "+
+						"sql=\"SELECT * FROM results\" (or pass offset/limit to paginate).",
+						len(rows), len(columns), ref.Id, ref.Id),
 				}, nil
 			}
 			// If storage failed, fall through to normal truncation
