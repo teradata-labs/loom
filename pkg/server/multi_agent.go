@@ -437,9 +437,13 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 			s.mu.RUnlock()
 
 			if ok {
-				// Log deprecation warning when name used instead of GUID
+				// Name-based addressing is a supported convenience (e.g. `loom chat
+				// --agent <name>` and clients that pass an agent name); the server
+				// resolves it to the GUID here. Log at Debug — it fires on every
+				// name-addressed call (including every Dreambase weave), so Warn was
+				// just noise, not an actionable deprecation.
 				if s.logger != nil {
-					s.logger.Warn("Agent accessed by name instead of GUID (deprecated)",
+					s.logger.Debug("resolved agent name to GUID",
 						zap.String("name", agentID),
 						zap.String("guid", resolvedGUID),
 						zap.String("caller", "getAgent"))
