@@ -16,15 +16,21 @@
 // that lets an agent persist a result set (e.g. an OpenData join) into a
 // dedicated Supabase schema, where a BI tool (Dreambase) can read it.
 //
-// SAFETY: this is NOT a general SQL tool. It can only:
-//   - create the configured schema (default "dreambase") and tables within it,
-//   - replace/append rows in those tables (parameterized inserts),
-//   - grant SELECT on them to the Supabase API roles so dashboards can read.
+// SAFETY: this is a schema-scoped gateway, NOT a general SQL tool. It can only:
+//   - create the configured schema (SUPABASE_WRITE_SCHEMA, default "dreambase")
+//     and tables within it, and replace/append rows (parameterized inserts);
+//   - run the OpenData->schema ETL (query_to_table);
+//   - RUN READ-ONLY SELECT/WITH queries over that schema (the `query` tool), so an
+//     agent can analyze the tables it wrote. Reads use a READ ONLY transaction
+//     with search_path pinned to the schema, are single-statement, and reject
+//     mutations + cross-schema/pg_* references — no access to any other schema.
+//   - grant SELECT on written tables to the Supabase API roles (dashboards).
 //
-// Table names are strictly validated; the schema is fixed (env, not arg); there
-// is no arbitrary SQL, no DROP, and no access to any other schema. It connects
-// via LOOM_STORAGE_POSTGRES_DSN (the same Supabase the lab already uses). Logs
-// go to STDERR (stdout is the MCP channel).
+// Table names are strictly validated; the schema is fixed per process (env, not
+// arg), so the shim is generic across schemas while each instance stays locked to
+// one. There is no arbitrary write SQL and no DROP. It connects via
+// LOOM_STORAGE_POSTGRES_DSN (the same Supabase the lab already uses). Logs go to
+// STDERR (stdout is the MCP channel).
 package main
 
 import (
@@ -148,6 +154,14 @@ func (p *provider) ListTools(_ context.Context) ([]protocol.Tool, error) {
 			Description: fmt.Sprintf("List the tables in the Supabase '%s' schema with their row counts.", p.schema),
 			InputSchema: obj(map[string]interface{}{}),
 		},
+		{
+			Name:        "query",
+			Description: fmt.Sprintf("Run a READ-ONLY SQL query (SELECT/WITH) over the Supabase '%s' schema — the tables you created with write_table/query_to_table. Use it to analyze, aggregate, or join those tables (e.g. compute metrics for insights). Unqualified table names resolve to the '%s' schema; only that schema is readable; writes/DDL and cross-schema access are rejected. Returns {columns, rows}.", p.schema, p.schema),
+			InputSchema: obj(map[string]interface{}{
+				"sql":      map[string]interface{}{"type": "string", "description": fmt.Sprintf("A single read-only SELECT or WITH statement over the '%s' schema. Reference tables by bare name (FROM my_table) or %s.my_table.", p.schema, p.schema)},
+				"max_rows": map[string]interface{}{"type": "integer", "description": fmt.Sprintf("Max rows to return (default 1000, cap %d).", maxRows)},
+			}, "sql"),
+		},
 	}
 	// Server-side ETL: run an OpenData DuckDB query and write its FULL result
 	// straight into the schema, without the rows passing through the model. This
@@ -174,11 +188,90 @@ func (p *provider) CallTool(ctx context.Context, name string, args map[string]in
 		return p.writeTable(ctx, args)
 	case "query_to_table":
 		return p.queryToTable(ctx, args)
+	case "query":
+		return p.runQuery(ctx, args)
 	case "list_tables":
 		return p.listTables(ctx)
 	default:
 		return errResult("unknown tool: " + name), nil
 	}
+}
+
+// forbiddenQueryRe blocks anything that isn't a pure read of the write schema:
+// mutating/DDL keywords (the read-only tx already prevents writes — this rejects
+// early and clearly) and cross-schema references (sensitive schemas + pg_*).
+// Unqualified names are scoped to the write schema via search_path.
+var forbiddenQueryRe = regexp.MustCompile(`(?i)(\b(insert|update|delete|drop|alter|truncate|grant|revoke|create|copy|merge|call|vacuum|analyze|reindex|refresh|listen|notify)\b|\b(public|auth|storage|vault|extensions|graphql|graphql_public|realtime|supabase_functions|information_schema|pg_catalog|pg_temp|pg_toast)\s*\.|\bpg_[a-z])`)
+
+// runQuery executes a single read-only SELECT/WITH over the write schema and
+// returns {columns, rows}. Safety: a READ ONLY transaction (Postgres rejects any
+// write/DDL), search_path pinned to the schema (unqualified names can't reach
+// other schemas), single-statement only, and the forbiddenQueryRe guard.
+func (p *provider) runQuery(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	sql, _ := args["sql"].(string)
+	sql = strings.TrimSpace(sql)
+	if sql == "" {
+		return errResult(fmt.Sprintf("'sql' is required (a read-only SELECT/WITH over the '%s' schema)", p.schema)), nil
+	}
+	if strings.Contains(strings.TrimRight(sql, "; \t\n"), ";") {
+		return errResult("only a single statement is allowed (no ';')"), nil
+	}
+	low := strings.ToLower(sql)
+	if !strings.HasPrefix(low, "select") && !strings.HasPrefix(low, "with") {
+		return errResult("only SELECT or WITH queries are allowed"), nil
+	}
+	if forbiddenQueryRe.MatchString(sql) {
+		return errResult(fmt.Sprintf("rejected: only read-only access to the '%s' schema is allowed (no writes/DDL, no cross-schema or pg_* references)", p.schema)), nil
+	}
+	rowLimit := 1000
+	if v, ok := args["max_rows"].(float64); ok && v > 0 {
+		rowLimit = int(v)
+	}
+	if rowLimit > maxRows {
+		rowLimit = maxRows
+	}
+
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return errResult("begin failed: " + err.Error()), nil
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	// Pin unqualified names to the write schema; the read-only tx blocks mutation.
+	if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{p.schema}.Sanitize()); err != nil {
+		return errResult("set search_path failed: " + err.Error()), nil
+	}
+	rows, err := tx.Query(ctx, sql)
+	if err != nil {
+		return errResult("query failed: " + err.Error()), nil
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	cols := make([]string, len(fields))
+	for i, f := range fields {
+		cols[i] = string(f.Name)
+	}
+	out := [][]interface{}{}
+	truncated := false
+	for rows.Next() {
+		if len(out) >= rowLimit {
+			truncated = true
+			break
+		}
+		vals, err := rows.Values()
+		if err != nil {
+			return errResult("scan failed: " + err.Error()), nil
+		}
+		out = append(out, vals)
+	}
+	if err := rows.Err(); err != nil {
+		return errResult("row iteration failed: " + err.Error()), nil
+	}
+	b, _ := json.Marshal(map[string]interface{}{
+		"schema": p.schema, "columns": cols, "rows": out,
+		"row_count": len(out), "truncated": truncated,
+	})
+	return textResult(string(b)), nil
 }
 
 func (p *provider) listTables(ctx context.Context) (*protocol.CallToolResult, error) {

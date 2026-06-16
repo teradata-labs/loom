@@ -79,6 +79,39 @@ func TestBuildRowMaps_Errors(t *testing.T) {
 	}
 }
 
+func TestQueryGuardForbiddenRe(t *testing.T) {
+	// Must REJECT: mutations/DDL, cross-schema refs, and pg_* references.
+	reject := []string{
+		"SELECT * FROM public.messages",
+		"select * from auth.users",
+		"SELECT * FROM storage.objects",
+		"SELECT * FROM information_schema.tables",
+		"SELECT * FROM pg_catalog.pg_tables",
+		"SELECT * FROM pg_class",
+		"WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+		"SELECT 1; DROP TABLE t",
+		"SELECT * FROM t; TRUNCATE t",
+		"select * from vault.secrets",
+	}
+	for _, q := range reject {
+		if !forbiddenQueryRe.MatchString(q) {
+			t.Errorf("forbiddenQueryRe should REJECT: %q", q)
+		}
+	}
+	// Must ALLOW: pure reads of the write schema (bare table names, aggregates, CTEs).
+	allow := []string{
+		"SELECT country_code, gdp FROM population_gdp_joined WHERE year = 2020",
+		"WITH t AS (SELECT * FROM us_unemployment_co2) SELECT avg(cpi) FROM t",
+		"select apd_district, count(*) AS n from inflation_vs_austin_crime group by 1 order by 2 desc limit 10",
+		"SELECT a.x, b.y FROM table_a a JOIN table_b b USING (county)",
+	}
+	for _, q := range allow {
+		if forbiddenQueryRe.MatchString(q) {
+			t.Errorf("forbiddenQueryRe should ALLOW: %q", q)
+		}
+	}
+}
+
 func TestPgType(t *testing.T) {
 	assert.Equal(t, "double precision", pgType(float64(3.2)))
 	assert.Equal(t, "double precision", pgType(2018))
@@ -88,17 +121,25 @@ func TestPgType(t *testing.T) {
 }
 
 func TestListTools(t *testing.T) {
+	// No odKey -> query_to_table is not advertised; base set is write_table,
+	// list_tables, query.
 	p := &provider{schema: "dreambase"}
 	tools, err := p.ListTools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, tools, 2)
+	require.Len(t, tools, 3)
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl.Name] = true
 		assert.NotEmpty(t, tl.Description)
 		assert.Equal(t, "object", tl.InputSchema["type"])
 	}
-	assert.True(t, names["write_table"] && names["list_tables"])
+	assert.True(t, names["write_table"] && names["list_tables"] && names["query"])
+
+	// With an OpenData key, query_to_table is also advertised (4 total).
+	p2 := &provider{schema: "dreambase", odKey: "od_live_test"}
+	tools2, err := p2.ListTools(context.Background())
+	require.NoError(t, err)
+	require.Len(t, tools2, 4)
 }
 
 func TestUnknownTool(t *testing.T) {
