@@ -325,6 +325,21 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 				goto normalResult
 			}
 
+			// Only divert a SQL result into the reference store when it is large
+			// enough to threaten the context window. A small read result (the
+			// common SELECT ... LIMIT N case) is exactly what the model asked to
+			// SEE, so return it inline and skip the query_tool_result round-trip —
+			// that two-step dance is fragile and pointless when the rows already
+			// fit. The gate matches the inline budget: anything truncateResult
+			// would pass through uncut is returned directly.
+			inlineBudget := a.truncation.MaxResultBytes
+			if inlineBudget <= 0 {
+				inlineBudget = DefaultMaxResultBytes
+			}
+			if len(fmt.Sprintf("%v", data)) <= inlineBudget {
+				goto normalResult
+			}
+
 			// Generate unique ID for this result
 			resultID := fmt.Sprintf("mcp_%s_%d", a.serverName, time.Now().UnixNano())
 
