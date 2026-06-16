@@ -19,6 +19,9 @@ Config: `deploy/fly/looms.lab.yaml` (`mcp.servers.opendata` → stdio `/usr/loca
 `search`, `list_providers`, `get_dataset`, `list_columns`, `query` (cross-dataset DuckDB SQL),
 `query_dataset`, `related_datasets` (dataset graph).
 
+A second stdio shim ([`cmd/supabase-write-mcp`](../../cmd/supabase-write-mcp), `dbwrite:*`) lets an
+agent **write results into your Supabase** (`dreambase` schema) for Dreambase — see #6 below.
+
 ## Agents (created on the lab via `loom_create_agent`, each with `tools.mcp: [{server: opendata, tools: ["*"]}]`)
 
 | Agent | Role | Demo |
@@ -29,6 +32,7 @@ Config: `deploy/fly/looms.lab.yaml` (`mcp.servers.opendata` → stdio `/usr/loca
 | `viz-builder` | results → chart-ready JSON | #2 |
 | `critic` | reviews analysis for errors/cherry-picking | #2 |
 | `anomaly-hunter` | z-score anomaly detection + explanation | #7 |
+| `data-publisher` | OpenData join → write result to Supabase (`opendata:*` + `dbwrite:*`) | #6 |
 
 ## Demos & how to run
 
@@ -55,10 +59,27 @@ with a single-stage pipeline pattern (see `living-dashboard.pattern.json`).
 **#7 — Anomaly hunter**: ask `anomaly-hunter` to find + explain anomalies in an OpenData series
 (it computes z-scores via DuckDB and cross-references related datasets).
 
-## Status / limitations
+## #6 (capstone) — publish a data product to Supabase for Dreambase
+
+Instead of publishing *back to OpenData* (which needs Clerk OAuth — the `od_live_` key is
+read-only, `401` on write), an agent joins public data in OpenData and **writes the result into
+your Supabase**, where Dreambase reads it. No OAuth anywhere.
+
+The `data-publisher` agent has both `opendata:*` and `dbwrite:*` tools. Example:
+> "Using OpenData, join `owid/unemployment` and `owid/co2-emissions` on country/year for 2018,
+> take the top 8 by CO2, then write the result to the Supabase table `unemployment_vs_co2`."
+
+It runs the cross-dataset DuckDB join via `opendata:query`, then `dbwrite:write_table` creates
+`dreambase.unemployment_vs_co2` on Supabase (typed columns, `GRANT SELECT` to the API roles).
+
+The `dbwrite` shim ([`cmd/supabase-write-mcp`](../../cmd/supabase-write-mcp)) is deliberately narrow:
+schema-locked (`dreambase`), strict table-name validation, parameterized inserts, no arbitrary
+SQL/DROP. **Dreambase read note:** to read `dreambase.*` via PostgREST, add `dreambase` to the
+project's *Exposed schemas* (Supabase → Settings → API); a direct Postgres connection needs no
+change.
+
+## Status
 - ✅ #1, #2, #3, #7 verified live against OpenData.
-- ✅ #4 scheduler enabled on the lab (`scheduler.enabled`).
-- ⚠️ **#6 (publish a data product to OpenData) is not supported**: OpenData's write endpoints
-  (`user-views`) require Clerk OAuth — the `od_live_` key is read-only (`401` on write). The
-  read/query/graph demos work; "publishing back" to OpenData would need the OAuth flow. A
-  Loom-side alternative is to publish the result to Supabase for Dreambase instead.
+- ✅ #4 scheduler enabled on the lab (`scheduler.enabled`); schedule created + triggered.
+- ✅ #6 done via the Supabase-write loop (`data-publisher` + `dbwrite`): OpenData join →
+  `dreambase.unemployment_vs_co2` on Supabase, verified.
