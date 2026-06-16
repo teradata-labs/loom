@@ -99,6 +99,43 @@ func NewPermissionChecker(config PermissionConfig) *PermissionChecker {
 	}
 }
 
+// Advertisable reports whether a tool should be offered to the LLM at all.
+//
+// A tool the checker would unconditionally refuse — one that is hard-disabled,
+// or one that requires approval while no approval mechanism is wired up — is
+// hidden from the model. Otherwise the model only discovers it can't use the
+// tool by calling it and eating a denial: that wastes a turn and records an
+// intentional policy decision as a tool failure in the analytics. Hiding such
+// tools costs no capability (they could never have run) and keeps the model's
+// tool surface honest.
+//
+// This mirrors CheckPermission's decision tree but never blocks and has no side
+// effects, so it is safe to call once per tool per turn. It is the single place
+// to revisit when an interactive approval callback is implemented (at which
+// point approval-required tools become advertisable again).
+func (pc *PermissionChecker) Advertisable(toolName string) bool {
+	// No checker, or YOLO mode: everything is offered.
+	if pc == nil || pc.yolo {
+		return true
+	}
+	// Hard-disabled tools (blacklist) are never offered — they can never run.
+	if matchPattern(toolName, pc.disabledExact, pc.disabledPrefix) {
+		return false
+	}
+	// Explicitly allow-listed tools are always offered.
+	if matchPattern(toolName, pc.allowedExact, pc.allowedPrefix) {
+		return true
+	}
+	// Not allow-listed: offered only when approval isn't required. When approval
+	// IS required there is no callback mechanism yet, so a non-allow-listed tool
+	// would always be denied unless the default action is "allow"; advertising it
+	// otherwise only produces denial noise.
+	if !pc.requireApproval {
+		return true
+	}
+	return pc.defaultAction == "allow"
+}
+
 // CheckPermission checks if a tool can be executed.
 // Returns nil if allowed, error if denied.
 func (pc *PermissionChecker) CheckPermission(ctx context.Context, toolName string, params map[string]interface{}) error {

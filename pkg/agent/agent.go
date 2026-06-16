@@ -742,6 +742,26 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 	return out
 }
 
+// applyPermissionToolFilter removes any tool the permission checker would never
+// allow — hard-disabled tools, or approval-required tools when no approval
+// mechanism is wired up — so the LLM is only offered tools it can actually
+// execute. Without this the model "discovers" a disabled tool by calling it and
+// eating a denial: a wasted turn, plus an intentional policy decision logged as
+// a tool failure. Tools driven by subsystems (graph_memory, task_board) are
+// unaffected; this only trims the names presented to the model.
+func (a *Agent) applyPermissionToolFilter(in []shuttle.Tool) []shuttle.Tool {
+	if a.permissionChecker == nil {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, tool := range in {
+		if tool == nil || a.permissionChecker.Advertisable(tool.Name()) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // RegisterTool registers a tool with the agent. Honours the
 // WithoutBuiltinTool suppression set: if the tool's name has been
 // suppressed via that option, the registration is silently skipped so
@@ -2170,6 +2190,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// below removes any active skill's excluded set for this turn.
 	tools := a.tools.ListTools()
 	tools = a.applySkillExcludedTools(tools, session)
+	tools = a.applyPermissionToolFilter(tools)
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
