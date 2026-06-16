@@ -367,6 +367,15 @@ func (p *provider) writeRows(ctx context.Context, table, mode string, cols []str
 		_, _ = p.pool.Exec(ctx, fmt.Sprintf("GRANT USAGE ON SCHEMA %s TO %s", qSchema, role))
 		_, _ = p.pool.Exec(ctx, fmt.Sprintf("GRANT SELECT ON %s TO %s", qTable, role))
 	}
+
+	// Enable RLS with a read-only policy so an exposed table is not flagged
+	// "RLS disabled in public" by Supabase. The shim writes as the table owner
+	// (which bypasses RLS), so writes still work; API roles get SELECT only via
+	// this policy and cannot write. Idempotent and best-effort (outside the tx).
+	qPolicy := pgx.Identifier{table + "_select"}.Sanitize()
+	_, _ = p.pool.Exec(ctx, "ALTER TABLE "+qTable+" ENABLE ROW LEVEL SECURITY")
+	_, _ = p.pool.Exec(ctx, fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s", qPolicy, qTable))
+	_, _ = p.pool.Exec(ctx, fmt.Sprintf("CREATE POLICY %s ON %s FOR SELECT USING (true)", qPolicy, qTable))
 	return ""
 }
 
