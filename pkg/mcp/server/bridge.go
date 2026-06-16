@@ -59,6 +59,7 @@ type LoomBridge struct {
 	tlsSkipVerify     bool                   // skip server certificate verification (insecure)
 	tlsEnabled        bool                   // whether TLS is explicitly enabled
 	skillOrchestrator *skills.Orchestrator   // optional skills orchestrator (nil = skills tools disabled)
+	allowedTools      map[string]bool        // when non-empty, the ONLY tools advertised + permitted (edge allow-list)
 	tools             []protocol.Tool        // cached tool definitions
 	handlers          map[string]toolHandler // cached tool handlers (built once)
 }
@@ -85,6 +86,48 @@ func WithMCPServer(s *MCPServer) BridgeOption {
 // when the MCPServer is created after the bridge (common in main.go wiring).
 func (b *LoomBridge) SetMCPServer(s *MCPServer) {
 	b.mcpServer = s
+}
+
+// WithAllowedTools restricts the bridge to a fixed set of tool names. When set
+// (non-empty), only these tools are advertised by ListTools and permitted by
+// CallTool/CallToolStream; every other loom RPC is hidden and rejected. This is
+// the edge allow-list for an internet-facing MCP endpoint — it keeps destructive
+// admin tools (delete_agent, register_tool, schedules, ...) off a public surface
+// regardless of what a client requests. Empty/unset = expose everything
+// (backwards compatible).
+func WithAllowedTools(names []string) BridgeOption {
+	return func(b *LoomBridge) {
+		if len(names) == 0 {
+			return
+		}
+		b.allowedTools = make(map[string]bool, len(names))
+		for _, n := range names {
+			if n = strings.TrimSpace(n); n != "" {
+				b.allowedTools[n] = true
+			}
+		}
+	}
+}
+
+// toolAllowed reports whether a tool may be advertised/called. An empty
+// allow-list means no restriction.
+func (b *LoomBridge) toolAllowed(name string) bool {
+	return len(b.allowedTools) == 0 || b.allowedTools[name]
+}
+
+// applyAllowList prunes the cached tool definitions to the allow-list (if any),
+// so ListTools only advertises permitted tools. Call after buildToolDefinitions.
+func (b *LoomBridge) applyAllowList() {
+	if len(b.allowedTools) == 0 {
+		return
+	}
+	filtered := make([]protocol.Tool, 0, len(b.tools))
+	for _, t := range b.tools {
+		if b.allowedTools[t.Name] {
+			filtered = append(filtered, t)
+		}
+	}
+	b.tools = filtered
 }
 
 // WithSkillOrchestrator sets the skill orchestrator for local skill management tools.
@@ -144,6 +187,7 @@ func NewLoomBridge(grpcAddr string, uiRegistry *apps.UIResourceRegistry, logger 
 	bridge.client = loomv1.NewLoomServiceClient(conn)
 	bridge.tools = bridge.buildToolDefinitions()
 	bridge.handlers = bridge.buildToolHandlers()
+	bridge.applyAllowList()
 	return bridge, nil
 }
 
@@ -194,6 +238,7 @@ func NewLoomBridgeFromClient(client loomv1.LoomServiceClient, uiRegistry *apps.U
 
 	bridge.tools = bridge.buildToolDefinitions()
 	bridge.handlers = bridge.buildToolHandlers()
+	bridge.applyAllowList()
 	return bridge
 }
 
@@ -212,6 +257,9 @@ func (b *LoomBridge) ListTools(_ context.Context) ([]protocol.Tool, error) {
 
 // CallTool implements ToolProvider.
 func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if !b.toolAllowed(name) {
+		return nil, fmt.Errorf("tool %q is not permitted on this endpoint", name)
+	}
 	handler, ok := b.handlers[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
@@ -232,6 +280,9 @@ func (b *LoomBridge) SupportsStreaming(name string) bool {
 // loom_execute_workflow run their streaming RPCs and forward progress via emit;
 // any other tool falls back to the synchronous CallTool (no progress emitted).
 func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[string]interface{}, _ string, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	if !b.toolAllowed(name) {
+		return nil, fmt.Errorf("tool %q is not permitted on this endpoint", name)
+	}
 	switch name {
 	case "loom_weave":
 		return b.handleWeaveStream(ctx, args, emit)

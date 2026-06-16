@@ -103,6 +103,22 @@ func main() {
 		)
 	}
 
+	// Edge tool allow-list: when LOOM_MCP_ALLOWED_TOOLS is set (comma-separated),
+	// the edge advertises and permits ONLY those tools. This keeps destructive
+	// admin RPCs (delete_agent, register_tool, schedules, ...) off an
+	// internet-facing surface regardless of what a client requests. Unset =
+	// expose everything (backwards compatible).
+	if raw := os.Getenv("LOOM_MCP_ALLOWED_TOOLS"); strings.TrimSpace(raw) != "" {
+		var allowed []string
+		for _, n := range strings.Split(raw, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				allowed = append(allowed, n)
+			}
+		}
+		bridgeOpts = append(bridgeOpts, server.WithAllowedTools(allowed))
+		logger.Info("MCP edge tool allow-list active", zap.Int("allowed_count", len(allowed)), zap.Strings("tools", allowed))
+	}
+
 	// Initialize skills library and orchestrator for MCP skill tools
 	skillsDir := os.Getenv("LOOM_SKILLS_DIR")
 	if skillsDir == "" {

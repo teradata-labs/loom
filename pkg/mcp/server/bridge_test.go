@@ -236,6 +236,47 @@ func TestLoomBridge_ListTools(t *testing.T) {
 	}
 }
 
+func TestLoomBridge_AllowList(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{}
+	registry := apps.NewUIResourceRegistry()
+
+	// Edge allow-list: only weave + list_agents + get_health.
+	bridge := NewLoomBridgeFromClient(mockClient, registry, logger,
+		WithAllowedTools([]string{"loom_weave", "loom_list_agents", "loom_get_health"}))
+
+	tools, err := bridge.ListTools(context.Background())
+	require.NoError(t, err)
+
+	got := make(map[string]bool)
+	for _, tool := range tools {
+		got[tool.Name] = true
+	}
+	assert.Len(t, tools, 3, "only the 3 allow-listed tools should be advertised")
+	for _, want := range []string{"loom_weave", "loom_list_agents", "loom_get_health"} {
+		assert.True(t, got[want], "allow-listed tool %s should be advertised", want)
+	}
+	// Destructive/admin tools must NOT be advertised.
+	for _, banned := range []string{"loom_delete_agent", "loom_create_agent", "loom_register_tool", "loom_list_tools"} {
+		assert.False(t, got[banned], "non-allow-listed tool %s must be hidden", banned)
+	}
+
+	// And calling a non-allow-listed tool must be rejected, not dispatched.
+	_, err = bridge.CallTool(context.Background(), "loom_delete_agent", map[string]interface{}{"agent_id": "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not permitted")
+
+	// An allow-listed tool still works.
+	_, err = bridge.CallTool(context.Background(), "loom_get_health", nil)
+	require.NoError(t, err)
+
+	// Empty allow-list = no restriction (backwards compatible).
+	full := NewLoomBridgeFromClient(mockClient, registry, logger)
+	fullTools, err := full.ListTools(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, len(fullTools), 40, "no allow-list should expose the full surface")
+}
+
 func TestLoomBridge_ToolsHaveUIMetadata(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}

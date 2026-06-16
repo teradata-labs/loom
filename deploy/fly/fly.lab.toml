@@ -26,6 +26,13 @@ primary_region = "dfw"               # Dallas — closest Fly region to Austin
   LOOM_SERVER_AUTH_ENABLED            = "true"
   LOOM_SERVER_AUTH_MODE               = "required"
   LOOM_SERVER_AUTH_SUPABASE_AUDIENCE  = "authenticated"
+  # Edge tool allow-list: the loom-mcp edge advertises + permits ONLY these tools
+  # (read + invoke + workflow/artifact reads). All destructive/admin RPCs
+  # (create/delete/start/stop/reload agent, register_tool, switch_model, schedule*,
+  # skill/pattern/app mutations, upload/delete artifact, loom_list_tools) are
+  # hidden and rejected on this internet-facing surface, regardless of client.
+  # Admin still happens through loom_weave -> the weaver (agent_management).
+  LOOM_MCP_ALLOWED_TOOLS              = "loom_weave,loom_list_agents,loom_get_agent,loom_get_health,loom_list_models,loom_execute_workflow,loom_get_workflow_execution,loom_list_workflow_executions,loom_create_session,loom_list_sessions,loom_get_session,loom_get_conversation_history,loom_list_artifacts,loom_get_artifact,loom_get_artifact_content,loom_get_artifact_stats,loom_search_artifacts,loom_get_trace,loom_list_skills,loom_get_skill,loom_list_patterns,loom_get_pattern,loom_list_component_types,loom_answer_clarification"
   # NOTE: do NOT set LOOM_YOLO here. looms.lab.yaml forces yolo:false; an env
   # LOOM_YOLO=true would re-open EVERY tool (incl. shell_execute) — never set it.
 
