@@ -38,9 +38,11 @@ agent:
 
   tools:
     builtin:
+      # Only tool_search needs listing (gates dynamic discovery). query_tool_result
+      # (SQL-store auto), graph_memory (graph-store auto), get_error_details +
+      # task_board (progressive disclosure) are provided automatically — listing
+      # them is redundant and trips config validation.
       - tool_search
-      - query_tool_result
-      - get_error_details
     mcp:
       # opendata: dataset/column discovery (the agent still explores before writing SQL).
       - server: opendata

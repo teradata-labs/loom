@@ -28,9 +28,12 @@ agent:
 
   tools:
     builtin:
-      - tool_search          # discover the opendata/dbwrite tools
-      - query_tool_result    # page large OpenData query results
-      - get_error_details    # inspect a failed tool call
+      # Only tool_search is listed: it gates dynamic discovery and must be opted in.
+      # query_tool_result is auto-registered when the SQL result store is wired;
+      # graph_memory is auto-registered with the graph store; get_error_details and
+      # task_board are progressively disclosed (after first error / first large
+      # result). Listing those is redundant and trips config validation.
+      - tool_search
     mcp:
       # Statically register the whole OpenData + dbwrite tool sets from the
       # globally-configured MCP servers (looms.lab.yaml mcp.servers), so the
