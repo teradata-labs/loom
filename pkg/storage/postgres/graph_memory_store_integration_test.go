@@ -102,4 +102,23 @@ func TestGraphMemory_RememberAutoCreatesReferencedEntities(t *testing.T) {
 		AgentID: agentID, Content: "again", MemoryType: "fact", EntityIDs: ids[:1],
 	})
 	require.NoError(t, err, "re-referencing an existing entity must be a no-op, not a duplicate-key error")
+
+	// The production failure: an entity already exists by NAME under a different
+	// (UUID) id; remembering by that name must resolve to it, not collide on
+	// (agent_id, name).
+	existing, err := store.CreateEntity(ctx, &memory.Entity{
+		AgentID: agentID, Name: uniqueID("buf"), EntityType: "tool",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, existing.Name, existing.ID, "entity id should be a UUID, distinct from its name")
+
+	saved2, err := store.Remember(ctx, &memory.Memory{
+		AgentID: agentID, Content: "Ilsun prefers " + existing.Name, MemoryType: "preference",
+		EntityIDs: []string{existing.Name}, // reference by name, not id
+	})
+	require.NoError(t, err, "referencing an existing entity by name must resolve, not hit a duplicate-key collision")
+
+	got2, err := store.GetMemory(ctx, agentID, saved2.ID)
+	require.NoError(t, err)
+	assert.Contains(t, got2.EntityIDs, existing.ID, "link should resolve to the existing entity's id")
 }

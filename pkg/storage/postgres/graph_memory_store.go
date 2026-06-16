@@ -1157,59 +1157,78 @@ func pgInsertMemoryTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 // If mem.EntityRoles is populated, it takes precedence (includes per-entity roles).
 // Otherwise falls back to mem.EntityIDs with default RoleAbout.
 func pgLinkEntitiesTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error {
+	link := func(ref, role string) error {
+		// Resolve the referenced entity (by id or name) to a real graph_entities.id,
+		// creating a minimal node only if it doesn't exist, then link to that id.
+		rid, err := resolveOrCreateEntityTx(ctx, tx, ref, mem.AgentID, mem.Owner)
+		if err != nil {
+			return fmt.Errorf("resolve entity %s: %w", ref, err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)
+			 ON CONFLICT (memory_id, entity_id, role) DO NOTHING`,
+			mem.ID, rid, role,
+		); err != nil {
+			return fmt.Errorf("link entity %s: %w", ref, err)
+		}
+		return nil
+	}
+
 	if len(mem.EntityRoles) > 0 {
 		for _, er := range mem.EntityRoles {
 			role := er.Role
 			if role == "" {
 				role = memory.RoleAbout
 			}
-			if err := ensureEntityTx(ctx, tx, er.ID, mem.AgentID, mem.Owner); err != nil {
-				return fmt.Errorf("ensure entity %s: %w", er.ID, err)
-			}
-			_, err := tx.Exec(ctx,
-				`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)
-				 ON CONFLICT (memory_id, entity_id, role) DO NOTHING`,
-				mem.ID, er.ID, role,
-			)
-			if err != nil {
-				return fmt.Errorf("link entity %s (role %s): %w", er.ID, role, err)
+			if err := link(er.ID, role); err != nil {
+				return err
 			}
 		}
 		return nil
 	}
 	// Fallback: EntityIDs without explicit roles -> default to RoleAbout.
 	for _, eid := range mem.EntityIDs {
-		if err := ensureEntityTx(ctx, tx, eid, mem.AgentID, mem.Owner); err != nil {
-			return fmt.Errorf("ensure entity %s: %w", eid, err)
-		}
-		_, err := tx.Exec(ctx,
-			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)
-			 ON CONFLICT (memory_id, entity_id, role) DO NOTHING`,
-			mem.ID, eid, memory.RoleAbout,
-		)
-		if err != nil {
-			return fmt.Errorf("link entity %s: %w", eid, err)
+		if err := link(eid, memory.RoleAbout); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// ensureEntityTx auto-creates a minimal entity node if one with this id does not
-// already exist, so remember(entity_ids=[...]) cannot fail the
-// graph_memory_entities -> graph_entities foreign key when the agent references
-// an entity it never explicitly created (the common case — fixes SQLSTATE 23503).
-// The id doubles as the name to avoid (agent_id, name) UNIQUE collisions.
-func ensureEntityTx(ctx context.Context, tx pgx.Tx, id, agentID, owner string) error {
-	if id == "" {
-		return fmt.Errorf("empty entity id")
+// resolveOrCreateEntityTx returns the graph_entities.id to link a memory to. It
+// matches an existing entity by id OR by (agent_id, name) — so an agent can
+// reference an entity by a slug that was originally stored under a different id —
+// and only creates a minimal node when neither exists. Fixes both the FK
+// violation (SQLSTATE 23503, entity missing) and the (agent_id, name)
+// duplicate-key collision a blind insert hit when the entity already existed
+// under another id.
+func resolveOrCreateEntityTx(ctx context.Context, tx pgx.Tx, ref, agentID, owner string) (string, error) {
+	if ref == "" {
+		return "", fmt.Errorf("empty entity reference")
 	}
-	_, err := tx.Exec(ctx,
+	var id string
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM graph_entities
+		 WHERE agent_id = $1 AND (id = $2 OR name = $2) AND deleted_at IS NULL
+		 LIMIT 1`,
+		agentID, ref,
+	).Scan(&id)
+	if err == nil {
+		return id, nil // already exists (matched by id or name)
+	}
+	if err != pgx.ErrNoRows {
+		return "", err
+	}
+	// Neither id nor name exists — create a minimal node (id and name = ref).
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO graph_entities (id, agent_id, name, entity_type, properties_json, owner, user_id, created_at, updated_at)
 		 VALUES ($1, $2, $1, 'concept', '{}', NULLIF($3, ''), $4, NOW(), NOW())
 		 ON CONFLICT (id) DO NOTHING`,
-		id, agentID, owner, UserIDFromContext(ctx),
-	)
-	return err
+		ref, agentID, owner, UserIDFromContext(ctx),
+	); err != nil {
+		return "", err
+	}
+	return ref, nil
 }
 
 // =============================================================================
