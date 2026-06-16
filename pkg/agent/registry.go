@@ -961,7 +961,14 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
-			searchTool := shuttle.Tool(toolregistry.NewSearchTool(r.toolRegistry))
+			st := toolregistry.NewSearchTool(r.toolRegistry)
+			// Hide tools the agent's permission policy would refuse, so the model
+			// never discovers (and then calls) a disabled tool via tool_search.
+			// Read lazily so it reflects the checker regardless of wiring order.
+			st.SetToolFilter(func(name string) bool {
+				return agent.permissionChecker == nil || agent.permissionChecker.Advertisable(name)
+			})
+			searchTool := shuttle.Tool(st)
 			// Wrap with PromptAwareTool for externalized descriptions
 			if agent.prompts != nil {
 				searchTool = shuttle.NewPromptAwareTool(searchTool, agent.prompts, "tools.tool_search")
