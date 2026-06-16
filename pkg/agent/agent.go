@@ -3678,6 +3678,22 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 		a.refTracker.PinForSession(sessionID, result.DataReference.Id)
 	}
 
+	// Progressive disclosure: a tool returned a STORED REFERENCE (e.g. an MCP tool
+	// like dbwrite:query that pre-stores a large {columns, rows} result and tells
+	// the model to use query_tool_result). The agent's own large-result path
+	// registers query_tool_result in formatToolResult, but a pre-stored reference
+	// bypasses that — so register it here too, the moment any tool hands back a
+	// reference. Keeps it out of the fresh tool list while ensuring it's available
+	// as soon as there's something to page.
+	if result.DataReference != nil && a.sqlResultStore != nil &&
+		!a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
+		queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+		if a.prompts != nil {
+			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		}
+		a.tools.Register(queryTool)
+	}
+
 	// Format successful result with smart truncation
 	if result.Data != nil {
 		dataStr := fmt.Sprintf("%v", result.Data)
