@@ -27,6 +27,58 @@ func TestIdentifierValidation(t *testing.T) {
 	}
 }
 
+func TestBuildRowMaps_ObjectShape(t *testing.T) {
+	cols, rows, sample, errMsg := buildRowMaps(map[string]interface{}{
+		"rows": []interface{}{
+			map[string]interface{}{"year": 2020.0, "country": "USA"},
+			map[string]interface{}{"year": 2021.0, "country": "CHN"},
+		},
+	})
+	require.Empty(t, errMsg)
+	assert.Equal(t, []string{"country", "year"}, cols, "object-shape columns are the sorted key union")
+	assert.Len(t, rows, 2)
+	assert.Equal(t, "USA", rows[0]["country"])
+	assert.Equal(t, 2020.0, sample["year"])
+}
+
+func TestBuildRowMaps_DuckDBShape(t *testing.T) {
+	// Exactly what opendata_query returns: columns + rows as value-arrays.
+	cols, rows, sample, errMsg := buildRowMaps(map[string]interface{}{
+		"columns": []interface{}{"country_code", "year", "population", "gdp"},
+		"rows": []interface{}{
+			[]interface{}{"USA", 2020.0, 331000000.0, 2.1e13},
+			[]interface{}{"CHN", 2020.0, 1402000000.0, 1.47e13},
+		},
+	})
+	require.Empty(t, errMsg)
+	assert.Equal(t, []string{"country_code", "year", "population", "gdp"}, cols, "column order is preserved as given")
+	require.Len(t, rows, 2)
+	assert.Equal(t, "CHN", rows[1]["country_code"])
+	assert.Equal(t, 1402000000.0, rows[1]["population"])
+	assert.Equal(t, "USA", sample["country_code"])
+}
+
+func TestBuildRowMaps_Errors(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{"empty rows", map[string]interface{}{"rows": []interface{}{}}, "non-empty array"},
+		{"bad column name", map[string]interface{}{"columns": []interface{}{"ok", "bad name"}, "rows": []interface{}{[]interface{}{1.0, 2.0}}}, "invalid column name"},
+		{"arity mismatch", map[string]interface{}{"columns": []interface{}{"a", "b"}, "rows": []interface{}{[]interface{}{1.0}}}, "values but 2 columns"},
+		{"object expected", map[string]interface{}{"rows": []interface{}{"notanobject"}}, "must be a JSON object"},
+		{"array expected with columns", map[string]interface{}{"columns": []interface{}{"a"}, "rows": []interface{}{map[string]interface{}{"a": 1.0}}}, "must be an array of values"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, errMsg := buildRowMaps(tc.args)
+			require.NotEmpty(t, errMsg)
+			assert.Contains(t, errMsg, tc.want)
+		})
+	}
+}
+
 func TestPgType(t *testing.T) {
 	assert.Equal(t, "double precision", pgType(float64(3.2)))
 	assert.Equal(t, "double precision", pgType(2018))

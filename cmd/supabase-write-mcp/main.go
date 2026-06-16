@@ -111,11 +111,12 @@ func (p *provider) ListTools(_ context.Context) ([]protocol.Tool, error) {
 	return []protocol.Tool{
 		{
 			Name:        "write_table",
-			Description: fmt.Sprintf("Persist a result set into the Supabase '%s' schema so a dashboard can read it. Provide rows as an array of flat JSON objects (same keys); columns and types are inferred. Use this to publish an analysis (e.g. an OpenData join) for Dreambase.", p.schema),
+			Description: fmt.Sprintf("Persist a result set into the Supabase '%s' schema so a dashboard can read it. TWO accepted shapes: (a) 'rows' as an array of flat JSON objects (column -> value); or (b) the DuckDB/OpenData result shape — pass 'columns' (array of names) plus 'rows' as an array of value-arrays (exactly what opendata_query returns). Columns and types are inferred. Use this to publish an analysis (e.g. an OpenData join) for Dreambase.", p.schema),
 			InputSchema: obj(map[string]interface{}{
-				"table": map[string]interface{}{"type": "string", "description": "Table name (lowercase letters/digits/underscore, e.g. 'unemployment_vs_co2')."},
-				"rows":  map[string]interface{}{"type": "array", "description": "Array of flat objects (column -> value).", "items": map[string]interface{}{"type": "object"}},
-				"mode":  map[string]interface{}{"type": "string", "description": "'replace' (default; truncate then insert) or 'append'.", "enum": []string{"replace", "append"}},
+				"table":   map[string]interface{}{"type": "string", "description": "Table name (lowercase letters/digits/underscore, e.g. 'unemployment_vs_co2')."},
+				"columns": map[string]interface{}{"type": "array", "description": "Optional column names. When set, 'rows' is interpreted as an array of value-arrays (DuckDB/OpenData shape) instead of objects.", "items": map[string]interface{}{"type": "string"}},
+				"rows":    map[string]interface{}{"type": "array", "description": "Either an array of flat objects (column -> value), or — when 'columns' is given — an array of value-arrays aligned to 'columns'."},
+				"mode":    map[string]interface{}{"type": "string", "description": "'replace' (default; truncate then insert) or 'append'.", "enum": []string{"replace", "append"}},
 			}, "table", "rows"),
 		},
 		{
@@ -167,6 +168,75 @@ func (p *provider) listTables(ctx context.Context) (*protocol.CallToolResult, er
 	return textResult(string(b)), nil
 }
 
+// buildRowMaps reshapes write_table input into ordered column names + row
+// objects, accepting either (a) 'rows' as an array of objects, or (b) 'columns'
+// plus 'rows' as value-arrays (the DuckDB/OpenData result shape, so an
+// opendata_query result can be piped straight in). colSample carries a non-nil
+// sample value per column for type inference. Returns a non-empty errMsg on bad
+// input. Pure (no DB), so the reshape is unit-testable.
+func buildRowMaps(args map[string]interface{}) (cols []string, rowMaps []map[string]interface{}, colSample map[string]interface{}, errMsg string) {
+	rawRows, ok := args["rows"].([]interface{})
+	if !ok || len(rawRows) == 0 {
+		return nil, nil, nil, "'rows' must be a non-empty array"
+	}
+	if len(rawRows) > maxRows {
+		return nil, nil, nil, fmt.Sprintf("too many rows (%d); cap is %d — aggregate or LIMIT first", len(rawRows), maxRows)
+	}
+	colSample = map[string]interface{}{}
+	rowMaps = make([]map[string]interface{}, 0, len(rawRows))
+
+	if rawCols, hasCols := args["columns"].([]interface{}); hasCols && len(rawCols) > 0 {
+		// DuckDB/OpenData shape: explicit columns + rows as value-arrays.
+		for _, c := range rawCols {
+			name, _ := c.(string)
+			if !identRe.MatchString(name) {
+				return nil, nil, nil, fmt.Sprintf("invalid column name %q: must match %s", name, identRe.String())
+			}
+			cols = append(cols, name)
+		}
+		for _, r := range rawRows {
+			arr, ok := r.([]interface{})
+			if !ok {
+				return nil, nil, nil, "when 'columns' is given, each row must be an array of values"
+			}
+			if len(arr) != len(cols) {
+				return nil, nil, nil, fmt.Sprintf("row has %d values but %d columns", len(arr), len(cols))
+			}
+			m := make(map[string]interface{}, len(cols))
+			for i, name := range cols {
+				m[name] = arr[i]
+				if _, seen := colSample[name]; !seen || colSample[name] == nil {
+					colSample[name] = arr[i]
+				}
+			}
+			rowMaps = append(rowMaps, m)
+		}
+		return cols, rowMaps, colSample, ""
+	}
+
+	// Array-of-objects shape: collect the union of keys, sample a value per column.
+	for _, r := range rawRows {
+		m, ok := r.(map[string]interface{})
+		if !ok {
+			return nil, nil, nil, "each row must be a JSON object (or pass 'columns' with array rows)"
+		}
+		rowMaps = append(rowMaps, m)
+		for k, v := range m {
+			if !identRe.MatchString(k) {
+				return nil, nil, nil, fmt.Sprintf("invalid column name %q: must match %s", k, identRe.String())
+			}
+			if _, seen := colSample[k]; !seen || colSample[k] == nil {
+				colSample[k] = v
+			}
+		}
+	}
+	for k := range colSample {
+		cols = append(cols, k)
+	}
+	sort.Strings(cols)
+	return cols, rowMaps, colSample, ""
+}
+
 func (p *provider) writeTable(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
 	table, _ := args["table"].(string)
 	if !identRe.MatchString(table) {
@@ -179,37 +249,10 @@ func (p *provider) writeTable(ctx context.Context, args map[string]interface{}) 
 	if mode != "replace" && mode != "append" {
 		return errResult("mode must be 'replace' or 'append'"), nil
 	}
-	rawRows, ok := args["rows"].([]interface{})
-	if !ok || len(rawRows) == 0 {
-		return errResult("'rows' must be a non-empty array of objects"), nil
+	cols, rowMaps, colSet, errMsg := buildRowMaps(args)
+	if errMsg != "" {
+		return errResult(errMsg), nil
 	}
-	if len(rawRows) > maxRows {
-		return errResult(fmt.Sprintf("too many rows (%d); cap is %d — aggregate or LIMIT first", len(rawRows), maxRows)), nil
-	}
-
-	// Collect the column set (union of keys) and a sample value per column for typing.
-	colSet := map[string]interface{}{}
-	rowMaps := make([]map[string]interface{}, 0, len(rawRows))
-	for _, r := range rawRows {
-		m, ok := r.(map[string]interface{})
-		if !ok {
-			return errResult("each row must be a JSON object"), nil
-		}
-		rowMaps = append(rowMaps, m)
-		for k, v := range m {
-			if !identRe.MatchString(k) {
-				return errResult(fmt.Sprintf("invalid column name %q: must match %s", k, identRe.String())), nil
-			}
-			if _, seen := colSet[k]; !seen || colSet[k] == nil {
-				colSet[k] = v
-			}
-		}
-	}
-	cols := make([]string, 0, len(colSet))
-	for k := range colSet {
-		cols = append(cols, k)
-	}
-	sort.Strings(cols)
 
 	qSchema := pgx.Identifier{p.schema}.Sanitize()
 	qTable := pgx.Identifier{p.schema, table}.Sanitize()
