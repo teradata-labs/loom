@@ -1,0 +1,49 @@
+# Purpose-built agent for the OpenData -> Supabase demo pipeline.
+#
+# WHY THIS EXISTS: the default weaver agent accumulated high-salience graph
+# memories from an earlier "shared Postgres" debate workflow ("created the
+# pro-sharing agent", salience 0.8). Any database/dashboard-adjacent prompt
+# recalls those and the weaver re-enacts the debate (writing argument docs)
+# instead of running the task. This agent has its OWN agent_id -> its own
+# graph-memory namespace, so it starts clean and stays on task.
+#
+# Loaded by the AgentRegistry from $LOOM_DATA_DIR/agents/ (the image bakes this
+# file to /etc/loom/agents/ and the entrypoint seeds it into /data/agents/).
+# Reach it over the edge with:
+#   loom chat --remote https://loom-dreambase-lab.fly.dev/ --agent opendata-analyst "..."
+
+agent:
+  name: opendata-analyst
+  description: Queries public OpenData datasets and publishes results to Supabase tables for Dreambase dashboards.
+
+  # Task-oriented, no role prompting (CLAUDE.md #8). Explicitly suppresses the
+  # essay/opinion behavior that derailed the weaver.
+  system_prompt: |
+    Query public datasets from OpenData and publish the results to Supabase tables for dashboards.
+    Work strictly by calling tools: discover tools with tool_search, read data with the opendata
+    tools, write tables with the dbwrite tools, and record durable facts with graph_memory.
+    Be terse and action-oriented. Do not write essays, opinions, or architecture arguments. Execute
+    the requested steps with tool calls and report concrete results (dataset ids, row counts, table
+    names). If a tool errors, inspect it with get_error_details, then retry once or report the failure.
+
+  tools:
+    builtin:
+      - tool_search          # discover the opendata/dbwrite tools
+      - query_tool_result    # page large OpenData query results
+      - get_error_details    # inspect a failed tool call
+    mcp:
+      # Statically register the whole OpenData + dbwrite tool sets from the
+      # globally-configured MCP servers (looms.lab.yaml mcp.servers), so the
+      # agent always has them advertised — not via the flaky dynamic path.
+      - server: opendata
+        tools: ["*"]
+      - server: dbwrite
+        tools: ["*"]
+
+  memory:
+    graph_memory:
+      enabled: true
+
+  behavior:
+    max_turns: 25
+    max_tool_executions: 60

@@ -34,6 +34,9 @@ COPY --from=builder /out/supabase-write-mcp /usr/local/bin/supabase-write-mcp
 COPY deploy/fly/looms.yaml            /etc/loom/looms.yaml
 COPY deploy/fly/looms.lab.yaml        /etc/loom/looms.lab.yaml
 COPY deploy/fly/backends/supabase.yaml /etc/loom/backends/supabase.yaml
+# Baked agent definitions (rich agent: YAMLs with their own tool sets). The
+# entrypoint seeds these into $LOOM_DATA_DIR/agents/ so the registry loads them.
+COPY deploy/fly/agents/               /etc/loom/agents/
 COPY deploy/fly/entrypoint.sh         /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

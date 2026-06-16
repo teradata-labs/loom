@@ -1852,6 +1852,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Hide tools the permission policy would refuse, so the model
+					// never discovers (then calls) a disabled tool via tool_search.
+					if permissionChecker != nil {
+						searchTool.SetToolFilter(permissionChecker.Advertisable)
+					}
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
 
@@ -3082,6 +3087,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				if permissionChecker != nil {
+					searchTool.SetToolFilter(permissionChecker.Advertisable)
+				}
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
 

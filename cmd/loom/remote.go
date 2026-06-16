@@ -68,9 +68,16 @@ func startSpinner() (stop func()) {
 // loom_weave tool calls, authenticated with the stored `loom login` token.
 var chatRemoteURL string
 
+// chatRemoteAgent optionally pins the remote weave to a specific registered
+// agent_id (loom_weave accepts agent_id server-side). Without it, the edge
+// routes to the default/session-owned agent (the weaver).
+var chatRemoteAgent string
+
 func init() {
 	chatCmd.Flags().StringVar(&chatRemoteURL, "remote", "",
 		"Chat via a remote HTTP-MCP endpoint (e.g. https://loom-dreambase.fly.dev/) instead of gRPC; uses the 'loom login' token")
+	chatCmd.Flags().StringVar(&chatRemoteAgent, "agent", "",
+		"With --remote: pin the session to a specific registered agent_id (default: the server-side weaver)")
 }
 
 // remoteChat drives an interactive (or one-shot) conversation against a
@@ -278,6 +285,9 @@ func (rc *remoteClient) weave(query string, onText func(string)) (string, error)
 	args := map[string]any{"query": query}
 	if rc.weaveSession != "" {
 		args["session_id"] = rc.weaveSession
+	}
+	if chatRemoteAgent != "" {
+		args["agent_id"] = chatRemoteAgent
 	}
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": rc.reqID, "method": "tools/call",

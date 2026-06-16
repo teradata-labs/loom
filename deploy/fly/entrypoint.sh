@@ -9,6 +9,20 @@ trap term TERM INT
 # Config is selectable so one image serves both the hardened public edge and
 # the capability-enabled lab. Defaults to the hardened config, so the existing
 # app's behavior is unchanged; fly.lab.toml sets LOOM_CONFIG to the lab overlay.
+
+# Seed baked agent definitions into the registry dir on the volume. Idempotent
+# and non-clobbering: an operator- or weaver-authored agent of the same name is
+# never overwritten. looms loads $LOOM_DATA_DIR/agents/*.yaml at startup.
+data_dir="${LOOM_DATA_DIR:-/data}"
+if [ -d /etc/loom/agents ]; then
+  mkdir -p "$data_dir/agents"
+  for f in /etc/loom/agents/*.yaml; do
+    [ -e "$f" ] || continue
+    dest="$data_dir/agents/$(basename "$f")"
+    [ -e "$dest" ] || { cp "$f" "$dest" && echo "seeded agent $(basename "$f")" >&2; }
+  done
+fi
+
 looms serve --config "${LOOM_CONFIG:-/etc/loom/looms.yaml}" &
 loom_pid=$!
 

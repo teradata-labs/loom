@@ -104,3 +104,10 @@ observability:
 # State persists on the volume ($LOOM_DATA_DIR/scheduler.db).
 scheduler:
   enabled: true
+
+# Purpose-built agents (opendata-analyst, ...) are NOT defined here: the
+# agents.agents map only carries name/description/system_prompt/max_turns and
+# cannot declare per-agent tools or MCP servers. Rich agents with their own tool
+# sets are loaded by the AgentRegistry from $LOOM_DATA_DIR/agents/*.yaml (and
+# hot-reloaded). The image bakes deploy/fly/agents/*.yaml and the entrypoint
+# seeds them into that directory on startup. See deploy/fly/agents/.
