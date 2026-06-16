@@ -70,3 +70,36 @@ func TestGraphMemory_EmptyPropertiesJSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"name":"Ilsun Park"}`, got.PropertiesJSON)
 }
+
+// TestGraphMemory_RememberAutoCreatesReferencedEntities reproduces the production
+// failure where an agent's remember(entity_ids=[...]) referenced entities it had
+// never created, violating graph_memory_entities -> graph_entities (SQLSTATE 23503)
+// and silently dropping the memory. The store must now auto-create the entities.
+func TestGraphMemory_RememberAutoCreatesReferencedEntities(t *testing.T) {
+	pool := testPool(t)
+	store := NewGraphMemoryStore(pool, nil, nil)
+	ctx := ContextWithUserID(context.Background(), uniqueID("gm-user"))
+	agentID := uniqueID("gm-agent")
+
+	ids := []string{uniqueID("ilsun_park"), uniqueID("buf"), uniqueID("protobuf")}
+	saved, err := store.Remember(ctx, &memory.Memory{
+		AgentID:    agentID,
+		Content:    "Ilsun uses Buf for protobuf",
+		Summary:    "prefers Buf",
+		MemoryType: "preference",
+		Salience:   0.7,
+		EntityIDs:  ids,
+	})
+	require.NoError(t, err,
+		"remember with un-created entity_ids must auto-create them, not violate the FK (was 23503)")
+
+	got, err := store.GetMemory(ctx, agentID, saved.ID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, ids, got.EntityIDs, "all referenced entities should be auto-created and linked")
+
+	// Idempotent: remembering the same entity again must not error.
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID: agentID, Content: "again", MemoryType: "fact", EntityIDs: ids[:1],
+	})
+	require.NoError(t, err, "re-referencing an existing entity must be a no-op, not a duplicate-key error")
+}

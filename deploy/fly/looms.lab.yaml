@@ -62,6 +62,10 @@ tools:
       - shared_memory_read
       - shared_memory_write      # multi-agent workflows share scratch state
       - contact_human
+      # Host-safe utility/meta tools (deny-by-default was blocking these):
+      - tool_search              # dynamic tool discovery
+      - query_tool_result        # page/filter large tool results (e.g. big OpenData queries)
+      - get_error_details        # inspect a prior tool error
 
   web_search:
     default_provider: tavily

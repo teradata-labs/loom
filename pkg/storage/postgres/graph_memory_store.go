@@ -1163,8 +1163,12 @@ func pgLinkEntitiesTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 			if role == "" {
 				role = memory.RoleAbout
 			}
+			if err := ensureEntityTx(ctx, tx, er.ID, mem.AgentID, mem.Owner); err != nil {
+				return fmt.Errorf("ensure entity %s: %w", er.ID, err)
+			}
 			_, err := tx.Exec(ctx,
-				`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)`,
+				`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)
+				 ON CONFLICT (memory_id, entity_id, role) DO NOTHING`,
 				mem.ID, er.ID, role,
 			)
 			if err != nil {
@@ -1175,8 +1179,12 @@ func pgLinkEntitiesTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 	}
 	// Fallback: EntityIDs without explicit roles -> default to RoleAbout.
 	for _, eid := range mem.EntityIDs {
+		if err := ensureEntityTx(ctx, tx, eid, mem.AgentID, mem.Owner); err != nil {
+			return fmt.Errorf("ensure entity %s: %w", eid, err)
+		}
 		_, err := tx.Exec(ctx,
-			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)`,
+			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES ($1, $2, $3)
+			 ON CONFLICT (memory_id, entity_id, role) DO NOTHING`,
 			mem.ID, eid, memory.RoleAbout,
 		)
 		if err != nil {
@@ -1184,6 +1192,24 @@ func pgLinkEntitiesTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 		}
 	}
 	return nil
+}
+
+// ensureEntityTx auto-creates a minimal entity node if one with this id does not
+// already exist, so remember(entity_ids=[...]) cannot fail the
+// graph_memory_entities -> graph_entities foreign key when the agent references
+// an entity it never explicitly created (the common case — fixes SQLSTATE 23503).
+// The id doubles as the name to avoid (agent_id, name) UNIQUE collisions.
+func ensureEntityTx(ctx context.Context, tx pgx.Tx, id, agentID, owner string) error {
+	if id == "" {
+		return fmt.Errorf("empty entity id")
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO graph_entities (id, agent_id, name, entity_type, properties_json, owner, user_id, created_at, updated_at)
+		 VALUES ($1, $2, $1, 'concept', '{}', NULLIF($3, ''), $4, NOW(), NOW())
+		 ON CONFLICT (id) DO NOTHING`,
+		id, agentID, owner, UserIDFromContext(ctx),
+	)
+	return err
 }
 
 // =============================================================================
