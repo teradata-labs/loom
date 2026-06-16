@@ -84,6 +84,8 @@ website/resources/
 /loom
 /loom-standalone
 /loom-mcp
+/opendata-mcp
+/supabase-write-mcp
 /loom-bench-harness
 bin/loom
 bin/looms
