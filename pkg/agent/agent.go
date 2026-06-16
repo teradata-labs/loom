@@ -4309,20 +4309,15 @@ func (a *Agent) SetSQLResultStore(sqlStore storage.ResultStore) {
 	// Store reference for later use
 	a.sqlResultStore = sqlStore
 
-	// Inject into tool executor so SQL results go to queryable tables
+	// Inject into tool executor so SQL results go to queryable tables. The store
+	// is wired regardless so large results are stored; the query_tool_result TOOL
+	// itself is NOT registered here — it is progressively disclosed (registered
+	// only after the first large result is stored; see formatToolResult /
+	// agent.go:3753). Registering it eagerly whenever a store existed put it in the
+	// model's tool list every turn even with nothing to query, defeating the
+	// progressive-disclosure design.
 	if a.executor != nil {
 		a.executor.SetSQLResultStore(sqlStore)
-	}
-
-	// Register query_tool_result tool if not already registered, unless the
-	// server has suppressed it (tools.none). The SQL result store stays
-	// wired regardless — agent subsystems can still write to it.
-	if sqlStore != nil && a.tools != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
-		queryTool := shuttle.Tool(NewQueryToolResultTool(sqlStore, a.sharedMemory))
-		if a.prompts != nil {
-			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-		}
-		a.tools.Register(queryTool)
 	}
 }
 
