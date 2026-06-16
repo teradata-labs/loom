@@ -139,21 +139,29 @@ func (p *provider) CallTool(ctx context.Context, name string, args map[string]in
 
 func (p *provider) listTables(ctx context.Context) (*protocol.CallToolResult, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT c.relname, COALESCE(c.reltuples::bigint, 0)
+		SELECT c.relname
 		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE n.nspname = $1 AND c.relkind = 'r' ORDER BY c.relname`, p.schema)
 	if err != nil {
 		return errResult("list failed: " + err.Error()), nil
 	}
-	defer rows.Close()
-	out := []map[string]interface{}{}
+	names := []string{}
 	for rows.Next() {
 		var name string
-		var est int64
-		if err := rows.Scan(&name, &est); err != nil {
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
 			return errResult("scan failed: " + err.Error()), nil
 		}
-		out = append(out, map[string]interface{}{"table": p.schema + "." + name, "approx_rows": est})
+		names = append(names, name)
+	}
+	rows.Close()
+
+	// Exact row counts (tables here are small dashboard result sets).
+	out := []map[string]interface{}{}
+	for _, name := range names {
+		var n int64
+		_ = p.pool.QueryRow(ctx, "SELECT count(*) FROM "+pgx.Identifier{p.schema, name}.Sanitize()).Scan(&n)
+		out = append(out, map[string]interface{}{"table": p.schema + "." + name, "rows": n})
 	}
 	b, _ := json.Marshal(map[string]interface{}{"schema": p.schema, "tables": out})
 	return textResult(string(b)), nil
