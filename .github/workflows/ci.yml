@@ -65,7 +65,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: Setup Buf
@@ -102,7 +102,7 @@ jobs:
     timeout-minutes: 40
     strategy:
       matrix:
-        go-version: ['1.25']
+        go-version: ['1.26']
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -124,8 +124,28 @@ jobs:
       - name: Generate weaver.yaml from template
         run: go run ./cmd/generate-weaver
 
+      - name: Pre-warm MCP filesystem server (npm cache)
+        # Several MCP integration/conformance tests shell out to
+        # `npx -y @modelcontextprotocol/server-filesystem` and start that server
+        # under a tight (30-45s) init timeout. A cold npm download can exceed
+        # that on a slow-registry day, surfacing as "initialize failed: context
+        # deadline exceeded" — a network flake unrelated to the code under test.
+        # Fetch the package once here so the timed tests hit the npm cache
+        # instead of racing a cold download. `npm install -g` downloads and exits
+        # cleanly (no stdio server to hang on, unlike `npx ... --help`); retried
+        # for transient registry blips and never hard-fails the job (if the
+        # registry is fully down the tests degrade to the prior behaviour).
+        run: |
+          for i in 1 2 3; do
+            npm install -g @modelcontextprotocol/server-filesystem && break
+            echo "npm install attempt $i failed; retrying in 5s..."
+            sleep 5
+          done || true
+
       - name: Run tests with race detection
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
@@ -134,9 +154,14 @@ jobs:
 
       - name: Run example tests
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
+          # ./examples/... covers all example packages; the previous explicit
+          # paths (agent-templates, workflows) were stale — the templates moved
+          # under examples/reference and `go test` errored "directory not found"
+          # (masked by tee until pipefail surfaced it).
           go test -tags fts5 -race -v -timeout=5m \
-            ./examples/agent-templates \
-            ./examples/workflows \
+            ./examples/... \
             | tee -a test-output.log
 
       - name: Check for race conditions
@@ -148,6 +173,8 @@ jobs:
 
       - name: Generate coverage report
         run: |
+          # pipefail so a failure in `go tool cover` is not masked by `tee`.
+          set -euo pipefail
           go tool cover -func=coverage.out | tee coverage-report.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -155,7 +182,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage
-        if: matrix.go-version == '1.25'
+        if: matrix.go-version == '1.26'
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v5
         with:
           files: ./coverage.out
@@ -166,7 +193,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage artifacts
-        if: matrix.go-version == '1.25'
+        if: matrix.go-version == '1.26'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coverage-report
@@ -190,7 +217,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: Setup Buf
@@ -261,7 +288,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ['1.25']
+        go-version: ['1.26']
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -343,7 +370,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: Setup Buf
@@ -375,6 +402,11 @@ jobs:
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
+          # Stable category so the analysis registers as the "gosec" code-scanning
+          # configuration. Without it the category defaults to the workflow path
+          # (.github/workflows/ci.yml:security), which the required "Code scanning
+          # results / gosec" check can't find -> neutral "configuration not found".
+          category: gosec
 
   # ============================================================================
   # Job 7: Coverage Check

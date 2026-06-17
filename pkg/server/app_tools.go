@@ -79,14 +79,32 @@ Spec format:
 {
   "version": "1.0",
   "title": "App Title",
-  "layout": "stack",
+  "layout": "grid",
   "components": [
     {"type": "header", "props": {"title": "Dashboard"}},
-    {"type": "chart", "props": {"chartType": "bar", "labels": [...], "datasets": [...]}}
+    {"type": "chart", "props": {"chartType": "bar", "labels": [...], "datasets": [{"label": "...", "data": [...]}]}},
+    {"type": "chart", "props": {"chartType": "line", "labels": [...], "datasets": [{"label": "...", "data": [...]}]}}
   ]
 }
 
-Layouts: stack (vertical), grid-2 (two columns), grid-3 (three columns).`
+Layouts (all grid layouts are responsive and collapse to fewer columns on narrow screens):
+  stack   — single column, vertical
+  grid-2  — 1 col on phones, 2 cols on tablets+
+  grid-3  — 1 col on phones, 2 cols on tablets, 3 cols on laptops+
+  grid    — 1 col phones, 2 tablets, 3 laptops, 4 desktop+ (fully responsive)
+  grid-4  — alias for grid
+IMPORTANT: Use grid or grid-3 when the dashboard has multiple charts — keeps charts compact and side-by-side.
+
+Chart height: charts default to 260px. Override with props.height (number in pixels or CSS string, e.g. 320).
+
+Scatter chart data format — each dataset's data must be an array of {x, y} objects:
+  {"chartType": "scatter", "datasets": [{"label": "Series", "data": [{"x": 1.2, "y": 3.4}, {"x": 2.1, "y": 5.6}]}]}
+
+Bubble chart data format — each point is {x, y, r} where r is the bubble radius:
+  {"chartType": "bubble", "datasets": [{"label": "Series", "data": [{"x": 1, "y": 2, "r": 8}, {"x": 3, "y": 4, "r": 12}]}]}
+
+Records format (all chart types): provide data as row objects plus x_key and series definitions:
+  {"chartType": "scatter", "data": [{"col_a": 1, "col_b": 2}], "x_key": "col_a", "series": [{"key": "col_b", "label": "B"}]}`
 }
 
 func (t *createUIAppTool) InputSchema() *shuttle.JSONSchema {
@@ -104,7 +122,7 @@ func (t *createUIAppTool) InputSchema() *shuttle.JSONSchema {
 		map[string]*shuttle.JSONSchema{
 			"version":     shuttle.NewStringSchema("Spec version, always '1.0'").WithDefault("1.0"),
 			"title":       shuttle.NewStringSchema("App/dashboard title shown in header"),
-			"layout":      shuttle.NewStringSchema("Component layout: 'stack' (vertical), 'grid-2' (two columns), 'grid-3' (three columns)").WithDefault("stack"),
+			"layout":      shuttle.NewStringSchema("Component layout: 'stack' (vertical), 'grid-2' (1→2 cols), 'grid-3' (1→2→3 cols), 'grid' (1→2→3→4 cols, fully responsive)").WithDefault("grid"),
 			"description": shuttle.NewStringSchema("Optional subtitle shown below the title"),
 			"components": shuttle.NewArraySchema(
 				"Ordered list of UI components to render",
@@ -321,7 +339,7 @@ func (t *updateUIAppTool) InputSchema() *shuttle.JSONSchema {
 				map[string]*shuttle.JSONSchema{
 					"version":    shuttle.NewStringSchema("Spec version, always '1.0'").WithDefault("1.0"),
 					"title":      shuttle.NewStringSchema("App/dashboard title"),
-					"layout":     shuttle.NewStringSchema("Layout: 'stack', 'grid-2', 'grid-3'").WithDefault("stack"),
+					"layout":     shuttle.NewStringSchema("Layout: 'stack', 'grid-2', 'grid-3', 'grid' (fully responsive 1→2→3→4)").WithDefault("grid"),
 					"components": shuttle.NewArraySchema("UI components", shuttle.NewObjectSchema("Component", map[string]*shuttle.JSONSchema{"type": shuttle.NewStringSchema("Component type"), "props": shuttle.NewObjectSchema("Props", nil, nil)}, []string{"type"})),
 				},
 				[]string{"title", "components"},

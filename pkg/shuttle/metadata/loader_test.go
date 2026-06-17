@@ -6,6 +6,7 @@
 package metadata
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -13,15 +14,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// toolMetadataDirOrSkip returns the path to the repository's tool_metadata
+// directory, skipping the test when it is absent. The directory is gitignored,
+// so it is present in full local checkouts but not in CI; tests that need the
+// real metadata files skip rather than fail (and return nil silently).
+func toolMetadataDirOrSkip(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join("..", "..", "..", "tool_metadata")
+	if _, err := os.Stat(dir); err != nil {
+		t.Skipf("skipping: tool_metadata directory not available (%v)", err)
+	}
+	return dir
+}
+
 func TestLoader_Load(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test that requires tool_metadata directory in short mode")
 	}
 
-	// Get project root (3 levels up from pkg/shuttle/metadata)
-	projectRoot := filepath.Join("..", "..", "..")
-	metadataDir := filepath.Join(projectRoot, "tool_metadata")
-
+	metadataDir := toolMetadataDirOrSkip(t)
 	loader := NewLoader(metadataDir)
 
 	t.Run("load web_search metadata", func(t *testing.T) {
@@ -107,10 +118,7 @@ func TestLoader_LoadAll(t *testing.T) {
 		t.Skip("Skipping test that requires tool_metadata directory in short mode")
 	}
 
-	// Get project root
-	projectRoot := filepath.Join("..", "..", "..")
-	metadataDir := filepath.Join(projectRoot, "tool_metadata")
-
+	metadataDir := toolMetadataDirOrSkip(t)
 	loader := NewLoader(metadataDir)
 
 	all, err := loader.LoadAll()
@@ -145,10 +153,7 @@ func TestLoader_Caching(t *testing.T) {
 		t.Skip("Skipping test that requires tool_metadata directory in short mode")
 	}
 
-	// Get project root
-	projectRoot := filepath.Join("..", "..", "..")
-	metadataDir := filepath.Join(projectRoot, "tool_metadata")
-
+	metadataDir := toolMetadataDirOrSkip(t)
 	loader := NewLoader(metadataDir)
 
 	t.Run("cache hit returns same pointer", func(t *testing.T) {
