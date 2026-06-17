@@ -124,6 +124,24 @@ jobs:
       - name: Generate weaver.yaml from template
         run: go run ./cmd/generate-weaver
 
+      - name: Pre-warm MCP filesystem server (npm cache)
+        # Several MCP integration/conformance tests shell out to
+        # `npx -y @modelcontextprotocol/server-filesystem` and start that server
+        # under a tight (30-45s) init timeout. A cold npm download can exceed
+        # that on a slow-registry day, surfacing as "initialize failed: context
+        # deadline exceeded" — a network flake unrelated to the code under test.
+        # Fetch the package once here so the timed tests hit the npm cache
+        # instead of racing a cold download. `npm install -g` downloads and exits
+        # cleanly (no stdio server to hang on, unlike `npx ... --help`); retried
+        # for transient registry blips and never hard-fails the job (if the
+        # registry is fully down the tests degrade to the prior behaviour).
+        run: |
+          for i in 1 2 3; do
+            npm install -g @modelcontextprotocol/server-filesystem && break
+            echo "npm install attempt $i failed; retrying in 5s..."
+            sleep 5
+          done || true
+
       - name: Run tests with race detection
         run: |
           # pipefail so a non-zero `go test` exit is not masked by `tee`.
