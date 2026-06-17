@@ -596,6 +596,37 @@ func (m *mockShuttleTool) Backend() string {
 	return ""
 }
 
+func TestConvertMessages_ToolInputNilOrEmpty(t *testing.T) {
+	// Regression (mirrors openai client fix #199): json.Marshal of a nil map
+	// returns "null" (no error), which the old `if err != nil` guard let through
+	// as Function.Arguments="null". LiteLLM forwards that to Vertex AI as
+	// tool_use.input=null, rejected with "Input should be a valid dictionary".
+	// Both nil and empty input must serialise to "{}".
+	tests := []struct {
+		name  string
+		input map[string]interface{}
+	}{
+		{"nil input", nil},
+		{"empty input", map[string]interface{}{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := convertMessages([]types.Message{
+				{
+					Role: "assistant",
+					ToolCalls: []types.ToolCall{
+						{ID: "call_x", Name: "get_status", Input: tt.input},
+					},
+				},
+			})
+			require.Len(t, out, 1)
+			require.Len(t, out[0].ToolCalls, 1)
+			assert.Equal(t, "{}", out[0].ToolCalls[0].Function.Arguments,
+				"nil/empty tool input must serialise to %q, never %q", "{}", "null")
+		})
+	}
+}
+
 func TestConvertTools_WithNilProperties(t *testing.T) {
 	// Test that object schemas with nil properties are converted to empty properties maps
 	// This is required by Azure OpenAI - object types must always have a properties field

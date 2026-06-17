@@ -517,8 +517,13 @@ func convertMessages(messages []llmtypes.Message) []openai.ChatMessage {
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []openai.ToolCall
 				for _, tc := range msg.ToolCalls {
+					// Marshal input to JSON string.
+					// Guard against nil Input — json.Marshal(nil) returns "null"
+					// (no error), which LiteLLM forwards to Vertex AI as a non-dict
+					// tool_use.input, causing a 400 "Input should be a valid
+					// dictionary". Mirrors the openai client fix (#199).
 					argsJSON, err := json.Marshal(tc.Input)
-					if err != nil {
+					if err != nil || string(argsJSON) == "null" {
 						argsJSON = []byte("{}")
 					}
 
