@@ -150,10 +150,10 @@ func (c *Compiler) Validate(spec *loomv1.UIAppSpec) error {
 
 	// Validate layout
 	switch spec.Layout {
-	case "", "stack", "grid-2", "grid-3":
+	case "", "stack", "grid-2", "grid-3", "grid", "grid-4":
 		// valid
 	default:
-		return fmt.Errorf("invalid layout %q (valid: stack, grid-2, grid-3)", spec.Layout)
+		return fmt.Errorf("invalid layout %q (valid: stack, grid-2, grid-3, grid, grid-4)", spec.Layout)
 	}
 
 	// Validate components

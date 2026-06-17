@@ -123,6 +123,9 @@
     "magenta",
   ]);
 
+  // Chart types that render as slices (no x/y axes, one color per slice).
+  const SLICE_CHART_TYPES = new Set(["pie", "doughnut", "polarArea"]);
+
   // Chart palette — vibrant colors that read well on dark backgrounds.
   const CHART_PALETTE = [
     "#688bf1",
@@ -300,7 +303,7 @@
   function applyLayout(container, layout) {
     if (!layout) return;
 
-    // The spec layout field is a string ('stack', 'grid-2', 'grid-3').
+    // The spec layout field is a string ('stack', 'grid-2', 'grid-3', 'grid').
     // Also support object form {type, gap, columns, direction} for future use.
     var type, gap, direction, columns;
     if (typeof layout === "string") {
@@ -318,7 +321,7 @@
     if (type === "grid-2") {
       container.style.display = "grid";
       container.style.gap = gap;
-      // minmax gives responsive collapse to single column on narrow viewports
+      // auto-fit + minmax collapses to 1 column on narrow viewports automatically
       container.style.gridTemplateColumns =
         "repeat(auto-fit, minmax(min(100%, 320px), 1fr))";
     } else if (type === "grid-3") {
@@ -326,15 +329,17 @@
       container.style.gap = gap;
       container.style.gridTemplateColumns =
         "repeat(auto-fit, minmax(min(100%, 250px), 1fr))";
-    } else if (type === "grid") {
+    } else if (type === "grid" || type === "grid-4") {
       container.style.display = "grid";
       container.style.gap = gap;
       if (columns) {
         container.style.gridTemplateColumns =
           "repeat(" + Math.max(1, Number(columns) || 1) + ", 1fr)";
       } else {
+        // Responsive 2→3→4 columns: medium ~704px → 2 cols, large ~1068px → 3 cols,
+        // XL ~1432px → 4 cols. calc(25% - 18px) caps at exactly 4 cols on wide screens.
         container.style.gridTemplateColumns =
-          "repeat(auto-fit, minmax(320px, 1fr))";
+          "repeat(auto-fit, minmax(min(100%, max(340px, calc(25% - 18px))), 1fr))";
       }
     } else {
       // stack (default) = vertical flex
@@ -422,15 +427,26 @@
       typeof props.data[0] === "object" &&
       !Array.isArray(props.data[0]);
 
-    const SLICE_CHART_TYPES = new Set(["pie", "doughnut", "polarArea"]);
+    const isPointChart = chartType === "scatter" || chartType === "bubble";
 
     if (isRecordsFormat) {
-      labels = props.data.map((row) => String(row[xKey] ?? ""));
+      // Scatter/bubble charts don't use labels — x comes from the data points.
+      if (!isPointChart) {
+        labels = props.data.map((row) => String(row[xKey] ?? ""));
+      }
       for (const s of seriesDef) {
         if (!s || typeof s !== "object" || !s.key) continue;
+        const rKey = props.r_key || props.rKey || s.r_key || s.rKey;
         const safeDS = {
           label: String(s.label || s.key),
           data: props.data.map((row) => {
+            if (isPointChart) {
+              const pt = { x: Number(row[xKey]), y: Number(row[s.key]) };
+              if (chartType === "bubble") {
+                pt.r = rKey && row[rKey] != null ? Number(row[rKey]) : 5;
+              }
+              return pt;
+            }
             const v = row[s.key];
             return v !== null && v !== undefined ? Number(v) : null;
           }),
@@ -491,7 +507,12 @@
         for (const ds of rawDatasets) {
           if (!ds || typeof ds !== "object") continue;
           const safeDS = {
-            data: Array.isArray(ds.data) ? ds.data.map(Number) : [],
+            // Scatter/bubble data is [{x,y}] or [{x,y,r}] — preserve objects as-is.
+            data: Array.isArray(ds.data)
+              ? isPointChart
+                ? ds.data.filter((p) => p !== null && p !== undefined && typeof p === "object")
+                : ds.data.map(Number)
+              : [],
           };
           if (ds.label) safeDS.label = String(ds.label);
 
@@ -551,7 +572,8 @@
       data: { labels, datasets },
       options: {
         responsive: true,
-        maintainAspectRatio: false,
+        maintainAspectRatio: SLICE_CHART_TYPES.has(chartType),
+        layout: SLICE_CHART_TYPES.has(chartType) ? { padding: 12 } : { padding: 0 },
         plugins: {
           legend: {
             labels: {
@@ -838,7 +860,7 @@
   }
 
   // --- chart ---
-  async function renderChart(props) {
+  async function renderChart(props, _children, _depth, gen) {
     const wrapper = createElement("div", {
       style: {
         background: THEME.surface,
@@ -864,8 +886,17 @@
       wrapper.appendChild(title);
     }
 
+    const rawChartType = props.chartType || props.chart_type || props.type;
+    const isSliceChart = SLICE_CHART_TYPES.has(rawChartType);
+    const chartHeight = props.height
+      ? String(props.height).match(/^\d+$/) ? props.height + "px" : String(props.height)
+      : isSliceChart ? null : "260px";
     const canvasWrap = createElement("div", {
-      style: { position: "relative", height: "400px", maxHeight: "400px" },
+      style: chartHeight
+        ? { position: "relative", height: chartHeight, maxHeight: chartHeight }
+        // Slice charts maintain their aspect ratio — cap width so the canvas
+        // doesn't grow to fill the full container and center it.
+        : { position: "relative", maxWidth: "min(320px, 100%)", margin: "0 auto" },
     });
     const canvas = document.createElement("canvas");
     canvasWrap.appendChild(canvas);
@@ -873,6 +904,8 @@
 
     try {
       await ensureChartJS();
+      // Abort if a newer render generation has started while Chart.js was loading.
+      if (gen !== undefined && renderGen !== gen) return null;
       const config = buildSafeChartConfig(props);
       const instance = new window.Chart(canvas.getContext("2d"), config);
       chartInstances.push(instance);
@@ -1512,7 +1545,7 @@
   // --- badges ---
   function renderBadges(props) {
     const container = createElement("div", {
-      style: { display: "flex", gap: "8px", flexWrap: "wrap" },
+      style: { display: "flex", gap: "8px", flexWrap: "wrap", alignSelf: "start", height: "fit-content" },
     });
     const items = Array.isArray(props.items) ? props.items : [];
     for (const item of items) {
@@ -1974,8 +2007,8 @@
             padding: "6px 14px",
             border: "none",
             borderRadius: "4px 4px 0 0",
-            background: i === 0 ? "#3d59a1" : "transparent",
-            color: i === 0 ? THEME.accent : THEME.textSecondary,
+            background: i === 0 ? THEME.accent : "transparent",
+            color: i === 0 ? THEME.bg : THEME.textSecondary,
             fontSize: "12px",
             fontWeight: "500",
             cursor: "pointer",
@@ -1995,9 +2028,9 @@
         btn.addEventListener("click", () => {
           for (let j = 0; j < buttons.length; j++) {
             buttons[j].style.background =
-              j === index ? "#3d59a1" : "transparent";
+              j === index ? THEME.accent : "transparent";
             buttons[j].style.color =
-              j === index ? THEME.accent : THEME.textSecondary;
+              j === index ? THEME.bg : THEME.textSecondary;
             panels[j].style.display = j === index ? "block" : "none";
           }
         });
@@ -2018,6 +2051,9 @@
         renderPromises.push(
           renderComponents(childArray, panels[i], depth + 1, gen),
         );
+      } else if (tabDefs[i] && tabDefs[i].content) {
+        // Fallback: render content string directly when no children supplied
+        appendSafeHTML(panels[i], String(tabDefs[i].content));
       }
       container.appendChild(panels[i]);
     }
@@ -2310,12 +2346,22 @@
     });
 
     const messages = Array.isArray(props.messages) ? props.messages : [];
+    // User bubble has a fixed dark background so always use white text,
+    // regardless of the active theme.
+    const userTextColor = "#ffffff";
 
     for (const msg of messages) {
       if (!msg || typeof msg !== "object") continue;
 
-      const isUser = msg.role === "user";
-      const isSystem = msg.role === "system";
+      // Accept common LLM-generated field name aliases so specs that use
+      // "from"/"sender"/"type" for role, or "text"/"message" for content,
+      // still render correctly rather than showing "unknown".
+      const role = msg.role || msg.from || msg.sender || msg.author || "";
+      const content = msg.content || msg.text || msg.message || msg.body || "";
+      const timestamp = msg.timestamp || msg.time || msg.ts || null;
+
+      const isUser = role === "user";
+      const isSystem = role === "system";
 
       const bubble = createElement("div", {
         style: {
@@ -2343,13 +2389,13 @@
             letterSpacing: "0.5px",
             marginBottom: "4px",
             color: isUser
-              ? THEME.accent
+              ? userTextColor
               : isSystem
                 ? THEME.warning
                 : THEME.success,
           },
         },
-        msg.role || "unknown",
+        role || "unknown",
       );
       bubble.appendChild(roleLabel);
 
@@ -2361,30 +2407,30 @@
             style: {
               fontSize: "13px",
               lineHeight: "1.6",
-              color: THEME.textPrimary,
+              color: isUser ? userTextColor : THEME.textPrimary,
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
             },
           },
-          msg.content || "",
+          content,
         ),
       );
 
       // Timestamp
-      if (msg.timestamp) {
+      if (timestamp) {
         bubble.appendChild(
           createElement(
             "div",
             {
               style: {
                 fontSize: "10px",
-                color: THEME.textMuted,
+                color: isUser ? "rgba(255,255,255,0.65)" : THEME.textMuted,
                 marginTop: "6px",
                 fontFamily: THEME.fontMono,
                 textAlign: isUser ? "right" : "left",
               },
             },
-            msg.timestamp,
+            timestamp,
           ),
         );
       }
@@ -2592,8 +2638,16 @@
       APP_ROOT.removeChild(APP_ROOT.firstChild);
     }
 
-    // Apply layout to root
-    applyLayout(APP_ROOT, APP_SPEC.layout);
+    // Apply layout to root. Auto-upgrade stack → grid-2 when the spec has
+    // multiple chart components so they sit side-by-side without the LLM
+    // needing to explicitly choose a grid layout.
+    const _specLayout = APP_SPEC.layout || "stack";
+    const _chartCount = Array.isArray(APP_SPEC.components)
+      ? APP_SPEC.components.filter((c) => c && c.type === "chart").length
+      : 0;
+    const _layout =
+      _specLayout === "stack" && _chartCount >= 2 ? "grid-2" : _specLayout;
+    applyLayout(APP_ROOT, _layout);
 
     // Render all components — capture generation so stale async renders abort.
     const gen = ++renderGen;
