@@ -18,12 +18,43 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap/zaptest"
 )
+
+// requireDockerImage skips the test unless a Docker daemon is reachable and the
+// named base image is already present locally. These E2E tests run real
+// containers from a base image; CI runners don't pre-pull images, so skip
+// rather than fail when the image is absent. Still skips in -short mode.
+func requireDockerImage(t *testing.T, image string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping e2e test in short mode (requires Docker daemon)")
+	}
+
+	host := detectDockerHost()
+	cli, err := client.NewClientWithOpts(
+		client.WithHost(host),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		t.Skipf("skipping: cannot create Docker client: %v", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		t.Skipf("skipping: no Docker daemon reachable at %s: %v", host, err)
+	}
+	if _, err := cli.ImageInspect(ctx, image); err != nil {
+		t.Skipf("skipping: required image %q not present locally (pull it to run this E2E test): %v", image, err)
+	}
+}
 
 // TestE2E_PythonExecution tests full Python execution workflow end-to-end.
 //
@@ -34,9 +65,7 @@ import (
 // - Exit code handling
 // - Distributed tracing (if tracer enabled)
 func TestE2E_PythonExecution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping e2e test in short mode (requires Docker daemon)")
-	}
+	requireDockerImage(t, "python:3.11-slim")
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -115,9 +144,7 @@ print("Execution complete")
 
 // TestE2E_NodeExecution tests full Node.js execution workflow end-to-end.
 func TestE2E_NodeExecution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping e2e test in short mode (requires Docker daemon)")
-	}
+	requireDockerImage(t, "node:20-alpine")
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -193,9 +220,7 @@ console.log('Execution complete');
 
 // TestE2E_ErrorHandling tests non-zero exit codes are captured correctly.
 func TestE2E_ErrorHandling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping e2e test in short mode (requires Docker daemon)")
-	}
+	requireDockerImage(t, "python:3.11-slim")
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -245,9 +270,7 @@ sys.exit(42)
 
 // TestE2E_StderrCapture tests stderr is properly captured alongside traces.
 func TestE2E_StderrCapture(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping e2e test in short mode (requires Docker daemon)")
-	}
+	requireDockerImage(t, "python:3.11-slim")
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)

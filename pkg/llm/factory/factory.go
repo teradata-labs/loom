@@ -16,6 +16,7 @@ package factory
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -196,7 +197,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		region = "us-east-1"
 	}
 
-	return bedrock.NewClient(bedrock.Config{
+	cfg := bedrock.Config{
 		Region:          region,
 		AccessKeyID:     f.config.BedrockAccessKeyID,
 		SecretAccessKey: f.config.BedrockSecretAccessKey,
@@ -206,7 +207,31 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		ModelID:         model,
 		MaxTokens:       f.resolveMaxOutput("bedrock", model),
 		Temperature:     f.config.Temperature,
-	})
+	}
+
+	// Anthropic Claude models route through the Anthropic SDK client, which
+	// streams tokens incrementally and sets cache_control for prompt caching.
+	// The direct AWS Converse client (NewClient) leaves ChatStream stubbed to a
+	// blocking call and sends no cache_control, so it is reserved for the
+	// non-Anthropic Bedrock models (e.g. DeepSeek, Qwen) that the Anthropic SDK
+	// cannot serve.
+	if isAnthropicBedrockModel(model) {
+		return bedrock.NewSDKClient(cfg)
+	}
+	return bedrock.NewClient(cfg)
+}
+
+// isAnthropicBedrockModel reports whether a Bedrock model ID refers to an
+// Anthropic Claude model, including cross-region inference profiles such as
+// "us.anthropic.claude-opus-4-7" or "global.anthropic.claude-opus-4-6-v1".
+// Application inference profile ARNs
+// (arn:aws:bedrock:…:application-inference-profile/<opaque-id>) carry no model
+// hint, so a Claude model behind one falls back to the Converse client — the
+// pre-fix behavior, and those ARNs are not addressable via the Anthropic SDK
+// anyway.
+func isAnthropicBedrockModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "anthropic") || strings.Contains(m, "claude")
 }
 
 func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error) {
