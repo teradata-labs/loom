@@ -3685,7 +3685,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 	// bypasses that — so register it here too, the moment any tool hands back a
 	// reference. Keeps it out of the fresh tool list while ensuring it's available
 	// as soon as there's something to page.
-	if result.DataReference != nil && a.sqlResultStore != nil &&
+	// query_tool_result reads from EITHER the SQL result store or shared memory,
+	// so register it when either is wired. Requiring only the SQL store missed
+	// shared-memory references (e.g. web_search results stored by the executor) —
+	// the agent saw the reference but had no tool to page it.
+	if result.DataReference != nil && (a.sqlResultStore != nil || a.sharedMemory != nil) &&
 		!a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
 		queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
 		if a.prompts != nil {
@@ -3767,8 +3771,10 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 					}
 
 					// Progressive disclosure: Register query_tool_result after first large
-					// result, unless the server has suppressed it (tools.none).
-					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
+					// result, unless the server has suppressed it (tools.none). We're
+					// inside `a.sharedMemory != nil` and just stored there, so the tool
+					// has a backing store regardless of whether the SQL store is wired.
+					if !a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
 						queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
 						if a.prompts != nil {
 							queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
