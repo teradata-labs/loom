@@ -108,6 +108,24 @@ func TestHandleWorkflowStream_YAMLSpec_StreamsAndReturnsResults(t *testing.T) {
 		"each progress event is forwarded as a status line")
 }
 
+func TestHandleWorkflowStream_WorkflowRefPassesThrough(t *testing.T) {
+	// A workflow_ref (saved workflow name) must NOT be rejected by the
+	// pattern/yaml guard — it flows through to the server, which resolves it.
+	mock := &streamWorkflowMock{events: []*loomv1.WorkflowProgress{
+		{Progress: 100, PartialResults: []*loomv1.AgentResult{{AgentId: "a", Output: "done"}}},
+	}}
+	bridge := newWorkflowBridge(t, mock)
+
+	res, err := bridge.handleWorkflowStream(context.Background(),
+		map[string]interface{}{"workflow_ref": "supabase-explorer"}, &captureEmitter{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.IsError, "workflow_ref must not be rejected by the pattern/yaml guard")
+	require.NotNil(t, mock.gotReq, "the request must reach StreamWorkflow")
+	assert.Equal(t, "supabase-explorer", mock.gotReq.GetWorkflowRef(), "workflow_ref flows through to the server")
+	assert.Nil(t, mock.gotReq.GetPattern(), "no inline pattern — the server resolves the ref")
+}
+
 func TestHandleWorkflowStream_MissingWorkflowIsError(t *testing.T) {
 	bridge := newWorkflowBridge(t, &streamWorkflowMock{})
 	res, err := bridge.handleWorkflowStream(context.Background(), map[string]interface{}{}, &captureEmitter{})

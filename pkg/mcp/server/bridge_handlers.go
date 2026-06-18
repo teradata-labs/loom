@@ -290,8 +290,10 @@ func (b *LoomBridge) handleWorkflowStream(ctx context.Context, args map[string]i
 		}
 		req.Pattern = pattern
 	}
-	if req.GetPattern() == nil {
-		return errorResult("a workflow is required: pass workflow_yaml (a YAML workflow spec) or an inline pattern"), nil
+	// A pattern, an inline workflow_yaml, OR a workflow_ref (saved workflow name,
+	// resolved server-side) is required. workflow_ref flows through to the server.
+	if req.GetPattern() == nil && strings.TrimSpace(req.GetWorkflowRef()) == "" {
+		return errorResult("a workflow is required: pass workflow_ref (a saved workflow name — see loom_list_workflows), workflow_yaml, or an inline pattern"), nil
 	}
 
 	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
