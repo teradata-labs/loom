@@ -24,6 +24,7 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 	return map[string]toolHandler{
 		// Core Agent
 		"loom_weave": b.handleWeave,
+		"loom_build": b.handleBuild,
 
 		// Patterns
 		"loom_load_patterns":  b.handleLoadPatterns,
@@ -173,6 +174,14 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 			prop("query", "string", "The user query or instruction to execute"),
 			prop("session_id", "string", "Session ID for conversation continuity (optional)"),
 			prop("agent_id", "string", "Agent ID to use (optional; if empty, server default or session routing applies). Pass a string; some clients may send other JSON scalar types, which are treated as explicit when non-empty."),
+		), conversationViewerURI, mv, weaveAnn),
+
+		tool("loom_build", "Build a Loom agent or workflow from a natural-language description. Loom's weaver — the system's expert at authoring agents and workflows — designs it, CREATES and SAVES it, then reports how to run it. Use this INSTEAD of writing workflow YAML, patterns, or stages yourself: the weaver knows Loom's components, tool wiring, and conventions far better than an external model. Returns the weaver's report (created agent_id(s) and/or workflow name + how to invoke it). For multi-step builds, pass the returned session_id back to refine.", objectSchema(
+			reqProp("intent", "string", "What to build, in plain language: the goal, expected inputs/outputs, steps, and any success criteria."),
+			prop("kind", "string", "What to build: 'agent', 'workflow', or 'auto' (default — let the weaver decide)."),
+			prop("name", "string", "Desired name for the created agent/workflow (optional)."),
+			prop("tools_hint", "array", "Capabilities it should use, e.g. [\"web_search\", \"sql\"] (optional hints for the weaver)."),
+			prop("session_id", "string", "Session ID to continue/refine a previous build (optional)."),
 		), conversationViewerURI, mv, weaveAnn),
 
 		// Patterns

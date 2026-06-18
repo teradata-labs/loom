@@ -236,6 +236,57 @@ func TestLoomBridge_ListTools(t *testing.T) {
 	}
 }
 
+func TestLoomBridge_Build_PinsWeaver(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	registry := apps.NewUIResourceRegistry()
+
+	var captured *loomv1.WeaveRequest
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			captured = in
+			return &loomv1.WeaveResponse{Text: "built it", AgentId: in.GetAgentId()}, nil
+		},
+	}
+
+	// Default: loom_build routes to the weaver and IGNORES any client-supplied
+	// agent_id (the tool doesn't accept one, but even if smuggled in args it must
+	// not override the pinned builder).
+	bridge := NewLoomBridgeFromClient(mockClient, registry, logger)
+	res, err := bridge.CallTool(context.Background(), "loom_build", map[string]interface{}{
+		"intent":     "a workflow that summarizes a CSV",
+		"kind":       "workflow",
+		"agent_id":   "attacker-supplied",
+		"session_id": "sess-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, captured)
+	assert.Equal(t, defaultBuilderAgent, captured.GetAgentId(), "loom_build must pin the builder agent (weaver)")
+	assert.NotEqual(t, "attacker-supplied", captured.GetAgentId(), "client agent_id must not override the pinned builder")
+	assert.Equal(t, "sess-1", captured.GetSessionId(), "session_id should flow through for refinement")
+	assert.Contains(t, captured.GetQuery(), "BUILD REQUEST", "query should be the wrapped build instruction")
+	assert.Contains(t, captured.GetQuery(), "a workflow that summarizes a CSV", "query should carry the caller's intent")
+
+	// Override the builder agent.
+	captured = nil
+	bridge2 := NewLoomBridgeFromClient(mockClient, registry, logger, WithBuilderAgent("custom-builder"))
+	_, err = bridge2.CallTool(context.Background(), "loom_build", map[string]interface{}{"intent": "an agent"})
+	require.NoError(t, err)
+	require.NotNil(t, captured)
+	assert.Equal(t, "custom-builder", captured.GetAgentId())
+
+	// Missing intent is a tool error, not an RPC.
+	captured = nil
+	errRes, err := bridge.CallTool(context.Background(), "loom_build", map[string]interface{}{"kind": "agent"})
+	require.NoError(t, err)
+	require.NotNil(t, errRes)
+	assert.True(t, errRes.IsError, "missing intent should yield an error result")
+	assert.Nil(t, captured, "no Weave RPC should fire when intent is missing")
+
+	// loom_build is advertised + streams.
+	assert.True(t, bridge.SupportsStreaming("loom_build"))
+}
+
 func TestLoomBridge_AllowList(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}

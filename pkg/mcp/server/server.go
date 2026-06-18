@@ -37,6 +37,7 @@ type MethodHandler func(ctx context.Context, id json.RawMessage, params json.Raw
 type MCPServer struct {
 	info               protocol.Implementation
 	capabilities       protocol.ServerCapabilities
+	instructions       string
 	extensions         map[string]interface{}
 	handlers           map[string]MethodHandler
 	logger             *zap.Logger
@@ -76,6 +77,15 @@ func WithResourceProvider(p ResourceProvider) Option {
 func WithExtensions(ext map[string]interface{}) Option {
 	return func(s *MCPServer) {
 		s.extensions = ext
+	}
+}
+
+// WithInstructions sets the server-level instructions returned on initialize.
+// This is how the endpoint steers a connecting model — e.g. telling it to author
+// agents/workflows via loom_build rather than constructing YAML by hand.
+func WithInstructions(text string) Option {
+	return func(s *MCPServer) {
+		s.instructions = text
 	}
 }
 
@@ -283,6 +293,7 @@ func (s *MCPServer) handleInitialize(_ context.Context, _ json.RawMessage, param
 		ProtocolVersion: protocol.ProtocolVersion,
 		Capabilities:    s.capabilities,
 		ServerInfo:      s.info,
+		Instructions:    s.instructions,
 		Extensions:      s.extensions,
 	}
 	return result, nil

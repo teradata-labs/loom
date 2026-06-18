@@ -62,7 +62,13 @@ type LoomBridge struct {
 	allowedTools      map[string]bool        // when non-empty, the ONLY tools advertised + permitted (edge allow-list)
 	tools             []protocol.Tool        // cached tool definitions
 	handlers          map[string]toolHandler // cached tool handlers (built once)
+	builderAgent      string                 // agent loom_build routes to (default "weaver")
 }
+
+// defaultBuilderAgent is the agent loom_build delegates authoring to when no
+// override is configured. The weaver is Loom's expert at constructing agents and
+// workflows; routing builds to it stops external models from hand-rolling YAML.
+const defaultBuilderAgent = "weaver"
 
 // BridgeOption configures a LoomBridge.
 type BridgeOption func(*LoomBridge)
@@ -128,6 +134,24 @@ func (b *LoomBridge) applyAllowList() {
 		}
 	}
 	b.tools = filtered
+}
+
+// WithBuilderAgent overrides the agent that loom_build delegates to. Defaults to
+// the weaver. Set via LOOM_MCP_BUILDER_AGENT to point builds at a dedicated agent.
+func WithBuilderAgent(name string) BridgeOption {
+	return func(b *LoomBridge) {
+		if name = strings.TrimSpace(name); name != "" {
+			b.builderAgent = name
+		}
+	}
+}
+
+// builderAgentOrDefault returns the configured builder agent, or the default.
+func (b *LoomBridge) builderAgentOrDefault() string {
+	if b.builderAgent != "" {
+		return b.builderAgent
+	}
+	return defaultBuilderAgent
 }
 
 // WithSkillOrchestrator sets the skill orchestrator for local skill management tools.
@@ -273,7 +297,7 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 // output via StreamWeave; loom_execute_workflow streams multi-agent progress via
 // StreamWorkflow.
 func (b *LoomBridge) SupportsStreaming(name string) bool {
-	return name == "loom_weave" || name == "loom_execute_workflow"
+	return name == "loom_weave" || name == "loom_execute_workflow" || name == "loom_build"
 }
 
 // CallToolStream implements StreamingToolProvider. loom_weave and
@@ -288,6 +312,8 @@ func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[s
 		return b.handleWeaveStream(ctx, args, emit)
 	case "loom_execute_workflow":
 		return b.handleWorkflowStream(ctx, args, emit)
+	case "loom_build":
+		return b.handleBuildStream(ctx, args, emit)
 	}
 	return b.CallTool(ctx, name, args)
 }

@@ -119,6 +119,13 @@ func main() {
 		logger.Info("MCP edge tool allow-list active", zap.Int("allowed_count", len(allowed)), zap.Strings("tools", allowed))
 	}
 
+	// loom_build delegates agent/workflow authoring to the weaver. Override the
+	// target agent with LOOM_MCP_BUILDER_AGENT; unset = the weaver (default).
+	if ba := strings.TrimSpace(os.Getenv("LOOM_MCP_BUILDER_AGENT")); ba != "" {
+		bridgeOpts = append(bridgeOpts, server.WithBuilderAgent(ba))
+		logger.Info("loom_build builder agent overridden", zap.String("agent", ba))
+	}
+
 	// Initialize skills library and orchestrator for MCP skill tools
 	skillsDir := os.Getenv("LOOM_SKILLS_DIR")
 	if skillsDir == "" {
@@ -142,11 +149,14 @@ func main() {
 	defer func() { _ = bridge.Close() }()
 	logger.Info("connected to looms", zap.String("addr", *grpcAddr))
 
-	// Create MCP server with bridge as provider
+	// Create MCP server with bridge as provider. The instructions steer a
+	// connecting model to delegate authoring to the weaver (loom_build) rather
+	// than hand-rolling workflow YAML/patterns — which external models do poorly.
 	mcpServer := server.NewMCPServer(serverName, version.Get(), logger,
 		server.WithToolProvider(bridge),
 		server.WithResourceProvider(bridge),
 		server.WithExtensions(protocol.ServerAppsExtension()),
+		server.WithInstructions("To create agents or workflows, call loom_build with a natural-language description; Loom's weaver authors and saves them for you. Do not construct workflow YAML or patterns directly — the weaver knows Loom's components and conventions far better. Use loom_execute_workflow to RUN a workflow the weaver built."),
 	)
 
 	// Wire MCP server to bridge so app mutations trigger resource list change notifications.
