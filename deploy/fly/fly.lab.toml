@@ -16,6 +16,10 @@ primary_region = "dfw"               # Dallas — closest Fly region to Austin
   LOOM_CONFIG                         = "/etc/loom/looms.lab.yaml"
   # Persist created agents + workspace on the mounted volume (survives restarts).
   LOOM_DATA_DIR                       = "/data"
+  # Fly containers run in UTC; Go's time.Local honors TZ. Set Central so the
+  # datetime injected into agent prompts matches the (Austin) presenter — without
+  # it, agents think it's ~6h later and mis-reason about "tonight"/business hours.
+  TZ                                  = "America/Chicago"
   LOOM_SERVER_HOST                    = "127.0.0.1"
   LOOM_SERVER_HTTP_PORT               = "0"
   LOOM_STORAGE_BACKEND                = "postgres"
