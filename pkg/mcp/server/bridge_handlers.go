@@ -573,6 +573,13 @@ func (b *LoomBridge) handleListWorkflowExecutions(ctx context.Context, args map[
 	)
 }
 
+func (b *LoomBridge) handleListWorkflows(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	return callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.ListWorkflowsRequest { return &loomv1.ListWorkflowsRequest{} },
+		b.client.ListWorkflows,
+	)
+}
+
 func (b *LoomBridge) handleScheduleWorkflow(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
 	return callGRPC(ctx, b.requestTimeout, args,
 		func() *loomv1.ScheduleWorkflowRequest { return &loomv1.ScheduleWorkflowRequest{} },

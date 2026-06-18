@@ -62,6 +62,7 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 
 		// Workflow Orchestration
 		"loom_execute_workflow":           b.handleExecuteWorkflow,
+		"loom_list_workflows":             b.handleListWorkflows,
 		"loom_get_workflow_execution":     b.handleGetWorkflowExecution,
 		"loom_list_workflow_executions":   b.handleListWorkflowExecutions,
 		"loom_schedule_workflow":          b.handleScheduleWorkflow,
@@ -281,14 +282,16 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		tool("loom_list_models", "List all available LLM models.", objectSchema(), "", mv, ro),
 
 		// Workflow Orchestration
-		tool("loom_execute_workflow", "Execute a multi-agent workflow (debate, pipeline, parallel, etc.) and stream its progress. The orchestrator wires the agents and their messaging itself — this is the reliable way to run multi-agent work, not ad-hoc ephemeral agents. Provide the workflow as 'workflow_yaml' (a YAML workflow spec with agents+tasks+type; easiest) OR an inline 'pattern'. Returns each agent's final output.", objectSchema(
-			prop("workflow_yaml", "string", "A complete workflow definition in YAML (agents, tasks, and workflow type). The simplest way to specify a workflow; takes precedence over 'pattern'."),
+		tool("loom_execute_workflow", "Execute a multi-agent workflow (debate, pipeline, parallel, etc.) and stream its progress. The orchestrator wires the agents and their messaging itself — this is the reliable way to run multi-agent work, not ad-hoc ephemeral agents. To run an EXISTING saved workflow, just pass 'workflow_ref' (its name, from loom_list_workflows) plus any 'variables' — no need to re-supply the definition. Otherwise provide 'workflow_yaml' (a YAML spec with agents+tasks+type) or an inline 'pattern'. Returns each agent's final output.", objectSchema(
+			prop("workflow_ref", "string", "Name of a SAVED workflow to run (from loom_list_workflows). The easiest way to run an existing workflow: pass this + variables, nothing else. Takes precedence over workflow_yaml/pattern."),
+			prop("workflow_yaml", "string", "A complete workflow definition in YAML (agents, tasks, and workflow type). Use for an ad-hoc workflow; takes precedence over 'pattern'."),
 			prop("pattern", "object", "Inline WorkflowPattern (protojson oneof: debate/pipeline/parallel/...). Use workflow_yaml instead unless you already have a proto pattern."),
 			prop("registry_id", "string", "Agent registry to use for agent lookup"),
 			prop("variables", "object", "Variables for prompt interpolation"),
 			prop("timeout_seconds", "integer", "Execution timeout in seconds"),
 			prop("enable_trace", "boolean", "Enable execution tracing"),
 		), "", mv, mut),
+		tool("loom_list_workflows", "List saved workflows that can be run by name. Returns each workflow's name (pass as workflow_ref to loom_execute_workflow), description, and type. Use this to discover existing workflows instead of authoring one.", objectSchema(), "", mv, ro),
 		tool("loom_get_workflow_execution", "Get a workflow execution.", objectSchema(
 			reqProp("execution_id", "string", "Workflow execution ID"),
 		), "", mv, ro),

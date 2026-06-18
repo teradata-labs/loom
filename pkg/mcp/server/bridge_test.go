@@ -287,6 +287,31 @@ func TestLoomBridge_Build_PinsWeaver(t *testing.T) {
 	assert.True(t, bridge.SupportsStreaming("loom_build"))
 }
 
+func TestLoomBridge_WorkflowRefSurface(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, apps.NewUIResourceRegistry(), logger)
+
+	tools, err := bridge.ListTools(context.Background())
+	require.NoError(t, err)
+
+	byName := make(map[string]protocol.Tool)
+	for _, tl := range tools {
+		byName[tl.Name] = tl
+	}
+
+	// loom_list_workflows must be advertised (run-by-name discovery).
+	_, ok := byName["loom_list_workflows"]
+	assert.True(t, ok, "loom_list_workflows should be advertised")
+
+	// loom_execute_workflow must accept workflow_ref so existing workflows run by name.
+	exec, ok := byName["loom_execute_workflow"]
+	require.True(t, ok)
+	props, _ := exec.InputSchema["properties"].(map[string]interface{})
+	require.NotNil(t, props, "execute_workflow should have properties")
+	_, hasRef := props["workflow_ref"]
+	assert.True(t, hasRef, "loom_execute_workflow should expose workflow_ref")
+}
+
 func TestLoomBridge_AllowList(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}

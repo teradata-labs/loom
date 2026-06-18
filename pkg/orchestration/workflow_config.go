@@ -124,7 +124,7 @@ func parseWorkflowYAML(data []byte) (*WorkflowConfig, error) {
 func validateWorkflowStructure(config *WorkflowConfig) error {
 	// Check apiVersion
 	if config.APIVersion == "" {
-		return fmt.Errorf("%w: missing apiVersion", ErrInvalidWorkflow)
+		return fmt.Errorf("%w: missing apiVersion — a workflow YAML needs 'apiVersion: loom/v1', 'kind: Workflow', and a 'spec:' block with a 'type:'. To run a workflow you already saved, pass workflow_ref (its name; see loom_list_workflows) instead of re-supplying the full YAML", ErrInvalidWorkflow)
 	}
 	if config.APIVersion != "loom/v1" {
 		return fmt.Errorf("%w: unsupported apiVersion '%s', expected 'loom/v1'", ErrInvalidWorkflow, config.APIVersion)

@@ -389,6 +389,13 @@ func (r *Registry) LoadAgents(ctx context.Context) error {
 	return nil
 }
 
+// WorkflowsDir returns the directory holding saved workflow YAML definitions
+// ($LOOM_DATA_DIR/workflows). Used by the server to resolve workflow_ref (run a
+// saved workflow by name) and to list runnable workflows.
+func (r *Registry) WorkflowsDir() string {
+	return filepath.Join(r.configDir, "workflows")
+}
+
 // LoadWorkflows loads workflow files and registers their coordinator agents
 func (r *Registry) LoadWorkflows(ctx context.Context) error {
 	workflowsDir := filepath.Join(r.configDir, "workflows")
