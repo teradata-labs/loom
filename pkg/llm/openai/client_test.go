@@ -175,6 +175,70 @@ func TestClient_ConvertMessages(t *testing.T) {
 			},
 		},
 		{
+			// Regression: json.Marshal of a nil map returns "null" (no error),
+			// which the old `if err != nil` guard let through. LiteLLM forwards
+			// that to Vertex AI as tool_use.input=null, which is rejected with
+			// "Input should be a valid dictionary". Must coerce to "{}".
+			name: "assistant tool call with nil input",
+			messages: []types.Message{
+				{
+					Role: "assistant",
+					ToolCalls: []types.ToolCall{
+						{
+							ID:    "call_nil",
+							Name:  "get_status",
+							Input: nil,
+						},
+					},
+				},
+			},
+			want: []ChatMessage{
+				{
+					Role: "assistant",
+					ToolCalls: []ToolCall{
+						{
+							ID:   "call_nil",
+							Type: "function",
+							Function: FunctionCall{
+								Name:      "get_status",
+								Arguments: `{}`,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "assistant tool call with empty input",
+			messages: []types.Message{
+				{
+					Role: "assistant",
+					ToolCalls: []types.ToolCall{
+						{
+							ID:    "call_empty",
+							Name:  "get_status",
+							Input: map[string]interface{}{},
+						},
+					},
+				},
+			},
+			want: []ChatMessage{
+				{
+					Role: "assistant",
+					ToolCalls: []ToolCall{
+						{
+							ID:   "call_empty",
+							Type: "function",
+							Function: FunctionCall{
+								Name:      "get_status",
+								Arguments: `{}`,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "tool result message",
 			messages: []types.Message{
 				{

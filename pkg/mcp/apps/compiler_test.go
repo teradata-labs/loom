@@ -65,6 +65,8 @@ func TestCompiler_Validate_ValidSpec(t *testing.T) {
 		{"stack layout", "stack"},
 		{"grid-2 layout", "grid-2"},
 		{"grid-3 layout", "grid-3"},
+		{"grid layout", "grid"},
+		{"grid-4 layout (alias for grid)", "grid-4"},
 	}
 
 	for _, tc := range tests {
@@ -119,7 +121,6 @@ func TestCompiler_Validate_InvalidLayout(t *testing.T) {
 		name   string
 		layout string
 	}{
-		{"grid-4 layout", "grid-4"},
 		{"horizontal layout", "horizontal"},
 		{"random string", "foobar"},
 	}
