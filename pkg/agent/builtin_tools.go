@@ -353,11 +353,12 @@ func generateRetrievalHints(meta *storage.DataMetadata) []string {
 
 	switch meta.DataType {
 	case "json_object":
-		// json_object doesn't support direct retrieval - data is too large for context
-		// Agent should understand structure from schema/preview and extract needed fields
+		// A json_object is retrievable by paginating it as text (windowed), so an
+		// agent can read back stored content (e.g. a web_search/http_request
+		// envelope) instead of hitting a dead end.
 		hints = append(hints,
-			"⚠️ Large json_object cannot be retrieved directly",
-			"💡 Review the preview and schema to understand structure",
+			"💡 query_tool_result(reference_id=..., offset=0, limit=100) — read the object (paginated)",
+			"💡 query_tool_result(reference_id=..., sql='SELECT * FROM results ...') — if it wraps a 'results' array",
 		)
 		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
 			fieldNames := make([]string, 0, len(meta.Schema.Fields))
@@ -368,7 +369,7 @@ func generateRetrievalHints(meta *storage.DataMetadata) []string {
 		}
 		// Add warning about size
 		if meta.SizeBytes > 100000 { // >100KB
-			hints = append(hints, fmt.Sprintf("⚠️ Object size: %d bytes - too large for context window", meta.SizeBytes))
+			hints = append(hints, fmt.Sprintf("⚠️ Large object (%d bytes) — paginate with offset/limit to avoid loading all at once", meta.SizeBytes))
 		}
 
 	case "json_array":
@@ -663,7 +664,7 @@ func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string,
 	// query's JSON blob, comes back whole. Structured types (json_object,
 	// json_array) still require an explicit method below, so a large array is
 	// never auto-dumped.
-	if meta.DataType == "text" {
+	if meta.DataType == "text" || meta.DataType == "json_object" {
 		return t.paginateData(ref, meta, input)
 	}
 
@@ -924,14 +925,17 @@ func (t *QueryToolResultTool) paginateData(ref *loomv1.DataReference, meta *stor
 	switch meta.DataType {
 	case "json_array":
 		return t.paginateJSONArray(data, offset, limit)
-	case "text":
+	case "text", "json_object":
+		// A json_object (e.g. a web_search/http_request result envelope) is a
+		// single blob with no item index, so window it as text — that lets an
+		// agent read back the stored content instead of hitting a dead end.
 		return t.paginateText(data, offset, limit)
 	default:
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "invalid_data_type",
-				Message:    fmt.Sprintf("Pagination only supports json_array and text, got %s", meta.DataType),
+				Message:    fmt.Sprintf("Pagination only supports json_array, json_object and text, got %s", meta.DataType),
 				Suggestion: "Check the tool result metadata and retrieval hints for supported query methods",
 			},
 		}, nil

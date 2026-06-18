@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -532,4 +533,29 @@ func TestConvertCSVToRows_TrailingNewlines(t *testing.T) {
 
 	assert.Equal(t, []string{"id", "name"}, columns)
 	assert.Len(t, rows, 2, "should ignore trailing newlines")
+}
+
+// TestQueryToolResult_JSONObjectRetrievable reproduces the web_search read-back
+// failure: a large result stored as a json_object (e.g. {provider, results:[...]})
+// used to be unretrievable — bare/offset queries errored and the summary gave no
+// reference_id. A bare reference_id must now return the stored content.
+func TestQueryToolResult_JSONObjectRetrievable(t *testing.T) {
+	ctx := context.Background()
+	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
+		MaxMemoryBytes: 10 * 1024 * 1024, CompressionThreshold: 1024 * 1024, TTLSeconds: 3600,
+	})
+	tool := &QueryToolResultTool{memoryStore: memoryStore}
+
+	jsonData := `{"provider":"tavily","query":"lazarus hours","result_count":1,"results":[{"title":"Lazarus","content":"Closes at 10pm daily","url":"https://x"}]}`
+	ref, err := memoryStore.Store("ref_web_search_123", []byte(jsonData), "application/json", nil)
+	require.NoError(t, err)
+	meta, err := memoryStore.GetMetadata(ref)
+	require.NoError(t, err)
+	require.Equal(t, "json_object", meta.DataType, "fixture must be a json_object")
+
+	// Bare reference_id (the agent's natural call) must now return content.
+	res, err := tool.Execute(ctx, map[string]interface{}{"reference_id": ref.Id})
+	require.NoError(t, err)
+	require.True(t, res.Success, "json_object must be retrievable, got error: %+v", res.Error)
+	assert.Contains(t, fmt.Sprintf("%v", res.Data), "Closes at 10pm daily", "stored content must come back")
 }

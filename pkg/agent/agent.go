@@ -3868,10 +3868,15 @@ func formatAgentSharedMemoryResult(meta *storage.DataMetadata, id string, toolNa
 	summary.WriteString("💡 How to retrieve:\n")
 	switch meta.DataType {
 	case "json_object":
-		summary.WriteString(fmt.Sprintf("⚠️ This json_object is too large (%d bytes) for direct retrieval\n", meta.SizeBytes))
-		summary.WriteString("Use the preview and schema above to understand the structure\n")
+		// Surface the reference_id + a working call. Previously this branch told
+		// the model the object was "too large for direct retrieval" and gave NO
+		// id — so it could see a result existed (web_search, http_request, ...)
+		// but had no way to read it and would guess wrong ids. Pagination windows
+		// the object as text, so the full content is retrievable.
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)  # read the object (paginated)\n", id))
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')  # if it wraps a 'results' array\n", id))
 		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			summary.WriteString("Consider which specific fields you need from the object\n")
+			summary.WriteString("Use the schema above to pick the fields you need.\n")
 		}
 
 	case "json_array":
