@@ -177,8 +177,25 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 			}
 		}
 
-		// Update input for next stage
-		currentInput = result.Output
+		// Update input for next stage. Hybrid context passing: stash the FULL stage
+		// output in SharedMemory (key stage-N-output) so a later stage can fetch it
+		// by reference, and pass the next stage a truncated summary when the output
+		// is large (> MaxStageOutputBytes). Small outputs pass through inline,
+		// unchanged. stageOutputs keeps the full text (final output + {{history}}).
+		// When SharedMemory is unavailable, fall back to full inline (original
+		// behavior) so no existing deployment regresses.
+		if e.orchestrator.sharedMemory != nil {
+			stageMemoryKey := fmt.Sprintf("stage-%d-output", stageNum)
+			if err := e.storeStageOutputInMemory(ctx, stageMemoryKey, stage.AgentId, result.Output); err != nil {
+				e.orchestrator.logger.Warn("failed to stash stage output in SharedMemory; passing full output inline",
+					zap.Int("stage", stageNum), zap.Error(err))
+				currentInput = result.Output
+			} else {
+				currentInput, _ = truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
+			}
+		} else {
+			currentInput = result.Output
+		}
 	}
 
 	// The final output is the last stage's output
@@ -213,7 +230,52 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 
 // buildStagePrompt constructs the prompt for a pipeline stage.
 func (e *PipelineExecutor) buildStagePrompt(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
-	return e.buildStagePromptWithContext(stage, previousOutput, allOutputs, nil)
+	prompt := e.buildStagePromptWithContext(stage, previousOutput, allOutputs, nil)
+	// When prior stages' full outputs are stashed in SharedMemory, tell the agent
+	// how to fetch them by key so it can recover full upstream context even when
+	// {{previous}} was truncated. Only the plain pipeline path adds this header;
+	// the iterative executor adds its own (it calls buildStagePromptWithContext
+	// directly, bypassing this wrapper).
+	if e.orchestrator.sharedMemory != nil && len(allOutputs) > 0 {
+		return e.buildSharedMemoryContextHeader(len(allOutputs)) + prompt
+	}
+	return prompt
+}
+
+// storeStageOutputInMemory stashes a stage's full output in the WORKFLOW
+// SharedMemory namespace under the given key, for on-demand retrieval by later
+// stages via shared_memory_read.
+func (e *PipelineExecutor) storeStageOutputInMemory(ctx context.Context, key, agentID, output string) error {
+	if e.orchestrator.sharedMemory == nil {
+		return fmt.Errorf("SharedMemory not available")
+	}
+	_, err := e.orchestrator.sharedMemory.Put(ctx, &loomv1.PutSharedMemoryRequest{
+		Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+		Key:       key,
+		Value:     []byte(output),
+		AgentId:   agentID,
+		Metadata: map[string]string{
+			"type":      "stage_output",
+			"agent_id":  agentID,
+			"full_size": fmt.Sprintf("%d", len(output)),
+		},
+	})
+	return err
+}
+
+// buildSharedMemoryContextHeader lists the SharedMemory keys holding prior
+// stages' full outputs, with the call to fetch them.
+func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
+	var b strings.Builder
+	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
+	b.WriteString("Full outputs from previous stages are stored in SharedMemory.\n")
+	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"stage-N-output\")` to fetch any stage's complete output (use this if a stage's input below looks truncated).\n\n")
+	b.WriteString("Available keys:\n")
+	for i := 1; i <= stageCount; i++ {
+		b.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+	}
+	b.WriteString("\n---\n\n")
+	return b.String()
 }
 
 // buildStagePromptWithContext constructs the prompt with optional structured context.

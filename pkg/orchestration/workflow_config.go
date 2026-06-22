@@ -69,30 +69,27 @@ type WorkflowMetadata struct {
 //   - ErrInvalidWorkflow: If the workflow structure is invalid
 //   - ErrUnsupportedPattern: If the pattern type is not recognized
 func LoadWorkflowFromYAML(path string) (*loomv1.WorkflowPattern, error) {
-	// 1. Read file
 	data, err := readWorkflowFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return LoadWorkflowFromYAMLBytes(data)
+}
 
-	// 2. Parse YAML
+// LoadWorkflowFromYAMLBytes parses, validates, and converts a workflow YAML
+// document already in memory into a WorkflowPattern. It is the path-free core
+// of LoadWorkflowFromYAML, used when the YAML arrives over the wire (e.g. the
+// loom_execute_workflow MCP tool's workflow_yaml argument) rather than from a
+// file on disk.
+func LoadWorkflowFromYAMLBytes(data []byte) (*loomv1.WorkflowPattern, error) {
 	config, err := parseWorkflowYAML(data)
 	if err != nil {
 		return nil, err
 	}
-
-	// 3. Validate structure
 	if err := validateWorkflowStructure(config); err != nil {
 		return nil, err
 	}
-
-	// 4. Convert to proto
-	pattern, err := convertToProto(config)
-	if err != nil {
-		return nil, err
-	}
-
-	return pattern, nil
+	return convertToProto(config)
 }
 
 // readWorkflowFile reads the workflow file from disk
@@ -127,7 +124,7 @@ func parseWorkflowYAML(data []byte) (*WorkflowConfig, error) {
 func validateWorkflowStructure(config *WorkflowConfig) error {
 	// Check apiVersion
 	if config.APIVersion == "" {
-		return fmt.Errorf("%w: missing apiVersion", ErrInvalidWorkflow)
+		return fmt.Errorf("%w: missing apiVersion — a workflow YAML needs 'apiVersion: loom/v1', 'kind: Workflow', and a 'spec:' block with a 'type:'. To run a workflow you already saved, pass workflow_ref (its name; see loom_list_workflows) instead of re-supplying the full YAML", ErrInvalidWorkflow)
 	}
 	if config.APIVersion != "loom/v1" {
 		return fmt.Errorf("%w: unsupported apiVersion '%s', expected 'loom/v1'", ErrInvalidWorkflow, config.APIVersion)

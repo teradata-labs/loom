@@ -742,6 +742,26 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 	return out
 }
 
+// applyPermissionToolFilter removes any tool the permission checker would never
+// allow — hard-disabled tools, or approval-required tools when no approval
+// mechanism is wired up — so the LLM is only offered tools it can actually
+// execute. Without this the model "discovers" a disabled tool by calling it and
+// eating a denial: a wasted turn, plus an intentional policy decision logged as
+// a tool failure. Tools driven by subsystems (graph_memory, task_board) are
+// unaffected; this only trims the names presented to the model.
+func (a *Agent) applyPermissionToolFilter(in []shuttle.Tool) []shuttle.Tool {
+	if a.permissionChecker == nil {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, tool := range in {
+		if tool == nil || a.permissionChecker.Advertisable(tool.Name()) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // RegisterTool registers a tool with the agent. Honours the
 // WithoutBuiltinTool suppression set: if the tool's name has been
 // suppressed via that option, the registration is silently skipped so
@@ -2170,6 +2190,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// below removes any active skill's excluded set for this turn.
 	tools := a.tools.ListTools()
 	tools = a.applySkillExcludedTools(tools, session)
+	tools = a.applyPermissionToolFilter(tools)
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
@@ -3657,6 +3678,26 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 		a.refTracker.PinForSession(sessionID, result.DataReference.Id)
 	}
 
+	// Progressive disclosure: a tool returned a STORED REFERENCE (e.g. an MCP tool
+	// like dbwrite:query that pre-stores a large {columns, rows} result and tells
+	// the model to use query_tool_result). The agent's own large-result path
+	// registers query_tool_result in formatToolResult, but a pre-stored reference
+	// bypasses that — so register it here too, the moment any tool hands back a
+	// reference. Keeps it out of the fresh tool list while ensuring it's available
+	// as soon as there's something to page.
+	// query_tool_result reads from EITHER the SQL result store or shared memory,
+	// so register it when either is wired. Requiring only the SQL store missed
+	// shared-memory references (e.g. web_search results stored by the executor) —
+	// the agent saw the reference but had no tool to page it.
+	if result.DataReference != nil && (a.sqlResultStore != nil || a.sharedMemory != nil) &&
+		!a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
+		queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+		if a.prompts != nil {
+			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		}
+		a.tools.Register(queryTool)
+	}
+
 	// Format successful result with smart truncation
 	if result.Data != nil {
 		dataStr := fmt.Sprintf("%v", result.Data)
@@ -3730,8 +3771,10 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 					}
 
 					// Progressive disclosure: Register query_tool_result after first large
-					// result, unless the server has suppressed it (tools.none).
-					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
+					// result, unless the server has suppressed it (tools.none). We're
+					// inside `a.sharedMemory != nil` and just stored there, so the tool
+					// has a backing store regardless of whether the SQL store is wired.
+					if !a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
 						queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
 						if a.prompts != nil {
 							queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
@@ -3831,10 +3874,15 @@ func formatAgentSharedMemoryResult(meta *storage.DataMetadata, id string, toolNa
 	summary.WriteString("💡 How to retrieve:\n")
 	switch meta.DataType {
 	case "json_object":
-		summary.WriteString(fmt.Sprintf("⚠️ This json_object is too large (%d bytes) for direct retrieval\n", meta.SizeBytes))
-		summary.WriteString("Use the preview and schema above to understand the structure\n")
+		// Surface the reference_id + a working call. Previously this branch told
+		// the model the object was "too large for direct retrieval" and gave NO
+		// id — so it could see a result existed (web_search, http_request, ...)
+		// but had no way to read it and would guess wrong ids. Pagination windows
+		// the object as text, so the full content is retrievable.
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)  # read the object (paginated)\n", id))
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')  # if it wraps a 'results' array\n", id))
 		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			summary.WriteString("Consider which specific fields you need from the object\n")
+			summary.WriteString("Use the schema above to pick the fields you need.\n")
 		}
 
 	case "json_array":
@@ -4288,20 +4336,15 @@ func (a *Agent) SetSQLResultStore(sqlStore storage.ResultStore) {
 	// Store reference for later use
 	a.sqlResultStore = sqlStore
 
-	// Inject into tool executor so SQL results go to queryable tables
+	// Inject into tool executor so SQL results go to queryable tables. The store
+	// is wired regardless so large results are stored; the query_tool_result TOOL
+	// itself is NOT registered here — it is progressively disclosed (registered
+	// only after the first large result is stored; see formatToolResult /
+	// agent.go:3753). Registering it eagerly whenever a store existed put it in the
+	// model's tool list every turn even with nothing to query, defeating the
+	// progressive-disclosure design.
 	if a.executor != nil {
 		a.executor.SetSQLResultStore(sqlStore)
-	}
-
-	// Register query_tool_result tool if not already registered, unless the
-	// server has suppressed it (tools.none). The SQL result store stays
-	// wired regardless — agent subsystems can still write to it.
-	if sqlStore != nil && a.tools != nil && !a.isBuiltinToolSuppressed("query_tool_result") {
-		queryTool := shuttle.Tool(NewQueryToolResultTool(sqlStore, a.sharedMemory))
-		if a.prompts != nil {
-			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-		}
-		a.tools.Register(queryTool)
 	}
 }
 

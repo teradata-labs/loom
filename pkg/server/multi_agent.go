@@ -437,9 +437,13 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 			s.mu.RUnlock()
 
 			if ok {
-				// Log deprecation warning when name used instead of GUID
+				// Name-based addressing is a supported convenience (e.g. `loom chat
+				// --agent <name>` and clients that pass an agent name); the server
+				// resolves it to the GUID here. Log at Debug — it fires on every
+				// name-addressed call (including every Dreambase weave), so Warn was
+				// just noise, not an actionable deprecation.
 				if s.logger != nil {
-					s.logger.Warn("Agent accessed by name instead of GUID (deprecated)",
+					s.logger.Debug("resolved agent name to GUID",
 						zap.String("name", agentID),
 						zap.String("guid", resolvedGUID),
 						zap.String("caller", "getAgent"))
@@ -3379,16 +3383,86 @@ func (s *MultiAgentServer) Shutdown(ctx context.Context) error {
 
 // ExecuteWorkflow executes a workflow pattern loaded from YAML or programmatically defined.
 // This RPC enables automatic execution of multi-agent workflows.
-func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.ExecuteWorkflowRequest) (*loomv1.ExecuteWorkflowResponse, error) {
-	if req.Pattern == nil {
-		return nil, status.Error(codes.InvalidArgument, "pattern is required")
+// resolveWorkflowPattern returns the pattern to run: an inline req.Pattern when
+// supplied, otherwise the saved workflow named req.WorkflowRef loaded from the
+// registry's workflows directory. This lets a client run an existing workflow by
+// name with just variables, instead of re-supplying the full pattern/YAML.
+func (s *MultiAgentServer) resolveWorkflowPattern(req *loomv1.ExecuteWorkflowRequest, registry *agent.Registry) (*loomv1.WorkflowPattern, error) {
+	if req.GetPattern() != nil {
+		return req.GetPattern(), nil
+	}
+	ref := strings.TrimSpace(req.GetWorkflowRef())
+	if ref == "" {
+		return nil, status.Error(codes.InvalidArgument, "either pattern or workflow_ref is required")
+	}
+	if registry == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent registry not configured")
+	}
+	// A workflow_ref is a bare name; reject path separators/traversal so it can
+	// only resolve inside the workflows directory.
+	if strings.ContainsAny(ref, `/\`) || strings.Contains(ref, "..") {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid workflow_ref %q: must be a bare workflow name", ref)
+	}
+	path := filepath.Join(registry.WorkflowsDir(), ref+".yaml")
+	if _, statErr := os.Stat(path); statErr != nil {
+		return nil, status.Errorf(codes.NotFound, "workflow %q not found (call ListWorkflows to see runnable workflows)", ref)
+	}
+	pattern, err := orchestration.LoadWorkflowFromYAML(path)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to load workflow %q: %v", ref, err)
+	}
+	return pattern, nil
+}
+
+// ListWorkflows returns the saved workflow definitions runnable by name via
+// ExecuteWorkflow's workflow_ref.
+func (s *MultiAgentServer) ListWorkflows(_ context.Context, _ *loomv1.ListWorkflowsRequest) (*loomv1.ListWorkflowsResponse, error) {
+	s.mu.RLock()
+	registry := s.registry
+	s.mu.RUnlock()
+	if registry == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agent registry not configured")
 	}
 
-	// Check registry is configured
+	dir := registry.WorkflowsDir()
+	files, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list workflows: %v", err)
+	}
+	resp := &loomv1.ListWorkflowsResponse{}
+	for _, path := range files {
+		cfg, err := orchestration.LoadWorkflowConfigFromYAML(path)
+		if err != nil {
+			// Skip unparseable files rather than failing the whole listing.
+			if s.logger != nil {
+				s.logger.Warn("skipping unparseable workflow file", zap.String("path", path), zap.Error(err))
+			}
+			continue
+		}
+		name := cfg.Metadata.Name
+		if name == "" {
+			name = strings.TrimSuffix(filepath.Base(path), ".yaml")
+		}
+		wfType, _ := cfg.Spec["type"].(string)
+		resp.Workflows = append(resp.Workflows, &loomv1.WorkflowSummary{
+			Name:        name,
+			Description: cfg.Metadata.Description,
+			Type:        wfType,
+		})
+	}
+	return resp, nil
+}
+
+func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.ExecuteWorkflowRequest) (*loomv1.ExecuteWorkflowResponse, error) {
 	s.mu.RLock()
 	registry := s.registry
 	s.mu.RUnlock()
 
+	// Resolve the pattern: an inline pattern, or a saved workflow by name (workflow_ref).
+	pattern, err := s.resolveWorkflowPattern(req, registry)
+	if err != nil {
+		return nil, err
+	}
 	if registry == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent registry not configured")
 	}
@@ -3399,7 +3473,7 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 	// Create workflow execution record
 	exec := &WorkflowExecution{
 		ExecutionID: executionID,
-		Pattern:     req.Pattern,
+		Pattern:     pattern,
 		StartTime:   time.Now(),
 		Status:      WorkflowStatusRunning,
 	}
@@ -3414,7 +3488,6 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 	}
 
 	// Apply variable interpolation
-	pattern := req.Pattern
 	if len(req.Variables) > 0 {
 		pattern = orchestration.InterpolateVariables(pattern, req.Variables)
 	}
@@ -3509,15 +3582,15 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 // StreamWorkflow executes a workflow and streams progress updates to the client.
 // This provides real-time feedback during long-running multi-agent workflows.
 func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, stream loomv1.LoomService_StreamWorkflowServer) error {
-	if req.Pattern == nil {
-		return status.Error(codes.InvalidArgument, "pattern is required")
-	}
-
-	// Check registry is configured
 	s.mu.RLock()
 	registry := s.registry
 	s.mu.RUnlock()
 
+	// Resolve the pattern: an inline pattern, or a saved workflow by name (workflow_ref).
+	pattern, err := s.resolveWorkflowPattern(req, registry)
+	if err != nil {
+		return err
+	}
 	if registry == nil {
 		return status.Error(codes.FailedPrecondition, "agent registry not configured")
 	}
@@ -3526,7 +3599,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 	executionID := GenerateSessionID()
 
 	// Get pattern type for progress messages
-	patternType := orchestration.GetPatternType(req.Pattern)
+	patternType := orchestration.GetPatternType(pattern)
 
 	// Send initial progress
 	if err := stream.Send(&loomv1.WorkflowProgress{
@@ -3557,7 +3630,6 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 	}
 
 	// Apply variable interpolation
-	pattern := req.Pattern
 	if len(req.Variables) > 0 {
 		pattern = orchestration.InterpolateVariables(pattern, req.Variables)
 	}
