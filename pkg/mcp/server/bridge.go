@@ -59,9 +59,16 @@ type LoomBridge struct {
 	tlsSkipVerify     bool                   // skip server certificate verification (insecure)
 	tlsEnabled        bool                   // whether TLS is explicitly enabled
 	skillOrchestrator *skills.Orchestrator   // optional skills orchestrator (nil = skills tools disabled)
+	allowedTools      map[string]bool        // when non-empty, the ONLY tools advertised + permitted (edge allow-list)
 	tools             []protocol.Tool        // cached tool definitions
 	handlers          map[string]toolHandler // cached tool handlers (built once)
+	builderAgent      string                 // agent loom_build routes to (default "weaver")
 }
+
+// defaultBuilderAgent is the agent loom_build delegates authoring to when no
+// override is configured. The weaver is Loom's expert at constructing agents and
+// workflows; routing builds to it stops external models from hand-rolling YAML.
+const defaultBuilderAgent = "weaver"
 
 // BridgeOption configures a LoomBridge.
 type BridgeOption func(*LoomBridge)
@@ -85,6 +92,66 @@ func WithMCPServer(s *MCPServer) BridgeOption {
 // when the MCPServer is created after the bridge (common in main.go wiring).
 func (b *LoomBridge) SetMCPServer(s *MCPServer) {
 	b.mcpServer = s
+}
+
+// WithAllowedTools restricts the bridge to a fixed set of tool names. When set
+// (non-empty), only these tools are advertised by ListTools and permitted by
+// CallTool/CallToolStream; every other loom RPC is hidden and rejected. This is
+// the edge allow-list for an internet-facing MCP endpoint — it keeps destructive
+// admin tools (delete_agent, register_tool, schedules, ...) off a public surface
+// regardless of what a client requests. Empty/unset = expose everything
+// (backwards compatible).
+func WithAllowedTools(names []string) BridgeOption {
+	return func(b *LoomBridge) {
+		if len(names) == 0 {
+			return
+		}
+		b.allowedTools = make(map[string]bool, len(names))
+		for _, n := range names {
+			if n = strings.TrimSpace(n); n != "" {
+				b.allowedTools[n] = true
+			}
+		}
+	}
+}
+
+// toolAllowed reports whether a tool may be advertised/called. An empty
+// allow-list means no restriction.
+func (b *LoomBridge) toolAllowed(name string) bool {
+	return len(b.allowedTools) == 0 || b.allowedTools[name]
+}
+
+// applyAllowList prunes the cached tool definitions to the allow-list (if any),
+// so ListTools only advertises permitted tools. Call after buildToolDefinitions.
+func (b *LoomBridge) applyAllowList() {
+	if len(b.allowedTools) == 0 {
+		return
+	}
+	filtered := make([]protocol.Tool, 0, len(b.tools))
+	for _, t := range b.tools {
+		if b.allowedTools[t.Name] {
+			filtered = append(filtered, t)
+		}
+	}
+	b.tools = filtered
+}
+
+// WithBuilderAgent overrides the agent that loom_build delegates to. Defaults to
+// the weaver. Set via LOOM_MCP_BUILDER_AGENT to point builds at a dedicated agent.
+func WithBuilderAgent(name string) BridgeOption {
+	return func(b *LoomBridge) {
+		if name = strings.TrimSpace(name); name != "" {
+			b.builderAgent = name
+		}
+	}
+}
+
+// builderAgentOrDefault returns the configured builder agent, or the default.
+func (b *LoomBridge) builderAgentOrDefault() string {
+	if b.builderAgent != "" {
+		return b.builderAgent
+	}
+	return defaultBuilderAgent
 }
 
 // WithSkillOrchestrator sets the skill orchestrator for local skill management tools.
@@ -130,7 +197,12 @@ func NewLoomBridge(grpcAddr string, uiRegistry *apps.UIResourceRegistry, logger 
 		return nil, fmt.Errorf("configure transport credentials: %w", err)
 	}
 
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(grpcAddr,
+		grpc.WithTransportCredentials(creds),
+		// Forward the edge-validated caller identity (bearer + x-user-id) to looms.
+		grpc.WithChainUnaryInterceptor(bearerForwardUnaryInterceptor),
+		grpc.WithChainStreamInterceptor(bearerForwardStreamInterceptor),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to looms at %s: %w", grpcAddr, err)
 	}
@@ -139,6 +211,7 @@ func NewLoomBridge(grpcAddr string, uiRegistry *apps.UIResourceRegistry, logger 
 	bridge.client = loomv1.NewLoomServiceClient(conn)
 	bridge.tools = bridge.buildToolDefinitions()
 	bridge.handlers = bridge.buildToolHandlers()
+	bridge.applyAllowList()
 	return bridge, nil
 }
 
@@ -189,6 +262,7 @@ func NewLoomBridgeFromClient(client loomv1.LoomServiceClient, uiRegistry *apps.U
 
 	bridge.tools = bridge.buildToolDefinitions()
 	bridge.handlers = bridge.buildToolHandlers()
+	bridge.applyAllowList()
 	return bridge
 }
 
@@ -207,6 +281,9 @@ func (b *LoomBridge) ListTools(_ context.Context) ([]protocol.Tool, error) {
 
 // CallTool implements ToolProvider.
 func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if !b.toolAllowed(name) {
+		return nil, fmt.Errorf("tool %q is not permitted on this endpoint", name)
+	}
 	handler, ok := b.handlers[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
@@ -214,6 +291,31 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 
 	b.logger.Debug("calling tool", zap.String("tool", name))
 	return handler(ctx, args)
+}
+
+// SupportsStreaming implements StreamingToolProvider. loom_weave streams agent
+// output via StreamWeave; loom_execute_workflow streams multi-agent progress via
+// StreamWorkflow.
+func (b *LoomBridge) SupportsStreaming(name string) bool {
+	return name == "loom_weave" || name == "loom_execute_workflow" || name == "loom_build"
+}
+
+// CallToolStream implements StreamingToolProvider. loom_weave and
+// loom_execute_workflow run their streaming RPCs and forward progress via emit;
+// any other tool falls back to the synchronous CallTool (no progress emitted).
+func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[string]interface{}, _ string, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	if !b.toolAllowed(name) {
+		return nil, fmt.Errorf("tool %q is not permitted on this endpoint", name)
+	}
+	switch name {
+	case "loom_weave":
+		return b.handleWeaveStream(ctx, args, emit)
+	case "loom_execute_workflow":
+		return b.handleWorkflowStream(ctx, args, emit)
+	case "loom_build":
+		return b.handleBuildStream(ctx, args, emit)
+	}
+	return b.CallTool(ctx, name, args)
 }
 
 // ListResources implements ResourceProvider.

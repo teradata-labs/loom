@@ -53,6 +53,11 @@ type ServerConfig struct {
 	// URL is the server URL (for HTTP/SSE/streamable-http transport)
 	URL string `yaml:"url" json:"url"`
 
+	// Headers are extra HTTP headers sent on every request (for
+	// http/sse/streamable-http transport), e.g. an Authorization bearer token
+	// for an authenticated remote MCP server.
+	Headers map[string]string `yaml:"headers" json:"headers"`
+
 	// EnableSessions enables session management (for streamable-http transport)
 	EnableSessions bool `yaml:"enable_sessions" json:"enable_sessions"`
 
