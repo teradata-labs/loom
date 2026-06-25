@@ -15,14 +15,14 @@ require (
 	charm.land/bubbletea/v2 v2.0.7
 	charm.land/lipgloss/v2 v2.0.4
 	github.com/MakeNowJust/heredoc v1.0.0
-	github.com/alecthomas/chroma/v2 v2.26.1
-	github.com/anthropics/anthropic-sdk-go v1.50.1
+	github.com/alecthomas/chroma/v2 v2.27.0
+	github.com/anthropics/anthropic-sdk-go v1.51.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.53.5
-	github.com/aws/smithy-go v1.27.1
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0
+	github.com/aws/smithy-go v1.27.2
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
@@ -57,7 +57,7 @@ require (
 	golang.org/x/mod v0.37.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/term v0.44.0
-	modernc.org/sqlite v1.52.0
+	modernc.org/sqlite v1.53.0
 )
 
 require (
@@ -94,7 +94,7 @@ require (
 	github.com/disintegration/gift v1.1.2 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.1.1 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -160,7 +160,7 @@ require (
 	golang.org/x/tools v0.45.0 // indirect
 	gopkg.in/cenkalti/backoff.v1 v1.1.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
