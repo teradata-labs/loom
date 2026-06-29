@@ -1,7 +1,7 @@
 
 # Prompt Migration Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -33,7 +33,7 @@ Migrate from inline prompts to the `FileRegistry` system for centralized prompt 
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Server running: `looms serve`
 - Existing agent with inline prompts
 

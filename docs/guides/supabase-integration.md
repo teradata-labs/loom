@@ -1,6 +1,6 @@
 # Supabase Integration Guide
 
-**Status:** ✅ Implemented (v1.2.0)
+**Status:** ✅ Implemented (v1.3.0)
 
 Loom integrates with Supabase in two ways:
 
@@ -172,7 +172,7 @@ Only user-created schemas (typically `public`) are shown.
 
 ## Part 2: Supabase as Storage Backend
 
-**Status:** ✅ Implemented (v1.2.0)
+**Status:** ✅ Implemented (v1.3.0)
 **Verified:** PostgreSQL 17.6 on Supabase
 
 Use Supabase PostgreSQL for Loom's internal storage instead of SQLite. This stores sessions, agents, conversation history, and state in your Supabase database.

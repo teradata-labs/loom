@@ -68,7 +68,7 @@ go build -tags "fts5,hawk" ./cmd/looms
 | `just build` | `fts5` | Standard build (default) | Production deployment with embedded observability |
 | `just build-minimal` | `fts5` | Same as `build` | Explicit standard build |
 | `just build-hawk` | `fts5,hawk` | With Hawk service export | External observability service |
-| `just build-full` | `fts5,hawk` | All features | Full development environment with external export |
+| `just build-full` | `fts5` | Same tags as `build` (judge is built-in, so no extra tags needed) | Full feature set without external Hawk export |
 
 **Note**: The `fts5` tag is always included for SQLite FTS5 support (required for session storage and embedded observability).
 
@@ -203,7 +203,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.23'
+          go-version: '1.25'
 
       - name: Build ${{ matrix.build }}
         run: just build-${{ matrix.build }}

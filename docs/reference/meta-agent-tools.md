@@ -3,7 +3,7 @@
 
 Reference documentation for the meta-agent subsystem. The meta-agent analyzes natural language requirements and generates agent configurations, selecting appropriate templates, patterns, and backends.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Package**: `pkg/metaagent/` (with sub-packages `learning/`, `templates/`, `teleprompter/`)
 **Status**: The meta-agent functionality is implemented as Go packages with Go functions and interfaces. There are no shuttle tools (the 18-tool design described in a previous version of this document was never implemented).
 

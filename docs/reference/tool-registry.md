@@ -3,7 +3,7 @@
 
 Reference for Loom's tool indexing and search system. The tool registry maintains an FTS5 index of all available tools (builtin, MCP, custom) and supports LLM-assisted search for tool discovery.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Package**: `pkg/tools/registry`
 **Status**: ✅ Implemented with FTS5 indexing, LLM-assisted search
 

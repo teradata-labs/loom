@@ -1,7 +1,7 @@
 
 # MCP Server Manager
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented
 
 ## Table of Contents

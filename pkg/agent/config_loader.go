@@ -876,9 +876,14 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 // Used when graph memory is enabled but no explicit config is provided (e.g., pre-existing agents).
 func DefaultGraphMemoryConfig() *loomv1.GraphMemoryConfig {
 	return &loomv1.GraphMemoryConfig{
-		Enabled:                       true,
-		ContextBudgetPercent:          20,
-		MaxContextTokens:              0, // 0 = use ContextBudgetPercent instead of absolute cap
+		Enabled:              true,
+		ContextBudgetPercent: 20,
+		MaxContextTokens:     0, // 0 = use ContextBudgetPercent instead of absolute cap
+		// DecayRate/BoostAmount below are agent-tuned graph-memory defaults. They
+		// intentionally differ from the pkg/memory salience-engine spec defaults
+		// (memory.DefaultDecayRate=0.995, memory.DefaultBoostAmount=0.05); the
+		// 0.95/0.1 pairing here is what the memory benchmarks validated. Change
+		// deliberately — it is benchmark-sensitive.
 		DecayRate:                     0.95,
 		EnableExtraction:              true,
 		ExtractionCadence:             5,

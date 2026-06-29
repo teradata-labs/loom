@@ -1,7 +1,7 @@
 
 # Structured Context Pattern
 
-**Version**: v1.2.0 | **Status**: ✅ Implemented
+**Version**: v1.3.0 | **Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ Pass structured JSON between workflow stages with mandatory validation to preven
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Multi-stage workflow defined (iterative or pipeline pattern)
 - Understanding of workflow orchestration
 

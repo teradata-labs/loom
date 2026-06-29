@@ -5,7 +5,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 
 **Version**: v1.3.0
 **Status**: Beta - Feature Complete, API Stabilizing
-**Quality**: 2462+ test functions across 342 test files, 0 race conditions
+**Quality**: 3,743 test functions across 397 test files, 0 race conditions
 
 
 ## Core Principles
@@ -23,7 +23,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 
 ### Zero Tolerance for Marketing Speak
 
-**This project is v1.0.0. Documentation must reflect reality, not aspirations.**
+**This project is v1.3.0. Documentation must reflect reality, not aspirations.**
 
 **BANNED WORDS/PHRASES:**
 - ❌ "production-ready" (unless explicitly approved and verified)
@@ -43,7 +43,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
    - 🚧 In Development (actively being worked on)
    - 📋 Planned (not yet started)
 3. **Separate Implemented vs Planned**: Never mix completed and planned features in same section
-4. **Include version context**: README has "Version: v0.1.0 Alpha" badge
+4. **Include version context**: README has a "**Version**: v1.3.0" badge
 5. **Note dependencies**: Document internal dependencies (Hawk) clearly
 6. **Specify limitations**: "File backend supported; SQL/API coming soon" not "all backends supported"
 
@@ -62,10 +62,10 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 ### README.md Structure Requirements
 
 **The README.md MUST maintain:**
-1. Version badge at top: `**Version:** v0.2.0`
+1. Version badge at top: `**Version**: v1.3.0`
 2. Dependency note about Hawk (optional dependency)
 3. Features split into "✅ Implemented" and "📋 Planned" sections
-4. Accurate LLM provider info (Anthropic, Bedrock, Ollama implemented; Azure/Vertex AI planned)
+4. Accurate LLM provider info (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, HuggingFace implemented; Vertex AI planned)
 5. Accurate feature claims verified against codebase
 
 **Before updating README:**
@@ -214,7 +214,7 @@ buf format -w       # Format proto files
 pkg/                 # Framework (importable)
 internal/            # Private implementation
 examples/            # Reference implementations (teradata, postgres, etc.)
-cmd/                 # Binaries (loom, loom-server, loom-mcp)
+cmd/                 # Binaries (loom, looms, loom-mcp)
 ```
 
 ### Naming Conventions

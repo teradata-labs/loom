@@ -57,12 +57,13 @@ var workflowCmd = &cobra.Command{
 	Long: `Manage workflow orchestrations for multi-agent coordination.
 
 Workflows are defined in YAML files using Kubernetes-style structure.
-They support 6 orchestration patterns:
+They support 7 orchestration patterns:
 - debate: Structured debates with multiple rounds
 - fork-join: Parallel execution with merged results
 - pipeline: Sequential stages with data flow
 - parallel: Independent tasks executed concurrently
 - conditional: Dynamic routing based on conditions
+- iterative: Pipeline with autonomous restart on failure
 - swarm: Collective decision-making through voting
 
 Examples:

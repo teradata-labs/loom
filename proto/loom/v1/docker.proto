@@ -12,14 +12,17 @@ import "loom/v1/project.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
-// RuntimeType defines the container runtime environment
+// RuntimeType defines the container runtime environment.
+// Only PYTHON, NODE, and CUSTOM have runtime implementations; the executor
+// rejects any other value with an "unsupported runtime type" error. RUBY,
+// RUST, and GO are reserved for future use and are not yet implemented.
 enum RuntimeType {
   RUNTIME_TYPE_UNSPECIFIED = 0;
   RUNTIME_TYPE_PYTHON = 1;
   RUNTIME_TYPE_NODE = 2;
-  RUNTIME_TYPE_RUBY = 3;
-  RUNTIME_TYPE_RUST = 4;
-  RUNTIME_TYPE_GO = 5;
+  RUNTIME_TYPE_RUBY = 3; // reserved; not yet implemented
+  RUNTIME_TYPE_RUST = 4; // reserved; not yet implemented
+  RUNTIME_TYPE_GO = 5; // reserved; not yet implemented
   RUNTIME_TYPE_CUSTOM = 100;
 }
 
