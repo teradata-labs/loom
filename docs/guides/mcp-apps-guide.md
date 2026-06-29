@@ -2,7 +2,8 @@
 
 Create interactive dashboards and visualizations from agent conversations or MCP tool calls.
 
-**Status**: ✅ Implemented (v1.2.0)
+**Version**: v1.3.0
+**Status**: ✅ Implemented
 
 ## Table of Contents
 
@@ -130,13 +131,15 @@ For stacked bar charts, add `"stacked": true`.
 
 ### Use Grid Layouts
 
-Three layout options control how top-level components arrange:
+Five layout values control how top-level components arrange. All grid layouts are responsive and collapse to fewer columns on narrow screens:
 
 | Layout | Behavior |
 |--------|----------|
-| `stack` | Vertical stack (default). Full width. |
-| `grid-2` | Two-column grid. Collapses to single column below 768px. |
-| `grid-3` | Three-column grid. Collapses to single column below 768px. |
+| `stack` | Single column, vertical (default). Full width. |
+| `grid-2` | 1 column on phones, 2 columns on tablets and up. |
+| `grid-3` | 1 column on phones, 2 on tablets, 3 on laptops and up. |
+| `grid` | 1 column on phones, 2 on tablets, 3 on laptops, 4 on desktops. |
+| `grid-4` | Alias for `grid`. |
 
 ```json
 {
@@ -373,9 +376,15 @@ The 4 built-in apps (conversation-viewer, data-chart, explain-plan-visualizer, d
 
 You used a component type that doesn't exist. Call `loom_list_component_types` to see the 14 valid types.
 
-### "spec exceeds maximum size"
+### "spec exceeds maximum size" / "component count exceeds maximum"
 
-The total spec JSON must be under 512 KB. Individual component props must be under 64 KB. Reduce data size or split into multiple apps.
+Specs are bounded by several structural limits:
+- Total spec JSON must be under 512 KB.
+- Individual component props must be under 64 KB.
+- A spec may contain at most 50 components (counted across all nesting levels).
+- Components may nest at most 10 levels deep.
+
+Reduce data size, lower the component count, or split into multiple apps.
 
 ### "dynamic app limit reached"
 

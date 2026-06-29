@@ -48,18 +48,10 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Custom help template with weave subcommands and Support at bottom
+	// Custom help template with a Support section at the bottom.
 	rootCmd.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}
-
-Weave Commands:
-  looms weave "<requirements>"  Create thread from natural language
-  looms weave list              List all threads
-  looms weave stats             Show weaver learning statistics
-  looms weave insights          Get improvement suggestions
-  looms weave feedback          Record thread feedback
-  looms weave refine            Refine existing thread
 
 Support:
   GitHub: https://github.com/teradata-labs/loom/issues
@@ -76,7 +68,7 @@ Support:
 	rootCmd.PersistentFlags().Bool("reflection", true, "enable gRPC reflection")
 
 	// LLM flags
-	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, ollama)")
+	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface)")
 	rootCmd.PersistentFlags().String("anthropic-key", "", "Anthropic API key (or use keyring/env)")
 	rootCmd.PersistentFlags().String("anthropic-model", "claude-sonnet-4-5-20250929", "Anthropic model")
 	rootCmd.PersistentFlags().Float64("temperature", 1.0, "LLM temperature")

@@ -3,7 +3,7 @@
 
 Command reference for `loom` (client) and `looms` (server).
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -139,6 +139,7 @@ These persistent flags are available on all `looms` commands:
 | `--log-format` | string | `text` | Log format (text, json) |
 | `--yolo` | bool | `false` | Bypass all tool permission prompts |
 | `--require-approval` | bool | `false` | Require user approval before executing tools |
+| `--minimal-tools` | bool | `false` | Suppress always-on auto-injected tools (`shell_execute`, `workspace`, `tool_search`, `graph_memory`, `task_board`) at agent construction; applies to all agents including the weaver. Lazy/progressive tools still fire when their conditions trigger. |
 
 
 ## Global Client Flags
@@ -381,7 +382,7 @@ looms pattern <subcommand> [flags]
 | `--file` | string | `""` | Path to pattern YAML file |
 | `--stdin` | bool | `false` | Read pattern YAML from stdin |
 | `--interactive` | bool | `false` | Open editor to create pattern interactively |
-| `--server` | string | `localhost:9090` | Loom server address |
+| `--server` | string | `localhost:60051` | Loom server address |
 | `--timeout` | int | `30` | Request timeout in seconds |
 
 **Flags (watch):**
@@ -390,7 +391,7 @@ looms pattern <subcommand> [flags]
 |------|------|---------|-------------|
 | `--thread` | string | `""` | Filter by thread ID (optional) |
 | `--category` | string | `""` | Filter by pattern category (optional) |
-| `--server` | string | `localhost:9090` | Loom server address |
+| `--server` | string | `localhost:60051` | Loom server address |
 
 **Examples:**
 
@@ -419,7 +420,7 @@ looms pattern watch --thread sql-thread
 
 Manage and execute workflow orchestrations for multi-agent coordination.
 
-Workflows support 6 orchestration patterns: debate, fork-join, pipeline, parallel, conditional, and swarm.
+Workflows support 7 orchestration patterns: debate, fork-join, pipeline, parallel, conditional, iterative, and swarm.
 
 **Usage:**
 ```bash

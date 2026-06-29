@@ -1,7 +1,7 @@
 
 # Human-in-the-Loop Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -29,8 +29,8 @@ Request human approval, input, or decision-making during agent execution using t
 
 ## Prerequisites
 
-- Loom v1.2.0+
-- Agent with ContactHumanTool enabled
+- Loom v1.3.0+
+- Agent with the `contact_human` tool enabled
 
 ## Quick Start
 

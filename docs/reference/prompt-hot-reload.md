@@ -1,7 +1,7 @@
 
 # Pattern Hot-Reload Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for Loom's pattern hot-reload system - zero-downtime pattern updates via filesystem watching.
 

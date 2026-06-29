@@ -1,7 +1,7 @@
 
 # Iterative Workflow Pattern Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Complete technical reference for Loom's iterative workflow pattern - multi-stage pipelines with autonomous restart coordination, validation retry with fresh agent context, and hybrid context passing for hallucination prevention.
 
@@ -1706,7 +1706,7 @@ restart_policy:
 **Description**: Whether to keep previous iteration's stage outputs in `stageOutputs` map.
 
 **Behavior**:
-- `true`: Keep outputs from previous iteration (available via `{{stage-N-output}}`)
+- `true`: Keep outputs from previous iteration (retained in the `stageOutputs` map and in SharedMemory under key `stage-N-output`; read via the `shared_memory_read` tool, not via a `{{stage-N-output}}` template variable)
 - `false`: Clear outputs from restarted stage onward
 
 **Example**:
@@ -1806,7 +1806,7 @@ START: ExecutePattern(IterativeWorkflowPattern)
 │  │  │  2. Build Prompt                               │ │ │
 │  │  │  • Start with stage.prompt_template            │ │ │
 │  │  │  • Substitute {{previous}} with last output    │ │ │
-│  │  │  • Substitute {{stage-N-output}} placeholders  │ │ │
+│  │  │  • Substitute {{history}}/{{structured_context}}│ │ │
 │  │  └────────────────────────────────────────────────┘ │ │
 │  │                    │                                 │ │
 │  │                    ▼                                 │ │

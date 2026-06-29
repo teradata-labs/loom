@@ -1,6 +1,6 @@
 # Learning Agent Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented
 
 ## Table of Contents
@@ -37,7 +37,7 @@ autonomy levels, rollback support).
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Loom server running: `looms serve`
 - Pattern library YAML files
 - Sufficient usage data (50+ samples per pattern recommended for MEDIUM confidence)
