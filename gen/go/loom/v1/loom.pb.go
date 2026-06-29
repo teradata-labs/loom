@@ -2868,7 +2868,19 @@ type Session struct {
 	// Total number of messages (user, assistant, and tool messages)
 	ConversationCount int32 `protobuf:"varint,8,opt,name=conversation_count,json=conversationCount,proto3" json:"conversation_count,omitempty"`
 	// Metadata
-	Metadata      map[string]string `protobuf:"bytes,9,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Metadata map[string]string `protobuf:"bytes,9,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Agent ID for this session (logical agent identifier, often the configured agent name).
+	AgentId string `protobuf:"bytes,10,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// Human-readable agent name when available (from session context or artifact metadata).
+	AgentName string `protobuf:"bytes,11,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	// Session start time in RFC3339 UTC (mirrors created_at for API consumers).
+	StartedAt string `protobuf:"bytes,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// Session end time in RFC3339 UTC when recorded in artifact metadata (e.g. after completion).
+	EndedAt string `protobuf:"bytes,13,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	// Lifecycle status from artifacts/sessions/<id>/metadata.json (e.g. active, completed).
+	MetadataStatus string `protobuf:"bytes,14,opt,name=metadata_status,json=metadataStatus,proto3" json:"metadata_status,omitempty"`
+	// Count of indexed artifacts when present in session artifact metadata.
+	ArtifactCount int32 `protobuf:"varint,15,opt,name=artifact_count,json=artifactCount,proto3" json:"artifact_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2966,6 +2978,48 @@ func (x *Session) GetMetadata() map[string]string {
 	return nil
 }
 
+func (x *Session) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *Session) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
+	}
+	return ""
+}
+
+func (x *Session) GetStartedAt() string {
+	if x != nil {
+		return x.StartedAt
+	}
+	return ""
+}
+
+func (x *Session) GetEndedAt() string {
+	if x != nil {
+		return x.EndedAt
+	}
+	return ""
+}
+
+func (x *Session) GetMetadataStatus() string {
+	if x != nil {
+		return x.MetadataStatus
+	}
+	return ""
+}
+
+func (x *Session) GetArtifactCount() int32 {
+	if x != nil {
+		return x.ArtifactCount
+	}
+	return 0
+}
+
 // GetSessionRequest retrieves a session.
 type GetSessionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3019,12 +3073,18 @@ type ListSessionsRequest struct {
 	State string `protobuf:"bytes,1,opt,name=state,proto3" json:"state,omitempty"`
 	// Filter by backend
 	Backend string `protobuf:"bytes,2,opt,name=backend,proto3" json:"backend,omitempty"`
-	// Pagination offset
+	// Pagination offset (sessions skipped; must be >= 0).
 	Offset int32 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
-	// Pagination limit
-	Limit         int32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Pagination page size. Omitted or <= 0 defaults to 50; values above 500 are capped at 500.
+	Limit int32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Filter by agent ID (matches Session.agent_id; often the configured agent name).
+	AgentId string `protobuf:"bytes,5,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// Filter by project_id stored in session metadata (context / artifact metadata).
+	ProjectId string `protobuf:"bytes,6,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// Filter by metadata_status from session artifact metadata (e.g. active, completed).
+	MetadataStatus string `protobuf:"bytes,7,opt,name=metadata_status,json=metadataStatus,proto3" json:"metadata_status,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListSessionsRequest) Reset() {
@@ -3085,12 +3145,34 @@ func (x *ListSessionsRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *ListSessionsRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *ListSessionsRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *ListSessionsRequest) GetMetadataStatus() string {
+	if x != nil {
+		return x.MetadataStatus
+	}
+	return ""
+}
+
 // ListSessionsResponse returns sessions.
 type ListSessionsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Sessions
+	// Sessions for the current page (after filters, offset, and limit).
 	Sessions []*Session `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
-	// Total count
+	// Total number of sessions matching the request filters (before applying offset/limit).
+	// int32 is sufficient for in-memory listings; values above 2^31-1 are not expected.
 	TotalCount    int32 `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -10855,7 +10937,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe9\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xad\x04\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -10867,18 +10949,31 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x05state\x18\x06 \x01(\tR\x05state\x12$\n" +
 	"\x0etotal_cost_usd\x18\a \x01(\x01R\ftotalCostUsd\x12-\n" +
 	"\x12conversation_count\x18\b \x01(\x05R\x11conversationCount\x12:\n" +
-	"\bmetadata\x18\t \x03(\v2\x1e.loom.v1.Session.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\t \x03(\v2\x1e.loom.v1.Session.MetadataEntryR\bmetadata\x12\x19\n" +
+	"\bagent_id\x18\n" +
+	" \x01(\tR\aagentId\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18\v \x01(\tR\tagentName\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\f \x01(\tR\tstartedAt\x12\x19\n" +
+	"\bended_at\x18\r \x01(\tR\aendedAt\x12'\n" +
+	"\x0fmetadata_status\x18\x0e \x01(\tR\x0emetadataStatus\x12%\n" +
+	"\x0eartifact_count\x18\x0f \x01(\x05R\rartifactCount\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"2\n" +
 	"\x11GetSessionRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"s\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xd6\x01\n" +
 	"\x13ListSessionsRequest\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12\x18\n" +
 	"\abackend\x18\x02 \x01(\tR\abackend\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\x05R\x05limit\"e\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12\x19\n" +
+	"\bagent_id\x18\x05 \x01(\tR\aagentId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x06 \x01(\tR\tprojectId\x12'\n" +
+	"\x0fmetadata_status\x18\a \x01(\tR\x0emetadataStatus\"e\n" +
 	"\x14ListSessionsResponse\x12,\n" +
 	"\bsessions\x18\x01 \x03(\v2\x10.loom.v1.SessionR\bsessions\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
