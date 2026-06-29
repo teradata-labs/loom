@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -395,11 +396,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	span.SetAttribute("session_id", session.ID)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Serialize context
 	contextJSON, err := json.Marshal(session.Context)
 	if err != nil {
+		s.mu.Unlock()
 		span.RecordError(err)
 		return fmt.Errorf("failed to marshal context: %w", err)
 	}
@@ -440,10 +440,16 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.TotalCostUSD,
 		session.TotalTokens,
 	)
+	s.mu.Unlock()
 
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to save session: %w", err)
+	}
+
+	if err := artifacts.SyncSessionArtifactMetadata(ctx, session); err != nil {
+		span.RecordError(err)
+		// Best-effort filesystem metadata; SQLite persistence already succeeded.
 	}
 
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", session.TotalCostUSD))
