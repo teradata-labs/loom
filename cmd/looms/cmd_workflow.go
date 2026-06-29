@@ -703,7 +703,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 			}
 
 		case "bedrock":
-			client, err := bedrock.NewClient(bedrock.Config{
+			client, err := bedrock.NewClientForModel(bedrock.Config{
 				Profile:         config.LLM.BedrockProfile,
 				Region:          config.LLM.BedrockRegion,
 				ModelID:         config.LLM.BedrockModelID,
@@ -805,7 +805,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 	}
 
 	// Try Bedrock
-	bedrockClient, err := bedrock.NewClient(bedrock.Config{
+	bedrockClient, err := bedrock.NewClientForModel(bedrock.Config{
 		Profile: "bedrock",
 		Region:  "us-west-2",
 		ModelID: "anthropic.claude-sonnet-4-5-20250929-v1:0",

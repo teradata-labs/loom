@@ -426,6 +426,30 @@ message ExecuteWorkflowRequest {
 
   // Optional: Enable tracing
   bool enable_trace = 5;
+
+  // Optional: Run a saved workflow by name instead of supplying a pattern.
+  // The server loads <workflow_ref>.yaml from its workflows directory, so a
+  // client can run an existing workflow with just variables — no need to
+  // re-supply the full pattern/YAML. Ignored when pattern is set.
+  string workflow_ref = 6;
+}
+
+// WorkflowSummary describes a saved workflow available to run by name.
+message WorkflowSummary {
+  // Name (the workflow_ref to pass to ExecuteWorkflow).
+  string name = 1;
+  // Human-readable description (from the workflow's metadata, if any).
+  string description = 2;
+  // Pattern type (pipeline, debate, fork-join, ...).
+  string type = 3;
+}
+
+// ListWorkflowsRequest lists saved workflows runnable by name.
+message ListWorkflowsRequest {}
+
+// ListWorkflowsResponse returns the saved workflows.
+message ListWorkflowsResponse {
+  repeated WorkflowSummary workflows = 1;
 }
 
 // ExecuteWorkflowResponse contains the workflow execution result.
