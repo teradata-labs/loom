@@ -5,6 +5,19 @@ All notable changes to Loom will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Session Artifact Metadata & ListSessions API (#146)
+- Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
+- `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
+- New `Session` fields returned by `ListSessions`: `agent_name`, `ended_at`, `metadata_status`, `artifact_count`.
+
+### Changed
+- `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
+- `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
+
 ## [1.3.0] - 2026-06-01
 
 ### Added
