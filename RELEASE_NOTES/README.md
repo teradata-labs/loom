@@ -5,6 +5,7 @@ This directory contains release notes for all Loom versions, organized for [OSSF
 ## Structure
 
 Each release has a dedicated markdown file:
+- `v1.3.0.md` - Release 1.3.0 notes
 - `v1.1.0.md` - Release 1.1.0 notes
 - `v1.0.2.md` - Release 1.0.2 notes
 - etc.
@@ -32,13 +33,16 @@ To verify releases, see the verification instructions in each release note.
 
 ## Current Release
 
-**Latest**: [v1.1.0](v1.1.0.md)
+**Latest**: [v1.3.0](v1.3.0.md)
 
 ## Past Releases
 
+- **v1.1.0** (2026-02-02) - GPG signing, SLSA provenance - See [v1.1.0.md](v1.1.0.md)
 - **v1.0.2** (2026-01-15) - Package distribution fixes - See CHANGELOG.md
 - **v1.0.1** (2026-01-14) - Database migration fixes - See CHANGELOG.md
 - **v1.0.0** (2026-01-09) - Initial release - See CHANGELOG.md
+
+> Note: v1.2.0 (2026-03-19) shipped without a dedicated release-note file; see CHANGELOG.md for its details.
 
 ## Contributing
 

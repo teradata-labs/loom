@@ -65,6 +65,8 @@ func TestCompiler_Validate_ValidSpec(t *testing.T) {
 		{"stack layout", "stack"},
 		{"grid-2 layout", "grid-2"},
 		{"grid-3 layout", "grid-3"},
+		{"grid layout", "grid"},
+		{"grid-4 layout (alias for grid)", "grid-4"},
 	}
 
 	for _, tc := range tests {
@@ -119,7 +121,6 @@ func TestCompiler_Validate_InvalidLayout(t *testing.T) {
 		name   string
 		layout string
 	}{
-		{"grid-4 layout", "grid-4"},
 		{"horizontal layout", "horizontal"},
 		{"random string", "foobar"},
 	}
@@ -476,8 +477,10 @@ func TestCompiler_Compile_ValidSpec(t *testing.T) {
 	assert.Contains(t, htmlStr, `version`)
 	assert.Contains(t, htmlStr, `1.0`)
 
-	// Output should be valid-looking HTML
-	assert.Contains(t, htmlStr, "<!DOCTYPE html>")
+	// Output should be valid-looking HTML.
+	// The doctype keyword is ASCII case-insensitive per the HTML spec, so don't
+	// pin a specific casing (the template emits the lowercase `<!doctype html>`).
+	assert.Contains(t, strings.ToLower(htmlStr), "<!doctype html>")
 	assert.Contains(t, htmlStr, "<html")
 	assert.Contains(t, htmlStr, "</html>")
 
@@ -935,8 +938,10 @@ func TestCompiler_Compile_CSP_AllDirectives(t *testing.T) {
 			"CSP must contain %q (%s)", d.directive, d.reason)
 	}
 
-	// Verify the CSP is in a meta tag (not just a comment)
-	assert.Contains(t, htmlStr, `<meta http-equiv="Content-Security-Policy"`,
+	// Verify the CSP is in a meta tag (not just a comment). The template may
+	// wrap the tag's attributes across multiple lines, so allow any whitespace
+	// between `<meta` and the http-equiv attribute.
+	assert.Regexp(t, `<meta\s+http-equiv="Content-Security-Policy"`, htmlStr,
 		"CSP must be a meta tag")
 }
 
@@ -948,15 +953,13 @@ func TestCompiler_SRIHashConsistency(t *testing.T) {
 	// All files that reference Chart.js must use the same SRI hash.
 	// If hashes diverge, one file loads a different (potentially compromised) version.
 
-	// Extract SRI hash from runtime.js (the embedded JS used by dynamic apps)
+	// Extract SRI hash from runtime.js (the embedded JS used by dynamic apps).
+	// Match the assignment regardless of quote style or whitespace/line-wrapping
+	// between `.integrity`, `=`, and the value (a formatter may rewrite any of these).
 	runtimeSrc := string(runtimeJS)
-	runtimeHashIdx := strings.Index(runtimeSrc, ".integrity = '")
-	require.NotEqual(t, -1, runtimeHashIdx, "runtime.js must contain an SRI integrity assignment")
-
-	start := runtimeHashIdx + len(".integrity = '")
-	end := strings.Index(runtimeSrc[start:], "'")
-	require.NotEqual(t, -1, end, "SRI integrity value must have closing quote")
-	runtimeHash := runtimeSrc[start : start+end]
+	integrityMatch := regexp.MustCompile(`\.integrity\s*=\s*["']([^"']+)["']`).FindStringSubmatch(runtimeSrc)
+	require.Len(t, integrityMatch, 2, "runtime.js must contain an SRI integrity assignment")
+	runtimeHash := integrityMatch[1]
 
 	assert.True(t, strings.HasPrefix(runtimeHash, "sha384-"),
 		"SRI hash must use sha384 algorithm, got: %s", runtimeHash)
@@ -1030,13 +1033,17 @@ func TestRuntimeJS_SecurityInvariants(t *testing.T) {
 		{"SVG_ALLOWED_ELEMENTS", "SVG element allowlist must be defined"},
 		{"SVG_ALLOWED_ATTRS", "SVG attribute allowlist must be defined"},
 		{"Object.hasOwn(", "must use Object.hasOwn for safe property checks"},
-		{"'use strict'", "must run in strict mode"},
 	}
 
 	for _, inv := range invariants {
 		assert.Contains(t, src, inv.pattern,
 			"runtime.js must contain %q (%s)", inv.pattern, inv.reason)
 	}
+
+	// Strict mode directive: accept either quote style (a formatter may rewrite
+	// single quotes to double quotes).
+	assert.Regexp(t, `["']use strict["']`, src,
+		"runtime.js must run in strict mode")
 }
 
 func TestRuntimeJS_SVGBlockedElements(t *testing.T) {

@@ -164,7 +164,7 @@ choco uninstall loom -y
 ### What Gets Installed
 
 - **Binaries**: `loom.exe` and `looms.exe` added to PATH via shims
-- **Patterns**: 90+ YAML patterns downloaded to `$env:LOOM_DATA_DIR\patterns\` (default: `$env:USERPROFILE\.loom\patterns\`)
+- **Patterns**: YAML patterns bundled in the package and copied to `$env:LOOM_DATA_DIR\patterns\` (default: `$env:USERPROFILE\.loom\patterns\`)
 - **Environment Variable**: `LOOM_DATA_DIR` set to `$env:USERPROFILE\.loom` (if not already set)
 - **Configuration**: Empty `looms.yaml` created (user configures LLM provider post-install)
 

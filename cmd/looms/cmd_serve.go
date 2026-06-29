@@ -93,6 +93,180 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
+// toolsMinimalActive reports whether the five always-on auto-injected tools
+// (shell_execute, workspace, tool_search, graph_memory, task_board) should
+// be suppressed. tools.none is a stricter superset that also suppresses
+// communication and UI app tools — it implies tools.minimal semantics here.
+func toolsMinimalActive() bool {
+	return viper.GetBool("tools.minimal") || viper.GetBool("tools.none")
+}
+
+// toolsNoneActive reports whether NO tools should be auto-injected. Agents
+// loaded under this mode get only what their YAML explicitly lists.
+func toolsNoneActive() bool {
+	return viper.GetBool("tools.none")
+}
+
+// builtinToolsToSuppress returns the names of agent-side builtin tools that
+// should NOT surface to the LLM under the current tools.minimal / tools.none
+// policy. Subsystems for these tools (the graph memory extractor, task
+// manager, error store, communication queues, shared memory) are wired
+// regardless — this controls only what the model sees in its tool list.
+//
+//	tools.minimal=true → suppress graph_memory, task_board
+//	                    (the two progressive-disclosure tools that previously
+//	                    over-coupled to subsystem wiring)
+//	tools.none=true    → also suppress the progressive-disclosure memory
+//	                    tools (conversation_memory, session_memory), the
+//	                    runtime error/result tools (get_error_details,
+//	                    query_tool_result), and the agent-coupling tools
+//	                    wired by MultiAgentServer.prepareAgent /
+//	                    UpdateAgent (send_message, publish,
+//	                    shared_memory_read, shared_memory_write).
+//	                    Net effect: the agent's tool list is exactly what
+//	                    its YAML declared.
+func builtinToolsToSuppress() []string {
+	if !toolsMinimalActive() {
+		return nil
+	}
+	suppressed := []string{"graph_memory", "task_board"}
+	if toolsNoneActive() {
+		suppressed = append(suppressed,
+			// Progressive-disclosure memory tools.
+			"conversation_memory",
+			"session_memory",
+			// Runtime tools surfaced by the agent on first error / first large result.
+			"get_error_details",
+			"query_tool_result",
+			// Communication + presentation tools wired by builtin.CommunicationTools,
+			// which MultiAgentServer.prepareAgent / UpdateAgent register on every
+			// agent regardless of how the agent was loaded.
+			"send_message",
+			"publish",
+			"shared_memory_read",
+			"shared_memory_write",
+			"top_n_query",
+			"group_by_query",
+			// Orchestration tool registered per-session by MultiAgentServer.Weave.
+			"manage_ephemeral_agents",
+		)
+	}
+	return suppressed
+}
+
+// registerYAMLBuiltinTools registers tools declared in cfg.Tools.Builtin onto
+// ag. Single source of truth for tool-name → registration-path policy, used by
+// both the static loader (cold start) and the agent-config hot-reload watcher.
+// Keeping both call sites on this helper prevents the two paths from drifting
+// (which silently dropped YAML-declared shell_execute on hot reload under
+// tools.minimal/none — see PR review feedback).
+//
+// Two categories of YAML-declared tool names get filtered:
+//
+//  1. autoRegisteredTools (shell_execute, workspace, tool_search) — added by
+//     dedicated auto-registration paths when those paths are enabled. The
+//     YAML mention is a duplicate. When tools.minimal/none has disabled the
+//     auto path, the YAML mention IS honoured (fall through and register).
+//
+//  2. otherMechanismTools — wired through their own subsystems (memory/swap,
+//     communication, presentation, UI app, visualization, HITL). They cannot
+//     be constructed from builtin.ByName alone because they need subsystem
+//     references. The YAML mention is metadata only; logged at debug so the
+//     skip is traceable rather than silent.
+//
+// agent_management gets the post-write hook so create_skill / update_skill
+// rebuild the skill router on the next chat turn.
+//
+// contact_human registration is intentionally not done here — see
+// registerContactHumanFromYAML, which needs the shared HITL store.
+//
+// indent controls the leading spaces on log lines so each call site keeps
+// its existing log indentation. agentManagementLogTag distinguishes the
+// boot-time log line from the hot-reload one.
+func registerYAMLBuiltinTools(
+	ag *agent.Agent,
+	cfg *loomv1.AgentConfig,
+	registry *agent.Registry,
+	logger *zap.Logger,
+	indent string,
+	agentManagementLogTag string,
+) {
+	if cfg.Tools == nil || len(cfg.Tools.Builtin) == 0 {
+		return
+	}
+
+	autoRegisteredTools := map[string]bool{
+		"shell_execute": true, // Auto-registered when !tools.minimal/none
+		"workspace":     true, // Auto-registered when !tools.minimal/none
+		"tool_search":   true, // Auto-registered when !tools.minimal/none and toolRegistry available
+	}
+	otherMechanismTools := map[string]string{
+		"recall_conversation":             "memory/swap layer",
+		"clear_recalled_context":          "memory/swap layer",
+		"search_conversation":             "memory/swap layer",
+		"get_tool_result":                 "async tool result retrieval",
+		"get_error_details":               "error details retrieval",
+		"delegate_to_agent":               "coordination subsystem",
+		"send_message":                    "communication subsystem (MessageQueue)",
+		"shared_memory_write":             "communication subsystem (SharedMemoryStore)",
+		"shared_memory_read":              "communication subsystem (SharedMemoryStore)",
+		"top_n_query":                     "presentation subsystem",
+		"group_by_query":                  "presentation subsystem",
+		"generate_visualization":          "visualization subsystem",
+		"generate_workflow_visualization": "visualization subsystem",
+		"create_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"list_component_types":            "UI app subsystem (AppCompiler/AppProvider)",
+		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
+		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+	}
+
+	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
+	for _, toolName := range cfg.Tools.Builtin {
+		if subsystem, ok := otherMechanismTools[toolName]; ok {
+			// Subsystem-wired tool. The YAML mention is metadata only; the
+			// actual registration (if any) happens via the named subsystem.
+			// Logged at debug so the skip is traceable instead of silent —
+			// without this, a user wondering why their YAML's send_message
+			// "doesn't work" gets no signal from the boot log.
+			logger.Debug(indent+"YAML lists subsystem-wired tool; skipping YAML registration",
+				zap.String("name", toolName),
+				zap.String("wired_via", subsystem))
+			continue
+		}
+		// Auto-registered tools are skipped here only when the auto-registration
+		// path will actually run. Under tools.minimal/none, fall through and
+		// register via the YAML-declared path so explicit declarations are
+		// honoured. This is the fix the cold-start path got in PR #193; the
+		// hot-reload path used to short-circuit on toolName=="shell_execute"
+		// unconditionally and silently dropped the YAML tool on reload.
+		if autoRegisteredTools[toolName] && !toolsMinimalActive() {
+			continue
+		}
+
+		var tool shuttle.Tool
+		if toolName == "agent_management" && registry != nil {
+			hook := func(skillName, filePath string) {
+				reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+				logger.Info(agentManagementLogTag+": skill write triggered router reload",
+					zap.String("skill", skillName),
+					zap.String("file", filePath),
+					zap.Int("reloaded", reloaded),
+					zap.Int("failed", failed))
+			}
+			tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+		} else {
+			tool = builtin.ByName(toolName)
+		}
+		if tool != nil {
+			ag.RegisterTool(tool)
+			logger.Info(indent+"  Tool registered", zap.String("name", toolName))
+		} else {
+			logger.Warn(indent+"  Unknown builtin tool", zap.String("name", toolName))
+		}
+	}
+}
+
 // createPermissionChecker creates a PermissionChecker based on configuration.
 // Returns nil if tool permissions are not configured.
 func createPermissionChecker(config *Config, logger *zap.Logger) *shuttle.PermissionChecker {
@@ -1416,10 +1590,13 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
 
-				// Wire graph memory (opt-out: enabled by default when store is available).
-				// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
-				// tools.minimal=true also suppresses it across the board.
-				if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
+				// Wire graph memory SUBSYSTEM whenever a store is available and
+				// the agent didn't explicitly disable it in YAML. The TOOL
+				// surface is gated separately via WithoutBuiltinTool below —
+				// tools.minimal/none never disables the extractor itself, so
+				// background entity extraction keeps running (via compressor_llm
+				// when declared) even when the tool is hidden from the LLM.
+				if graphMemoryStore != nil {
 					gmCfg := cfg.Memory.GetGraphMemory()
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
 					if !explicitlyDisabled {
@@ -1430,35 +1607,41 @@ func runServe(cmd *cobra.Command, args []string) {
 						if memoryEmbedder != nil {
 							agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
 						}
-						logger.Info("    Graph memory enabled",
+						logger.Info("    Graph memory subsystem enabled",
 							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
-							zap.Bool("vector_search", memoryEmbedder != nil))
+							zap.Bool("vector_search", memoryEmbedder != nil),
+							zap.Bool("tool_surface", !toolsMinimalActive()))
 					} else {
-						logger.Info("    Graph memory explicitly disabled")
+						logger.Info("    Graph memory explicitly disabled by agent YAML")
 					}
-				} else if graphMemoryStore != nil {
-					logger.Info("    Graph memory suppressed by tools.minimal")
 				}
 
 				// Wire task subsystem. The manager is always wired so skills-overhaul
 				// task emission and the sticky-while-open-tasks checker work for every
 				// agent. The per-agent memory.task_board.enabled flag gates only tool
-				// surfacing (task_board builtin, kanban prompt, in-context summary).
-				// tools.minimal=true overrides the per-agent flag and forces the tool
-				// off, while leaving the manager wired for skill task emission.
+				// surfacing (task_board builtin, kanban prompt, in-context summary);
+				// the manager subsystem runs regardless. tools.minimal/none gates ONLY
+				// the tool surface via WithoutBuiltinTool below — the task manager
+				// keeps emitting and tracking tasks.
 				if taskManager != nil {
 					tbCfg := cfg.Memory.GetTaskBoard()
 					if tbCfg == nil {
 						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
 					}
-					if viper.GetBool("tools.minimal") && tbCfg.Enabled {
-						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
-						logger.Info("    Task board tool suppressed by tools.minimal")
-					}
 					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
 					if tbCfg.Enabled {
-						logger.Info("    Task board tool surfacing enabled")
+						logger.Info("    Task board subsystem enabled",
+							zap.Bool("tool_surface", !toolsMinimalActive()))
 					}
+				}
+
+				// Tool-surface gating. tools.minimal hides graph_memory + task_board
+				// (the two agent-side progressive-disclosure tools that previously
+				// over-coupled to subsystem wiring). tools.none additionally hides
+				// the other progressive-disclosure tools so the LLM only sees what
+				// the YAML explicitly declared.
+				for _, name := range builtinToolsToSuppress() {
+					agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
 				}
 
 				// Add PermissionChecker if configured
@@ -1493,6 +1676,47 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
 				}
 
+				// Wire per-role LLMs if declared in YAML. These route auxiliary
+				// work (memory extraction, classification) to a separate provider
+				// — critical when the primary is a single-slot local model.
+				// Mirrors the registry path at pkg/agent/registry.go ~600.
+				var staticClassifierLLM agent.LLMProvider
+				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
+					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
+					if err != nil {
+						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
+							zap.Error(err),
+							zap.String("provider", cfg.CompressorLlm.Provider),
+							zap.String("model", cfg.CompressorLlm.Model))
+					} else {
+						if tracer != nil {
+							compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+						}
+						agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
+						logger.Info("    Compressor LLM configured",
+							zap.String("provider", cfg.CompressorLlm.Provider),
+							zap.String("model", cfg.CompressorLlm.Model))
+					}
+				}
+				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
+					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
+					if err != nil {
+						logger.Warn("    Failed to create classifier LLM, router will use primary",
+							zap.Error(err),
+							zap.String("provider", cfg.ClassifierLlm.Provider),
+							zap.String("model", cfg.ClassifierLlm.Model))
+					} else {
+						if tracer != nil {
+							classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+						}
+						staticClassifierLLM = classLLM
+						agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
+						logger.Info("    Classifier LLM configured",
+							zap.String("provider", cfg.ClassifierLlm.Provider),
+							zap.String("model", cfg.ClassifierLlm.Model))
+					}
+				}
+
 				// Wire skills (orchestrator + Discovery + hierarchical router)
 				// via the shared agent.BuildSkillsOptions helper. This is the
 				// single source of truth used by both this static-YAML loader
@@ -1502,15 +1726,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				if agentCfg.SkillsConfig != nil && agentCfg.SkillsConfig.Enabled {
 					if registry != nil {
 						agentOpts = append(agentOpts,
-							registry.BuildSkillsOptions(agentCfg.SkillsConfig, nil, agentLLMProvider, cfg.Name)...)
+							registry.BuildSkillsOptions(agentCfg.SkillsConfig, staticClassifierLLM, agentLLMProvider, cfg.Name)...)
 					} else {
 						agentOpts = append(agentOpts,
 							agent.BuildSkillsOptions(agent.SkillsWiringDeps{
-								SkillsConfig: agentCfg.SkillsConfig,
-								PrimaryLLM:   agentLLMProvider,
-								AgentName:    cfg.Name,
-								Tracer:       tracer,
-								Logger:       logger,
+								SkillsConfig:  agentCfg.SkillsConfig,
+								ClassifierLLM: staticClassifierLLM,
+								PrimaryLLM:    agentLLMProvider,
+								AgentName:     cfg.Name,
+								Tracer:        tracer,
+								Logger:        logger,
 							})...)
 					}
 				}
@@ -1520,7 +1745,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Always register shell_execute and workspace for all agents,
 				// unless tools.minimal=true (--minimal-tools) is set, in which
 				// case the agent only sees what its YAML declares.
-				if !viper.GetBool("tools.minimal") {
+				if !toolsMinimalActive() {
 					var shellTool shuttle.Tool
 					if cfg.Name == "weaver" {
 						weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
@@ -1539,67 +1764,10 @@ func runServe(cmd *cobra.Command, args []string) {
 					logger.Info("    tools.minimal=true: skipping auto-registration of shell_execute and workspace")
 				}
 
-				// Register builtin tools if specified
-				if cfg.Tools != nil && len(cfg.Tools.Builtin) > 0 {
-					logger.Info("    Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
-					for _, toolName := range cfg.Tools.Builtin {
-						// Skip tools that are registered automatically or through other mechanisms
-						skipTools := map[string]bool{
-							"shell_execute":                   true, // Auto-registered for all agents
-							"tool_search":                     true, // Auto-registered when tool registry available
-							"recall_conversation":             true, // Registered with memory/swap layer
-							"clear_recalled_context":          true, // Registered with memory/swap layer
-							"search_conversation":             true, // Registered with memory/swap layer
-							"get_tool_result":                 true, // Async tool result retrieval
-							"get_error_details":               true, // Error details retrieval
-							"delegate_to_agent":               true, // Coordination tool (registered elsewhere)
-							"send_message":                    true, // Communication tool (requires MessageQueue)
-							"shared_memory_write":             true, // Communication tool (requires SharedMemoryStore)
-							"shared_memory_read":              true, // Communication tool (requires SharedMemoryStore)
-							"top_n_query":                     true, // Presentation tool
-							"group_by_query":                  true, // Presentation tool
-							"generate_visualization":          true, // Visualization tool
-							"generate_workflow_visualization": true, // Visualization tool
-							"create_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
-							"contact_human":                   true, // HITL tool (registered with shared SQLite store)
-						}
-						if skipTools[toolName] {
-							continue
-						}
-						// spawn_agent removed
-
-						// agent_management writes skill YAMLs via
-						// create_skill / update_skill. After a successful
-						// write we want every running agent's router to
-						// pick up the new skill on the next chat turn,
-						// without a server restart. Wire a post-write hook
-						// to Registry.ReloadAllSkillRouters; the tool runs
-						// the hook synchronously in its Execute path.
-						var tool shuttle.Tool
-						if toolName == "agent_management" && registry != nil {
-							hook := func(skillName, filePath string) {
-								reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
-								logger.Info("agent_management: skill write triggered router reload",
-									zap.String("skill", skillName),
-									zap.String("file", filePath),
-									zap.Int("reloaded", reloaded),
-									zap.Int("failed", failed))
-							}
-							tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
-						} else {
-							tool = builtin.ByName(toolName)
-						}
-						if tool != nil {
-							ag.RegisterTool(tool)
-							logger.Info("      Tool registered", zap.String("name", toolName))
-						} else {
-							logger.Warn("      Unknown builtin tool", zap.String("name", toolName))
-						}
-					}
-				}
+				// Register builtin tools declared in YAML. Shared with the
+				// hot-reload path via registerYAMLBuiltinTools so the two
+				// paths cannot drift.
+				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
 
 				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
 				if cfg.Tools != nil {
@@ -1660,7 +1828,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Register tool_search and enable dynamic tool registration if tool registry available.
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
-				if toolRegistry != nil && !viper.GetBool("tools.minimal") {
+				if toolRegistry != nil && !toolsMinimalActive() {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
@@ -1993,6 +2161,27 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("Task manager injected into agent registry",
 				zap.Bool("decomposer_present", taskDecomposer != nil))
 		}
+		// Inject the graph memory subsystem so registry-built agents
+		// (gRPC-created or config-hot-reloaded) get the extractor. The
+		// per-agent memory.graph_memory.enabled flag in YAML can still
+		// opt out for a specific agent; the suppressed-tools list below
+		// controls tool surfacing independently.
+		if registry != nil && graphMemoryStore != nil {
+			registry.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
+			logger.Info("Graph memory store injected into agent registry",
+				zap.Bool("embedder_present", memoryEmbedder != nil))
+		}
+		// Push the server-level tool-surface policy into the registry so
+		// gRPC-created agents see the same hidden-tools list as the
+		// statically-loaded ones. See builtinToolsToSuppress().
+		if registry != nil {
+			suppressed := builtinToolsToSuppress()
+			if len(suppressed) > 0 {
+				registry.SetSuppressedBuiltinTools(suppressed)
+				logger.Info("Suppressed builtin tools propagated to agent registry",
+					zap.Strings("tools", suppressed))
+			}
+		}
 		// Wire the eval store for ABTest result persistence.
 		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
 			evalDBPath := config.Database.Path
@@ -2036,9 +2225,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.Int("channel_send_timeout_ms", config.Server.Clarification.ChannelSendTimeoutMs))
 	}
 
-	// Set LLM concurrency limit to prevent rate limiting (especially for workflows with many subagents)
-	loomService.SetLLMConcurrencyLimit(2)
-	logger.Info("LLM concurrency limit configured to prevent rate limiting", zap.Int("limit", 2))
+	// Set LLM concurrency limit. Bounds in-flight LLM calls across the whole
+	// server: 1 fully serialises (recommended for a single local Ollama slot),
+	// higher values allow parallelism for workflows with many subagents.
+	llmConcurrency := config.LLM.ConcurrencyLimit
+	if llmConcurrency < 1 {
+		llmConcurrency = 2
+	}
+	loomService.SetLLMConcurrencyLimit(llmConcurrency)
+	logger.Info("LLM concurrency limit configured", zap.Int("limit", llmConcurrency))
 
 	// Set observability tracer for workflow and agent tracing
 	if tracer != nil {
@@ -2521,19 +2716,26 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Register communication tools with all loaded agents
-	// This ensures agents loaded from YAML configs get pub/sub tools
-	logger.Info("Registering communication tools with loaded agents...")
-	for agentID, ag := range agents {
-		commTools := builtin.CommunicationTools(messageQueue, messageBus, sharedMemory, agentID)
-		ag.RegisterTools(commTools...)
-		logger.Info("  Communication tools registered",
-			zap.String("agent", agentID),
-			zap.Int("num_tools", len(commTools)))
+	// This ensures agents loaded from YAML configs get pub/sub tools.
+	// tools.none=true skips this so a stripped-down local agent only sees
+	// what its YAML declares.
+	if !toolsNoneActive() {
+		logger.Info("Registering communication tools with loaded agents...")
+		for agentID, ag := range agents {
+			commTools := builtin.CommunicationTools(messageQueue, messageBus, sharedMemory, agentID)
+			ag.RegisterTools(commTools...)
+			logger.Info("  Communication tools registered",
+				zap.String("agent", agentID),
+				zap.Int("num_tools", len(commTools)))
+		}
+	} else {
+		logger.Info("Communication tools suppressed by tools.none")
 	}
 
 	// Register UI app tools with all loaded agents using lazy disclosure:
 	// tools are only promoted into the active tool set when ContainsUIIntent fires.
-	if appCompiler != nil && uiRegistry != nil {
+	// tools.none=true skips this for the same reason as communication tools.
+	if appCompiler != nil && uiRegistry != nil && !toolsNoneActive() {
 		logger.Info("Registering UI app tools for lazy disclosure with loaded agents...")
 		for agentID, ag := range agents {
 			uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
@@ -2542,6 +2744,8 @@ func runServe(cmd *cobra.Command, args []string) {
 				zap.String("agent", agentID),
 				zap.Int("num_tools", len(uiAppTools)))
 		}
+	} else if toolsNoneActive() {
+		logger.Info("UI app tools suppressed by tools.none")
 	}
 
 	// Enable reflection if configured
@@ -2675,10 +2879,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				agent.WithConfig(cfg),
 			}
 
-			// Wire graph memory (opt-out: enabled by default when store is available).
-			// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
-			// tools.minimal=true also suppresses it across the board.
-			if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
+			// Wire graph memory SUBSYSTEM (mirrors the static-loader path).
+			// tools.minimal/none never disables the extractor; tool surfacing
+			// is gated separately via WithoutBuiltinTool below.
+			if graphMemoryStore != nil {
 				gmCfg := agentConfig.GetMemory().GetGraphMemory()
 				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
 				if !explicitlyDisabled {
@@ -2689,32 +2893,34 @@ func runServe(cmd *cobra.Command, args []string) {
 					if memoryEmbedder != nil {
 						agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
 					}
-					logger.Info("    Graph memory enabled (hot-reload)",
+					logger.Info("    Graph memory subsystem enabled (hot-reload)",
 						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
-						zap.Bool("vector_search", memoryEmbedder != nil))
+						zap.Bool("vector_search", memoryEmbedder != nil),
+						zap.Bool("tool_surface", !toolsMinimalActive()))
 				} else {
-					logger.Info("    Graph memory explicitly disabled (hot-reload)")
+					logger.Info("    Graph memory explicitly disabled by agent YAML (hot-reload)")
 				}
-			} else if graphMemoryStore != nil {
-				logger.Info("    Graph memory suppressed by tools.minimal (hot-reload)")
 			}
 
-			// Wire task subsystem. Manager always wired (skills emission unconditional);
-			// per-agent flag gates only tool surfacing. tools.minimal=true forces the
-			// tool surface off while leaving the manager wired for skill task emission.
+			// Wire task subsystem. Manager always wired (skills emission
+			// unconditional); per-agent flag gates only tool surfacing.
+			// tools.minimal/none gates ONLY the tool surface via
+			// WithoutBuiltinTool below — the manager keeps emitting/tracking.
 			if taskManager != nil {
 				tbCfg := agentConfig.GetMemory().GetTaskBoard()
 				if tbCfg == nil {
 					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
 				}
-				if viper.GetBool("tools.minimal") && tbCfg.Enabled {
-					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
-					logger.Info("    Task board tool suppressed by tools.minimal (hot-reload)")
-				}
 				agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
 				if tbCfg.Enabled {
-					logger.Info("    Task board tool surfacing enabled (hot-reload)")
+					logger.Info("    Task board subsystem enabled (hot-reload)",
+						zap.Bool("tool_surface", !toolsMinimalActive()))
 				}
+			}
+
+			// Tool-surface gating — see builtinToolsToSuppress() for policy.
+			for _, name := range builtinToolsToSuppress() {
+				agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
 			}
 
 			// Add PermissionChecker if configured
@@ -2745,7 +2951,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Always register shell_execute and workspace for all agents,
 			// unless tools.minimal=true (--minimal-tools) is set, in which
 			// case the agent only sees what its YAML declares.
-			if !viper.GetBool("tools.minimal") {
+			if !toolsMinimalActive() {
 				var shellTool shuttle.Tool
 				if agentConfig.Name == "weaver" {
 					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
@@ -2764,39 +2970,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Info("  tools.minimal=true: skipping auto-registration of shell_execute and workspace")
 			}
 
-			// Register builtin tools if specified
-			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
-				logger.Info("  Registering builtin tools", zap.Int("count", len(agentConfig.Tools.Builtin)))
-				for _, toolName := range agentConfig.Tools.Builtin {
-					// Skip tools that are registered separately
-					if toolName == "shell_execute" || toolName == "contact_human" {
-						continue
-					}
-					// spawn_agent removed
-
-					// Mirror the boot path's agent_management wiring: the
-					// hot-reload path also needs the post-write hook so
-					// reloaded weaver agents trigger router rebuilds.
-					var tool shuttle.Tool
-					if toolName == "agent_management" && registry != nil {
-						hook := func(skillName, filePath string) {
-							reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
-							logger.Info("agent_management (reload): skill write triggered router reload",
-								zap.String("skill", skillName),
-								zap.String("file", filePath),
-								zap.Int("reloaded", reloaded),
-								zap.Int("failed", failed))
-						}
-						tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
-					} else {
-						tool = builtin.ByName(toolName)
-					}
-					if tool != nil {
-						newAgent.RegisterTool(tool)
-						logger.Info("    Tool registered", zap.String("name", toolName))
-					}
-				}
-			}
+			// Register builtin tools declared in YAML. Shared with the
+			// cold-start path via registerYAMLBuiltinTools so the two paths
+			// cannot drift — this previously short-circuited unconditionally
+			// on toolName=="shell_execute" and silently dropped YAML-declared
+			// shell_execute on hot reload under tools.minimal/none.
+			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
 
 			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
 			if agentConfig.Tools != nil {
@@ -2857,7 +3036,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			// Register tool_search and enable dynamic tool registration if tool registry available.
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
-			if toolRegistry != nil && !viper.GetBool("tools.minimal") {
+			if toolRegistry != nil && !toolsMinimalActive() {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
@@ -2872,7 +3051,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			// Register UI app tools for hot-reloaded agents using lazy disclosure
-			if appCompiler != nil && uiRegistry != nil {
+			if appCompiler != nil && uiRegistry != nil && !toolsNoneActive() {
 				uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
 				newAgent.RegisterLazyTools(uiAppTools, server.ContainsUIIntent)
 				logger.Info("  UI app tools registered for lazy disclosure", zap.Int("num_tools", len(uiAppTools)))

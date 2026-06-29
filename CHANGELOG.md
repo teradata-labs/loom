@@ -5,6 +5,137 @@ All notable changes to Loom will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-01
+
+### Added
+
+#### Salience-Driven Graph Memory (#133, #137, #159)
+- **GraphMemoryService** — 15 RPCs: entity/edge CRUD, `Remember`/`Recall`/`Forget`/`Supersede`/`Consolidate`, `ContextFor` composite queries, `GetGraphStats`
+- Salience scoring with exponential time decay (`S = S_base * decay_rate^days`), boost operations, and per-memory-type token budget allocation
+- Auto-extraction subprocess — LLM extracts entities/relationships/memories asynchronously; fires on user input and on a tool-execution cadence (default every 5 tool calls)
+- `graph_memory` tool auto-injected when a graph memory store is configured; enabled by default (opt-out via `enable_extraction: false`)
+- Event-date anchoring — extractor emits absolute ISO dates (`YYYY-MM-DD`) with confidence levels (`exact`/`approximate`/`ambiguous`); retrieval prepends `[YYYY-MM-DD]` to the context block ⚠️ internal Go layer only — see Limitations
+- SQLite (migration `000002_graph_memory`) and PostgreSQL (migration `000010_graph_memory`) storage with FTS5 full-text search, soft deletes, and user-scoped RLS
+
+#### LLM-Assisted Task Decomposition & Agent Kanban (#141)
+- **TaskService** proto — Task/TaskBoard/TaskLane messages, `TaskStatus`/`TaskPriority`/`TaskCategory`/`TaskDependencyType`/`DecomposeStrategy` enums, 19 RPCs defined (⚠️ 11 of 19 served — see Limitations)
+- `task_board` tool auto-injected into the agent loop (10 actions: decompose, ready, claim, update, close, create, list, show, add_dep, board)
+- Task Manager business logic: DFS cycle detection, auto status propagation, auto block/unblock, WIP limits, compaction
+- LLM-assisted Decomposer with backward/forward/parallel strategies, retry-on-invalid-JSON, and rollback on materialize failure
+- Dependency-aware storage: SQLite (`000003_tasks`, `000008_task_idempotency`) with FTS5; PostgreSQL (`000011_tasks`, `000013_task_idempotency`) with RLS
+- `OutputRetryPolicy` proto in `collaboration.proto` — `CONTINUE`/`FRESH`/`ESCALATE` retry-session modes with feedback templates and cooldown
+- Live task context injected into the agent system prompt each turn; message-bus events for task lifecycle (created/claimed/released/completed/blocked/updated)
+
+#### Skills System Expansion (#174, #182, #183, #184, #195)
+- Declarative skill **bindings** (`SkillBinding`/`SkillBindingMode`) with exact-name, glob, and label-selector matching; replaces `enabled_skills`/`disabled_skills` (backward-compat shim retained)
+- Hierarchical **PageIndex-style router** (`SkillIndexNode`/`SkillIndex`) for LLM-driven skill discovery with session caching (migration `000007`/`000012` skill_index)
+- **Skill task emission** — author-defined decompositions (`SkillTaskTemplate`) with decomposer fallback; idempotent materialization via skill idempotency keys
+- End-of-turn **task-board hygiene** auditor (`HygieneConfig`/`HygienePolicy`: `REQUIRE_FIX`/`AUTO_FIX`/`WARN_ONLY`)
+- **SkillsImportService** gRPC (`BulkImportSkills`/`AddSkill`/`ClassifySkill`) with post-write router reload
+- Import of Anthropic-style Agent Skill directories with cross-skill references and keyword synthesis
+- `SkillRiskLevel` (`LOW`/`MEDIUM`/`HIGH`/`RESTRICTED`) recorded per skill; HIGH/RESTRICTED skills are blocked when `tools.permissions.require_approval=true` ⚠️ interactive approval flow not yet implemented
+
+#### Self-Healing Error Recovery (#177)
+- **3-tier recovery** in the conversation loop, enabled by default (opt-out via `behavior.enable_self_healing: false`):
+  - Output-token circuit breaker → trims broken turns, injects a recovery nudge, continues
+  - Tool circuit breaker → disables the failing tool locally, returns a synthetic disabled result, continues with remaining tools
+  - Token-budget pressure → aggressive trim (keep last 4 messages, clear summaries) when budget exceeds threshold after normal compression
+- One-shot recovery per error type per conversation prevents infinite retry loops
+- `RecoverableError` (type + recovery action + payload) surfaced to upper layers when self-healing is exhausted
+- Trim operations respect `tool_use`/`tool_result` pair boundaries; recovery paths emit observability span events
+
+#### Load Testing Infrastructure & Throughput Optimization (#139)
+- Load-testing framework (2,484 lines): zero-token mock LLM provider + gRPC harness with configurable latency, error injection, and streaming
+- Per-layer token-count caching reduces `AddMessage` from O(n) to O(1)
+- Channel-based encoder pool replaces the mutex on `TokenCounter` (tunable via `LOOM_TOKEN_ENCODER_POOL_SIZE`)
+- Read-lock fast path for session cache hits; `SegmentedMemory` built outside the lock
+- Measured on Apple M4 Pro (14 cores): **2,200 req/s peak at 160 workers** (concurrency scaling), **11,023 req/s on fresh sessions vs 187 req/s on a shared session** (59x contention gap, by design); throughput flat ~2,400 req/s across 100–10,000 sessions
+- 15 load/scalability scenarios (concurrency, multi-turn, memory pressure, session contention, fresh vs reused)
+- `just load-test`, `just load-test-bench`, `just load-test-perf` targets
+
+#### LongMemEval Benchmark & Judge Criteria Fix (#159)
+- `loom-longmemeval` CLI harness — evaluates graph memory across LongMemEval question categories with ingest, multi-session, and context-stuffing modes (`download`/`run`/`score`/`info` subcommands, `--types`/`--isolate` flags)
+- **LLM judge now honors `JudgeConfig.Criteria`** — routes to a generic criteria-driven prompt instead of a hardcoded SQL-evaluation template when `Evidence.Criteria` is set
+- Vector embedding infrastructure: `Embedder` interface + OpenAI implementation; SQLite brute-force `VectorRecall` with cosine similarity (migration `000005_embedding_column`) ⚠️ PostgreSQL pgvector path stubbed — see Limitations
+- Configurable `extraction_timeout_seconds` (default 30s) and tool-result filtering for graph memory extraction
+
+#### Span Exporter & Workflow Session Continuity (#132)
+- **SpanExporter** interface (`ExportSpans`/`ForceFlush`/`Shutdown`) for exporting traces to external backends; `WithSpanExporter` and `WithDefaultResourceAttributes` options on `EmbeddedTracer`
+- Workflow session continuity — `ScheduledSessionMode` (`NEW`/`RESUME`); RESUME mode uses a stable `workflow_id` for deterministic agent sessions across scheduled runs
+- `ContextWithTraceID` for explicit trace-ID propagation; workflow-id resolution across all orchestration executors
+
+#### Agent Presets & Workflow Templates
+- `AgentPreset` enum (8 presets) and `WorkflowTemplate` enum (7 templates) with defaults registries
+- RPCs: `ListAgentPresets`, `ListWorkflowTemplates`, `CreateWorkflowFromTemplate` (idempotent by agent name) wired into `MultiAgentServer`
+
+#### Local-Ollama Profile & Tool-Surface Controls (#193)
+- Per-role LLMs (`compressor_llm`, `classifier_llm`) now wired in the static-YAML server loader, not only the gRPC path; finding extraction routed through the compressor LLM when set
+- `llm.concurrency_limit` config knob (default 2) replaces the hardcoded limit — set to 1 for single-slot local Ollama
+- `tools.none` config knob — agent sees only the tools its YAML declares (suppresses the auto-registered minimal/communication/orchestration tool surface)
+- `examples/config/local-ollama.yaml` and an Ollama researcher reference agent
+
+#### Teradata Patterns (#142)
+- Expanded Teradata patterns from 34 to **84** YAML files across new ML/analytics categories (AI functions, association, BYOM, data prep, geospatial, hypothesis testing, ML, model evaluation, text, timeseries, vector search)
+- 4 new Teradata skills: data prep, ML pipeline, SQL analytics, vector RAG
+
+#### Bedrock Bearer-Token Authentication
+- Optional bearer-token auth for Amazon Bedrock (IAM Identity Center / SSO) that bypasses SigV4, supplied via CLI/env/keyring as `bedrock_bearer_token` (runtime only, not persisted to config files)
+- Note: an earlier iteration of this feature was reverted (a34a5cb) and has since been re-introduced and wired end-to-end (`pkg/llm/bedrock` → factory → config)
+
+### Fixed
+
+- **Compression boundary** (#162) — `adjustCompressionBoundary` maps tool-call groups and iterates until stable so compression never splits an `assistant(tool_calls)` message from its `tool_result` pair
+- **Pipeline partial results** (#162) — pipeline executor emits stage output and metadata (thinking, cost, duration, tokens) incrementally after each stage instead of only at the end
+- **LLM catalog wiring** (#156) — catalog (73 models) is now authoritative for output cap and context window across all providers via a `Source` chain
+- **Ollama healthcheck & timeout** (#188) — fixed healthcheck handling; default timeout is now provider-driven instead of a hardcoded 60s (see Changed)
+- **MCP `loom_weave` routing** (#145) — agent routing surfaced to MCP clients; agent id/name preamble prepended to tool responses
+- **Graph memory hot-reload** (#137) — corrected hot-reload wiring and default config; entities track roles/user markers to reduce entity confusion
+- **Visualization styleguide** (#144, #157) — fails fast on an unavailable styleguide endpoint (returns an error instead of a silent fallback) and uses the zap logger for the fallback path
+- **Skills slash commands** (#195) — unicode base-splitting so multi-byte delimiters parse correctly
+- **Quickstart shell detection** (#179) — reads the `SHELL` environment variable instead of guessing from the script runtime
+- **Chocolatey package icon** — restored the `iconUrl` (removed in v1.0.x when it pointed at a non-existent file) using a committed `packaging/icon.png` served via a tag-pinned jsDelivr CDN URL; the version manager keeps the pinned tag in sync on every bump
+- **Chocolatey package install** — the pattern library is now bundled inside the package instead of downloaded at install time, removing an unvalidated remote download flagged by Chocolatey moderation (the patterns archive was fetched via `Url64bit` with no `Checksum64`). Also corrected the bundled binary SHA256 checksums, which did not match the published v1.3.0 Windows artifacts and would have failed verification at install
+- **Test hermeticity** — `pkg/shuttle/builtin` web-search tests now clear ambient search-provider API keys (`TAVILY_API_KEY`, etc.) via `TestMain`, so results no longer depend on the developer's environment
+- **`.gitattributes`** (#194) — enforces LF line endings to eliminate false diffs on Windows clones with `autocrlf=true`
+
+### Changed
+
+#### Breaking Changes
+- **IntentCategory enum removed** (#137) — patterns use freeform `intents` strings; the enum constants are gone (YAML fallback preserved). Pattern YAML must declare `intents`.
+- **Ollama default timeout** (#188) — zero/unset now means provider-driven instead of the previous 60s fallback. Configs relying on the implicit 60s behave differently; set an explicit timeout to preserve old behavior.
+- **LLM catalog model IDs** (#156) — the legacy short-prefix map for `claude-opus-4`/`claude-sonnet-4`/`claude-haiku-4` was removed; catalog-exact model IDs are now required.
+- **Graph memory extraction default-on** (#137) — when graph memory is enabled, the extraction subprocess runs by default, which increases LLM-call volume in existing deployments. Opt out with `enable_extraction: false`.
+- **Skills config** — `enabled_skills`/`disabled_skills` deprecated in favor of `bindings[]` (compat shim retained); skills emit tasks by default — opt out with `emit_tasks: false` (per skill) or `tasks_enabled: false` (agent).
+- **Auto-applied DB migrations** — SQLite `000005` (embedding) and `000006` (event_date) apply automatically on first start of the upgraded server. Back up databases before upgrading.
+
+#### Dependency Updates
+- google.golang.org/grpc: 1.79.3 → 1.81.1
+- github.com/grpc-ecosystem/grpc-gateway/v2: 2.28.0 → 2.29.0
+- github.com/anthropics/anthropic-sdk-go: 1.26.0 → 1.45.0
+- github.com/aws/aws-sdk-go-v2/service/bedrockruntime: 1.50.2 → 1.52.0 (+ aws-sdk-go-v2 core/config/credentials)
+- github.com/jackc/pgx/v5: 5.8.0 → 5.9.2
+- charm.land/bubbletea/v2: 2.0.2 → 2.0.6; bubbles/v2 2.0.0 → 2.1.0; lipgloss/v2 2.0.2 → 2.0.3
+- github.com/go-jose/go-jose/v4 (#138), go.opentelemetry.io/otel otlptracehttp (#147), and grouped go-minor-patch updates (#140, #155, #165, #176, #192)
+- CI action bumps: codeql-action, codecov-action, golangci-lint-action, gosec, release-downloader, action-gh-release
+
+### Testing
+
+- **3739 test functions** across 393 test files (up from 3112/319 in v1.2.0)
+- **Zero race conditions** — tests run with the `-race` detector (`-tags fts5`)
+- Self-healing recovery: 12 tests including concurrent-access race coverage
+- Span exporter: 16 tests (export errors, shutdown, resource attributes, concurrent export)
+- Task system: 31 tests (store, decomposer, emitter, tool, manager integration, idempotency)
+- Skills: binding/router/emitter/hygiene/import suites + unicode slash-command parsing
+- Load testing: mock provider (21 tests) + harness/scalability/profiling suites; all consume zero LLM tokens
+
+### Known Limitations
+
+- **Graph memory event dates over gRPC** — `event_date`/`event_date_confidence` are not yet fields on the proto `GraphMemory` message and are not round-tripped by `convert.go`; event-date anchoring works via the internal Go layer only, not for gRPC clients.
+- **Graph memory conversation-turn cadence** — `conversation_extraction_cadence` parses from config but is currently inert; only user-input and tool-execution triggers are active.
+- **TaskService gRPC surface** — 11 of 19 RPCs are served. `UpdateTask`, `DeleteTask`, `ReleaseTask`, `TransitionTask`, `AddDependency`, `RemoveDependency`, `GetBlockedTasks`, `DecomposeTask`, and `GetTaskContext` are defined in proto but not yet implemented; decomposition is available via the `task_board` tool action.
+- **Vector recall** — SQLite `VectorRecall` is brute-force O(n) (scales to ~100K memories/agent); the PostgreSQL pgvector path is stubbed and returns not-implemented.
+- **Skill risk levels** — recorded and used for block-when-`require_approval`; an interactive HITL approval flow is not yet implemented (`tools.permissions` returns a not-implemented error unless `yolo=true` or the tool is allow-listed).
+
 ## [1.2.0] - 2026-03-19
 
 ### Added

@@ -124,6 +124,8 @@ jobs:
 
       - name: Run tests with race detection
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
@@ -132,9 +134,13 @@ jobs:
 
       - name: Run example tests
         run: |
+          # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          set -euo pipefail
+          # ./examples/... covers all example packages; the previous explicit
+          # paths (agent-templates, workflows) were stale — the templates moved
+          # under examples/reference and `go test` errored "directory not found".
           go test -tags fts5 -race -v -timeout=5m \
-            ./examples/agent-templates \
-            ./examples/workflows \
+            ./examples/... \
             | tee -a test-output.log
 
       - name: Check for race conditions
@@ -146,12 +152,14 @@ jobs:
 
       - name: Generate coverage report
         run: |
+          # pipefail so a failure in `go tool cover` is not masked by `tee`.
+          set -euo pipefail
           go tool cover -func=coverage.out | tee coverage-report.txt
           COVERAGE=$(grep "total:" coverage-report.txt | awk '{print $3}')
           echo "## Nightly Coverage: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-coverage-${{ github.run_number }}
           path: |
@@ -263,7 +271,7 @@ jobs:
           "ZIP_FILE=$ZIP_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload binaries artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-binaries-${{ matrix.os }}-${{ github.run_number }}
           path: |
@@ -300,7 +308,7 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@4a3bd8af174872c778439083ded7adbf3747e770 # v2.26.1
+        uses: securego/gosec@9e6a9843d7a4a6e3e9a8539b02612c8a4aa3f889 # v2.27.1
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
 
@@ -313,7 +321,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
@@ -329,7 +337,7 @@ jobs:
           fi
 
       - name: Upload security report artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-security-report-${{ github.run_number }}
           path: results.sarif
@@ -368,7 +376,7 @@ jobs:
           echo "RELEASE_DATE=$DATE" >> $GITHUB_ENV
 
       - name: Create nightly release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Nightly Build ${{ env.RELEASE_DATE }}"
