@@ -2,7 +2,7 @@
 
 The Loom HTTP server provides REST API access (via gRPC-gateway), Server-Sent Events (SSE) streaming, CORS support, and Swagger UI documentation.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Feature Status
 
@@ -46,7 +46,7 @@ LoomService gRPC endpoints are available via HTTP/REST through the grpc-gateway.
 - `GET /v1/sessions/{session_id}` - Get session
 - `POST /v1/weave:stream` - Stream agent execution (SSE)
 
-This is a subset; the LoomService exposes 68 HTTP path patterns via gRPC-gateway. See `/swagger-ui` for the complete API documentation.
+This is a subset; LoomService exposes 38 HTTP path patterns via gRPC-gateway. See `/swagger-ui` for the full LoomService API. (The generated OpenAPI spec is built from all annotated protos, so `/swagger-ui` also lists endpoints for services such as TaskService and SkillsImportService that are *not* HTTP-registered and are reachable over gRPC only.)
 
 ### Apps Browser
 
@@ -212,7 +212,7 @@ Response (example):
   "components": {
     "llm.default": { "status": "healthy", "latencyMs": "142" }
   },
-  "version": "1.2.0",
+  "version": "1.3.0",
   "uptimeSeconds": "3600"
 }
 ```

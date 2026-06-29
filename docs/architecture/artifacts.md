@@ -1,6 +1,6 @@
 # Artifact Management Architecture
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented (Session-based with CASCADE cleanup)
 **Last Updated**: 2026-03-28
 
@@ -1611,7 +1611,7 @@ COUNT(*) FROM artifacts WHERE session_id = s = 0
 
 ---
 
-**Document Version:** v1.2.0
+**Document Version:** v1.3.0
 **Last Updated:** 2026-03-28
 **Diagrams Created By:** ascii-diagram-architect (agent a309de1)
 **Verified:** ✅ All design claims verified against implementation

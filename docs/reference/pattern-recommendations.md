@@ -1,7 +1,7 @@
 
 # Pattern Recommendations Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Reference for Loom's built-in patterns across multiple categories - pattern selection by use case, backend type, difficulty level, and pattern catalog.
 
@@ -52,11 +52,11 @@ Reference for Loom's built-in patterns across multiple categories - pattern sele
 | **fun** | 5 | LLM | Beginner | Haiku, limerick, D&D, rubber duck debugging |
 | **rest_api** | 1 | REST | Beginner | Health check |
 | **nasa** | 1 | LLM | Intermediate | Cosmic anomaly investigation |
-| **libraries** | 16 | N/A | N/A | Pattern library definitions |
+| **libraries** | 20 | N/A | N/A | Pattern library/bundle definitions |
 
-**Total Patterns**: 104 (88 executable patterns + 16 library definitions)
+**Total Patterns**: 158 YAML files (138 executable patterns + 20 library/bundle definitions). Authoritative count: `find patterns -name '*.yaml' | wc -l`.
 
-> Additional teradata subcategories: teradata/text (1), teradata/data_loading (1), teradata/data_modeling (1), teradata/code_migration (1), and 1 top-level teradata pattern (csv_to_teradata_intelligent) also exist.
+> The table above (and the `teradata/analytics`, `teradata/ml`, etc. rows) documents only the most commonly used categories. The `teradata/` domain alone holds **84** patterns across ~20 subcategories (analytics, ml, data_discovery, data_quality, performance, timeseries, text, ai_functions, association, byom, core, data_prep, geospatial, hypothesis_testing, model_evaluation, vector_search, data_loading, data_modeling, code_migration, plus 1 top-level `csv_to_teradata_intelligent`). Most teradata subcategories are not enumerated in this document. Browse the `patterns/` directory for the full inventory.
 
 
 ### Pattern Selection Decision Tree
@@ -128,7 +128,7 @@ START: What do you need to accomplish?
 
 ## Overview
 
-Loom includes **88 executable patterns** (plus 16 library definitions) across **27 categories** to guide agents in solving domain-specific problems. Patterns provide:
+Loom includes **138 executable patterns** (plus 20 library/bundle definitions, for 158 YAML files total) spread across 16 top-level domains to guide agents in solving domain-specific problems. Patterns provide:
 
 - **Structured problem-solving**: Templates for common tasks
 - **Domain expertise**: Best practices for SQL, ML, text processing
@@ -812,7 +812,10 @@ All patterns in `postgres/analytics/`:
 - Sufficient privileges to read system catalogs
 
 
-### Teradata Patterns (34)
+### Teradata Patterns (84)
+
+> The breakdown below enumerates the most commonly used teradata subcategories. The `teradata/` domain contains **84** patterns in total; additional subcategories (ai_functions, association, byom, core, data_prep, geospatial, hypothesis_testing, model_evaluation, vector_search) are present in `patterns/teradata/` but not listed here. Verify with `find patterns/teradata -name '*.yaml' | wc -l`.
+
 **Analytics** (7 patterns):
 - sessionize (SESSIONIZE function)
 - funnel_analysis (nPath function)
@@ -841,10 +844,11 @@ All patterns in `postgres/analytics/`:
 **Timeseries** (2 patterns):
 - moving_average, arima
 
-**Other** (5 patterns):
-- teradata/text/ngram, teradata/data_loading/fastload_generation
-- teradata/data_modeling/temporal_table_design, teradata/code_migration/macro_to_procedure
-- teradata/csv_to_teradata_intelligent
+**Other subcategories** (not exhaustively listed; ~50 additional patterns):
+- teradata/text/ (5), teradata/data_prep/ (6), teradata/ai_functions/ (6), teradata/model_evaluation/ (5)
+- teradata/vector_search/ (4), teradata/geospatial/ (3), teradata/association/ (2), teradata/byom/ (2)
+- teradata/core/ (2), teradata/hypothesis_testing/ (2), teradata/data_loading/ (1), teradata/data_modeling/ (1)
+- teradata/code_migration/ (1), and 1 top-level pattern (csv_to_teradata_intelligent)
 
 **Requirements**:
 - Teradata 16.20+ (analytics functions)

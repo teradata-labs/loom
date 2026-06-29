@@ -348,13 +348,10 @@ If ALL active skills are sticky, the concurrent skill cap is allowed to overflow
 Boards are auto-created when needed (by `resolveBoardForWrite` in the tool or `ensureBoard` in the emitter). To create one explicitly:
 
 ```bash
-# Via gRPC
+# TaskService is gRPC-only — it is NOT registered with the HTTP/REST gateway
+# (only LoomService is), so use grpcurl rather than curl.
 grpcurl -d '{"board": {"id": "my-board", "name": "My Project Board"}}' \
-  localhost:50051 loom.v1.TaskService/CreateBoard
-
-# Via HTTP gateway
-curl -X POST http://localhost:8080/v1/boards \
-  -d '{"board": {"id": "my-board", "name": "My Project Board"}}'
+  localhost:60051 loom.v1.TaskService/CreateBoard
 ```
 
 ### Board-less Tasks
@@ -421,7 +418,7 @@ Subscribe to real-time task changes:
 
 ```bash
 grpcurl -d '{"board_id": "my-board"}' \
-  localhost:50051 loom.v1.TaskService/StreamTaskUpdates
+  localhost:60051 loom.v1.TaskService/StreamTaskUpdates
 ```
 
 ### Event Bus Topics
@@ -466,7 +463,7 @@ Check:
 If an agent crashed while holding a claim:
 ```bash
 grpcurl -d '{"task_id": "abc123", "session_id": "the-session"}' \
-  localhost:50051 loom.v1.TaskService/ReleaseTask
+  localhost:60051 loom.v1.TaskService/ReleaseTask
 ```
 
 ---

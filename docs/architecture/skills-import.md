@@ -1,8 +1,8 @@
 # Skills Import + Classification
 
+**Version:** v1.3.0
 **Status:** ✅ Implemented (pkg/skills/importer + SkillsImportService gRPC surface + parent_index_path persistence + router-side leaf filter + Taxonomy type + graph-aware classifier path)
-**Branches:** `feat/skills-import-converter` (PR #182, merged); `feat/skills-import-rpc` (RPC surface + post-write router reload)
-**Version target:** post-v1.2.0
+**History:** `feat/skills-import-converter` (PR #182, merged); `feat/skills-import-rpc` → `SkillsImportService` + post-write router reload (PR #183, merged to `main`)
 
 Architecture reference for `loom skills import [--classify --taxonomy]`,
 `loom skills add`, and `loom skills classify`. For end-user usage see
@@ -279,7 +279,7 @@ classification cost is small even on a large catalog.
 
 ### Response validation
 
-`parseClassifyResponse` enforces every constraint the prompt mentions:
+`ParseClassifyResponse` enforces every constraint the prompt mentions:
 
 | Rule | Failure mode |
 |---|---|
@@ -409,7 +409,8 @@ is enough**; manual cache purge isn't needed.
 
 The router's leaf-filter (`pickFromFatLeaf` in `pkg/skills/index/router.go`)
 is the safety net for buckets that classify large. When a terminal leaf
-has more `skill_refs` than `maxCandidates` (default 5), the router
+has more `skill_refs` than `maxCandidates` (default 3, set via
+`WithRouterMaxCandidates` in `pkg/skills/index/router.go`), the router
 makes one extra LLM call to pick the relevant subset for the user
 message. So the classifier doesn't need perfect bucketing — even an
 8-skill bucket still produces precise routing.
@@ -638,7 +639,7 @@ to read.
 | `gen/go/loom/v1/skills_import.{pb,_grpc.pb,pb.gw}.go` | Generated Go client + server stubs + HTTP gateway |
 | `gen/openapiv2/loom/v1/skills_import.swagger.json` | OpenAPI v2 schema for the HTTP gateway |
 | `pkg/server/skills_import.go` | `SkillsImportServer` implementation (3 RPC handlers, zip extraction with zip-slip + zip-bomb defenses, post-write router reload trigger) |
-| `pkg/server/skills_import_test.go` | 15 cases: constructor validation, all 3 source variants, security rejections, classifier wiring, streaming events, dry-run, taxonomy errors |
+| `pkg/server/skills_import_test.go` | 17 test functions: constructor validation, all 3 source variants, security rejections, classifier wiring, streaming events, dry-run, taxonomy errors |
 
 ### CLI (gRPC client)
 

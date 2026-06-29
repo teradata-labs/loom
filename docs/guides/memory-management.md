@@ -10,7 +10,7 @@ Loom uses a **segmented memory architecture** to manage conversation history and
 - ✅ Integrated observability with Hawk metrics
 - ✅ Backwards compatible defaults
 
-**Version:** v1.2.0
+**Version:** v1.3.0
 **Status:** Implemented (since v1.0.0-beta.5)
 
 
