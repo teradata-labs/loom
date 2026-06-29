@@ -1516,7 +1516,16 @@ func (c *Config) Validate() error {
 	if c.Observability.Enabled {
 		mode := c.Observability.Mode
 		if mode == "" {
-			mode = "service" // Default to service mode for backward compatibility
+			// Resolve an empty mode the same way the tracer builder does (see
+			// cmd_serve.go): "service" only when a Hawk endpoint is configured,
+			// otherwise "embedded". This keeps Validate() in step with what the
+			// server actually runs, so enabling observability without an explicit
+			// mode or endpoint validates as embedded instead of being rejected.
+			if c.Observability.HawkEndpoint != "" {
+				mode = "service"
+			} else {
+				mode = "embedded"
+			}
 		}
 
 		switch mode {
