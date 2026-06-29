@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -450,59 +451,61 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 // calculateCost estimates the cost in USD based on token usage.
 // Pricing as of 2024-11 for various OpenAI models.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// Pricing per million tokens (as of 2024-11)
-	var inputCostPerM, outputCostPerM float64
-
-	switch c.model {
-	case "gpt-4o":
-		inputCostPerM = 2.50
-		outputCostPerM = 10.00
-	case "gpt-4o-mini":
-		inputCostPerM = 0.15
-		outputCostPerM = 0.60
-	case "gpt-4-turbo", "gpt-4-turbo-preview":
-		inputCostPerM = 10.00
-		outputCostPerM = 30.00
-	case "gpt-4", "gpt-4-0613":
-		inputCostPerM = 30.00
-		outputCostPerM = 60.00
-	case "gpt-3.5-turbo", "gpt-3.5-turbo-0125":
-		inputCostPerM = 0.50
-		outputCostPerM = 1.50
-	case "o1-preview":
-		inputCostPerM = 15.00
-		outputCostPerM = 60.00
-	case "o1-mini":
-		inputCostPerM = 3.00
-		outputCostPerM = 12.00
-	case "gpt-5":
-		inputCostPerM = 2.50
-		outputCostPerM = 10.00
-	case "gpt-5-mini":
-		inputCostPerM = 0.40
-		outputCostPerM = 1.60
-	case "gpt-4.1":
-		inputCostPerM = 2.00
-		outputCostPerM = 8.00
-	case "gpt-4.1-mini":
-		inputCostPerM = 0.40
-		outputCostPerM = 1.60
-	case "gpt-4.1-nano":
-		inputCostPerM = 0.10
-		outputCostPerM = 0.40
-	case "o3":
-		inputCostPerM = 10.00
-		outputCostPerM = 40.00
-	case "o3-mini":
-		inputCostPerM = 1.10
-		outputCostPerM = 4.40
-	case "o4-mini":
-		inputCostPerM = 1.10
-		outputCostPerM = 4.40
-	default:
-		// Default to gpt-4o pricing
-		inputCostPerM = 2.50
-		outputCostPerM = 10.00
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
+	// to the provider-local rates below only for model ids it does not list.
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("openai", c.model)
+	if !ok {
+		switch c.model {
+		case "gpt-4o":
+			inputCostPerM = 2.50
+			outputCostPerM = 10.00
+		case "gpt-4o-mini":
+			inputCostPerM = 0.15
+			outputCostPerM = 0.60
+		case "gpt-4-turbo", "gpt-4-turbo-preview":
+			inputCostPerM = 10.00
+			outputCostPerM = 30.00
+		case "gpt-4", "gpt-4-0613":
+			inputCostPerM = 30.00
+			outputCostPerM = 60.00
+		case "gpt-3.5-turbo", "gpt-3.5-turbo-0125":
+			inputCostPerM = 0.50
+			outputCostPerM = 1.50
+		case "o1-preview":
+			inputCostPerM = 15.00
+			outputCostPerM = 60.00
+		case "o1-mini":
+			inputCostPerM = 3.00
+			outputCostPerM = 12.00
+		case "gpt-5":
+			inputCostPerM = 2.50
+			outputCostPerM = 10.00
+		case "gpt-5-mini":
+			inputCostPerM = 0.40
+			outputCostPerM = 1.60
+		case "gpt-4.1":
+			inputCostPerM = 2.00
+			outputCostPerM = 8.00
+		case "gpt-4.1-mini":
+			inputCostPerM = 0.40
+			outputCostPerM = 1.60
+		case "gpt-4.1-nano":
+			inputCostPerM = 0.10
+			outputCostPerM = 0.40
+		case "o3":
+			inputCostPerM = 10.00
+			outputCostPerM = 40.00
+		case "o3-mini":
+			inputCostPerM = 1.10
+			outputCostPerM = 4.40
+		case "o4-mini":
+			inputCostPerM = 1.10
+			outputCostPerM = 4.40
+		default:
+			// Default to gpt-4o pricing
+			inputCostPerM = 2.50
+			outputCostPerM = 10.00
+		}
 	}
 
 	inputCost := float64(inputTokens) * inputCostPerM / 1_000_000
