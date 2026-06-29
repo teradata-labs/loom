@@ -1220,15 +1220,21 @@ func resolveOrCreateEntityTx(ctx context.Context, tx pgx.Tx, ref, agentID, owner
 		return "", err
 	}
 	// Neither id nor name exists — create a minimal node (id and name = ref).
-	if _, err := tx.Exec(ctx,
+	// Conflict on (agent_id, name), not (id): a concurrent insert of the same
+	// entity between the SELECT above and here violates the UNIQUE(agent_id,
+	// name) constraint, which an ON CONFLICT (id) clause does not absorb (it
+	// surfaced as an error). DO UPDATE ... RETURNING yields the canonical id
+	// whether we inserted the row or lost the race to a concurrent writer.
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO graph_entities (id, agent_id, name, entity_type, properties_json, owner, user_id, created_at, updated_at)
 		 VALUES ($1, $2, $1, 'concept', '{}', NULLIF($3, ''), $4, NOW(), NOW())
-		 ON CONFLICT (id) DO NOTHING`,
+		 ON CONFLICT (agent_id, name) DO UPDATE SET updated_at = NOW()
+		 RETURNING id`,
 		ref, agentID, owner, UserIDFromContext(ctx),
-	); err != nil {
+	).Scan(&id); err != nil {
 		return "", err
 	}
-	return ref, nil
+	return id, nil
 }
 
 // =============================================================================
