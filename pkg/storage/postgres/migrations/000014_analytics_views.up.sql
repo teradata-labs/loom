@@ -18,10 +18,11 @@
 -- SECURITY: every view is `security_invoker = true` so base-table RLS is
 -- evaluated against the *querying* role and its `app.current_user_id` session
 -- GUC, never the view owner's. This guarantees a view can never expose more
--- than the caller could already read directly. NOTE: Loom's base-table RLS
--- policies are permissive when `app.current_user_id` is unset (see 000007),
--- so a connection that does not set that GUC sees all rows — these views do
--- not change that, they only avoid *elevating* privilege.
+-- than the caller could already read directly. NOTE: Loom's base-table RLS on
+-- sessions/messages (000007) is strict — when `app.current_user_id` is unset,
+-- `current_setting(..., true)` is NULL so no rows match (deny-by-default); a
+-- connection without that GUC therefore sees nothing through these views. The
+-- views only avoid *elevating* privilege; they never loosen it.
 
 -- View 1: cost and token totals per agent, per role, per UTC day.
 -- Sourced from per-message `cost_usd` / `token_count` (000001).
