@@ -27,6 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -63,7 +64,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", session.ID)
 
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 
 		contextJSON, err := json.Marshal(session.Context)
@@ -100,6 +101,18 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Avoid disk I/O while holding a DB transaction/connection.
+	if syncErr := artifacts.SyncSessionArtifactMetadata(ctx, session); syncErr != nil {
+		span.RecordError(syncErr)
+		s.logger.Warn("session artifact metadata sync failed after DB commit",
+			zap.String("session_id", session.ID),
+			zap.Error(syncErr),
+		)
+	}
+	return nil
 }
 
 // LoadSession retrieves a session and its messages from PostgreSQL.

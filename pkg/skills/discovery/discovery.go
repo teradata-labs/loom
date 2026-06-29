@@ -25,7 +25,9 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -165,13 +167,15 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 	if cmd, _ := skills.ParseSlashCommand(message); cmd != "" {
 		if skill, ok := d.library.FindBySlashCommand(cmd); ok {
 			if eligible[skill.Name] {
-				return []*Candidate{{
+				out := []*Candidate{{
 					Skill:        skill,
 					Mode:         modeByName[skill.Name],
 					Confidence:   1.0,
 					TriggerType:  "slash_command",
 					TriggerValue: cmd,
-				}}, nil
+				}}
+				recordActivatedSkills(span, out)
+				return out, nil
 			}
 		}
 	}
@@ -262,7 +266,41 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 	if len(candidates) > maxConcurrent {
 		candidates = candidates[:maxConcurrent]
 	}
+	recordActivatedSkills(span, candidates)
 	return candidates, nil
+}
+
+// recordActivatedSkills annotates the discovery span with the skills that
+// fired this turn (the candidates the agent goes on to activate). The
+// loom-cloud span exporter persists span attributes verbatim into
+// llm_spans.attributes, so this lets trace consumers — and the dashboard —
+// attribute a turn to specific skills without re-deriving them. It is a no-op
+// when the tracer produced a nil span (e.g. NoOpTracer).
+func recordActivatedSkills(span *observability.Span, candidates []*Candidate) {
+	if span == nil {
+		return
+	}
+	span.SetAttribute("skills.activated.count", len(candidates))
+	if len(candidates) == 0 {
+		return
+	}
+	names := make([]string, 0, len(candidates))
+	detail := make([]map[string]interface{}, 0, len(candidates))
+	for _, c := range candidates {
+		if c == nil || c.Skill == nil {
+			continue
+		}
+		names = append(names, c.Skill.Name)
+		detail = append(detail, map[string]interface{}{
+			"name":       c.Skill.Name,
+			"trigger":    c.TriggerType,
+			"confidence": c.Confidence,
+		})
+	}
+	span.SetAttribute("skills.activated.names", strings.Join(names, ","))
+	if b, err := json.Marshal(detail); err == nil {
+		span.SetAttribute("skills.activated.detail", string(b))
+	}
 }
 
 // toSkillsBindings extracts the SkillBinding records from the resolver's

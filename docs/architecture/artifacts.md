@@ -2,7 +2,7 @@
 
 **Version**: v1.2.0
 **Status**: ✅ Implemented (Session-based with CASCADE cleanup)
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-08
 
 ---
 
@@ -25,6 +25,7 @@
 - [Data Structures](#data-structures)
   - [Session-Artifact Relationship](#session-artifact-relationship)
   - [Directory Structure](#directory-structure)
+  - [Session artifact metadata](#session-artifact-metadata-metadatajson)
   - [Database Schema](#database-schema)
 - [Design Rationale](#design-rationale)
   - [Session-Based Organization](#session-based-organization)
@@ -52,6 +53,10 @@
 The Artifact Management subsystem provides **session-aware file storage** for the Loom agent framework. Every artifact is automatically organized by session, enabling automatic cleanup, isolation, and simplified path management.
 
 **Target Audience**: Architects, academics, advanced developers
+
+**What changed (recent)**:
+
+- Session directories may include `metadata.json` for attribution (agent, times, allowlisted context IDs); see [Session artifact metadata](#session-artifact-metadata-metadatajson).
 
 **What Changed in v1.0.2**:
 - ✅ Session-based directory structure (`sessions/<session-id>/agent/`, `sessions/<session-id>/scratchpad/`)
@@ -882,6 +887,7 @@ $LOOM_DATA_DIR/
 │   │   └── <uuid>.tmp
 │   └── sessions/
 │       ├── sess_abc123/
+│       │   ├── metadata.json      # Session attribution (agent, times, optional context IDs)
 │       │   ├── agent/             # Agent/generated artifacts (indexed)
 │       │   │   ├── analysis.md
 │       │   │   ├── query.sql
@@ -910,6 +916,22 @@ $LOOM_DATA_DIR/
 | Agent/generated with session | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/<filename>` |
 | Scratchpad | `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/<filename>` |
 | No session context | `$LOOM_DATA_DIR/artifacts/temp/<filename>` |
+
+### Session artifact metadata (`metadata.json`)
+
+Each session directory may contain **`metadata.json`** at:
+
+`$LOOM_DATA_DIR/artifacts/sessions/<session_id>/metadata.json`
+
+It records **non-secret attribution** for dashboards and APIs: session id, agent identifiers, start/end times, lifecycle status (`active`, `completed`), optional **`context`** with allowlisted keys only (`user_id`, `project_id`, `conversation_id`), and optional artifact stats. The file is created/updated when the session is persisted; missing files remain valid for older sessions.
+
+**Feature flag (default off):** set `artifacts.session_metadata_enabled: true` in `looms.yaml` or `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED=1` so the server writes `metadata.json` on session save, marks completion on delete, and merges this file into list/get session APIs when filters require it. When disabled, no per-session disk I/O runs for this feature and APIs omit disk-derived lifecycle fields unless another code path sets them.
+
+**Multi-replica / PostgreSQL caveat:** `metadata.json` lives on the server process filesystem (`$LOOM_DATA_DIR/artifacts/sessions/...`). Multiple `looms serve` replicas each have their own local tree unless you mount shared storage; session rows in PostgreSQL are shared, but artifact metadata files are not replicated by the database. For consistent cross-replica attribution, use shared storage for `$LOOM_DATA_DIR` or keep metadata in the database (future work; see project backlog).
+
+API responses merge this file into `Session` fields (for example `metadata_status`, `started_at`, `ended_at`, `artifact_count`) using the same **context allowlist** so tampered files cannot inject arbitrary keys into HTTP/gRPC payloads.
+
+See [GitHub issue #111](https://github.com/teradata-labs/loom/issues/111).
 
 ---
 
