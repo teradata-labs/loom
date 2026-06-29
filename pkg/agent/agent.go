@@ -747,8 +747,9 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 // mechanism is wired up — so the LLM is only offered tools it can actually
 // execute. Without this the model "discovers" a disabled tool by calling it and
 // eating a denial: a wasted turn, plus an intentional policy decision logged as
-// a tool failure. Tools driven by subsystems (graph_memory, task_board) are
-// unaffected; this only trims the names presented to the model.
+// a tool failure. The graph_memory/task_board subsystems keep functioning
+// regardless of this filter; it only trims the tool names offered to the model
+// (those names are still hidden if an explicit deny pattern matches them).
 func (a *Agent) applyPermissionToolFilter(in []shuttle.Tool) []shuttle.Tool {
 	if a.permissionChecker == nil {
 		return in

@@ -397,6 +397,60 @@
     "hoverBorderColor",
   ]);
 
+  // Returns true for values JS Number() coerces to a finite number (numbers and
+  // numeric strings), which is what a chart can actually plot.
+  function isNumericValue(v) {
+    if (typeof v === "number") return isFinite(v);
+    if (typeof v === "string" && v.trim() !== "") return isFinite(Number(v));
+    return false;
+  }
+
+  // Infer an {xKey, series} mapping from an array of row objects when the spec
+  // omits x_key/series. The most common LLM-produced chart shape is a plain
+  // array of records (e.g. [{hour:"06:00", speed:24.5}, ...]); without a mapping
+  // the old code coerced each row object to NaN and rendered an empty chart.
+  // The first non-numeric field becomes the x-axis; every numeric field becomes
+  // a series. Returns null when no usable numeric series can be found.
+  function inferRecordsMapping(rows) {
+    const first = rows[0];
+    if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+    const keys = Object.keys(first);
+    if (keys.length < 2) return null;
+    let xKey = keys.find((k) => !isNumericValue(first[k]));
+    if (xKey === undefined) xKey = keys[0]; // all numeric: use the first column as the axis
+    const series = keys
+      .filter((k) => k !== xKey && isNumericValue(first[k]))
+      .map((k) => ({ key: k, label: k }));
+    if (series.length === 0) return null;
+    return { xKey, series };
+  }
+
+  // Reports whether a built Chart.js config has at least one finite value
+  // (axis charts) or one valid {x,y} point (scatter/bubble) to plot.
+  function chartConfigHasData(config) {
+    const datasets =
+      config && config.data && Array.isArray(config.data.datasets)
+        ? config.data.datasets
+        : [];
+    for (const ds of datasets) {
+      if (!ds || !Array.isArray(ds.data)) continue;
+      for (const v of ds.data) {
+        if (typeof v === "number" && isFinite(v)) return true;
+        if (
+          v &&
+          typeof v === "object" &&
+          typeof v.x === "number" &&
+          isFinite(v.x) &&
+          typeof v.y === "number" &&
+          isFinite(v.y)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   function buildSafeChartConfig(props) {
     // Support snake_case (chart_type), camelCase (chartType), and plain (type).
     const rawType = props.chartType || props.chart_type || props.type;
@@ -418,30 +472,42 @@
             color: (Array.isArray(props.colors) && props.colors[i]) || null,
           }))
         : null;
-    const isRecordsFormat =
-      xKey &&
-      seriesDef &&
+
+    // Detect a plain array of row objects, then fill in any missing x_key/series
+    // by inference so the common mapping-less shape renders instead of NaN-ing.
+    const dataIsRowObjects =
       Array.isArray(props.data) &&
       props.data.length > 0 &&
       props.data[0] !== null &&
       typeof props.data[0] === "object" &&
       !Array.isArray(props.data[0]);
+    let effectiveXKey = xKey;
+    let effectiveSeriesDef = seriesDef;
+    if (dataIsRowObjects && (!effectiveXKey || !effectiveSeriesDef)) {
+      const inferred = inferRecordsMapping(props.data);
+      if (inferred) {
+        if (!effectiveXKey) effectiveXKey = inferred.xKey;
+        if (!effectiveSeriesDef) effectiveSeriesDef = inferred.series;
+      }
+    }
+    const isRecordsFormat =
+      effectiveXKey && effectiveSeriesDef && dataIsRowObjects;
 
     const isPointChart = chartType === "scatter" || chartType === "bubble";
 
     if (isRecordsFormat) {
       // Scatter/bubble charts don't use labels — x comes from the data points.
       if (!isPointChart) {
-        labels = props.data.map((row) => String(row[xKey] ?? ""));
+        labels = props.data.map((row) => String(row[effectiveXKey] ?? ""));
       }
-      for (const s of seriesDef) {
+      for (const s of effectiveSeriesDef) {
         if (!s || typeof s !== "object" || !s.key) continue;
         const rKey = props.r_key || props.rKey || s.r_key || s.rKey;
         const safeDS = {
           label: String(s.label || s.key),
           data: props.data.map((row) => {
             if (isPointChart) {
-              const pt = { x: Number(row[xKey]), y: Number(row[s.key]) };
+              const pt = { x: Number(row[effectiveXKey]), y: Number(row[s.key]) };
               if (chartType === "bubble") {
                 pt.r = rKey && row[rKey] != null ? Number(row[rKey]) : 5;
               }
@@ -486,9 +552,13 @@
       let dataObj =
         props.data && typeof props.data === "object" ? props.data : props;
 
-      // Normalize flat top-level array: props.data = [1,2,3]
+      // Normalize flat top-level array: props.data = [1,2,3]. Preserve any
+      // sibling props.labels so a {labels, data} pair still gets its x-axis.
       if (Array.isArray(props.data)) {
-        dataObj = { labels: [], datasets: [{ data: props.data }] };
+        dataObj = {
+          labels: Array.isArray(props.labels) ? props.labels : [],
+          datasets: [{ data: props.data }],
+        };
       }
       // Normalize missing datasets when a flat .data array is present inside the object
       if (!Array.isArray(dataObj.datasets) && Array.isArray(dataObj.data)) {
@@ -907,6 +977,27 @@
       // Abort if a newer render generation has started while Chart.js was loading.
       if (gen !== undefined && renderGen !== gen) return null;
       const config = buildSafeChartConfig(props);
+      // If normalization produced no finite data, show a clear empty-state
+      // instead of a blank canvas with an "undefined" legend and a 0–1 axis.
+      if (!chartConfigHasData(config)) {
+        canvasWrap.remove();
+        wrapper.appendChild(
+          createElement(
+            "div",
+            {
+              style: {
+                color: THEME.textSecondary,
+                fontFamily: THEME.fontMono,
+                fontSize: "12px",
+                padding: "16px 8px",
+                textAlign: "center",
+              },
+            },
+            "No plottable data for this chart. Provide labels + datasets with numeric data arrays.",
+          ),
+        );
+        return wrapper;
+      }
       const instance = new window.Chart(canvas.getContext("2d"), config);
       chartInstances.push(instance);
     } catch (chartErr) {

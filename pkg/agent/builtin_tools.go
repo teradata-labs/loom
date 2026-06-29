@@ -661,9 +661,9 @@ func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string,
 	// from offset 0 — returning the first page (bounded to a line window) is what
 	// an agent calling query_tool_result(ref) with no other args expects, and is
 	// far more useful than a hard error. A single-line result, e.g. an OpenData
-	// query's JSON blob, comes back whole. Structured types (json_object,
-	// json_array) still require an explicit method below, so a large array is
-	// never auto-dumped.
+	// query's JSON blob, comes back whole. json_object is paginated like text
+	// (below); only json_array still requires an explicit method, so a large
+	// array is never auto-dumped.
 	if meta.DataType == "text" || meta.DataType == "json_object" {
 		return t.paginateData(ref, meta, input)
 	}
