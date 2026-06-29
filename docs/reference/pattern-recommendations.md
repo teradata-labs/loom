@@ -17,7 +17,8 @@ Reference for Loom's built-in patterns across multiple categories - pattern sele
 - [Pattern by Use Case](#pattern-by-use-case)
 - [Pattern by Backend Type](#pattern-by-backend-type)
 - [Pattern by Difficulty](#pattern-by-difficulty)
-- [Complete Pattern Catalog](#complete-pattern-catalog)
+- [Complete Pattern Index](#complete-pattern-index)
+- [Detailed Pattern Catalog](#detailed-pattern-catalog-selected)
 - [Pattern Library API](#pattern-library-api)
 - [Best Practices](#best-practices)
 - [Error Codes](#error-codes)
@@ -967,7 +968,196 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 - teradata/ml/decision_tree (hyperparameter tuning)
 
 
-## Complete Pattern Catalog
+## Complete Pattern Index
+
+_Generated from the 138 executable pattern files in `patterns/` (library bundles excluded). Each entry is `path` — purpose._
+
+#### code/ (2)
+
+- `code/doc_generation.yaml` — Automated Documentation Generation
+- `code/test_generation.yaml` — Automated Test Case Generation
+
+#### debugging/ (1)
+
+- `debugging/root_cause_analysis.yaml` — Systematic Error Investigation
+
+#### document/ (2)
+
+- `document/document_analyzer.yaml` — Document Content Analysis
+- `document/file_parser.yaml` — Document and File Parsing
+
+#### documents/ (4)
+
+- `documents/csv_import.yaml` — CSV Import and Analysis
+- `documents/document_qa.yaml` — Document Question Answering
+- `documents/excel_analysis.yaml` — Excel Spreadsheet Analysis
+- `documents/pdf_extraction.yaml` — PDF Text Extraction and Analysis
+
+#### evaluation/ (1)
+
+- `evaluation/prompt_evaluation.yaml` — A/B Testing and Quality Scoring
+
+#### fun/ (5)
+
+- `fun/code_haiku.yaml` — Code Haiku Generator
+- `fun/commit_message_limerick.yaml` — Commit Message Limerick Generator
+- `fun/dnd_character_generator.yaml` — D&D 5e Character Sheet Generator
+- `fun/error_translator.yaml` — Error Message Translator (Human-Speak Edition)
+- `fun/rubber_duck_debugger.yaml` — Rubber Duck Debugging Assistant
+
+#### nasa/ (1)
+
+- `nasa/cosmic_anomaly_investigator.yaml` — Cosmic Anomaly Investigator
+
+#### postgres/ (12)
+
+- `postgres/analytics/count_optimization.yaml` — COUNT Query Optimization
+- `postgres/analytics/data_type_optimization.yaml` — Data Type Optimization
+- `postgres/analytics/distinct_elimination.yaml` — DISTINCT Elimination
+- `postgres/analytics/foreign_key_validation.yaml` — Foreign Key Validation
+- `postgres/analytics/join_optimization.yaml` — JOIN Optimization
+- `postgres/analytics/like_pattern_optimization.yaml` — LIKE Pattern Optimization
+- `postgres/analytics/missing_index_analysis.yaml` — Missing Index Analysis
+- `postgres/analytics/partition_recommendation.yaml` — Table Partitioning Recommendation
+- `postgres/analytics/query_rewrite.yaml` — Query Rewrite Optimization
+- `postgres/analytics/sequential_scan_detection.yaml` — Sequential Scan Detection
+- `postgres/analytics/subquery_to_join.yaml` — Subquery to JOIN Conversion
+- `postgres/analytics/vacuum_recommendation.yaml` — VACUUM and ANALYZE Recommendation
+
+#### prompt_engineering/ (4)
+
+- `prompt_engineering/chain_of_thought.yaml` — Chain of Thought Reasoning
+- `prompt_engineering/few_shot_learning.yaml` — Few-Shot Learning from Examples
+- `prompt_engineering/hallucination_prevention.yaml` — Citation and Grounding Techniques
+- `prompt_engineering/structured_output.yaml` — Structured Output (JSON/XML)
+
+#### rest_api/ (1)
+
+- `rest_api/health_check.yaml` — REST API Health Check Design
+
+#### sql/ (8)
+
+- `sql/data_quality/data_profiling.yaml` — Data Profiling and Quality Assessment
+- `sql/data_quality/data_validation.yaml` — Data Validation and Quality Rules
+- `sql/data_quality/duplicate_detection.yaml` — Duplicate Detection and Deduplication
+- `sql/data_quality/missing_value_analysis.yaml` — Missing Value Analysis and Imputation
+- `sql/data_quality/outlier_detection.yaml` — Outlier Detection and Analysis
+- `sql/text/ngram.yaml` — N-Gram Text Analysis
+- `sql/timeseries/arima.yaml` — ARIMA Time Series Forecasting
+- `sql/timeseries/moving_average.yaml` — Moving Average
+
+#### teradata/ (84)
+
+- `teradata/ai_functions/ai_ask_llm.yaml` — AI Ask LLM
+- `teradata/ai_functions/ai_pii.yaml` — AI PII Detection and Masking
+- `teradata/ai_functions/ai_sentiment.yaml` — AI Sentiment Analysis
+- `teradata/ai_functions/ai_summarize.yaml` — AI Text Summarization
+- `teradata/ai_functions/ai_text_classifier.yaml` — AI Text Classifier
+- `teradata/ai_functions/authorization_objects.yaml` — Authorization Objects for External Services
+- `teradata/analytics/attribution.yaml` — Attribution Analysis
+- `teradata/analytics/churn_analysis.yaml` — Customer Churn Analysis and Prediction
+- `teradata/analytics/customer_health_scoring.yaml` — Customer Health Score Analysis
+- `teradata/analytics/funnel_analysis.yaml` — Funnel Analysis
+- `teradata/analytics/npath.yaml` — nPath Sequence Analysis
+- `teradata/analytics/resource_utilization.yaml` — Resource Utilization Analysis
+- `teradata/analytics/sessionize.yaml` — Sessionize - Group Events into Sessions
+- `teradata/association/apriori.yaml` — Frequent Itemset Mining and Association Rules (Apriori)
+- `teradata/association/collaborative_filtering.yaml` — Collaborative Filtering (Pairwise Item Affinity)
+- `teradata/byom/model_loading.yaml` — BYOM Model Loading
+- `teradata/byom/model_scoring.yaml` — BYOM Model Scoring
+- `teradata/code_migration/macro_to_procedure.yaml` — MACRO to Stored Procedure Conversion
+- `teradata/core/data_types_casting.yaml` — Teradata Data Types & Casting
+- `teradata/core/sql_basics.yaml` — Teradata SQL Basics & Dialect Differences
+- `teradata/csv_to_teradata_intelligent.yaml` — Intelligent CSV to Teradata Import
+- `teradata/data_discovery/column_similarity.yaml` — Column Similarity Analysis Using Distance Metrics
+- `teradata/data_discovery/corpus_navigation.yaml` — Corpus Navigation via Relationships
+- `teradata/data_discovery/data_profiling.yaml` — Statistical Data Profiling Using Signatures
+- `teradata/data_discovery/domain_discovery.yaml` — Domain Discovery and Clustering
+- `teradata/data_discovery/foreign_key_detection.yaml` — Foreign Key Detection Using Conditional Probabilities
+- `teradata/data_discovery/key_detection.yaml` — Primary Key Detection Using Signatures
+- `teradata/data_discovery/schema_graph_query.yaml` — Schema Graph Query (Materialized Map Views)
+- `teradata/data_discovery/signature_generation.yaml` — Column Signature Generation
+- `teradata/data_loading/fastload_generation.yaml` — FastLoad Script Generation
+- `teradata/data_modeling/temporal_table_design.yaml` — Temporal Table Design
+- `teradata/data_prep/bincode.yaml` — Binning / Discretization (TD_BinCodeFit / TD_BinCodeTransform)
+- `teradata/data_prep/column_transformer.yaml` — Pipeline Transform (TD_ColumnTransformer)
+- `teradata/data_prep/fit_transform_pattern.yaml` — Fit/Transform Two-Phase Architecture
+- `teradata/data_prep/one_hot_encoding.yaml` — One-Hot Encoding (TD_OneHotEncodingFit / TD_OneHotEncodingTransform)
+- `teradata/data_prep/scale_transform.yaml` — Feature Scaling (TD_ScaleFit / TD_ScaleTransform)
+- `teradata/data_prep/smote.yaml` — Synthetic Oversampling (TD_SMOTE)
+- `teradata/data_quality/data_profiling.yaml` — Data Profiling and Quality Assessment
+- `teradata/data_quality/data_validation.yaml` — Data Validation and Quality Rules
+- `teradata/data_quality/duplicate_detection.yaml` — Duplicate Detection and Deduplication
+- `teradata/data_quality/missing_value_analysis.yaml` — Missing Value Analysis and Imputation
+- `teradata/data_quality/outlier_detection.yaml` — Outlier Detection and Analysis
+- `teradata/geospatial/geometry_basics.yaml` — ST_Geometry Types and Construction
+- `teradata/geospatial/spatial_operations.yaml` — Spatial Manipulation and Aggregation
+- `teradata/geospatial/spatial_relationships.yaml` — Spatial Relationship Predicates and Distance
+- `teradata/hypothesis_testing/anova.yaml` — One-Way Analysis of Variance (ANOVA)
+- `teradata/hypothesis_testing/statistical_tests.yaml` — Statistical Tests (Chi-Square, F-Test, Z-Test)
+- `teradata/ml/anomaly_detection.yaml` — Anomaly Detection (One-Class SVM)
+- `teradata/ml/decision_forest.yaml` — Decision Forest (Random Forest)
+- `teradata/ml/decision_tree.yaml` — Decision Tree Classification
+- `teradata/ml/glm.yaml` — Generalized Linear Model (GLM)
+- `teradata/ml/kmeans.yaml` — K-Means Clustering
+- `teradata/ml/knn.yaml` — K-Nearest Neighbors (KNN)
+- `teradata/ml/linear_regression.yaml` — Linear Regression
+- `teradata/ml/logistic_regression.yaml` — Logistic Regression
+- `teradata/ml/ml_pipeline_patterns.yaml` — ML Pipeline Patterns
+- `teradata/ml/naive_bayes.yaml` — Naive Bayes Classifier
+- `teradata/ml/svm.yaml` — Support Vector Machine (SVM)
+- `teradata/ml/xgboost.yaml` — XGBoost (Gradient Boosted Trees)
+- `teradata/model_evaluation/classification_evaluator.yaml` — Classification Model Evaluator
+- `teradata/model_evaluation/regression_evaluator.yaml` — Regression Model Evaluator
+- `teradata/model_evaluation/roc_analysis.yaml` — ROC Curve and AUC Analysis
+- `teradata/model_evaluation/shap_explainability.yaml` — SHAP Feature Explainability
+- `teradata/model_evaluation/train_test_split.yaml` — Train/Test Split
+- `teradata/performance/catalog_views.yaml` — Teradata Catalog Views (DBC.*)
+- `teradata/performance/explain_analysis.yaml` — EXPLAIN Plan Analysis
+- `teradata/performance/pi_skew_detection.yaml` — Primary Index Skew Detection
+- `teradata/performance/query_tuning.yaml` — Query Tuning Strategies
+- `teradata/performance/spool_space_analysis.yaml` — Spool Space Analysis
+- `teradata/performance/statistics_collection.yaml` — Statistics Collection Recommendations
+- `teradata/text/ner.yaml` — Named Entity Recognition
+- `teradata/text/ngram.yaml` — N-Gram Text Analysis
+- `teradata/text/sentiment.yaml` — Sentiment Analysis
+- `teradata/text/text_classifier.yaml` — Naive Bayes Text Classification
+- `teradata/text/tfidf.yaml` — TF-IDF Vector Generation
+- `teradata/timeseries/arima.yaml` — ARIMA Time Series Forecasting
+- `teradata/timeseries/holt_winters.yaml` — Holt-Winters Exponential Smoothing Forecaster
+- `teradata/timeseries/moving_average.yaml` — Moving Average
+- `teradata/timeseries/signal_processing.yaml` — Digital Signal Processing (DSP)
+- `teradata/timeseries/uaf_concepts.yaml` — UAF (Unbounded Array Framework) Architecture
+- `teradata/vector_search/embeddings.yaml` — Text Embedding Generation
+- `teradata/vector_search/hnsw.yaml` — HNSW Approximate Nearest Neighbor Search
+- `teradata/vector_search/vector_distance.yaml` — Exact Vector Distance Search
+- `teradata/vector_search/vector_normalize.yaml` — Vector Normalization
+
+#### text/ (2)
+
+- `text/sentiment_analysis.yaml` — Multi-Class Sentiment Detection
+- `text/summarization.yaml` — Text Summarization Techniques
+
+#### vision/ (2)
+
+- `vision/chart_interpretation.yaml` — Extract Data from Charts and Graphs
+- `vision/form_extraction.yaml` — OCR and Form Field Extraction
+
+#### weaver/ (9)
+
+- `weaver/conditional_workflow.yaml` — Conditional Workflow Pattern
+- `weaver/debate_workflow.yaml` — Debate Workflow Pattern
+- `weaver/fork_join_workflow.yaml` — Fork-Join Workflow Pattern
+- `weaver/hub_spoke_workflow.yaml` — Hub-and-Spoke Coordination Pattern
+- `weaver/iterative_workflow.yaml` — Iterative Workflow Pattern
+- `weaver/parallel_workflow.yaml` — Parallel Workflow Pattern
+- `weaver/pipeline_workflow.yaml` — Pipeline Workflow Pattern
+- `weaver/pubsub_workflow.yaml` — Peer-to-Peer Pub-Sub Coordination Pattern
+- `weaver/swarm_workflow.yaml` — Swarm Voting Workflow Pattern
+
+## Detailed Pattern Catalog (selected)
+
+In-depth entries (templates, intents, examples, and common errors) for commonly-used patterns. For every pattern, see [Complete Pattern Index](#complete-pattern-index) above.
 
 ### postgres/analytics/sequential_scan_detection
 
