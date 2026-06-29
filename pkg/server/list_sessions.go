@@ -86,6 +86,13 @@ func pageProtoSessions(sessions []*loomv1.Session, offset, limit int32) []*loomv
 	if o >= len(sessions) {
 		return nil
 	}
+	// Preserve the historical "return everything" behavior when the caller has
+	// not opted into pagination at all (no limit and no offset). Once either
+	// pagination parameter is set, apply the server-side default page size and
+	// hard cap so callers can page deterministically.
+	if limit <= 0 && offset <= 0 {
+		return sessions[o:]
+	}
 	lim := int(normalizeListSessionsLimit(limit))
 	end := o + lim
 	if end > len(sessions) {

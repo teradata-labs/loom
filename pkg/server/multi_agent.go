@@ -2789,6 +2789,12 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 			zap.Error(err))
 	}
 
+	// NOTE: the lookup above runs under RLock and the delete below under a
+	// separate Lock, so two concurrent DeleteSession calls for the same id can
+	// both pass the lookup and reach here. The downstream operations
+	// (CompleteSessionArtifactMetadata plus the idempotent agent/store deletes)
+	// are safe to repeat; the only visible effect is that the losing call also
+	// returns Success rather than NotFound.
 	s.mu.Lock()
 	if deleteAgent != nil {
 		if _, ok := deleteAgent.GetSession(req.SessionId); ok {

@@ -457,8 +457,11 @@ func (s *Server) DeleteSession(ctx context.Context, req *loomv1.DeleteSessionReq
 	}
 
 	_, inMemory := s.agent.GetSession(req.SessionId)
+	// Only consult the persistent store when the session is not already in
+	// memory. Otherwise we'd add a store round-trip (and on Postgres, pull the
+	// session row and its messages) to every delete on the happy path.
 	inStore := false
-	if s.sessionStore != nil {
+	if !inMemory && s.sessionStore != nil {
 		if loaded, err := s.sessionStore.LoadSession(ctx, req.SessionId); err == nil && loaded != nil {
 			inStore = true
 		}

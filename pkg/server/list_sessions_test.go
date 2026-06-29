@@ -67,15 +67,44 @@ func TestPageProtoSessions(t *testing.T) {
 	if got := pageProtoSessions(s, 1, 1); len(got) != 1 || got[0].Id != "2" {
 		t.Fatalf("page 1,1: got %+v", got)
 	}
-	// limit 0 uses default page size (50); only 3 sessions exist
+	// No limit and no offset = no pagination opted into = return everything.
 	if got := pageProtoSessions(s, 0, 0); len(got) != 3 {
-		t.Fatalf("limit 0 uses default page size: got len %d", len(got))
+		t.Fatalf("no pagination -> return all: got len %d", len(got))
 	}
 	if got := pageProtoSessions(s, 0, 2); len(got) != 2 || got[0].Id != "1" {
 		t.Fatalf("page first 2: got %+v", got)
 	}
 	if got := pageProtoSessions(s, 10, 5); len(got) != 0 {
 		t.Fatalf("offset past end: got %+v", got)
+	}
+}
+
+// TestPageProtoSessions_PaginationOptIn pins the behavior that callers who do
+// not pass any pagination parameter keep the historical "return everything"
+// response, while setting either limit or offset opts into server-side paging.
+func TestPageProtoSessions_PaginationOptIn(t *testing.T) {
+	t.Parallel()
+	n := int(listSessionsMaxPageSize) + 100 // > default page size and > cap
+	all := make([]*loomv1.Session, n)
+	for i := range all {
+		all[i] = &loomv1.Session{}
+	}
+
+	// No limit and no offset: unbounded (preserves pre-pagination behavior).
+	if got := pageProtoSessions(all, 0, 0); len(got) != n {
+		t.Fatalf("no pagination -> all %d, got %d", n, len(got))
+	}
+	// Explicit limit paginates.
+	if got := pageProtoSessions(all, 0, 100); len(got) != 100 {
+		t.Fatalf("explicit limit 100, got %d", len(got))
+	}
+	// Offset alone opts into pagination -> default page size applies.
+	if got := pageProtoSessions(all, 1, 0); len(got) != int(listSessionsDefaultPageSize) {
+		t.Fatalf("offset opts into pagination -> default page %d, got %d", listSessionsDefaultPageSize, len(got))
+	}
+	// Over-cap limit is capped.
+	if got := pageProtoSessions(all, 0, 9999); len(got) != int(listSessionsMaxPageSize) {
+		t.Fatalf("over-cap -> max %d, got %d", listSessionsMaxPageSize, len(got))
 	}
 }
 
