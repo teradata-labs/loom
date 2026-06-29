@@ -2,7 +2,7 @@
 
 **Version**: v1.2.0
 **Status**: ✅ Implemented
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-08
 
 ## Table of Contents
 
@@ -64,6 +64,8 @@ Every artifact is associated with a **session ID**. When an agent creates an art
 ```
 $LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/<filename>
 ```
+
+The same session folder may include **`metadata.json`** at `sessions/<session-id>/metadata.json` with attribution fields (agent, timestamps, optional project/conversation IDs). It is maintained by the server when sessions are saved; see the [artifact architecture](../architecture/artifacts.md#session-artifact-metadata-metadatajson) for the schema and privacy rules.
 
 **Benefits:**
 - No path management needed by agents - just use filenames
