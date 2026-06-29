@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,7 +103,7 @@ func parseSSE(t *testing.T, body string) []sseEvent {
 func newSSEServer(t *testing.T, sh StreamingMCPHandler) *StreamableHTTPServer {
 	t.Helper()
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			// Synchronous fallback path: echo a trivial JSON-RPC result.
 			var req struct {
 				ID     *json.RawMessage `json:"id"`
@@ -192,6 +193,59 @@ func TestStreamableHTTPServer_POST_SSE_HappyPath(t *testing.T) {
 	assert.Equal(t, int64(7), final.ID)
 	require.Len(t, final.Result.Content, 1)
 	assert.Equal(t, "the answer", final.Result.Content[0].Text)
+}
+
+// blockingStreamHandler emits one event, signals that it has started, then
+// blocks until its context is cancelled — modelling a long-running streaming
+// tool that the client disconnects from mid-stream.
+type blockingStreamHandler struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (h *blockingStreamHandler) HandleMessageStream(ctx context.Context, _ []byte, w SSEWriter) ([]byte, error) {
+	_ = w.WriteEvent([]byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`))
+	close(h.started)
+	<-ctx.Done()
+	close(h.cancelled)
+	return nil, ctx.Err()
+}
+
+// TestStreamableHTTPServer_SSE_ClientDisconnect asserts that a client
+// disconnect mid-stream cancels the handler's context, so a long-running
+// streaming tool unwinds instead of leaking a goroutine.
+func TestStreamableHTTPServer_SSE_ClientDisconnect(t *testing.T) {
+	h := &blockingStreamHandler{started: make(chan struct{}), cancelled: make(chan struct{})}
+	srv := newSSEServer(t, h)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loom_weave"}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	// Wait until the handler is mid-stream, then simulate a client disconnect.
+	select {
+	case <-h.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream handler did not start")
+	}
+	cancel()
+
+	// The disconnect must propagate to the handler's context and let it unwind.
+	select {
+	case <-h.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client disconnect did not cancel the handler context")
+	}
 }
 
 func TestStreamableHTTPServer_POST_NoAcceptSSE_UsesJSON(t *testing.T) {

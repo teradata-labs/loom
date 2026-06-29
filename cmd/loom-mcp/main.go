@@ -22,7 +22,8 @@
 //   - stdio (default): JSON-RPC over stdin/stdout, for Claude Desktop and IDEs.
 //   - http: Streamable HTTP (MCP 2025-03-26) for remote clients. The loom_weave
 //     tool streams progress via POST-response Server-Sent Events. The HTTP
-//     transport has no built-in auth and binds to localhost by default.
+//     transport binds to localhost by default; loom-mcp can wrap it with an
+//     optional Supabase-JWT auth layer (see runHTTP).
 //
 // Usage:
 //
@@ -202,15 +203,15 @@ func runStdio(ctx context.Context, mcpServer *server.MCPServer, logger *zap.Logg
 // runHTTP serves the MCP server over Streamable HTTP (MCP 2025-03-26) for remote
 // clients. The bridge's loom_weave tool streams progress via POST-response SSE.
 //
-// SECURITY: this transport has no built-in authentication. It binds to localhost
-// by default; exposing it on a network interface (or via a tunnel) without an
-// authenticating layer in front grants unauthenticated access to all MCP tools.
-// Phase 1C adds native Supabase-JWT auth in front of this handler.
+// SECURITY: the raw transport has no built-in authentication. runHTTP wraps it
+// with a Supabase-JWT authMiddleware when an authenticator is configured; it
+// binds to localhost by default. Exposing it on a network interface (or via a
+// tunnel) without that auth layer grants unauthenticated access to all MCP tools.
 func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logger *zap.Logger) {
 	transport.WarnIfNotLocalhost(logger, addr)
 
 	httpSrv, err := transport.NewStreamableHTTPServer(transport.StreamableHTTPServerConfig{
-		Handler:       func(msg []byte) ([]byte, error) { return mcpServer.HandleMessage(context.Background(), msg) },
+		Handler:       func(ctx context.Context, msg []byte) ([]byte, error) { return mcpServer.HandleMessage(ctx, msg) },
 		StreamHandler: mcpServer,
 		Logger:        logger,
 		SessionTTL:    transport.DefaultSessionTTL,

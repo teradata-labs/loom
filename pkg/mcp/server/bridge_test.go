@@ -342,6 +342,12 @@ func TestLoomBridge_AllowList(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not permitted")
 
+	// The streaming entrypoint (the one actually used by the SSE edge) enforces
+	// the same allow-list before dispatch.
+	_, err = bridge.CallToolStream(context.Background(), "loom_delete_agent", map[string]interface{}{"agent_id": "x"}, "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not permitted")
+
 	// An allow-listed tool still works.
 	_, err = bridge.CallTool(context.Background(), "loom_get_health", nil)
 	require.NoError(t, err)

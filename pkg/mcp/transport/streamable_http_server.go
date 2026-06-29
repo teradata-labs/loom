@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ const DefaultSessionTTL = 30 * time.Minute
 
 // MCPHandler is a function that processes MCP JSON-RPC messages and returns a response.
 // For notifications (no id), it returns nil.
-type MCPHandler func(msg []byte) ([]byte, error)
+type MCPHandler func(ctx context.Context, msg []byte) ([]byte, error)
 
 // SSEWriter writes individual Server-Sent Events on a streaming POST response.
 // Each call emits one framed event (id/event/data) and flushes immediately.
@@ -210,8 +211,9 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Process message
-	resp, err := s.handler(body)
+	// Process message (pass the request context so auth/identity middleware
+	// data reaches the handler on the synchronous path too).
+	resp, err := s.handler(r.Context(), body)
 	if err != nil {
 		s.logger.Error("handler error", zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -391,11 +393,13 @@ func WarnIfNotLocalhost(logger *zap.Logger, addr string) {
 		return
 	}
 	host := addr
-	// Strip port if present.
-	if idx := strings.LastIndex(addr, ":"); idx >= 0 {
-		host = addr[:idx]
+	// Strip the port if present. net.SplitHostPort handles bracketed IPv6
+	// ("[::1]:8080" -> "::1") correctly, unlike a naive LastIndex(":") which
+	// would truncate a bare IPv6 literal mid-address.
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
 	}
-	// Strip brackets for IPv6.
+	// Strip brackets for a bracketed IPv6 host given without a port.
 	host = strings.Trim(host, "[]")
 
 	switch host {
