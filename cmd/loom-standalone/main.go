@@ -169,7 +169,7 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 		if llmModel == "" {
 			llmModel = "anthropic.claude-sonnet-4-5-20250929-v1:0"
 		}
-		llmProv, err = bedrock.NewClient(bedrock.Config{
+		llmProv, err = bedrock.NewClientForModel(bedrock.Config{
 			Region:      "us-west-2",
 			ModelID:     llmModel,
 			MaxTokens:   maxTok,
