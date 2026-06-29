@@ -1140,7 +1140,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		if profile == "" {
 			profile = "default"
 		}
-		return bedrock.NewClient(bedrock.Config{
+		return bedrock.NewClientForModel(bedrock.Config{
 			Region:            region,
 			Profile:           profile,
 			ModelID:           config.Model,

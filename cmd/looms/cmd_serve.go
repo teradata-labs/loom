@@ -497,7 +497,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
-		client, err := bedrock.NewClient(bedrock.Config{
+		client, err := bedrock.NewClientForModel(bedrock.Config{
 			Region:            cfg.BedrockRegion,
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
@@ -733,7 +733,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if modelID == "" {
 			modelID = serverConfig.LLM.BedrockModelID
 		}
-		return bedrock.NewClient(bedrock.Config{
+		return bedrock.NewClientForModel(bedrock.Config{
 			Region:          serverConfig.LLM.BedrockRegion,
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
 			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
