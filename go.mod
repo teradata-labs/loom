@@ -16,13 +16,13 @@ require (
 	charm.land/lipgloss/v2 v2.0.4
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/anthropics/anthropic-sdk-go v1.51.0
+	github.com/anthropics/anthropic-sdk-go v1.52.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0
-	github.com/aws/smithy-go v1.27.2
+	github.com/aws/smithy-go v1.27.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
