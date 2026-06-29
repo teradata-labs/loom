@@ -277,7 +277,7 @@ func (f *ProviderFactory) createOpenAIProvider(model string) (interface{}, error
 		model = f.config.OpenAIModel
 	}
 	if model == "" {
-		model = "gpt-4o"
+		model = openai.DefaultOpenAIModel
 	}
 
 	return openai.NewClient(openai.Config{
@@ -397,7 +397,7 @@ func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, 
 		model = f.config.HuggingFaceModel
 	}
 	if model == "" {
-		model = "meta-llama/Llama-3.1-70B-Instruct"
+		model = huggingface.DefaultHuggingFaceModel
 	}
 
 	return huggingface.NewClient(huggingface.Config{
