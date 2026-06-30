@@ -27,6 +27,12 @@ import (
 // It provides LLM-assisted tool discovery with high accuracy.
 type SearchTool struct {
 	registry *Registry
+	// advertisable, when set, filters search results to tools the calling agent
+	// could actually execute. Without it the global registry would surface tools
+	// the agent's permission policy disables (e.g. shell_execute on a locked-down
+	// deployment); the model would then call one and eat a denial — a wasted turn
+	// and a policy decision miscounted as a tool failure. Nil means no filtering.
+	advertisable func(toolName string) bool
 }
 
 // NewSearchTool creates a new tool search tool.
@@ -34,6 +40,14 @@ func NewSearchTool(registry *Registry) *SearchTool {
 	return &SearchTool{
 		registry: registry,
 	}
+}
+
+// SetToolFilter installs a predicate that decides whether a discovered tool is
+// offered to the agent. Tools for which it returns false are dropped from the
+// results, so the model never discovers a tool it cannot run. Pass the agent's
+// permission-checker advertisability predicate.
+func (t *SearchTool) SetToolFilter(advertisable func(toolName string) bool) {
+	t.advertisable = advertisable
 }
 
 // Name returns the tool name.
@@ -154,9 +168,13 @@ func (t *SearchTool) Execute(ctx context.Context, params map[string]interface{})
 		}, nil
 	}
 
-	// Format results for LLM consumption
+	// Format results for LLM consumption, skipping any tool the calling agent
+	// could not execute so the model never discovers a tool it can't run.
 	results := make([]map[string]interface{}, 0, len(resp.Results))
 	for _, r := range resp.Results {
+		if t.advertisable != nil && r.Tool != nil && !t.advertisable(r.Tool.Name) {
+			continue
+		}
 		result := map[string]interface{}{
 			"name":        r.Tool.Name,
 			"description": r.Tool.Description,
