@@ -497,6 +497,9 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
+		// NewClientForModel routes Anthropic Claude models to the streaming +
+		// caching SDK client and others to the Converse client (single source of
+		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		client, err := bedrock.NewClientForModel(bedrock.Config{
 			Region:            cfg.BedrockRegion,
 			AccessKeyID:       cfg.BedrockAccessKeyID,
@@ -733,6 +736,9 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if modelID == "" {
 			modelID = serverConfig.LLM.BedrockModelID
 		}
+		// NewClientForModel routes Anthropic Claude models to the streaming +
+		// caching SDK client and others to the Converse client (single source of
+		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		return bedrock.NewClientForModel(bedrock.Config{
 			Region:          serverConfig.LLM.BedrockRegion,
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
@@ -850,6 +856,24 @@ func exportConfigToEnv(cfg *Config) {
 	if cfg.Tools.WebSearch.SerpAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
+	}
+}
+
+// buildServerAuthConfig converts the viper auth config into the server package's
+// AuthConfig (decoupled from viper). "optional" mode maps to Required=false.
+func buildServerAuthConfig(config *Config, logger *zap.Logger) server.AuthConfig {
+	sb := config.Server.Auth.Supabase
+	var secret []byte
+	if sb.JWTSecret != "" {
+		secret = []byte(sb.JWTSecret)
+	}
+	return server.AuthConfig{
+		Required:    config.Server.Auth.Mode != "optional",
+		HS256Secret: secret,
+		JWKSURL:     sb.JWKSURL,
+		Audience:    sb.Audience,
+		Issuer:      sb.Issuer,
+		Logger:      logger,
 	}
 }
 
@@ -1830,6 +1854,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Hide tools the permission policy would refuse, so the model
+					// never discovers (then calls) a disabled tool via tool_search.
+					if permissionChecker != nil {
+						searchTool.SetToolFilter(permissionChecker.Advertisable)
+					}
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
 
@@ -1987,11 +2016,33 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Warn("SQLite backend does not support user ID requirement; require_user_id ignored")
 	}
 
-	// Create gRPC server with optional TLS and user ID interceptors
+	// Build the interceptor chain. When Supabase-JWT auth is enabled it runs
+	// first and establishes the user identity from the token's subject; the
+	// legacy user-id interceptor then defers to that identity (see extractUserID).
+	// When auth is disabled, only the legacy interceptor runs (unchanged behavior).
+	unaryInterceptors := make([]grpc.UnaryServerInterceptor, 0, 2)
+	streamInterceptors := make([]grpc.StreamServerInterceptor, 0, 2)
+	if config.Server.Auth.Enabled {
+		authr, err := server.NewAuthenticator(context.Background(), buildServerAuthConfig(config, logger))
+		if err != nil {
+			logger.Fatal("failed to initialize Supabase-JWT authenticator", zap.Error(err))
+		}
+		unaryInterceptors = append(unaryInterceptors, authr.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, authr.StreamServerInterceptor())
+		logger.Info("Supabase-JWT authentication enabled",
+			zap.String("mode", config.Server.Auth.Mode),
+			zap.Bool("hs256", config.Server.Auth.Supabase.JWTSecret != ""),
+			zap.Bool("jwks", config.Server.Auth.Supabase.JWKSURL != ""),
+		)
+	}
+	unaryInterceptors = append(unaryInterceptors, server.UserIDUnaryInterceptor(userIDCfg))
+	streamInterceptors = append(streamInterceptors, server.UserIDStreamInterceptor(userIDCfg))
+
+	// Create gRPC server with optional TLS and the interceptor chain.
 	var grpcServer *grpc.Server
 	serverOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(server.UserIDUnaryInterceptor(userIDCfg)),
-		grpc.StreamInterceptor(server.UserIDStreamInterceptor(userIDCfg)),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
 	}
 	if tlsManager != nil {
 		creds := credentials.NewTLS(tlsManager.TLSConfig())
@@ -3038,6 +3089,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				if permissionChecker != nil {
+					searchTool.SetToolFilter(permissionChecker.Advertisable)
+				}
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
 
@@ -3478,12 +3532,24 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
+		// Expand ${ENV_VAR} in header values so secrets (e.g. a bearer token for
+		// an authenticated remote MCP server) come from the environment rather
+		// than being committed to the config file.
+		var headers map[string]string
+		if len(serverConfig.Headers) > 0 {
+			headers = make(map[string]string, len(serverConfig.Headers))
+			for k, v := range serverConfig.Headers {
+				headers[k] = os.ExpandEnv(v)
+			}
+		}
+
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
 			Transport:        transport,
 			URL:              serverConfig.URL,
+			Headers:          headers,
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,

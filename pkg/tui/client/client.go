@@ -47,7 +47,31 @@ type Config struct {
 	TLSInsecure   bool   // Skip TLS certificate verification (for self-signed certs)
 	TLSCAFile     string // Path to CA certificate file
 	TLSServerName string // Override TLS server name (for testing)
+
+	// BearerToken, when set, supplies a token attached as "authorization: Bearer"
+	// metadata on every RPC (e.g. a Supabase access token from `loom login`).
+	// It is invoked per request so it can refresh transparently.
+	BearerToken func() (string, error)
 }
+
+// perRPCBearer attaches a bearer token to outgoing gRPC requests.
+type perRPCBearer struct {
+	get        func() (string, error)
+	requireTLS bool
+}
+
+func (b perRPCBearer) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	token, err := b.get()
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, nil
+	}
+	return map[string]string{"authorization": "Bearer " + token}, nil
+}
+
+func (b perRPCBearer) RequireTransportSecurity() bool { return b.requireTLS }
 
 // NewClient creates a new Loom client.
 func NewClient(cfg Config) (*Client, error) {
@@ -71,9 +95,16 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	// Connect to server
-	conn, err := grpc.NewClient(cfg.ServerAddr,
-		grpc.WithTransportCredentials(creds),
-	)
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if cfg.BearerToken != nil {
+		// Per-RPC credentials require transport security unless the credential
+		// opts out; allow loopback/dev over insecure transport.
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(perRPCBearer{
+			get:        cfg.BearerToken,
+			requireTLS: cfg.TLSEnabled,
+		}))
+	}
+	conn, err := grpc.NewClient(cfg.ServerAddr, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client for %s: %w", cfg.ServerAddr, err)
 	}
