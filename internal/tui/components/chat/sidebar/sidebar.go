@@ -1188,8 +1188,8 @@ func (m *sidebarCmp) keyboardHintsBlock() string {
 		{"↑/↓", "navigate"},
 		{"enter", "select"},
 		{"ctrl+n", "new session"},
-		{"ctrl+e", "agents"},
-		{"ctrl+w", "workflows"},
+		{"alt+a", "agents"},
+		{"alt+w", "workflows"},
 	}
 
 	// --- slash commands ---
