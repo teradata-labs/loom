@@ -40,8 +40,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+g", "more"),
 		),
 		Commands: key.NewBinding(
-			key.WithKeys("ctrl+k", "ctrl+p"), // ctrl+k is more universal for command palette
-			key.WithHelp("ctrl+k", "commands"),
+			key.WithKeys("ctrl+p"), // ctrl+k freed so the editor's readline kill-to-EOL works (#171)
+			key.WithHelp("ctrl+p", "commands"),
 		),
 		Suspend: key.NewBinding(
 			key.WithKeys("ctrl+z"),
@@ -52,12 +52,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+o", "sessions"),
 		),
 		AgentsDialog: key.NewBinding(
-			key.WithKeys("ctrl+e"),
-			key.WithHelp("ctrl+e", "agents"),
+			key.WithKeys("alt+a"), // moved off ctrl+e (readline: move-to-end-of-line) — #171
+			key.WithHelp("alt+a", "agents"),
 		),
 		WorkflowsDialog: key.NewBinding(
-			key.WithKeys("ctrl+w"),
-			key.WithHelp("ctrl+w", "workflows"),
+			key.WithKeys("alt+w"), // moved off ctrl+w (readline: delete-word-backward) — #171
+			key.WithHelp("alt+w", "workflows"),
 		),
 	}
 }
