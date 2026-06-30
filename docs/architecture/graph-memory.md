@@ -4,7 +4,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Status**: ✅ Implemented (merged to main)
 
@@ -313,9 +313,11 @@ Two relation types:
 
 **Salience Model**:
 - Initial salience set at creation (default 0.5, range 0.0-1.0)
-- **Time decay**: `salience *= decay_rate` per day (default 0.995)
-- **Access boost**: `salience = min(1.0, salience + boost_amount)` on each access (default 0.05)
+- **Time decay**: `salience *= decay_rate` per day (`pkg/memory/salience.go` package default `DefaultDecayRate = 0.995`)
+- **Access boost**: `salience = min(1.0, salience + boost_amount)` on each access (`pkg/memory/salience.go` `DefaultBoostAmount = 0.05`)
 - **DecayAll**: Batch operation applying decay factor to all memories for an agent
+
+> Note: the agent-level `DefaultGraphMemoryConfig()` (`pkg/agent/config_loader.go:877`) applies its own defaults of `decay_rate=0.95` and `boost_amount=0.1`, which override the `pkg/memory/salience.go` package constants when an agent is constructed. See the [Configuration](#configuration) section.
 
 **Ranking Formula** (for recall):
 ```

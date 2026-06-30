@@ -4,7 +4,7 @@
 Technical specification for Loom agent configuration. Covers both the **server-level** agent
 definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by the server.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **API Version**: loom/v1
 **Configuration Kind**: `Agent`
 

@@ -1,7 +1,7 @@
 
 # Loom Documentation
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Getting Started

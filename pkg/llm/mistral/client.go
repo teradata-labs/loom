@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -137,53 +138,57 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 //
 // Note: Prices may vary. Check https://mistral.ai/technology/#pricing for current rates.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	var inputCostPerM, outputCostPerM float64
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
+	// to the provider-local rates below only for legacy/aliased model ids it does
+	// not list.
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("mistral", c.model)
+	if !ok {
+		switch c.model {
+		case "open-mistral-7b", "mistral-tiny-2312": // Legacy tiny
+			inputCostPerM = 0.25
+			outputCostPerM = 0.25
 
-	switch c.model {
-	case "open-mistral-7b", "mistral-tiny-2312": // Legacy tiny
-		inputCostPerM = 0.25
-		outputCostPerM = 0.25
+		case "open-mixtral-8x7b", "mistral-small-2312": // Legacy small
+			inputCostPerM = 0.70
+			outputCostPerM = 0.70
 
-	case "open-mixtral-8x7b", "mistral-small-2312": // Legacy small
-		inputCostPerM = 0.70
-		outputCostPerM = 0.70
+		case "open-mixtral-8x22b":
+			inputCostPerM = 2.00
+			outputCostPerM = 6.00
 
-	case "open-mixtral-8x22b":
-		inputCostPerM = 2.00
-		outputCostPerM = 6.00
+		case "mistral-small-latest", "mistral-small-2402":
+			inputCostPerM = 0.10
+			outputCostPerM = 0.30
 
-	case "mistral-small-latest", "mistral-small-2402":
-		inputCostPerM = 0.10
-		outputCostPerM = 0.30
+		case "mistral-medium-latest", "mistral-medium-2312": // Deprecated
+			inputCostPerM = 2.70
+			outputCostPerM = 8.10
 
-	case "mistral-medium-latest", "mistral-medium-2312": // Deprecated
-		inputCostPerM = 2.70
-		outputCostPerM = 8.10
+		case "mistral-large-latest", "mistral-large-2402", "mistral-large-2407":
+			inputCostPerM = 2.00
+			outputCostPerM = 6.00
 
-	case "mistral-large-latest", "mistral-large-2402", "mistral-large-2407":
-		inputCostPerM = 2.00
-		outputCostPerM = 6.00
+		case "magistral-medium-latest":
+			inputCostPerM = 2.00
+			outputCostPerM = 8.00
 
-	case "magistral-medium-latest":
-		inputCostPerM = 2.00
-		outputCostPerM = 8.00
+		case "magistral-small-latest":
+			inputCostPerM = 0.50
+			outputCostPerM = 1.50
 
-	case "magistral-small-latest":
-		inputCostPerM = 0.50
-		outputCostPerM = 1.50
+		case "codestral-latest":
+			inputCostPerM = 0.30
+			outputCostPerM = 0.90
 
-	case "codestral-latest":
-		inputCostPerM = 0.30
-		outputCostPerM = 0.90
+		case "devstral-medium-latest":
+			inputCostPerM = 0.50
+			outputCostPerM = 1.50
 
-	case "devstral-medium-latest":
-		inputCostPerM = 0.50
-		outputCostPerM = 1.50
-
-	default:
-		// Default to large pricing for unknown models
-		inputCostPerM = 2.00
-		outputCostPerM = 6.00
+		default:
+			// Default to large pricing for unknown models
+			inputCostPerM = 2.00
+			outputCostPerM = 6.00
+		}
 	}
 
 	inputCost := float64(inputTokens) * inputCostPerM / 1_000_000

@@ -1,5 +1,7 @@
 # Self-Healing Error Recovery for the Loom Agent Framework
 
+> **Status: ✅ Implemented (v1.3.0).** This document is the original design plan. The plan has since shipped: `RecoverableError`, `RecoveryConfig`, and `recoveryOrchestrator` live in `pkg/agent/recovery.go`; `EnableSelfHealing` (default `true`) is in `pkg/agent/types.go` and wired from the `behavior.enable_self_healing` YAML field in `pkg/agent/config_loader.go`; `TrimLastN`/`AggressiveTrim` are in `pkg/agent/segmented_memory.go`; `Session.TrimLastN` is in `pkg/types/types.go`; and the Phase 7 tests live in `pkg/agent/recovery_test.go`. The text below is retained as the design record; line numbers in the wiring section refer to the state of `agent.go` at plan time and may have drifted.
+
 ## Problem
 
 The conversation loop hard-fails on circuit breakers and token budget exhaustion. The error propagates to the user as a dead-end — no recovery attempted, no partial output preserved. Agents stop after 10–20 tool calls and all the user sees is an error.

@@ -27,16 +27,19 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// RuntimeType defines the container runtime environment
+// RuntimeType defines the container runtime environment.
+// Only PYTHON, NODE, and CUSTOM have runtime implementations; the executor
+// rejects any other value with an "unsupported runtime type" error. RUBY,
+// RUST, and GO are reserved for future use and are not yet implemented.
 type RuntimeType int32
 
 const (
 	RuntimeType_RUNTIME_TYPE_UNSPECIFIED RuntimeType = 0
 	RuntimeType_RUNTIME_TYPE_PYTHON      RuntimeType = 1
 	RuntimeType_RUNTIME_TYPE_NODE        RuntimeType = 2
-	RuntimeType_RUNTIME_TYPE_RUBY        RuntimeType = 3
-	RuntimeType_RUNTIME_TYPE_RUST        RuntimeType = 4
-	RuntimeType_RUNTIME_TYPE_GO          RuntimeType = 5
+	RuntimeType_RUNTIME_TYPE_RUBY        RuntimeType = 3 // reserved; not yet implemented
+	RuntimeType_RUNTIME_TYPE_RUST        RuntimeType = 4 // reserved; not yet implemented
+	RuntimeType_RUNTIME_TYPE_GO          RuntimeType = 5 // reserved; not yet implemented
 	RuntimeType_RUNTIME_TYPE_CUSTOM      RuntimeType = 100
 )
 

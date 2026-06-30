@@ -5,7 +5,7 @@ Architecture of Loom's agent runtime system with Error Submission Channel, built
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -326,7 +326,10 @@ func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string,
 
     // Generate unique error ID: err_YYYYMMDD_HHMMSS_<6-char-random>
     now := time.Now()
-    randomSuffix := generateRandomString(6) // Cryptographic random
+    randomSuffix, randErr := generateRandomString(6) // Cryptographic random
+    if randErr != nil {
+        return "", fmt.Errorf("failed to generate random ID suffix: %w", randErr)
+    }
     errorID := fmt.Sprintf("err_%s_%s",
         now.Format("20060102_150405"),
         randomSuffix)
@@ -475,11 +478,22 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 
 ### Built-in Tool Registry
 
-**Responsibility**: Progressive disclosure of system tools. Built-in tools are NOT registered at agent creation time. They are registered dynamically when their trigger condition is met:
+**Responsibility**: Registration of auto-injected system tools (added by the agent, not listed in the agent's tools YAML). Most are registered via progressive disclosure -- only when their trigger condition is met -- while `graph_memory` is registered eagerly at agent setup when its store is available.
+
+Progressive-disclosure tools (registered dynamically on first trigger):
 
 - `get_error_details`: registered after the first tool execution error (requires error store)
 - `query_tool_result`: registered after the first large result is stored in shared memory (requires SQL result store)
 - `conversation_memory`: registered after the first L2 swap event (unified recall/search/clear)
+- `session_memory`: registered when session memory becomes relevant (`checkAndRegisterSessionMemoryTool`)
+- `task_board`: registered on first relevant turn (`checkAndRegisterTaskBoardTool`)
+
+Eagerly-registered auto-injected tools:
+
+- `graph_memory`: registered at setup when a graph-memory store is available (`agent.go:271`); enabled by default with system-prompt instructions auto-appended
+
+Removed/disabled tools:
+
 - `get_tool_result`: disabled (EXPERIMENT removed; inline metadata makes it unnecessary)
 - `record_finding`: removed (replaced by automatic finding extraction via LLM)
 

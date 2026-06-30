@@ -1,7 +1,7 @@
 
 # Pattern Library Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -30,7 +30,7 @@ Use YAML patterns to encode domain knowledge as reusable templates for SQL gener
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Pattern YAML files in `patterns/` directory
 
 ## Quick Start
