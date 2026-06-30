@@ -677,11 +677,14 @@ func (s *sidebarCmp) currentModelBlock() string {
 	}
 
 	if modelDisplayName == "" {
-		// Fallback: global config (always available)
-		model := config.Get().GetModel()
-		modelDisplayName = model.Name
-		showReasoning = model.CanReason()
-		contextWindow = model.ContextWindow
+		// No model source resolved yet: the session has no LLM cost report,
+		// the providers/agents lists haven't arrived, and no agent model is
+		// known. Show a neutral placeholder rather than a hardcoded default
+		// model name — the previous fallback displayed "Claude Sonnet 4" as
+		// the active model even when the agent was configured with a different
+		// one (#170). The real model fills in once AgentsListMsg or the first
+		// LLM cost report arrives.
+		modelDisplayName = "detecting model…"
 	}
 
 	modelIcon := t.S().Base.Foreground(t.FgSubtle).Render(styles.ModelIcon)
