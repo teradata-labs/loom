@@ -31,12 +31,14 @@ func TestWebSearchTool_DefaultProvider_NoAPIKey(t *testing.T) {
 	assert.Contains(t, result.Error.Message, "tavily")
 }
 
-// TestWebSearchTool_MinimalUsage tests the absolute minimal usage
-// Now uses DuckDuckGo explicitly since Tavily requires an API key
+// TestWebSearchTool_MinimalUsage tests the absolute minimal usage:
+// just a query plus a provider that needs no API key (DuckDuckGo).
+// The DDG endpoint is pointed at a local mock (newMockedDDGTool) — unit CI
+// must not depend on the live API, which throttles hosted runners (flaked
+// at the 30s client timeout).
 func TestWebSearchTool_MinimalUsage(t *testing.T) {
-	tool := NewWebSearchTool()
+	tool := newMockedDDGTool(t)
 
-	// Just a query with duckduckgo (which doesn't need API key)
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"query":    "test",
 		"provider": "duckduckgo",
