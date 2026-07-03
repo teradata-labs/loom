@@ -103,6 +103,11 @@ type Config struct {
 
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
+
+	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
+	// skills into the agents/skills directories on startup. Set to true for runtime
+	// pods that should only serve the explicitly configured agent(s).
+	SkipEmbeddedAgents bool `mapstructure:"skip_embedded_agents"`
 }
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.

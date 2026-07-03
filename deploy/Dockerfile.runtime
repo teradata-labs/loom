@@ -1,0 +1,60 @@
+# Dockerfile.runtime — Loom runtime image for K8s pod deployments.
+# Produces a minimal image with the `looms` binary serving gRPC + HTTP gateway.
+#
+# Build (multi-arch):
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f deploy/Dockerfile.runtime -t teradata/loom-runtime:1.3.0-litellm --push .
+#
+# Runtime expects:
+#   - AgentConfig YAML mounted at /data/config/agent.yaml (via ConfigMap at LOOM_DATA_DIR)
+#   - Environment: LOOM_LLM_API_KEY, LOOM_PORT (default 5006), LOOM_GRPC_PORT (default 60051)
+
+FROM golang:1.25-alpine AS builder
+
+ARG GIT_COMMIT=unknown
+ARG VERSION=1.2.0
+
+# Install build deps for SQLite (CGO needed for fts5 via modernc — actually pure Go, but just in case)
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Cache dependency downloads
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build looms binary with fts5 tag (pure Go SQLite via modernc.org/sqlite)
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -tags fts5 \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT}" \
+    -o /looms ./cmd/looms
+
+# Runtime image: distroless for minimal attack surface
+FROM gcr.io/distroless/static-debian12
+
+# Copy binary
+COPY --from=builder /looms /looms
+
+# Bake in built-in skills library (available to all deployed agents)
+COPY --from=builder /src/skills/ /opt/loom/skills/
+
+# Working directory for runtime scratch (SQLite, artifacts)
+WORKDIR /workdir
+
+# gRPC port
+EXPOSE 60051
+# HTTP gateway port
+EXPOSE 5006
+
+# Set LOOM_DATA_DIR to /workdir — config and agent files are mounted here via subPath
+ENV LOOM_DATA_DIR=/workdir
+# Built-in skills fallback path (user skills from skills_dir take precedence)
+ENV LOOM_SKILLS_DIR=/opt/loom/skills
+
+# Default entrypoint: serve mode (auto-discovers $LOOM_DATA_DIR/looms.yaml)
+ENTRYPOINT ["/looms", "serve"]

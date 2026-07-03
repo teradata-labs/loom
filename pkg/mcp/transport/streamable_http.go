@@ -154,6 +154,11 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 
+	// Add custom headers (e.g., Authorization)
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
+
 	t.logger.Debug("Sending POST request",
 		zap.String("endpoint", t.endpoint),
 		zap.Int("message_size", len(message)),
@@ -514,6 +519,11 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
+
+	// Add custom headers
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {

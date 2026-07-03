@@ -404,8 +404,9 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 		endpoint = os.Getenv("LITELLM_ENDPOINT")
 	}
 	if endpoint == "" {
-		endpoint = os.Getenv("LITELLM_BASE_URL")
+		endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 	}
+	// endpoint is optional — litellm.NewClient defaults to http://litellm:4000/v1/chat/completions
 
 	apiKey := f.config.LiteLLMAPIKey
 	if apiKey == "" {
@@ -415,6 +416,7 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 	if model == "" {
 		model = f.config.LiteLLMModel
 	}
+	// model is optional — litellm.NewClient defaults to anthropic/claude-sonnet-4-5-20250929
 
 	return litellm.NewClient(litellm.Config{
 		Endpoint:     endpoint,

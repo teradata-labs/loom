@@ -716,7 +716,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
-			endpoint = os.Getenv("LITELLM_BASE_URL")
+			endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 		}
 		key := apiKey(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
 		return litellm.NewClient(litellm.Config{
@@ -1393,101 +1393,106 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Warn("Examples source not found, skipping copy")
 	}
 
-	// Copy default weaver agent to loom data directory (if not exists)
-	agentsDir := filepath.Join(loomDataDir, "agents")
-	weaverDestPath := filepath.Join(agentsDir, "weaver.yaml")
-	if _, err := os.Stat(weaverDestPath); os.IsNotExist(err) {
-		// Ensure agents directory exists
-		if err := os.MkdirAll(agentsDir, 0750); err != nil {
-			logger.Warn("Failed to create agents directory", zap.Error(err))
-		}
-
-		// Get weaver from embedded files
-		weaverData := embedded.GetWeaver()
-		logger.Info("Using embedded weaver.yaml")
-
-		// Write to destination
-		if err := os.WriteFile(weaverDestPath, weaverData, 0600); err != nil {
-			logger.Warn("Failed to copy weaver.yaml to agents directory", zap.Error(err))
-		} else {
-			logger.Info("Weaver agent installed",
-				zap.String("source", "embedded"),
-				zap.String("dest", weaverDestPath),
-				zap.Int("size", len(weaverData)))
-		}
-	} else {
-		logger.Debug("Weaver agent already exists", zap.String("path", weaverDestPath))
-	}
-
-	// Copy default guide agent to loom data directory (if not exists)
-	guideDestPath := filepath.Join(agentsDir, "guide.yaml")
-	if _, err := os.Stat(guideDestPath); os.IsNotExist(err) {
-		// Ensure agents directory exists
-		if err := os.MkdirAll(agentsDir, 0750); err != nil {
-			logger.Warn("Failed to create agents directory", zap.Error(err))
-		}
-
-		// Get guide from embedded files
-		guideData := embedded.GetGuide()
-		logger.Info("Using embedded guide.yaml")
-
-		// Write to destination
-		if err := os.WriteFile(guideDestPath, guideData, 0600); err != nil {
-			logger.Warn("Failed to copy guide.yaml to agents directory", zap.Error(err))
-		} else {
-			logger.Info("Guide agent installed",
-				zap.String("source", "embedded"),
-				zap.String("dest", guideDestPath),
-				zap.Int("size", len(guideData)))
-		}
-	} else {
-		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
-	}
-
-	// Deploy bundled weaver skills (if not exists). One block per skill so
-	// users can delete an individual file to opt out without losing the
-	// others.
 	skillsDir := filepath.Join(loomDataDir, "skills")
-	weaverBundledSkills := []struct {
-		name string
-		data []byte
-	}{
-		{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
-		{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
-		{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
-		{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
-	}
-	for _, s := range weaverBundledSkills {
-		path := filepath.Join(skillsDir, s.name)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := os.MkdirAll(skillsDir, 0750); err != nil {
-				logger.Warn("Failed to create skills directory", zap.Error(err))
+	if config.SkipEmbeddedAgents {
+		logger.Info("Skipping embedded agent/skill installation (skip_embedded_agents=true)")
+	} else {
+		// Copy default weaver and guide agents + bundled skills to loom data directory
+		// (skipped when skip_embedded_agents is set — e.g. runtime pods that serve only the deployed agent)
+		agentsDir := filepath.Join(loomDataDir, "agents")
+		weaverDestPath := filepath.Join(agentsDir, "weaver.yaml")
+		if _, err := os.Stat(weaverDestPath); os.IsNotExist(err) {
+			// Ensure agents directory exists
+			if err := os.MkdirAll(agentsDir, 0750); err != nil {
+				logger.Warn("Failed to create agents directory", zap.Error(err))
 			}
-			if err := os.WriteFile(path, s.data, 0600); err != nil {
-				logger.Warn("Failed to deploy weaver skill",
-					zap.String("name", s.name), zap.Error(err))
-			} else {
-				logger.Info("Weaver skill installed",
-					zap.String("name", s.name),
-					zap.String("dest", path),
-					zap.Int("size", len(s.data)))
-			}
-		} else {
-			logger.Debug("Weaver skill already exists",
-				zap.String("name", s.name), zap.String("path", path))
-		}
-	}
 
-	// Create agent guide in loom data directory (visible to agents)
-	agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
-	if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {
-		agentGuide := embedded.GetStartHere()
-		if err := os.WriteFile(agentGuidePath, agentGuide, 0600); err != nil {
-			logger.Warn("Failed to create agent guide", zap.Error(err))
+			// Get weaver from embedded files
+			weaverData := embedded.GetWeaver()
+			logger.Info("Using embedded weaver.yaml")
+
+			// Write to destination
+			if err := os.WriteFile(weaverDestPath, weaverData, 0600); err != nil {
+				logger.Warn("Failed to copy weaver.yaml to agents directory", zap.Error(err))
+			} else {
+				logger.Info("Weaver agent installed",
+					zap.String("source", "embedded"),
+					zap.String("dest", weaverDestPath),
+					zap.Int("size", len(weaverData)))
+			}
 		} else {
-			logger.Info("Agent guide created", zap.String("path", agentGuidePath))
+			logger.Debug("Weaver agent already exists", zap.String("path", weaverDestPath))
 		}
-	}
+
+		// Copy default guide agent to loom data directory (if not exists)
+		guideDestPath := filepath.Join(agentsDir, "guide.yaml")
+		if _, err := os.Stat(guideDestPath); os.IsNotExist(err) {
+			// Ensure agents directory exists
+			if err := os.MkdirAll(agentsDir, 0750); err != nil {
+				logger.Warn("Failed to create agents directory", zap.Error(err))
+			}
+
+			// Get guide from embedded files
+			guideData := embedded.GetGuide()
+			logger.Info("Using embedded guide.yaml")
+
+			// Write to destination
+			if err := os.WriteFile(guideDestPath, guideData, 0600); err != nil {
+				logger.Warn("Failed to copy guide.yaml to agents directory", zap.Error(err))
+			} else {
+				logger.Info("Guide agent installed",
+					zap.String("source", "embedded"),
+					zap.String("dest", guideDestPath),
+					zap.Int("size", len(guideData)))
+			}
+		} else {
+			logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
+		}
+
+		// Deploy bundled weaver skills (if not exists). One block per skill so
+		// users can delete an individual file to opt out without losing the
+		// others.
+		weaverBundledSkills := []struct {
+			name string
+			data []byte
+		}{
+			{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
+			{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
+			{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
+			{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
+		}
+		for _, s := range weaverBundledSkills {
+			path := filepath.Join(skillsDir, s.name)
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if err := os.MkdirAll(skillsDir, 0750); err != nil {
+					logger.Warn("Failed to create skills directory", zap.Error(err))
+				}
+				if err := os.WriteFile(path, s.data, 0600); err != nil {
+					logger.Warn("Failed to deploy weaver skill",
+						zap.String("name", s.name), zap.Error(err))
+				} else {
+					logger.Info("Weaver skill installed",
+						zap.String("name", s.name),
+						zap.String("dest", path),
+						zap.Int("size", len(s.data)))
+				}
+			} else {
+				logger.Debug("Weaver skill already exists",
+					zap.String("name", s.name), zap.String("path", path))
+			}
+		}
+
+		// Create agent guide in loom data directory (visible to agents)
+		agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
+		if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {
+			agentGuide := embedded.GetStartHere()
+			if err := os.WriteFile(agentGuidePath, agentGuide, 0600); err != nil {
+				logger.Warn("Failed to create agent guide", zap.Error(err))
+			} else {
+				logger.Info("Agent guide created", zap.String("path", agentGuidePath))
+			}
+		}
+	} // end skip_embedded_agents else block
 
 	// Get artifact store from storage backend
 	artifactStore := storageBackend.ArtifactStore()

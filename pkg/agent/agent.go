@@ -1566,6 +1566,18 @@ func (a *Agent) writeTaskDeps(b *strings.Builder, ctx context.Context, taskID st
 	}
 }
 
+// maxPreviewLen is the maximum number of runes recorded in span preview attributes.
+const maxPreviewLen = 200
+
+// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
+func truncatePreview(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxPreviewLen {
+		return s
+	}
+	return string(runes[:maxPreviewLen]) + "…"
+}
+
 // truncateID returns the first 8 chars of an ID for compact display.
 func truncateID(id string) string {
 	if len(id) <= 8 {
