@@ -35,11 +35,21 @@ FROM gcr.io/distroless/static-debian12
 # Binary
 COPY --from=builder /looms /looms
 
-# Built-in skills library (available to all deployed agents)
+# Built-in skills library — Teradata runtime skills only
 COPY --from=builder /src/skills/ /opt/loom/skills/
 
-# Patterns library (SQL, Teradata, code patterns used at runtime by agents)
-COPY --from=builder /src/patterns/ /opt/loom/patterns/
+# Runtime patterns — domain execution patterns only (excludes weaver, fun, nasa, prompt_engineering, evaluation)
+COPY --from=builder /src/patterns/sql/ /opt/loom/patterns/sql/
+COPY --from=builder /src/patterns/postgres/ /opt/loom/patterns/postgres/
+COPY --from=builder /src/patterns/teradata/ /opt/loom/patterns/teradata/
+COPY --from=builder /src/patterns/libraries/ /opt/loom/patterns/libraries/
+COPY --from=builder /src/patterns/code/ /opt/loom/patterns/code/
+COPY --from=builder /src/patterns/debugging/ /opt/loom/patterns/debugging/
+COPY --from=builder /src/patterns/document/ /opt/loom/patterns/document/
+COPY --from=builder /src/patterns/documents/ /opt/loom/patterns/documents/
+COPY --from=builder /src/patterns/rest_api/ /opt/loom/patterns/rest_api/
+COPY --from=builder /src/patterns/text/ /opt/loom/patterns/text/
+COPY --from=builder /src/patterns/vision/ /opt/loom/patterns/vision/
 
 # Working directory for agent data / SQLite DB
 WORKDIR /workdir
