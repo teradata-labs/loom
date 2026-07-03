@@ -2,114 +2,15 @@ apiVersion: loom/v1
 kind: Skill
 metadata:
   name: weaver-creation
-  title: Agent & Workflow Creation — Global Flow Guard
-  description: Always-on behavioral contract for agent/workflow creation. Enforces requirements-first, confirm-before-write, create-writes-DB-only, test-before-publish, explicit-publish (separate user-triggered step), and deploy-on-request ordering, plus YAML authoring rules.
+  title: Agent & Workflow Creation
+  description: Behavioral constraints and best practices for creating agent and workflow YAML configurations
   domain: meta-agent
-  version: "3.1.0"
+  version: "1.0.0"
 trigger:
   mode: ALWAYS
 prompt:
-  guard: |
-    This skill is ALWAYS active. It is the master ordering contract for every
-    agent-creation conversation. No matter which other skill matched (presets,
-    interactive, scaffold, templates), the steps below are MANDATORY and may
-    never be skipped or reordered. If another skill's wording seems to let you
-    create or apply something immediately, this guard overrides it.
-
-    BUILD PATH DETECTION — Infer the path from what the user said. Do NOT
-    present a menu asking the user to pick a type:
-    - Loom path (YAML agent): user says /create, mentions "loom", "yaml",
-      "config-driven", or gives a role/use-case with no framework mentioned.
-    - Pro-code path (Python SDK): user says /scaffold, mentions a framework
-      by name (LangGraph, CrewAI, AutoGen, OpenAI, Claude SDK, LangChain).
-    When neither loom nor pro-code signals are present, default to the Loom
-    path — it is the faster and simpler option. NEVER ask "what type of agent
-    do you want to create?" — the user states this explicitly if they care.
-
-    THE FIVE-PHASE CONTRACT (never skip a phase):
-
-    1. GATHER REQUIREMENTS — For a named role, your FIRST message is a full
-       proposal: purpose, system-prompt summary (bullets showing what makes
-       the agent effective), tools with rationale, model, capabilities. Close
-       with "Anything to adjust?" — never open with questions for a named role.
-       For genuinely vague requests ("create an agent" with no role), ask what
-       the agent should do. Use a preset/template ONLY after its fit is
-       confirmed against the stated or proposed requirements.
-
-    2. DISCOVER — Always run tool_search BEFORE wiring any domain-specific or MCP
-       tools into an agent — even when using a preset. Presets carry a default tool
-       list that may not match the tools actually registered in this environment.
-       The tool_search result is the ground truth. Steps:
-         a. Call tool_search with the domain keyword (e.g. "teradata", "salesforce")
-         b. Wire in ONLY the tool names returned by tool_search
-         c. If the preset's default tools differ from what tool_search returns, use
-            the discovered names — not the preset defaults
-       Never guess or hallucinate tool names. A tool that looks right but is not
-       returned by tool_search does not exist in this environment.
-
-    3. CREATE (write to Tera DB only) — Once the user confirms the requirements,
-       call agent_management action="create_agent" (or action="apply_preset" for
-       the preset path). This writes the agent to the Tera/Loom-Cloud DB and
-       makes it available in-session immediately. It does NOT publish to AgentOps.
-       After creation the tool automatically places agent.yaml + looms.yaml in
-       the Artifact pane so the user can review them. Do NOT call preview_config
-       right after create_agent — the artifacts are already in the pane.
-
-    4. REVIEW, TEST & REFINE — Tell the user the agent is created and that the
-       YAML files are in the Artifact pane for review. Invite them to:
-       (a) read the Artifact pane to check the config, and
-       (b) chat with the agent right here in Tera to test it works as expected.
-       Tera is the workbench — agents run in-process immediately after creation,
-       so the user can talk to the agent and verify it before committing to
-       publish. Ask: "Does everything look right, or would you like to adjust
-       anything? You can also try talking to the agent here to test it first."
-       If the user wants changes, call update_agent with the new values.
-
-    5. PUBLISH (explicit, user-triggered) — Only when the user is satisfied after
-       testing and says "publish", "looks good", "go ahead", or similar — call
-       agent_management action="publish_agent". This uploads the YAML artifacts
-       to S3 and registers a version in AgentOps, the production serving
-       platform. Publishing is for agents that need to be: deployed as a
-       standalone service, called by external systems, run at scale, or governed
-       as a production workload. You do NOT need to publish to use the agent in
-       Tera. After publish succeeds, report the definition_id and version number.
-
-    6. OFFER DEPLOYMENT — After publishing, always ask whether to deploy to
-       runtime. Never deploy without an explicit yes.
-
-    7. NEVER fabricate YAML. Do NOT compose or display an agent.yaml / looms.yaml
-       block, code block, or "Agent Preview" section in the chat at any point —
-       not before creation, not after. The Artifact pane shows the real files
-       automatically after create_agent runs. To confirm before creating,
-       summarise requirements in PLAIN PROSE ONLY (bullets: name, purpose,
-       tools, model, capabilities); never render YAML or structured preview in
-       the chat. The moment you feel the urge to write "```yaml" or
-       "Agent Preview:", stop — write prose instead.
-
-    8. TOOL DISCIPLINE during creation. Use ONLY agent_management and tool_search
-       during the agent creation flow. Do NOT call SQL query, knowledge_graph,
-       database tools, project_manager, or any data-access tool during creation —
-       those are for data analysis, not for building agents.
   instructions: |
-    Ordering rules (enforced by the guard above):
-    - Use-case/role requests → detect the build path (loom vs pro-code) from
-      the user's words; default to loom. Do NOT ask the user to pick a type.
-    - Always gather requirements before building, presets included.
-    - create_agent / apply_preset write to the Tera DB ONLY. They do NOT publish
-      to AgentOps. The tool places agent.yaml + looms.yaml in the Artifact pane.
-    - Only call create_agent/apply_preset after the user confirms requirements.
-      Do NOT call preview_config immediately after — artifacts are already in the
-      Artifact pane.
-    - After creation, invite the user to review the Artifact pane and ask for
-      any changes before publishing.
-    - To refine after creation: update_agent with the new values.
-    - Publishing is a SEPARATE explicit step (publish_agent). Only call it when
-      the user explicitly says "publish", "looks good", "go ahead", or similar.
-    - NEVER set a "published" field via update_agent — it does not exist and is
-      rejected.
-    - Always offer runtime deployment after publishing; never deploy unprompted.
-
-    YAML authoring rules (apply whenever you write agent/workflow YAML):
+    When creating agent/workflow YAML, follow these rules strictly:
     1. Use FLAT tool arrays (never nested builtin:/mcp:/custom: subsections)
     2. Never include llm: section unless user explicitly requests a provider
     3. Never list auto-registered tools (workspace, query_tool_result,
@@ -118,7 +19,7 @@ prompt:
        shared_memory_read, shared_memory_write) in agent configs
     5. Always create agents BEFORE workflows that reference them
     6. Use tool_search to discover domain tools - never guess tool names
-    7. Workflow agent_names must exactly match existing agent names
+    7. Agent names in workflows must match .yaml filenames in agents/ dir
     8. Use action="create_agent" not action="create" with type="agent"
     9. Use action="create_workflow" not action="create" with type="workflow"
     10. For event-driven workflows: sub-agents auto-spawn on message receipt.
@@ -131,20 +32,6 @@ prompt:
         - swarm requires: question (NOT topic!), agent_ids, strategy
         - coordination requires: entrypoint, agents (array), communication (pattern + hub or topic)
   constraints:
-    - NEVER present a menu asking the user what type of agent to create — detect loom vs pro-code from their words; default to loom
-    - For a role/use-case request, proceed directly to requirements gathering (loom path); only switch to pro-code if the user names a framework (LangGraph, CrewAI, AutoGen, etc.) or uses /scaffold
-    - NEVER call create_agent/apply_preset before the user confirms requirements
-    - NEVER show a YAML preview, code block, or "Agent Preview" section before calling create_agent — summarise requirements in PLAIN PROSE ONLY (bullets: name, purpose, tools, model); the real YAML appears in the Artifact pane automatically after create_agent runs
-    - NEVER render agent.yaml or looms.yaml content in the chat at any point — not before creation, not after — the Artifact pane shows the real files automatically
-    - During agent creation use ONLY: agent_management and tool_search. Do NOT call SQL query, knowledge graph, database tools, or project_manager during creation — these are data tools, not creation tools
-    - ALWAYS run tool_search BEFORE wiring domain-specific or MCP tools — even when using a preset. Preset tool lists are defaults; tool_search is ground truth. Wire in only what tool_search actually returns for this environment
-    - create_agent / apply_preset write to the Tera DB ONLY — they do NOT publish to AgentOps; publishing is a SEPARATE step (publish_agent) triggered only by the user
-    - After create_agent, always invite the user to TEST the agent in Tera (chat with it) before publishing — Tera is the workbench, agents run in-process immediately
-    - Publishing to AgentOps is for production readiness: standalone deployment, external service calls, scale, governance — NOT required just to use the agent in Tera
-    - NEVER call preview_config immediately after create_agent — artifacts are already in the Artifact pane from creation
-    - NEVER set a "published" field via update_agent — it does not exist and is rejected
-    - Only call publish_agent when the user explicitly confirms they are happy and want to publish
-    - ALWAYS offer runtime deployment after publishing; never deploy without explicit confirmation
     - Validate all YAML before writing
     - Fix validation errors before retrying
     - Do not hallucinate tool names
@@ -154,17 +41,20 @@ prompt:
     - debate uses topic, fork-join uses prompt, swarm uses question — never swap these
     - parallel uses tasks array (each with unique prompt), NOT agent_ids
   output_format: |
-    After create_agent / apply_preset (phase 3): confirm the agent name and
-    tera_agent_id, then tell the user that agent.yaml and looms.yaml are in the
-    Artifact pane. Invite them to check the pane AND test the agent by chatting
-    with it here in Tera — it runs in-process immediately. Example: "The agent
-    is ready in Tera. Check the Artifact pane for the YAML config, and feel free
-    to talk to it directly to test it. Let me know when you're satisfied and
-    want to publish to AgentOps, or if you'd like to refine anything first."
-    After publish_agent (phase 5): report the definition_id and version, then
-    ask whether to deploy to a standalone runtime now.
+    After creation, always provide:
+    1. Summary of what was created (agents, workflow, skills)
+    2. Exact loom commands to run the agent/workflow
+    3. Skill activation commands if skills were configured
+    4. Reminder that user can return for modifications
 tools:
+  required_tools:
+    - agent_management
   preferred_order:
+    - shell_execute
     - tool_search
     - agent_management
 sticky: true
+# This skill carries behavioral rules, not concrete work. Setting
+# emit_tasks: false prevents Phase D from running the LLM decomposer on
+# every weaver turn (since mode is ALWAYS and there is no task_template).
+emit_tasks: false
