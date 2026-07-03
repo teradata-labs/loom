@@ -43,18 +43,23 @@ COPY --from=builder /looms /looms
 # Bake in built-in skills library (available to all deployed agents)
 COPY --from=builder /src/skills/ /opt/loom/skills/
 
+# Bake in patterns library (SQL, Teradata, code patterns used at runtime by agents)
+COPY --from=builder /src/patterns/ /opt/loom/patterns/
+
 # Working directory for runtime scratch (SQLite, artifacts)
 WORKDIR /workdir
 
-# gRPC port
+# gRPC port (must match AgentOpsCore grpc_port default: 60051)
 EXPOSE 60051
-# HTTP gateway port
+# HTTP/REST+SSE gateway port
 EXPOSE 5006
 
-# Set LOOM_DATA_DIR to /workdir — config and agent files are mounted here via subPath
+# LOOM_DATA_DIR: agent config and SQLite are mounted here via ConfigMap/subPath
 ENV LOOM_DATA_DIR=/workdir
-# Built-in skills fallback path (user skills from skills_dir take precedence)
+# LOOM_SKILLS_DIR: built-in skills fallback (agent skills_dir takes precedence)
 ENV LOOM_SKILLS_DIR=/opt/loom/skills
+# Disable embedded agent/skill installation (weaver, guide) — runtime pods only serve the deployed agent
+ENV LOOM_SKIP_EMBEDDED_AGENTS=true
 
 # Default entrypoint: serve mode (auto-discovers $LOOM_DATA_DIR/looms.yaml)
 ENTRYPOINT ["/looms", "serve"]
