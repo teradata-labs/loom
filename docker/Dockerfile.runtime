@@ -35,15 +35,25 @@ FROM gcr.io/distroless/static-debian12
 # Binary
 COPY --from=builder /looms /looms
 
-# Teradata skills
-COPY skills/ /opt/loom/skills/
+# Built-in skills library (available to all deployed agents)
+COPY --from=builder /src/skills/ /opt/loom/skills/
+
+# Patterns library (SQL, Teradata, code patterns used at runtime by agents)
+COPY --from=builder /src/patterns/ /opt/loom/patterns/
 
 # Working directory for agent data / SQLite DB
 WORKDIR /workdir
 
+# LOOM_DATA_DIR: agent config and SQLite are mounted here via ConfigMap/subPath
 ENV LOOM_DATA_DIR=/workdir
+# LOOM_SKILLS_DIR: built-in skills fallback (agent skills_dir takes precedence)
 ENV LOOM_SKILLS_DIR=/opt/loom/skills
+# Disable embedded agent/skill installation (weaver, guide) — runtime pods only serve the deployed agent
+ENV LOOM_SKIP_EMBEDDED_AGENTS=true
 
-EXPOSE 8080
+# gRPC port (must match AgentOpsCore grpc_port default: 60051)
+EXPOSE 60051
+# HTTP/REST+SSE gateway port
+EXPOSE 5006
 
 ENTRYPOINT ["/looms", "serve"]
