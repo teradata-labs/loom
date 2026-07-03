@@ -5,10 +5,10 @@ metadata:
   title: Custom Agent & Workflow Authoring
   description: Hand-rolled agent / workflow creation when no preset or template fits the user's intent.
   domain: meta-agent
-  version: "1.1.0"
-  author: loom-cloud
+  version: "1.0.0"
+  author: loom-core
   labels:
-    surface: tera
+    surface: weaver
 trigger:
   slash_commands:
     - /from-scratch
@@ -27,170 +27,71 @@ prompt:
   instructions: |
     Use this flow when a preset or template would force a poor fit:
     - The user's intent doesn't match any preset role
-    - The workflow needs a pattern that the templates don't cover (the
-      6 templates are pipeline / fork-join / debate / pair-programming /
-      voting-swarm / knowledge-transfer flavours; anything else needs a
-      hand-rolled workflow)
+    - The workflow needs a pattern the registry doesn't cover (custom
+      conditional routing, iterative restart, pair-programming, teacher-
+      student, ad-hoc swarm)
     - The user requires a specific provider / model / temperature combo
       that conflicts with every preset's defaults
 
     ## Decision: did you really need this skill?
     Before authoring from scratch, double-check:
-    1. Did you call agent_management {"action": "presets"}? Seven
-       presets cover most single-agent intents.
+    1. Did you call agent_management {"action": "presets"}? Eight presets
+       cover most single-agent intents.
     2. Did you call agent_management {"action": "templates"}? Six
        templates cover the common multi-agent shapes.
-    3. Is the user's pattern actually in the supported list? The
-       weaver-templates skill enumerates the real pattern_type values.
+    3. Is the user's pattern actually in the supported list (pipeline,
+       fork_join, debate, parallel, conditional, swarm, iterative,
+       pair_programming, teacher_student)?
 
     If yes to any of those and a preset / template is "close enough",
     apply it and let the user iterate.
 
     ## Flow (when from-scratch is justified)
-
     1. Use agent_management {"action": "discover", "type": "pattern_config",
        "pattern_type": "<chosen>"} to see exact required fields for the
        pattern (you almost certainly need this).
     2. Use tool_search to discover available tools — do NOT guess tool
        names. Names that look right but aren't registered fail at
        runtime, not at authoring time.
-    3. **Confirm requirements in PROSE** — summarise the agent (name,
-       purpose, tools, model, capabilities) in plain prose and ask the user
-       to confirm. Do NOT fabricate or render an agent.yaml / looms.yaml
-       block here. The real YAML appears in the Artifact pane automatically
-       after create_agent runs (step 4).
-    4. **Create (DB only)** — Once the user confirms, call create_agent.
-       This writes the agent to the Tera/Loom-Cloud DB and makes it
-       available in-session immediately. The tool automatically places
-       agent.yaml + looms.yaml in the Artifact pane for review. Create each
-       agent with one agent_management call. Do NOT call preview_config
-       right after — the files are already in the Artifact pane.
-    5. **Review, test & refine** — Tell the user the agent is created and
-       that the YAML files are in the Artifact pane. Invite them to:
-       (a) review the pane, and (b) chat with the agent right here in Tera
-       to verify it behaves as expected — it runs in-process immediately.
-       Ask: "Does everything look right? You can test it by talking to it
-       here before publishing. Let me know when you're happy or if you'd
-       like to change anything." If changes needed, call update_agent.
-    6. **Publish (explicit, user-triggered)** — Only when the user is
-       satisfied after testing and says "publish", "looks good", "go ahead"
-       call agent_management {"action": "publish_agent", "name": "<agent>"}.
-       This uploads artifacts to S3 and registers a version in AgentOps —
-       the production serving platform for standalone deployment, external
-       service calls, scale, and governance. You do NOT need to publish to
-       use the agent in Tera. Report the definition_id and version on success.
-    7. Create the workflow with agent_management after every referenced
-       agent exists in the catalog.
-    8. Validate with agent_management.
-    9. **Success summary** — After publish, display the tera_agent_id,
-       agentops_definition_id, and version, then offer deployment to a
-       runtime.
+    3. Create each agent with agent_management {"action": "create_agent",
+       "config": {...}}. One call per agent.
+    4. Create the workflow with agent_management
+       {"action": "create_workflow", "config": {...}} after all agents
+       exist on disk.
+    5. Validate with agent_management {"action": "validate",
+       "type": "workflow", "name": "<n>"}.
 
-    ## agent_management tool — parameter shape
+    ## Agent skeleton (k8s-style)
+    apiVersion: loom/v1
+    kind: Agent
+    metadata:
+      name: <kebab-case-name>
+      version: "1.0.0"
+      description: <one-line>
+    spec:
+      system_prompt: |
+        <direct task instructions; no role-play>
+      tools: [<list of registered tool names>]
+      config:
+        max_turns: 100
+        max_tool_executions: 50
+        timeout_seconds: 1800
 
-    **Critical**: agent_management uses TOP-LEVEL fields. Do NOT nest
-    parameters under a `config` object — the tool's input schema is flat,
-    and any nested `config` is silently ignored.
-
-    ### create_agent
-    Required:
-    - `action`: "create_agent"
-    - `name`: kebab-case agent name (unique per user)
-    - `system_prompt`: direct task instructions (no role-play)
-
-    Optional:
-    - `description`: one-line human-readable description
-    - `tools`: array of `{"name": "<tool>", "enabled": true}` objects
-      (omit for an agent with no domain-specific tools — auto-injected
-      tools land regardless)
-    - `pattern_type`: only for backend hints, not for agents you're
-      creating
-    - `max_turns`, `max_tool_executions`, `timeout_seconds`,
-      `temperature`, `thinking_level`, `cache_control`, etc.
-
-    Example:
-    ```json
-    {
-      "action": "create_agent",
-      "name": "sql-critic",
-      "description": "Reviews SQL queries for correctness and performance",
-      "system_prompt": "Review every SQL query you receive. Identify correctness issues first, performance second. Cite the exact predicate or clause you object to.",
-      "tools": [
-        {"name": "web_search", "enabled": true},
-        {"name": "tool_search", "enabled": true}
-      ],
-      "temperature": 0.2
-    }
-    ```
-
-    ### create_workflow
-    Required:
-    - `action`: "create_workflow"
-    - `name`: kebab-case workflow name (unique per user)
-    - `pattern_type`: one of `pipeline`, `parallel`, `debate`,
-      `fork_join`, `conditional`, `iterative`, `swarm`,
-      `pair_programming`, `teacher_student`
-    - `agent_names` (array) — names of the agents in the workflow
-      (they must already exist in the catalog), OR `agent_ids` (array
-      of UUIDs)
-    - `pattern_config` — JSON object whose shape depends on
-      `pattern_type`; use `discover pattern_config` first to find out
-      what's required
-
-    Example:
-    ```json
-    {
-      "action": "create_workflow",
-      "name": "sql-review-loop",
-      "pattern_type": "pipeline",
-      "agent_names": ["sql-writer", "sql-critic"],
-      "pattern_config": {
-        "stages": [
-          {"agent_name": "sql-writer",  "prompt_template": "{{input}}"},
-          {"agent_name": "sql-critic", "prompt_template": "{{previous}}"}
-        ]
-      }
-    }
-    ```
-
-    ### validate
-    Required:
-    - `action`: "validate"
-    - `type`: "agent" or "workflow"
-
-    For type=agent, also include the agent's full create_agent payload
-    (`name`, `system_prompt`, `tools`, etc.) so validate can check the
-    shape. For type=workflow, also include the workflow's full payload
-    (`name`, `pattern_type`, `agent_names`, `pattern_config`). Validate
-    returns errors and warnings; address everything before persisting.
-
-    Example for a workflow:
-    ```json
-    {
-      "action": "validate",
-      "type": "workflow",
-      "name": "sql-review-loop",
-      "pattern_type": "pipeline",
-      "agent_names": ["sql-writer", "sql-critic"],
-      "pattern_config": {
-        "stages": [
-          {"agent_name": "sql-writer",  "prompt_template": "{{input}}"},
-          {"agent_name": "sql-critic", "prompt_template": "{{previous}}"}
-        ]
-      }
-    }
-    ```
-
-    Example for an agent:
-    ```json
-    {
-      "action": "validate",
-      "type": "agent",
-      "name": "sql-critic",
-      "system_prompt": "Review every SQL query…",
-      "tools": [{"name": "web_search", "enabled": true}]
-    }
-    ```
+    ## Workflow skeleton
+    apiVersion: loom/v1
+    kind: Workflow
+    metadata:
+      name: <kebab-case-name>
+      version: "1.0.0"
+    spec:
+      type: <pattern>            # pipeline | fork_join | debate | swarm | etc.
+      agent_names: [<agent1>, <agent2>, ...]
+      pipeline:                   # or fork_join: / debate: / swarm: ...
+        stages:
+          - agent_name: <agent1>
+            prompt_template: "{{input}}"
+          - agent_name: <agent2>
+            prompt_template: "{{previous}}"
 
     ## What to avoid
     - Do NOT skip the `discover pattern_config` call. Field names differ
@@ -198,44 +99,25 @@ prompt:
     - Do NOT use role-prompting ("You are a SQL expert...") — direct
       task instructions perform better and cost less.
     - Do NOT set `llm.provider` unless the user EXPLICITLY requested a
-      provider. Agents inherit the resolved LLM (server default → user
-      default → agent override; most specific wins).
+      provider. Agents inherit the server's default LLM.
     - Do NOT list auto-injected tools (workspace, query_tool_result,
       conversation_memory, session_memory, get_error_details, publish,
       shared_memory_*, send_message) in the tool list — they are
       always-on for workflow agents and double-listing makes validation
       noisier.
-    - Do NOT nest fields under a `config` object — agent_management
-      reads top-level fields only.
-    - Do NOT validate without including the full payload — validate
-      replays the create_* shape, so it needs `system_prompt` /
-      `pattern_type` / `pattern_config` / etc. to check anything useful.
-    - Do NOT create a workflow before every referenced agent exists in
-      the catalog. The validator will fail.
-    - Offer to add newly built agents/workflows to the current project
-      (via `project_manager`) only when the session is project-scoped;
-      the tool is not available outside a project.
+    - Do NOT create workflows before their agents exist on disk. The
+      validator will fail.
   constraints:
     - Always confirm with the user that no preset / template fits before
       hand-rolling.
-    - Confirm requirements with the user in PLAIN PROSE before creating — NEVER fabricate or render an agent.yaml / looms.yaml preview, code block, or "Agent Preview" section before create_agent; the real YAML appears in the Artifact pane automatically after create_agent runs
-    - create_agent writes to the Tera DB ONLY — it does NOT publish to AgentOps; the tool places agent.yaml + looms.yaml in the Artifact pane automatically
-    - After create_agent, always invite the user to TEST the agent in Tera (chat with it in-process) before publishing — testing in Tera costs nothing and catches issues early
-    - Publishing to AgentOps is for production readiness: standalone deployment, external service calls, scale, governance — NOT required just to use the agent in Tera
-    - Do NOT call preview_config immediately after create_agent — the artifacts are already in the Artifact pane
-    - Publishing is a SEPARATE explicit step (publish_agent) triggered only when the user confirms they are happy after testing
-    - NEVER set a "published" field via update_agent — it does not exist and is rejected; to refine, update_agent then publish_agent
     - Always call discover pattern_config before assembling a workflow.
-    - Always pass top-level fields to agent_management — never nest
-      under `config`.
-    - Validate every config with a full payload before persisting.
-    - Always show success summary with registry ID and next steps after creation
+    - Validate every config before moving on (validate, type=agent /
+      workflow).
   output_format: |
     A walkthrough of: (a) why neither presets nor templates fit, (b) the
     agents created with their roles and key tool choices, (c) the
     workflow pattern + the discover call result that informed the
-    pattern_config, (d) the validate output, (e) catalog-assigned IDs +
-    how to invoke from the dashboard or via gRPC.
+    pattern_config, (d) the validate output.
   examples:
     - user_input: "Build a 4-stage iterative SQL optimization loop with a critic that can restart any earlier stage"
       expected_output: |
@@ -244,12 +126,10 @@ prompt:
         don't map onto any preset cleanly. Going from-scratch.
 
         1) agent_management discover type=pattern_config pattern_type=iterative
-        2) Create 4 agents via agent_management create_agent (one call each);
-           each call returns the catalog-assigned agent_id.
+        2) Create 4 agents via agent_management create_agent (one call each)
         3) Create the workflow via agent_management create_workflow with the
-           iterative pattern + restart_topic wiring.
-        4) Validate each agent + the workflow.
-      explanation: Justifies the from-scratch choice + lists the discover-driven steps and validation.
+           iterative pattern + restart_topic wiring
+      explanation: Justifies the from-scratch choice + lists the discover-driven steps.
 tools:
   required_tools:
     - agent_management
@@ -261,11 +141,11 @@ pattern_refs: []
 skill_refs: []
 max_prompt_tokens: 2600
 sticky: true
-parent_index_path: meta-agent/tera/custom
+parent_index_path: meta-agent/weaver/custom
 emit_tasks: true
 task_template:
   root_title: Custom Agent / Workflow Authoring
-  max_tasks: 6
+  max_tasks: 7
   ephemeral_on_deactivate: false
   steps:
     - title: Justify the from-scratch choice
@@ -285,21 +165,27 @@ task_template:
       category: investigation
       priority: P1
       depends_on: [0]
-    - title: Author each agent
-      objective: Create every required agent via agent_management create_agent with top-level fields. Direct task prompts (no role-prompting), discovered tool names only.
-      acceptance_criteria: Each agent_management create_agent call returns success=true and a catalog-assigned agent_id; no validation errors.
+    - title: Author each agent YAML
+      objective: Create every required agent via agent_management create_agent. Direct task prompts (no role-prompting), discovered tool names only.
+      acceptance_criteria: Each agent_management create_agent call returns success=true; no validation errors.
       category: implementation
       priority: P1
       depends_on: [1]
-    - title: Author the workflow (multi-agent only)
-      objective: Create the workflow via agent_management create_workflow after every referenced agent exists in the catalog.
-      acceptance_criteria: agent_management create_workflow returns success=true; agents_referenced existed in the catalog before this step.
+    - title: Author the workflow YAML (multi-agent only)
+      objective: Create the workflow via agent_management create_workflow after all agents exist.
+      acceptance_criteria: agent_management create_workflow returns success=true; agents_referenced existed before this step.
       category: implementation
       priority: P1
       depends_on: [2, 3]
-    - title: Validate end-to-end + brief the user
-      objective: Call agent_management validate on each agent + the workflow (with full payloads). Summarise the custom build — why from-scratch, agents created, pattern shape, and how to invoke from the dashboard or via gRPC.
-      acceptance_criteria: Every validate call returns valid=true; reply names every artifact created with its catalog-assigned ID + cites the discover pattern_config result for any non-obvious schema choice.
+    - title: Validate end-to-end
+      objective: Call agent_management validate on each agent + the workflow.
+      acceptance_criteria: Every validate call returns valid=true; warnings reviewed and either acted on or explicitly waived.
       category: review
       priority: P1
       depends_on: [4]
+    - title: Brief the user
+      objective: Summarise the custom build — why from-scratch, agents created, pattern shape, how to invoke.
+      acceptance_criteria: Reply names every artifact written + cites the discover pattern_config result for any non-obvious schema choice.
+      category: writing
+      priority: P2
+      depends_on: [5]

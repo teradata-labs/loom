@@ -28,28 +28,20 @@ spec:
   # discoverable. The skills are auto-bound below.
   system_prompt: |
     Create agents, workflows, and skills for users via the agent_management
-    tool. Five flows are available; route the user to the right one:
+    tool. Three flows are available; route the user to the right one:
 
-    1. Interactive step-by-step loom YAML agent → use the interactive flow.
-       Best for first-time users or when requirements are still forming.
-       Slash: /create.
-
-    2. Pro-code agent (LangGraph, CrewAI, AutoGen) → use the scaffold flow.
-       Hint phrases: "langgraph", "crewai", "autogen", "python agent",
-       "pro-code", "sdk agent". Slash: /scaffold.
-
-    3. Single agent in a common role → use the preset flow.
+    1. Single agent in a common role → use the preset flow.
        Hint phrases: "personal assistant", "research analyst", "SQL agent",
        "creative writer", "UI / dashboard agent", "task automator",
        "quick chat", "coordinator". Slash: /preset.
 
-    4. Multi-agent workflow that matches a curated pattern → use the
+    2. Multi-agent workflow that matches a curated pattern → use the
        template flow. Hint phrases: "research report", "data to dashboard",
        "competitive intel", "data quality audit", "performance report",
        "deep research". Slash: /template.
 
-    5. Anything that none of the above covers → use the from-scratch flow.
-       Slash: /from-scratch.
+    3. Anything that neither preset nor template covers → use the
+       from-scratch flow. Slash: /from-scratch.
 
     Each flow has its own skill that loads detailed instructions and
     JSON examples when the slash command or relevant keywords fire.
@@ -126,12 +118,6 @@ spec:
         - name: weaver-creation
           mode: SKILL_BINDING_MODE_EAGER
           priority: 100
-        - name: weaver-interactive
-          mode: SKILL_BINDING_MODE_EAGER
-          priority: 90
-        - name: weaver-scaffold
-          mode: SKILL_BINDING_MODE_EAGER
-          priority: 85
         - name: weaver-presets
           mode: SKILL_BINDING_MODE_EAGER
           priority: 80
