@@ -105,6 +105,16 @@ func (r *Registry) Unregister(name string) {
 	delete(r.tools, name)
 }
 
+// RegisterAlias registers an existing tool under an additional alias name.
+// This allows callers to look up a tool by both its canonical prefixed name
+// (e.g. "teradata-aiop:base_databaseList") and a plain alias
+// (e.g. "base_databaseList") without duplicating the tool implementation.
+func (r *Registry) RegisterAlias(alias string, tool Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[alias] = tool
+}
+
 // Count returns the number of registered tools.
 func (r *Registry) Count() int {
 	r.mu.RLock()

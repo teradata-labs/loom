@@ -610,6 +610,20 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	// Fast path: the tool may already be registered under a server-prefixed name
+	// (e.g., "teradata-aiop:base_databaseList") while the LLM called it by its
+	// plain name ("base_databaseList") because the ROM or tool_search result
+	// returned the unprefixed form. Scan the local registry first before
+	// hitting the external tool registry.
+	suffix := ":" + toolName
+	for _, t := range e.registry.ListTools() {
+		if strings.HasSuffix(t.Name(), suffix) {
+			// Register an alias so subsequent calls skip this scan.
+			e.registry.RegisterAlias(toolName, t)
+			return t, nil
+		}
+	}
+
 	// Check if tool registry is configured
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")

@@ -611,6 +611,26 @@ backup:
     fi
 
 # =============================================================================
+# Runtime Image (teradata/loom-runtime)
+# =============================================================================
+
+# Build the loom-runtime Docker image
+build-runtime tag="1.0.0":
+    docker build \
+        --build-arg VERSION=$(cat VERSION) \
+        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+        -t teradata/loom-runtime:{{tag}} \
+        -f docker/Dockerfile.runtime \
+        .
+
+# Build and load loom-runtime image into ALL nodes of a minikube cluster.
+# Uses docker build + minikube image load (vs minikube image build) so the image
+# is distributed to every node — required for multi-node clusters.
+build-runtime-minikube tag="1.0.0" profile="agentops-cluster":
+    just build-runtime {{tag}}
+    minikube image load teradata/loom-runtime:{{tag}} -p {{profile}}
+
+# =============================================================================
 # Benchmark (AKS publication-grade)
 # =============================================================================
 
