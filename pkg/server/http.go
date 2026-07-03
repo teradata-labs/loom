@@ -332,9 +332,28 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
+	// Propagate auth and tracing headers from the HTTP request into gRPC
+	// incoming metadata so that UserIDStreamInterceptor and any downstream
+	// context readers (e.g. auth token forwarding to MCP tools) work
+	// identically on the SSE path as they do on the native gRPC path.
+	ctx := r.Context()
+	md := metadata.New(nil)
+	if v := r.Header.Get("Authorization"); v != "" {
+		md.Set("authorization", v)
+	}
+	if v := r.Header.Get("X-User-ID"); v != "" {
+		md.Set("x-user-id", v)
+	}
+	if v := r.Header.Get("X-Request-ID"); v != "" {
+		md.Set("x-request-id", v)
+	}
+	if len(md) > 0 {
+		ctx = metadata.NewIncomingContext(ctx, md)
+	}
+
 	// Create gRPC stream
 	stream := &sseStreamWrapper{
-		ctx:     r.Context(),
+		ctx:     ctx,
 		writer:  w,
 		flusher: w.(http.Flusher),
 		logger:  h.logger,

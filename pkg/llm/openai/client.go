@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,6 +132,13 @@ func NewClient(config Config) *Client {
 		extraHeaders: copyHeaders(config.ExtraHeaders),
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				// Use a short idle-connection timeout so the pool doesn't
+				// hand out stale connections that the LLM proxy has already
+				// closed on its side (which causes EOF errors).
+				IdleConnTimeout:     30 * time.Second,
+				MaxIdleConnsPerHost: 5,
+			},
 		},
 	}
 }
@@ -146,6 +154,20 @@ func copyHeaders(m map[string]string) map[string]string {
 		cp[k] = v
 	}
 	return cp
+}
+
+// isRetryableTransportError reports whether an HTTP transport error is transient
+// and safe to retry (stale keep-alive connection recycled by the server).
+func isRetryableTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "EOF") || strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "use of closed network connection")
 }
 
 // getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
@@ -275,6 +297,12 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []ToolCall
 				for _, tc := range msg.ToolCalls {
+					// Skip tool calls with empty id or sanitized name — sending
+					// these to Bedrock causes a 400 validation error.
+					sanitized := llm.SanitizeToolName(tc.Name)
+					if tc.ID == "" || sanitized == "" {
+						continue
+					}
 					// Marshal input to JSON string.
 					// Guard against nil Input — json.Marshal(nil) returns "null"
 					// (no error), which LiteLLM forwards to Vertex AI as a non-dict
@@ -289,12 +317,14 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 						ID:   tc.ID,
 						Type: "function",
 						Function: FunctionCall{
-							Name:      llm.SanitizeToolName(tc.Name),
+							Name:      sanitized,
 							Arguments: string(argsJSON),
 						},
 					})
 				}
-				apiMsg.ToolCalls = toolCalls
+				if len(toolCalls) > 0 {
+					apiMsg.ToolCalls = toolCalls
+				}
 			}
 
 			apiMessages = append(apiMessages, apiMsg)
@@ -451,6 +481,11 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
+			// Skip tool calls with empty id or name — strict providers (Bedrock)
+			// reject messages containing toolUse blocks where either field is empty.
+			if tc.ID == "" || tc.Function.Name == "" {
+				continue
+			}
 			// Parse arguments JSON string back to map
 			var input map[string]interface{}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
@@ -591,35 +626,37 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	for k, v := range c.extraHeaders {
-		httpReq.Header.Set(k, v)
-	}
-
-	// 2. Send request with rate limiting if enabled
+	// 2. Send request with rate limiting if enabled.
+	// Retry once on transient transport errors (stale keep-alive connection
+	// recycled by the LLM proxy, manifesting as EOF).
 	var httpResp *http.Response
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		httpReq, reqErr := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if reqErr != nil {
+			return nil, fmt.Errorf("failed to create request: %w", reqErr)
 		}
-		httpResp = result.(*http.Response)
-	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		var doErr error
+		if c.rateLimiter != nil {
+			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+				return c.httpClient.Do(httpReq)
+			})
+			doErr = err
+			if err == nil {
+				httpResp = result.(*http.Response)
+			}
+		} else {
+			httpResp, doErr = c.httpClient.Do(httpReq)
 		}
+		if doErr != nil {
+			if attempt < 2 && isRetryableTransportError(doErr) {
+				continue
+			}
+			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
+		}
+		break
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -731,6 +768,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 4. Parse accumulated tool call arguments
 	for _, tc := range toolCallMap {
+		// Skip tool calls with empty name or ID — Bedrock (and other strict
+		// providers) reject messages containing toolUse blocks where name or
+		// toolUseId is empty. This can happen when streaming produces partial
+		// delta chunks that initialize a slot before the name/id arrive.
+		if tc.ID == "" || tc.Name == "" {
+			continue
+		}
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {
@@ -793,35 +837,37 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	for k, v := range c.extraHeaders {
-		httpReq.Header.Set(k, v)
-	}
-
-	// Send request with rate limiting if enabled
+	// Send request with rate limiting if enabled.
+	// Retry once on transient transport errors (stale keep-alive connection
+	// recycled by the LLM proxy, manifesting as EOF).
 	var httpResp *http.Response
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		httpReq, reqErr := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if reqErr != nil {
+			return nil, fmt.Errorf("failed to create request: %w", reqErr)
 		}
-		httpResp = result.(*http.Response)
-	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		var doErr error
+		if c.rateLimiter != nil {
+			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+				return c.httpClient.Do(httpReq)
+			})
+			doErr = err
+			if err == nil {
+				httpResp = result.(*http.Response)
+			}
+		} else {
+			httpResp, doErr = c.httpClient.Do(httpReq)
 		}
+		if doErr != nil {
+			if attempt < 2 && isRetryableTransportError(doErr) {
+				continue
+			}
+			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
+		}
+		break
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
