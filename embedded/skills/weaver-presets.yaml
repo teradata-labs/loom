@@ -3,280 +3,147 @@ kind: Skill
 metadata:
   name: weaver-presets
   title: Agent Preset Scaffolding
-  description: Curated single-agent presets Tera applies via agent_management apply_preset.
+  description: Curated single-agent presets the weaver applies via agent_management apply_preset.
   domain: meta-agent
-  version: "1.2.0"
-  author: loom-cloud
+  version: "1.0.0"
+  author: loom-core
   labels:
-    surface: tera
+    surface: weaver
 trigger:
   slash_commands:
     - /preset
     - /presets
   keywords:
     - preset
-    - apply preset
-    - quick preset
-    - use a preset
-    - agent preset
+    - personal assistant
+    - research analyst
+    - teradata analyst
+    - creative writer
+    - ui specialist
+    - task automator
+    - quick chat
+    - coordinator
+    - "single agent"
   mode: HYBRID
-  min_confidence: 0.8  # Only match when user explicitly mentions preset/template
+  min_confidence: 0.65
 prompt:
-  guard: |
-    ## HARD RULES
-
-    0. DO NOT enter the preset flow unless the user has EXPLICITLY chosen the
-       preset path (said "preset", used /preset, or confirmed a preset
-       recommendation). A bare role or use-case ("create a teradata analyst
-       agent") does NOT automatically select presets. Detect the intent from
-       the user's words — never present a numbered build-path menu.
-    1. ALWAYS gather requirements before applying any preset. A preset name in
-       the message is a hint, not a directive.
-    2. apply_preset writes the agent to the Tera DB ONLY. It does NOT publish
-       to AgentOps. Publishing is a SEPARATE explicit step (publish_agent),
-       triggered only when the user explicitly says to publish.
-    3. NEVER call preview_config or show agent.yaml / looms.yaml in chat. The
-       Artifact pane shows the real files automatically after apply_preset runs.
-       Summarise what was created in PLAIN PROSE ONLY.
-    4. After apply_preset, ALWAYS run tool_search to discover the actual
-       domain/MCP tools available in this environment. Wire in ONLY the tool
-       names returned by tool_search — never add tools from memory, the ROM,
-       or the preset description that tool_search did not return. Call
-       update_agent to add the discovered tools (the preset's base tools stay;
-       you are appending domain tools that tool_search confirmed exist).
-    5. NEVER call SQL query, knowledge_graph, database tools, or any
-       data-access tool during agent creation — use ONLY agent_management
-       and tool_search during the creation flow.
-    6. NEVER call update_agent with a "published" field — it does not exist.
-    7. Always offer to test the agent in Tera before publishing. Tera is the
-       workbench — agents run in-process immediately after apply_preset.
-    8. Only call publish_agent when the user explicitly says "publish" or
-       confirms they are ready for production.
-
   instructions: |
-    Use a preset when the user wants a quick start for a common agent role.
-    Presets fill limits, temperature, thinking, memory, and workload profile.
-    The user always supplies requirements — the preset is a starting point, not
-    a final answer. Domain/MCP tools are discovered via tool_search and added
-    after apply_preset.
+    Use a preset whenever the user asks for a single agent in a common
+    role. Presets fill tools, limits, temperature, thinking, memory,
+    and workload profile. The user still supplies a name and system
+    prompt — those two never come from the preset.
 
     ## Flow
+    1. Call agent_management with {"action": "presets"} to list the
+       available presets and their default tool sets.
+    2. Pick the preset whose intent matches the user. If nothing fits,
+       fall back to the weaver-from-scratch skill.
+    3. Call agent_management with apply_preset, passing the preset name,
+       the user-chosen agent name, and the system prompt you've drafted.
+    4. Confirm with the user — show the agent name + preset and ask if
+       they want adjustments.
 
-    ### Step 1 — Requirements first (ALWAYS)
-
-    Gather what the agent needs: tasks, data sources, integrations, name.
-    For a named role request that is specific enough ("create a Teradata analyst
-    with access to the Teradata MCP server"), your first reply is a PROSE
-    PROPOSAL — name, purpose, tools, model, capabilities — ending with
-    "Anything to adjust?" Proceed without asking if the request is already clear.
-
-    ### Step 2 — Select preset
-
-    Call agent_management with {"action": "presets"} to get the current list.
-    Recommend the best-fitting preset with a brief summary.
-    Confirm the user is happy with the choice before proceeding.
-    If no preset fits, fall back to create_agent (weaver-from-scratch path).
-
-    ### Step 3 — Discover actual domain tools (BEFORE creating)
-
-    If the agent needs domain/MCP tools (Teradata, Salesforce, etc.):
-    a. Call tool_search with the domain keyword (e.g. "teradata", "salesforce")
-    b. Note the exact tool names returned — these are what exist in this environment
-    c. NEVER use tool names from the ROM, preset description, or memory that
-       tool_search did not return. If tool_search returns nothing, the domain
-       tools are not registered in this session; do NOT invent names.
-
-    ### Step 4 — Draft system prompt
-
-    Write a direct, task-oriented system prompt. No "You are an expert…" framing.
-    Ask the user to review it.
-
-    ### Step 5 — Create agent (Tera DB only)
-
-    Once requirements and system prompt are confirmed, call apply_preset with:
-    - preset, name, system_prompt, description
-
-    apply_preset writes the agent to the Tera DB and makes it available
-    in-session immediately. It does NOT publish to AgentOps — that is a
-    separate explicit step. The Artifact pane automatically shows agent.yaml
-    and looms.yaml after apply_preset succeeds.
-
-    If the user's requirements need tools or fields beyond the preset defaults,
-    use create_agent instead — same Tera-DB-only write, full control.
-
-    ### Step 6 — Wire in discovered domain tools
-
-    If tool_search (Step 3) returned domain tools, call update_agent to add
-    them to the agent. Pass ONLY the exact tool names that tool_search returned.
-    Do NOT add tool names from the ROM, preset cheatsheet, or any other source —
-    only what tool_search confirmed exists in this environment.
-
-    Example: if tool_search returned ["base_readQuery", "base_writeQuery",
-    "dba_sessionInfo"] for "teradata", call update_agent with those three names
-    appended to the agent's tool list. If tool_search returned
-    ["teradata_tool_call", "teradata_tool_help"], add only those two.
-
-    ### Step 7 — Invite testing
-
-    Tell the user the agent is in Tera and ready to test. Confirm the agent name
-    and agent_id. Tell them the YAML is in the Artifact pane. Invite them to chat
-    with the agent right here to validate behavior before publishing.
-    Ask: "Does everything look right, or would you like to adjust anything?"
-
-    ### Step 8 — Publish (explicit, user-triggered)
-
-    Only when the user says "publish", "looks good", "go ahead", or similar:
-    call publish_agent. This uploads artifacts to S3 and registers a version in
-    the AgentOps registry. Report the definition_id and version.
-
-    ### Step 9 — Deployment offer (after publishing)
-
-    Ask whether to deploy to a Kubernetes runtime. Never deploy without an
-    explicit yes.
-
-    ## Preset reference (call presets action for authoritative list)
-
-    - **personal_assistant** — general assistant, web_search + web_browse +
-      http_request + create_ui_app + tool_search, long-term memory
-    - **research_analyst** — deep web research, 200k context, DATA_INTENSIVE
-    - **teradata_analyst** — SQL on Teradata, TD ROM, DATA_INTENSIVE,
-      web_search + http_request + create_ui_app + tool_search. Domain MCP
-      tools discovered via tool_search and added via update_agent after preset.
-    - **creative_writer** — long-form writing, temperature 1.0, strong memory
-    - **ui_specialist** — dashboards/visualizations, create_ui_app + web tools
-    - **task_automator** — agentic automation, sub-agent delegation
-    - **quick_chat** — lightweight Q&A, no tools
+    ## Preset cheatsheet
+    - **personal_assistant** — always-on assistant. Unlimited turns,
+      web + http + file + parse tools, deep thinking, long-term graph memory.
+    - **research_analyst** — web research with citations. 200k context,
+      systematic synthesis, parse_document for PDFs / docx.
+    - **teradata_analyst** — SQL on Teradata. TD ROM, data-intensive
+      profile, create_ui_app for dashboards. Unlimited query-result inspection.
+    - **creative_writer** — long-form writing. Temperature 1.0, strong
+      graph memory for continuity, file_read + file_write for drafts.
+    - **ui_specialist** — dashboards and visualizations. create_ui_app
+      + web tools for reference + file_read.
+    - **task_automator** — agentic workhorse. shell_execute + file_*,
+      sub-agent delegation, manage_ephemeral_agents, agent_management,
+      output-token circuit breaker disabled for long-running runs.
+    - **quick_chat** — lightweight Q&A. No tools, short history window,
+      thinking disabled. Cheapest preset.
+    - **coordinator** — decomposes work and delegates to sub-agents.
+      task_board + manage_ephemeral_agents. Does no work directly.
 
     ## Required parameters for apply_preset
-
-    - preset — snake_case preset key
-    - name — user-chosen agent name
-    - system_prompt — task-oriented prompt (no role-play framing)
-    - description (optional)
-
-    apply_preset applies the preset's base tools and limits. Domain/MCP tools
-    are appended via update_agent using tool_search-confirmed names only.
+    - preset: one of the names above (snake_case)
+    - name: the user-chosen agent name (kebab-case recommended)
+    - system_prompt: a focused, role-specific prompt (no "You are an
+      expert..." role-play — give direct instructions)
+    - active_provider (optional): named pool entry like "claude-haiku"
+      if the user wants a specific model
 
     ## What to avoid
-
-    - Do NOT list auto-injected tools in the apply_preset call (workspace,
-      query_tool_result, send_message, publish, shared_memory_*)
-    - Do NOT pass an empty system_prompt — apply_preset rejects it
-    - Do NOT reference filesystem paths. Agents are catalog entries identified
-      by agent_id and name
-    - Do NOT add domain tool names that tool_search did not return
-    - Do NOT show YAML in chat — Artifact pane handles that
-    - Do NOT call SQL query, knowledge_graph, or database tools during creation
-    - Offer to add the new agent to the current project (via project_manager)
-      only when the session is project-scoped
-
+    - Do NOT list auto-injected tools in the preset call (workspace,
+      query_tool_result, send_message, publish, shared_memory_*) — the
+      preset's tool list is exactly what the agent gets; auto-injection
+      adds the rest at runtime.
+    - Do NOT pass an empty system_prompt — the apply_preset action will
+      reject it. Always draft a prompt before calling.
+    - Do NOT mix apply_preset with manual tools overrides on the same
+      call; if the user wants a different tool set, use create_agent
+      instead and build the agent from scratch.
   constraints:
-    - 'Detect the intent from the user''s words — never present a numbered type-selection menu'
-    - 'Gather requirements before applying any preset'
-    - 'apply_preset writes to the Tera DB ONLY — it does NOT publish to AgentOps; publishing is a SEPARATE step (publish_agent) triggered only when the user explicitly confirms'
-    - 'NEVER call preview_config or show agent.yaml / looms.yaml in chat — the Artifact pane shows files automatically after apply_preset; summarise in plain prose only'
-    - 'After apply_preset, ALWAYS run tool_search to discover domain/MCP tools; call update_agent with ONLY the tool names that tool_search returned — never add tools from the ROM, preset description, or memory'
-    - 'During agent creation use ONLY agent_management and tool_search — do NOT call SQL query, knowledge_graph, database tools, or project_manager'
-    - 'Never call update_agent with a "published" field — it does not exist'
-    - 'After apply_preset, invite the user to test the agent in Tera before publishing — agents run in-process immediately'
-    - 'Only call publish_agent when the user explicitly confirms they want to publish'
-    - 'Always offer deployment after publishing; never deploy without explicit confirmation'
-    - 'One apply_preset call per agent — use update_agent for subsequent changes'
-
+    - 'Always call agent_management with action=presets first when the user is browsing or unsure.'
+    - 'Always confirm preset choice with the user before apply_preset.'
+    - 'One apply_preset call per agent — do not loop over presets.'
   output_format: |
-    After apply_preset + update_agent (domain tools): confirm agent name and
-    agent_id in plain prose. Tell the user the YAML is in the Artifact pane.
-    Invite them to test by chatting with the agent here in Tera.
-    Example: "The Teradata Analyst agent is ready in Tera (ID: <id>). The YAML
-    config is in the Artifact pane. Try chatting with it directly to test your
-    SQL queries — let me know when you're satisfied and want to publish to
-    AgentOps, or if you'd like to adjust anything first."
-    After publish_agent: report definition_id and version, then ask whether to
-    deploy to a standalone runtime.
-
+    On preset listing: a short summary per preset (name + one-line
+    description) and a recommendation tailored to the user's intent.
+    On apply: a single confirmation line citing agent name + preset.
   examples:
-    - user_input: "create a teradata analyst agent which has access to teradata mcp server"
+    - user_input: "Make me a personal assistant that helps with daily tasks"
       expected_output: |
-        Propose the agent in plain prose (name, purpose, tools, model).
-        Run tool_search("teradata") to discover what Teradata tools exist in this
-        environment. Call apply_preset(preset="teradata_analyst", name=...,
-        system_prompt=...). Then call update_agent to add ONLY the tool names that
-        tool_search returned — not the ROM tool list, not the preset cheatsheet.
-        Tell the user the agent is ready in Tera, YAML is in the Artifact pane,
-        and invite them to test it. Do NOT show YAML in chat.
-      explanation: tool_search is the ground truth for which tools exist; the preset
-        provides configuration defaults; update_agent wires in what was actually found.
-    - user_input: "use the teradata preset for our warehouse, focused on sales analytics queries"
+        Call agent_management:
+        {"action": "apply_preset", "preset": "personal_assistant",
+         "name": "my-assistant",
+         "system_prompt": "Help the user manage daily tasks, answer questions, and find information efficiently."}
+      explanation: Preset fits the intent; name is user-friendly; prompt is task-oriented (no role-play).
+    - user_input: "I want a SQL analyst for our Teradata warehouse"
       expected_output: |
-        After requirements gathered and system prompt drafted, call apply_preset.
-        Run tool_search("teradata") and add discovered tools via update_agent.
-        Confirm in plain prose. Invite testing. Separately offer to publish when
-        the user is satisfied.
-      explanation: apply_preset creates in Tera DB only; tool_search + update_agent
-        wires domain tools; publish is a separate user-triggered step.
-
+        {"action": "apply_preset", "preset": "teradata_analyst",
+         "name": "td-warehouse-analyst",
+         "system_prompt": "Answer questions about the Teradata warehouse by writing and executing SQL. Always cite the exact query and result. Highlight trends, anomalies, and key takeaways."}
+      explanation: TD preset includes the ROM and data-intensive profile required for SQL work.
 tools:
   required_tools:
     - agent_management
-    - tool_search
   preferred_order:
-    - tool_search
     - agent_management
 pattern_refs: []
 skill_refs: []
 max_prompt_tokens: 2200
 sticky: true
-parent_index_path: meta-agent/tera/presets
+parent_index_path: meta-agent/weaver/presets
 emit_tasks: true
 task_template:
   root_title: Apply Agent Preset
-  max_tasks: 8
+  max_tasks: 5
   ephemeral_on_deactivate: false
   steps:
-    - title: Gather requirements from user
-      objective: Understand specific tasks, data sources, and constraints before recommending a preset.
-      acceptance_criteria: User has described their specific requirements.
-      category: investigation
-      priority: P1
-    - title: Discover domain tools via tool_search
-      objective: Call tool_search with the domain keyword before creating the agent; note exact tool names returned.
-      acceptance_criteria: tool_search was called; actual available tool names are known.
-      category: investigation
-      priority: P1
-      depends_on: [0]
-    - title: Recommend and confirm preset choice
-      objective: Call presets action; recommend best fit; user approves.
-      acceptance_criteria: User confirmed preset choice.
+    - title: Confirm preset choice with user
+      objective: Verify the chosen preset is the best fit for the user's stated intent.
+      acceptance_criteria: User has explicitly approved the preset OR the message already specifies "apply directly".
       category: decision
       priority: P1
-      depends_on: [0]
-    - title: Draft system prompt
-      objective: Write a direct, task-oriented system prompt based on requirements.
-      acceptance_criteria: System prompt is action-focused, no role-play framing.
+    - title: Draft the agent's system prompt
+      objective: Write a direct, task-oriented system prompt (no role-prompting).
+      acceptance_criteria: Prompt is 1-4 paragraphs, action-focused, contains no "you are an expert..." framing.
       category: writing
       priority: P1
-      depends_on: [2]
-    - title: Create agent in Tera (apply_preset)
-      objective: Call apply_preset with preset + params; it writes the agent to the Tera DB only (NOT AgentOps).
-      acceptance_criteria: apply_preset returned success=true with agent_id.
+      depends_on: [0]
+    - title: Apply the preset via agent_management
+      objective: Call agent_management with action=apply_preset, name, system_prompt.
+      acceptance_criteria: Tool returns success=true, agent YAML lands in agents/ dir, no validation errors.
       category: implementation
       priority: P1
-      depends_on: [3]
-    - title: Wire discovered domain tools (update_agent)
-      objective: Call update_agent with ONLY the tool names that tool_search returned for this environment.
-      acceptance_criteria: update_agent succeeded; only tool_search-confirmed names were added.
-      category: implementation
-      priority: P1
-      depends_on: [4]
-    - title: Invite testing
-      objective: Tell user the agent is ready in Tera; invite them to chat with it to verify behavior.
-      acceptance_criteria: User has tested or acknowledged they can test before publishing.
-      category: decision
-      priority: P1
-      depends_on: [5]
-    - title: Publish and offer deployment (when user confirms)
-      objective: When user says publish, call publish_agent; then ask about runtime deployment.
-      acceptance_criteria: User answered yes (publish_agent called) or deferred.
-      category: decision
+      depends_on: [1]
+    - title: Verify the agent loaded
+      objective: Confirm the new agent appears via agent_management list and read.
+      acceptance_criteria: read returns the freshly-written YAML and the preset label is set.
+      category: review
       priority: P2
-      depends_on: [6]
+      depends_on: [2]
+    - title: Brief the user on what was built
+      objective: Summarise preset + tools + key limits + how to use the agent.
+      acceptance_criteria: Reply includes agent name, preset id, tool list, and an example invocation.
+      category: writing
+      priority: P2
+      depends_on: [3]
