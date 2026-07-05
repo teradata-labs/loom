@@ -866,9 +866,26 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.LiteLLMModel
 		}
+		// Endpoint and API key are frequently injected via environment
+		// variables (e.g. avmo-tera-cloud runtime pods set LITELLM_BASE_URL /
+		// LITELLM_API_KEY) rather than the config file, and Viper's
+		// AutomaticEnv does not bind nested secret keys that are absent from
+		// the config. Fall back to the environment so agent-config-driven
+		// providers get the same credentials as the primary LLM.
+		endpoint := serverConfig.LLM.LiteLLMEndpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_BASE_URL")
+		}
+		apiKey := serverConfig.LLM.LiteLLMAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("LITELLM_API_KEY")
+		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
-			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
+			Endpoint:    endpoint,
+			APIKey:      apiKey,
 			Model:       model,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
