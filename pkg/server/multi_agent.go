@@ -3325,10 +3325,13 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check by pinging each unique LLM provider.
-// Providers are deduplicated across agents (many agents share the same provider)
-// and checked concurrently, so latency is O(slowest_provider) not O(agents × latency).
-// Returns per-provider status in the components map.
+// GetHealth performs a health check against each unique LLM provider, preferring
+// each provider's lightweight HealthCheck (see pingProvider in health.go) over a
+// real chat completion so transient LLM latency/rate limits don't falsely report
+// a live agent as unhealthy. Providers are deduplicated across agents (many agents
+// share the same provider) and checked concurrently, so latency is
+// O(slowest_provider) not O(agents × latency). Returns per-provider status in the
+// components map.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
 	s.mu.RLock()
 	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
@@ -3366,9 +3369,7 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 		go func() {
 			start := time.Now()
 			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_, err := info.provider.Chat(checkCtx, []types.Message{
-				{Role: "user", Content: "ping"},
-			}, nil)
+			err := pingProvider(checkCtx, info.provider)
 			cancel()
 			latency := time.Since(start).Milliseconds()
 
