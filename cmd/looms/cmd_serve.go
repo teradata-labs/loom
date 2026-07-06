@@ -3662,6 +3662,7 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
+			Headers:          serverConfig.Headers,
 			Transport:        transport,
 			URL:              serverConfig.URL,
 			Headers:          headers,
