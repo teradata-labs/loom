@@ -8,20 +8,25 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // CORSConfig holds CORS configuration
@@ -370,12 +375,63 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		logger:  h.logger,
 	}
 
+	// Emit periodic SSE heartbeats while StreamWeave runs. Some stages (e.g.
+	// pattern-selection / skill-decompose LLM calls) can run for tens of
+	// seconds without producing a single WeaveProgress event. Upstream
+	// proxies/load balancers with an idle-connection timeout (a common default
+	// is 60s) may kill an SSE connection that has been silent that long, which
+	// surfaces to the browser as a client-cancelled request and an empty
+	// response even though the agent was still working. A ~15s heartbeat
+	// keeps bytes flowing so those idle timeouts don't trigger.
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				if err := stream.writeHeartbeat(); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	// Execute StreamWeave
 	if err := h.grpcServer.StreamWeave(&req, stream); err != nil {
-		h.logger.Error("StreamWeave failed", zap.Error(err))
+		if isClientCanceled(err) {
+			// The client disconnected or cancelled the request (e.g. closed the
+			// tab/EventSource, navigated away, or hit a client-side timeout).
+			// This is routine SSE lifecycle, not a server failure, so it is
+			// logged at Info rather than Error to avoid false-positive alerts.
+			h.logger.Info("StreamWeave stopped: client disconnected", zap.Error(err))
+		} else {
+			h.logger.Error("StreamWeave failed", zap.Error(err))
+		}
 		// Send error as SSE event
 		h.sendSSEError(w, stream.flusher, err)
 	}
+}
+
+// isClientCanceled reports whether err represents a client-initiated stream
+// cancellation (context canceled or gRPC codes.Canceled) rather than a
+// genuine server-side failure.
+func isClientCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Code() == codes.Canceled
+	}
+	return false
 }
 
 // sseStreamWrapper implements loomv1.LoomService_StreamWeaveServer for SSE
@@ -384,24 +440,50 @@ type sseStreamWrapper struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	logger  *zap.Logger
+
+	// mu serializes writes to writer/flusher between Send (from the StreamWeave
+	// goroutine) and writeHeartbeat (from the heartbeat ticker goroutine).
+	mu sync.Mutex
 }
 
 func (s *sseStreamWrapper) Send(progress *loomv1.WeaveProgress) error {
-	// Convert progress to JSON
-	data, err := json.Marshal(progress)
+	// Convert progress to JSON using protojson so field names are emitted in
+	// camelCase (e.g. partialContent, isTokenStream) and enums as their string
+	// names (e.g. "EXECUTION_STAGE_COMPLETED") — matching the WeaveProgress
+	// proto-JSON wire format that SSE clients (e.g. the AgentRuntime UI
+	// playground's parseLoomWeaveProgress) expect. Plain encoding/json would
+	// instead emit the struct's snake_case json tags and raw numeric enums,
+	// which those clients cannot parse.
+	data, err := protojson.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("failed to marshal progress: %w", err)
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Write SSE event
-	_, err = fmt.Fprintf(s.writer, "data: %s\n\n", data)
-	if err != nil {
+	if _, err := fmt.Fprintf(s.writer, "data: %s\n\n", data); err != nil {
 		return err
 	}
 
 	// Flush immediately
 	s.flusher.Flush()
 
+	return nil
+}
+
+// writeHeartbeat writes an SSE comment line (ignored by spec-compliant SSE
+// clients since it doesn't start with "data:") purely to keep the
+// connection's byte stream active for idle-timeout proxies/load balancers.
+func (s *sseStreamWrapper) writeHeartbeat() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := fmt.Fprint(s.writer, ": heartbeat\n\n"); err != nil {
+		return err
+	}
+	s.flusher.Flush()
 	return nil
 }
 

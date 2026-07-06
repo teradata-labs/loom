@@ -105,6 +105,41 @@ func TestExecutor_Execute_ToolNotFound(t *testing.T) {
 	}
 }
 
+// TestExecutor_Execute_ResolvesServerPrefixedSuffix verifies that a tool
+// registered under a server-qualified name (e.g. "server:tool_name") can
+// still be called by its plain unprefixed name.
+func TestExecutor_Execute_ResolvesServerPrefixedSuffix(t *testing.T) {
+	reg := NewRegistry()
+	exec := NewExecutor(reg)
+
+	tool := &MockTool{MockName: "teradata-aiop-mcp-server:base_readQuery"}
+	reg.Register(tool)
+
+	result, err := exec.Execute(context.Background(), "base_readQuery", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, tool.ExecuteCount)
+}
+
+// TestExecutor_Execute_ResolvesSanitizedQualifiedName verifies that a tool
+// registered under a server-qualified name (e.g. "server:tool_name") can
+// still be called by its LLM-sanitized form (colon replaced with underscore),
+// since some providers reject ':' in tool names (see llm.SanitizeToolName)
+// and callers may re-derive the sanitized name instead of using the
+// provider's reverse-mapped original.
+func TestExecutor_Execute_ResolvesSanitizedQualifiedName(t *testing.T) {
+	reg := NewRegistry()
+	exec := NewExecutor(reg)
+
+	tool := &MockTool{MockName: "teradata-aiop-mcp-server:base_readQuery"}
+	reg.Register(tool)
+
+	result, err := exec.Execute(context.Background(), "teradata-aiop-mcp-server_base_readQuery", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, tool.ExecuteCount)
+}
+
 func TestExecutor_Execute_ToolError(t *testing.T) {
 	reg := NewRegistry()
 	tool := &errorTool{name: "error"}
