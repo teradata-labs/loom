@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
@@ -130,4 +131,37 @@ func TestValidateProviders_ReportsFailures(t *testing.T) {
 	assert.Contains(t, err.Error(), "connection refused")
 	// Healthy provider should still have been checked
 	assert.Equal(t, int64(1), llmOK.calls.Load())
+}
+
+// TestServer_GetHealth_UsesHealthCheckerWhenAvailable is a regression test:
+// GetHealth must not fall back to a real Chat "ping" completion when the
+// provider offers a cheap HealthCheck — a live chat completion is slower,
+// costs real tokens, and is far more prone to transient failures (rate
+// limits, cold starts, proxy blips) that don't reflect the agent's actual
+// liveness, causing false "unhealthy" reports for a working agent.
+func TestServer_GetHealth_UsesHealthCheckerWhenAvailable(t *testing.T) {
+	llm := &healthCheckingLLM{countingLLM: countingLLM{name: "litellm", model: "gpt-4"}}
+	ag := agent.NewAgent(&mockBackend{}, llm)
+	srv := NewServer(ag, nil)
+
+	resp, err := srv.GetHealth(context.Background(), &loomv1.GetHealthRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "healthy", resp.Status)
+	assert.Equal(t, int64(0), llm.calls.Load(), "Chat should not be called when HealthCheck is available")
+	assert.Equal(t, int64(1), llm.healthCalls.Load(), "HealthCheck should be invoked exactly once")
+}
+
+// TestMultiAgentServer_GetHealth_UsesHealthCheckerWhenAvailable mirrors
+// TestServer_GetHealth_UsesHealthCheckerWhenAvailable for the multi-agent
+// server's GetHealth implementation.
+func TestMultiAgentServer_GetHealth_UsesHealthCheckerWhenAvailable(t *testing.T) {
+	llm := &healthCheckingLLM{countingLLM: countingLLM{name: "litellm", model: "gpt-4"}}
+	ag := agent.NewAgent(&mockBackend{}, llm)
+	srv := NewMultiAgentServer(map[string]*agent.Agent{"agent1": ag}, nil)
+
+	resp, err := srv.GetHealth(context.Background(), &loomv1.GetHealthRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "healthy", resp.Status)
+	assert.Equal(t, int64(0), llm.calls.Load(), "Chat should not be called when HealthCheck is available")
+	assert.Equal(t, int64(1), llm.healthCalls.Load(), "HealthCheck should be invoked exactly once")
 }
