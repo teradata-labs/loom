@@ -71,29 +71,55 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// ListTools returns all registered tools.
+// ListTools returns all registered tools, deduplicated by Tool.Name().
+//
+// The registry intentionally allows the same underlying Tool instance to be
+// stored under multiple map keys — e.g. RegisterAlias registers a plain
+// alias key ("base_readQuery") pointing at a Tool already registered under
+// its canonical, server-qualified key ("mcp-server:base_readQuery") so
+// lookups work regardless of which form the LLM uses. But Tool.Name() is
+// fixed on the Tool instance itself and doesn't change per registry key, so
+// naively iterating the map would return that same Tool (with the same
+// Name()) once per alias. Callers use ListTools() to build the tool schema
+// sent to the LLM API, and providers like Anthropic/Claude reject a
+// request whose tools have duplicate names ("Tool names must be unique"),
+// so dedup here by Name() to guarantee at most one schema entry per tool.
 func (r *Registry) ListTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	seen := make(map[string]struct{}, len(r.tools))
 	tools := make([]Tool, 0, len(r.tools))
 	for _, tool := range r.tools {
+		name := tool.Name()
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
 		tools = append(tools, tool)
 	}
 	return tools
 }
 
-// ListByBackend returns all tools for a specific backend.
+// ListByBackend returns all tools for a specific backend, deduplicated by
+// Tool.Name() for the same reason as ListTools (see its comment).
 // Pass empty string to get backend-agnostic tools.
 func (r *Registry) ListByBackend(backend string) []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	seen := make(map[string]struct{})
 	var tools []Tool
 	for _, tool := range r.tools {
-		if tool.Backend() == backend || tool.Backend() == "" {
-			tools = append(tools, tool)
+		if tool.Backend() != backend && tool.Backend() != "" {
+			continue
 		}
+		name := tool.Name()
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, tool)
 	}
 	return tools
 }
