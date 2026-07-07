@@ -44,6 +44,20 @@ func validSpec() *loomv1.UIAppSpec {
 	}
 }
 
+func TestAssembledRuntime(t *testing.T) {
+	// assembledRuntime() should inject chart-legend.js into runtime.js at the marker
+	runtime := assembledRuntime()
+	require.NotEmpty(t, runtime)
+
+	// Should not contain the injection marker after assembly
+	assert.NotContains(t, runtime, legendInjectMarker,
+		"injection marker must be replaced in assembled runtime")
+
+	// Should contain content from chart-legend.js (like buildCustomLegend)
+	assert.Contains(t, runtime, "buildCustomLegend",
+		"assembled runtime must contain injected chart-legend.js code")
+}
+
 func TestNewCompiler(t *testing.T) {
 	c, err := NewCompiler()
 	require.NoError(t, err)
