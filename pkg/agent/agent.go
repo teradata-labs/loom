@@ -1871,6 +1871,222 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	return response, nil
 }
 
+// ChatWithContentBlocks is like ChatWithProgress but the user turn carries
+// multimodal content blocks (text and/or images) alongside the plain-text
+// content. userMessage remains the canonical text (used for persistence,
+// graph-memory extraction, and providers without multimodal support);
+// contentBlocks take precedence when building the provider request for
+// providers that support them. progressCallback may be nil, in which case no
+// progress events are emitted (equivalent to Chat).
+func (a *Agent) ChatWithContentBlocks(ctx context.Context, sessionID string, userMessage string, contentBlocks []ContentBlock, progressCallback ProgressCallback) (*Response, error) {
+	// Inject session ID into context for tool access
+	ctx = session.WithSessionID(ctx, sessionID)
+
+	// Start trace span — always created; NoOpTracer handles disabled case
+	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat_with_content_blocks")
+	defer a.tracer.EndSpan(span)
+
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	span.SetAttribute("message.content_blocks", len(contentBlocks))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+		"content_blocks": len(contentBlocks),
+		"has_progress":   progressCallback != nil,
+	})
+
+	// Get or create session with agent metadata for proper ReferenceStore namespacing
+	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// Add user message to history — ContentBlocks take precedence over Content
+	// when providers build the request, so multimodal content reaches the model.
+	userMsg := Message{
+		Role:          "user",
+		Content:       userMessage,
+		ContentBlocks: contentBlocks,
+		AgentID:       a.id, // Track which agent received this message
+		Timestamp:     time.Now(),
+	}
+	session.AddMessage(ctx, userMsg)
+
+	// Persist message if storage configured
+	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
+		// Log error but don't fail the request
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", userMsg.Role),
+			zap.Error(err))
+		span.RecordError(err)
+	}
+
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(ctx, sessionID)
+		}()
+	}
+
+	// Store progressCallback in context so nested operations (tools, backends) can access it
+	if progressCallback != nil {
+		ctx = ContextWithProgressCallback(ctx, progressCallback)
+	}
+
+	// Create agent context with progress callback (nil is fine — no events emitted)
+	agentCtx := &agentContext{
+		Context:          ctx,
+		session:          session,
+		tracer:           a.tracer,
+		progressCallback: progressCallback,
+	}
+
+	// Run conversation loop
+	response, err := a.runConversationLoop(agentCtx)
+
+	// Progressive disclosure: Check if conversation_memory tool should be registered
+	// (after first L2 swap event)
+	a.checkAndRegisterConversationMemoryTool(sessionID)
+	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
+
+	// Calculate total duration
+	duration := time.Since(startTime)
+
+	if err != nil {
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
+		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
+
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
+
+		// Emit failure event
+		if progressCallback != nil {
+			progressCallback(ProgressEvent{
+				Stage:     StageFailed,
+				Progress:  0,
+				Message:   fmt.Sprintf("Execution failed: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
+		return nil, fmt.Errorf("conversation loop failed: %w", err)
+	}
+
+	// Add assistant response to history
+	assistantMsg := Message{
+		Role:       "assistant",
+		Content:    response.Content,
+		AgentID:    a.id, // Track which agent generated this response
+		Timestamp:  time.Now(),
+		TokenCount: response.Usage.TotalTokens,
+		CostUSD:    response.Usage.CostUSD,
+	}
+	session.AddMessage(ctx, assistantMsg)
+
+	// Persist final message and session
+	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", assistantMsg.Role),
+			zap.Error(err))
+		span.RecordError(err)
+	}
+	if err := a.memory.PersistSession(ctx, session); err != nil {
+		zap.L().Warn("Failed to persist session",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		span.RecordError(err)
+	}
+
+	// Record success metrics and span attributes
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
+	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
+
+	// Emit metrics
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
+
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	return response, nil
+}
+
 // Response represents the agent's response to a user message.
 type Response struct {
 	// Content is the text response
