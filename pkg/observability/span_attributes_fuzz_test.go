@@ -180,6 +180,22 @@ func FuzzSpanTimestamps(f *testing.F) {
 	f.Add(now.Unix(), now.Unix()) // Same time
 
 	f.Fuzz(func(t *testing.T, startUnix, endUnix int64) {
+		// Clamp to a 200-year window around the Unix epoch so that extreme
+		// int64 values don't produce far-future/far-past timestamps whose
+		// string representations are expensive to compute, which can stall
+		// fuzz workers and trigger a context-deadline failure on slow CI.
+		const maxSec = int64(200 * 365 * 24 * 3600)
+		if startUnix < -maxSec {
+			startUnix = -maxSec
+		} else if startUnix > maxSec {
+			startUnix = maxSec
+		}
+		if endUnix < -maxSec {
+			endUnix = -maxSec
+		} else if endUnix > maxSec {
+			endUnix = maxSec
+		}
+
 		startTime := time.Unix(startUnix, 0)
 		endTime := time.Unix(endUnix, 0)
 
