@@ -126,6 +126,12 @@ type Candidate struct {
 	// TriggerValue is the slash command, the matched keyword, or the
 	// router's chosen path, depending on TriggerType.
 	TriggerValue string
+	// TriggerArgs is the free-text remainder the user typed after a slash
+	// command (e.g. "/profile demo.table" -> "demo.table"). It is only set
+	// for TriggerType == "slash_command"; empty for keyword/router/always.
+	// Callers surface it to the LLM so the skill uses the arguments the user
+	// already supplied instead of re-asking for them.
+	TriggerArgs string
 }
 
 // Discover runs the per-turn pipeline and returns the surviving
@@ -164,7 +170,7 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 	}
 
 	// Phase 1: slash command fast path.
-	if cmd, _ := skills.ParseSlashCommand(message); cmd != "" {
+	if cmd, rest := skills.ParseSlashCommand(message); cmd != "" {
 		if skill, ok := d.library.FindBySlashCommand(cmd); ok {
 			if eligible[skill.Name] {
 				out := []*Candidate{{
@@ -173,6 +179,7 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 					Confidence:   1.0,
 					TriggerType:  "slash_command",
 					TriggerValue: cmd,
+					TriggerArgs:  rest,
 				}}
 				recordActivatedSkills(span, out)
 				return out, nil

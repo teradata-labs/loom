@@ -218,6 +218,11 @@ type ActiveSkill struct {
 	Skill        *Skill    `json:"skill"`
 	TriggerType  string    `json:"trigger_type"`
 	TriggerValue string    `json:"trigger_value"`
+	// TriggerArgs is the free-text the user typed after a slash command on
+	// the turn that activated this skill (e.g. "demo.table"). It is injected
+	// into the skill's LLM context exactly once (on the invoking turn) and
+	// then cleared so later turns don't re-inject stale arguments.
+	TriggerArgs  string    `json:"trigger_args,omitempty"`
 	Confidence   float64   `json:"confidence"`
 	ActivatedAt  time.Time `json:"activated_at"`
 	SessionID    string    `json:"session_id"`

@@ -2096,8 +2096,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						if !activeBefore[c.Skill.Name] {
 							activatedThisTurn[c.Skill.Name] = c.Skill
 						}
-						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
-							c.TriggerType, c.TriggerValue, c.Confidence)
+						a.skillOrchestrator.ActivateSkillWithArgs(sessionID, c.Skill,
+							c.TriggerType, c.TriggerValue, c.TriggerArgs, c.Confidence)
 					}
 				} else {
 					zap.L().Debug("skill discovery failed; skipping activation",

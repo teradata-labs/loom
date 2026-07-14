@@ -411,6 +411,43 @@ func TestOrchestrator_FormatActiveSkillsForLLM(t *testing.T) {
 	assert.Contains(t, output, "---", "skills should be separated by ---")
 }
 
+func TestOrchestrator_FormatActiveSkillsForLLM_InvocationArgs(t *testing.T) {
+	skillA := &Skill{
+		Name:  "profile",
+		Title: "Profile",
+		Prompt: SkillPrompt{
+			Instructions: "Profile the given table.",
+		},
+	}
+	orch := newTestOrchestrator(skillA)
+	sessionID := "sess-args"
+
+	// Activated with slash args -> args are surfaced to the LLM once.
+	orch.ActivateSkillWithArgs(sessionID, skillA, "slash_command", "/profile",
+		"summarize demo_user.online_retail", 1.0)
+
+	output := orch.FormatActiveSkillsForLLM(sessionID, 10000)
+	assert.Contains(t, output, "Profile the given table.")
+	assert.Contains(t, output, "### Invocation Request")
+	assert.Contains(t, output, "summarize demo_user.online_retail")
+	assert.Contains(t, output, "Do NOT ask the user")
+
+	// Inject-once: a second format call (a later turn where the skill stays
+	// active but wasn't re-invoked) must NOT re-inject the stale args.
+	output = orch.FormatActiveSkillsForLLM(sessionID, 10000)
+	assert.Contains(t, output, "Profile the given table.")
+	assert.NotContains(t, output, "### Invocation Request")
+	assert.NotContains(t, output, "demo_user.online_retail")
+}
+
+func TestOrchestrator_ActivateSkill_DefaultsEmptyArgs(t *testing.T) {
+	skillA := &Skill{Name: "a", Title: "A", Prompt: SkillPrompt{Instructions: "x"}}
+	orch := newTestOrchestrator(skillA)
+
+	active := orch.ActivateSkill("s", skillA, "test", "", 1.0)
+	assert.Empty(t, active.TriggerArgs, "ActivateSkill must default TriggerArgs to empty")
+}
+
 func TestOrchestrator_FormatActiveSkillsForLLM_TokenBudget(t *testing.T) {
 	// Create a skill with large instructions.
 	bigSkill := &Skill{

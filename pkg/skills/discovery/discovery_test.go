@@ -129,6 +129,32 @@ func TestDiscovery_SlashCommand_NewlineSeparated(t *testing.T) {
 	}
 }
 
+func TestDiscovery_SlashCommand_CapturesArgs(t *testing.T) {
+	a := mkSkill("profile", "", []string{"/profile"}, nil)
+	lib := libraryWith(t, a)
+	d := New(lib, binding.NewResolver(lib))
+
+	cfg := &skills.SkillsConfig{
+		Enabled:  true,
+		Bindings: []skills.SkillBinding{{Name: "profile", Mode: skills.BindingLazy}},
+	}
+
+	// Trailing text after the slash command is captured as TriggerArgs.
+	got, err := d.Discover(context.Background(), "s",
+		"/profile summarize demo_user.online_retail", cfg)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "slash_command", got[0].TriggerType)
+	assert.Equal(t, "/profile", got[0].TriggerValue)
+	assert.Equal(t, "summarize demo_user.online_retail", got[0].TriggerArgs)
+
+	// A bare slash command with no trailing text yields empty args.
+	got, err = d.Discover(context.Background(), "s", "/profile", cfg)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].TriggerArgs)
+}
+
 func TestDiscovery_FTSFallback_WhenNoRouter(t *testing.T) {
 	a := mkSkill("sql-tune", "", nil, []string{"slow query", "tune query"})
 	b := mkSkill("pr", "", nil, []string{"review pr"})

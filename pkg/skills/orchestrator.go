@@ -376,6 +376,15 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 // in-flight work. This matches the design's "sticky-while-open-tasks"
 // guarantee from the skills overhaul.
 func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType, triggerValue string, confidence float64) *ActiveSkill {
+	return o.ActivateSkillWithArgs(sessionID, skill, triggerType, triggerValue, "", confidence)
+}
+
+// ActivateSkillWithArgs is ActivateSkill plus the free-text arguments the user
+// supplied after a slash command on this turn. The args are stored on the
+// ActiveSkill and injected into the skill's LLM context exactly once by
+// FormatActiveSkillsForLLM, so a skill invoked as "/profile demo.table" sees
+// "demo.table" and does not re-ask for it.
+func (o *Orchestrator) ActivateSkillWithArgs(sessionID string, skill *Skill, triggerType, triggerValue, triggerArgs string, confidence float64) *ActiveSkill {
 	_, span := o.tracer.StartSpan(context.Background(), "skills.orchestrator.activate_skill")
 	defer o.tracer.EndSpan(span)
 
@@ -383,6 +392,7 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 		Skill:        skill,
 		TriggerType:  triggerType,
 		TriggerValue: triggerValue,
+		TriggerArgs:  triggerArgs,
 		Confidence:   confidence,
 		ActivatedAt:  time.Now(),
 		SessionID:    sessionID,
@@ -571,8 +581,16 @@ func (o *Orchestrator) FormatActiveSkillsForLLM(sessionID string, maxTokens int)
 	var sb strings.Builder
 	included := 0
 
+	// Names of skills whose one-shot invocation args were emitted this call.
+	// We clear them afterwards (under the write lock) so a slash skill that
+	// stays active across later turns does not re-inject stale arguments.
+	var emittedArgs []string
+
 	for _, a := range active {
 		formatted := a.Skill.FormatForLLM()
+		if a.TriggerArgs != "" {
+			formatted += formatInvocationArgs(a.TriggerArgs)
+		}
 		fLen := len(formatted)
 
 		// Add separator overhead.
@@ -591,9 +609,39 @@ func (o *Orchestrator) FormatActiveSkillsForLLM(sessionID string, maxTokens int)
 		sb.WriteString(formatted)
 		usedChars += fLen + separatorLen
 		included++
+		if a.TriggerArgs != "" {
+			emittedArgs = append(emittedArgs, a.Skill.Name)
+		}
+	}
+
+	// Inject-once: clear the args we just surfaced on the canonical records.
+	if len(emittedArgs) > 0 {
+		clear := make(map[string]bool, len(emittedArgs))
+		for _, n := range emittedArgs {
+			clear[n] = true
+		}
+		o.mu.Lock()
+		for _, as := range o.activeSessions[sessionID] {
+			if as != nil && as.Skill != nil && clear[as.Skill.Name] {
+				as.TriggerArgs = ""
+			}
+		}
+		o.mu.Unlock()
 	}
 
 	return sb.String()
+}
+
+// formatInvocationArgs renders the free-text the user typed after a slash
+// command into a block appended to the skill body, instructing the model to
+// use the supplied arguments instead of re-asking for them.
+func formatInvocationArgs(args string) string {
+	return "\n\n### Invocation Request\n" +
+		"The user invoked this skill with the following request:\n\n" +
+		args + "\n\n" +
+		"Use any values provided above (database/table/column names, IDs, " +
+		"parameters, options) directly. Do NOT ask the user for information " +
+		"that is already present in this request.\n"
 }
 
 // CleanupSession removes all state for a session.
