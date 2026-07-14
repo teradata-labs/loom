@@ -4,7 +4,7 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.3.0
+**Version**: v1.3.0 (planned — see status indicators below)
 
 ---
 
@@ -94,22 +94,14 @@ cmd/looms/config.go   ✅  ObservabilityConfig.Provider = "hawk, otlp" (comment 
 ### What Is Missing
 
 ```
-pkg/observability/otel.go         ✅  OTelTracer implementation
-pkg/observability/otel_attrs.go   ✅  Loom AttrLLM* → gen_ai.* translation map
-pkg/observability/otel_config.go  ✅  OTelConfig struct + env var loading
-                                      (incl. LOOM_OTLP_INSECURE resolution)
-pkg/observability/otel_test.go    ✅  Unit tests with behavioral assertions
-                                      (export count checks, LOOM_OTLP_INSECURE
-                                       env resolution, errcheck-safe Shutdown)
+pkg/observability/otel.go         📋  OTelTracer implementation
+pkg/observability/otel_attrs.go   📋  Loom AttrLLM* → gen_ai.* translation map
+pkg/observability/otel_config.go  📋  OTelConfig struct + env var loading
+pkg/observability/otel_test.go    📋  Unit tests (in-memory OTel exporter)
 
-cmd/looms/config.go               ✅  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
-cmd/looms/cmd_serve.go            ✅  case "otel": branch in tracer switch
-pkg/observability/auto_select.go  ✅  TracerModeOTel constant + selection logic
-                                      (auto mode reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT /
-                                       LOOM_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_TRACES_HEADERS /
-                                       LOOM_OTLP_HEADERS, LOOM_OTLP_INSECURE, OTEL_SERVICE_NAME)
-pkg/agent/agent.go                ✅  message.preview / response.preview truncated to 200 runes
-                                      (privacy + payload size guard on Chat / ChatWithProgress)
+cmd/looms/config.go               📋  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
+cmd/looms/cmd_serve.go            📋  case "otel": branch in tracer switch
+pkg/observability/auto_select.go  📋  TracerModeOTel constant + selection logic
 ```
 
 ### Key Insight: SpanExporter Already Exists
@@ -208,7 +200,7 @@ The `OTelTracer` owns an OTel `TracerProvider` internally. On `StartSpan`, it cr
 
 **Responsibility**: Implement the `Tracer` interface, bridging Loom's span lifecycle to the OTel SDK while preserving Loom's context propagation model.
 
-**File**: `pkg/observability/otel.go`
+**File**: `pkg/observability/otel.go` (📋 to be created)
 
 **Core Structure**:
 ```
@@ -261,8 +253,7 @@ NewOTelTracer(cfg OTelConfig):
 ∀ span s: s.SpanID ∈ activeSpans during [StartSpan, EndSpan]
 ∀ span s: activeSpans[s.SpanID] deleted after EndSpan
 OTel span.TraceID = Loom span.TraceID (W3C hex format)
-OTel span.ParentSpanID = parent OTel span from activeSpans (in-process)
-OTel span.ParentSpanID derived from Loom span.ParentID (cross-process fallback only)
+OTel span.ParentSpanID = Loom span.ParentID (when non-empty)
 ```
 
 
@@ -270,7 +261,7 @@ OTel span.ParentSpanID derived from Loom span.ParentID (cross-process fallback o
 
 **Responsibility**: Map Loom's internal attribute constants (`AttrLLM*`, `AttrTool*`, etc.) to OTel's GenAI semantic conventions (`gen_ai.*`). This layer is what makes traces render correctly in Opik, Grafana, and other backends without custom configuration.
 
-**File**: `pkg/observability/otel_attrs.go`
+**File**: `pkg/observability/otel_attrs.go` (📋 to be created)
 
 **Translation is applied at `EndSpan` time**, not `StartSpan` — attributes are often set by calling code between the two, so translation must happen on completion.
 
@@ -295,7 +286,7 @@ default        → SpanKindInternal
 
 **Responsibility**: Carry all configuration required to construct an `OTelTracer` and resolve from environment variables.
 
-**File**: `pkg/observability/otel_config.go`
+**File**: `pkg/observability/otel_config.go` (📋 to be created)
 
 ```
 OTelConfig

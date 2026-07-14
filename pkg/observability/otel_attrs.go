@@ -29,9 +29,7 @@ import (
 //   - OTel Exceptions: https://opentelemetry.io/docs/specs/semconv/exceptions/
 //   - OTel RPC (for MCP): https://opentelemetry.io/docs/specs/semconv/rpc/
 //   - Opik-specific: gen_ai.prompt / gen_ai.completion drive the Input/Output columns
-//
-//nolint:gochecknoglobals
-var loomToGenAI = map[string]string{ // #nosec G101 -- map values are OTel attribute name strings, not credentials
+var loomToGenAI = map[string]string{ //nolint:gochecknoglobals
 	// LLM identity (REQUIRED by OTel GenAI spec)
 	"llm.provider":  "gen_ai.system",
 	"llm.model":     "gen_ai.request.model",

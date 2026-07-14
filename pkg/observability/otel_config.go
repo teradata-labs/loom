@@ -43,12 +43,7 @@ type OTelConfig struct {
 	// Env: OTEL_EXPORTER_OTLP_TRACES_HEADERS (format: "key=val,key2=val2")
 	Headers map[string]string
 
-	// Insecure forces plain HTTP transport for the OTLP exporter (i.e. the
-	// connection uses http:// even if the endpoint URL starts with https://).
-	// This is NOT equivalent to disabling TLS certificate verification.
-	// Use for local development against plain-HTTP collectors (Jaeger, Opik
-	// running on localhost).  For https:// endpoints with self-signed certs,
-	// use a custom TLS config instead.
+	// Insecure disables TLS certificate verification. Use for local dev only.
 	// Env: LOOM_OTLP_INSECURE
 	Insecure bool
 
@@ -76,40 +71,18 @@ type OTelConfig struct {
 	SpanFilter SpanFilterConfig
 }
 
-// resolveOTLPEndpointEnv returns the OTLP traces endpoint from environment
-// variables, applying OTel-spec semantics:
-//   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: signal-specific; used verbatim.
-//   - OTEL_EXPORTER_OTLP_ENDPOINT: base URL per spec; /v1/traces is appended.
-//   - LOOM_OTLP_ENDPOINT: Loom-specific fallback; used verbatim.
-func resolveOTLPEndpointEnv() string {
-	if v := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
-		return v
-	}
-	if v := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
-		return strings.TrimRight(v, "/") + "/v1/traces"
-	}
-	return os.Getenv("LOOM_OTLP_ENDPOINT")
-}
-
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = resolveOTLPEndpointEnv()
+		cfg.Endpoint = firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT")
 	}
 	if len(cfg.Headers) == 0 {
-		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
+		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
 	}
-	if !cfg.Insecure {
-		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"
-	}
 	if cfg.ServiceName == "" {
-		if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
-			cfg.ServiceName = name
-		} else {
-			cfg.ServiceName = "loom" // safe default: non-empty service.name in every exported span
-		}
+		cfg.ServiceName = firstEnv("OTEL_SERVICE_NAME", "")
 	}
 	if cfg.ServiceVersion == "" {
 		cfg.ServiceVersion = os.Getenv("OTEL_SERVICE_VERSION")
