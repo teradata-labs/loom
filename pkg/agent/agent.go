@@ -1706,20 +1706,6 @@ func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType 
 	return fmt.Sprintf("Error in %s: %s", category, errorType)
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes
-// (message.preview / response.preview). Capping prevents unbounded trace payload sizes
-// and avoids leaking full conversation content into observability backends.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // Chat processes a user message and returns a response.
 // This is the main entry point for conversational interaction.
 func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) (*Response, error) {
@@ -1985,7 +1971,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncatePreview(response.Content))
+	span.SetAttribute("response.preview", response.Content)
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
