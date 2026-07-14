@@ -35,6 +35,9 @@ const (
 
 	// TracerModeNone disables tracing
 	TracerModeNone TracerMode = "none"
+
+	// TracerModeOTel exports traces via OTLP HTTP to any compatible backend.
+	TracerModeOTel TracerMode = "otel"
 )
 
 // AutoSelectConfig provides configuration for automatic tracer selection
@@ -57,6 +60,18 @@ type AutoSelectConfig struct {
 
 	// EmbeddedSQLitePath: Path to SQLite database (required if EmbeddedStorageType="sqlite")
 	EmbeddedSQLitePath string
+
+	// OTLPEndpoint is the OTLP HTTP endpoint URL (for otel mode).
+	OTLPEndpoint string
+
+	// OTLPHeaders are HTTP headers sent with OTLP requests (e.g. auth tokens).
+	OTLPHeaders map[string]string
+
+	// OTLPInsecure disables TLS verification (local dev only).
+	OTLPInsecure bool
+
+	// ServiceName populates resource attribute service.name in otel mode.
+	ServiceName string
 
 	// Logger for tracer operations
 	Logger *zap.Logger
@@ -91,10 +106,18 @@ func NewAutoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 		return newEmbeddedTracer(config)
 	case TracerModeNone:
 		return NewNoOpTracer(), nil
+	case TracerModeOTel:
+		return NewOTelTracer(OTelConfig{
+			Endpoint:    config.OTLPEndpoint,
+			Headers:     config.OTLPHeaders,
+			Insecure:    config.OTLPInsecure,
+			ServiceName: config.ServiceName,
+			Privacy:     safePrivacy(config.Privacy),
+		})
 	case TracerModeAuto:
 		return autoSelectTracer(config)
 	default:
-		return nil, fmt.Errorf("unknown tracer mode: %s (supported: auto, service, embedded, none)", config.Mode)
+		return nil, fmt.Errorf("unknown tracer mode: %s (supported: auto, service, embedded, none, otel)", config.Mode)
 	}
 }
 
@@ -106,6 +129,21 @@ func autoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 	logger := config.Logger
 	if logger == nil {
 		logger, _ = zap.NewProduction()
+	}
+
+	// OTel takes priority over service/embedded when endpoint is configured.
+	if isOTelAvailable(config) {
+		logger.Info("auto-selecting otel tracer",
+			zap.String("endpoint", config.OTLPEndpoint),
+			zap.String("reason", "otlp_endpoint configured"),
+		)
+		return NewOTelTracer(OTelConfig{
+			Endpoint:    config.OTLPEndpoint,
+			Headers:     config.OTLPHeaders,
+			Insecure:    config.OTLPInsecure,
+			ServiceName: config.ServiceName,
+			Privacy:     safePrivacy(config.Privacy),
+		})
 	}
 
 	// No tracers available
@@ -150,9 +188,22 @@ func autoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 	return newServiceTracer(config)
 }
 
+// isOTelAvailable checks if otel mode can be used
+func isOTelAvailable(config *AutoSelectConfig) bool {
+	return config.OTLPEndpoint != ""
+}
+
 // isServiceAvailable checks if service mode can be used
 func isServiceAvailable(config *AutoSelectConfig) bool {
 	return config.HawkURL != ""
+}
+
+// safePrivacy dereferences a *PrivacyConfig, returning zero value if nil.
+func safePrivacy(p *PrivacyConfig) PrivacyConfig {
+	if p == nil {
+		return PrivacyConfig{}
+	}
+	return *p
 }
 
 // isEmbeddedAvailable checks if embedded mode can be used

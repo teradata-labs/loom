@@ -1466,7 +1466,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	span.SetAttribute("message.preview", userMessage)
 	a.mu.RLock()
 	currentLLM := a.llm
 	a.mu.RUnlock()
@@ -1597,7 +1597,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+	span.SetAttribute("response.preview", response.Content)
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -1660,7 +1660,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	span.SetAttribute("message.preview", userMessage)
 	a.mu.RLock()
 	currentLLM := a.llm
 	a.mu.RUnlock()
@@ -1806,7 +1806,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+	span.SetAttribute("response.preview", response.Content)
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {

@@ -16,6 +16,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
@@ -79,6 +80,7 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	// Set span attributes - basic info
 	span.SetAttribute(observability.AttrLLMProvider, p.provider.Name())
 	span.SetAttribute(observability.AttrLLMModel, p.provider.Model())
+	span.SetAttribute("llm.operation", "chat") // gen_ai.operation.name — required by OTel GenAI spec
 
 	// Capture request details
 	span.SetAttribute("llm.messages.count", len(messages))
@@ -91,6 +93,11 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 			toolNames[i] = tool.Name()
 		}
 		span.SetAttribute("llm.tools.names", toolNames)
+	}
+
+	// Last user message — maps to gen_ai.prompt → Opik input column.
+	if preview := lastUserMessagePreview(messages); preview != "" {
+		span.SetAttribute("message.preview", preview)
 	}
 
 	// Record event: LLM call started
@@ -162,6 +169,11 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 			toolCallNames[i] = tc.Name
 		}
 		span.SetAttribute("llm.tool_calls.names", toolCallNames)
+	}
+
+	// Response content — maps to gen_ai.completion → Opik output column.
+	if resp.Content != "" {
+		span.SetAttribute("response.preview", resp.Content)
 	}
 
 	// Capture content length (for analysis)
@@ -259,6 +271,7 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	// Set span attributes - basic info
 	span.SetAttribute(observability.AttrLLMProvider, p.provider.Name())
 	span.SetAttribute(observability.AttrLLMModel, p.provider.Model())
+	span.SetAttribute("llm.operation", "chat") // gen_ai.operation.name — required by OTel GenAI spec
 	span.SetAttribute("llm.streaming", true)
 
 	// Capture request details
@@ -272,6 +285,11 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 			toolNames[i] = tool.Name()
 		}
 		span.SetAttribute("llm.tools.names", toolNames)
+	}
+
+	// Last user message — maps to gen_ai.prompt → Opik input column.
+	if preview := lastUserMessagePreview(messages); preview != "" {
+		span.SetAttribute("message.preview", preview)
 	}
 
 	// Record event: streaming started
@@ -387,6 +405,11 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 		span.SetAttribute("llm.tool_calls.names", toolCallNames)
 	}
 
+	// Response content — maps to gen_ai.completion → Opik output column.
+	if resp.Content != "" {
+		span.SetAttribute("response.preview", resp.Content)
+	}
+
 	// Capture content length (for analysis)
 	span.SetAttribute("llm.content.length", len(resp.Content))
 
@@ -465,6 +488,28 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	})
 
 	return resp, nil
+}
+
+// lastUserMessagePreview returns the full content of the last user message.
+// For multi-modal messages it concatenates text blocks, skipping image blocks.
+func lastUserMessagePreview(messages []llmtypes.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role != "user" {
+			continue
+		}
+		if m.Content != "" {
+			return m.Content
+		}
+		var parts []string
+		for _, b := range m.ContentBlocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
 }
 
 // Ensure InstrumentedProvider implements LLMProvider interface

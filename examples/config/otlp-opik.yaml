@@ -1,0 +1,71 @@
+# Loom + Opik OTLP Test Configuration (Bedrock)
+#
+# Usage (AWS credentials via environment):
+#   export AWS_ACCESS_KEY_ID="AKIA..."
+#   export AWS_SECRET_ACCESS_KEY="..."
+#   export AWS_SESSION_TOKEN="..."          # if using temporary credentials
+#   looms serve --config examples/config/looms-opik-test.yaml
+#
+# Usage (AWS named profile):
+#   Set llm.bedrock_profile below, then run without exporting AWS_* vars.
+#
+# Assumes Opik is running locally on the default port 5173.
+
+server:
+  port: 60051
+  host: 127.0.0.1
+  enable_reflection: true
+
+llm:
+  provider: bedrock
+  bedrock_region: us-west-2
+  # Cross-region inference profile — routes to the nearest available region.
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # Uncomment to use a named AWS profile instead of env vars:
+  # bedrock_profile: default
+  temperature: 1.0
+  max_tokens: 4096
+
+observability:
+  enabled: true
+  mode: otel
+
+  # Self-hosted Opik endpoint.
+  # Replace <opik-host> with your Opik instance hostname or IP.
+  # Default Docker port is 5173.
+  otlp_endpoint: "http://localhost:5173/api/v1/private/otel/v1/traces"
+
+  # Self-hosted Opik does not require an auth header by default.
+  # If you've enabled API key auth on your instance, uncomment and set via env:
+  #   export LOOM_OBSERVABILITY_OTLP_HEADERS="Authorization=Bearer <your-opik-api-key>"
+  # Or pin to a specific project:
+  # otlp_headers:
+  #   Opik-Project-Name: "loom-dev"
+
+  # Required: self-hosted runs without TLS by default.
+  otlp_insecure: true
+
+  # Only export LLM/agent spans — suppresses startup, migration, and storage spans.
+  # Remove or leave empty to export everything.
+  otlp_include_spans:
+    - "llm."
+    - "agent."
+    - "tool."
+    - "backend."
+    - "mcp."
+
+storage:
+  backend: sqlite
+  sqlite:
+    path: /tmp/loom-opik-test.db
+
+logging:
+  level: info
+  format: text
+
+tools:
+  permissions:
+    yolo: true
+
+# Agents are loaded from $LOOM_DATA_DIR/agents/ (default: ~/.loom/agents/).
+# To add a test agent, create ~/.loom/agents/test-agent.yaml with kind: Agent.

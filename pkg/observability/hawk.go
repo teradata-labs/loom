@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -338,13 +337,6 @@ func (t *HawkTracer) flushNow() error {
 	return fmt.Errorf("hawk export failed after %d attempts: %w", t.config.MaxRetries+1, lastErr)
 }
 
-// PII redaction patterns (compiled once at package init)
-var (
-	emailPattern      = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
-	phonePattern      = regexp.MustCompile(`\b\d{3}[-.]?\d{3}[-.]?\d{4}\b`)
-	ssnPattern        = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
-	creditCardPattern = regexp.MustCompile(`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`)
-)
 
 // redact applies privacy rules to span before export.
 // This removes sensitive data (credentials, PII) while preserving debugging utility.
