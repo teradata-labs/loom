@@ -17,6 +17,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -132,18 +133,22 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Logger:  m.logger.With(zap.String("server", name)),
 		})
 	case "streamable-http":
-		// Streamable HTTP transport (MCP 2025-03-26 spec)
+		// Streamable HTTP transport (MCP 2025-03-26 spec).
+		// Expand ${VAR} references in header values so tokens stored as env vars
+		// at deploy time (e.g. MCP_SERVERNAME_AUTHORIZATION) resolve at pod startup.
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
 			Endpoint:         config.URL,
-			Headers:          config.Headers,
+			Headers:          expandEnvHeaders(config.Headers),
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
 			Logger:           m.logger.With(zap.String("server", name)),
 		})
 	case "http", "sse":
-		// Legacy HTTP/SSE transport (deprecated, backwards compatibility)
+		// Legacy HTTP/SSE transport (deprecated, backwards compatibility).
+		// Expand ${VAR} references and forward headers — both were missing previously.
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.URL,
+			Headers:  expandEnvHeaders(config.Headers),
 			Logger:   m.logger.With(zap.String("server", name)),
 		})
 	default:
@@ -311,6 +316,23 @@ func (m *Manager) ServerNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// expandEnvHeaders returns a copy of the header map with every value run through
+// os.ExpandEnv so that ${VAR} and $VAR references resolve to the actual pod
+// environment variable values at startup time. This enables tera-cloud to write
+// env var references (e.g. ${MCP_MYSERVER_AUTHORIZATION}) into looms.yaml instead
+// of baking literal bearer tokens into the artifact, which would become stale when
+// tokens rotate. Returns nil unchanged.
+func expandEnvHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	expanded := make(map[string]string, len(headers))
+	for k, v := range headers {
+		expanded[k] = os.ExpandEnv(v)
+	}
+	return expanded
 }
 
 // IsHealthy checks if a server is healthy by pinging it.
