@@ -1,7 +1,7 @@
 
 # SQLite Best Practices Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Best practices for SQLite usage in Loom - session storage, HITL persistence, reference storage, and performance optimization.
 

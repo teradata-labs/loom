@@ -1,8 +1,8 @@
 # Skills Overhaul
 
-**Status:** ✅ Implemented (all 13 phases + deferred-work A, B, C; one remaining gap is `mcp_servers` activation — see Limitations)
-**Branch:** `feat/skills-overhaul`
-**Version target:** post-v1.2.0
+**Version:** v1.3.0
+**Status:** ✅ Implemented (all 13 phases + deferred-work A–E; remaining gaps are `mcp_servers` activation and registry-side hot-reload wiring — see Limitations)
+**History:** landed on `feat/skills-overhaul`, merged to `main`
 
 This document describes the three-part overhaul of the Loom skills subsystem
 introduced by the skills overhaul branch. It supersedes the skill section
@@ -324,11 +324,14 @@ template service (`/template skill-health-audit`).
   author intent inside the skill prompt; the LLM still chooses tool
   invocation order. There is no mechanism to enforce ordering at the
   agent layer, and that's intentional — order is a runtime decision.
-- 📋 **Disk persistence of the skill index.** The registry currently uses
-  `MemoryStore` for the router tree. `SQLStore` is wired-up-ready (Phase 4
-  migrations exist on both backends) for the future case where an
-  enterprise catalog is large enough that re-summarising at every process
-  start outweighs disk I/O.
+- ✅ **Disk persistence of the skill index.** The registry wires
+  `SQLStore` (SQLite dialect) onto the router when its DB handle is
+  non-nil: `SkillsWiringDeps.IndexStoreDB` is set to `r.db`
+  (`pkg/agent/registry.go:2224`), and `NewSQLStore` is constructed at
+  `registry.go:2474`. Cold start tries `store.LatestIndex` first for an
+  instant `SetTree` before rebuilding (see Deferred A). When the DB
+  handle is nil, persistence is skipped and the router runs from an
+  in-memory tree (re-summarised each boot).
 - 📋 **HotReloadHandler not auto-wired in registry.** `pkg/skills/index.HotReloadHandler`
   is implemented and tested (Phase 10), but the registry does not yet
   install it on the skill library's hot-reloader. This is a one-line
@@ -362,9 +365,11 @@ controls baked into the design:
   (sessionID, msgHash, bindingsHash). 5-minute TTL. Repeated messages on
   one session hit the cache after the first call.
 - **Slash command bypass.** `/sql-optimize` skips the router entirely.
-- **Optional `router_model_override`.** Field exists in `SkillsConfig`
+- **Optional `router_model_override`.** Field on `SkillsConfig`
   for pointing routing at a smaller/cheaper model (Haiku, local Ollama).
-  📋 Not yet honored by the registry.
+  ✅ Honored by the registry: `BuildSkillsOptions` resolves the named
+  provider from the provider pool (`pkg/agent/registry.go:2430`), falling
+  back with a Warn when the name is absent. (See Deferred A.)
 
 Estimated worst case at heavy use with Sonnet-class routing: ~$0.30 per
 agent per day. Acceptable for the discovery quality gain at scale.

@@ -3,7 +3,7 @@
 
 Reference for connecting Loom to the HuggingFace Inference API.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -132,6 +132,8 @@ HuggingFace access token. See [Authentication](#authentication) for setup method
 **Required**: No
 
 The HuggingFace model identifier. Must be the full `org/model-name` format as shown on the HuggingFace model page (e.g., `meta-llama/Meta-Llama-3.1-8B-Instruct`).
+
+**Note**: The default differs slightly by code path. The HuggingFace client's own default (`pkg/llm/huggingface/client.go`) is `meta-llama/Meta-Llama-3.1-70B-Instruct`, while the provider factory's fallback when no model is configured (`pkg/llm/factory/factory.go`) is `meta-llama/Llama-3.1-70B-Instruct` (no `Meta-` prefix). Both are treated as the same model for cost estimation ($0.80/$0.80). HuggingFace is not in the static model catalog — any model on the Inference API that speaks the OpenAI chat-completions format can be used.
 
 Browse available models at [huggingface.co/models](https://huggingface.co/models). The model must support the chat completions API format.
 

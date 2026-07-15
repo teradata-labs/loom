@@ -5,7 +5,7 @@ Architecture of Loom's 5-layer segmented memory system with profile-based adapti
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents

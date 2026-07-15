@@ -1,7 +1,7 @@
 
 # MCP Integration Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ Connect Loom agents to MCP (Model Context Protocol) servers for file access, dat
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Node.js (for npx-based MCP servers) or custom MCP server binary
 - API key configured: `looms config set-key anthropic_api_key`
 
@@ -213,8 +213,11 @@ looms config set mcp.servers.myserver.enabled true
 looms config set mcp.servers.myserver.enabled false
 ```
 
-> **Note:** Servers default to disabled (`enabled: false`) for safety.
-> You must explicitly set `enabled: true` for each server you want to use.
+> **Note:** A server listed under `mcp.servers` in `looms.yaml` defaults to
+> `enabled: true` — listing it implies you want it running. Set
+> `enabled: false` explicitly to keep a configured server from starting.
+> (When building a `manager.ServerConfig` programmatically in Go, the zero
+> value is `false`, so set `Enabled: true` explicitly there.)
 
 
 ## Common Tasks

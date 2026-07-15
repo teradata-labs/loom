@@ -144,7 +144,12 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		).Scan(&sessionName, &agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
 		if scanErr != nil {
 			if scanErr == pgx.ErrNoRows {
-				s.logger.Warn("session not found (possible RLS denial)",
+				// Benign on the common path: a client-supplied session_id is looked
+				// up before it exists, then GetOrCreateSession creates it. Logged at
+				// Debug (not Warn) so it doesn't read as an RLS alarm on every new
+				// session. A genuine RLS/user_id mismatch surfaces as repeated misses
+				// for an id that was created — visible as functional failures, not here.
+				s.logger.Debug("session not found on load; will be created if new",
 					zap.String("session_id", sessionID),
 					zap.String("operation", "LoadSession"),
 				)

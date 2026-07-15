@@ -2,7 +2,7 @@
 
 How the MCP Apps system compiles declarative JSON specs into secure, standalone HTML documents.
 
-**Status**: ✅ Implemented (v1.2.0)
+**Status**: ✅ Implemented (v1.3.0)
 
 ## Table of Contents
 
@@ -83,7 +83,7 @@ The registry provides:
 
 ### App Template (`pkg/mcp/apps/html/app-template.html`)
 
-An embedded HTML template (~1000 lines of CSS) that provides:
+An embedded HTML template (~1300 lines, mostly CSS) that provides:
 - Tokyonight Dark theme with 6 named colors
 - CSS for all 14 component types
 - Responsive grid layouts
@@ -91,7 +91,7 @@ An embedded HTML template (~1000 lines of CSS) that provides:
 
 ### Runtime (`pkg/mcp/apps/html/runtime.js`)
 
-An embedded JavaScript file (~1700 lines) that:
+An embedded JavaScript file (~2800 lines) that:
 - Parses the spec from `<script type="application/json" id="app-spec">`
 - Renders components using `document.createElement` + `textContent` (no `innerHTML`)
 - Creates Chart.js charts (loaded via CDN with SRI hash)
@@ -187,7 +187,7 @@ All apps use the `ui://loom/<name>` URI scheme. The short name is extracted from
 ### Output Sanitization
 
 1. **HTML entity escaping**: `<`, `>`, `&` in spec JSON replaced with `\u003c`, `\u003e`, `\u0026` before template embedding
-2. **Content-Security-Policy**: `default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'`
+2. **Content-Security-Policy**: `default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; connect-src 'none'; form-action 'none';`
 3. **Chart.js SRI**: Loaded from `cdn.jsdelivr.net` with a pinned Subresource Integrity hash (v4.4.7)
 
 ### Runtime Safety

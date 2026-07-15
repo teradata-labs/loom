@@ -1,7 +1,7 @@
 
 # Weaver Usage Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented
 
 > **What's New in v1.2.0**:
@@ -52,7 +52,7 @@ The Weaver creates complete agent configurations from natural language requireme
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - LLM provider configured (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, or HuggingFace)
 - Running Loom server: `bin/looms serve`
 

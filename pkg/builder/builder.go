@@ -80,7 +80,7 @@ func (b *AgentBuilder) WithAnthropicLLM(apiKey string) *AgentBuilder {
 
 // WithBedrockLLM configures AWS Bedrock as the LLM provider.
 func (b *AgentBuilder) WithBedrockLLM(region string) *AgentBuilder {
-	client, err := bedrock.NewClient(bedrock.Config{
+	client, err := bedrock.NewClientForModel(bedrock.Config{
 		Region:  region,
 		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	})

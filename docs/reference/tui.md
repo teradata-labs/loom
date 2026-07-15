@@ -1,7 +1,7 @@
 
 # Terminal UI Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for Loom's interactive terminal user interface - a Bubbletea-based chat client for real-time agent conversations.
 

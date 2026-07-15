@@ -1,7 +1,7 @@
 
 # Judge Streaming Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -34,7 +34,7 @@ Get real-time progress updates during long-running judge evaluations, useful for
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - At least one judge registered
 - Loom server running: `looms serve`
 

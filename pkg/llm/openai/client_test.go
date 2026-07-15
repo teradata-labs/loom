@@ -540,8 +540,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "gpt-5",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.007, // (1000 * 2.5 + 500 * 10) / 1M = 0.0075
-			wantMax:      0.008,
+			wantMin:      0.006240, // (1000 * 1.25 + 500 * 10) / 1M = 0.00625 (catalog)
+			wantMax:      0.006260,
 		},
 		{
 			name:         "gpt-5-mini",
@@ -580,8 +580,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "o3",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.029, // (1000 * 10.0 + 500 * 40.0) / 1M = 0.03
-			wantMax:      0.031,
+			wantMin:      0.005990, // (1000 * 2.0 + 500 * 8.0) / 1M = 0.006 (catalog)
+			wantMax:      0.006010,
 		},
 		{
 			name:         "o3-mini",

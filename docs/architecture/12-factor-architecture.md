@@ -4,7 +4,7 @@ Analysis of Loom's adherence to 12-factor app principles for cloud-native LLM ag
 
 **Target Audience**: Architects, academics, platform engineers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ---
 
@@ -771,7 +771,7 @@ func (e *ToolExecutor) ExecuteConcurrent(ctx context.Context, tools []Tool) []Re
 }
 ```
 
-**Multi-Agent Workflow Patterns** (6 orchestration patterns):
+**Multi-Agent Workflow Patterns** (9 orchestration patterns, `proto/loom/v1/orchestration.proto` `WorkflowPattern` oneof):
 
 1. **Pipeline**: Sequential execution, output flows to next stage
 2. **Parallel**: Independent tasks execute concurrently
@@ -779,6 +779,9 @@ func (e *ToolExecutor) ExecuteConcurrent(ctx context.Context, tools []Tool) []Re
 4. **Debate**: Agents argue different perspectives
 5. **Conditional**: Route based on agent decisions
 6. **Swarm**: Dynamic agent collaboration
+7. **Pair Programming**: Two agents collaborate on code
+8. **Teacher-Student**: Knowledge transfer between agents
+9. **Iterative**: Loop-based refinement workflow
 
 **Configuration**:
 
@@ -802,7 +805,7 @@ server:
 go test -tags fts5 -race ./...
 
 # Results:
-# 2462+ test functions across 342 test files
+# 3,676+ test functions across 397 test files
 # 0 race conditions detected
 # Critical packages: patterns 81.7%, communication 77.9%, fabric 79.2%
 ```
@@ -835,7 +838,7 @@ go test -tags fts5 -race ./...
 Startup Breakdown:
   Binary startup:        <100ms
   SQLite init (WAL):     <50ms
-  Pattern loading:       89-143ms (104 patterns, 80KB YAML)
+  Pattern loading:       89-143ms (158 patterns, ~80KB+ YAML)
   Agent initialization:  <50ms
   Total:                 <200ms
 ```
@@ -1479,7 +1482,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Breakdown**:
 - Binary startup: <100ms (Go compiled executable)
 - SQLite init (WAL): <50ms
-- Pattern loading: 89-143ms (104 patterns, 80KB YAML)
+- Pattern loading: 89-143ms (158 patterns, ~80KB+ YAML)
 - Agent initialization: <50ms
 
 **Warm Start** (cached patterns): <150ms
@@ -1493,7 +1496,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Pattern Hot-Reload**: 89-143ms (p50-p99)
 
 **Measurement Conditions**:
-- Pattern library size: 104 patterns (11 libraries)
+- Pattern library size at time of measurement: ~104 patterns (library has since grown to 158)
 - Total pattern bytes: ~80KB YAML
 - Test hardware: M2 MacBook Pro
 
@@ -1518,7 +1521,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 - Single agent: ~100 requests/second (LLM latency-bound)
 - Multi-agent: ~1000 requests/second (10 agents, parallel)
 
-**Race Conditions**: 0 detected (2462+ test functions across 342 test files with `-race` flag)
+**Race Conditions**: 0 detected (3,676+ test functions across 397 test files with `-race` flag)
 
 **Critical Packages** (test coverage):
 - patterns: 81.7%
@@ -1710,7 +1713,7 @@ type PrivacyConfig struct {
 
 ---
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Last Updated**: 2026-01-14
 

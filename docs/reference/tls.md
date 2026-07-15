@@ -1,7 +1,7 @@
 
 # TLS/HTTPS Configuration Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Reference for TLS/HTTPS configuration in Loom -- securing gRPC and HTTP connections with manual certificates, Let's Encrypt, self-signed certificates, and mutual TLS (mTLS).
 

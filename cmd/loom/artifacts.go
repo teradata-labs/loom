@@ -172,13 +172,7 @@ func init() {
 
 func runArtifactsListCommand(cmd *cobra.Command, args []string) {
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
@@ -255,13 +249,7 @@ func runArtifactsSearchCommand(cmd *cobra.Command, args []string) {
 	query := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -325,13 +313,7 @@ func runArtifactsShowCommand(cmd *cobra.Command, args []string) {
 	idOrName := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -414,13 +396,7 @@ func runArtifactsUploadCommand(cmd *cobra.Command, args []string) {
 	}
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -452,13 +428,7 @@ func runArtifactsDownloadCommand(cmd *cobra.Command, args []string) {
 	idOrName := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -517,13 +487,7 @@ func runArtifactsDeleteCommand(cmd *cobra.Command, args []string) {
 	idOrName := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -564,13 +528,7 @@ func runArtifactsDeleteCommand(cmd *cobra.Command, args []string) {
 
 func runArtifactsStatsCommand(cmd *cobra.Command, args []string) {
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

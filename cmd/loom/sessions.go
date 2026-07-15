@@ -84,13 +84,7 @@ func init() {
 
 func runSessionsListCommand(cmd *cobra.Command, args []string) {
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
@@ -163,13 +157,7 @@ func runSessionsShowCommand(cmd *cobra.Command, args []string) {
 	sessionID := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -228,13 +216,7 @@ func runSessionsDeleteCommand(cmd *cobra.Command, args []string) {
 	sessionID := args[0]
 
 	// Connect to server
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
