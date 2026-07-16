@@ -339,6 +339,11 @@ type LLMConfig struct {
 	HuggingFaceToken string `mapstructure:"huggingface_token"` // From CLI/env/keyring only
 	HuggingFaceModel string `mapstructure:"huggingface_model"`
 
+	// LiteLLM-specific
+	LiteLLMEndpoint string `mapstructure:"litellm_endpoint"`
+	LiteLLMAPIKey   string `mapstructure:"litellm_api_key"` // From CLI/env/keyring only
+	LiteLLMModel    string `mapstructure:"litellm_model"`
+
 	// Common generation parameters
 	Temperature float64 `mapstructure:"temperature"`
 	MaxTokens   int     `mapstructure:"max_tokens"`
@@ -1630,8 +1635,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("huggingface token is required (set LOOM_LLM_HUGGINGFACE_TOKEN, HUGGINGFACE_API_KEY, or save to keyring with 'looms config set-key huggingface_token')")
 		}
 
+	case "litellm":
+		// endpoint and API key are optional — defaults apply
+
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, or huggingface)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
 	// Validate storage config
@@ -1838,6 +1846,11 @@ llm:
   # HuggingFace configuration
   huggingface_model: meta-llama/Meta-Llama-3.1-70B-Instruct
   # huggingface_token: set via keyring (looms config set-key huggingface_token)
+
+  # LiteLLM proxy configuration
+  # litellm_endpoint: http://litellm:4000/v1/chat/completions
+  # litellm_model: anthropic/claude-sonnet-4-5-20250929
+  # litellm_api_key: set via keyring (looms config set-key litellm_api_key)
 
   # Common generation parameters (apply to all providers)
   temperature: 1.0
