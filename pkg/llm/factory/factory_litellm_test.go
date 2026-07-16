@@ -14,7 +14,6 @@
 package factory
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,9 +75,8 @@ func TestCreateLiteLLMProvider_FromEnv(t *testing.T) {
 // TestCreateLiteLLMProvider_BaseURLEnvFallback verifies LITELLM_BASE_URL is
 // used when LITELLM_ENDPOINT is not set.
 func TestCreateLiteLLMProvider_BaseURLEnvFallback(t *testing.T) {
-	os.Unsetenv("LITELLM_ENDPOINT")
+	t.Setenv("LITELLM_ENDPOINT", "") // ensure LITELLM_ENDPOINT is unset for this test
 	t.Setenv("LITELLM_BASE_URL", "http://base-url-litellm:4000")
-	defer os.Unsetenv("LITELLM_BASE_URL")
 
 	f := NewProviderFactory(FactoryConfig{})
 
