@@ -4,7 +4,7 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.3.0 (planned — see status indicators below)
+**Version**: v1.3.0
 
 ---
 
@@ -94,14 +94,22 @@ cmd/looms/config.go   ✅  ObservabilityConfig.Provider = "hawk, otlp" (comment 
 ### What Is Missing
 
 ```
-pkg/observability/otel.go         📋  OTelTracer implementation
-pkg/observability/otel_attrs.go   📋  Loom AttrLLM* → gen_ai.* translation map
-pkg/observability/otel_config.go  📋  OTelConfig struct + env var loading
-pkg/observability/otel_test.go    📋  Unit tests (in-memory OTel exporter)
+pkg/observability/otel.go         ✅  OTelTracer implementation
+pkg/observability/otel_attrs.go   ✅  Loom AttrLLM* → gen_ai.* translation map
+pkg/observability/otel_config.go  ✅  OTelConfig struct + env var loading
+                                      (incl. LOOM_OTLP_INSECURE resolution)
+pkg/observability/otel_test.go    ✅  Unit tests with behavioral assertions
+                                      (export count checks, LOOM_OTLP_INSECURE
+                                       env resolution, errcheck-safe Shutdown)
 
-cmd/looms/config.go               📋  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
-cmd/looms/cmd_serve.go            📋  case "otel": branch in tracer switch
-pkg/observability/auto_select.go  📋  TracerModeOTel constant + selection logic
+cmd/looms/config.go               ✅  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
+cmd/looms/cmd_serve.go            ✅  case "otel": branch in tracer switch
+pkg/observability/auto_select.go  ✅  TracerModeOTel constant + selection logic
+                                      (auto mode reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT /
+                                       LOOM_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_TRACES_HEADERS /
+                                       LOOM_OTLP_HEADERS, LOOM_OTLP_INSECURE, OTEL_SERVICE_NAME)
+pkg/agent/agent.go                ✅  message.preview / response.preview truncated to 200 runes
+                                      (privacy + payload size guard on Chat / ChatWithProgress)
 ```
 
 ### Key Insight: SpanExporter Already Exists
