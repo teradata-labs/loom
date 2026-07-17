@@ -328,7 +328,11 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTelTracer: %v", err)
 	}
-	defer tr.Shutdown(context.Background())
+	defer func() {
+		if err := tr.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
 
 	t.Run("StartSpan returns non-nil span and context", func(t *testing.T) {
 		ctx, span := tr.StartSpan(context.Background(), "llm.completion")
