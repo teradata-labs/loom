@@ -81,6 +81,9 @@ func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
 	}
+	if !cfg.Insecure {
+		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"
+	}
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = firstEnv("OTEL_SERVICE_NAME", "")
 	}

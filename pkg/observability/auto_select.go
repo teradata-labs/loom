@@ -294,6 +294,10 @@ func newEmbeddedTracer(config *AutoSelectConfig) (Tracer, error) {
 //	export LOOM_EMBEDDED_STORAGE=memory
 //	export HAWK_URL=http://localhost:8090
 func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
+	var otlpHeaders map[string]string
+	if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
+		otlpHeaders = parseHeadersEnv(raw)
+	}
 	config := &AutoSelectConfig{
 		Mode:                TracerMode(getEnv("LOOM_TRACER_MODE", "auto")),
 		PreferEmbedded:      getEnv("LOOM_TRACER_PREFER_EMBEDDED", "true") == "true",
@@ -301,6 +305,10 @@ func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
 		HawkAPIKey:          os.Getenv("HAWK_API_KEY"),
 		EmbeddedStorageType: getEnv("LOOM_EMBEDDED_STORAGE", "memory"),
 		EmbeddedSQLitePath:  os.Getenv("LOOM_EMBEDDED_SQLITE_PATH"),
+		OTLPEndpoint:        firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT"),
+		OTLPHeaders:         otlpHeaders,
+		OTLPInsecure:        os.Getenv("LOOM_OTLP_INSECURE") == "true",
+		ServiceName:         firstEnv("OTEL_SERVICE_NAME", ""),
 		Logger:              logger,
 	}
 

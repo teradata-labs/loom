@@ -165,14 +165,14 @@ func TestGenAISystemNormalization(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"anthropic", "anthropic"},        // already matches spec — no normalization
-		{"openai", "openai"},              // already matches spec
-		{"ollama", "ollama"},              // community convention, kept as-is
-		{"mistral", "mistral"},            // kept as-is
-		{"bedrock", "aws.bedrock"},        // normalized
-		{"azure-openai", "azure_openai"},  // normalized
+		{"anthropic", "anthropic"},         // already matches spec — no normalization
+		{"openai", "openai"},               // already matches spec
+		{"ollama", "ollama"},               // community convention, kept as-is
+		{"mistral", "mistral"},             // kept as-is
+		{"bedrock", "aws.bedrock"},         // normalized
+		{"azure-openai", "azure_openai"},   // normalized
 		{"gemini", "google.generative_ai"}, // normalized
-		{"huggingface", "hugging_face"},   // normalized
+		{"huggingface", "hugging_face"},    // normalized
 	}
 	for _, tc := range tests {
 		t.Run(tc.provider, func(t *testing.T) {
@@ -205,10 +205,10 @@ func TestRedactOTelSpan(t *testing.T) {
 
 	t.Run("credential keys removed when RedactCredentials=true", func(t *testing.T) {
 		span := &Span{Attributes: map[string]interface{}{
-			"password":    "s3cr3t",
-			"api_key":     "key123",
-			"llm.model":   "claude-3",
-			"token":       "tok",
+			"password":     "s3cr3t",
+			"api_key":      "key123",
+			"llm.model":    "claude-3",
+			"token":        "tok",
 			"access_token": "at",
 		}}
 		out := redactOTelSpan(span, PrivacyConfig{RedactCredentials: true})
@@ -389,10 +389,29 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 		span.SetAttribute("llm.model", "claude-3-sonnet")
 		span.SetAttribute("llm.tokens.input", int64(150))
 		span.SetAttribute("llm.tokens.output", int64(50))
+
+		// Verify attributes are recorded on the span before export.
+		if got, ok := span.Attributes["llm.model"].(string); !ok || got != "claude-3-sonnet" {
+			t.Errorf("span.Attributes[llm.model] = %v, want \"claude-3-sonnet\"", span.Attributes["llm.model"])
+		}
+		if got, ok := span.Attributes["llm.tokens.input"].(int64); !ok || got != 150 {
+			t.Errorf("span.Attributes[llm.tokens.input] = %v, want 150", span.Attributes["llm.tokens.input"])
+		}
+
+		countBefore := atomic.LoadInt32(&requestCount)
 		tr.EndSpan(span)
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tr.Flush(flushCtx); err != nil {
+			t.Errorf("Flush error: %v", err)
+		}
+		if atomic.LoadInt32(&requestCount) <= countBefore {
+			t.Error("expected at least one OTLP export request after EndSpan+Flush")
+		}
 	})
 
 	t.Run("Flush triggers export", func(t *testing.T) {
+		countBefore := atomic.LoadInt32(&requestCount)
 		_, span := tr.StartSpan(context.Background(), "llm.completion")
 		tr.EndSpan(span)
 
@@ -400,6 +419,9 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 		defer cancel()
 		if err := tr.Flush(ctx); err != nil {
 			t.Errorf("Flush returned error: %v", err)
+		}
+		if atomic.LoadInt32(&requestCount) <= countBefore {
+			t.Error("expected at least one OTLP export request after Flush")
 		}
 	})
 }
@@ -432,6 +454,30 @@ func TestResolveOTelConfig(t *testing.T) {
 		}
 		if cfg.FlushInterval == 0 {
 			t.Error("flush interval default should be non-zero")
+		}
+	})
+
+	t.Run("LOOM_OTLP_INSECURE env var enables insecure mode", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "true")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if !cfg.Insecure {
+			t.Error("Insecure should be true when LOOM_OTLP_INSECURE=true")
+		}
+	})
+
+	t.Run("LOOM_OTLP_INSECURE env unset leaves Insecure false", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Insecure {
+			t.Error("Insecure should remain false when LOOM_OTLP_INSECURE is not set")
+		}
+	})
+
+	t.Run("explicit Insecure=true not cleared by missing env", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318", Insecure: true})
+		if !cfg.Insecure {
+			t.Error("explicit Insecure=true should not be cleared by resolveOTelConfig")
 		}
 	})
 }
