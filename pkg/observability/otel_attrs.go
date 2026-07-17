@@ -29,7 +29,9 @@ import (
 //   - OTel Exceptions: https://opentelemetry.io/docs/specs/semconv/exceptions/
 //   - OTel RPC (for MCP): https://opentelemetry.io/docs/specs/semconv/rpc/
 //   - Opik-specific: gen_ai.prompt / gen_ai.completion drive the Input/Output columns
-var loomToGenAI = map[string]string{ //nolint:gochecknoglobals
+//
+//nolint:gochecknoglobals
+var loomToGenAI = map[string]string{ // #nosec G101 -- map values are OTel attribute name strings, not credentials
 	// LLM identity (REQUIRED by OTel GenAI spec)
 	"llm.provider":  "gen_ai.system",
 	"llm.model":     "gen_ai.request.model",
@@ -80,7 +82,7 @@ var loomToGenAI = map[string]string{ //nolint:gochecknoglobals
 
 	// Session / user — kept as-is so backends index them without a loom. prefix
 	"session.id": "session.id",
-	"user.id":    "user.id", //nolint:gosec // G101 false positive: map key is an attribute name, not a credential
+	"user.id":    "user.id",
 	"trace.id":   "trace.id",
 }
 
