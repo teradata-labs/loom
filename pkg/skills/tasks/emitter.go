@@ -213,10 +213,11 @@ func (e *Emitter) emitTemplate(ctx context.Context, req EmitRequest) (*EmitResul
 			EstimatedEffort:     step.EstimatedEffort,
 			SkillIdempotencyKey: key,
 			Metadata: map[string]string{
-				"skill_name":     req.Skill.Name,
-				"skill_session":  req.SessionID,
-				"skill_step":     fmt.Sprintf("%d", i),
-				"skill_emit_via": "template",
+				"skill_name":                     req.Skill.Name,
+				"skill_session":                  req.SessionID,
+				"skill_step":                     fmt.Sprintf("%d", i),
+				"skill_emit_via":                 "template",
+				task.CreatedBySessionMetadataKey: req.SessionID,
 			},
 		}
 		out, isNew, err := e.manager.CreateTaskIdempotent(ctx, t)
@@ -299,12 +300,13 @@ func (e *Emitter) emitDecomposed(ctx context.Context, req EmitRequest) (*EmitRes
 	}
 
 	dreq := &task.DecomposeRequest{
-		Goal:     buildDecomposeGoal(req.Skill),
-		Context:  req.Skill.Description,
-		BoardID:  req.BoardID,
-		AgentID:  req.AgentID,
-		MaxDepth: 2,
-		Strategy: loomv1.DecomposeStrategy_DECOMPOSE_STRATEGY_FORWARD,
+		Goal:      buildDecomposeGoal(req.Skill),
+		Context:   req.Skill.Description,
+		BoardID:   req.BoardID,
+		AgentID:   req.AgentID,
+		MaxDepth:  2,
+		Strategy:  loomv1.DecomposeStrategy_DECOMPOSE_STRATEGY_FORWARD,
+		SessionID: req.SessionID,
 	}
 	resp, err := e.decomposer.Decompose(ctx, req.LLM, dreq)
 	if err != nil {
@@ -337,6 +339,7 @@ func (e *Emitter) emitDecomposed(ctx context.Context, req EmitRequest) (*EmitRes
 		t.Metadata["skill_session"] = req.SessionID
 		t.Metadata["skill_step"] = fmt.Sprintf("%d", i)
 		t.Metadata["skill_emit_via"] = "decomposer"
+		t.Metadata[task.CreatedBySessionMetadataKey] = req.SessionID
 		t.SkillIdempotencyKey = key
 		if _, err := e.manager.UpdateTask(ctx, t, []string{"metadata", "skill_idempotency_key"}); err != nil {
 			e.logger.Warn("emitter: failed to stamp decomposer output",
@@ -358,10 +361,11 @@ func (e *Emitter) emitDecomposed(ctx context.Context, req EmitRequest) (*EmitRes
 		BoardID:             req.BoardID,
 		SkillIdempotencyKey: probeKey,
 		Metadata: map[string]string{
-			"skill_name":     req.Skill.Name,
-			"skill_session":  req.SessionID,
-			"skill_emit_via": "decomposer-marker",
-			"hidden":         "true",
+			"skill_name":                     req.Skill.Name,
+			"skill_session":                  req.SessionID,
+			"skill_emit_via":                 "decomposer-marker",
+			"hidden":                         "true",
+			task.CreatedBySessionMetadataKey: req.SessionID,
 		},
 	}
 	if _, _, err := e.manager.CreateTaskIdempotent(ctx, marker); err != nil {

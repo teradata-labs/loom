@@ -88,12 +88,9 @@ func (c *LLMCompressor) simpleCompress(messages []Message) string {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			// Extract key terms from user queries
-			content := msg.Content
-			if len(content) > 60 {
-				content = content[:60] + "..."
-			}
-			parts = append(parts, fmt.Sprintf("User: %s", content))
+			// Preserve the user's question — truncating it loses the
+			// objective (issue #262).
+			parts = append(parts, fmt.Sprintf("User: %s", truncateForSummary(msg.Content, maxSummaryUserQueryChars)))
 		case "assistant":
 			// Assistant responses - extract tool usage or key facts
 			if c.containsToolCall(msg) {
@@ -156,11 +153,9 @@ func (c *SimpleCompressor) CompressMessages(ctx context.Context, messages []Mess
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			content := msg.Content
-			if len(content) > 60 {
-				content = content[:60] + "..."
-			}
-			parts = append(parts, fmt.Sprintf("User: %s", content))
+			// Preserve the user's question — truncating it loses the
+			// objective (issue #262).
+			parts = append(parts, fmt.Sprintf("User: %s", truncateForSummary(msg.Content, maxSummaryUserQueryChars)))
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				parts = append(parts, "Agent executed tools")
