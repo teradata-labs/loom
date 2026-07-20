@@ -61,6 +61,18 @@ ENV LOOM_SKILLS_DIR=/opt/loom/skills
 # Disable embedded agent/skill installation (weaver, guide) — runtime pods only serve the deployed agent
 ENV LOOM_SKIP_EMBEDDED_AGENTS=true
 
+# ─── AgentOps Observability (agentopso11y / Opik OTLP) ───────────────────────
+# When AgentOpsCore enables in-house observability for a deployment it injects:
+#   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — Opik OTLP ingest URL
+#   OTEL_EXPORTER_OTLP_TRACES_HEADERS  — "Opik-Project-Name=<deployment-id>"
+#   LOOM_OTLP_INSECURE                 — "true" for self-hosted (no TLS)
+# loom auto-selects OTel mode when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set
+# (see pkg/observability/auto_select.go — OTel takes priority over embedded/service).
+# No values are baked in here; they are injected at deploy time by AgentOpsCore.
+ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=""
+ENV OTEL_EXPORTER_OTLP_TRACES_HEADERS=""
+ENV LOOM_OTLP_INSECURE=""
+
 # gRPC port (must match AgentOpsCore grpc_port default: 60051)
 EXPOSE 60051
 # HTTP/REST+SSE gateway port
