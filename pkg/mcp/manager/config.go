@@ -79,6 +79,7 @@ type ServerConfig struct {
 	// to speak exactly that revision and fails without fallback.
 	ProtocolVersion string `yaml:"protocol_version" json:"protocol_version"`
 
+
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
 }
