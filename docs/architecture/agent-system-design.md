@@ -5,7 +5,7 @@ Detailed architecture of Loom's agent runtime - the conversation loop, segmented
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -410,7 +410,7 @@ type Memory struct {
 - Query (LLM): One LLM call per turn (latency dominated by LLM inference)
 - Space: O(n) for pattern summaries
 
-**Performance**: <10ms for keyword matching over 104 patterns, 89-143ms hot-reload latency.
+**Performance**: <10ms for keyword matching over the pattern library (158 patterns), 89-143ms hot-reload latency.
 
 **See**: [Pattern System Architecture](pattern-system.md)
 
@@ -1027,7 +1027,7 @@ func AddMessage(msg):
 |-----------|-----|-----|-------|
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
-| Pattern match | 8ms | 15ms | Keyword matching over 104 patterns |
+| Pattern match | 8ms | 15ms | Keyword matching over the pattern library |
 | LLM invoke | 850ms | 2100ms | Network + Claude Sonnet 4.5 generation |
 | Tool execution | 45ms | 180ms | Backend-dependent (SQL query) |
 | Judge evaluation | 920ms | 2300ms | LLM-based scoring |

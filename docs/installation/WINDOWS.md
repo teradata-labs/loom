@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
 **What it does**:
 - ✅ Checks/installs prerequisites (Go, Just, Buf)
 - ✅ Builds `looms.exe` and `loom.exe`
-- ✅ Installs 100+ patterns to `$LOOM_DATA_DIR/patterns/`
+- ✅ Installs 158 patterns to `$LOOM_DATA_DIR/patterns/`
 - ✅ Creates configuration file
 - ✅ Sets up environment variables
 - ✅ Interactive LLM provider setup
@@ -37,28 +37,30 @@ powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
 
 ---
 
-### Option 2: Package Managers (📋 Planned)
+### Option 2: Package Managers
 
-Once published to package repositories, you'll be able to install with one command:
+#### winget (Microsoft Official - Windows 10/11) — ✅ Published
 
-#### Scoop (Developer-Friendly)
 ```powershell
+winget install Teradata.Loom
+```
+
+#### Chocolatey — ✅ Published
+
+```powershell
+choco install loom
+```
+
+#### Scoop (Developer-Friendly) — 📋 Manifests ready, not yet published
+
+```powershell
+# Available once the manifests are published to a Scoop bucket:
 scoop install loom-server
 # or install both client and server
 scoop install loom loom-server
 ```
 
-#### winget (Microsoft Official - Windows 10/11)
-```powershell
-winget install Teradata.Loom
-```
-
-#### Chocolatey (Most Popular)
-```powershell
-choco install loom
-```
-
-**Current Status**: Manifests are ready in `packaging/windows/`. See [Publishing](#publishing-to-package-managers) section below.
+**Current Status**: Chocolatey and winget packages are published automatically on each release. Scoop manifests are ready in `packaging/windows/scoop/` but not yet published to a bucket. See [Publishing](#publishing-to-package-managers) section below.
 
 ---
 
@@ -130,7 +132,7 @@ Download from [GitHub Releases](https://github.com/teradata-labs/loom/releases):
 
 ```powershell
 # Download binaries
-$version = "1.2.0"
+$version = "1.3.0"
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/looms-windows-amd64.exe.zip" -OutFile looms.zip
 
@@ -304,7 +306,7 @@ cd packaging/windows/scoop
 
 # Update version in loom.json and loom-server.json
 # Calculate SHA256 hashes
-$version = "1.2.0"
+$version = "1.3.0"
 Invoke-WebRequest "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
 (Get-FileHash loom.zip -Algorithm SHA256).Hash
 
@@ -337,7 +339,7 @@ choco pack
 choco install loom -source . -y
 
 # Push to Chocolatey (requires API key)
-choco push loom.1.2.0.nupkg --source https://push.chocolatey.org/
+choco push loom.1.3.0.nupkg --source https://push.chocolatey.org/
 ```
 
 See individual README files in `packaging/windows/scoop/`, `packaging/windows/winget/`, and `packaging/windows/chocolatey/` directories for detailed instructions.

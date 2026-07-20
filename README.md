@@ -41,7 +41,7 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 ```
 
 **API endpoints** after `looms serve`:
-- **gRPC**: `localhost:60051` (127 RPCs)
+- **gRPC**: `localhost:60051` (151 RPCs)
 - **HTTP/REST**: `localhost:5006` (with SSE streaming)
 - **Swagger UI**: `localhost:5006/swagger-ui`
 - **MCP Apps**: `localhost:5006/apps/`
@@ -53,7 +53,7 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 Instead of prompt engineering, Loom uses **pattern-guided learning**. Domain knowledge is encoded as reusable YAML patterns that agents select and apply based on user intent:
 
 ```
-User message → Pattern selection (from 104 patterns) → LLM call with context → Tool execution → Response
+User message → Pattern selection (from 158 patterns) → LLM call with context → Tool execution → Response
      ↑                                                                                             |
      └────────────────────── Learning feedback loop (optional) ────────────────────────────────────┘
 ```
@@ -68,7 +68,7 @@ Patterns are plain-English YAML files anyone can write. They turn generic LLMs i
 
 Describe what you need; the Weaver builds it:
 - Analyzes requirements to determine domain and capabilities
-- Selects patterns from the library (104 patterns across 16 domains)
+- Selects patterns from the library (158 patterns across 16 domains)
 - Generates YAML configuration and activates the agent
 - Automatically selects workflow patterns for multi-agent tasks
 - **/agent-plan mode** for guided requirement gathering with skills-based recommendations
@@ -103,12 +103,12 @@ See [Learning Agent Guide](docs/guides/learning-agent-guide.md).
 
 ### Pattern Library
 
-104 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
+158 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
 
 | Domain | Count | Examples |
 |--------|-------|----------|
-| `teradata/` | 34 | ML models, analytics, data quality, performance, FastLoad |
-| `libraries/` | 16 | Domain-specific pattern bundles (sql-core, teradata-analytics, etc.) |
+| `teradata/` | 84 | ML models, analytics, data quality, performance, FastLoad |
+| `libraries/` | 20 | Domain-specific pattern bundles (sql-core, teradata-analytics, etc.) |
 | `postgres/` | 12 | Query optimization, index analysis, vacuum tuning |
 | `weaver/` | 9 | Workflow patterns (debate, pipeline, fork-join, swarm, etc.) |
 | `sql/` | 8 | Data validation, profiling, duplicate detection |
@@ -198,17 +198,17 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 
 ### LLM Providers
 
-8 providers, 44 cataloged models with mid-session switching:
+8 providers, 73 cataloged models with mid-session switching:
 
 | Provider | Models |
 |----------|--------|
-| **Anthropic** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
-| **AWS Bedrock** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
-| **OpenAI** | GPT-5, GPT-5 Mini, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, o3, o3-mini, o4-mini |
-| **Azure OpenAI** | GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
-| **Google Gemini** | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |
-| **Mistral** | Mistral Large, Mistral Small, Magistral Medium, Magistral Small, Codestral, Devstral |
-| **Ollama** | Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4, Gemma 3 (+ any local model) |
+| **Anthropic** | Claude Opus 4.7, Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
+| **AWS Bedrock** | Claude Opus 4.7 (regional + global), Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
+| **OpenAI** | GPT-5.4 Pro, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex, GPT-5.3 Chat, GPT-5.2, GPT-5.1, GPT-5, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, o3-pro, o3, o3-mini, o4-mini |
+| **Azure OpenAI** | GPT-5.4, GPT-5.4 Mini, GPT-5.3 Chat, GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
+| **Google Gemini** | Gemini 3.1 Pro, Gemini 3.1 Flash-Lite, Gemini 3 Pro, Gemini 3 Flash (Preview), Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |
+| **Mistral** | Mistral Large, Mistral Large 3, Mistral Medium, Mistral Medium 3.1, Mistral Small, Magistral Medium, Magistral Small, Ministral 3 (14B/8B/3B), Codestral, Devstral Medium, Devstral Small |
+| **Ollama** | Llama 4, Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3.5, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4 Mini, Phi 4, Gemma 4, Gemma 3 (+ any local model) |
 | **HuggingFace** | Any model via HuggingFace Inference API (Llama, Mixtral, Gemma, Qwen, etc.) |
 
 ---
@@ -242,7 +242,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 │                      Loom Framework                          │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
 │  │ Agent       │ │ Orchestration│ │ Patterns   │ │ Shuttle│ │
-│  │ Runtime     │ │ (9 patterns) │ │ (104 YAML) │ │ (tools)│ │
+│  │ Runtime     │ │ (9 patterns) │ │ (158 YAML) │ │ (tools)│ │
 │  └─────────────┘ └──────────────┘ └────────────┘ └────────┘ │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
 │  │ Judges      │ │ Skills       │ │ MCP Apps   │ │ Comms  │ │
@@ -262,7 +262,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 └──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-**Proto is law**: All APIs defined in `proto/loom/v1/` first. 127 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
+**Proto is law**: All APIs defined in `proto/loom/v1/` first. 151 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
 
 ---
 
@@ -276,7 +276,7 @@ git clone https://github.com/teradata-labs/loom && cd loom
 # .\quickstart.ps1  # Windows
 ```
 
-Installs Go, Buf, builds binaries, installs 104 patterns, and configures your LLM provider interactively. See [QUICKSTART.md](QUICKSTART.md).
+Installs Go, Buf, builds binaries, installs 158 patterns, and configures your LLM provider interactively. See [QUICKSTART.md](QUICKSTART.md).
 
 ### Manual
 
@@ -367,7 +367,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 
 ## Quality
 
-- 3,230 test functions across 342 test files
+- 3,743 test functions across 397 test files
 - All tests run with `-race` detector; 0 race conditions
 - CI: proto lint, golangci-lint, race detection, fuzz tests, gosec, CodeQL, multi-platform build
 

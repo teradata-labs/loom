@@ -61,6 +61,7 @@ type StreamableHTTPTransport struct {
 	// Configuration
 	enableSessions   bool
 	enableResumption bool
+	headers          map[string]string // custom headers (e.g. Authorization) sent on every request
 }
 
 // StreamableHTTPConfig configures streamable-http transport.
@@ -97,6 +98,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 		streamCancel:     streamCancel,
 		enableSessions:   config.EnableSessions,
 		enableResumption: config.EnableResumption,
+		headers:          config.Headers,
 	}
 
 	logger.Info("Streamable HTTP transport created", zap.String("endpoint", config.Endpoint))
@@ -124,6 +126,11 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	// Custom headers (e.g. Authorization for an authenticated remote server).
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
 
 	// Add session ID if we have one
 	if sessionID := t.sessionMgr.GetSessionID(); sessionID != "" {
@@ -361,6 +368,9 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		return err
 	}
 
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
 	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
 
 	resp, err := t.client.Do(req)

@@ -1,7 +1,7 @@
 
 # Prompt Management Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -35,7 +35,7 @@ Manage prompts externally using YAML files with hot-reload, variable interpolati
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Prompt YAML files using frontmatter format (see [YAML Format](#yaml-format))
 
 ## Quick Start

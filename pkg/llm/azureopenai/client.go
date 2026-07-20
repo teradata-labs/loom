@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -368,29 +369,32 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.
 // Azure OpenAI pricing varies by region and deployment type.
 // These are approximate costs based on Pay-As-You-Go pricing.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// Pricing per million tokens (approximate, varies by region)
-	var inputCostPerM, outputCostPerM float64
-
-	switch c.modelName {
-	case "gpt-4o":
-		inputCostPerM = 2.50
-		outputCostPerM = 10.00
-	case "gpt-4o-mini":
-		inputCostPerM = 0.15
-		outputCostPerM = 0.60
-	case "gpt-4-turbo", "gpt-4-turbo-preview":
-		inputCostPerM = 10.00
-		outputCostPerM = 30.00
-	case "gpt-4", "gpt-4-0613":
-		inputCostPerM = 30.00
-		outputCostPerM = 60.00
-	case "gpt-35-turbo", "gpt-3.5-turbo": // Azure uses gpt-35-turbo naming
-		inputCostPerM = 0.50
-		outputCostPerM = 1.50
-	default:
-		// Default to gpt-4o pricing
-		inputCostPerM = 2.50
-		outputCostPerM = 10.00
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
+	// to the provider-local rates below for deployment names it does not list
+	// (Azure routes by deployment name, which is often not a catalog model id).
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("azure-openai", c.modelName)
+	if !ok {
+		switch c.modelName {
+		case "gpt-4o":
+			inputCostPerM = 2.50
+			outputCostPerM = 10.00
+		case "gpt-4o-mini":
+			inputCostPerM = 0.15
+			outputCostPerM = 0.60
+		case "gpt-4-turbo", "gpt-4-turbo-preview":
+			inputCostPerM = 10.00
+			outputCostPerM = 30.00
+		case "gpt-4", "gpt-4-0613":
+			inputCostPerM = 30.00
+			outputCostPerM = 60.00
+		case "gpt-35-turbo", "gpt-3.5-turbo": // Azure uses gpt-35-turbo naming
+			inputCostPerM = 0.50
+			outputCostPerM = 1.50
+		default:
+			// Default to gpt-4o pricing
+			inputCostPerM = 2.50
+			outputCostPerM = 10.00
+		}
 	}
 
 	inputCost := float64(inputTokens) * inputCostPerM / 1_000_000

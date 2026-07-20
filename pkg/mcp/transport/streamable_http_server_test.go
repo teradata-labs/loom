@@ -15,6 +15,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -34,7 +35,7 @@ import (
 func newTestServer(t *testing.T) *StreamableHTTPServer {
 	logger := zaptest.NewLogger(t)
 	server, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			var req struct {
 				JSONRPC string           `json:"jsonrpc"`
 				ID      *json.RawMessage `json:"id"`
@@ -306,7 +307,7 @@ func TestStreamableHTTPServer_SessionTTLExpiry(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	// Use a very short TTL so the cleanup goroutine fires quickly.
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			var req struct {
 				JSONRPC string           `json:"jsonrpc"`
 				ID      *json.RawMessage `json:"id"`
@@ -358,7 +359,7 @@ func TestStreamableHTTPServer_SessionTTLExpiry(t *testing.T) {
 func TestStreamableHTTPServer_SessionTTLRenewedByActivity(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			var req struct {
 				JSONRPC string           `json:"jsonrpc"`
 				ID      *json.RawMessage `json:"id"`
@@ -430,7 +431,7 @@ func TestStreamableHTTPServer_SessionTTLRenewedByActivity(t *testing.T) {
 func TestStreamableHTTPServer_Close(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			return nil, nil
 		},
 		Logger:     logger,
@@ -446,7 +447,7 @@ func TestStreamableHTTPServer_Close(t *testing.T) {
 func TestStreamableHTTPServer_CloseStopsCleanup(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			var req struct {
 				JSONRPC string           `json:"jsonrpc"`
 				ID      *json.RawMessage `json:"id"`
@@ -520,7 +521,7 @@ func TestStreamableHTTPServer_ExpireSessionsDirect(t *testing.T) {
 	// Test the expireSessions method directly for deterministic behavior.
 	logger := zaptest.NewLogger(t)
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			return nil, nil
 		},
 		Logger:     logger,
@@ -569,7 +570,7 @@ func TestStreamableHTTPServer_ConcurrentWithCleanup(t *testing.T) {
 	// Verify no race conditions between request handling and cleanup goroutine.
 	logger := zaptest.NewLogger(t)
 	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
-		Handler: func(msg []byte) ([]byte, error) {
+		Handler: func(_ context.Context, msg []byte) ([]byte, error) {
 			var req struct {
 				JSONRPC string           `json:"jsonrpc"`
 				ID      *json.RawMessage `json:"id"`

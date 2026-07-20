@@ -334,6 +334,59 @@ func TestSearchToolExecution(t *testing.T) {
 	assert.GreaterOrEqual(t, resultsCount, 0, "Expected at least 0 results")
 }
 
+func TestSearchToolFiltersUnadvertisableTools(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test_searchtool_filter_*.db")
+	require.NoError(t, err)
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
+
+	registry, err := New(Config{
+		DBPath:   tmpFile.Name(),
+		Indexers: []Indexer{NewBuiltinIndexer(nil)},
+	})
+	require.NoError(t, err)
+	defer func() { _ = registry.Close() }()
+
+	ctx := context.Background()
+	resp, err := registry.IndexAll(ctx)
+	require.NoError(t, err)
+	require.Greater(t, resp.TotalCount, int32(0))
+
+	searchTool := NewSearchTool(registry)
+
+	// Names returned for a broad query, with no filter installed.
+	names := func() map[string]bool {
+		res, err := searchTool.Execute(ctx, map[string]interface{}{
+			"query": "file read write http request shell command", "mode": "fast", "max_results": float64(10),
+		})
+		require.NoError(t, err)
+		require.True(t, res.Success)
+		out := map[string]bool{}
+		for _, r := range res.Data.(map[string]interface{})["results"].([]map[string]interface{}) {
+			out[r["name"].(string)] = true
+		}
+		return out
+	}
+
+	unfiltered := names()
+	require.NotEmpty(t, unfiltered, "expected the broad query to return at least one tool to filter")
+
+	// Pick any returned tool and make it unadvertisable; it must disappear while
+	// the rest survive.
+	var hidden string
+	for n := range unfiltered {
+		hidden = n
+		break
+	}
+	searchTool.SetToolFilter(func(name string) bool { return name != hidden })
+
+	filtered := names()
+	assert.NotContains(t, filtered, hidden, "filtered-out tool must not appear in search results")
+	for n := range filtered {
+		assert.True(t, unfiltered[n], "filter must not invent new results")
+	}
+}
+
 func TestSearchToolMissingQuery(t *testing.T) {
 	// Create temp database
 	tmpFile, err := os.CreateTemp("", "test_searchtool_error_*.db")

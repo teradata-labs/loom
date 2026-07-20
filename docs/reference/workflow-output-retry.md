@@ -1,6 +1,6 @@
 # Workflow Output Retry Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Output retry adds automatic retry with informative feedback when agent output doesn't match expected formats. Supported by conditional, pipeline, and swarm workflow patterns.
 

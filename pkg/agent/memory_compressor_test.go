@@ -162,7 +162,9 @@ func TestLLMCompressor_SimpleCompress(t *testing.T) {
 		{
 			name: "long user message truncated",
 			messages: []Message{
-				{Role: "user", Content: strings.Repeat("This is a very long message that should be truncated. ", 5)},
+				// Must exceed maxSummaryUserQueryChars — user content below the
+				// cap is preserved verbatim (issue #262).
+				{Role: "user", Content: strings.Repeat("This is a very long message that should be truncated. ", 10)},
 			},
 			expected: []string{"User:", "..."},
 		},

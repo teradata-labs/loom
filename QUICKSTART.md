@@ -62,7 +62,7 @@ The PowerShell script does the same as the bash version with Windows-specific:
 ### Data & Configuration (Configurable Location)
 **Default**: `$LOOM_DATA_DIR` (defaults to `$HOME/.loom/` on macOS/Linux or `%USERPROFILE%\.loom\` on Windows)
 
-- `patterns/` - 90+ reusable YAML patterns
+- `patterns/` - 158 reusable YAML patterns
 - `documentation/` - Complete documentation
 - `looms.yaml` - Server configuration
 - `loom.db` - SQLite database (created on first run)
@@ -103,11 +103,11 @@ The installer supports 8 LLM providers:
 
 2. **Anthropic** (Trial Credits)
    - Best tool calling support
-   - Claude 3.5 Sonnet or Claude 4.5
+   - Claude Sonnet 4.5 (default) or a newer Opus/Sonnet model
    - Get API key: https://console.anthropic.com/
 
 3. **AWS Bedrock** (Pay-as-you-go)
-   - Enterprise-grade
+   - Runs in your AWS account
    - SSO integration
    - Best for organizations with AWS accounts
 

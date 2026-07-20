@@ -1,8 +1,8 @@
 # Artifact Management Usage Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-08
 
 ## Table of Contents
 
@@ -65,6 +65,8 @@ Every artifact is associated with a **session ID**. When an agent creates an art
 $LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/<filename>
 ```
 
+The same session folder may include **`metadata.json`** at `sessions/<session-id>/metadata.json` with attribution fields (agent, timestamps, optional project/conversation IDs). It is maintained by the server when sessions are saved; see the [artifact architecture](../architecture/artifacts.md#session-artifact-metadata-metadatajson) for the schema and privacy rules.
+
 **Benefits:**
 - No path management needed by agents - just use filenames
 - Related artifacts automatically grouped
@@ -109,7 +111,7 @@ $LOOM_DATA_DIR/artifacts/
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - FTS5-enabled SQLite (included with `just build`)
 - Running Loom server (`looms serve`)
 
@@ -117,7 +119,7 @@ $LOOM_DATA_DIR/artifacts/
 
 ```bash
 # Check Loom version
-loom --version  # Should show v1.2.0 or later
+loom --version  # Should show v1.3.0 or later
 
 # Verify artifacts directory exists
 ls -la $LOOM_DATA_DIR/artifacts/
@@ -757,6 +759,6 @@ df -h $LOOM_DATA_DIR/
 
 ---
 
-**Documentation Version:** v1.2.0
+**Documentation Version:** v1.3.0
 **Last Updated:** 2026-03-28
 **Status:** ✅ Audited against codebase

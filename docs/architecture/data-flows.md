@@ -5,7 +5,7 @@ End-to-end data flows showing how information moves through Loom's multi-layered
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Status Indicators**: ✅ Verified against codebase | ⚠️ Simplified or approximate | 📋 Conceptual (not directly reflected in code)
 
@@ -568,7 +568,7 @@ Backend     Executor    SharedMem    Policy       Compression   Agent        LLM
   │            │           │           │               │          │  (50 tokens 
   │            │           │           │               │          │           │ 
   │            │           │           │               │          │◀─ Action ──┤
-  │            │           │           │               │          │  get_tool_re
+  │            │           │           │               │          │  query_tool_result
   │            │           │           │               │          │           │ 
   │            │           │           │               │          ├─ Resolve ─▶│
   │            │           │           │               │          │  Reference │
@@ -1011,7 +1011,7 @@ LLM Provider  TokenCounter  CostCalc   Agent      Span        Hawk
   │              │             │          │          │          │               
 ```
 
-**Pricing Table** ✅ (from `pkg/llm/factory/model_catalog.go`):
+**Pricing Table** ✅ (canonical data in `pkg/llm/catalog/catalog.go`, surfaced via `pkg/llm/factory/model_catalog.go`):
 ```
 Model                     Input $/1M    Output $/1M
 ───────────────────────────────────────────────────
@@ -1244,7 +1244,7 @@ message LLMCost {
 - [Agent System Architecture](agent-system-design.md) - Agent conversation loop
 - [Memory Systems Architecture](memory-systems.md) - Segmented memory design
 - [Multi-Agent Orchestration](multi-agent.md) - Workflow patterns
-- [Communication System](communication-system-design.md) - Tri-modal messaging
+- [Communication System](communication-system-design.md) - Quad-modal messaging
 - [Observability Architecture](observability.md) - Hawk integration
 - [Pattern System](pattern-system.md) - Keyword-based pattern matching
 

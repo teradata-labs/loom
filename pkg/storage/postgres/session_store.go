@@ -27,6 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -63,7 +64,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", session.ID)
 
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 
 		contextJSON, err := json.Marshal(session.Context)
@@ -100,6 +101,18 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Avoid disk I/O while holding a DB transaction/connection.
+	if syncErr := artifacts.SyncSessionArtifactMetadata(ctx, session); syncErr != nil {
+		span.RecordError(syncErr)
+		s.logger.Warn("session artifact metadata sync failed after DB commit",
+			zap.String("session_id", session.ID),
+			zap.Error(syncErr),
+		)
+	}
+	return nil
 }
 
 // LoadSession retrieves a session and its messages from PostgreSQL.
@@ -131,7 +144,12 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		).Scan(&sessionName, &agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
 		if scanErr != nil {
 			if scanErr == pgx.ErrNoRows {
-				s.logger.Warn("session not found (possible RLS denial)",
+				// Benign on the common path: a client-supplied session_id is looked
+				// up before it exists, then GetOrCreateSession creates it. Logged at
+				// Debug (not Warn) so it doesn't read as an RLS alarm on every new
+				// session. A genuine RLS/user_id mismatch surfaces as repeated misses
+				// for an id that was created — visible as functional failures, not here.
+				s.logger.Debug("session not found on load; will be created if new",
 					zap.String("session_id", sessionID),
 					zap.String("operation", "LoadSession"),
 				)
