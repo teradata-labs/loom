@@ -32,9 +32,10 @@ import (
 )
 
 // Backend implements backend.StorageBackend using PostgreSQL with pgx.
-// NOTE: The proto-defined PostgresStorageConfig includes a SupabaseConfig field
-// (loomv1.SupabaseConfig) for future Supabase-hosted PostgreSQL integration.
-// This is available via cfg.GetSupabase() but is not yet consumed by the backend.
+//
+// When PostgresStorageConfig.Supabase is enabled, the connection DSN is derived
+// from the Supabase project (session-mode pooler, port 5432) in
+// internal/pgxdriver.buildDSN.
 type Backend struct {
 	pool              *pgxpool.Pool
 	sessionStore      *SessionStore

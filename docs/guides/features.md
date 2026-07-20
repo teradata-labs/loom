@@ -1,7 +1,7 @@
 
 # Loom Features Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -132,16 +132,17 @@ See [MCP Integration Guide](./integration/mcp-readme/) for details.
 
 ## Hot Reload
 
-✅ Update patterns, prompts, skills, artifacts, and agent configs without restarting the server.
+✅ Update patterns, skills, artifacts, and agent/workflow configs without restarting the server.
 
 ### Supported File Types
 
-- Pattern YAML files (`patterns/**/*.yaml`)
-- Prompt templates (`prompts/**/*.yaml`)
-- Skill YAML files (`skills/**/*.yaml`)
-- Agent configurations (`$LOOM_DATA_DIR/agents/*.yaml`)
-- Workflow configurations (`$LOOM_DATA_DIR/workflows/*.yaml`)
-- Artifact files (`$LOOM_DATA_DIR/artifacts/`)
+- ✅ Pattern YAML files (per-agent `patterns_dir`) — reloaded by `patterns.HotReloader` (`pkg/server/multi_agent.go:2431`)
+- ✅ Skill YAML files (`$LOOM_DATA_DIR/skills/`) — a skill write triggers a router reload (`cmd/looms/cmd_serve.go:251`)
+- ✅ Agent configurations (`$LOOM_DATA_DIR/agents/*.yaml`) (`cmd/looms/cmd_serve.go:3102`)
+- ✅ Workflow configurations (`$LOOM_DATA_DIR/workflows/*.yaml`) (`cmd/looms/cmd_serve.go:3102`)
+- ✅ Artifact files (`$LOOM_DATA_DIR/artifacts/`) — watched by `artifacts.Watcher` (`cmd/looms/cmd_serve.go:1251`)
+
+> **Note:** Prompt templates loaded via `FileRegistry` are read once at server startup (`cmd/looms/cmd_serve.go:312`). The `prompts.enable_reload` config flag is accepted but the server does not currently start a prompt-file watcher; the FileRegistry `Watch()` API is available from the Go API.
 
 ### How Hot Reload Works
 

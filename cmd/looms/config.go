@@ -15,6 +15,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,26 @@ type ServerConfig struct {
 	TLS              TLSConfig           `mapstructure:"tls"`
 	Clarification    ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
 	CORS             CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
+	Auth             AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
+}
+
+// AuthConfig gates JWT authentication of Loom's gRPC/HTTP endpoints. When
+// disabled (the default), Loom uses the legacy trusted x-user-id header.
+type AuthConfig struct {
+	Enabled  bool               `mapstructure:"enabled"`  // Master switch (default: false)
+	Provider string             `mapstructure:"provider"` // Only "supabase" is supported today
+	Mode     string             `mapstructure:"mode"`     // "required" (reject unauthenticated) or "optional"
+	Supabase SupabaseAuthConfig `mapstructure:"supabase"`
+}
+
+// SupabaseAuthConfig holds Supabase-specific JWT verification settings. The
+// jwt_secret is sensitive and must come from env/keyring, never YAML.
+type SupabaseAuthConfig struct {
+	ProjectRef string `mapstructure:"project_ref"` // Used to derive jwks_url/issuer when blank
+	JWTSecret  string `mapstructure:"jwt_secret"`  // HS256 shared secret (env/keyring only)
+	JWKSURL    string `mapstructure:"jwks_url"`    // Asymmetric keys; auto-derived from project_ref if blank
+	Audience   string `mapstructure:"audience"`    // Expected aud claim (default: "authenticated")
+	Issuer     string `mapstructure:"issuer"`      // Expected iss; auto-derived from project_ref if blank
 }
 
 // CORSServerConfig holds CORS configuration for HTTP endpoints.
@@ -317,6 +338,11 @@ type LLMConfig struct {
 	// HuggingFace-specific
 	HuggingFaceToken string `mapstructure:"huggingface_token"` // From CLI/env/keyring only
 	HuggingFaceModel string `mapstructure:"huggingface_model"`
+
+	// LiteLLM-specific
+	LiteLLMEndpoint string `mapstructure:"litellm_endpoint"`
+	LiteLLMAPIKey   string `mapstructure:"litellm_api_key"` // From CLI/env/keyring only
+	LiteLLMModel    string `mapstructure:"litellm_model"`
 
 	// Common generation parameters
 	Temperature float64 `mapstructure:"temperature"`
@@ -437,6 +463,26 @@ type PostgresConfig struct {
 	// Require X-User-ID header on all requests (default: true).
 	// When false, requests without X-User-ID use default_user_id or "default-user".
 	RequireUserID bool `mapstructure:"require_user_id"`
+
+	// Supabase configures storage by Supabase project (session-mode pooler DSN)
+	// instead of a raw DSN/host. Takes precedence over host fields but not `dsn`.
+	Supabase SupabaseStorageConfig `mapstructure:"supabase"`
+}
+
+// SupabaseStorageConfig configures Loom storage against a Supabase project.
+// When enabled, a session-mode (port 5432) pooler DSN is derived from these
+// fields. database_password is sensitive: prefer LOOM_SUPABASE_DB_PASSWORD or
+// the keyring over YAML.
+type SupabaseStorageConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`
+	ProjectRef       string `mapstructure:"project_ref"`
+	DatabasePassword string `mapstructure:"database_password"`
+	Region           string `mapstructure:"region"`
+	PoolerHost       string `mapstructure:"pooler_host"`
+	Database         string `mapstructure:"database"`
+	ProjectURL       string `mapstructure:"project_url"`
+	AnonKey          string `mapstructure:"anon_key"`
+	ServiceRoleKey   string `mapstructure:"service_role_key"`
 }
 
 // PostgresPoolConfig holds PostgreSQL connection pool configuration.
@@ -612,6 +658,12 @@ type MCPServerConfig struct {
 
 	// URL is the server URL (required for http/sse/streamable-http transport)
 	URL string `mapstructure:"url"`
+
+	// Headers are extra HTTP headers for http/sse/streamable-http transport.
+	// Values support ${ENV_VAR} expansion at serve time, so secrets (e.g. an
+	// Authorization bearer token) live in the environment, not the config file:
+	//   headers: { Authorization: "Bearer ${OPENDATA_API_KEY}" }
+	Headers map[string]string `mapstructure:"headers"`
 
 	// EnableSessions enables session management (for streamable-http transport)
 	EnableSessions bool `mapstructure:"enable_sessions"`
@@ -991,6 +1043,15 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Non-fatal: keyring might not be available - user can provide secrets via CLI/env
 	_ = loadSecretsFromKeyring(&config)
 
+	// Derive Supabase auth issuer/JWKS URL from the project ref when not set.
+	deriveSupabaseAuthDefaults(&config)
+
+	// Convenience env var for the Supabase storage DB password (shorter than the
+	// nested LOOM_STORAGE_POSTGRES_SUPABASE_DATABASE_PASSWORD).
+	if v := os.Getenv("LOOM_SUPABASE_DB_PASSWORD"); v != "" {
+		config.Storage.Postgres.Supabase.DatabasePassword = v
+	}
+
 	// Fix MCP environment variable case (Viper lowercases all keys)
 	// This must be done after unmarshal to restore original case from YAML
 	configFile := viper.ConfigFileUsed()
@@ -1036,6 +1097,17 @@ func setDefaults() {
 	viper.SetDefault("server.cors.allow_credentials", false) // MUST be false with wildcard origins
 	viper.SetDefault("server.cors.max_age", 86400)           // 24 hours
 
+	// Auth (Supabase JWT). Keys are registered (even empty) so AutomaticEnv binds
+	// e.g. LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET on Unmarshal.
+	viper.SetDefault("server.auth.enabled", false)
+	viper.SetDefault("server.auth.provider", "supabase")
+	viper.SetDefault("server.auth.mode", "required")
+	viper.SetDefault("server.auth.supabase.project_ref", "")
+	viper.SetDefault("server.auth.supabase.jwt_secret", "")
+	viper.SetDefault("server.auth.supabase.jwks_url", "")
+	viper.SetDefault("server.auth.supabase.audience", "authenticated")
+	viper.SetDefault("server.auth.supabase.issuer", "")
+
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
@@ -1073,6 +1145,13 @@ func setDefaults() {
 	viper.SetDefault("storage.postgres.pool.max_idle_time_seconds", 300)
 	viper.SetDefault("storage.postgres.pool.max_lifetime_seconds", 3600)
 	viper.SetDefault("storage.postgres.pool.health_check_interval_seconds", 30)
+	// Supabase storage keys (registered so AutomaticEnv binds them on Unmarshal).
+	viper.SetDefault("storage.postgres.supabase.enabled", false)
+	viper.SetDefault("storage.postgres.supabase.project_ref", "")
+	viper.SetDefault("storage.postgres.supabase.database_password", "")
+	viper.SetDefault("storage.postgres.supabase.region", "")
+	viper.SetDefault("storage.postgres.supabase.pooler_host", "")
+	viper.SetDefault("storage.postgres.supabase.database", "")
 	viper.SetDefault("storage.migration.auto_migrate", true)
 	viper.SetDefault("storage.postgres.soft_delete.grace_period_seconds", 2592000)   // 30 days
 	viper.SetDefault("storage.postgres.soft_delete.cleanup_interval_seconds", 86400) // 1 day
@@ -1236,6 +1315,16 @@ func GetSecretMappings() []SecretMapping {
 			IsSet:      func(c *Config) bool { return c.Observability.HawkAPIKey != "" },
 		},
 		{
+			KeyringKey: "supabase_jwt_secret",
+			Setter:     func(c *Config, val string) { c.Server.Auth.Supabase.JWTSecret = val },
+			IsSet:      func(c *Config) bool { return c.Server.Auth.Supabase.JWTSecret != "" },
+		},
+		{
+			KeyringKey: "supabase_db_password",
+			Setter:     func(c *Config, val string) { c.Storage.Postgres.Supabase.DatabasePassword = val },
+			IsSet:      func(c *Config) bool { return c.Storage.Postgres.Supabase.DatabasePassword != "" },
+		},
+		{
 			KeyringKey: "openai_api_key",
 			Setter:     func(c *Config, val string) { c.LLM.OpenAIAPIKey = val },
 			IsSet:      func(c *Config) bool { return c.LLM.OpenAIAPIKey != "" },
@@ -1333,6 +1422,65 @@ func GetSecretMappings() []SecretMapping {
 	}
 }
 
+// validateAuth checks the endpoint authentication configuration when enabled.
+func (c *Config) validateAuth() error {
+	a := c.Server.Auth
+	if !a.Enabled {
+		return nil
+	}
+	if a.Provider != "supabase" {
+		return fmt.Errorf("server.auth.provider %q not supported (only \"supabase\")", a.Provider)
+	}
+	if a.Mode != "required" && a.Mode != "optional" {
+		return fmt.Errorf("server.auth.mode must be \"required\" or \"optional\" (got %q)", a.Mode)
+	}
+	if a.Supabase.JWTSecret == "" && a.Supabase.JWKSURL == "" {
+		return fmt.Errorf("server.auth requires a verification source: set server.auth.supabase.jwt_secret (HS256) " +
+			"via LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET/keyring, or server.auth.supabase.project_ref (derives JWKS)")
+	}
+	if a.Supabase.Issuer == "" || a.Supabase.Audience == "" {
+		return fmt.Errorf("server.auth requires issuer and audience: set server.auth.supabase.project_ref to derive them, or set them explicitly")
+	}
+	// Tokens must not traverse a non-loopback interface in plaintext.
+	if !c.Server.TLS.Enabled && !isLoopbackHost(c.Server.Host) {
+		return fmt.Errorf("server.auth.enabled requires TLS when server.host is not loopback (got %q); "+
+			"set server.tls.enabled=true or bind server.host to 127.0.0.1", c.Server.Host)
+	}
+	return nil
+}
+
+// isLoopbackHost reports whether a server host binds only the loopback interface.
+// An empty host binds all interfaces and is therefore NOT loopback.
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	case "":
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// deriveSupabaseAuthDefaults fills in the Supabase JWKS URL and issuer from the
+// project ref when they are not explicitly configured. Supabase exposes its
+// JWKS at https://<ref>.supabase.co/auth/v1/.well-known/jwks.json and signs
+// tokens with issuer https://<ref>.supabase.co/auth/v1.
+func deriveSupabaseAuthDefaults(config *Config) {
+	sb := &config.Server.Auth.Supabase
+	if sb.ProjectRef == "" {
+		return
+	}
+	if sb.JWKSURL == "" {
+		sb.JWKSURL = fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", sb.ProjectRef)
+	}
+	if sb.Issuer == "" {
+		sb.Issuer = fmt.Sprintf("https://%s.supabase.co/auth/v1", sb.ProjectRef)
+	}
+}
+
 // loadSecretsFromKeyring loads API keys from system keyring using the secret mappings.
 // This is extensible - just add more entries to GetSecretMappings().
 func loadSecretsFromKeyring(config *Config) error {
@@ -1423,6 +1571,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid port: %d (must be 1-65535)", c.Server.Port)
 	}
 
+	if err := c.validateAuth(); err != nil {
+		return err
+	}
+
 	// Validate LLM config
 	if c.LLM.Provider == "" {
 		return fmt.Errorf("llm.provider is required")
@@ -1483,8 +1635,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("huggingface token is required (set LOOM_LLM_HUGGINGFACE_TOKEN, HUGGINGFACE_API_KEY, or save to keyring with 'looms config set-key huggingface_token')")
 		}
 
+	case "litellm":
+		// endpoint and API key are optional — defaults apply
+
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, or huggingface)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
 	// Validate storage config
@@ -1521,7 +1676,16 @@ func (c *Config) Validate() error {
 	if c.Observability.Enabled {
 		mode := c.Observability.Mode
 		if mode == "" {
-			mode = "service" // Default to service mode for backward compatibility
+			// Resolve an empty mode the same way the tracer builder does (see
+			// cmd_serve.go): "service" only when a Hawk endpoint is configured,
+			// otherwise "embedded". This keeps Validate() in step with what the
+			// server actually runs, so enabling observability without an explicit
+			// mode or endpoint validates as embedded instead of being rejected.
+			if c.Observability.HawkEndpoint != "" {
+				mode = "service"
+			} else {
+				mode = "embedded"
+			}
 		}
 
 		switch mode {
@@ -1594,6 +1758,17 @@ func (c *Config) BuildProtoStorageConfig() *loomv1.StorageConfig {
 					CleanupIntervalSeconds: pg.SoftDelete.CleanupIntervalSeconds,
 				},
 				RequireUserId: pg.RequireUserID,
+				Supabase: &loomv1.SupabaseConfig{
+					Enabled:          pg.Supabase.Enabled,
+					ProjectUrl:       pg.Supabase.ProjectURL,
+					AnonKey:          pg.Supabase.AnonKey,
+					ServiceRoleKey:   pg.Supabase.ServiceRoleKey,
+					ProjectRef:       pg.Supabase.ProjectRef,
+					DatabasePassword: pg.Supabase.DatabasePassword,
+					Region:           pg.Supabase.Region,
+					PoolerHost:       pg.Supabase.PoolerHost,
+					Database:         pg.Supabase.Database,
+				},
 			},
 			Migration: &loomv1.MigrationConfig{
 				AutoMigrate:   c.Storage.Migration.AutoMigrate,
@@ -1671,6 +1846,11 @@ llm:
   # HuggingFace configuration
   huggingface_model: meta-llama/Meta-Llama-3.1-70B-Instruct
   # huggingface_token: set via keyring (looms config set-key huggingface_token)
+
+  # LiteLLM proxy configuration
+  # litellm_endpoint: http://litellm:4000/v1/chat/completions
+  # litellm_model: anthropic/claude-sonnet-4-5-20250929
+  # litellm_api_key: set via keyring (looms config set-key litellm_api_key)
 
   # Common generation parameters (apply to all providers)
   temperature: 1.0

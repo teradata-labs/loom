@@ -1,7 +1,7 @@
 
 # Weaver: Agent Creation via Conversation
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented
 
 ## Table of Contents
@@ -40,7 +40,7 @@ The weaver is not a CLI subcommand. There is no `looms weave` command. You inter
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - LLM provider configured (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, or HuggingFace)
 - Loom server running (`looms serve`)
 
@@ -101,13 +101,14 @@ If you already have a customized `weaver.yaml` in your agents directory, the ser
 
 ### Tools Available to the Weaver
 
-The weaver has three tools configured in its agent spec:
+The weaver has four tools configured in its agent spec:
 
 | Tool | Purpose |
 |------|---------|
 | `agent_management` | Create, update, read, list, validate, and delete agent/workflow/skill YAML files. Actions include `create_agent`, `create_workflow`, `create_skill`, `update_agent`, `update_workflow`, `update_skill`, `read`, `list`, `validate`, `delete`. |
 | `shell_execute` | Run shell commands. The weaver's working directory defaults to `$LOOM_SANDBOX_DIR` (which itself defaults to `$LOOM_DATA_DIR`). An explicit `working_dir` parameter overrides this. |
 | `tool_search` | Discover available tools via FTS search. The weaver uses this to find the right tools for the agents it creates. |
+| `task_board` | Track the weaver's own multi-step work as dependency-aware kanban tasks (used by the slash-triggered planning skills). |
 
 The `agent_management` tool is security-restricted: only the weaver and guide agents can use it. The guide agent is further restricted to read-only access (`list` and `read` only).
 

@@ -16,7 +16,6 @@ package factory
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -25,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -85,6 +85,11 @@ type FactoryConfig struct {
 	// HuggingFace configuration
 	HuggingFaceToken string
 	HuggingFaceModel string
+
+	// LiteLLM configuration
+	LiteLLMEndpoint string
+	LiteLLMAPIKey   string
+	LiteLLMModel    string
 
 	// Common settings
 	MaxTokens       int
@@ -152,6 +157,8 @@ func (f *ProviderFactory) CreateProvider(provider, model string) (interface{}, e
 		return f.createGeminiProvider(model)
 	case "huggingface":
 		return f.createHuggingFaceProvider(model)
+	case "litellm":
+		return f.createLiteLLMProvider(model)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -209,29 +216,10 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		Temperature:     f.config.Temperature,
 	}
 
-	// Anthropic Claude models route through the Anthropic SDK client, which
-	// streams tokens incrementally and sets cache_control for prompt caching.
-	// The direct AWS Converse client (NewClient) leaves ChatStream stubbed to a
-	// blocking call and sends no cache_control, so it is reserved for the
-	// non-Anthropic Bedrock models (e.g. DeepSeek, Qwen) that the Anthropic SDK
-	// cannot serve.
-	if isAnthropicBedrockModel(model) {
-		return bedrock.NewSDKClient(cfg)
-	}
-	return bedrock.NewClient(cfg)
-}
-
-// isAnthropicBedrockModel reports whether a Bedrock model ID refers to an
-// Anthropic Claude model, including cross-region inference profiles such as
-// "us.anthropic.claude-opus-4-7" or "global.anthropic.claude-opus-4-6-v1".
-// Application inference profile ARNs
-// (arn:aws:bedrock:…:application-inference-profile/<opaque-id>) carry no model
-// hint, so a Claude model behind one falls back to the Converse client — the
-// pre-fix behavior, and those ARNs are not addressable via the Anthropic SDK
-// anyway.
-func isAnthropicBedrockModel(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "anthropic") || strings.Contains(m, "claude")
+	// Anthropic Claude models stream + cache via the Anthropic SDK client;
+	// others use the AWS Converse client. Routing is centralized in the bedrock
+	// package so every construction site behaves identically (NewClientForModel).
+	return bedrock.NewClientForModel(cfg)
 }
 
 func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error) {
@@ -277,7 +265,7 @@ func (f *ProviderFactory) createOpenAIProvider(model string) (interface{}, error
 		model = f.config.OpenAIModel
 	}
 	if model == "" {
-		model = "gpt-4o"
+		model = openai.DefaultOpenAIModel
 	}
 
 	return openai.NewClient(openai.Config{
@@ -397,13 +385,41 @@ func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, 
 		model = f.config.HuggingFaceModel
 	}
 	if model == "" {
-		model = "meta-llama/Llama-3.1-70B-Instruct"
+		model = huggingface.DefaultHuggingFaceModel
 	}
 
 	return huggingface.NewClient(huggingface.Config{
 		Token:       token,
 		Model:       model,
 		MaxTokens:   f.resolveMaxOutput("huggingface", model),
+		Temperature: f.config.Temperature,
+		Timeout:     time.Duration(f.config.Timeout) * time.Second,
+	}), nil
+}
+
+func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, error) {
+	endpoint := f.config.LiteLLMEndpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("LITELLM_ENDPOINT")
+	}
+	if endpoint == "" {
+		endpoint = os.Getenv("LITELLM_BASE_URL")
+	}
+
+	apiKey := f.config.LiteLLMAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("LITELLM_API_KEY")
+	}
+
+	if model == "" {
+		model = f.config.LiteLLMModel
+	}
+
+	return litellm.NewClient(litellm.Config{
+		Endpoint:    endpoint,
+		APIKey:      apiKey,
+		Model:       model,
+		MaxTokens:   f.resolveMaxOutput("litellm", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil

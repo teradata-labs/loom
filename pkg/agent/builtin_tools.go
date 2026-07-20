@@ -353,11 +353,12 @@ func generateRetrievalHints(meta *storage.DataMetadata) []string {
 
 	switch meta.DataType {
 	case "json_object":
-		// json_object doesn't support direct retrieval - data is too large for context
-		// Agent should understand structure from schema/preview and extract needed fields
+		// A json_object is retrievable by paginating it as text (windowed), so an
+		// agent can read back stored content (e.g. a web_search/http_request
+		// envelope) instead of hitting a dead end.
 		hints = append(hints,
-			"⚠️ Large json_object cannot be retrieved directly",
-			"💡 Review the preview and schema to understand structure",
+			"💡 query_tool_result(reference_id=..., offset=0, limit=100) — read the object (paginated)",
+			"💡 query_tool_result(reference_id=..., sql='SELECT * FROM results ...') — if it wraps a 'results' array",
 		)
 		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
 			fieldNames := make([]string, 0, len(meta.Schema.Fields))
@@ -368,7 +369,7 @@ func generateRetrievalHints(meta *storage.DataMetadata) []string {
 		}
 		// Add warning about size
 		if meta.SizeBytes > 100000 { // >100KB
-			hints = append(hints, fmt.Sprintf("⚠️ Object size: %d bytes - too large for context window", meta.SizeBytes))
+			hints = append(hints, fmt.Sprintf("⚠️ Large object (%d bytes) — paginate with offset/limit to avoid loading all at once", meta.SizeBytes))
 		}
 
 	case "json_array":
@@ -587,13 +588,15 @@ func (t *QueryToolResultTool) querySQLResult(ctx context.Context, refID string, 
 		}
 		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", meta.TableName, limit, offsetInt)
 	} else {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "Must provide 'sql' query or 'offset'/'limit' for pagination",
-			},
-		}, nil
+		// Neither 'sql' nor 'offset' given: return the first page rather than
+		// erroring. A bare reference_id is the common call (the model just wants
+		// to see the stored rows), so default to a capped page and let the model
+		// paginate or run SQL if it needs more.
+		limit := 100
+		if l, ok := input["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d", meta.TableName, limit)
 	}
 
 	// Execute query
@@ -654,12 +657,22 @@ func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string,
 		return t.paginateData(ref, meta, input)
 	}
 
-	// No valid query method provided
+	// No explicit method given. For a plain text result, default to pagination
+	// from offset 0 — returning the first page (bounded to a line window) is what
+	// an agent calling query_tool_result(ref) with no other args expects, and is
+	// far more useful than a hard error. A single-line result, e.g. an OpenData
+	// query's JSON blob, comes back whole. json_object is paginated like text
+	// (below); only json_array still requires an explicit method, so a large
+	// array is never auto-dumped.
+	if meta.DataType == "text" || meta.DataType == "json_object" {
+		return t.paginateData(ref, meta, input)
+	}
+
 	return &shuttle.Result{
 		Success: false,
 		Error: &shuttle.Error{
 			Code:       "invalid_input",
-			Message:    fmt.Sprintf("Data type '%s' requires specific query method", meta.DataType),
+			Message:    fmt.Sprintf("Data type '%s' requires a specific query method", meta.DataType),
 			Suggestion: "Check the tool result metadata and retrieval hints for supported query methods (e.g., offset/limit for text, sql for SQL results)",
 		},
 	}, nil
@@ -912,14 +925,17 @@ func (t *QueryToolResultTool) paginateData(ref *loomv1.DataReference, meta *stor
 	switch meta.DataType {
 	case "json_array":
 		return t.paginateJSONArray(data, offset, limit)
-	case "text":
+	case "text", "json_object":
+		// A json_object (e.g. a web_search/http_request result envelope) is a
+		// single blob with no item index, so window it as text — that lets an
+		// agent read back the stored content instead of hitting a dead end.
 		return t.paginateText(data, offset, limit)
 	default:
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "invalid_data_type",
-				Message:    fmt.Sprintf("Pagination only supports json_array and text, got %s", meta.DataType),
+				Message:    fmt.Sprintf("Pagination only supports json_array, json_object and text, got %s", meta.DataType),
 				Suggestion: "Check the tool result metadata and retrieval hints for supported query methods",
 			},
 		}, nil

@@ -5,7 +5,7 @@ Architectural overview of Loom - a Go framework for building **self-improving** 
 
 **Target Audience**: Architects, academics, and advanced developers seeking deep understanding of Loom's design.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -504,7 +504,7 @@ graph TD
 **Purpose**: Domain knowledge library with hot-reload and semantic search.
 
 **Key Features**:
-- 104 YAML patterns across 17 domains
+- 158 YAML patterns across 16 non-empty domains
 - Keyword-based scoring for pattern relevance ranking
 - Hot-reload with 89-143ms latency (fsnotify-based)
 - A/B testing support with variant selection strategies
@@ -975,7 +975,7 @@ sequenceDiagram
 
 | Operation | P50 | P99 | Notes |
 |-----------|-----|-----|-------|
-| Pattern matching | 8ms | 15ms | Keyword-based scoring over 104 patterns |
+| Pattern matching | 8ms | 15ms | Keyword-based scoring over the pattern library |
 | Pattern hot-reload | 89ms | 143ms | File watch + index rebuild + RWMutex cache swap |
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
@@ -1109,7 +1109,7 @@ sequenceDiagram
 
 ### Stable APIs (v1.0.0)
 
-**Core service protos** (22 total in `proto/loom/v1/`):
+**Core service protos** (25 total in `proto/loom/v1/`):
 - `loom.proto`: Primary gRPC service (LoomService + AdminService)
 - `agent_config.proto`: Agent configuration
 - `orchestration.proto`: Workflow specifications
@@ -1120,7 +1120,7 @@ sequenceDiagram
 - `memory.proto`: MemoryLayerService
 - `graph_memory.proto`: GraphMemoryService
 - `communication.proto`, `bus.proto`, `shared_memory.proto`: Communication primitives
-- `pattern.proto`, `eval.proto`, `backend.proto`, `collaboration.proto`, `docker.proto`, `apps.proto`, `skill.proto`, `project.proto`, `server.proto`, `storage.proto`: Supporting definitions
+- `pattern.proto`, `eval.proto`, `backend.proto`, `collaboration.proto`, `docker.proto`, `apps.proto`, `skill.proto`, `skills_import.proto`, `task.proto`, `templates.proto`, `project.proto`, `server.proto`, `storage.proto`: Supporting definitions
 
 **Guarantee**: No breaking changes in v1.x.y releases (validated via `buf breaking`).
 

@@ -36,7 +36,7 @@ func TestExecuteWorkflow_Validation(t *testing.T) {
 				Pattern: nil,
 			},
 			expectCode:  codes.InvalidArgument,
-			expectError: "pattern is required",
+			expectError: "either pattern or workflow_ref is required",
 		},
 		{
 			name: "no registry configured",
@@ -108,7 +108,7 @@ func TestStreamWorkflow_Validation(t *testing.T) {
 				Pattern: nil,
 			},
 			expectCode:  codes.InvalidArgument,
-			expectError: "pattern is required",
+			expectError: "either pattern or workflow_ref is required",
 		},
 		{
 			name: "no registry configured",

@@ -2804,6 +2804,29 @@
         ]
       }
     },
+    "/v1/workflows": {
+      "get": {
+        "summary": "ListWorkflows lists saved workflow definitions that can be run by name via\nExecuteWorkflow's workflow_ref. Lets a client discover existing workflows\ninstead of re-supplying a full pattern/YAML.",
+        "operationId": "LoomService_ListWorkflows",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkflowsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/workflows/executions": {
       "get": {
         "summary": "ListWorkflowExecutions lists workflow executions.",
@@ -5084,6 +5107,10 @@
         "enableTrace": {
           "type": "boolean",
           "title": "Optional: Enable tracing"
+        },
+        "workflowRef": {
+          "type": "string",
+          "description": "Optional: Run a saved workflow by name instead of supplying a pattern.\nThe server loads \u003cworkflow_ref\u003e.yaml from its workflows directory, so a\nclient can run an existing workflow with just variables — no need to\nre-supply the full pattern/YAML. Ignored when pattern is set."
         }
       },
       "description": "ExecuteWorkflowRequest initiates a workflow execution."
@@ -6122,6 +6149,19 @@
         }
       },
       "description": "ListWorkflowTemplatesResponse returns every registered template."
+    },
+    "v1ListWorkflowsResponse": {
+      "type": "object",
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowSummary"
+          }
+        }
+      },
+      "description": "ListWorkflowsResponse returns the saved workflows."
     },
     "v1LoadPatternsRequest": {
       "type": "object",
@@ -8779,6 +8819,26 @@
         "serviceRoleKey": {
           "type": "string",
           "title": "Supabase service role key (for server-side access)"
+        },
+        "projectRef": {
+          "type": "string",
+          "description": "Supabase project reference (e.g. \"abcdefghijklmnop\")."
+        },
+        "databasePassword": {
+          "type": "string",
+          "description": "Database password. SENSITIVE: prefer the LOOM_SUPABASE_DB_PASSWORD env var\nor the keyring over committing it to YAML."
+        },
+        "region": {
+          "type": "string",
+          "description": "Project region (e.g. \"us-east-1\"), used to construct the default pooler host."
+        },
+        "poolerHost": {
+          "type": "string",
+          "description": "Explicit pooler host override (e.g. \"aws-0-us-east-1.pooler.supabase.com\").\nThe aws-N prefix varies per project; set this from the dashboard when the\nregion-derived default does not match."
+        },
+        "database": {
+          "type": "string",
+          "description": "Database name (default: \"postgres\")."
         }
       },
       "description": "SupabaseConfig configures Supabase-specific features.\nSTATUS: Planned. Proto scaffold only — no implementation exists yet.\nThis message is reserved for a future PR that adds Supabase-hosted PostgreSQL support."
@@ -10259,6 +10319,24 @@
         }
       },
       "description": "WorkflowResult contains the execution results from a workflow pattern."
+    },
+    "v1WorkflowSummary": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name (the workflow_ref to pass to ExecuteWorkflow)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description (from the workflow's metadata, if any)."
+        },
+        "type": {
+          "type": "string",
+          "description": "Pattern type (pipeline, debate, fork-join, ...)."
+        }
+      },
+      "description": "WorkflowSummary describes a saved workflow available to run by name."
     },
     "v1WorkflowTemplate": {
       "type": "string",
