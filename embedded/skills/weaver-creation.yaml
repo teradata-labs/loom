@@ -43,7 +43,12 @@ prompt:
   output_format: |
     After creation, always provide:
     1. Summary of what was created (agents, workflow, skills)
-    2. Exact loom commands to run the agent/workflow
+    2. Exact loom commands to run the agent/workflow. The thread id is the
+       agent's name. Use exactly these forms and no others:
+         - Interactive TUI:  loom --thread <thread-id>
+         - One-shot CLI:     loom chat --thread <thread-id> "your message"
+       The --thread flag is required; never use a positional agent argument
+       (for example `loom chat <name>` is wrong) and do not invent other flags.
     3. Skill activation commands if skills were configured
     4. Reminder that user can return for modifications
 tools:

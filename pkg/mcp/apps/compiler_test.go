@@ -44,6 +44,20 @@ func validSpec() *loomv1.UIAppSpec {
 	}
 }
 
+func TestAssembledRuntime(t *testing.T) {
+	// assembledRuntime() should inject chart-legend.js into runtime.js at the marker
+	runtime := assembledRuntime()
+	require.NotEmpty(t, runtime)
+
+	// Should not contain the injection marker after assembly
+	assert.NotContains(t, runtime, legendInjectMarker,
+		"injection marker must be replaced in assembled runtime")
+
+	// Should contain content from chart-legend.js (like buildCustomLegend)
+	assert.Contains(t, runtime, "buildCustomLegend",
+		"assembled runtime must contain injected chart-legend.js code")
+}
+
 func TestNewCompiler(t *testing.T) {
 	c, err := NewCompiler()
 	require.NoError(t, err)
@@ -987,9 +1001,10 @@ func TestCompiler_SRIHashConsistency(t *testing.T) {
 
 func TestRuntimeJS_NoDangerousDOMAPIs(t *testing.T) {
 	// The runtime.js must NEVER use innerHTML, outerHTML, eval, document.write,
-	// or Function() constructor. These are XSS vectors.
+	// or Function() constructor. These are XSS vectors. Scan the assembled
+	// runtime so the injected chart-legend.js is covered too.
 
-	src := string(runtimeJS)
+	src := assembledRuntime()
 
 	dangerousPatterns := []struct {
 		pattern string
@@ -1101,4 +1116,70 @@ func TestRuntimeJS_ChartJSConfigNotPassthrough(t *testing.T) {
 				"runtime.js line %d: Chart.js must NOT receive raw props", i+1)
 		}
 	}
+}
+
+func TestRuntimeJS_CustomLegend(t *testing.T) {
+	// The custom HTML legend replaces Chart.js's on-canvas legend so it can
+	// scroll (carousel) and truncate long labels. It lives in chart-legend.js
+	// and is injected into runtime.js; verify the assembled runtime contains it.
+	assembled := assembledRuntime()
+
+	// Injection must have happened: marker replaced, legend builder present.
+	assert.NotContains(t, assembled, legendInjectMarker,
+		"chart-legend.js injection marker must be replaced in the assembled runtime")
+	assert.Contains(t, string(runtimeJS), legendInjectMarker,
+		"runtime.js must retain the injection marker for chart-legend.js")
+
+	invariants := []struct {
+		pattern string
+		reason  string
+	}{
+		{"display: false", "on-canvas Chart.js legend must be disabled"},
+		{"function buildCustomLegend(", "custom HTML legend builder must exist"},
+		{"function legendItemsFromChart(", "legend items must be derived without chart.legend"},
+		{"scrollBy(", "legend carousel must scroll horizontally via scrollBy"},
+		{"textOverflow: \"ellipsis\"", "long legend labels must truncate with an ellipsis"},
+		{"toggleDataVisibility(", "legend clicks must toggle slice visibility"},
+	}
+	for _, inv := range invariants {
+		assert.Contains(t, assembled, inv.pattern,
+			"assembled runtime must contain %q (%s)", inv.pattern, inv.reason)
+	}
+
+	// The full label text must be exposed via the native title tooltip, set
+	// through the safe attribute setter (never innerHTML).
+	assert.Contains(t, assembled, `setSafeAttribute(label, "title"`,
+		"legend must expose full label text via title attribute")
+
+	// The removed compact-legend branching must not linger — its presence would
+	// mean the legend could still render on-canvas at the top for some types.
+	assert.NotContains(t, assembled, "isCompactLegendChart",
+		"runtime must not reference the removed isCompactLegendChart flag")
+	assert.NotContains(t, assembled, `position: isCompactLegendChart`,
+		"legend must not use conditional top/bottom positioning")
+}
+
+func TestRuntimeJS_ColorPalette(t *testing.T) {
+	// Colors for slice/radar charts must come from a distinct-hue palette with
+	// HSL fallback so many slices/series stay differentiable.
+	src := string(runtimeJS)
+
+	invariants := []struct {
+		pattern string
+		reason  string
+	}{
+		{"function chartColorAt(", "chartColorAt palette/HSL helper must exist"},
+		{"function withChartAlpha(", "alpha helper must support hex and hsl colors"},
+		{`"hsl("`, "HSL generation must exist for high item counts"},
+		{"137.508", "golden-angle hue stepping must spread hues evenly"},
+	}
+	for _, inv := range invariants {
+		assert.Contains(t, src, inv.pattern,
+			"runtime.js must contain %q (%s)", inv.pattern, inv.reason)
+	}
+
+	// The old direct palette indexing for slices must be replaced by chartColorAt
+	// so the HSL overflow path is actually reachable.
+	assert.NotContains(t, src, "CHART_PALETTE[i % CHART_PALETTE.length] +",
+		"slice colors must route through chartColorAt, not raw palette indexing")
 }

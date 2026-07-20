@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -84,6 +85,11 @@ type FactoryConfig struct {
 	// HuggingFace configuration
 	HuggingFaceToken string
 	HuggingFaceModel string
+
+	// LiteLLM configuration
+	LiteLLMEndpoint string
+	LiteLLMAPIKey   string
+	LiteLLMModel    string
 
 	// Common settings
 	MaxTokens       int
@@ -151,6 +157,8 @@ func (f *ProviderFactory) CreateProvider(provider, model string) (interface{}, e
 		return f.createGeminiProvider(model)
 	case "huggingface":
 		return f.createHuggingFaceProvider(model)
+	case "litellm":
+		return f.createLiteLLMProvider(model)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -384,6 +392,34 @@ func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, 
 		Token:       token,
 		Model:       model,
 		MaxTokens:   f.resolveMaxOutput("huggingface", model),
+		Temperature: f.config.Temperature,
+		Timeout:     time.Duration(f.config.Timeout) * time.Second,
+	}), nil
+}
+
+func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, error) {
+	endpoint := f.config.LiteLLMEndpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("LITELLM_ENDPOINT")
+	}
+	if endpoint == "" {
+		endpoint = os.Getenv("LITELLM_BASE_URL")
+	}
+
+	apiKey := f.config.LiteLLMAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("LITELLM_API_KEY")
+	}
+
+	if model == "" {
+		model = f.config.LiteLLMModel
+	}
+
+	return litellm.NewClient(litellm.Config{
+		Endpoint:    endpoint,
+		APIKey:      apiKey,
+		Model:       model,
+		MaxTokens:   f.resolveMaxOutput("litellm", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil

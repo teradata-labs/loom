@@ -21,9 +21,17 @@ import (
 	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
 )
+
+// CreatedBySessionMetadataKey records, in task metadata, the conversation
+// session that created a task via this tool (create/decompose). Claims are a
+// separate lifecycle event (see executeClaim); this key lets callers scope
+// "tasks created in this conversation" without pre-claiming, which would
+// break the ready → claim workflow (ClaimTask requires an unclaimed task).
+const CreatedBySessionMetadataKey = task.CreatedBySessionMetadataKey
 
 // TaskBoardTool provides agent-facing task decomposition and kanban operations.
 // Actions: decompose, ready, claim, update, close, create, list, show, add_dep, board.
@@ -226,6 +234,7 @@ func (t *TaskBoardTool) executeDecompose(ctx context.Context, input map[string]i
 		MaxDepth:   maxDepth,
 		Strategy:   strategy,
 		AgentID:    t.agentID,
+		SessionID:  session.SessionIDFromContext(ctx),
 	})
 	if err != nil {
 		return errorResult("DECOMPOSE_ERROR", err.Error()), nil
@@ -277,7 +286,14 @@ func (t *TaskBoardTool) executeClaim(ctx context.Context, input map[string]inter
 		return errorResult("INVALID_PARAMETER", "task_id is required for claim"), nil
 	}
 
-	claimed, err := t.manager.ClaimTask(ctx, taskID, t.agentID, t.agentID+"-session")
+	// Record the real conversation session when the agent runs inside one
+	// (Chat sets it via session.WithSessionID); fall back to the legacy
+	// synthetic id so standalone/headless usage keeps prior behavior.
+	claimSession := session.SessionIDFromContext(ctx)
+	if claimSession == "" {
+		claimSession = t.agentID + "-session"
+	}
+	claimed, err := t.manager.ClaimTask(ctx, taskID, t.agentID, claimSession)
 	if err != nil {
 		return errorResult("CLAIM_ERROR", err.Error()), nil
 	}
@@ -377,6 +393,11 @@ func (t *TaskBoardTool) executeCreate(ctx context.Context, input map[string]inte
 		OwnerAgentID:    t.agentID,
 		BoardID:         boardID,
 		ParentID:        getStr(input, "parent_id"),
+	}
+	// Attribute the task to the conversation that created it (metadata, not a
+	// claim — pre-claiming would make the later ready → claim step fail).
+	if sid := session.SessionIDFromContext(ctx); sid != "" {
+		tk.Metadata = map[string]string{task.CreatedBySessionMetadataKey: sid}
 	}
 
 	created, err := t.manager.CreateTask(ctx, tk)

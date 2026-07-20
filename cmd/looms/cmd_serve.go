@@ -45,6 +45,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -622,6 +623,25 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			RateLimiterConfig: rlCfg,
 		}), nil
 
+	case "litellm":
+		endpoint := cfg.LiteLLMEndpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_BASE_URL")
+		}
+		key := apiKey(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
+		return litellm.NewClient(litellm.Config{
+			Endpoint:          endpoint,
+			APIKey:            key,
+			Model:             cfg.LiteLLMModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
 	}
@@ -686,6 +706,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.HuggingFaceModel
 		}
 		return "meta-llama/Llama-3.1-70B-Instruct"
+	case "litellm":
+		if cfg.LLM.LiteLLMModel != "" {
+			return cfg.LLM.LiteLLMModel
+		}
+		return litellm.DefaultModel
 	default:
 		return ""
 	}
@@ -836,8 +861,22 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Timeout:     timeout,
 		}), nil
 
+	case "litellm":
+		model := protoConfig.Model
+		if model == "" {
+			model = serverConfig.LLM.LiteLLMModel
+		}
+		return litellm.NewClient(litellm.Config{
+			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
+			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
+			Model:       model,
+			MaxTokens:   maxTokens,
+			Temperature: temperature,
+			Timeout:     timeout,
+		}), nil
+
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
 	}
 }
 
@@ -1415,6 +1454,11 @@ func runServe(cmd *cobra.Command, args []string) {
 		// HuggingFace
 		HuggingFaceToken: config.LLM.HuggingFaceToken,
 		HuggingFaceModel: config.LLM.HuggingFaceModel,
+
+		// LiteLLM
+		LiteLLMEndpoint: config.LLM.LiteLLMEndpoint,
+		LiteLLMAPIKey:   config.LLM.LiteLLMAPIKey,
+		LiteLLMModel:    config.LLM.LiteLLMModel,
 
 		// Common settings
 		MaxTokens:       config.LLM.MaxTokens,
