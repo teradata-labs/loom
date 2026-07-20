@@ -683,9 +683,6 @@ type MCPServerConfig struct {
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `mapstructure:"enable_resumption"`
 
-	// Headers are HTTP headers to send with requests (for http/sse/streamable-http transport)
-	Headers map[string]string `mapstructure:"headers"`
-
 	// Enabled controls whether this server should be started (default: true)
 	// CRITICAL: This field MUST be explicitly written during add/update operations
 	// to prevent the server being disabled on restart (Go zero-value is false).

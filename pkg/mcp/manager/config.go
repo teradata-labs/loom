@@ -64,9 +64,6 @@ type ServerConfig struct {
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `yaml:"enable_resumption" json:"enable_resumption"`
 
-	// Headers are HTTP headers to send with requests (for http/sse/streamable-http transport)
-	Headers map[string]string `yaml:"headers" json:"headers"`
-
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
 }
