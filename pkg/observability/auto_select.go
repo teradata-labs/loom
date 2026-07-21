@@ -312,7 +312,7 @@ func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
 		HawkAPIKey:          os.Getenv("HAWK_API_KEY"),
 		EmbeddedStorageType: getEnv("LOOM_EMBEDDED_STORAGE", "memory"),
 		EmbeddedSQLitePath:  os.Getenv("LOOM_EMBEDDED_SQLITE_PATH"),
-		OTLPEndpoint:        firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT"),
+		OTLPEndpoint:        resolveOTLPEndpointEnv(),
 		OTLPHeaders:         otlpHeaders,
 		OTLPInsecure:        os.Getenv("LOOM_OTLP_INSECURE") == "true",
 		ServiceName:         firstEnv("OTEL_SERVICE_NAME", ""),

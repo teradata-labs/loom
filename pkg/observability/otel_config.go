@@ -76,16 +76,25 @@ type OTelConfig struct {
 	SpanFilter SpanFilterConfig
 }
 
+// resolveOTLPEndpointEnv returns the OTLP traces endpoint from environment
+// variables, applying OTel-spec semantics:
+//   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: signal-specific; used verbatim.
+//   - OTEL_EXPORTER_OTLP_ENDPOINT: base URL per spec; /v1/traces is appended.
+//   - LOOM_OTLP_ENDPOINT: Loom-specific fallback; used verbatim.
+func resolveOTLPEndpointEnv() string {
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
+		return strings.TrimRight(v, "/") + "/v1/traces"
+	}
+	return os.Getenv("LOOM_OTLP_ENDPOINT")
+}
+
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		// Honor both the traces-specific variant and the base OTLP endpoint env
-		// var (the latter is more commonly documented in generic OTel guides).
-		cfg.Endpoint = firstEnv(
-			"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-			"OTEL_EXPORTER_OTLP_ENDPOINT",
-			"LOOM_OTLP_ENDPOINT",
-		)
+		cfg.Endpoint = resolveOTLPEndpointEnv()
 	}
 	if len(cfg.Headers) == 0 {
 		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {

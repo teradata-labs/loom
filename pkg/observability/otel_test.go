@@ -489,6 +489,73 @@ func TestResolveOTelConfig(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// resolveOTLPEndpointEnv — OTel spec semantics for the two standard env vars
+// ---------------------------------------------------------------------------
+
+func TestResolveOTLPEndpointEnv(t *testing.T) {
+	clearOTLPEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("LOOM_OTLP_ENDPOINT", "")
+	}
+
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
+		clearOTLPEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://collector:4318/v1/traces" {
+			t.Errorf("expected verbatim traces endpoint, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT gets /v1/traces appended (OTel spec)", func(t *testing.T) {
+		clearOTLPEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://localhost:4318/v1/traces" {
+			t.Errorf("expected /v1/traces appended, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT trailing slash stripped before append", func(t *testing.T) {
+		clearOTLPEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318/")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://localhost:4318/v1/traces" {
+			t.Errorf("expected clean /v1/traces path, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes priority over base var", func(t *testing.T) {
+		clearOTLPEnv(t)
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://traces-only:4318/v1/traces")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://base:4318")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://traces-only:4318/v1/traces" {
+			t.Errorf("traces-specific var should win, got %q", got)
+		}
+	})
+
+	t.Run("LOOM_OTLP_ENDPOINT fallback used verbatim", func(t *testing.T) {
+		clearOTLPEnv(t)
+		t.Setenv("LOOM_OTLP_ENDPOINT", "http://loom-specific:4318/v1/traces")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://loom-specific:4318/v1/traces" {
+			t.Errorf("expected LOOM_OTLP_ENDPOINT verbatim, got %q", got)
+		}
+	})
+
+	t.Run("empty when no env set", func(t *testing.T) {
+		clearOTLPEnv(t)
+		got := resolveOTLPEndpointEnv()
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Interface compliance
 // ---------------------------------------------------------------------------
 

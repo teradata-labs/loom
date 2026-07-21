@@ -208,7 +208,7 @@ The `OTelTracer` owns an OTel `TracerProvider` internally. On `StartSpan`, it cr
 
 **Responsibility**: Implement the `Tracer` interface, bridging Loom's span lifecycle to the OTel SDK while preserving Loom's context propagation model.
 
-**File**: `pkg/observability/otel.go` (📋 to be created)
+**File**: `pkg/observability/otel.go`
 
 **Core Structure**:
 ```
@@ -261,7 +261,8 @@ NewOTelTracer(cfg OTelConfig):
 ∀ span s: s.SpanID ∈ activeSpans during [StartSpan, EndSpan]
 ∀ span s: activeSpans[s.SpanID] deleted after EndSpan
 OTel span.TraceID = Loom span.TraceID (W3C hex format)
-OTel span.ParentSpanID = Loom span.ParentID (when non-empty)
+OTel span.ParentSpanID = parent OTel span from activeSpans (in-process)
+OTel span.ParentSpanID derived from Loom span.ParentID (cross-process fallback only)
 ```
 
 
@@ -269,7 +270,7 @@ OTel span.ParentSpanID = Loom span.ParentID (when non-empty)
 
 **Responsibility**: Map Loom's internal attribute constants (`AttrLLM*`, `AttrTool*`, etc.) to OTel's GenAI semantic conventions (`gen_ai.*`). This layer is what makes traces render correctly in Opik, Grafana, and other backends without custom configuration.
 
-**File**: `pkg/observability/otel_attrs.go` (📋 to be created)
+**File**: `pkg/observability/otel_attrs.go`
 
 **Translation is applied at `EndSpan` time**, not `StartSpan` — attributes are often set by calling code between the two, so translation must happen on completion.
 
@@ -294,7 +295,7 @@ default        → SpanKindInternal
 
 **Responsibility**: Carry all configuration required to construct an `OTelTracer` and resolve from environment variables.
 
-**File**: `pkg/observability/otel_config.go` (📋 to be created)
+**File**: `pkg/observability/otel_config.go`
 
 ```
 OTelConfig

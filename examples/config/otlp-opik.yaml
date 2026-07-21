@@ -4,7 +4,7 @@
 #   export AWS_ACCESS_KEY_ID="AKIA..."
 #   export AWS_SECRET_ACCESS_KEY="..."
 #   export AWS_SESSION_TOKEN="..."          # if using temporary credentials
-#   looms serve --config examples/config/looms-opik-test.yaml
+#   looms serve --config examples/config/otlp-opik.yaml
 #
 # Usage (AWS named profile):
 #   Set llm.bedrock_profile below, then run without exporting AWS_* vars.
