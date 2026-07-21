@@ -193,6 +193,31 @@ func TestAgent_ChatWithContentBlocks_EmptyBlocks(t *testing.T) {
 	assert.Empty(t, userMsg.ContentBlocks, "no blocks supplied means none forwarded")
 }
 
+// TestAgent_ChatWithContentBlocks_SuccessWithProgressCallback exercises the
+// success path with a non-nil progress callback: the call succeeds, returns a
+// response, and — unlike the error path — never emits a StageFailed event.
+func TestAgent_ChatWithContentBlocks_SuccessWithProgressCallback(t *testing.T) {
+	llm := &capturingLLM{response: "described"}
+	ag := contentBlocksTestAgent(llm)
+
+	var mu sync.Mutex
+	var stages []ExecutionStage
+	cb := func(ev ProgressEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		stages = append(stages, ev.Stage)
+	}
+
+	resp, err := ag.ChatWithContentBlocks(context.Background(), "ok_cb_session", "describe this", sampleBlocks(), cb)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "described", resp.Content)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.NotContains(t, stages, StageFailed, "successful turn must not emit a failure event")
+}
+
 // TestAgent_ChatWithContentBlocks_ErrorEmitsFailureEvent covers the error path:
 // a failing LLM propagates the error, returns a nil response, and — when a
 // progress callback is supplied — emits a StageFailed event.

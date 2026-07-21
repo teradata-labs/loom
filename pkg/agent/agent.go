@@ -1469,18 +1469,86 @@ func truncatePreview(s string) string {
 // Chat processes a user message and returns a response.
 // This is the main entry point for conversational interaction.
 func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName: "agent.chat",
+	})
+}
+
+// ChatWithProgress is like Chat but supports streaming progress updates.
+// The progressCallback will be called at key execution stages to report progress.
+// This is used by StreamWeave to provide real-time feedback to clients.
+func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName:         "agent.chat_with_progress",
+		progressCallback: progressCallback,
+		reportProgress:   true,
+	})
+}
+
+// ChatWithContentBlocks is like ChatWithProgress but the user turn carries
+// multimodal content blocks (text and/or images) alongside the plain-text
+// content. userMessage remains the canonical text (used for persistence,
+// graph-memory extraction, and providers without multimodal support);
+// contentBlocks take precedence when building the provider request for
+// providers that support them. progressCallback may be nil, in which case no
+// progress events are emitted (equivalent to Chat).
+func (a *Agent) ChatWithContentBlocks(ctx context.Context, sessionID string, userMessage string, contentBlocks []ContentBlock, progressCallback ProgressCallback) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName:            "agent.chat_with_content_blocks",
+		contentBlocks:       contentBlocks,
+		progressCallback:    progressCallback,
+		reportProgress:      true,
+		reportContentBlocks: true,
+	})
+}
+
+// chatParams configures the shared conversation lifecycle behind Chat,
+// ChatWithProgress, and ChatWithContentBlocks. Each public entry point sets only
+// the fields it needs so its span and telemetry stay identical to the
+// pre-refactor, hand-written form.
+type chatParams struct {
+	// spanName is the trace span name for this entry point.
+	spanName string
+
+	// contentBlocks, when present, is attached to the user turn so multimodal
+	// content reaches providers that support it. nil for text-only entry points.
+	contentBlocks []ContentBlock
+
+	// progressCallback, when non-nil, is threaded into context so nested
+	// operations (tools, backends, sub-agents) can report progress, and it
+	// receives a StageFailed event if the conversation loop errors.
+	progressCallback ProgressCallback
+
+	// reportProgress adds the "has_progress" field to the conversation.started
+	// event. Chat omits it; ChatWithProgress and ChatWithContentBlocks set it.
+	reportProgress bool
+
+	// reportContentBlocks adds the "message.content_blocks" span attribute and
+	// the "content_blocks" started-event field. ChatWithContentBlocks only.
+	reportContentBlocks bool
+}
+
+// chat runs the full conversation lifecycle — span setup, user-message
+// persistence, graph-memory kick-off, the conversation loop, and success/error
+// telemetry — shared by the three public chat entry points. See chatParams for
+// how each entry point tailors span name, multimodal content, and progress
+// reporting.
+func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
 	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()
-	ctx, span := a.tracer.StartSpan(ctx, "agent.chat")
+	ctx, span := a.tracer.StartSpan(ctx, p.spanName)
 	defer a.tracer.EndSpan(span)
 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
 	span.SetAttribute("message.preview", truncatePreview(userMessage))
+	if p.reportContentBlocks {
+		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
+	}
 	a.mu.RLock()
 	currentLLM := a.llm
 	a.mu.RUnlock()
@@ -1490,20 +1558,31 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
 	// Record conversation started event
-	span.AddEvent("conversation.started", map[string]interface{}{
+	startedEvent := map[string]interface{}{
 		"session_id":     sessionID,
 		"message_length": len(userMessage),
-	})
+	}
+	if p.reportContentBlocks {
+		startedEvent["content_blocks"] = len(p.contentBlocks)
+	}
+	if p.reportProgress {
+		startedEvent["has_progress"] = p.progressCallback != nil
+	}
+	span.AddEvent("conversation.started", startedEvent)
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
-	// Add user message to history
+	// Add user message to history. ContentBlocks (when present) take precedence
+	// over Content as providers build the request, so multimodal content reaches
+	// the model; Content remains the canonical text for persistence and providers
+	// without multimodal support.
 	userMsg := Message{
-		Role:      "user",
-		Content:   userMessage,
-		AgentID:   a.id, // Track which agent received this message
-		Timestamp: time.Now(),
+		Role:          "user",
+		Content:       userMessage,
+		ContentBlocks: p.contentBlocks,
+		AgentID:       a.id, // Track which agent received this message
+		Timestamp:     time.Now(),
 	}
 	session.AddMessage(ctx, userMsg)
 
@@ -1528,12 +1607,18 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		}()
 	}
 
-	// Create agent context
+	// Store progressCallback in context so nested operations (tools, backends) can access it.
+	// This enables sub-agent progress reporting (e.g., weaver's sub-agents).
+	if p.progressCallback != nil {
+		ctx = ContextWithProgressCallback(ctx, p.progressCallback)
+	}
+
+	// Create agent context (a nil progressCallback is fine — no events emitted)
 	agentCtx := &agentContext{
 		Context:          ctx,
 		session:          session,
 		tracer:           a.tracer,
-		progressCallback: nil, // No progress callback for regular Chat
+		progressCallback: p.progressCallback,
 	}
 
 	// Run conversation loop
@@ -1563,6 +1648,16 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
 			observability.AttrSessionID: sessionID,
 		})
+
+		// Emit failure event to the progress callback when one is registered.
+		if p.progressCallback != nil {
+			p.progressCallback(ProgressEvent{
+				Stage:     StageFailed,
+				Progress:  0,
+				Message:   fmt.Sprintf("Execution failed: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
@@ -1612,434 +1707,6 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
 	span.SetAttribute("response.preview", truncatePreview(response.Content))
-
-	// Check if we hit limits
-	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
-		span.SetAttribute("conversation.max_turns_hit", true)
-	}
-	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
-		span.SetAttribute("conversation.max_executions_hit", true)
-	}
-
-	// Record completion event
-	span.AddEvent("conversation.completed", map[string]interface{}{
-		"duration_ms":     duration.Milliseconds(),
-		"turns":           turns,
-		"tool_executions": toolExecs,
-		"cost_usd":        response.Usage.CostUSD,
-		"tokens":          response.Usage.TotalTokens,
-	})
-
-	// Emit metrics
-	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
-		observability.AttrSessionID: sessionID,
-		"status":                    "success",
-	})
-
-	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	return response, nil
-}
-
-// ChatWithProgress is like Chat but supports streaming progress updates.
-// The progressCallback will be called at key execution stages to report progress.
-// This is used by StreamWeave to provide real-time feedback to clients.
-func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error) {
-	// Inject session ID into context for tool access
-	ctx = session.WithSessionID(ctx, sessionID)
-
-	// Start trace span — always created; NoOpTracer handles disabled case
-	startTime := time.Now()
-	ctx, span := a.tracer.StartSpan(ctx, "agent.chat_with_progress")
-	defer a.tracer.EndSpan(span)
-
-	// Set initial attributes
-	span.SetAttribute(observability.AttrSessionID, sessionID)
-	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncatePreview(userMessage))
-	a.mu.RLock()
-	currentLLM := a.llm
-	a.mu.RUnlock()
-	span.SetAttribute("llm.provider", currentLLM.Name())
-	span.SetAttribute("llm.model", currentLLM.Model())
-	span.SetAttribute("config.max_turns", a.config.MaxTurns)
-	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-
-	// Record conversation started event
-	span.AddEvent("conversation.started", map[string]interface{}{
-		"session_id":     sessionID,
-		"message_length": len(userMessage),
-		"has_progress":   true,
-	})
-
-	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-
-	// Add user message to history
-	userMsg := Message{
-		Role:      "user",
-		Content:   userMessage,
-		AgentID:   a.id, // Track which agent received this message
-		Timestamp: time.Now(),
-	}
-	session.AddMessage(ctx, userMsg)
-
-	// Persist message if storage configured
-	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
-		// Log error but don't fail the request
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", userMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-
-	// Fire graph memory extraction on the incoming user message immediately,
-	// in parallel with the LLM processing it.
-	if a.enableGraphMemoryExtraction {
-		a.graphExtractionWG.Add(1)
-		go func() {
-			defer a.graphExtractionWG.Done()
-			a.extractGraphMemoryAsync(ctx, sessionID)
-		}()
-	}
-
-	// Store progressCallback in context so nested operations (tools, backends) can access it
-	// This enables sub-agent progress reporting (e.g., weaver's sub-agents)
-	if progressCallback != nil {
-		ctx = ContextWithProgressCallback(ctx, progressCallback)
-	}
-
-	// Create agent context with progress callback
-	agentCtx := &agentContext{
-		Context:          ctx, // Now contains progressCallback
-		session:          session,
-		tracer:           a.tracer,
-		progressCallback: progressCallback,
-	}
-
-	// Run conversation loop (will emit progress events)
-	response, err := a.runConversationLoop(agentCtx)
-
-	// Progressive disclosure: Check if conversation_memory tool should be registered
-	// (after first L2 swap event)
-	a.checkAndRegisterConversationMemoryTool(sessionID)
-	a.checkAndRegisterSessionMemoryTool(ctx)
-	a.checkAndRegisterGraphMemoryTool()
-	a.checkAndRegisterTaskBoardTool()
-
-	// Calculate total duration
-	duration := time.Since(startTime)
-
-	if err != nil {
-		span.Status = observability.Status{
-			Code:    observability.StatusError,
-			Message: err.Error(),
-		}
-		span.SetAttribute(observability.AttrErrorMessage, err.Error())
-		span.AddEvent("conversation.failed", map[string]interface{}{
-			"error":       err.Error(),
-			"duration_ms": duration.Milliseconds(),
-		})
-
-		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-
-		// Emit failure event
-		if progressCallback != nil {
-			progressCallback(ProgressEvent{
-				Stage:     StageFailed,
-				Progress:  0,
-				Message:   fmt.Sprintf("Execution failed: %v", err),
-				Timestamp: time.Now(),
-			})
-		}
-		return nil, fmt.Errorf("conversation loop failed: %w", err)
-	}
-
-	// Add assistant response to history
-	assistantMsg := Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id, // Track which agent generated this response
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
-	}
-	session.AddMessage(ctx, assistantMsg)
-
-	// Persist final message and session
-	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", assistantMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-	if err := a.memory.PersistSession(ctx, session); err != nil {
-		zap.L().Warn("Failed to persist session",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-
-	// Record success metrics and span attributes
-	span.Status = observability.Status{
-		Code: observability.StatusOK,
-	}
-
-	// Capture conversation metrics
-	turns := response.Metadata["turns"].(int)
-	toolExecs := response.Metadata["tool_executions"].(int)
-
-	span.SetAttribute("conversation.turns", turns)
-	span.SetAttribute("conversation.tool_executions", toolExecs)
-	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
-	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
-	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncatePreview(response.Content))
-
-	// Check if we hit limits
-	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
-		span.SetAttribute("conversation.max_turns_hit", true)
-	}
-	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
-		span.SetAttribute("conversation.max_executions_hit", true)
-	}
-
-	// Record completion event
-	span.AddEvent("conversation.completed", map[string]interface{}{
-		"duration_ms":     duration.Milliseconds(),
-		"turns":           turns,
-		"tool_executions": toolExecs,
-		"cost_usd":        response.Usage.CostUSD,
-		"tokens":          response.Usage.TotalTokens,
-	})
-
-	// Emit metrics
-	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
-		observability.AttrSessionID: sessionID,
-		"status":                    "success",
-	})
-
-	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
-		observability.AttrSessionID: sessionID,
-	})
-
-	// Note: We don't emit StageCompleted here - the caller (StreamWeave) will
-	// emit it with the full result included in the progress event
-
-	return response, nil
-}
-
-// ChatWithContentBlocks is like ChatWithProgress but the user turn carries
-// multimodal content blocks (text and/or images) alongside the plain-text
-// content. userMessage remains the canonical text (used for persistence,
-// graph-memory extraction, and providers without multimodal support);
-// contentBlocks take precedence when building the provider request for
-// providers that support them. progressCallback may be nil, in which case no
-// progress events are emitted (equivalent to Chat).
-func (a *Agent) ChatWithContentBlocks(ctx context.Context, sessionID string, userMessage string, contentBlocks []ContentBlock, progressCallback ProgressCallback) (*Response, error) {
-	// Inject session ID into context for tool access
-	ctx = session.WithSessionID(ctx, sessionID)
-
-	// Start trace span — always created; NoOpTracer handles disabled case
-	startTime := time.Now()
-	ctx, span := a.tracer.StartSpan(ctx, "agent.chat_with_content_blocks")
-	defer a.tracer.EndSpan(span)
-
-	// Set initial attributes
-	span.SetAttribute(observability.AttrSessionID, sessionID)
-	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncateString(userMessage, 100))
-	span.SetAttribute("message.content_blocks", len(contentBlocks))
-	a.mu.RLock()
-	currentLLM := a.llm
-	a.mu.RUnlock()
-	span.SetAttribute("llm.provider", currentLLM.Name())
-	span.SetAttribute("llm.model", currentLLM.Model())
-	span.SetAttribute("config.max_turns", a.config.MaxTurns)
-	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-
-	// Record conversation started event
-	span.AddEvent("conversation.started", map[string]interface{}{
-		"session_id":     sessionID,
-		"message_length": len(userMessage),
-		"content_blocks": len(contentBlocks),
-		"has_progress":   progressCallback != nil,
-	})
-
-	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-
-	// Add user message to history — ContentBlocks take precedence over Content
-	// when providers build the request, so multimodal content reaches the model.
-	userMsg := Message{
-		Role:          "user",
-		Content:       userMessage,
-		ContentBlocks: contentBlocks,
-		AgentID:       a.id, // Track which agent received this message
-		Timestamp:     time.Now(),
-	}
-	session.AddMessage(ctx, userMsg)
-
-	// Persist message if storage configured
-	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
-		// Log error but don't fail the request
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", userMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-
-	// Fire graph memory extraction on the incoming user message immediately,
-	// in parallel with the LLM processing it.
-	if a.enableGraphMemoryExtraction {
-		a.graphExtractionWG.Add(1)
-		go func() {
-			defer a.graphExtractionWG.Done()
-			a.extractGraphMemoryAsync(ctx, sessionID)
-		}()
-	}
-
-	// Store progressCallback in context so nested operations (tools, backends) can access it
-	if progressCallback != nil {
-		ctx = ContextWithProgressCallback(ctx, progressCallback)
-	}
-
-	// Create agent context with progress callback (nil is fine — no events emitted)
-	agentCtx := &agentContext{
-		Context:          ctx,
-		session:          session,
-		tracer:           a.tracer,
-		progressCallback: progressCallback,
-	}
-
-	// Run conversation loop
-	response, err := a.runConversationLoop(agentCtx)
-
-	// Progressive disclosure: Check if conversation_memory tool should be registered
-	// (after first L2 swap event)
-	a.checkAndRegisterConversationMemoryTool(sessionID)
-	a.checkAndRegisterSessionMemoryTool(ctx)
-	a.checkAndRegisterGraphMemoryTool()
-	a.checkAndRegisterTaskBoardTool()
-
-	// Calculate total duration
-	duration := time.Since(startTime)
-
-	if err != nil {
-		span.Status = observability.Status{
-			Code:    observability.StatusError,
-			Message: err.Error(),
-		}
-		span.SetAttribute(observability.AttrErrorMessage, err.Error())
-		span.AddEvent("conversation.failed", map[string]interface{}{
-			"error":       err.Error(),
-			"duration_ms": duration.Milliseconds(),
-		})
-
-		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-
-		// Emit failure event
-		if progressCallback != nil {
-			progressCallback(ProgressEvent{
-				Stage:     StageFailed,
-				Progress:  0,
-				Message:   fmt.Sprintf("Execution failed: %v", err),
-				Timestamp: time.Now(),
-			})
-		}
-		return nil, fmt.Errorf("conversation loop failed: %w", err)
-	}
-
-	// Add assistant response to history
-	assistantMsg := Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id, // Track which agent generated this response
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
-	}
-	session.AddMessage(ctx, assistantMsg)
-
-	// Persist final message and session
-	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", assistantMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-	if err := a.memory.PersistSession(ctx, session); err != nil {
-		zap.L().Warn("Failed to persist session",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		span.RecordError(err)
-	}
-
-	// Record success metrics and span attributes
-	span.Status = observability.Status{
-		Code: observability.StatusOK,
-	}
-
-	// Capture conversation metrics
-	turns := response.Metadata["turns"].(int)
-	toolExecs := response.Metadata["tool_executions"].(int)
-
-	span.SetAttribute("conversation.turns", turns)
-	span.SetAttribute("conversation.tool_executions", toolExecs)
-	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
-	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
-	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncateString(response.Content, 100))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
