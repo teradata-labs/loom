@@ -24,6 +24,11 @@ type PipelineExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.PipelinePattern
 	workflowID   string
+
+	// fingerprintOverride replaces the executor's own pattern fingerprint in
+	// checkpoints. Set by the iterative executor's plain-pipeline fallback so
+	// suspension/resume verify against the host-visible iterative pattern.
+	fingerprintOverride string
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -33,6 +38,61 @@ func NewPipelineExecutor(orchestrator *Orchestrator, pattern *loomv1.PipelinePat
 		pattern:      pattern,
 		workflowID:   workflowID,
 	}
+}
+
+// pipelineState is the inter-stage loop state of a pipeline run. It is built
+// fresh by Execute and rehydrated from a WorkflowCheckpoint by Resume — HITL
+// gates only fire at stage boundaries, so this fully describes a run.
+type pipelineState struct {
+	// Index of the stage to execute first.
+	startIndex int
+
+	// Append-only execution history (all attempts) for cost accounting.
+	allResults []*loomv1.AgentResult
+
+	// Full output per completed stage of the current pass, index-aligned.
+	stageOutputs []string
+
+	// Input for the next stage ({{previous}}).
+	currentInput string
+
+	// agent_id -> model name.
+	modelsUsed map[string]string
+
+	// Stages that continued with unvalidated output.
+	validationWarnings []string
+
+	// REVISE round-trips consumed per gated stage (agent_id -> count).
+	gateRevisions map[string]int32
+
+	// Feedback to thread into the next executed stage's prompt (consumed once).
+	revisionFeedback string
+
+	// Human-readable source of revisionFeedback for the prompt header.
+	revisionSource string
+}
+
+// pipelineFingerprint returns the fingerprint recorded in checkpoints taken
+// by this executor.
+func (e *PipelineExecutor) pipelineFingerprint() (string, error) {
+	if e.fingerprintOverride != "" {
+		return e.fingerprintOverride, nil
+	}
+	return pipelinePatternFingerprint(e.pattern)
+}
+
+// validateStagesAndAgents checks the pipeline is non-empty and every stage
+// agent resolves.
+func (e *PipelineExecutor) validateStagesAndAgents(ctx context.Context) error {
+	if len(e.pattern.Stages) == 0 {
+		return fmt.Errorf("pipeline has no stages")
+	}
+	for i, stage := range e.pattern.Stages {
+		if _, err := e.orchestrator.GetAgent(ctx, stage.AgentId); err != nil {
+			return fmt.Errorf("agent not found for stage %d: %s: %w", i, stage.AgentId, err)
+		}
+	}
+	return nil
 }
 
 // Execute runs the pipeline and returns the result.
@@ -57,26 +117,179 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 	e.orchestrator.logger.Info("Starting pipeline execution",
 		zap.Int("stages", len(e.pattern.Stages)))
 
-	// Check for empty pipeline
-	if len(e.pattern.Stages) == 0 {
-		return nil, fmt.Errorf("pipeline has no stages")
+	if err := e.validateStagesAndAgents(ctx); err != nil {
+		return nil, err
 	}
 
-	// Validate all agents exist
-	for i, stage := range e.pattern.Stages {
-		if _, err := e.orchestrator.GetAgent(ctx, stage.AgentId); err != nil {
-			return nil, fmt.Errorf("agent not found for stage %d: %s: %w", i, stage.AgentId, err)
+	state := &pipelineState{
+		startIndex:    0,
+		allResults:    make([]*loomv1.AgentResult, 0, len(e.pattern.Stages)),
+		stageOutputs:  make([]string, 0, len(e.pattern.Stages)),
+		currentInput:  e.pattern.InitialPrompt,
+		modelsUsed:    make(map[string]string),
+		gateRevisions: make(map[string]int32),
+	}
+
+	return e.executeFrom(ctx, startTime, workflowID, state)
+}
+
+// Resume continues a suspended pipeline from a WorkflowCheckpoint after a
+// human gate decision. REJECT is handled by Orchestrator.ResumeWorkflow; this
+// method applies APPROVE (continue at the next stage) and REVISE (jump back
+// to the gate's revise target with feedback threaded into its prompt).
+func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowCheckpoint, decision *loomv1.GateDecision) (*loomv1.WorkflowResult, error) {
+	startTime := time.Now()
+
+	fp, err := e.pipelineFingerprint()
+	if err != nil {
+		return nil, fmt.Errorf("resume: failed to fingerprint pipeline: %w", err)
+	}
+	if fp != ckpt.ConfigFingerprint {
+		return nil, fmt.Errorf("resume: workflow definition changed since suspension (fingerprint %s != checkpoint %s) — re-run the workflow instead", fp, ckpt.ConfigFingerprint)
+	}
+
+	workflowID := ckpt.WorkflowId
+	if workflowID == "" {
+		workflowID = e.workflowID
+	}
+
+	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.pipeline.resume")
+	defer e.orchestrator.tracer.EndSpan(workflowSpan)
+	if workflowSpan != nil {
+		workflowSpan.SetAttribute("workflow.type", "pipeline")
+		workflowSpan.SetAttribute("workflow.id", workflowID)
+		workflowSpan.SetAttribute("resume.decision", decision.Action.String())
+		workflowSpan.SetAttribute("resume.next_stage_index", fmt.Sprintf("%d", ckpt.NextStageIndex))
+	}
+
+	if err := e.validateStagesAndAgents(ctx); err != nil {
+		return nil, err
+	}
+
+	gatedIndex := int(ckpt.NextStageIndex) - 1
+	if gatedIndex < 0 || gatedIndex >= len(e.pattern.Stages) || len(ckpt.StageSnapshots) != gatedIndex+1 {
+		return nil, fmt.Errorf("resume: corrupt checkpoint (next_stage_index=%d, snapshots=%d, stages=%d)",
+			ckpt.NextStageIndex, len(ckpt.StageSnapshots), len(e.pattern.Stages))
+	}
+
+	state := &pipelineState{
+		allResults:         ckpt.AllResults,
+		stageOutputs:       make([]string, 0, len(e.pattern.Stages)),
+		modelsUsed:         ckpt.ModelsUsed,
+		validationWarnings: ckpt.ValidationWarnings,
+		gateRevisions:      ckpt.GateRevisionCounts,
+	}
+	if state.modelsUsed == nil {
+		state.modelsUsed = make(map[string]string)
+	}
+	if state.gateRevisions == nil {
+		state.gateRevisions = make(map[string]int32)
+	}
+	for _, snap := range ckpt.StageSnapshots {
+		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
+	}
+
+	switch decision.Action {
+	case loomv1.GateAction_GATE_ACTION_APPROVE:
+		state.startIndex = gatedIndex + 1
+		state.currentInput = e.deriveInputFromOutput(gatedIndex+1, state.stageOutputs[gatedIndex])
+
+	case loomv1.GateAction_GATE_ACTION_REVISE:
+		gate := e.pattern.Stages[gatedIndex].HitlGate
+		if gate == nil {
+			return nil, fmt.Errorf("resume: checkpointed gate stage %s has no hitl_gate", e.pattern.Stages[gatedIndex].AgentId)
 		}
+		if strings.TrimSpace(decision.Feedback) == "" {
+			return nil, fmt.Errorf("resume: REVISE decision requires feedback")
+		}
+		target, err := resolveReviseTarget(e.pattern.Stages, gatedIndex, gate)
+		if err != nil {
+			return nil, fmt.Errorf("resume: %w", err)
+		}
+		gatedAgentID := e.pattern.Stages[gatedIndex].AgentId
+		state.gateRevisions[gatedAgentID]++
+		if state.gateRevisions[gatedAgentID] > maxGateRevisions(gate) {
+			return nil, fmt.Errorf("resume: gate on stage %s exceeded max_revisions (%d)", gatedAgentID, maxGateRevisions(gate))
+		}
+		state.startIndex = target
+		state.stageOutputs = state.stageOutputs[:target]
+		if target == 0 {
+			state.currentInput = e.pattern.InitialPrompt
+		} else {
+			state.currentInput = e.deriveInputFromOutput(target, state.stageOutputs[target-1])
+		}
+		state.revisionFeedback = decision.Feedback
+		state.revisionSource = "human reviewer"
+
+	default:
+		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
 	}
 
-	// Execute pipeline stages sequentially
-	allResults := make([]*loomv1.AgentResult, 0, len(e.pattern.Stages))
-	stageOutputs := make([]string, 0, len(e.pattern.Stages))
-	currentInput := e.pattern.InitialPrompt
-	modelsUsed := make(map[string]string)
-	var validationWarnings []string // tracks stages that used unvalidated output
+	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
+	// shared_memory_read and truncation notices keep working after resume.
+	restoreWorkflowMemory(ctx, e.orchestrator, ckpt)
 
-	for i, stage := range e.pattern.Stages {
+	e.orchestrator.logger.Info("Resuming pipeline execution",
+		zap.String("workflow_id", workflowID),
+		zap.String("decision", decision.Action.String()),
+		zap.Int("start_stage", state.startIndex+1))
+
+	return e.executeFrom(ctx, startTime, workflowID, state)
+}
+
+// deriveInputFromOutput computes the {{previous}} input the next stage would
+// have received after the given stage completed (truncated with a SharedMemory
+// pointer when a store is available, full text otherwise).
+func (e *PipelineExecutor) deriveInputFromOutput(stageNum int, fullOutput string) string {
+	if e.orchestrator.sharedMemory == nil {
+		return fullOutput
+	}
+	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, fmt.Sprintf("stage-%d-output", stageNum))
+	return out
+}
+
+// buildCheckpoint captures the durable suspension state at the gate on stage
+// gatedIndex (whose output is the last entry of state.stageOutputs).
+func (e *PipelineExecutor) buildCheckpoint(ctx context.Context, workflowID string, state *pipelineState, gatedIndex int, gateReq *loomv1.HITLGateRequest) (*loomv1.WorkflowCheckpoint, error) {
+	fp, err := e.pipelineFingerprint()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fingerprint pipeline for checkpoint: %w", err)
+	}
+	snaps := make([]*loomv1.CheckpointStageSnapshot, 0, len(state.stageOutputs))
+	for idx, out := range state.stageOutputs {
+		snaps = append(snaps, &loomv1.CheckpointStageSnapshot{
+			AgentId:    e.pattern.Stages[idx].AgentId,
+			FullOutput: out,
+		})
+	}
+	return &loomv1.WorkflowCheckpoint{
+		CheckpointVersion:  CheckpointVersion,
+		ConfigFingerprint:  fp,
+		WorkflowId:         workflowID,
+		PatternType:        "pipeline",
+		NextStageIndex:     int32(gatedIndex + 1), // #nosec G115 -- stage counts are tiny
+		StageSnapshots:     snaps,
+		AllResults:         state.allResults,
+		ModelsUsed:         state.modelsUsed,
+		ValidationWarnings: state.validationWarnings,
+		GateRevisionCounts: state.gateRevisions,
+		PendingGate:        gateReq,
+		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator),
+		CreatedAtMs:        time.Now().UnixMilli(),
+	}, nil
+}
+
+// executeFrom runs pipeline stages starting at state.startIndex until
+// completion, suspension (HITL gate), rejection, or failure.
+func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time, workflowID string, state *pipelineState) (*loomv1.WorkflowResult, error) {
+	allResults := state.allResults
+	stageOutputs := state.stageOutputs
+	currentInput := state.currentInput
+	modelsUsed := state.modelsUsed
+	validationWarnings := state.validationWarnings
+
+	for i := state.startIndex; i < len(e.pattern.Stages); {
+		stage := e.pattern.Stages[i]
 		stageNum := i + 1
 
 		// Start stage-level span
@@ -91,8 +304,12 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 			zap.Int("total_stages", len(e.pattern.Stages)),
 			zap.String("agent_id", stage.AgentId))
 
-		// Build prompt for this stage
+		// Build prompt for this stage. Revision feedback (from a HITL gate
+		// REVISE decision) is threaded into the first stage executed after
+		// the jump, then consumed; the call also blanks stray placeholders.
 		prompt := e.buildStagePrompt(stage, currentInput, stageOutputs)
+		prompt = injectRevisionFeedback(prompt, state.revisionFeedback, state.revisionSource)
+		state.revisionFeedback = ""
 
 		// Execute stage with agent span
 		result, model, err := e.executeStageWithSpan(ctx, workflowID, stage, prompt, stageNum)
@@ -177,6 +394,80 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 			}
 		}
 
+		// HITL gate: evaluated after the stage's output passes validation and
+		// before the next stage starts. Default (no handler) is durable
+		// suspension via WorkflowSuspended; an inline handler may decide
+		// approve/revise/reject in-process.
+		if stage.HitlGate != nil {
+			// Sync loop-local slices back into state so the checkpoint (and
+			// revise bookkeeping) sees the current pass, not stale slices.
+			state.allResults = allResults
+			state.stageOutputs = stageOutputs
+			state.modelsUsed = modelsUsed
+			state.validationWarnings = validationWarnings
+
+			gateReq := buildGateRequest(workflowID, stage, stageNum, result.Output)
+			e.orchestrator.emitProgress(WorkflowProgressEvent{
+				PatternType:    "pipeline",
+				Message:        fmt.Sprintf("Stage %d of %d awaiting human review", stageNum, len(e.pattern.Stages)),
+				Progress:       int32(float64(stageNum) / float64(len(e.pattern.Stages)) * 100), // #nosec G115
+				CurrentAgentID: stage.AgentId,
+				PartialResults: allResults,
+				HITLRequest:    gateReq,
+			})
+
+			decision, gateErr := evaluateHITLGate(ctx, e.orchestrator, stage.HitlGate, gateReq)
+			if gateErr != nil {
+				return nil, gateErr
+			}
+			if decision == nil {
+				ckpt, ckptErr := e.buildCheckpoint(ctx, workflowID, state, i, gateReq)
+				if ckptErr != nil {
+					return nil, ckptErr
+				}
+				e.orchestrator.logger.Info("Pipeline suspended at HITL gate",
+					zap.String("workflow_id", workflowID),
+					zap.String("stage", stage.AgentId),
+					zap.Int("stage_num", stageNum))
+				return nil, &WorkflowSuspended{Checkpoint: ckpt}
+			}
+
+			switch decision.Action {
+			case loomv1.GateAction_GATE_ACTION_APPROVE:
+				// Fall through to advance normally.
+
+			case loomv1.GateAction_GATE_ACTION_REJECT:
+				return nil, &GateRejected{StageAgentID: stage.AgentId, Feedback: decision.Feedback}
+
+			case loomv1.GateAction_GATE_ACTION_REVISE:
+				target, terr := resolveReviseTarget(e.pattern.Stages, i, stage.HitlGate)
+				if terr != nil {
+					return nil, terr
+				}
+				state.gateRevisions[stage.AgentId]++
+				if state.gateRevisions[stage.AgentId] > maxGateRevisions(stage.HitlGate) {
+					return nil, fmt.Errorf("gate on stage %s exceeded max_revisions (%d)", stage.AgentId, maxGateRevisions(stage.HitlGate))
+				}
+				stageOutputs = stageOutputs[:target]
+				if target == 0 {
+					currentInput = e.pattern.InitialPrompt
+				} else {
+					currentInput = e.deriveInputFromOutput(target, stageOutputs[target-1])
+				}
+				state.revisionFeedback = decision.Feedback
+				state.revisionSource = "human reviewer"
+				e.orchestrator.logger.Info("Gate revision: restarting stage",
+					zap.String("gated_stage", stage.AgentId),
+					zap.Int("target_stage", target+1),
+					zap.Int32("revision", state.gateRevisions[stage.AgentId]))
+				i = target
+				continue
+
+			default:
+				return nil, fmt.Errorf("gate on stage %s received unsupported decision %s", stage.AgentId, decision.Action)
+			}
+		}
+
 		// Update input for next stage. Hybrid context passing: stash the FULL stage
 		// output in SharedMemory (key stage-N-output) so a later stage can fetch it
 		// by reference, and pass the next stage a truncated summary when the output
@@ -196,9 +487,14 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		} else {
 			currentInput = result.Output
 		}
+
+		i++
 	}
 
 	// The final output is the last stage's output
+	if len(stageOutputs) == 0 {
+		return nil, fmt.Errorf("pipeline produced no stage outputs")
+	}
 	finalOutput := stageOutputs[len(stageOutputs)-1]
 
 	// Calculate total cost

@@ -59,6 +59,34 @@ type IterativePipelineExecutor struct {
 
 	// Structured context for agent hallucination prevention
 	structuredContext *StructuredContext
+
+	// REVISE round-trips consumed per HITL gate (agent_id -> count)
+	gateRevisions map[string]int32
+
+	// Latest FULL (untruncated) output per stage, for checkpoint snapshots
+	fullOutputs map[string]string
+
+	// Feedback threaded into the next executed stage's prompt (consumed once).
+	// Set by HITL gate REVISE decisions and by restart requests (reason +
+	// parameters — previously logged only, never reaching the target stage).
+	pendingFeedback string
+	feedbackSource  string
+
+	// Resume state rehydrated from a WorkflowCheckpoint (nil for fresh runs)
+	resume *iterativeResumeState
+}
+
+// iterativeResumeState carries checkpoint-rehydrated loop state into
+// executeWithRestarts.
+type iterativeResumeState struct {
+	startStageIndex int
+	iteration       int
+	currentInput    string
+	stageOutputs    map[string]string // agent_id -> truncated output
+	fullOutputs     map[string]string // agent_id -> full output
+	allResults      []*loomv1.AgentResult
+	modelsUsed      map[string]string
+	snapshots       []*loomv1.CheckpointStageSnapshot // ordered, for context replay
 }
 
 // NewIterativePipelineExecutor creates a new iterative pipeline executor.
@@ -77,6 +105,8 @@ func NewIterativePipelineExecutor(
 		restartRequests:  make(chan *loomv1.RestartRequest, 10),
 		restartResponses: make(map[string]chan *loomv1.RestartResponse),
 		lastRestartTime:  make(map[string]time.Time),
+		gateRevisions:    make(map[string]int32),
+		fullOutputs:      make(map[string]string),
 	}
 }
 
@@ -130,8 +160,15 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 	// Check if restart policy is enabled
 	if e.pattern.RestartPolicy == nil || !e.pattern.RestartPolicy.Enabled {
 		e.orchestrator.logger.Info("Restart policy disabled, executing as standard pipeline")
-		// Fall back to standard pipeline execution
+		// Fall back to standard pipeline execution. Checkpoints taken there
+		// must fingerprint the host-visible ITERATIVE pattern, not the inner
+		// pipeline, so resume verification matches what the host resubmits.
 		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
+		if fp, err := iterativePatternFingerprint(e.pattern); err == nil {
+			executor.fingerprintOverride = fp
+		} else {
+			e.orchestrator.logger.Warn("failed to fingerprint iterative pattern for fallback executor", zap.Error(err))
+		}
 		return executor.Execute(ctx)
 	}
 
@@ -189,6 +226,17 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 
 	e.currentIteration = 1
 
+	// Rehydrate loop state when resuming from a HITL gate checkpoint.
+	if e.resume != nil {
+		stageOutputs = e.resume.stageOutputs
+		allResults = e.resume.allResults
+		modelsUsed = e.resume.modelsUsed
+		e.fullOutputs = e.resume.fullOutputs
+		if e.resume.iteration > 0 {
+			e.currentIteration = e.resume.iteration
+		}
+	}
+
 	// Initialize structured context for hallucination prevention
 	ctx, contextSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.structured_context.init")
 	e.structuredContext = NewStructuredContext(workflowID, "npath-discovery")
@@ -209,6 +257,21 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	// Execute pipeline stages
 	currentInput := e.pattern.Pipeline.InitialPrompt
 	stageIndex := 0
+	if e.resume != nil {
+		currentInput = e.resume.currentInput
+		stageIndex = e.resume.startStageIndex
+		// Replay completed stage outputs into the structured context
+		// (best-effort — parse failures are non-fatal, as in the main loop).
+		for i, snap := range e.resume.snapshots {
+			if snap.FullOutput == "" {
+				continue
+			}
+			if err := e.parseAndAddStageOutput(fmt.Sprintf("stage-%d", i+1), snap.AgentId, snap.FullOutput); err != nil {
+				e.orchestrator.logger.Debug("resume: stage output not parseable into structured context",
+					zap.String("stage_id", snap.AgentId), zap.Error(err))
+			}
+		}
+	}
 
 	for e.currentIteration <= int(maxIterations) {
 		if stageIndex >= len(e.pattern.Pipeline.Stages) {
@@ -242,6 +305,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 			}
 		}
 		prompt := e.buildStagePromptWithStructuredContext(stage, currentInput, outputsSlice)
+		// Thread pending revision/restart feedback into this stage's prompt
+		// (consumed once; blanks stray placeholders otherwise).
+		prompt = injectRevisionFeedback(prompt, e.pendingFeedback, e.feedbackSource)
+		e.pendingFeedback = ""
 
 		if promptSpan != nil {
 			// Add context size metrics
@@ -373,6 +440,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		// Store truncated output for context passing (includes SharedMemory reference if truncated)
 		truncatedForStorage, _ := truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
 		stageOutputs[stage.AgentId] = truncatedForStorage
+		e.fullOutputs[stage.AgentId] = result.Output
 		allResults = append(allResults, result)
 
 		// Try to parse stage output as JSON and add to structured context
@@ -435,6 +503,79 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 				zap.String("memory_key", stageMemoryKey))
 		}
 		currentInput = truncatedOutput
+
+		// HITL gate: evaluated after the stage completes and before the next
+		// stage (or restart handling). Default (no handler) is durable
+		// suspension via WorkflowSuspended.
+		if stage.HitlGate != nil {
+			gateReq := buildGateRequest(workflowID, stage, stageNum, result.Output)
+			totalStages := len(e.pattern.Pipeline.Stages)
+			e.orchestrator.emitProgress(WorkflowProgressEvent{
+				PatternType:    "iterative_pipeline",
+				Message:        fmt.Sprintf("Stage %d of %d awaiting human review", stageNum, totalStages),
+				Progress:       int32(float64(stageNum) / float64(totalStages) * 100), // #nosec G115
+				CurrentAgentID: stage.AgentId,
+				PartialResults: allResults,
+				HITLRequest:    gateReq,
+			})
+
+			decision, gateErr := evaluateHITLGate(execCtx, e.orchestrator, stage.HitlGate, gateReq)
+			if gateErr != nil {
+				return nil, gateErr
+			}
+			if decision == nil {
+				ckpt, ckptErr := e.buildCheckpoint(ctx, workflowID, gateReq, stageIndex, stageOutputs, allResults, modelsUsed)
+				if ckptErr != nil {
+					return nil, ckptErr
+				}
+				e.orchestrator.logger.Info("Iterative pipeline suspended at HITL gate",
+					zap.String("workflow_id", workflowID),
+					zap.String("stage", stage.AgentId),
+					zap.Int("stage_num", stageNum),
+					zap.Int("iteration", e.currentIteration))
+				return nil, &WorkflowSuspended{Checkpoint: ckpt}
+			}
+
+			switch decision.Action {
+			case loomv1.GateAction_GATE_ACTION_APPROVE:
+				// Fall through to restart handling / next stage.
+
+			case loomv1.GateAction_GATE_ACTION_REJECT:
+				return nil, &GateRejected{StageAgentID: stage.AgentId, Feedback: decision.Feedback}
+
+			case loomv1.GateAction_GATE_ACTION_REVISE:
+				target, terr := resolveReviseTarget(e.pattern.Pipeline.Stages, stageIndex, stage.HitlGate)
+				if terr != nil {
+					return nil, terr
+				}
+				e.gateRevisions[stage.AgentId]++
+				if e.gateRevisions[stage.AgentId] > maxGateRevisions(stage.HitlGate) {
+					return nil, fmt.Errorf("gate on stage %s exceeded max_revisions (%d)", stage.AgentId, maxGateRevisions(stage.HitlGate))
+				}
+				// Outputs from the target stage onward are superseded by the
+				// revision — drop them (mirrors restart semantics).
+				for i := target; i < len(e.pattern.Pipeline.Stages); i++ {
+					delete(stageOutputs, e.pattern.Pipeline.Stages[i].AgentId)
+					delete(e.fullOutputs, e.pattern.Pipeline.Stages[i].AgentId)
+				}
+				if target == 0 {
+					currentInput = e.pattern.Pipeline.InitialPrompt
+				} else {
+					currentInput = stageOutputs[e.pattern.Pipeline.Stages[target-1].AgentId]
+				}
+				e.pendingFeedback = decision.Feedback
+				e.feedbackSource = "human reviewer"
+				e.orchestrator.logger.Info("Gate revision: restarting stage",
+					zap.String("gated_stage", stage.AgentId),
+					zap.Int("target_stage", target+1),
+					zap.Int32("revision", e.gateRevisions[stage.AgentId]))
+				stageIndex = target
+				continue
+
+			default:
+				return nil, fmt.Errorf("gate on stage %s received unsupported decision %s", stage.AgentId, decision.Action)
+			}
+		}
 
 		// Check for restart requests (non-blocking)
 		select {
@@ -534,6 +675,12 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 
 			// Update last restart time
 			e.lastRestartTime[restartReq.TargetStageId] = time.Now()
+
+			// Thread the restart reason/parameters into the restarted stage's
+			// prompt. Previously these were logged only — the target stage
+			// never learned why it was restarted.
+			e.pendingFeedback = formatRestartFeedback(restartReq)
+			e.feedbackSource = fmt.Sprintf("stage %s restart request", restartReq.RequesterStageId)
 
 			// Jump back to target stage
 			stageIndex = targetIndex
@@ -1208,4 +1355,166 @@ func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) 
 		zap.Int("keys_deleted", len(listResp.Keys)))
 
 	return nil
+}
+
+// buildCheckpoint captures the durable suspension state of the iterative
+// pipeline at the gate on stage gatedIndex. Snapshots are index-aligned with
+// pipeline stages up to and including the gated stage; stages whose outputs a
+// restart discarded get empty placeholders so index-keyed re-seeding stays
+// correct on resume.
+func (e *IterativePipelineExecutor) buildCheckpoint(
+	ctx context.Context,
+	workflowID string,
+	gateReq *loomv1.HITLGateRequest,
+	gatedIndex int,
+	stageOutputs map[string]string,
+	allResults []*loomv1.AgentResult,
+	modelsUsed map[string]string,
+) (*loomv1.WorkflowCheckpoint, error) {
+	fp, err := iterativePatternFingerprint(e.pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fingerprint iterative pattern for checkpoint: %w", err)
+	}
+
+	snaps := make([]*loomv1.CheckpointStageSnapshot, 0, gatedIndex+1)
+	for idx := 0; idx <= gatedIndex; idx++ {
+		agentID := e.pattern.Pipeline.Stages[idx].AgentId
+		full := e.fullOutputs[agentID]
+		if full == "" {
+			// Fall back to the (possibly truncated) context copy if the full
+			// output is unavailable for a completed stage.
+			full = stageOutputs[agentID]
+		}
+		snaps = append(snaps, &loomv1.CheckpointStageSnapshot{
+			AgentId:    agentID,
+			FullOutput: full,
+		})
+	}
+
+	return &loomv1.WorkflowCheckpoint{
+		CheckpointVersion:  CheckpointVersion,
+		ConfigFingerprint:  fp,
+		WorkflowId:         workflowID,
+		PatternType:        "iterative_pipeline",
+		NextStageIndex:     int32(gatedIndex + 1), // #nosec G115 -- stage counts are tiny
+		StageSnapshots:     snaps,
+		AllResults:         allResults,
+		ModelsUsed:         modelsUsed,
+		Iteration:          types.SafeInt32(e.currentIteration),
+		GateRevisionCounts: e.gateRevisions,
+		PendingGate:        gateReq,
+		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator),
+		CreatedAtMs:        time.Now().UnixMilli(),
+	}, nil
+}
+
+// Resume continues a suspended iterative pipeline from a WorkflowCheckpoint
+// after a human gate decision. REJECT is handled by
+// Orchestrator.ResumeWorkflow; this method applies APPROVE and REVISE.
+func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowCheckpoint, decision *loomv1.GateDecision) (*loomv1.WorkflowResult, error) {
+	// A checkpoint taken by the restart-disabled fallback is a plain pipeline
+	// checkpoint (fingerprinted against the iterative pattern) — resume it the
+	// same way it was executed.
+	if e.pattern.RestartPolicy == nil || !e.pattern.RestartPolicy.Enabled {
+		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
+		if fp, err := iterativePatternFingerprint(e.pattern); err == nil {
+			executor.fingerprintOverride = fp
+		} else {
+			e.orchestrator.logger.Warn("failed to fingerprint iterative pattern for fallback resume", zap.Error(err))
+		}
+		return executor.Resume(ctx, ckpt, decision)
+	}
+
+	fp, err := iterativePatternFingerprint(e.pattern)
+	if err != nil {
+		return nil, fmt.Errorf("resume: failed to fingerprint iterative pattern: %w", err)
+	}
+	if fp != ckpt.ConfigFingerprint {
+		return nil, fmt.Errorf("resume: workflow definition changed since suspension (fingerprint %s != checkpoint %s) — re-run the workflow instead", fp, ckpt.ConfigFingerprint)
+	}
+
+	stages := e.pattern.Pipeline.Stages
+	gatedIndex := int(ckpt.NextStageIndex) - 1
+	if gatedIndex < 0 || gatedIndex >= len(stages) || len(ckpt.StageSnapshots) != gatedIndex+1 {
+		return nil, fmt.Errorf("resume: corrupt checkpoint (next_stage_index=%d, snapshots=%d, stages=%d)",
+			ckpt.NextStageIndex, len(ckpt.StageSnapshots), len(stages))
+	}
+
+	state := &iterativeResumeState{
+		iteration:    int(ckpt.Iteration),
+		stageOutputs: make(map[string]string),
+		fullOutputs:  make(map[string]string),
+		allResults:   ckpt.AllResults,
+		modelsUsed:   ckpt.ModelsUsed,
+		snapshots:    ckpt.StageSnapshots,
+	}
+	if state.modelsUsed == nil {
+		state.modelsUsed = make(map[string]string)
+	}
+	if ckpt.GateRevisionCounts != nil {
+		e.gateRevisions = ckpt.GateRevisionCounts
+	}
+	for i, snap := range ckpt.StageSnapshots {
+		if snap.FullOutput == "" {
+			continue
+		}
+		state.fullOutputs[snap.AgentId] = snap.FullOutput
+		truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, fmt.Sprintf("stage-%d-output", i+1))
+		state.stageOutputs[snap.AgentId] = truncated
+	}
+
+	switch decision.Action {
+	case loomv1.GateAction_GATE_ACTION_APPROVE:
+		state.startStageIndex = gatedIndex + 1
+		state.currentInput = state.stageOutputs[stages[gatedIndex].AgentId]
+
+	case loomv1.GateAction_GATE_ACTION_REVISE:
+		gate := stages[gatedIndex].HitlGate
+		if gate == nil {
+			return nil, fmt.Errorf("resume: checkpointed gate stage %s has no hitl_gate", stages[gatedIndex].AgentId)
+		}
+		if strings.TrimSpace(decision.Feedback) == "" {
+			return nil, fmt.Errorf("resume: REVISE decision requires feedback")
+		}
+		target, terr := resolveReviseTarget(stages, gatedIndex, gate)
+		if terr != nil {
+			return nil, fmt.Errorf("resume: %w", terr)
+		}
+		gatedAgentID := stages[gatedIndex].AgentId
+		e.gateRevisions[gatedAgentID]++
+		if e.gateRevisions[gatedAgentID] > maxGateRevisions(gate) {
+			return nil, fmt.Errorf("resume: gate on stage %s exceeded max_revisions (%d)", gatedAgentID, maxGateRevisions(gate))
+		}
+		for i := target; i < len(stages); i++ {
+			delete(state.stageOutputs, stages[i].AgentId)
+			delete(state.fullOutputs, stages[i].AgentId)
+		}
+		state.startStageIndex = target
+		if target == 0 {
+			state.currentInput = e.pattern.Pipeline.InitialPrompt
+		} else {
+			state.currentInput = state.stageOutputs[stages[target-1].AgentId]
+		}
+		e.pendingFeedback = decision.Feedback
+		e.feedbackSource = "human reviewer"
+
+	default:
+		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
+	}
+
+	// Restore agent-written SharedMemory and re-seed stage output keys before
+	// the resumed loop starts.
+	restoreWorkflowMemory(ctx, e.orchestrator, ckpt)
+
+	e.resume = state
+	e.orchestrator.logger.Info("Resuming iterative pipeline execution",
+		zap.String("workflow_id", ckpt.WorkflowId),
+		zap.String("decision", decision.Action.String()),
+		zap.Int("start_stage", state.startStageIndex+1),
+		zap.Int("iteration", state.iteration))
+
+	if ckpt.WorkflowId != "" {
+		e.workflowID = ckpt.WorkflowId
+	}
+	return e.Execute(ctx)
 }
