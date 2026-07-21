@@ -16,6 +16,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -97,6 +98,16 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 
 	// Execute the actual workflow.
 	result, err := t.inner.ExecutePattern(ctx, pattern)
+
+	// A HITL gate suspension is not a failure — the run resumes later against
+	// the same board, so leave task state untouched instead of closing
+	// in-progress tasks as failed.
+	var suspended *WorkflowSuspended
+	if errors.As(err, &suspended) {
+		t.logger.Info("task tracking: workflow suspended at HITL gate; board left open",
+			zap.String("gated_stage", suspended.Checkpoint.GetPendingGate().GetStageAgentId()))
+		return result, err
+	}
 
 	// Record results into tasks regardless of success/failure.
 	t.recordResults(ctx, stageTasks, result, err)

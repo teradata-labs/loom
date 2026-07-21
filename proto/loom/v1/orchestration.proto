@@ -112,6 +112,201 @@ message PipelineStage {
   // Optional: Unified output validation policy. When set, takes precedence
   // over the legacy validation_prompt + output_schema + retry_policy fields.
   OutputPolicy output_policy = 6;
+
+  // Optional: Human-in-the-loop approval gate evaluated AFTER this stage's
+  // output passes validation and BEFORE the next stage starts. When the gate
+  // fires, the executor either asks a configured HITLHandler for an inline
+  // decision or suspends the workflow with a WorkflowCheckpoint the host can
+  // persist and later resume. Gates are supported on pipeline and iterative
+  // patterns only.
+  HITLGate hitl_gate = 7;
+}
+
+// HITLGate declares a human approval gate on a pipeline stage boundary.
+// Gates are deterministic control flow — they always fire when configured,
+// unlike agent-initiated contact_human tool calls.
+message HITLGate {
+  // Prompt shown to the human reviewer. Supports the {{output}} placeholder,
+  // replaced with the gated stage's (possibly truncated) output.
+  // Empty = a default "review the output of stage N" prompt.
+  string prompt_template = 1;
+
+  // Request type shown to the host UI (approval, decision, input, review).
+  // Aligned with HITLRequestInfo.request_type. Default: "approval".
+  string request_type = 2;
+
+  // Advisory timeout for the human decision, in seconds. In suspend mode the
+  // HOST enforces expiry of the persisted checkpoint; in inline-handler mode
+  // the handler context is bounded by this timeout. 0 = host default.
+  int32 timeout_seconds = 3;
+
+  // Stage (agent_id) to restart when the decision is REVISE.
+  // Empty = restart the gated stage itself. Must be at or before the gated
+  // stage in pipeline order — forward jumps are invalid.
+  string revise_target_stage_id = 4;
+
+  // Maximum REVISE round-trips this gate accepts before the workflow fails
+  // (prevents endless review loops). Default: 3.
+  int32 max_revisions = 5;
+
+  // What to do when the decision times out (enforced by the host in suspend
+  // mode). Default (UNSPECIFIED) is treated as FAIL.
+  GateTimeoutAction on_timeout = 6;
+}
+
+// GateTimeoutAction defines gate behavior on decision timeout.
+enum GateTimeoutAction {
+  // Unset — treated as GATE_TIMEOUT_ACTION_FAIL.
+  GATE_TIMEOUT_ACTION_UNSPECIFIED = 0;
+
+  // Fail the workflow run (safe default).
+  GATE_TIMEOUT_ACTION_FAIL = 1;
+
+  // Treat as a rejection (workflow ends without executing later stages).
+  GATE_TIMEOUT_ACTION_REJECT = 2;
+
+  // Auto-approve and continue (use only for advisory gates).
+  GATE_TIMEOUT_ACTION_APPROVE = 3;
+}
+
+// HITLGateRequest is what the executor hands the host (or HITLHandler) when a
+// gate fires: everything a UI needs to render the review and collect a decision.
+message HITLGateRequest {
+  // Workflow ID of the suspended run (session determinism on resume).
+  string workflow_id = 1;
+
+  // Agent ID of the gated stage.
+  string stage_agent_id = 2;
+
+  // 1-based stage number of the gated stage.
+  int32 stage_number = 3;
+
+  // Rendered question for the human (prompt_template with {{output}} applied).
+  string question = 4;
+
+  // The full stage output under review.
+  string stage_output = 5;
+
+  // Request type (approval, decision, input, review).
+  string request_type = 6;
+
+  // Advisory decision timeout in seconds (from HITLGate.timeout_seconds).
+  int32 timeout_seconds = 7;
+
+  // Suggested decision options for the UI (e.g. approve, revise, reject).
+  repeated string options = 8;
+}
+
+// GateAction is the human's decision at a gate.
+enum GateAction {
+  // Unset — invalid; hosts must supply an explicit action.
+  GATE_ACTION_UNSPECIFIED = 0;
+
+  // Continue to the next stage.
+  GATE_ACTION_APPROVE = 1;
+
+  // Restart at HITLGate.revise_target_stage_id with GateDecision.feedback
+  // threaded into that stage's prompt ({{revision_feedback}}).
+  GATE_ACTION_REVISE = 2;
+
+  // End the workflow without executing later stages.
+  GATE_ACTION_REJECT = 3;
+}
+
+// GateDecision carries the human's decision back into the executor.
+message GateDecision {
+  // The action to take.
+  GateAction action = 1;
+
+  // Free-text feedback. Required for REVISE (it becomes {{revision_feedback}}
+  // in the restarted stage's prompt); optional context for APPROVE/REJECT.
+  string feedback = 2;
+
+  // Optional identity of the decision maker (audit metadata for the host).
+  string decided_by = 3;
+}
+
+// WorkflowCheckpoint is the durable suspension state of a pipeline or
+// iterative workflow, captured at a stage boundary when a HITL gate fires.
+// It never contains in-flight agent-loop state: gates only fire between
+// stages, so completed stage outputs plus counters fully describe the run.
+// Hosts persist this server-side; it is not intended for untrusted clients.
+message WorkflowCheckpoint {
+  // Checkpoint schema version for forward evolution. Current version: 1.
+  int32 checkpoint_version = 1;
+
+  // SHA-256 (hex) of the deterministically-marshaled WorkflowPattern this
+  // checkpoint was taken against. Resume MUST verify this matches the
+  // pattern it is resuming with — resuming against an edited workflow is
+  // how unreviewed changes would get executed.
+  string config_fingerprint = 2;
+
+  // Resolved workflow ID of the original run (keeps stage session IDs
+  // deterministic across suspend/resume).
+  string workflow_id = 3;
+
+  // Pattern type at suspension: "pipeline" or "iterative_pipeline".
+  string pattern_type = 4;
+
+  // 0-based index of the stage to execute on APPROVE (gated stage + 1).
+  int32 next_stage_index = 5;
+
+  // Latest full output per completed stage, ordered by stage index for the
+  // current pass. Used to rehydrate {{previous}}/{{history}} context and to
+  // re-seed SharedMemory stage-N-output keys on resume.
+  repeated CheckpointStageSnapshot stage_snapshots = 6;
+
+  // Append-only execution history (all attempts, including superseded ones)
+  // so cost accounting stays accurate across suspend/resume.
+  repeated AgentResult all_results = 7;
+
+  // Models used so far (agent_id -> model name).
+  map<string, string> models_used = 8;
+
+  // Validation warnings accumulated so far (plain pipeline graceful
+  // degradation path).
+  repeated string validation_warnings = 9;
+
+  // Iterative-pattern iteration counter at suspension (0 for plain pipeline).
+  int32 iteration = 10;
+
+  // REVISE round-trips consumed per gate (keyed by gated stage agent_id).
+  map<string, int32> gate_revision_counts = 11;
+
+  // The gate request awaiting a decision.
+  HITLGateRequest pending_gate = 12;
+
+  // Snapshot of agent-written WORKFLOW-namespace SharedMemory entries
+  // (stage-N-output keys are excluded — they are re-seeded from
+  // stage_snapshots). Restored on resume.
+  repeated CheckpointMemoryEntry shared_memory = 13;
+
+  // Checkpoint creation time (Unix milliseconds).
+  int64 created_at_ms = 14;
+}
+
+// CheckpointStageSnapshot is the latest full output of one completed stage.
+message CheckpointStageSnapshot {
+  // Agent ID of the stage.
+  string agent_id = 1;
+
+  // Full (untruncated) stage output.
+  string full_output = 2;
+}
+
+// CheckpointMemoryEntry is one preserved WORKFLOW-namespace SharedMemory entry.
+message CheckpointMemoryEntry {
+  // SharedMemory key.
+  string key = 1;
+
+  // Raw value bytes.
+  bytes value = 2;
+
+  // Agent that wrote the entry.
+  string agent_id = 3;
+
+  // Entry metadata.
+  map<string, string> metadata = 4;
 }
 
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
