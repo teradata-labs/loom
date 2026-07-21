@@ -1456,9 +1456,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		HuggingFaceModel: config.LLM.HuggingFaceModel,
 
 		// LiteLLM
-		LiteLLMEndpoint: config.LLM.LiteLLMEndpoint,
-		LiteLLMAPIKey:   config.LLM.LiteLLMAPIKey,
-		LiteLLMModel:    config.LLM.LiteLLMModel,
+		LiteLLMEndpoint:     config.LLM.LiteLLMEndpoint,
+		LiteLLMAPIKey:       config.LLM.LiteLLMAPIKey,
+		LiteLLMModel:        config.LLM.LiteLLMModel,
+		LiteLLMExtraHeaders: config.LLM.LiteLLMExtraHeaders,
 
 		// Common settings
 		MaxTokens:       config.LLM.MaxTokens,

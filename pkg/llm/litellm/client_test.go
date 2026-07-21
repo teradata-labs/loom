@@ -242,6 +242,32 @@ func TestClient_ChatStream_SimpleText(t *testing.T) {
 	assert.Contains(t, resp.Content, "Hi")
 }
 
+// TestClient_ExtraHeaders verifies that ExtraHeaders set on litellm.Config are
+// forwarded to the proxy on every request.
+func TestClient_ExtraHeaders(t *testing.T) {
+	var receivedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		writeChatResponse(w, "ok", 5, 3)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{
+		Endpoint: srv.URL,
+		Model:    DefaultModel,
+		ExtraHeaders: map[string]string{
+			"X-LiteLLM-Tags": "env=test,agent=loom",
+			"X-LiteLLM-User": "vasu",
+		},
+	})
+
+	_, err := c.Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "env=test,agent=loom", receivedHeaders.Get("X-LiteLLM-Tags"))
+	assert.Equal(t, "vasu", receivedHeaders.Get("X-LiteLLM-User"))
+}
+
 // TestClient_ImplementsLLMProvider is a compile-time interface assertion.
 func TestClient_ImplementsLLMProvider(t *testing.T) {
 	var _ llmtypes.LLMProvider = (*Client)(nil)
