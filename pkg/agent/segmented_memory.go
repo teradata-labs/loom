@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -366,28 +367,25 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 		}
 
 		if toCompressCount > 0 {
-			// CRITICAL: Ensure tool_use/tool_result pairs stay together
-			// If compression boundary splits a tool pair, adjust to keep them together
-			toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
-
 			// Track token count before compression
 			tokensBefore := sm.tokenCount
 
-			// Compress oldest messages to L2
-			toCompress := sm.l1Messages[:toCompressCount]
-			sm.l1Messages = sm.l1Messages[toCompressCount:]
+			// Compress oldest messages to L2, keeping the active user message
+			// pinned (evictL1Prefix also pair-adjusts the boundary).
+			toCompress := sm.evictL1Prefix(toCompressCount)
+			if len(toCompress) > 0 {
+				sm.compressToL2(ctx, toCompress)
+				// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
+				sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+				sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+				sm.l1Dirty = false
+				sm.updateTokenCount()
+				sm.tokenCountDirty = false
 
-			sm.compressToL2(ctx, toCompress)
-			// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
-			sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-			sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
-			sm.l1Dirty = false
-			sm.updateTokenCount()
-			sm.tokenCountDirty = false
-
-			// Log compression event with token savings
-			tokensSaved := tokensBefore - sm.tokenCount
-			sm.logCompressionEvent(len(toCompress), tokensSaved)
+				// Log compression event with token savings
+				tokensSaved := tokensBefore - sm.tokenCount
+				sm.logCompressionEvent(len(toCompress), tokensSaved)
+			}
 		}
 	}
 }
@@ -398,6 +396,67 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// evictL1Prefix removes roughly the first toCompressCount messages from L1
+// and returns them for compression — except the most recent user message,
+// which is never evicted. That message is the active objective the agent is
+// still executing; compressing it mid-turn replaces the question with a short
+// summary and the agent loses the tail of its own task (issue #262). If the
+// pinned message falls inside the eviction window, the window widens by one
+// (so pinning never shrinks the batch) and the pinned message is spliced out
+// and kept at the head of L1, preserving the relative order of the remaining
+// messages. Splicing a user message out of the prefix cannot split a
+// tool_use/tool_result group; the boundary is pair-adjusted here via
+// adjustCompressionBoundary, so callers must not pre-adjust.
+// Returns nil when nothing can safely be evicted. Must hold lock.
+func (sm *SegmentedMemory) evictL1Prefix(toCompressCount int) []Message {
+	if toCompressCount <= 0 || len(sm.l1Messages) == 0 {
+		return nil
+	}
+	if toCompressCount > len(sm.l1Messages) {
+		toCompressCount = len(sm.l1Messages)
+	}
+
+	pinnedIdx := -1
+	for i := len(sm.l1Messages) - 1; i >= 0; i-- {
+		if sm.l1Messages[i].Role == "user" {
+			pinnedIdx = i
+			break
+		}
+	}
+
+	// The pinned message doesn't count toward the eviction batch — widen the
+	// window by one so pinning can't shrink the batch to nothing.
+	if pinnedIdx >= 0 && pinnedIdx < toCompressCount && toCompressCount < len(sm.l1Messages) {
+		toCompressCount++
+	}
+
+	// CRITICAL: Ensure tool_use/tool_result pairs stay together.
+	// If the eviction boundary splits a tool pair, adjust to keep them together.
+	toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
+	if toCompressCount <= 0 {
+		return nil
+	}
+
+	if pinnedIdx < 0 || pinnedIdx >= toCompressCount {
+		// No user message, or the most recent one is outside the evicted
+		// prefix (an older user turn may still compress) — plain eviction.
+		toCompress := sm.l1Messages[:toCompressCount]
+		sm.l1Messages = sm.l1Messages[toCompressCount:]
+		return toCompress
+	}
+
+	// Splice the pinned message out of the prefix and keep it at the head of L1.
+	toCompress := make([]Message, 0, toCompressCount-1)
+	toCompress = append(toCompress, sm.l1Messages[:pinnedIdx]...)
+	toCompress = append(toCompress, sm.l1Messages[pinnedIdx+1:toCompressCount]...)
+
+	rest := make([]Message, 0, len(sm.l1Messages)-toCompressCount+1)
+	rest = append(rest, sm.l1Messages[pinnedIdx])
+	rest = append(rest, sm.l1Messages[toCompressCount:]...)
+	sm.l1Messages = rest
+	return toCompress
 }
 
 // adjustCompressionBoundary ensures tool_use/tool_result pairs stay together.
@@ -566,14 +625,11 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 				break
 			}
 
-			toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
-			if toCompressCount <= 0 {
-				break // adjustCompressionBoundary reduced to 0 — nothing safe to compress
-			}
-
 			tokensBefore := sm.tokenCount
-			toCompress := sm.l1Messages[:toCompressCount]
-			sm.l1Messages = sm.l1Messages[toCompressCount:]
+			toCompress := sm.evictL1Prefix(toCompressCount)
+			if len(toCompress) == 0 {
+				break // nothing safe to compress (pair boundary or pinned user message)
+			}
 			sm.compressToL2(ctx, toCompress)
 			sm.updateTokenCount()
 			sm.tokenCountDirty = false
@@ -918,8 +974,10 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 		// Extract key information
 		switch msg.Role {
 		case "user":
-			// User queries
-			parts = append(parts, fmt.Sprintf("User asked about: %s", sm.extractKeywords(msg.Content)))
+			// User queries — preserve the question itself. The user's request is
+			// the highest-value, lowest-cost string in the context; reducing it
+			// to a keyword stub destroys the agent's objective (issue #262).
+			parts = append(parts, fmt.Sprintf("User asked about: %s", truncateForSummary(msg.Content, maxSummaryUserQueryChars)))
 		case "assistant":
 			// Assistant actions
 			if sm.containsToolCall(msg) {
@@ -943,13 +1001,25 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 	return strings.Join(parts, "; ")
 }
 
-// extractKeywords pulls out key terms from text (simple heuristic)
-func (sm *SegmentedMemory) extractKeywords(text string) string {
-	// Simple keyword extraction - just take first 50 chars
-	if len(text) > 50 {
-		return text[:50] + "..."
+// maxSummaryUserQueryChars caps user message content preserved in compression
+// summaries. Generous on purpose: user questions are small, and losing their
+// tail loses the objective (issue #262 — a question truncated at 50 chars cut
+// `demo_user.telecocustomer` down to a table named "t"). Assistant/tool
+// content stays aggressively summarized — it is derivable from tool traces,
+// unlike the user's intent.
+const maxSummaryUserQueryChars = 500
+
+// truncateForSummary caps text at max bytes without splitting a UTF-8 rune,
+// appending "..." when truncated.
+func truncateForSummary(text string, max int) string {
+	if len(text) <= max {
+		return text
 	}
-	return text
+	cut := text[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
 
 // containsToolCall checks if message contains tool execution.

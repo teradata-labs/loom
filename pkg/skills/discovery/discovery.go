@@ -164,15 +164,22 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 	}
 
 	// Phase 1: slash command fast path.
-	if cmd, _ := skills.ParseSlashCommand(message); cmd != "" {
+	if cmd, rest := skills.ParseSlashCommand(message); cmd != "" {
 		if skill, ok := d.library.FindBySlashCommand(cmd); ok {
 			if eligible[skill.Name] {
+				// Mirror MatchSkills so both slash paths emit an identical
+				// TriggerValue for the same input (#196): carry the remainder
+				// when present, otherwise the bare command.
+				triggerValue := cmd
+				if rest != "" {
+					triggerValue = cmd + " " + rest
+				}
 				out := []*Candidate{{
 					Skill:        skill,
 					Mode:         modeByName[skill.Name],
 					Confidence:   1.0,
 					TriggerType:  "slash_command",
-					TriggerValue: cmd,
+					TriggerValue: triggerValue,
 				}}
 				recordActivatedSkills(span, out)
 				return out, nil

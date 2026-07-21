@@ -60,6 +60,27 @@ var appTemplateHTML []byte
 //go:embed html/runtime.js
 var runtimeJS []byte
 
+//go:embed html/chart-legend.js
+var chartLegendJS []byte
+
+// legendInjectMarker is the placeholder inside runtime.js's IIFE where the
+// chart-legend.js source is spliced in at build time so it shares the runtime's
+// closure scope (THEME, createElement, setSafeAttribute, SLICE_CHART_TYPES).
+const legendInjectMarker = "// __LOOM_INJECT_CHART_LEGEND__"
+
+// assembledRuntime returns runtime.js with chart-legend.js injected at the
+// marker. Injecting (rather than shipping a second <script>) keeps the legend
+// code inside the runtime IIFE where its helpers live.
+func assembledRuntime() string {
+	src := string(runtimeJS)
+	if !strings.Contains(src, legendInjectMarker) {
+		// No marker: fall back to the raw runtime so charts still render even if
+		// the legend cannot be injected.
+		return src
+	}
+	return strings.Replace(src, legendInjectMarker, string(chartLegendJS), 1)
+}
+
 // Compiler validates UIAppSpec and compiles it to standalone HTML.
 type Compiler struct {
 	catalog *ComponentCatalog
@@ -84,7 +105,7 @@ func NewCompiler() (*Compiler, error) {
 	return &Compiler{
 		catalog: NewComponentCatalog(),
 		tmpl:    tmpl,
-		runtime: string(runtimeJS),
+		runtime: assembledRuntime(),
 	}, nil
 }
 
