@@ -227,6 +227,8 @@ type MemoryCompressionConfigYAML struct {
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
+	YellowThresholdPercent   int                              `yaml:"yellow_threshold_percent"`
+	RedThresholdPercent      int                              `yaml:"red_threshold_percent"`
 }
 
 // MemoryCompressionBatchSizesYAML represents compression batch sizes in YAML
@@ -824,12 +826,22 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 	if err != nil {
 		return nil
 	}
+	yellowThreshold, err := safeInt32(yaml.YellowThresholdPercent, "YellowThresholdPercent")
+	if err != nil {
+		return nil
+	}
+	redThreshold, err := safeInt32(yaml.RedThresholdPercent, "RedThresholdPercent")
+	if err != nil {
+		return nil
+	}
 
 	config := &loomv1.MemoryCompressionConfig{
 		MaxL1Messages:            maxL1,
 		MinL1Messages:            minL1,
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
+		YellowThresholdPercent:   yellowThreshold,
+		RedThresholdPercent:      redThreshold,
 	}
 
 	// Parse workload profile string to enum

@@ -598,80 +598,14 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 	assert.Greater(t, int(resultData["count"].(float64)), 0)
 }
 
-// TestConversationMemoryTool_ClearAction tests clear action.
-func TestConversationMemoryTool_ClearAction(t *testing.T) {
-	// Create temporary database
-	tmpDB := t.TempDir() + "/test.db"
-	defer func() { _ = os.Remove(tmpDB) }()
-
-	// Create session store
-	tracer := observability.NewNoOpTracer()
-	store, err := NewSessionStore(tmpDB, tracer)
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	// Create memory with store
-	memory := NewMemory()
-	memory.store = store
-	memory.SetTracer(tracer)
-
-	// Create session
-	sessionID := "clear-test-session"
-	session := memory.GetOrCreateSession(context.Background(), sessionID)
-
-	// Add and recall messages
-	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
-	for i := 0; i < 10; i++ {
-		msg := Message{
-			Role:      "user",
-			Content:   fmt.Sprintf("Message %d", i),
-			Timestamp: time.Now(),
-		}
-		segMem.AddMessage(context.Background(), msg)
-		err := store.SaveMessage(context.Background(), sessionID, msg)
-		require.NoError(t, err)
-	}
-
-	// Force swap
-	segMem.SetMaxL2Tokens(50)
-	segMem.CompactMemory(context.Background())
-
-	// Recall messages to promote them
-	recalled, err := segMem.RetrieveMessagesFromSwap(context.Background(), 0, 5)
-	require.NoError(t, err)
-	err = segMem.PromoteMessagesToContext(recalled)
-	require.NoError(t, err)
-
-	// Verify promoted messages exist
-	promoted := segMem.GetPromotedContext()
-	assert.Greater(t, len(promoted), 0, "Should have promoted messages")
-
-	// Create tool and clear
-	tool := NewConversationMemoryTool(memory)
-	//nolint:staticcheck // SA1029: using string key to match tool API contract
-	ctx := context.WithValue(context.Background(), "session_id", sessionID)
-
-	input := map[string]interface{}{
-		"action": "clear",
-	}
-
-	result, err := tool.Execute(ctx, input)
-	require.NoError(t, err)
-	assert.True(t, result.Success)
-
-	var resultData map[string]interface{}
-	dataStr, _ := result.Data.(string)
-	err = json.Unmarshal([]byte(dataStr), &resultData)
-	require.NoError(t, err)
-
-	assert.Equal(t, "clear", resultData["action"])
-	assert.True(t, resultData["success"].(bool))
-	assert.Greater(t, int(resultData["cleared_count"].(float64)), 0)
-
-	// Verify promoted messages are cleared
-	promotedAfter := segMem.GetPromotedContext()
-	assert.Equal(t, 0, len(promotedAfter), "Promoted context should be empty")
-}
+// TestConversationMemoryTool_ClearAction ("clear" reports the promoted-context count it
+// cleared) is retired by D-2: the "clear" action's implementation
+// (conversation_memory_tool.go) is built entirely on GetPromotedContext/
+// ClearPromotedContext, both deleted along with the promoted-context channel (Seam 2
+// deletion manifest). There is no successor "clear" contract defined by this ticket, so
+// this coverage is retired, not rewritten. TestConversationMemoryTool_ClearErrors below
+// (the pre-condition error paths, reached before any promoted-context code runs) is
+// unaffected and stays covered.
 
 // TestConversationMemoryTool_ClearErrors tests clear error cases.
 func TestConversationMemoryTool_ClearErrors(t *testing.T) {
@@ -843,10 +777,6 @@ func TestConversationMemoryTool_Integration(t *testing.T) {
 	result, err = tool.Execute(ctx, clearInput)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
-
-	// Verify promoted context is empty
-	promoted := segMem.GetPromotedContext()
-	assert.Equal(t, 0, len(promoted))
 }
 
 // TestConversationMemoryTool_AsShuttleTool tests integration with shuttle.Tool wrapper.

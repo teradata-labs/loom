@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -205,6 +206,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
 		if err == nil && session != nil {
+			// Reclassify-on-restore: persisted classes are applied verbatim
+			// (SaveMessage/LoadMessages round-trip); rows predating the
+			// context_class column (or otherwise persisted empty) reclassify
+			// by the same structural rules used at construction.
+			session.Messages = reclassifyMessages(session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
 			// (they aren't persisted). Recreate them so compression and error
@@ -218,12 +224,16 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// Replay DB-loaded messages into a freshly built SegmentedMem so
 			// GetMessagesForLLM returns full history after server restart.
 			//
-			// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
-			// compression from firing between an assistant tool_use and its
-			// tool_result — see ReplayMessages doc for details.
+			// CRITICAL: Use ReplayMessages/RestoreFold (never AddMessage in a
+			// loop) to prevent compression from firing between an assistant
+			// tool_use and its tool_result — see ReplayMessages doc for
+			// details. restoreSegmentedMemory is fold-aware (O-RST-1/2,
+			// C-031/032): with a persisted fold it recomputes the fold-time
+			// carry and seeds L2 from the residue; otherwise it falls back to
+			// a full verbatim restore and the next red beat re-folds.
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-					segMem.ReplayMessages(ctx, session.Messages)
+					restoreSegmentedMemory(ctx, store, sessionID, session.Messages, segMem, logger)
 				}
 			}
 			m.sessions[sessionID] = session
@@ -359,6 +369,51 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 			segMem.maxToolResults = maxToolRes
 		}
 	}
+}
+
+// restoreSegmentedMemory performs the fold-aware restore (O-RST-1/2,
+// C-031/032, FR-027): with a persisted fold, L1 is set to
+// recompute_carry(flat[:foldIndex]) + flat[foldIndex:] and L2 to the
+// persisted residue; with an absent or unreadable fold, a full verbatim
+// restore occurs and the next red beat re-folds. No pressure is applied
+// either way — restore is pure bulk-load, no compression or eviction runs
+// here.
+//
+// The most recent fold is the LAST element of LoadMemorySnapshots (which
+// orders ASC, oldest first) — not a LIMIT 1 query, which would return the
+// OLDEST fold and restore a stale one once a session has folded more than
+// once (SC-003).
+func restoreSegmentedMemory(ctx context.Context, store SessionStorage, sessionID string, flat []Message, segMem *SegmentedMemory, logger *zap.Logger) {
+	if store == nil {
+		segMem.ReplayMessages(ctx, flat)
+		return
+	}
+
+	snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "l2_summary", 0)
+	switch {
+	case err != nil:
+		logger.Warn("Failed to load fold record — falling back to verbatim restore",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	case len(snaps) > 0:
+		latest := snaps[len(snaps)-1]
+		var rec foldRecord
+		if jsonErr := json.Unmarshal([]byte(latest.Content), &rec); jsonErr == nil &&
+			rec.FoldIndex >= 0 && rec.FoldIndex <= len(flat) {
+			carry := computeCarry(flat[:rec.FoldIndex])
+			l1 := make([]Message, 0, len(carry)+len(flat)-rec.FoldIndex)
+			l1 = append(l1, carry...)
+			l1 = append(l1, flat[rec.FoldIndex:]...)
+			segMem.RestoreFold(ctx, rec.Residue, l1, len(flat))
+			return
+		}
+		logger.Warn("Fold record unreadable — falling back to verbatim restore",
+			zap.String("session_id", sessionID))
+	}
+
+	// Absent or unreadable fold: full verbatim restore. l2Summary stays
+	// empty (ReplayMessages never touches it) — the next red beat re-folds.
+	segMem.ReplayMessages(ctx, flat)
 }
 
 // GetSession retrieves a session by ID.

@@ -44,6 +44,45 @@ type Tool interface {
 	Backend() string
 }
 
+// Context-class string constants. This is the single shared signal both the
+// pkg/agent tagger (D-3) and the pkg/shuttle/executor.go admission gate
+// (D-4) read — pkg/agent's ClassNarrative/ClassCharter/ClassLedger/
+// ClassBallast are declared in terms of these values, so the two packages
+// agree by construction.
+const (
+	ClassNarrative = ""
+	ClassCharter   = "charter"
+	ClassLedger    = "ledger"
+	ClassBallast   = "ballast"
+)
+
+// ContextClassHinter is implemented by tools that opt into ballast-class
+// context retention: a read-only data tool whose results are wrappable at
+// admission and evictable by the valve, recoverable via recall_context.
+// This is a whitelist mechanism, never a blacklist — a tool that does not
+// implement this interface (or returns anything other than "ballast")
+// classifies as ledger, the fail-safe default for tool results.
+type ContextClassHinter interface {
+	// ContextClassHint returns "ballast" to opt into ballast-class retention.
+	// Any other value (including "") is treated as no opinion.
+	ContextClassHint() string
+}
+
+// IsBallast reports whether tool has opted into ballast-class context
+// retention via ContextClassHinter. The admission gate (Executor.
+// handleLargeResult, D-4 Seam 1) wraps a result into a preview + reference
+// only when this returns true — charter and ledger results always enter
+// whole, regardless of size. A tool that does not implement
+// ContextClassHinter, or whose hint is anything other than "ballast", is
+// never wrappable.
+func IsBallast(tool Tool) bool {
+	if tool == nil {
+		return false
+	}
+	hinter, ok := tool.(ContextClassHinter)
+	return ok && hinter.ContextClassHint() == ClassBallast
+}
+
 // Result represents the outcome of tool execution.
 type Result struct {
 	// Success indicates if the tool executed successfully

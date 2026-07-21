@@ -41,6 +41,16 @@ type CompressionProfile struct {
 
 	// Number of messages to compress under critical threshold
 	CriticalBatchSize int
+
+	// Yellow-zone threshold as percentage (0-100) for the single-writer
+	// pressure pipeline (default: 70, overridable via agent config).
+	// At or above this usage, ValveEvict runs.
+	YellowThresholdPercent int
+
+	// Red-zone threshold as percentage (0-100) for the single-writer
+	// pressure pipeline (default: 85, overridable via agent config).
+	// At or above this usage, Fold runs.
+	RedThresholdPercent int
 }
 
 // ProfileDefaults provides preset profiles for common workload types.
@@ -55,6 +65,8 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		NormalBatchSize:          3,
 		WarningBatchSize:         5,
 		CriticalBatchSize:        7,
+		YellowThresholdPercent:   70,
+		RedThresholdPercent:      85,
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE: {
 		Name:                     "data_intensive",
@@ -65,6 +77,8 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		NormalBatchSize:          2,
 		WarningBatchSize:         4,
 		CriticalBatchSize:        6,
+		YellowThresholdPercent:   70,
+		RedThresholdPercent:      85,
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL: {
 		Name:                     "conversational",
@@ -75,6 +89,8 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		NormalBatchSize:          4,
 		WarningBatchSize:         6,
 		CriticalBatchSize:        8,
+		YellowThresholdPercent:   70,
+		RedThresholdPercent:      85,
 	},
 }
 
@@ -112,6 +128,12 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 	}
 	if config.CriticalThresholdPercent > 0 {
 		profile.CriticalThresholdPercent = int(config.CriticalThresholdPercent)
+	}
+	if config.YellowThresholdPercent > 0 {
+		profile.YellowThresholdPercent = int(config.YellowThresholdPercent)
+	}
+	if config.RedThresholdPercent > 0 {
+		profile.RedThresholdPercent = int(config.RedThresholdPercent)
 	}
 
 	// Override batch sizes if specified
@@ -165,6 +187,32 @@ func (p CompressionProfile) Validate() error {
 	if p.CriticalThresholdPercent <= p.WarningThresholdPercent {
 		return fmt.Errorf("critical_threshold_percent (%d) must be greater than warning_threshold_percent (%d)",
 			p.CriticalThresholdPercent, p.WarningThresholdPercent)
+	}
+
+	// Yellow/red zone thresholds: 0 means "not configured", which resolves to
+	// the documented defaults (yellow=70, red=85) rather than being validated
+	// as an explicit value. Only an explicitly-set (non-zero) value is checked
+	// against range and ordering constraints.
+	yellowPct := p.YellowThresholdPercent
+	if yellowPct == 0 {
+		yellowPct = 70
+	}
+	redPct := p.RedThresholdPercent
+	if redPct == 0 {
+		redPct = 85
+	}
+
+	if yellowPct < 0 || yellowPct > 100 {
+		return fmt.Errorf("yellow_threshold_percent must be 0-100, got %d", yellowPct)
+	}
+	if redPct < 0 || redPct > 100 {
+		return fmt.Errorf("red_threshold_percent must be 0-100, got %d", redPct)
+	}
+
+	// Red must be higher than yellow
+	if redPct <= yellowPct {
+		return fmt.Errorf("red_threshold_percent (%d) must be greater than yellow_threshold_percent (%d)",
+			redPct, yellowPct)
 	}
 
 	// Batch sizes must be positive and reasonable

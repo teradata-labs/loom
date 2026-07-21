@@ -18,7 +18,6 @@ package skills
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -345,8 +344,11 @@ func TestOrchestrator_ActivateSkill_Replaces(t *testing.T) {
 	assert.InDelta(t, 0.9, actives[0].Confidence, 0.001)
 }
 
-func TestOrchestrator_MaxConcurrentSkills(t *testing.T) {
-	// Create 5 skills with varying confidence.
+func TestActivateSkill_NoImplicitEviction_PastLegacyDefault(t *testing.T) {
+	// There is no implicit eviction (O-SKL-3): activating more skills than
+	// the legacy default MaxConcurrentSkills (3, still used to bound
+	// MatchSkills' candidate count) must never evict an existing active
+	// skill. The active set only shrinks via explicit DeactivateSkill.
 	skills := make([]*Skill, 5)
 	for i := range skills {
 		skills[i] = &Skill{
@@ -360,80 +362,36 @@ func TestOrchestrator_MaxConcurrentSkills(t *testing.T) {
 	orch := newTestOrchestrator(skills...)
 	sessionID := "sess-max"
 
-	// Activate 4 skills. The default max is 3, so the lowest confidence
-	// should be evicted after the 4th activation.
 	confidences := []float64{0.9, 0.5, 0.8, 0.7}
 	for i := 0; i < 4; i++ {
 		orch.ActivateSkill(sessionID, skills[i], "test", "", confidences[i])
 	}
 
 	actives := orch.GetActiveSkills(sessionID)
-	require.Len(t, actives, 3, "should evict to default max of 3")
+	require.Len(t, actives, 4, "no skill may be evicted just because the active count passed the legacy default of 3")
 
-	// The lowest confidence was 0.5 (skill-1), it should be evicted.
-	for _, a := range actives {
-		assert.NotEqual(t, "skill-1", a.Skill.Name, "lowest confidence skill should be evicted")
+	names := activeSkillNamesForSession(orch, sessionID)
+	for i := 0; i < 4; i++ {
+		assert.Contains(t, names, fmt.Sprintf("skill-%d", i))
 	}
 }
 
-func TestOrchestrator_FormatActiveSkillsForLLM(t *testing.T) {
-	skillA := &Skill{
-		Name:  "skill-a",
-		Title: "Skill A",
-		Prompt: SkillPrompt{
-			Instructions: "Instructions for A.",
-		},
+// activeSkillNamesForSession returns the set of skill names currently
+// active for a session, for assertion convenience.
+func activeSkillNamesForSession(o *Orchestrator, sessionID string) []string {
+	out := []string{}
+	for _, as := range o.GetActiveSkills(sessionID) {
+		out = append(out, as.Skill.Name)
 	}
-	skillB := &Skill{
-		Name:  "skill-b",
-		Title: "Skill B",
-		Prompt: SkillPrompt{
-			Instructions: "Instructions for B.",
-		},
-	}
-
-	orch := newTestOrchestrator(skillA, skillB)
-	sessionID := "sess-format"
-
-	// No active skills.
-	output := orch.FormatActiveSkillsForLLM(sessionID, 10000)
-	assert.Empty(t, output)
-
-	// Activate both.
-	orch.ActivateSkill(sessionID, skillA, "test", "", 1.0)
-	orch.ActivateSkill(sessionID, skillB, "test", "", 0.9)
-
-	output = orch.FormatActiveSkillsForLLM(sessionID, 10000)
-	assert.Contains(t, output, "## Skill: Skill A")
-	assert.Contains(t, output, "Instructions for A.")
-	assert.Contains(t, output, "## Skill: Skill B")
-	assert.Contains(t, output, "Instructions for B.")
-	assert.Contains(t, output, "---", "skills should be separated by ---")
+	return out
 }
 
-func TestOrchestrator_FormatActiveSkillsForLLM_TokenBudget(t *testing.T) {
-	// Create a skill with large instructions.
-	bigSkill := &Skill{
-		Name:  "big-skill",
-		Title: "Big Skill",
-		Prompt: SkillPrompt{
-			Instructions: strings.Repeat("x", 1000),
-		},
-	}
-
-	orch := newTestOrchestrator(bigSkill)
-	sessionID := "sess-budget"
-	orch.ActivateSkill(sessionID, bigSkill, "test", "", 1.0)
-
-	// Budget of 10 tokens = 40 chars, which is not enough for the big skill.
-	output := orch.FormatActiveSkillsForLLM(sessionID, 10)
-	assert.Empty(t, output, "skill should be skipped when it exceeds token budget")
-
-	// Budget of 10000 tokens = 40000 chars, which is enough.
-	output = orch.FormatActiveSkillsForLLM(sessionID, 10000)
-	assert.NotEmpty(t, output)
-	assert.Contains(t, output, "## Skill: Big Skill")
-}
+// TestOrchestrator_FormatActiveSkillsForLLM and TestOrchestrator_FormatActiveSkillsForLLM_
+// TokenBudget are retired by loom D-2 (TER-419): FormatActiveSkillsForLLM is deleted tree-
+// wide once its sole call site (pkg/agent's discovery block, agent.go) is removed — the
+// skill-body-into-context injection channel it formatted for is gone (Seam 2 deletion
+// manifest). There is no successor API in this package; the discovery *menu* D-6 adds is a
+// pkg/agent-side tail note, not a pkg/skills formatter.
 
 func TestOrchestrator_CleanupSession(t *testing.T) {
 	skill := &Skill{
@@ -506,7 +464,6 @@ func TestOrchestrator_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			sess := sessions[idx%len(sessions)]
 			_ = orch.GetActiveSkills(sess)
-			_ = orch.FormatActiveSkillsForLLM(sess, 5000)
 		}(i)
 	}
 
@@ -704,8 +661,10 @@ func TestDefaultSkillsConfig(t *testing.T) {
 }
 
 // TestOrchestrator_LogsActivationLifecycle verifies the orchestrator emits
-// info-level log entries for skill activation, replacement, deactivation,
-// and eviction so operators can trace which skills got picked per turn.
+// info-level log entries for skill activation, replacement, and
+// deactivation so operators can trace which skills got picked per turn.
+// There is no implicit eviction (O-SKL-3), so no "skill evicted" log is
+// ever emitted by ActivateSkill regardless of how many skills are active.
 func TestOrchestrator_LogsActivationLifecycle(t *testing.T) {
 	core, observed := observer.New(zapcore.InfoLevel)
 	logger := zap.New(core)
@@ -719,19 +678,18 @@ func TestOrchestrator_LogsActivationLifecycle(t *testing.T) {
 	for _, s := range []*Skill{skillA, skillB, skillC, skillD} {
 		lib.Register(s)
 	}
-	orch := NewOrchestrator(lib,
-		WithOrchestratorLogger(logger),
-		WithMaxConcurrentSkills(3),
-	)
+	orch := NewOrchestrator(lib, WithOrchestratorLogger(logger))
 
 	// Activate a fresh skill -> "skill activated".
 	orch.ActivateSkill("sess", skillA, "slash", "/skill-a", 1.0)
 	// Re-activate same skill -> "skill replaced".
 	orch.ActivateSkill("sess", skillA, "slash", "/skill-a", 0.9)
-	// Fill to cap, then evict.
+	// Activate more skills than the legacy default of 3 -- must not evict.
 	orch.ActivateSkill("sess", skillB, "keyword", "b", 0.6)
 	orch.ActivateSkill("sess", skillC, "keyword", "c", 0.5)
-	orch.ActivateSkill("sess", skillD, "keyword", "d", 0.8) // evicts skill-c (lowest confidence)
+	orch.ActivateSkill("sess", skillD, "keyword", "d", 0.8)
+
+	require.Len(t, orch.GetActiveSkills("sess"), 4, "no implicit eviction: all four skills stay active")
 
 	// Deactivate -> "skill deactivated".
 	orch.DeactivateSkill("sess", skillA.Name)
@@ -742,7 +700,7 @@ func TestOrchestrator_LogsActivationLifecycle(t *testing.T) {
 	}
 	assert.True(t, got["skill activated"], "expected at least one 'skill activated' log; got %v", got)
 	assert.True(t, got["skill replaced"], "expected 'skill replaced' log on duplicate ActivateSkill; got %v", got)
-	assert.True(t, got["skill evicted"], "expected 'skill evicted' log when active set exceeds cap; got %v", got)
+	assert.False(t, got["skill evicted"], "ActivateSkill must never log 'skill evicted': there is no implicit eviction")
 	assert.True(t, got["skill deactivated"], "expected 'skill deactivated' log; got %v", got)
 
 	// Spot-check that the activate entry carries the routing context.

@@ -17,6 +17,13 @@
 - There are no tools named receive_message, receive_broadcast, or subscribe. Messages arrive as injected context.
 - Agent IDs in workflows use `workflow:agent` format.
 
+## Skills and Patterns
+
+- A skill discovery menu, when it appears, lists candidates only — no skill is active until you call manage_skills(action="load", name="<name>"). Loading is always explicit.
+- A high-risk skill load returns a gate result instead of activating. Ask the user for approval before retrying, or continue without the skill.
+- A load that exceeds the active-skill safety cap returns an explicit error. Unload a skill you no longer need before loading another.
+- When a loaded skill's instructions say to wait for user approval before continuing, ending your turn to ask for that approval is task progress — not a stall or a failure.
+
 ## Quality
 
 - Never fabricate data. Only report what tools actually return.

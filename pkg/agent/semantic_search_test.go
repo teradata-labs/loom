@@ -411,56 +411,7 @@ func TestSearchMessages_Integration(t *testing.T) {
 	assert.Contains(t, results[0].Content, "SQL", "First result should be about SQL")
 }
 
-// TestSearchMessages_TokenBudget tests that promotion respects token budget.
-func TestSearchMessages_TokenBudget(t *testing.T) {
-	tmpDB := t.TempDir() + "/test.db"
-	defer func() { _ = os.Remove(tmpDB) }()
-
-	tracer := observability.NewNoOpTracer()
-	store, err := NewSessionStore(tmpDB, tracer)
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	// Create memory with small token budget
-	memory := NewMemory()
-	memory.store = store
-	memory.maxContextTokens = 500
-	memory.reservedOutputTokens = 100
-
-	sessionID := "budget-session"
-	session := memory.GetOrCreateSession(context.Background(), sessionID)
-
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	require.True(t, ok)
-
-	ctx := context.Background()
-
-	// Fill context near capacity
-	for i := 0; i < 10; i++ {
-		msg := Message{
-			Role:      "user",
-			Content:   "This is a message to fill up the token budget with some content.",
-			Timestamp: time.Now(),
-		}
-		segMem.AddMessage(context.Background(), msg)
-	}
-
-	// Save large messages to database
-	largeMsg := Message{
-		Role:      "user",
-		Content:   "This is a very long message that will exceed the token budget when promoted." + string(make([]byte, 2000)),
-		Timestamp: time.Now(),
-	}
-	err = store.SaveMessage(ctx, sessionID, largeMsg)
-	require.NoError(t, err)
-
-	// Search and attempt to promote
-	results, err := segMem.SearchMessages(ctx, "long message", 1)
-	require.NoError(t, err)
-	assert.Greater(t, len(results), 0, "Should find the message")
-
-	// Try to promote - should fail due to budget
-	err = segMem.PromoteMessagesToContext(results)
-	assert.Error(t, err, "Should fail to promote due to token budget exceeded")
-	assert.Contains(t, err.Error(), "token budget exceeded")
-}
+// TestSearchMessages_TokenBudget (promotion respects token budget) is retired by D-2:
+// SegmentedMemory.PromoteMessagesToContext is deleted along with the whole promoted-context
+// channel (Seam 2 deletion manifest) — SearchMessages itself (semantic recall) is
+// unaffected and stays covered by TestSearchMessages_Integration above.

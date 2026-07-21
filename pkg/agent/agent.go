@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -103,18 +104,6 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.PatternConfig == nil {
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
-
-	// Initialize automatic finding extraction with defaults if not set
-	if a.config.ExtractionCadence == 0 {
-		a.config.ExtractionCadence = 3 // Default: extract every 3 tool calls
-	}
-	if a.config.MaxFindings == 0 {
-		a.config.MaxFindings = 50 // Default: keep 50 findings
-	}
-	// Enable by default (can be explicitly disabled by setting enable_finding_extraction: false in config)
-	a.enableFindingExtraction = true
-	a.extractionCadence = a.config.ExtractionCadence
-	a.toolExecutionsSinceExtraction = 0
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -207,9 +196,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
 	// See formatToolResult() for automatic registration when error store is used
 
-	// REMOVED: Manual record_finding tool (replaced by automatic extraction)
-	// Findings are now automatically extracted from tool results using LLM-based semantic analysis
-	// See finding_extractor.go for implementation
+	// REMOVED: record_finding tool and automatic finding extraction (D-2 retired
+	// the findings working-memory channel entirely — it is not part of the
+	// three-part assembler contract: ROM (+fold residue) + L1).
 
 	// Initialize SQL result store for queryable large SQL results
 	// This allows filtering/aggregating SQL results without context blowout
@@ -278,6 +267,14 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
+	// Register recall_context eagerly (not progressive disclosure): unlike
+	// conversation_memory/session_memory, the valve (SegmentedMemory.
+	// ValveEvict) can fire on the very first turn that crosses the yellow
+	// zone, and its stub names recall_context immediately — the tool must
+	// already be in the LLM's tool list by the time a stub can appear (D-4
+	// Seam 3, C-F). recall_context depends only on a.memory, known here.
+	a.checkAndRegisterRecallContextTool()
+
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between
 	// skill activations and task board entries (skills overhaul Phase 6).
@@ -286,27 +283,20 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
 	}
 
-	// Install the sticky-while-open-tasks checker on the orchestrator
-	// when both the skill subsystem and the task subsystem are present.
-	// Eviction will treat any active skill with non-DONE+non-CANCELLED
-	// tasks for this (skill, session) pair as sticky, so in-flight work
-	// is never abandoned mid-turn. (Skills overhaul deferred work C.)
-	if a.skillOrchestrator != nil && a.taskManager != nil {
-		taskMgr := a.taskManager
-		a.skillOrchestrator.SetStickinessChecker(func(skillName, sessionID string) bool {
-			open, err := taskMgr.HasOpenSkillTasks(context.Background(), skillName, sessionID)
-			if err != nil {
-				// Treat lookup failures as "not sticky" so eviction can
-				// still proceed; logging is enough.
-				zap.L().Debug("stickiness check failed",
-					zap.String("skill", skillName),
-					zap.String("session", sessionID),
-					zap.Error(err))
-				return false
-			}
-			return open
-		})
-	}
+	// Register manage_skills eagerly when a skill orchestrator is wired.
+	// Activation is explicit-only (Seam 3): the per-turn discovery block
+	// never activates a skill itself, only this tool does — so it must be
+	// present in the LLM's tool list from the first turn whenever skills
+	// are configured at all. Registered after the skillTaskEmitter/
+	// taskBoardConfig wiring above so the tool captures their final values.
+	a.checkAndRegisterManageSkillsTool()
+
+	// Register manage_patterns when the caller opted in via
+	// WithPatternManagement (see doc comment on
+	// checkAndRegisterManagePatternsTool for why that option exists: the
+	// pattern orchestrator itself is unconditionally constructed above and
+	// so can't double as the opt-in signal).
+	a.checkAndRegisterManagePatternsTool()
 
 	// Construct the end-of-turn hygiene auditor + enforcer when both the
 	// skill and task subsystems are wired. The auditor inspects tasks
@@ -331,15 +321,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		)
 	}
 
-	// Install an eviction callback that boosts graph memory salience for
-	// entities related to the evicted skill. When a skill is evicted, its
-	// related knowledge becomes more relevant (the agent just used it),
+	// Install a deactivation callback that boosts graph memory salience for
+	// entities related to the deactivated skill. When a skill is unloaded,
+	// its related knowledge becomes more relevant (the agent just used it),
 	// so touching those memories strengthens future retrieval. Zero LLM
-	// calls — pure FTS search + TouchMemories.
+	// calls — pure FTS search + TouchMemories. There is no implicit
+	// eviction (O-SKL-3): this only fires from an explicit
+	// manage_skills(unload) or DeactivateSkill call.
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
 		agentName := a.config.Name
-		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
+		a.skillOrchestrator.SetOnSkillDeactivate(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
 			ctx := context.Background()
 
 			// Build search query from skill name + first 3 keywords.
@@ -354,7 +346,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 
 			entities, err := store.SearchEntities(ctx, agentName, query, 5)
 			if err != nil {
-				zap.L().Debug("eviction salience boost: entity search failed",
+				zap.L().Debug("deactivation salience boost: entity search failed",
 					zap.String("skill", skill.Name),
 					zap.String("session", sessionID),
 					zap.Error(err))
@@ -391,13 +383,13 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			}
 
 			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
-				zap.L().Debug("eviction salience boost: TouchMemories failed",
+				zap.L().Debug("deactivation salience boost: TouchMemories failed",
 					zap.String("skill", skill.Name),
 					zap.Error(touchErr))
 				return
 			}
 
-			zap.L().Debug("eviction salience boost: touched memories",
+			zap.L().Debug("deactivation salience boost: touched memories",
 				zap.String("skill", skill.Name),
 				zap.String("session", sessionID),
 				zap.Duration("active_for", activeFor),
@@ -611,6 +603,20 @@ func WithPatternInjection(enabled bool) Option {
 	}
 }
 
+// WithPatternManagement enables the manage_patterns builtin (list/load/unload
+// over the pattern library, Seam 1). Off by default: the pattern orchestrator
+// backing it is unconditionally constructed by NewAgent for the (unrelated,
+// already-on-by-default) automatic pattern-selection feature, so its mere
+// presence can't double as an opt-in signal the way a.skillOrchestrator != nil
+// does for manage_skills. This option is that signal instead — a plain
+// NewAgent call stays at the framework's zero-built-in-tools baseline until
+// a caller explicitly asks for pattern management.
+func WithPatternManagement(enabled bool) Option {
+	return func(a *Agent) {
+		a.patternManagementEnabled = enabled
+	}
+}
+
 // WithSkillOrchestrator sets the skill orchestrator for skill activation and injection.
 func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
 	return func(a *Agent) {
@@ -640,9 +646,9 @@ func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 }
 
 // skillNameSet returns the names currently active on a session as a set
-// keyed by skill name. Used by the four-phase pipeline to decide which
-// activations are "new this turn" so the task emitter only fires once per
-// activation event.
+// keyed by skill name. Used by manage_skills to decide whether a load is a
+// genuinely new activation (versus a re-load of an already-active skill),
+// so task emission and the safety-cap check only fire for new activations.
 func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
 	out := make(map[string]bool, len(active))
 	for _, as := range active {
@@ -651,6 +657,82 @@ func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
 		}
 	}
 	return out
+}
+
+// skillMenuCandidate is a normalized view of a skill discovery candidate,
+// used to render the per-beat skill discovery menu regardless of whether
+// the candidate came from the Discovery pipeline or the legacy MatchSkills
+// path. Listing a skill here implies nothing about its active state — the
+// menu is candidates-only (Seam 3, C-034); the model must call
+// manage_skills(action="load") explicitly to activate one.
+type skillMenuCandidate struct {
+	Name         string
+	Title        string
+	TriggerType  string
+	TriggerValue string
+	Confidence   float64
+}
+
+// toSkillMenuCandidates normalizes discovery.Candidate results into the
+// shared menu-rendering shape.
+func toSkillMenuCandidates(discovered []*discovery.Candidate) []skillMenuCandidate {
+	out := make([]skillMenuCandidate, 0, len(discovered))
+	for _, c := range discovered {
+		if c == nil || c.Skill == nil {
+			continue
+		}
+		out = append(out, skillMenuCandidate{
+			Name:         c.Skill.Name,
+			Title:        c.Skill.Title,
+			TriggerType:  c.TriggerType,
+			TriggerValue: c.TriggerValue,
+			Confidence:   c.Confidence,
+		})
+	}
+	return out
+}
+
+// toSkillMenuCandidatesFromMatches normalizes the legacy MatchSkills result
+// shape into the shared menu-rendering shape.
+func toSkillMenuCandidatesFromMatches(matches []*skills.MatchResult) []skillMenuCandidate {
+	out := make([]skillMenuCandidate, 0, len(matches))
+	for _, m := range matches {
+		if m == nil || m.Skill == nil {
+			continue
+		}
+		out = append(out, skillMenuCandidate{
+			Name:         m.Skill.Name,
+			Title:        m.Skill.Title,
+			TriggerType:  m.TriggerType,
+			TriggerValue: m.TriggerValue,
+			Confidence:   m.Confidence,
+		})
+	}
+	return out
+}
+
+// formatSkillDiscoveryMenu renders the per-beat skill candidate menu: the
+// skills discovery surfaced for this turn, with no activation implied.
+// Returns "" when there are no candidates so an empty menu never adds a
+// tail-note section.
+func formatSkillDiscoveryMenu(candidates []skillMenuCandidate) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[Skill Discovery]\nCandidates for this turn (not active — call manage_skills(action=\"load\", name=\"<name>\") to activate):\n")
+	for _, c := range candidates {
+		fmt.Fprintf(&sb, "- %s", c.Name)
+		if c.Title != "" {
+			fmt.Fprintf(&sb, " (%s)", c.Title)
+		}
+		fmt.Fprintf(&sb, " — trigger: %s", c.TriggerType)
+		if c.TriggerValue != "" {
+			fmt.Fprintf(&sb, " %q", c.TriggerValue)
+		}
+		fmt.Fprintf(&sb, ", confidence %.2f\n", c.Confidence)
+	}
+	return sb.String()
 }
 
 // enforceRequiredSkillTools auto-registers tools listed in active skills'
@@ -709,36 +791,46 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 // The filter is per-turn (no permanent unregistration) so deactivating a
 // skill restores its excluded tools on subsequent turns automatically.
 func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []shuttle.Tool {
-	if a.skillOrchestrator == nil || session == nil {
-		return in
-	}
-	sessionID := session.ID
-	if sessionID == "" {
-		sessionID = a.id
-	}
-	active := a.skillOrchestrator.GetActiveSkills(sessionID)
-	if len(active) == 0 {
-		return in
-	}
-	excluded := make(map[string]bool)
-	for _, as := range active {
-		if as == nil || as.Skill == nil {
-			continue
+	out := in
+
+	if a.skillOrchestrator != nil && session != nil {
+		sessionID := session.ID
+		if sessionID == "" {
+			sessionID = a.id
 		}
-		for _, name := range as.Skill.Tools.ExcludedTools {
-			excluded[name] = true
+		active := a.skillOrchestrator.GetActiveSkills(sessionID)
+		if len(active) > 0 {
+			excluded := make(map[string]bool)
+			for _, as := range active {
+				if as == nil || as.Skill == nil {
+					continue
+				}
+				for _, name := range as.Skill.Tools.ExcludedTools {
+					excluded[name] = true
+				}
+			}
+			if len(excluded) > 0 {
+				filtered := make([]shuttle.Tool, 0, len(in))
+				for _, tool := range in {
+					if excluded[tool.Name()] {
+						continue
+					}
+					filtered = append(filtered, tool)
+				}
+				out = filtered
+			}
 		}
 	}
-	if len(excluded) == 0 {
-		return in
-	}
-	out := make([]shuttle.Tool, 0, len(in))
-	for _, tool := range in {
-		if excluded[tool.Name()] {
-			continue
+
+	// The effective tool set for this turn is now final: measure its
+	// tool-schema token cost (O-TOK-1). RecomputeToolSchema fingerprints the
+	// set internally, so this is a cheap no-op on turns where nothing changed.
+	if session != nil {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.RecomputeToolSchema(out)
 		}
-		out = append(out, tool)
 	}
+
 	return out
 }
 
@@ -773,6 +865,7 @@ func (a *Agent) RegisterTool(tool shuttle.Tool) {
 		return
 	}
 	a.tools.Register(tool)
+	a.refreshToolSchemaTokens()
 }
 
 // RegisterTools registers multiple tools, honouring per-name suppression.
@@ -785,6 +878,25 @@ func (a *Agent) RegisterTools(tools ...shuttle.Tool) {
 // UnregisterTool unregisters a tool by name.
 func (a *Agent) UnregisterTool(name string) {
 	a.tools.Unregister(name)
+	a.refreshToolSchemaTokens()
+}
+
+// refreshToolSchemaTokens recomputes the measured tool-schema token cost
+// (O-TOK-1) for every session's SegmentedMemory from the current live tool
+// set. Called whenever the registered tool set changes (register, unregister,
+// lazy-tool promotion) so token-budget reporting stays current; each
+// session's RecomputeToolSchema call is a cheap no-op when its effective
+// (post-exclusion) set hasn't actually changed.
+func (a *Agent) refreshToolSchemaTokens() {
+	if a.memory == nil {
+		return
+	}
+	tools := a.tools.ListTools()
+	for _, sess := range a.memory.ListSessions() {
+		if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.RecomputeToolSchema(tools)
+		}
+	}
 }
 
 // RegisterLazyTools registers tools that will only be added to the active tool set
@@ -807,6 +919,7 @@ func (a *Agent) evaluateLazyTools(msg string) {
 	copy(sets, a.lazyToolSets)
 	a.mu.RUnlock()
 
+	changed := false
 	for _, set := range sets {
 		// Short-circuit if all tools in this set are already registered.
 		allRegistered := true
@@ -823,9 +936,14 @@ func (a *Agent) evaluateLazyTools(msg string) {
 			for _, t := range set.tools {
 				if !a.tools.IsRegistered(t.Name()) {
 					a.tools.Register(t)
+					changed = true
 				}
 			}
 		}
+	}
+
+	if changed {
+		a.refreshToolSchemaTokens()
 	}
 }
 
@@ -915,7 +1033,6 @@ func (a *Agent) GetContextState(sessionID string) *ContextState {
 	}
 
 	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-		state.ActivePattern = segMem.GetActivePattern()
 		state.ContextTokensUsed = int64(segMem.GetTokenCount())
 		state.ContextTokensMax = int64(segMem.GetTokenBudgetMax())
 	}
@@ -925,6 +1042,10 @@ func (a *Agent) GetContextState(sessionID string) *ContextState {
 
 // ResetSessionContext clears the context window for a session, preserving ROM and
 // registered tools. Returns true if the session was found and reset, false otherwise.
+//
+// This is the SOLE caller of AggressiveTrim/TrimLastN (C-H): the class-blind
+// trim step runs only here, reachable only via the user-surfaced
+// reset_context action — never automatically from the loop pressure path.
 func (a *Agent) ResetSessionContext(sessionID string) bool {
 	sess, ok := a.memory.GetSession(sessionID)
 	if !ok || sess == nil {
@@ -933,6 +1054,14 @@ func (a *Agent) ResetSessionContext(sessionID string) bool {
 
 	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 		segMem.ResetContext()
+
+		keepLastN := DefaultRecoveryConfig().AggressiveTrimKeepLastN
+		if a.config.RecoveryConfig != nil {
+			keepLastN = a.config.RecoveryConfig.AggressiveTrimKeepLastN
+		}
+		segMem.AggressiveTrim(keepLastN)
+		sess.TrimLastN(0)
+
 		return true
 	}
 
@@ -1486,10 +1615,11 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 
 	// Add user message to history
 	userMsg := Message{
-		Role:      "user",
-		Content:   userMessage,
-		AgentID:   a.id, // Track which agent received this message
-		Timestamp: time.Now(),
+		Role:         "user",
+		Content:      userMessage,
+		AgentID:      a.id, // Track which agent received this message
+		ContextClass: ClassLedger,
+		Timestamp:    time.Now(),
 	}
 	session.AddMessage(ctx, userMsg)
 
@@ -1681,10 +1811,11 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 
 	// Add user message to history
 	userMsg := Message{
-		Role:      "user",
-		Content:   userMessage,
-		AgentID:   a.id, // Track which agent received this message
-		Timestamp: time.Now(),
+		Role:         "user",
+		Content:      userMessage,
+		AgentID:      a.id, // Track which agent received this message
+		ContextClass: ClassLedger,
+		Timestamp:    time.Now(),
 	}
 	session.AddMessage(ctx, userMsg)
 
@@ -2046,15 +2177,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 	}
 
-	// Inject graph memory context (if enabled and available).
-	a.injectGraphMemoryContext(ctx, session)
-
-	// --- Skill activation ---
-	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
-	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
-	// Format/inject). When skillDiscovery is nil we fall back to the legacy
-	// path so existing tests and configs that don't wire Discovery still
-	// behave exactly as v1.2.0 did.
+	// --- Skill discovery (candidate menu only; never activates) ---
+	// Discovery surfaces candidates for the model to choose from; it never
+	// activates a skill itself (Seam 3, C-034). Activation is explicit only,
+	// via the manage_skills(load) builtin, which also runs the high-risk
+	// gate (Seam 2) and the task-emission-on-activation step that used to
+	// live here as "Phase D" back when discovery force-activated. The menu
+	// built below is rendered into this beat's tail note by
+	// buildBeatTailNote (D-2's tail-note seam), never injected as
+	// system/stored content.
+	var skillDiscoveryMenu string
 	if a.skillOrchestrator != nil && session != nil {
 		sessionID := session.ID
 		if sessionID == "" {
@@ -2081,107 +2213,30 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			// Phase B: discover candidates.
-			activatedThisTurn := map[string]*skills.Skill{}
-			activeBefore := skillNameSet(a.skillOrchestrator.GetActiveSkills(sessionID))
+			var candidates []skillMenuCandidate
 			if a.skillDiscovery != nil {
-				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
-					for _, c := range candidates {
-						if c.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
-							zap.L().Info("high-risk skill blocked (requires HITL approval)",
-								zap.String("skill", c.Skill.Name),
-								zap.String("risk_level", c.Skill.RiskLevel))
-							continue
-						}
-						if !activeBefore[c.Skill.Name] {
-							activatedThisTurn[c.Skill.Name] = c.Skill
-						}
-						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
-							c.TriggerType, c.TriggerValue, c.Confidence)
-					}
+				if discovered, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
+					candidates = toSkillMenuCandidates(discovered)
 				} else {
-					zap.L().Debug("skill discovery failed; skipping activation",
+					zap.L().Debug("skill discovery failed; skipping menu",
 						zap.String("session", sessionID),
 						zap.Error(err))
 				}
 			} else if lastMsg != "" {
 				// Legacy path: direct MatchSkills via the orchestrator.
 				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
-					for _, m := range matches {
-						if m.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
-							zap.L().Info("high-risk skill blocked (requires HITL approval)",
-								zap.String("skill", m.Skill.Name),
-								zap.String("risk_level", m.Skill.RiskLevel))
-							continue
-						}
-						if !activeBefore[m.Skill.Name] {
-							activatedThisTurn[m.Skill.Name] = m.Skill
-						}
-						a.skillOrchestrator.ActivateSkill(sessionID, m.Skill,
-							m.TriggerType, m.TriggerValue, m.Confidence)
-					}
+					candidates = toSkillMenuCandidatesFromMatches(matches)
 				}
 			}
-
-			// Phase D: emit tasks for newly-activated skills (overhaul-only).
-			if a.skillTaskEmitter != nil && len(activatedThisTurn) > 0 {
-				agentTasksEnabled := skillsConfig.EffectiveTasksEnabled()
-				boardID := skillsConfig.SkillTaskBoardID
-				if boardID == "" && a.taskBoardConfig != nil {
-					boardID = a.taskBoardConfig.DefaultBoardId
-				}
-				for name, skill := range activatedThisTurn {
-					_, err := a.skillTaskEmitter.EmitForActivation(ctx, skilltasks.EmitRequest{
-						Skill:             skill,
-						SessionID:         sessionID,
-						AgentID:           a.id,
-						BoardID:           boardID,
-						LLM:               a.llm,
-						AgentTasksEnabled: agentTasksEnabled,
-					})
-					if err != nil {
-						zap.L().Warn("skill task emission failed",
-							zap.String("skill", name),
-							zap.Error(err))
-					}
-				}
-			}
-
-			// Format and inject skill prompts (existing logic).
-			maxTokens := 1500
-			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
-				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
-			}
-			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
-			if skillContent != "" {
-				activeNames := make([]string, 0)
-				for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
-					activeNames = append(activeNames, as.Skill.Name)
-				}
-				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-					segMem.InjectSkills(skillContent, activeNames)
-				}
-			}
-
-			// Co-inject pattern refs from active skills (existing logic).
-			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
-				for _, ref := range as.Skill.PatternRefs {
-					if a.orchestrator != nil {
-						if pattern, err := a.orchestrator.GetLibrary().Load(ref); err == nil {
-							formatted := pattern.FormatForLLM()
-							if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-								segMem.InjectPattern(formatted, ref)
-							}
-						}
-					}
-				}
-			}
+			skillDiscoveryMenu = formatSkillDiscoveryMenu(candidates)
 
 			// Enforce SkillToolConfig.required_tools across all active skills.
 			// required_tools that aren't yet registered are auto-registered
 			// from the builtin set when available; missing tools log a Warn
 			// and the skill continues without them (the LLM still has access
-			// to whatever IS registered).
+			// to whatever IS registered). The active set here reflects only
+			// explicit manage_skills(load)/unload calls and session end —
+			// discovery above never mutates it (Seam 5, no implicit eviction).
 			a.enforceRequiredSkillTools(sessionID)
 		}
 	}
@@ -2258,18 +2313,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					if err == nil {
 						selectedPattern = pattern
 
-						// Format and inject pattern
-						formattedPattern := pattern.FormatForLLM()
-
-						// Inject into segmented memory
-						if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-							segMem.InjectPattern(formattedPattern, pattern.Name)
-
-							tokenCount := a.tokenCounter.CountTokens(formattedPattern)
-							patternSpan.SetAttribute("pattern.tokens", tokenCount)
-							patternSpan.SetAttribute("pattern.injected", "true")
-						}
-
 						// Record metrics
 						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
 							"pattern":    patternName,
@@ -2305,83 +2348,39 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"max_tool_executions": a.config.MaxToolExecutions,
 		})
 
-		// === FEATURE INTEGRATION: Token Budget Management ===
-		// Check token budget and enforce compression if needed (segmented memory only)
+		// === Single-writer pressure pipeline (C-B) ===
+		// prepareContext is the ONLY mutation entry point after admission: it
+		// runs zone dispatch (fold at red, valve-evict at yellow, nothing
+		// below yellow) then returns the assembled message list.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			budgetInfo := checkTokenBudget(segMem)
-
-			// Log budget status
-			span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
-			span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
-			span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
-			span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
-
-			if budgetInfo.budgetPct > 70 {
-				span.AddEvent("token_budget.warning", map[string]interface{}{
-					"usage_pct": budgetInfo.budgetPct,
-				})
-			}
-
-			// Force compression at 85% threshold
-			compressed, err := enforceTokenBudget(ctx, segMem, budgetInfo)
-			if err != nil {
-				return nil, fmt.Errorf("token budget enforcement failed: %w", err)
-			}
-			if compressed {
-				span.AddEvent("memory.compressed", map[string]interface{}{
-					"trigger": "budget_critical",
-				})
-			}
-
-			// After compression, if still critically over budget, attempt recovery.
-			if checkTokenBudget(segMem).budgetPct > 85 {
-				if recovery != nil {
-					budgetChecker := func() float64 { return checkTokenBudget(segMem).budgetPct }
-					recovered, _ := recovery.recoverTokenBudget(ctx, session, segMem, budgetChecker)
-					if !recovered {
-						budgetErr := fmt.Errorf("token budget critically exceeded (%.1f%%) after aggressive trim", checkTokenBudget(segMem).budgetPct)
-						return nil, recovery.buildRecoverableError("token_budget_exceeded", budgetErr, "reset_context", map[string]any{"budget_pct": checkTokenBudget(segMem).budgetPct})
-					}
-				} else {
-					return nil, fmt.Errorf("token budget critically exceeded (%.1f%%) and self-healing disabled", checkTokenBudget(segMem).budgetPct)
+			if _, err := a.prepareContext(ctx, session); err != nil {
+				var re *RecoverableError
+				if errors.As(err, &re) {
+					return nil, re // breaker already shaped it
 				}
+				return nil, recovery.buildRecoverableError(
+					"token_budget_exceeded", err, "reset_context",
+					map[string]any{"budget_pct": segMem.BudgetPct()})
 			}
 		}
 
-		// Build messages for LLM (will use segmented memory if configured)
+		// Build messages for LLM (will use segmented memory if configured).
+		// Any per-beat dynamic content (soft reminders, graph-memory recall,
+		// discovery menu) is carried as a single Role:"user" tail note
+		// appended to this LOCAL slice only — never session.AddMessage,
+		// never system-role (C-004). The note lives for this one LLM call;
+		// it is not part of l1Messages, so it never affects byte-stability.
 		messages := session.GetMessages()
+		if note := a.buildBeatTailNote(ctx, session, turnCount, toolExecutionCount, skillDiscoveryMenu); note != "" {
+			messages = append(messages, Message{Role: "user", Content: note})
 
-		// === FEATURE INTEGRATION: Soft Reminders ===
-		// Add reminders if approaching limits (non-intrusive, doesn't remove tools)
-		// Thresholds: 75% of max (but minimum of 10 tools / 8 turns)
-		if session.SegmentedMem != nil {
-			// Check tool execution reminder
-			toolReminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions)
-			// Check turn count reminder
-			turnReminder := buildTurnReminder(turnCount, a.config.MaxTurns)
-
-			// Combine reminders if both are active
-			combinedReminder := toolReminder + turnReminder
-
-			if combinedReminder != "" {
-				// Append reminder to system message (if exists) or first user message
-				if len(messages) > 0 && messages[0].Role == "system" {
-					messages[0].Content += combinedReminder
-				} else if len(messages) > 0 && messages[0].Role == "user" {
-					messages[0].Content += combinedReminder
-				}
-
-				span.AddEvent("soft_reminder.added", map[string]interface{}{
-					"tool_count":        toolExecutionCount,
-					"turn_count":        turnCount,
-					"max_tools":         a.config.MaxToolExecutions,
-					"max_turns":         a.config.MaxTurns,
-					"tool_threshold":    int(float64(a.config.MaxToolExecutions) * 0.75),
-					"turn_threshold":    int(float64(a.config.MaxTurns) * 0.75),
-					"has_tool_reminder": toolReminder != "",
-					"has_turn_reminder": turnReminder != "",
-				})
-			}
+			span.AddEvent("beat_tail_note.added", map[string]interface{}{
+				"turn_count":      turnCount,
+				"tool_exec_count": toolExecutionCount,
+				"max_tools":       a.config.MaxToolExecutions,
+				"max_turns":       a.config.MaxTurns,
+				"note_length":     len(note),
+			})
 		}
 
 		// Emit LLM generation progress
@@ -2659,8 +2658,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", maxPerTurn, i+1, len(llmResp.ToolCalls)),
 						},
 					},
-					AgentID:   a.id,
-					Timestamp: time.Now(),
+					AgentID:      a.id,
+					ContextClass: toolResultClass(toolCall.Name, nil),
+					Timestamp:    time.Now(),
 				}
 				session.AddMessage(ctx, skipMsg)
 				if persistErr := a.memory.PersistMessage(ctx, session.ID, skipMsg); persistErr != nil {
@@ -2676,12 +2676,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
 			if cachedResult, ok := turnDedup[dedupKey]; ok {
 				dedupMsg := Message{
-					Role:       "tool",
-					Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
-					ToolUseID:  toolCall.ID,
-					ToolResult: cachedResult,
-					AgentID:    a.id,
-					Timestamp:  time.Now(),
+					Role:         "tool",
+					Content:      a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
+					ToolUseID:    toolCall.ID,
+					ToolResult:   cachedResult,
+					AgentID:      a.id,
+					ContextClass: toolResultClass(toolCall.Name, nil),
+					Timestamp:    time.Now(),
 				}
 				session.AddMessage(ctx, dedupMsg)
 				if persistErr := a.memory.PersistMessage(ctx, session.ID, dedupMsg); persistErr != nil {
@@ -2866,13 +2867,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			// Add tool result to conversation
+			resolvedTool, _ := a.tools.Get(toolCall.Name)
 			toolMsg := Message{
-				Role:       "tool",
-				Content:    formattedResult,
-				ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
-				ToolResult: result,
-				AgentID:    a.id, // Track which agent executed this tool
-				Timestamp:  time.Now(),
+				Role:         "tool",
+				Content:      formattedResult,
+				ToolUseID:    toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
+				ToolResult:   result,
+				AgentID:      a.id, // Track which agent executed this tool
+				ContextClass: toolResultClass(toolCall.Name, resolvedTool),
+				Timestamp:    time.Now(),
 			}
 			session.AddMessage(ctx, toolMsg)
 
@@ -2884,17 +2887,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					zap.String("role", toolMsg.Role),
 					zap.Error(persistErr))
 				toolSpan.RecordError(persistErr)
-			}
-
-			// === AUTOMATIC FINDING EXTRACTION ===
-			// After each tool execution, check if we should extract findings
-			if a.enableFindingExtraction {
-				a.toolExecutionsSinceExtraction++
-				if a.toolExecutionsSinceExtraction >= a.extractionCadence {
-					// Run extraction in background (non-blocking)
-					go a.extractFindingsAsync(ctx, session.ID)
-					a.toolExecutionsSinceExtraction = 0
-				}
 			}
 
 			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
@@ -2988,6 +2980,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			zap.String("role", synthesisMsg.Role),
 			zap.Error(err))
 		span.RecordError(err)
+	}
+
+	// Single-writer pressure pipeline (C-B): prepareContext must run before
+	// this LLM-bound call too — it is the second (and last) exhaustive
+	// call-surface site (see chatWithRetry doc rule).
+	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		if _, err := a.prepareContext(ctx, session); err != nil {
+			var re *RecoverableError
+			if errors.As(err, &re) {
+				return nil, re // breaker already shaped it
+			}
+			return nil, recovery.buildRecoverableError(
+				"token_budget_exceeded", err, "reset_context",
+				map[string]any{"budget_pct": segMem.BudgetPct()})
+		}
 	}
 
 	// Make final LLM call WITHOUT tools to force synthesis
@@ -3266,6 +3273,87 @@ func (a *Agent) checkAndRegisterGraphMemoryTool() {
 	a.tools.Register(tool)
 }
 
+// checkAndRegisterRecallContextTool registers the recall_context builtin
+// (D-4, C-F) eagerly rather than via progressive disclosure: when a durable
+// session store is wired, it must already be visible in the LLM's tool list
+// the moment a valve eviction stub can appear, which may be the very first
+// turn that crosses the yellow zone — unlike conversation_memory/
+// session_memory, which register lazily only after a triggering event.
+//
+// Gated on a durable store being configured: ValveEvict itself never evicts
+// anything without one (C-022 — "never evicting without a persist"), so
+// without a store no stub, and therefore no ref, can ever exist to recall.
+// Registering the tool anyway would add it — and its schema token cost — to
+// every agent regardless of whether memory persistence is even configured,
+// which regresses the zero-built-in-tools baseline for tool-less agents.
+func (a *Agent) checkAndRegisterRecallContextTool() {
+	if a.isBuiltinToolSuppressed("recall_context") {
+		return
+	}
+	if a.tools.IsRegistered("recall_context") {
+		return
+	}
+	if a.memory == nil || a.memory.GetStore() == nil {
+		return
+	}
+
+	tool := shuttle.Tool(NewRecallContextTool(a.memory))
+	if a.prompts != nil {
+		tool = shuttle.NewPromptAwareTool(tool, a.prompts, "tools.recall_context")
+	}
+	a.tools.Register(tool)
+}
+
+// checkAndRegisterManageSkillsTool registers the manage_skills builtin
+// (Seam 1, O-SKL-1) when a skill orchestrator is configured. Unlike
+// conversation_memory/session_memory this is not progressive disclosure:
+// since discovery never activates a skill on its own (Seam 3), manage_skills
+// must already be in the LLM's tool list the first time a candidate menu
+// appears, or the model has no way to act on it.
+func (a *Agent) checkAndRegisterManageSkillsTool() {
+	if a.isBuiltinToolSuppressed("manage_skills") {
+		return
+	}
+	if a.tools.IsRegistered("manage_skills") {
+		return
+	}
+	if a.skillOrchestrator == nil {
+		return
+	}
+
+	tool := shuttle.Tool(NewManageSkillsTool(
+		a.skillOrchestrator, a.skillTaskEmitter, a.taskBoardConfig,
+		a.config, a.llm, a.id, a.permissionChecker,
+	))
+	a.tools.Register(tool)
+}
+
+// checkAndRegisterManagePatternsTool registers the manage_patterns builtin
+// (Seam 1, O-SKL-1) eagerly, mirroring checkAndRegisterManageSkillsTool's
+// shape exactly — except manage_skills gates on a.skillOrchestrator, a field
+// that is nil unless the caller explicitly wires WithSkillOrchestrator,
+// while the pattern orchestrator is unconditionally constructed in NewAgent
+// (it backs the separate, always-on automatic pattern-selection feature).
+// a.orchestrator != nil is therefore never a genuine opt-in signal, so this
+// gates on a.patternManagementEnabled (set only via WithPatternManagement)
+// instead — a plain NewAgent call stays at the framework's
+// zero-built-in-tools baseline until a caller explicitly asks for pattern
+// management, exactly like every other builtin here.
+func (a *Agent) checkAndRegisterManagePatternsTool() {
+	if a.isBuiltinToolSuppressed("manage_patterns") {
+		return
+	}
+	if a.tools.IsRegistered("manage_patterns") {
+		return
+	}
+	if a.orchestrator == nil || !a.patternManagementEnabled {
+		return
+	}
+
+	tool := shuttle.Tool(NewManagePatternsTool(a.orchestrator))
+	a.tools.Register(tool)
+}
+
 // graphMemoryTokenBudget returns the token budget for graph memory context injection.
 // Follows the same pattern as SegmentedMemory's L1 budget.
 func (a *Agent) graphMemoryTokenBudget() int {
@@ -3293,11 +3381,39 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
-// injectGraphMemoryContext queries graph memory for the current topic and injects
-// relevant context into the conversation as a system message.
-func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+// buildBeatTailNote assembles the per-beat tail note: soft reminders (tool/turn
+// threshold nudges), any graph-memory recall for this beat, and the skill
+// discovery candidate menu (Seam 3, C-034). The result is meant to be
+// appended as a single Role:"user" message to the loop's LOCAL messages
+// slice for this one LLM call — never session.AddMessage, never
+// system-role (C-004, FR-004). Returns "" when there is nothing to add.
+func (a *Agent) buildBeatTailNote(ctx context.Context, session *types.Session, turnCount, toolExecutionCount int, skillMenu string) string {
+	var parts []string
+
+	if reminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions); reminder != "" {
+		parts = append(parts, strings.TrimSpace(reminder))
+	}
+	if reminder := buildTurnReminder(turnCount, a.config.MaxTurns); reminder != "" {
+		parts = append(parts, strings.TrimSpace(reminder))
+	}
+	if recall := a.graphMemoryRecall(ctx, session); recall != "" {
+		parts = append(parts, recall)
+	}
+	if skillMenu != "" {
+		parts = append(parts, strings.TrimSpace(skillMenu))
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+// graphMemoryRecall queries graph memory for the current topic and returns a
+// formatted recall string for this beat's tail note. Returns "" when graph
+// memory is disabled/unavailable or no relevant memories are found. This
+// never persists to the session (C-006's extractGraphMemoryAsync is the only
+// thing that writes graph memory; this only reads it back for the LLM).
+func (a *Agent) graphMemoryRecall(ctx context.Context, session *types.Session) string {
 	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
-		return
+		return ""
 	}
 
 	// Wait for any in-flight extractions to finish before querying.
@@ -3306,7 +3422,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	budget := a.graphMemoryTokenBudget()
 	if budget <= 0 {
-		return
+		return ""
 	}
 
 	// Get the last user message.
@@ -3319,7 +3435,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		}
 	}
 	if userMessage == "" {
-		return
+		return ""
 	}
 
 	// Use LLM to distill the user message into a search query for memory recall.
@@ -3327,7 +3443,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// becomes something like "first issue with new car after first service".
 	searchQuery := a.extractSearchQuery(ctx, userMessage)
 	if searchQuery == "" {
-		return
+		return ""
 	}
 
 	// Gather candidate memories from multiple sources.
@@ -3378,17 +3494,17 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	}
 
 	if len(candidates) == 0 {
-		return
+		return ""
 	}
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
 	if len(relevant) == 0 {
-		return
+		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	sb.WriteString("[Graph Memory Context]\nRelevant memories from past conversations:\n\n")
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
@@ -3403,10 +3519,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
-	session.AddMessage(ctx, types.Message{
-		Role:    "system",
-		Content: "[Graph Memory Context]\n" + sb.String(),
-	})
+	return sb.String()
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -3717,13 +3830,29 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			}
 		}
 
-		// Respect the configured byte-based threshold from SetSharedMemoryThreshold.
-		// The executor's handleLargeResult already checks the byte threshold and
-		// stores large results in shared memory. If the executor kept the result
-		// inline (bytes <= threshold), we must not override that decision with the
-		// hardcoded token-based check below. This ensures the admin-configured
-		// threshold (e.g. 40KB) is authoritative — not the 1000-token heuristic.
-		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
+		// Admission gate (D-4, C-D): only a ballast-class result is wrappable
+		// at all — charter/ledger results always enter whole, regardless of
+		// size. formatToolResult is a second, independent wrap/format path
+		// downstream of Executor.handleLargeResult, so it must apply the same
+		// gate that decision used, or a charter/ledger tool (manage_skills,
+		// manage_patterns, contact_human, recall_context, and any tool that
+		// never opted into ballast) would slip past the executor's gate only
+		// to be wrapped here anyway.
+		tool, _ := a.tools.Get(toolName)
+		if !shuttle.Wrappable(toolName, tool) {
+			return dataStr
+		}
+
+		// Respect the configured byte-based threshold from SetSharedMemoryThreshold,
+		// defaulting to the same admission threshold Executor.handleLargeResult uses
+		// (D-4 Seam 1) rather than storage.DefaultSharedMemoryThreshold's inline-
+		// everything sentinel. The executor's handleLargeResult already checks the
+		// byte threshold and stores large results in shared memory. If the executor
+		// kept the result inline (bytes < threshold), we must not override that
+		// decision with the hardcoded token-based check below. This ensures the
+		// admin-configured threshold (e.g. 40KB) is authoritative — not the
+		// 1000-token heuristic.
+		byteThreshold := shuttle.DefaultAdmissionThresholdBytes
 		if a.sharedMemoryThreshold >= 0 {
 			byteThreshold = a.sharedMemoryThreshold
 		}
@@ -3733,10 +3862,13 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			return dataStr
 		}
 
-		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory
-		// Wrapping them again creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
-		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
-		if tokenCount > maxInlineTokens && toolName != "get_tool_result" && toolName != "query_tool_result" {
+		// Large, wrappable result - store reference and provide summary. The
+		// ballast-only gate above already excludes progressive disclosure
+		// tool outputs (get_tool_result, query_tool_result are in the same
+		// admission exemption set), so wrapping them again — and the
+		// resulting infinite recursion (query_tool_result → DataRef A →
+		// query_tool_result(A) → DataRef B → ...) — can't happen here.
+		if tokenCount > maxInlineTokens {
 			// Large result - store reference and provide summary
 
 			// Try shared memory first (fastest, in-process)

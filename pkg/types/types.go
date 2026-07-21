@@ -124,6 +124,10 @@ type Message struct {
 	// Optional - may be empty for messages created before this field was added
 	AgentID string
 
+	// ContextClass is the structural retention class (narrative/charter/ledger/ballast).
+	// Optional - empty (narrative) for messages created before this field was added.
+	ContextClass string
+
 	// UserID identifies which user owns this message (for RLS multi-tenancy).
 	// Set from context via interceptor for PostgreSQL backends.
 	// Defaults to "default-user" for SQLite backends.
@@ -288,6 +292,7 @@ type Session struct {
 type SegmentedMemoryInterface interface {
 	AddMessage(ctx context.Context, msg Message)
 	GetMessagesForLLM() []Message
+	GetL1MessageCount() int
 }
 
 // AddMessage adds a message to the session history.
@@ -346,10 +351,14 @@ func (s *Session) TrimLastN(n int) {
 	}
 
 	if n == 0 {
-		// Sync mode: trim flat list to match segmented memory message count.
+		// Sync mode: trim flat list to match segmented memory's retained
+		// conversation message count (L1). GetMessagesForLLM() is not usable
+		// here — it includes synthetic, non-conversational entries (ROM, L2
+		// summary, pattern/skill injections) that are never part of the flat
+		// list, which would leave stale messages behind after a full reset.
 		if s.SegmentedMem != nil {
 			if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
-				targetLen := len(segMem.GetMessagesForLLM())
+				targetLen := segMem.GetL1MessageCount()
 				if targetLen < len(s.Messages) {
 					s.Messages = s.Messages[:targetLen]
 				}

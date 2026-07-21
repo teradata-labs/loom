@@ -155,9 +155,13 @@ type SkillLibraryMetadataYAML struct {
 	Labels      map[string]string `yaml:"labels"`
 }
 
-// LoadSkill loads a single skill from a YAML file.
+// LoadSkill loads a single skill from a YAML file. The resolved (cleaned)
+// path is recorded on the returned Skill as SourcePath (Seam 4, O-SKL-1) so
+// callers — notably the manage_skills(load) builtin — can surface where the
+// skill's definition lives on disk.
 func LoadSkill(path string) (*Skill, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read skill file %s: %w", path, err)
 	}
@@ -174,7 +178,9 @@ func LoadSkill(path string) (*Skill, error) {
 		return nil, fmt.Errorf("invalid skill %s: %w", path, err)
 	}
 
-	return yamlToSkill(&sy), nil
+	skill := yamlToSkill(&sy)
+	skill.SourcePath = cleanPath
+	return skill, nil
 }
 
 // LoadSkillLibrary loads a skill library YAML file containing multiple skills.

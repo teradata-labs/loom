@@ -29,13 +29,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
-// StickinessChecker is consulted during eviction to decide whether an
-// active skill should be treated as sticky for the current activation
-// attempt, regardless of its Skill.Sticky flag. The agent layer typically
-// installs a checker that returns true when the skill has open tasks on
-// the kanban board, so eviction never abandons in-flight work.
-type StickinessChecker func(skillName, sessionID string) bool
-
 // Orchestrator is the activation engine for skills. It evaluates user messages,
 // matches them to skills via slash commands, keywords, or always-on rules,
 // and manages active skill lifecycles within sessions.
@@ -46,18 +39,12 @@ type Orchestrator struct {
 	logger         *zap.Logger
 	activeSessions map[string][]*ActiveSkill // sessionID -> active skills
 
-	// maxConcurrentSkills caps the active set during eviction. <=0 means
-	// "use the legacy default of 3". Set via WithMaxConcurrentSkills, or
-	// at runtime via SetMaxConcurrentSkills (the agent layer pulls it
-	// from SkillsConfig once known).
-	maxConcurrentSkills int
-	// stickinessChecker (optional) is consulted during eviction. nil means
-	// only Skill.Sticky is honored, preserving v1.2.0 behavior.
-	stickinessChecker StickinessChecker
-	// onSkillEviction (optional) is called after a skill is evicted from
-	// the active set. Used by the agent layer to boost graph memory salience
-	// for entities related to the evicted skill.
-	onSkillEviction func(sessionID string, skill *Skill, activeFor time.Duration)
+	// onSkillDeactivate (optional) is called after a skill leaves the active
+	// set via DeactivateSkill. Used by the agent layer to boost graph memory
+	// salience for entities related to the deactivated skill. There is no
+	// implicit eviction (O-SKL-3): this only ever fires from an explicit
+	// unload or equivalent, never from ActivateSkill.
+	onSkillDeactivate func(sessionID string, skill *Skill, activeFor time.Duration)
 }
 
 // OrchestratorOption configures an Orchestrator during construction.
@@ -73,7 +60,7 @@ func WithOrchestratorTracer(t observability.Tracer) OrchestratorOption {
 }
 
 // WithOrchestratorLogger sets the zap logger used to surface skill
-// activation/deactivation/eviction events. When unset, the orchestrator
+// activation/deactivation events. When unset, the orchestrator
 // uses zap.NewNop() so existing callers see no output change.
 func WithOrchestratorLogger(l *zap.Logger) OrchestratorOption {
 	return func(o *Orchestrator) {
@@ -83,58 +70,23 @@ func WithOrchestratorLogger(l *zap.Logger) OrchestratorOption {
 	}
 }
 
-// WithMaxConcurrentSkills caps the active-skill set this orchestrator
-// allows per session. The eviction routine consults this; 0 falls back
-// to the legacy default of 3.
-func WithMaxConcurrentSkills(n int) OrchestratorOption {
+// WithOnSkillDeactivate installs a callback that fires after a skill leaves
+// the active set via DeactivateSkill. The callback receives the session ID,
+// the deactivated skill, and how long the skill was active. Used by the
+// agent layer to boost graph memory salience for entities related to the
+// deactivated skill.
+func WithOnSkillDeactivate(fn func(sessionID string, skill *Skill, activeFor time.Duration)) OrchestratorOption {
 	return func(o *Orchestrator) {
-		if n > 0 {
-			o.maxConcurrentSkills = n
-		}
+		o.onSkillDeactivate = fn
 	}
 }
 
-// WithStickinessChecker installs a callback that the eviction routine
-// consults to decide whether a candidate-for-eviction is sticky. Used by
-// the agent layer to keep skills active while they have open tasks.
-func WithStickinessChecker(checker StickinessChecker) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.stickinessChecker = checker
-	}
-}
-
-// SetMaxConcurrentSkills adjusts the eviction cap at runtime. Safe for
-// concurrent use with ActivateSkill.
-func (o *Orchestrator) SetMaxConcurrentSkills(n int) {
+// SetOnSkillDeactivate installs a deactivation callback at runtime. Safe for
+// concurrent use with DeactivateSkill.
+func (o *Orchestrator) SetOnSkillDeactivate(fn func(sessionID string, skill *Skill, activeFor time.Duration)) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.maxConcurrentSkills = n
-}
-
-// SetStickinessChecker installs a stickiness checker at runtime. Safe for
-// concurrent use with ActivateSkill.
-func (o *Orchestrator) SetStickinessChecker(checker StickinessChecker) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.stickinessChecker = checker
-}
-
-// WithOnSkillEviction installs a callback that fires after a skill is evicted
-// from the active set. The callback receives the session ID, the evicted skill,
-// and how long the skill was active. Used by the agent layer to boost graph
-// memory salience for entities related to the evicted skill.
-func WithOnSkillEviction(fn func(sessionID string, skill *Skill, activeFor time.Duration)) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.onSkillEviction = fn
-	}
-}
-
-// SetOnSkillEviction installs an eviction callback at runtime. Safe for
-// concurrent use with ActivateSkill.
-func (o *Orchestrator) SetOnSkillEviction(fn func(sessionID string, skill *Skill, activeFor time.Duration)) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.onSkillEviction = fn
+	o.onSkillDeactivate = fn
 }
 
 // NewOrchestrator creates a new skill orchestrator backed by the given library.
@@ -363,18 +315,13 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 	return results, nil
 }
 
-// ActivateSkill activates a skill for a session. If the session already has
-// MaxConcurrentSkills active, the lowest-confidence non-sticky skill is
-// evicted. Sticky-ness is determined by:
-//  1. Skill.Sticky == true (explicit author intent), OR
-//  2. The configured StickinessChecker returning true for the skill —
-//     used by the agent layer to keep skills active while they have open
-//     tasks on the board.
-//
-// When every active skill is sticky, the cap is allowed to overflow for
-// this turn rather than evicting load-bearing skills out from under
-// in-flight work. This matches the design's "sticky-while-open-tasks"
-// guarantee from the skills overhaul.
+// ActivateSkill activates a skill for a session, appending it to the active
+// set (or replacing the existing entry when the skill is already active).
+// There is no implicit eviction: the active set only shrinks via an explicit
+// DeactivateSkill call or session end (O-SKL-3). Callers that need a ceiling
+// on the active set — e.g. the manage_skills(load) builtin's safety-cap
+// check — must enforce it themselves before calling ActivateSkill; this
+// method always honors the request.
 func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType, triggerValue string, confidence float64) *ActiveSkill {
 	_, span := o.tracer.StartSpan(context.Background(), "skills.orchestrator.activate_skill")
 	defer o.tracer.EndSpan(span)
@@ -415,71 +362,6 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 	}
 
 	sessions = append(sessions, active)
-
-	maxConcurrent := o.maxConcurrentSkills
-	if maxConcurrent <= 0 {
-		maxConcurrent = 3
-	}
-	if len(sessions) > maxConcurrent {
-		// Find lowest-confidence skill among the evictable (non-sticky) set.
-		// Skip the just-appended active record (last index): we never
-		// evict the skill we're about to activate.
-		minIdx := -1
-		for i := 0; i < len(sessions)-1; i++ {
-			as := sessions[i]
-			if as == nil || as.Skill == nil {
-				continue
-			}
-			if as.Skill.Sticky {
-				continue
-			}
-			if o.stickinessChecker != nil && o.stickinessChecker(as.Skill.Name, sessionID) {
-				continue
-			}
-			if minIdx == -1 || sessions[i].Confidence < sessions[minIdx].Confidence {
-				minIdx = i
-			}
-		}
-		if minIdx >= 0 {
-			// Capture evicted skill metadata before removal.
-			evicted := sessions[minIdx]
-			// Remove it (swap with last, truncate).
-			sessions[minIdx] = sessions[len(sessions)-1]
-			sessions = sessions[:len(sessions)-1]
-			if span != nil {
-				span.SetAttribute("eviction", "evicted")
-			}
-			if evicted != nil && evicted.Skill != nil {
-				o.logger.Info("skill evicted",
-					zap.String("skill", evicted.Skill.Name),
-					zap.String("session", sessionID),
-					zap.Float64("confidence", evicted.Confidence),
-					zap.Duration("active_for", time.Since(evicted.ActivatedAt)),
-					zap.String("reason", "max_concurrent_exceeded"),
-					zap.String("evicted_for", skill.Name),
-				)
-			}
-			// Fire the eviction callback (outside critical path, async).
-			if o.onSkillEviction != nil && evicted != nil && evicted.Skill != nil {
-				fn := o.onSkillEviction
-				activeFor := time.Since(evicted.ActivatedAt)
-				go fn(sessionID, evicted.Skill, activeFor)
-			}
-		} else {
-			if span != nil {
-				// Every existing skill is sticky; the cap overflows for this
-				// turn rather than abandoning load-bearing work.
-				span.SetAttribute("eviction", "overflow_all_sticky")
-			}
-			o.logger.Info("skill cap overflow (all sticky)",
-				zap.String("skill", skill.Name),
-				zap.String("session", sessionID),
-				zap.Int("active_count", len(sessions)),
-				zap.Int("max_concurrent", maxConcurrent),
-			)
-		}
-	}
-
 	o.activeSessions[sessionID] = sessions
 
 	if span != nil {
@@ -529,6 +411,12 @@ func (o *Orchestrator) DeactivateSkill(sessionID, skillName string) {
 				zap.Duration("active_for", activeFor),
 				zap.Int("active_count", len(o.activeSessions[sessionID])),
 			)
+			// Fire the deactivation callback (outside critical path, async).
+			if o.onSkillDeactivate != nil && active.Skill != nil {
+				fn := o.onSkillDeactivate
+				skill := active.Skill
+				go fn(sessionID, skill, activeFor)
+			}
 			return
 		}
 	}
@@ -547,53 +435,6 @@ func (o *Orchestrator) GetActiveSkills(sessionID string) []*ActiveSkill {
 	out := make([]*ActiveSkill, len(src))
 	copy(out, src)
 	return out
-}
-
-// FormatActiveSkillsForLLM combines all active skill prompts within the given
-// token budget. Skills are included in FIFO order (activation time). If a skill's
-// formatted prompt exceeds the remaining budget it is skipped.
-// Token estimation: 1 token ~ 4 characters.
-func (o *Orchestrator) FormatActiveSkillsForLLM(sessionID string, maxTokens int) string {
-	active := o.GetActiveSkills(sessionID)
-	if len(active) == 0 {
-		return ""
-	}
-
-	// Sort by activation time (FIFO).
-	sort.Slice(active, func(i, j int) bool {
-		return active[i].ActivatedAt.Before(active[j].ActivatedAt)
-	})
-
-	const charsPerToken = 4
-	maxChars := maxTokens * charsPerToken
-	usedChars := 0
-
-	var sb strings.Builder
-	included := 0
-
-	for _, a := range active {
-		formatted := a.Skill.FormatForLLM()
-		fLen := len(formatted)
-
-		// Add separator overhead.
-		separatorLen := 0
-		if included > 0 {
-			separatorLen = len("\n---\n")
-		}
-
-		if usedChars+fLen+separatorLen > maxChars {
-			continue // skip this skill, it doesn't fit
-		}
-
-		if included > 0 {
-			sb.WriteString("\n---\n")
-		}
-		sb.WriteString(formatted)
-		usedChars += fLen + separatorLen
-		included++
-	}
-
-	return sb.String()
 }
 
 // CleanupSession removes all state for a session.

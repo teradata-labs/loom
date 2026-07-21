@@ -100,8 +100,16 @@ type Agent struct {
 	guardrails      *fabric.GuardrailEngine
 	circuitBreakers *fabric.CircuitBreakerManager
 
-	// Pattern orchestration
-	orchestrator *patterns.Orchestrator
+	// Pattern orchestration. orchestrator is unconditionally constructed by
+	// NewAgent (it backs the always-on automatic pattern-selection feature),
+	// so its presence alone is not a genuine opt-in signal.
+	// patternManagementEnabled gates the manage_patterns builtin (Seam 1)
+	// the same way a.skillOrchestrator != nil gates manage_skills — off
+	// unless the caller explicitly opts in via WithPatternManagement, so a
+	// plain NewAgent call stays at the framework's zero-built-in-tools
+	// baseline.
+	orchestrator             *patterns.Orchestrator
+	patternManagementEnabled bool
 
 	// Skill orchestration. The skillOrchestrator manages activation lifecycle
 	// and prompt injection. The discovery component (when present) is the
@@ -155,11 +163,6 @@ type Agent struct {
 
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
-
-	// Automatic finding extraction
-	enableFindingExtraction       bool // Whether automatic extraction is enabled
-	extractionCadence             int  // Number of tool executions between extractions
-	toolExecutionsSinceExtraction int  // Counter for tool executions since last extraction
 
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
@@ -272,11 +275,6 @@ type Config struct {
 
 	// SkillsConfig controls skill activation and injection (nil = use defaults)
 	SkillsConfig *skills.SkillsConfig
-
-	// Automatic finding extraction configuration
-	EnableFindingExtraction bool // Whether to enable automatic finding extraction (default: true)
-	ExtractionCadence       int  // Number of tool executions between extractions (default: 3)
-	MaxFindings             int  // Maximum findings to keep in cache (default: 50)
 
 	// OutputTokenCBThreshold is the number of consecutive turns where the LLM
 	// hits the output token limit AND returns truncated tool calls before the

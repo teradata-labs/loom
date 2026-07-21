@@ -60,7 +60,7 @@ agent:
 	require.True(t, ok, "Should be SegmentedMemory")
 
 	// Verify SegmentedMemory is configured with data_intensive profile values
-	assert.Equal(t, 4000, segMem.maxL1Tokens, "Should use data_intensive maxL1Tokens (4000 tokens)")
+	assert.Equal(t, 4000, segMem.compressionProfile.MaxL1Tokens, "Should use data_intensive MaxL1Tokens (4000 tokens)")
 	assert.Equal(t, 3, segMem.minL1Messages, "Should use data_intensive minL1Messages")
 	assert.Equal(t, "data_intensive", segMem.compressionProfile.Name)
 	assert.Equal(t, 50, segMem.compressionProfile.WarningThresholdPercent)
@@ -98,7 +98,7 @@ agent:
 	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
-	assert.Equal(t, 9600, segMem.maxL1Tokens, "Should use conversational maxL1Tokens (9600 tokens)")
+	assert.Equal(t, 9600, segMem.compressionProfile.MaxL1Tokens, "Should use conversational MaxL1Tokens (9600 tokens)")
 	assert.Equal(t, 6, segMem.minL1Messages)
 }
 
@@ -135,7 +135,7 @@ agent:
 	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
-	assert.Equal(t, 12000, segMem.maxL1Tokens, "Should use custom MaxL1Tokens (12000 from 15 messages)")
+	assert.Equal(t, 12000, segMem.compressionProfile.MaxL1Tokens, "Should use custom MaxL1Tokens (12000 from 15 messages)")
 	assert.Equal(t, 4, segMem.minL1Messages)
 }
 
@@ -166,7 +166,7 @@ agent:
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
 	// Should use balanced profile defaults (backwards compatibility)
-	assert.Equal(t, 6400, segMem.maxL1Tokens, "Should default to balanced maxL1Tokens (6400)")
+	assert.Equal(t, 6400, segMem.compressionProfile.MaxL1Tokens, "Should default to balanced MaxL1Tokens (6400)")
 	assert.Equal(t, 4, segMem.minL1Messages, "Should default to balanced minL1Messages")
 }
 

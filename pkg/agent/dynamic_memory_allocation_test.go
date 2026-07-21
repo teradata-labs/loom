@@ -249,7 +249,7 @@ func TestNewSegmentedMemoryWithDynamicAllocation_Integration(t *testing.T) {
 			// Verify memory was created successfully
 			assert.NotNil(t, sm)
 			assert.Equal(t, romContent, sm.romContent)
-			assert.NotZero(t, sm.maxL1Tokens)
+			assert.NotZero(t, sm.compressionProfile.MaxL1Tokens)
 			assert.NotZero(t, sm.maxL2Tokens)
 			assert.NotNil(t, sm.tokenBudget)
 			assert.NotNil(t, sm.tokenCounter)
@@ -257,13 +257,13 @@ func TestNewSegmentedMemoryWithDynamicAllocation_Integration(t *testing.T) {
 			// Verify L1 is reasonable for context size (token-based)
 			if tt.contextTokens >= 150000 {
 				// Very large models should have substantial L1 token budget
-				assert.GreaterOrEqual(t, sm.maxL1Tokens, 60000)
+				assert.GreaterOrEqual(t, sm.compressionProfile.MaxL1Tokens, 60000)
 			} else if tt.contextTokens >= 100000 {
 				// Large models should have substantial L1 token budget
-				assert.GreaterOrEqual(t, sm.maxL1Tokens, 40000)
+				assert.GreaterOrEqual(t, sm.compressionProfile.MaxL1Tokens, 40000)
 			} else if tt.contextTokens < 10000 {
 				// Small models should have minimal L1 token budget
-				assert.LessOrEqual(t, sm.maxL1Tokens, 2000)
+				assert.LessOrEqual(t, sm.compressionProfile.MaxL1Tokens, 2000)
 			}
 
 			// Verify L2 scales with available budget

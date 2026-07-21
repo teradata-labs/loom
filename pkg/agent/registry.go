@@ -728,6 +728,20 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 	}
 
+	// manage_patterns (Seam 1) is off by default (see WithPatternManagement's
+	// doc comment) so a plain agent stays at the zero-built-in-tools
+	// baseline; wire it on only when explicitly requested via
+	// config.Tools.Builtin, the same explicit-request convention shell_execute
+	// and tool_search already use.
+	if config.Tools != nil {
+		for _, toolName := range config.Tools.Builtin {
+			if toolName == "manage_patterns" {
+				opts = append(opts, WithPatternManagement(true))
+				break
+			}
+		}
+	}
+
 	// Set tracer if provided
 	if r.tracer != nil {
 		opts = append(opts, WithTracer(r.tracer))
@@ -2422,12 +2436,13 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 	}
 	skillLib := skills.NewLibrary(libOpts...)
 
+	// deps.SkillsConfig.MaxConcurrentSkills bounds the discovery candidate
+	// menu (consumed by MatchSkills/Discovery below), not the orchestrator's
+	// active set — there is no active-set cap to wire here (O-SKL-3): the
+	// active set only shrinks via explicit unload or session end.
 	orchOpts := []skills.OrchestratorOption{
 		skills.WithOrchestratorTracer(deps.Tracer),
 		skills.WithOrchestratorLogger(logger),
-	}
-	if deps.SkillsConfig.MaxConcurrentSkills > 0 {
-		orchOpts = append(orchOpts, skills.WithMaxConcurrentSkills(deps.SkillsConfig.MaxConcurrentSkills))
 	}
 	skillOrch := skills.NewOrchestrator(skillLib, orchOpts...)
 

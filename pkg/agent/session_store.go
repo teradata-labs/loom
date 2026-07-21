@@ -265,16 +265,17 @@ func (s *SessionStore) initSchema() error {
 
 	// Migration: Add agent_id, parent_session_id, session_context columns for cross-session memory
 	agentMemoryMigrations := map[string]string{
-		"agent_id":          "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
-		"parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
-		"session_context":   "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
-		"message_agent_id":  "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
+		"agent_id":              "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
+		"parent_session_id":     "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
+		"session_context":       "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
+		"message_agent_id":      "ALTER TABLE messages ADD COLUMN agent_id TEXT",      // Track which agent created each message
+		"message_context_class": "ALTER TABLE messages ADD COLUMN context_class TEXT", // Structural retention class (narrative/charter/ledger/ballast)
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
 		// Check if column exists
 		var table string
-		if columnName == "session_context" || columnName == "message_agent_id" {
+		if columnName == "session_context" || columnName == "message_agent_id" || columnName == "message_context_class" {
 			table = "messages"
 		} else {
 			table = "sessions"
@@ -305,6 +306,8 @@ func (s *SessionStore) initSchema() error {
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"
 				case "message_agent_id":
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"
+				case "message_context_class":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context_class ON messages(context_class)"
 				}
 				if indexSQL != "" {
 					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
@@ -587,9 +590,15 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		agentID = &msg.AgentID
 	}
 
+	// Handle context_class (nullable; "" (narrative) round-trips as NULL)
+	var contextClass *string
+	if msg.ContextClass != "" {
+		contextClass = &msg.ContextClass
+	}
+
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, context_class, timestamp, token_count, cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -601,6 +610,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		toolResultJSON,
 		string(sessionContext),
 		agentID,
+		contextClass,
 		msg.Timestamp.Unix(),
 		msg.TokenCount,
 		msg.CostUSD,
@@ -641,7 +651,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 // (e.g., LoadSession).
 func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string) ([]Message, error) {
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, context_class, timestamp, token_count, cost_usd
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY timestamp ASC
@@ -658,7 +668,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		var msg Message
 		var msgID int64
 		var toolCallsJSON, toolUseID, toolResultJSON *string
-		var sessionContext, agentID sql.NullString
+		var sessionContext, agentID, contextClass sql.NullString
 		var timestamp int64
 
 		err := rows.Scan(
@@ -670,6 +680,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&toolResultJSON,
 			&sessionContext,
 			&agentID,
+			&contextClass,
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
@@ -685,6 +696,11 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		// Populate agent_id from nullable database value (backward compatible)
 		if agentID.Valid {
 			msg.AgentID = agentID.String
+		}
+		// Populate context_class from nullable database value (backward
+		// compatible; empty stays "" and reclassifies on restore)
+		if contextClass.Valid {
+			msg.ContextClass = contextClass.String
 		}
 		// SQLite backend is single-tenant; set default UserID
 		msg.UserID = "default-user"

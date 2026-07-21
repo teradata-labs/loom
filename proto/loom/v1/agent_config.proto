@@ -399,6 +399,16 @@ message MemoryCompressionConfig {
 
   // Batch sizes for compression operations
   MemoryCompressionBatchSizes batch_sizes = 6;
+
+  // Yellow-zone threshold as percentage (0-100) (default: 70)
+  // At or above this usage, the single-writer pressure pipeline evicts
+  // low-value context (ValveEvict).
+  int32 yellow_threshold_percent = 7;
+
+  // Red-zone threshold as percentage (0-100) (default: 85)
+  // At or above this usage, the single-writer pressure pipeline folds the
+  // conversation ledger (Fold).
+  int32 red_threshold_percent = 8;
 }
 
 // BehaviorConfig defines agent behavior constraints

@@ -1460,9 +1460,17 @@ type MemoryCompressionConfig struct {
 	// data_intensive=70, balanced=75, conversational=85
 	CriticalThresholdPercent int32 `protobuf:"varint,5,opt,name=critical_threshold_percent,json=criticalThresholdPercent,proto3" json:"critical_threshold_percent,omitempty"`
 	// Batch sizes for compression operations
-	BatchSizes    *MemoryCompressionBatchSizes `protobuf:"bytes,6,opt,name=batch_sizes,json=batchSizes,proto3" json:"batch_sizes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BatchSizes *MemoryCompressionBatchSizes `protobuf:"bytes,6,opt,name=batch_sizes,json=batchSizes,proto3" json:"batch_sizes,omitempty"`
+	// Yellow-zone threshold as percentage (0-100) (default: 70)
+	// At or above this usage, the single-writer pressure pipeline evicts
+	// low-value context (ValveEvict).
+	YellowThresholdPercent int32 `protobuf:"varint,7,opt,name=yellow_threshold_percent,json=yellowThresholdPercent,proto3" json:"yellow_threshold_percent,omitempty"`
+	// Red-zone threshold as percentage (0-100) (default: 85)
+	// At or above this usage, the single-writer pressure pipeline folds the
+	// conversation ledger (Fold).
+	RedThresholdPercent int32 `protobuf:"varint,8,opt,name=red_threshold_percent,json=redThresholdPercent,proto3" json:"red_threshold_percent,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *MemoryCompressionConfig) Reset() {
@@ -1535,6 +1543,20 @@ func (x *MemoryCompressionConfig) GetBatchSizes() *MemoryCompressionBatchSizes {
 		return x.BatchSizes
 	}
 	return nil
+}
+
+func (x *MemoryCompressionConfig) GetYellowThresholdPercent() int32 {
+	if x != nil {
+		return x.YellowThresholdPercent
+	}
+	return 0
+}
+
+func (x *MemoryCompressionConfig) GetRedThresholdPercent() int32 {
+	if x != nil {
+		return x.RedThresholdPercent
+	}
+	return 0
 }
 
 // BehaviorConfig defines agent behavior constraints
@@ -2225,7 +2247,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
-	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xef\x02\n" +
+	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xdd\x03\n" +
 	"\x17MemoryCompressionConfig\x12C\n" +
 	"\x10workload_profile\x18\x01 \x01(\x0e2\x18.loom.v1.WorkloadProfileR\x0fworkloadProfile\x12&\n" +
 	"\x0fmax_l1_messages\x18\x02 \x01(\x05R\rmaxL1Messages\x12&\n" +
@@ -2233,7 +2255,9 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x19warning_threshold_percent\x18\x04 \x01(\x05R\x17warningThresholdPercent\x12<\n" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
-	"batchSizes\"\xf7\x02\n" +
+	"batchSizes\x128\n" +
+	"\x18yellow_threshold_percent\x18\a \x01(\x05R\x16yellowThresholdPercent\x122\n" +
+	"\x15red_threshold_percent\x18\b \x01(\x05R\x13redThresholdPercent\"\xf7\x02\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +

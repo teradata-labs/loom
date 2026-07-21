@@ -260,17 +260,18 @@ func (tb *TokenBudget) CanFit(tokens int) bool {
 	return tb.AvailableTokens() >= tokens
 }
 
-// Use marks tokens as used. Returns false if budget exceeded.
+// Use marks tokens as used, recording the true usage even when it exceeds
+// the remaining budget — the pressure pipeline (BudgetPct/ZoneThresholds)
+// depends on usage reflecting real demand once a session is over budget.
+// Returns false if the tokens did not fit within the remaining budget
+// (the accounting still records them), true otherwise.
 func (tb *TokenBudget) Use(tokens int) bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	if tokens > (tb.MaxTokens - tb.ReservedTokens - tb.UsedTokens) {
-		return false
-	}
-
+	fits := tokens <= (tb.MaxTokens - tb.ReservedTokens - tb.UsedTokens)
 	tb.UsedTokens += tokens
-	return true
+	return fits
 }
 
 // Free returns tokens to the budget.

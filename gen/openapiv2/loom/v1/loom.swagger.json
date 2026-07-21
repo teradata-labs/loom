@@ -6385,6 +6385,16 @@
         "batchSizes": {
           "$ref": "#/definitions/v1MemoryCompressionBatchSizes",
           "title": "Batch sizes for compression operations"
+        },
+        "yellowThresholdPercent": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Yellow-zone threshold as percentage (0-100) (default: 70)\nAt or above this usage, the single-writer pressure pipeline evicts\nlow-value context (ValveEvict)."
+        },
+        "redThresholdPercent": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Red-zone threshold as percentage (0-100) (default: 85)\nAt or above this usage, the single-writer pressure pipeline folds the\nconversation ledger (Fold)."
         }
       },
       "title": "MemoryCompressionConfig defines conversation history compression behavior"
