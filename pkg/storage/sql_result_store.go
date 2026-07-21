@@ -212,8 +212,11 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 		return nil, fmt.Errorf("no columns found in SQL result")
 	}
 
-	// Create table name
-	tableName := fmt.Sprintf("tool_result_%s", id)
+	// Create table name. Sanitize once here so every downstream use (CREATE,
+	// INSERT, DROP, and the value stored in sql_result_metadata) is a safe SQL
+	// identifier, even when the id embeds external input such as an MCP server
+	// name containing hyphens.
+	tableName := sanitizeIdentifier(fmt.Sprintf("tool_result_%s", id))
 
 	// Create table (REGULAR table, not TEMP - critical fix!)
 	columnDefs := make([]string, len(columns))
@@ -223,7 +226,7 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 		columnDefs[i] = fmt.Sprintf("%s TEXT", safeName)
 	}
 
-	createSQL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", tableName, strings.Join(columnDefs, ", "))
+	createSQL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", tableName, strings.Join(columnDefs, ", ")) // #nosec G201 -- tableName and columns sanitized via sanitizeIdentifier
 	if _, err := s.db.Exec(createSQL); err != nil {
 		return nil, fmt.Errorf("failed to create result table: %w", err)
 	}
@@ -235,8 +238,7 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 			placeholders[i] = "?"
 		}
 
-		safeTable := sanitizeIdentifier(tableName)
-		insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)", safeTable, strings.Join(placeholders, ", ")) // #nosec G201 -- tableName sanitized
+		insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)", tableName, strings.Join(placeholders, ", ")) // #nosec G201 -- tableName sanitized via sanitizeIdentifier
 		stmt, err := s.db.Prepare(insertSQL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to prepare insert: %w", err)
@@ -268,7 +270,7 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 		now.Unix(), now.Unix(), sizeBytes)
 	if err != nil {
 		// Cleanup table if metadata insert fails
-		_, _ = s.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		_, _ = s.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)) // #nosec G201 -- tableName sanitized via sanitizeIdentifier
 		return nil, fmt.Errorf("failed to store metadata: %w", err)
 	}
 
@@ -397,6 +399,11 @@ func (s *SQLResultStore) GetMetadata(_ context.Context, id string) (*SQLResultMe
 	meta.StoredAt = time.Unix(storedAt, 0)
 	meta.AccessedAt = time.Unix(accessedAt, 0)
 
+	// Defense-in-depth: table names are written sanitized, but re-sanitize the
+	// value read back so a tampered metadata row cannot inject SQL into
+	// consumers that interpolate meta.TableName into queries.
+	meta.TableName = sanitizeIdentifier(meta.TableName)
+
 	// Generate preview data (first 5 + last 5 rows)
 	meta.Preview = s.generatePreview(meta.TableName, meta.Columns, meta.RowCount)
 
@@ -485,8 +492,9 @@ func (s *SQLResultStore) Delete(_ context.Context, id string) error {
 		return fmt.Errorf("failed to get metadata: %w", err)
 	}
 
-	// Drop table
-	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)
+	// Drop table. Sanitize the name read back from metadata so a tampered row
+	// cannot inject SQL (defense-in-depth; names are stored sanitized).
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(tableName)) // #nosec G201 -- identifier sanitized via sanitizeIdentifier
 	if _, err := s.db.Exec(dropSQL); err != nil {
 		return fmt.Errorf("failed to drop table: %w", err)
 	}
@@ -540,9 +548,9 @@ func (s *SQLResultStore) cleanupExpired() {
 
 	// Delete expired results
 	for _, result := range toDelete {
-		// Drop table
-		dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", result.tableName)
-		_, _ = s.db.Exec(dropSQL) // Ignore errors
+		// Drop table. Sanitize the name read back from metadata (defense-in-depth).
+		dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(result.tableName)) // #nosec G201 -- identifier sanitized via sanitizeIdentifier
+		_, _ = s.db.Exec(dropSQL)                                                               // Ignore errors
 
 		// Delete metadata
 		_, _ = s.db.Exec(`DELETE FROM sql_result_metadata WHERE id = ?`, result.id)
