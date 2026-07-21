@@ -340,10 +340,10 @@ type LLMConfig struct {
 	HuggingFaceModel string `mapstructure:"huggingface_model"`
 
 	// LiteLLM-specific
-	LiteLLMEndpoint      string            `mapstructure:"litellm_endpoint"`
-	LiteLLMAPIKey        string            `mapstructure:"litellm_api_key"` // From CLI/env/keyring only
-	LiteLLMModel         string            `mapstructure:"litellm_model"`
-	LiteLLMExtraHeaders  map[string]string `mapstructure:"litellm_extra_headers"`
+	LiteLLMEndpoint     string            `mapstructure:"litellm_endpoint"`
+	LiteLLMAPIKey       string            `mapstructure:"litellm_api_key"` // From CLI/env/keyring only
+	LiteLLMModel        string            `mapstructure:"litellm_model"`
+	LiteLLMExtraHeaders map[string]string `mapstructure:"litellm_extra_headers"`
 
 	// Common generation parameters
 	Temperature float64 `mapstructure:"temperature"`

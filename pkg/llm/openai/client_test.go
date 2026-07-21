@@ -1047,9 +1047,9 @@ func TestClient_ExtraHeaders_Stream(t *testing.T) {
 			`{"id":"2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		}
 		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}

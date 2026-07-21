@@ -87,10 +87,10 @@ type FactoryConfig struct {
 	HuggingFaceModel string
 
 	// LiteLLM configuration
-	LiteLLMEndpoint      string
-	LiteLLMAPIKey        string
-	LiteLLMModel         string
-	LiteLLMExtraHeaders  map[string]string
+	LiteLLMEndpoint     string
+	LiteLLMAPIKey       string
+	LiteLLMModel        string
+	LiteLLMExtraHeaders map[string]string
 
 	// Common settings
 	MaxTokens       int
