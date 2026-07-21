@@ -588,6 +588,12 @@ type ObservabilityConfig struct {
 	StorageType   string `mapstructure:"storage_type"`   // memory, sqlite
 	SQLitePath    string `mapstructure:"sqlite_path"`    // Path for SQLite storage
 	FlushInterval string `mapstructure:"flush_interval"` // e.g., "5s", "30s"
+
+	// OTel mode — exports to any OTLP HTTP backend (Opik, Jaeger, Tempo, etc.)
+	OTLPEndpoint     string            `mapstructure:"otlp_endpoint"`      // Full OTLP HTTP URL
+	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
+	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Skip TLS (local dev only)
+	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
 }
 
 // LoggingConfig holds logging configuration.
@@ -1682,7 +1688,9 @@ func (c *Config) Validate() error {
 			// otherwise "embedded". This keeps Validate() in step with what the
 			// server actually runs, so enabling observability without an explicit
 			// mode or endpoint validates as embedded instead of being rejected.
-			if c.Observability.HawkEndpoint != "" {
+			if c.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if c.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"
@@ -1705,10 +1713,15 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("observability.hawk_endpoint is required when mode=service")
 			}
 			// Note: HawkAPIKey is optional - not required for local Hawk installations
+		case "otel":
+			// OTel mode: validate endpoint
+			if c.Observability.OTLPEndpoint == "" {
+				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel")
+			}
 		case "none":
 			// No-op mode: no validation needed
 		default:
-			return fmt.Errorf("observability.mode must be 'embedded', 'service', or 'none' (got: %s)", mode)
+			return fmt.Errorf("observability.mode must be 'embedded', 'service', 'otel', or 'none' (got: %s)", mode)
 		}
 	}
 
