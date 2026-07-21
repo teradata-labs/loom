@@ -124,8 +124,16 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 				loomSpan.ResourceAttributes[k] = v
 			}
 		}
-		// Inject parent span context so OTel SDK establishes the parent-child link.
-		if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
+		// Prefer the live in-process OTel span so SDK propagation assigns the
+		// same SDK-generated trace/span IDs to the child — not the UUID-derived
+		// ones that would create a dangling remote parent.  Fall back to the
+		// UUID-derived remote context only when no live span is registered (i.e.
+		// the parent was created by a different process / tracer instance).
+		if raw, ok := t.activeSpans.Load(parent.SpanID); ok {
+			if parentOTelSpan, ok := raw.(oteltrace.Span); ok {
+				otelCtx = oteltrace.ContextWithSpan(ctx, parentOTelSpan)
+			}
+		} else if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
 			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
 		}
 	}

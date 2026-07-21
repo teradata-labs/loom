@@ -43,7 +43,12 @@ type OTelConfig struct {
 	// Env: OTEL_EXPORTER_OTLP_TRACES_HEADERS (format: "key=val,key2=val2")
 	Headers map[string]string
 
-	// Insecure disables TLS certificate verification. Use for local dev only.
+	// Insecure forces plain HTTP transport for the OTLP exporter (i.e. the
+	// connection uses http:// even if the endpoint URL starts with https://).
+	// This is NOT equivalent to disabling TLS certificate verification.
+	// Use for local development against plain-HTTP collectors (Jaeger, Opik
+	// running on localhost).  For https:// endpoints with self-signed certs,
+	// use a custom TLS config instead.
 	// Env: LOOM_OTLP_INSECURE
 	Insecure bool
 
@@ -74,10 +79,16 @@ type OTelConfig struct {
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT")
+		// Honor both the traces-specific variant and the base OTLP endpoint env
+		// var (the latter is more commonly documented in generic OTel guides).
+		cfg.Endpoint = firstEnv(
+			"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+			"OTEL_EXPORTER_OTLP_ENDPOINT",
+			"LOOM_OTLP_ENDPOINT",
+		)
 	}
 	if len(cfg.Headers) == 0 {
-		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
+		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
 	}
@@ -85,7 +96,11 @@ func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"
 	}
 	if cfg.ServiceName == "" {
-		cfg.ServiceName = firstEnv("OTEL_SERVICE_NAME", "")
+		if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
+			cfg.ServiceName = name
+		} else {
+			cfg.ServiceName = "loom" // safe default: non-empty service.name in every exported span
+		}
 	}
 	if cfg.ServiceVersion == "" {
 		cfg.ServiceVersion = os.Getenv("OTEL_SERVICE_VERSION")

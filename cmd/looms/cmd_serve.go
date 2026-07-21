@@ -975,8 +975,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
-			// Default to service mode if endpoint is set, otherwise embedded
-			if config.Observability.HawkEndpoint != "" {
+			// Derive mode from whichever endpoint is configured.
+			// OTel takes priority so that otlp_endpoint alone activates otel mode
+			// without requiring an explicit mode: otel in the config (matches
+			// what Config.Validate() documents).
+			if config.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if config.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"

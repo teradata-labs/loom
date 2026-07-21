@@ -112,7 +112,7 @@ func NewAutoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 			Headers:     config.OTLPHeaders,
 			Insecure:    config.OTLPInsecure,
 			ServiceName: config.ServiceName,
-			Privacy:     safePrivacy(config.Privacy),
+			Privacy:     safeOTelPrivacy(config.Privacy),
 		})
 	case TracerModeAuto:
 		return autoSelectTracer(config)
@@ -142,7 +142,7 @@ func autoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 			Headers:     config.OTLPHeaders,
 			Insecure:    config.OTLPInsecure,
 			ServiceName: config.ServiceName,
-			Privacy:     safePrivacy(config.Privacy),
+			Privacy:     safeOTelPrivacy(config.Privacy),
 		})
 	}
 
@@ -198,10 +198,17 @@ func isServiceAvailable(config *AutoSelectConfig) bool {
 	return config.HawkURL != ""
 }
 
-// safePrivacy dereferences a *PrivacyConfig, returning zero value if nil.
-func safePrivacy(p *PrivacyConfig) PrivacyConfig {
+// safeOTelPrivacy dereferences a *PrivacyConfig for OTel construction paths.
+// When nil (caller did not explicitly configure privacy) it defaults to safe
+// redaction-on behaviour: credentials and PII are redacted before export to
+// any off-box OTLP backend.  Callers that intentionally want no redaction must
+// pass an explicit &PrivacyConfig{RedactCredentials: false, RedactPII: false}.
+func safeOTelPrivacy(p *PrivacyConfig) PrivacyConfig {
 	if p == nil {
-		return PrivacyConfig{}
+		return PrivacyConfig{
+			RedactCredentials: true,
+			RedactPII:         true,
+		}
 	}
 	return *p
 }

@@ -660,13 +660,15 @@ export LOOM_OTLP_HEADERS="Authorization=Bearer my-api-key"
 **Values:** `true`, `false`
 **Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
 
-Disables TLS certificate verification for the OTLP HTTP connection. Use only for local development against self-signed or plain HTTP endpoints.
+Forces plain HTTP transport for the OTLP exporter (uses `http://` even if the endpoint URL specifies `https://`). This is implemented via `otlptracehttp.WithInsecure()` which **forces plaintext** — it does **not** disable TLS certificate verification for existing `https://` connections. Use only for local development against collectors that listen on plain HTTP (e.g. Jaeger or Opik on localhost).
+
+For `https://` endpoints with self-signed certificates, configure the collector to use a trusted certificate instead.
 
 ```bash
 export LOOM_OTLP_INSECURE=true
 ```
 
-⚠️ **Warning:** Never set this in production — it disables certificate validation entirely.
+⚠️ **Warning:** Never set this in production — spans are transmitted without encryption.
 
 ### OTEL_SERVICE_NAME
 **Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`

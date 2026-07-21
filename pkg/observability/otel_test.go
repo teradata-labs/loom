@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -492,4 +494,122 @@ func TestResolveOTelConfig(t *testing.T) {
 
 func TestOTelTracerImplementsTracer(t *testing.T) {
 	var _ Tracer = (*OTelTracer)(nil) // compile-time check duplicated for clarity
+}
+
+// ---------------------------------------------------------------------------
+// Parent-child span linkage (regression for blocking bug reported in review)
+// ---------------------------------------------------------------------------
+
+// newInMemoryOTelTracer builds an OTelTracer backed by an InMemoryExporter so
+// exported spans can be inspected without a live OTLP collector.
+func newInMemoryOTelTracer(t *testing.T) (*OTelTracer, *tracetest.InMemoryExporter) {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp), // synchronous export so spans are available immediately
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	return &OTelTracer{
+		provider: provider,
+		tracer:   provider.Tracer("loom"),
+		privacy:  PrivacyConfig{},
+	}, exp
+}
+
+// TestParentChildSameTrace verifies that a child span exported by OTelTracer
+// shares the same TraceID as its parent and correctly references the parent's
+// SpanID — not a UUID-derived orphan.
+func TestParentChildSameTrace(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	// Start parent span and keep it active while the child is created.
+	// (EndSpan removes the parent from activeSpans — the child must be started
+	//  before the parent ends so the live OTel span is still available.)
+	ctx, parent := tr.StartSpan(context.Background(), "parent.op")
+
+	// Start child with the parent context while parent is still active.
+	_, child := tr.StartSpan(ctx, "child.op")
+	tr.EndSpan(child)
+	tr.EndSpan(parent)
+
+	// Force sync flush.
+	if err := tr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 exported spans, got %d", len(spans))
+	}
+
+	// Map by operation name for clarity.
+	byName := make(map[string]tracetest.SpanStub, 2)
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+
+	parentStub, ok := byName["parent.op"]
+	if !ok {
+		t.Fatal("parent.op span not found in exported spans")
+	}
+	childStub, ok := byName["child.op"]
+	if !ok {
+		t.Fatal("child.op span not found in exported spans")
+	}
+
+	// Both must share the same TraceID.
+	if parentStub.SpanContext.TraceID() != childStub.SpanContext.TraceID() {
+		t.Errorf("trace ID mismatch: parent=%s child=%s — child was orphaned into a separate trace",
+			parentStub.SpanContext.TraceID(), childStub.SpanContext.TraceID())
+	}
+
+	// Child must reference parent's SDK-assigned SpanID, not a UUID-derived one.
+	if childStub.Parent.SpanID() != parentStub.SpanContext.SpanID() {
+		t.Errorf("parent span ID mismatch: child.ParentSpanID=%s parent.SpanID=%s",
+			childStub.Parent.SpanID(), parentStub.SpanContext.SpanID())
+	}
+}
+
+// TestThreeGenerationChain verifies the fix holds for a three-level A → B → C chain.
+func TestThreeGenerationChain(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	ctxA, spanA := tr.StartSpan(context.Background(), "A")
+	ctxB, spanB := tr.StartSpan(ctxA, "B")
+	_, spanC := tr.StartSpan(ctxB, "C")
+	tr.EndSpan(spanC)
+	tr.EndSpan(spanB)
+	tr.EndSpan(spanA)
+
+	if err := tr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 exported spans, got %d", len(spans))
+	}
+
+	byName := make(map[string]tracetest.SpanStub, 3)
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+
+	traceID := byName["A"].SpanContext.TraceID()
+	for _, name := range []string{"A", "B", "C"} {
+		if byName[name].SpanContext.TraceID() != traceID {
+			t.Errorf("span %q has different TraceID %s; want %s",
+				name, byName[name].SpanContext.TraceID(), traceID)
+		}
+	}
+
+	if byName["B"].Parent.SpanID() != byName["A"].SpanContext.SpanID() {
+		t.Errorf("B.ParentSpanID=%s != A.SpanID=%s",
+			byName["B"].Parent.SpanID(), byName["A"].SpanContext.SpanID())
+	}
+	if byName["C"].Parent.SpanID() != byName["B"].SpanContext.SpanID() {
+		t.Errorf("C.ParentSpanID=%s != B.SpanID=%s",
+			byName["C"].Parent.SpanID(), byName["B"].SpanContext.SpanID())
+	}
 }
