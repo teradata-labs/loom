@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1031,4 +1032,45 @@ func TestClient_ExtraHeaders_NilMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, "Hello", resp.Content)
+}
+
+func TestClient_ExtraHeaders_Stream(t *testing.T) {
+	// Verify that ExtraHeaders are forwarded on ChatStream requests.
+	var receivedHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		chunks := []string{
+			`{"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
+			`{"id":"2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		APIKey:   "test-key",
+		Model:    "gpt-4o",
+		Endpoint: server.URL,
+		ExtraHeaders: map[string]string{
+			"x-litellm-tags": "env=test",
+		},
+	})
+
+	ctx := &mockContext{Context: context.Background()}
+	messages := []types.Message{{Role: "user", Content: "Hi"}}
+
+	_, err := client.ChatStream(ctx, messages, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "env=test", receivedHeaders.Get("x-litellm-tags"))
+	assert.Equal(t, "Bearer test-key", receivedHeaders.Get("Authorization"))
 }
