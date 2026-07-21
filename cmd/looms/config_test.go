@@ -475,12 +475,32 @@ func TestValidate_ObservabilityMode(t *testing.T) {
 		assert.Contains(t, err.Error(), "sqlite_path is required")
 	})
 
+	t.Run("enabled, mode=otel, endpoint set -> valid", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "otel", OTLPEndpoint: "http://collector:4318/v1/traces"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("enabled, mode=otel, no endpoint -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "otel"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "otlp_endpoint is required")
+	})
+
+	t.Run("enabled, empty mode, otlp endpoint set -> valid (auto otel)", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, OTLPEndpoint: "http://collector:4318/v1/traces"}
+		assert.NoError(t, cfg.Validate())
+	})
+
 	t.Run("enabled, invalid mode -> error", func(t *testing.T) {
 		cfg := validBase()
 		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "bogus"}
 		err := cfg.Validate()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must be 'embedded', 'service', or 'none'")
+		assert.Contains(t, err.Error(), "must be 'embedded', 'service', 'otel', or 'none'")
 	})
 
 	t.Run("disabled -> valid regardless of mode", func(t *testing.T) {
