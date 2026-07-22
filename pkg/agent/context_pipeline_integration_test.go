@@ -427,7 +427,7 @@ func TestManageSkillsLoad_HonorsConfigMaxConcurrentSkillsCap(t *testing.T) {
 	tool := &ManageSkillsTool{
 		orchestrator: skills.NewOrchestrator(library),
 		config: &Config{
-			SkillsConfig: &skills.SkillsConfig{MaxConcurrentSkills: 3},
+			SkillsConfig: &skills.SkillsConfig{LoadHardCap: 3},
 		},
 		taskBoardConfig: &loomv1.TaskBoardConfig{},
 	}

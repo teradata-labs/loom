@@ -177,43 +177,22 @@ func TestManageSkillsTool_List_ReportsActiveState(t *testing.T) {
 	assert.False(t, seen["beta"], "beta was never loaded and must report active=false")
 }
 
-func TestManageSkillsTool_Unload_RemovesFromActiveSet(t *testing.T) {
-	lib := newEmptySkillLibrary(t)
-	lib.Register(&skills.Skill{Name: "temp-skill", Title: "Temp"})
-	orch := skills.NewOrchestrator(lib)
-	tool := newManageSkillsToolForTest(orch, nil)
-
-	sessionID := "sess-unload"
-	ctx := ctxWithSession(sessionID)
-
-	_, err := tool.Execute(ctx, map[string]interface{}{"action": "load", "name": "temp-skill"})
-	require.NoError(t, err)
-	require.Len(t, orch.GetActiveSkills(sessionID), 1)
-
-	result, err := tool.Execute(ctx, map[string]interface{}{"action": "unload", "name": "temp-skill"})
-	require.NoError(t, err)
-	require.True(t, result.Success)
-
-	data := resultData(t, result)
-	assert.Equal(t, "unload", data["action"])
-	assert.Equal(t, "deactivated", data["status"])
-	assert.Equal(t, true, data["was_active"])
-	assert.EqualValues(t, 0, data["active_count"])
-
-	assert.Empty(t, orch.GetActiveSkills(sessionID), "unload must be the only thing that removes an active skill")
-}
-
-func TestManageSkillsTool_Unload_NotActive_IsIdempotentSuccess(t *testing.T) {
+// Unload is intentionally not a supported action — an executed skill is an
+// event in the append-only context, retired only by the pressure pipeline
+// (valve/fold). See ManageSkillsTool.Description and skillActiveSafetyCap
+// docs. The "unload" verb is rejected with INVALID_ACTION.
+func TestManageSkillsTool_Unload_ActionRejected(t *testing.T) {
 	lib := newEmptySkillLibrary(t)
 	orch := skills.NewOrchestrator(lib)
 	tool := newManageSkillsToolForTest(orch, nil)
 
-	result, err := tool.Execute(ctxWithSession("sess-idempotent"), map[string]interface{}{
-		"action": "unload", "name": "never-loaded",
+	result, err := tool.Execute(ctxWithSession("sess-no-unload"), map[string]interface{}{
+		"action": "unload", "name": "anything",
 	})
 	require.NoError(t, err)
-	require.True(t, result.Success, "unloading a skill that was never active is a no-op success, not an error")
-	assert.Equal(t, false, resultData(t, result)["was_active"])
+	require.False(t, result.Success)
+	require.NotNil(t, result.Error)
+	assert.Equal(t, "INVALID_ACTION", result.Error.Code)
 }
 
 func TestManageSkillsTool_Load_UnknownSkill_ReturnsNotFoundError(t *testing.T) {
@@ -324,7 +303,7 @@ func TestManageSkillsTool_Load_LowRisk_NeverGated(t *testing.T) {
 	}
 }
 
-// --- cap (default 20): explicit error, no implicit eviction, unload-only removal ---
+// --- cap (default 20): explicit error, no implicit eviction, retired only by pressure pipeline ---
 
 func TestManageSkillsTool_Load_PastCap_ReturnsExplicitErrorNoEviction(t *testing.T) {
 	lib := newEmptySkillLibrary(t)
@@ -352,7 +331,7 @@ func TestManageSkillsTool_Load_PastCap_ReturnsExplicitErrorNoEviction(t *testing
 	require.False(t, result.Success)
 	require.NotNil(t, result.Error)
 	assert.Equal(t, "ACTIVE_SKILL_CAP_EXCEEDED", result.Error.Code)
-	assert.Contains(t, result.Error.Message, "no skill was evicted")
+	assert.Contains(t, result.Error.Message, "safety cap")
 	assert.NotEmpty(t, result.Error.Suggestion)
 
 	// No implicit eviction: the active set is unchanged at exactly the cap,
@@ -368,35 +347,6 @@ func TestManageSkillsTool_Load_PastCap_ReturnsExplicitErrorNoEviction(t *testing
 		assert.True(t, activeNames[names[i]], "skill %s must still be active (no implicit eviction)", names[i])
 	}
 	assert.False(t, activeNames[names[skillActiveSafetyCap]], "the rejected skill must not have been activated")
-}
-
-func TestManageSkillsTool_Load_PastCap_UnloadFreesCapacity(t *testing.T) {
-	lib := newEmptySkillLibrary(t)
-	names := make([]string, skillActiveSafetyCap+1)
-	for i := range names {
-		names[i] = fmt.Sprintf("cap-skill-%02d", i)
-		lib.Register(&skills.Skill{Name: names[i]})
-	}
-	orch := skills.NewOrchestrator(lib)
-	tool := newManageSkillsToolForTest(orch, nil)
-	sessionID := "sess-cap-unload"
-	ctx := ctxWithSession(sessionID)
-
-	for i := 0; i < skillActiveSafetyCap; i++ {
-		_, err := tool.Execute(ctx, map[string]interface{}{"action": "load", "name": names[i]})
-		require.NoError(t, err)
-	}
-
-	// Free capacity via explicit unload — the only sanctioned removal path.
-	_, err := tool.Execute(ctx, map[string]interface{}{"action": "unload", "name": names[0]})
-	require.NoError(t, err)
-	require.Len(t, orch.GetActiveSkills(sessionID), skillActiveSafetyCap-1)
-
-	// The load that previously failed must now succeed.
-	result, err := tool.Execute(ctx, map[string]interface{}{"action": "load", "name": names[skillActiveSafetyCap]})
-	require.NoError(t, err)
-	require.True(t, result.Success, "load must succeed once explicit unload frees capacity")
-	require.Len(t, orch.GetActiveSkills(sessionID), skillActiveSafetyCap)
 }
 
 func TestManageSkillsTool_Load_AtCap_ReloadingAlreadyActiveSkill_DoesNotCountAgainstCap(t *testing.T) {

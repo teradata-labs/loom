@@ -111,9 +111,20 @@ type SkillsConfig struct {
 	EnabledSkills []string
 	// Deprecated: prefer Bindings. Resolver excludes these names when
 	// synthesizing the implicit binding set.
-	DisabledSkills       []string
-	MinAutoConfidence    float64
-	MaxConcurrentSkills  int
+	DisabledSkills    []string
+	MinAutoConfidence float64
+	// MaxConcurrentSkills is the orchestrator's eviction cap: when the
+	// active set reaches this size on ActivateSkill, the lowest-confidence
+	// non-sticky skill is evicted to make room. Distinct from LoadHardCap,
+	// which gates the manage_skills(load) tool at a separate ceiling.
+	MaxConcurrentSkills int
+	// LoadHardCap is the ceiling manage_skills(load) enforces before
+	// activating a new skill. A load at or above this cap is refused with
+	// an explicit ACTIVE_SKILL_CAP_EXCEEDED error rather than silently
+	// evicting. Distinct from MaxConcurrentSkills (the eviction cap
+	// consulted by orchestrator-internal callers). When 0, falls back to
+	// the runaway-loop backstop skillActiveSafetyCap.
+	LoadHardCap          int
 	SkillsDir            string
 	ContextBudgetPercent int
 
@@ -155,6 +166,12 @@ type SkillsConfig struct {
 // router's per-leaf decisions reach the orchestrator without being
 // silently trimmed. See pkg/skills/index/router.go's maxCandidates
 // comment for the rationale.
+//
+// LoadHardCap is left at 0 (fall through to skillActiveSafetyCap = 20)
+// so the manage_skills(load) tool's rejection ceiling stays a runaway
+// backstop, not a target — matching pre-v5 behavior where the active
+// set could grow to the orchestrator's eviction cap without operator
+// intervention.
 func DefaultSkillsConfig() *SkillsConfig {
 	return &SkillsConfig{
 		Enabled:               true,

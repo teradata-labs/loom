@@ -537,96 +537,16 @@ func (sm *SegmentedMemory) RomBase() string {
 	return sm.romContent
 }
 
-// RemoveSkillLoadMessage removes the most recent manage_skills(load, name)
-// tool_result from L1 for the given skill name. Called by executeUnload
-// to keep the L1 view aligned with the orchestrator's active-set: without
-// this, orchestrator says "not active" but walk-L1 (ActiveSkillNames)
-// still sees the load metadata and hides the skill from the ROM catalog
-// — a stale state that breaks the reload path.
-//
-// Also removes the paired assistant tool_call message that invoked the
-// load, so the API-valid tool_use/tool_result invariant holds after
-// removal. Returns true when a load message was found and removed.
-//
-// Safe under concurrent AddMessage: takes the write lock.
-func (sm *SegmentedMemory) RemoveSkillLoadMessage(skillName string) bool {
-	if skillName == "" {
-		return false
-	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Walk newest-first to find the most recent load for this skill.
-	for i := len(sm.l1Messages) - 1; i >= 0; i-- {
-		msg := sm.l1Messages[i]
-		if msg.Role != "tool" || msg.ToolResult == nil {
-			continue
-		}
-		md := msg.ToolResult.Metadata
-		if md == nil {
-			continue
-		}
-		action, _ := md["action"].(string)
-		if action != "load" {
-			continue
-		}
-		name, _ := md["skill"].(string)
-		if name != skillName {
-			continue
-		}
-
-		// Found the load tool_result at i. Also find its paired assistant
-		// message (immediately preceding, or somewhere earlier) that
-		// carries the ToolCall with matching ID — remove both to preserve
-		// tool_use/tool_result pairing.
-		toolUseID := msg.ToolUseID
-		pairIdx := -1
-		if toolUseID != "" {
-			for j := i - 1; j >= 0; j-- {
-				am := sm.l1Messages[j]
-				if am.Role != "assistant" {
-					continue
-				}
-				for _, tc := range am.ToolCalls {
-					if tc.ID == toolUseID {
-						pairIdx = j
-						break
-					}
-				}
-				if pairIdx >= 0 {
-					break
-				}
-			}
-		}
-
-		// Remove tool_result at i.
-		sm.l1Messages = append(sm.l1Messages[:i], sm.l1Messages[i+1:]...)
-		// Remove paired assistant if it ONLY held this tool_call (would
-		// otherwise leave a stranded assistant with an orphaned tool_call).
-		// If the assistant had multiple tool_calls, removing the whole
-		// assistant would orphan the others; in that case leave it alone
-		// and let the API reject-or-strip logic handle downstream.
-		if pairIdx >= 0 && pairIdx < len(sm.l1Messages) {
-			am := sm.l1Messages[pairIdx]
-			if len(am.ToolCalls) == 1 && am.ToolCalls[0].ID == toolUseID {
-				sm.l1Messages = append(sm.l1Messages[:pairIdx], sm.l1Messages[pairIdx+1:]...)
-			}
-		}
-		sm.l1Dirty = true
-		sm.updateTokenCount()
-		return true
-	}
-	return false
-}
-
 // ActiveSkillNames returns the set of skill names whose manage_skills
 // load-body is currently resident in L1. Walked structurally — read
 // ToolResult.Metadata["action"]=="load" and ["skill"] — not by content
 // parsing, so the answer stays correct across:
 //
-//   - Explicit unload (removes the load message from L1 → not seen here → skill returns to ROM catalog next turn)
 //   - Fold at red (narrative-classed load bodies compressed into residue → not in L1 → skill returns to catalog)
 //   - Valve at yellow (ballast-only path, never touches loads)
+//
+// There is no explicit unload: a skill load is an event in the append-only
+// context, retired only when the pressure pipeline reclaims its body.
 //
 // The result feeds Session.assembleForLLM's catalog filter: entries whose
 // skill is in this set are hidden from the ROM catalog, so the LLM never

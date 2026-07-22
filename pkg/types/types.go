@@ -10,6 +10,7 @@ package types
 
 import (
 	"context"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,23 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
+
+// segMemAssertOnce guards the one-shot warning emitted when a
+// Session.SegmentedMem value fails the SegmentedMemoryInterface type
+// assertion — an out-of-repo implementer of an older, narrower interface
+// would otherwise silently degrade (AddMessage becomes a no-op,
+// GetMessages returns the raw flat list). One log per process is enough
+// to surface the issue without spamming the operator on every call.
+var segMemAssertOnce sync.Once
+
+func warnSegMemAssertion(actual any) {
+	segMemAssertOnce.Do(func() {
+		log.Printf("loom/types: Session.SegmentedMem value (%T) does not implement SegmentedMemoryInterface; "+
+			"AddMessage/GetMessages will fall back to the flat message list. "+
+			"Check that your custom SegmentedMemory implementation exposes RomBase/GetL2Summary/GetMessages/ActiveSkillNames.",
+			actual)
+	})
+}
 
 // ============================================================================
 // LLM Types (originally from pkg/llm/types)
@@ -352,6 +370,8 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	if s.SegmentedMem != nil {
 		if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
 			segMem.AddMessage(ctx, msg)
+		} else {
+			warnSegMemAssertion(s.SegmentedMem)
 		}
 	}
 
@@ -363,18 +383,22 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 // GetMessages returns the compiled message list for the LLM call.
 //
 // When SegmentedMem is configured this is the sole Contract 1 assembler:
-// ROM (system, exactly one, byte-stable between folds except for the
-// append-only per-session skill catalog) + fold residue (user, present
-// only after a fold) + L1 conversation. No other channel exists.
+// ROM (system, exactly one) + fold residue (user, present only after a
+// fold) + L1 conversation. No other channel exists.
+//
+// The ROM's base is byte-stable per session; the trailing [Available
+// Skills] block mutates on skill activity (see composeROM for the
+// cache-economics rationale).
 //
 // The ROM composed here = SegmentedMem.RomBase() + a rendered skill
 // catalog filtered against the currently-loaded skills. The catalog
 // itself lives on Session.RomCatalog (append-only, router-fed); the
 // loaded set is walked structurally out of L1 via
 // SegmentedMem.ActiveSkillNames — "skill is loaded iff its
-// manage_skills(load) tool_result is still in L1", so unload / fold /
-// valve eviction of the load body all self-heal (skill returns to the
-// catalog next turn).
+// manage_skills(load) tool_result is still in L1", so fold / valve
+// eviction of the load body self-heals (skill returns to the catalog
+// next turn). There is no explicit unload — a skill load is an event
+// in the append-only context, retired only by pressure reclaim.
 //
 // Fallback (no SegmentedMem) returns a copy of the flat message list.
 func (s *Session) GetMessages() []Message {
@@ -385,6 +409,7 @@ func (s *Session) GetMessages() []Message {
 		if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
 			return s.assembleForLLM(segMem)
 		}
+		warnSegMemAssertion(s.SegmentedMem)
 	}
 
 	// Fallback to flat list
@@ -420,6 +445,24 @@ func (s *Session) assembleForLLM(segMem SegmentedMemoryInterface) []Message {
 // insertion order is preserved so the cache stays warm for descriptions
 // added earlier in the session. A catalog with no non-active entries
 // renders no section at all — no empty header ever leaks into ROM.
+//
+// Cache economics — WHY this is an acceptable trade, not a regression:
+//
+// This is a small mutation region at the tail of the ROM system slot.
+// Pre-v5 loom had the SAME mutation region at the same byte position,
+// carrying full skill BODIES rewritten every turn — thousands of bytes
+// per active skill. V5 shrank that region to descriptions only, gated
+// on catalog activity rather than per-turn active-set. Any change here
+// (load, fold reclaim) invalidates the Anthropic prompt-cache prefix
+// from this byte onward — including all of L1 — but L1 changes anyway
+// on every user turn, so the marginal cache cost of a skill event is
+// bounded by a single extra turn's worth of re-processing.
+//
+// Future improvement: hoist the [Available Skills] block into its own
+// system-block breakpoint (Anthropic supports up to 4 cache_control
+// markers) so the base ROM keeps its cache slot across skill events.
+// Not done here — requires provider-adapter changes and per-provider
+// verification, and the current cost is bounded by L1 churn anyway.
 func composeROM(base string, catalog []SkillCatalogEntry, active map[string]bool) string {
 	if len(catalog) == 0 {
 		return base
@@ -509,6 +552,8 @@ func (s *Session) TrimLastN(n int) {
 				if targetLen < len(s.Messages) {
 					s.Messages = s.Messages[:targetLen]
 				}
+			} else {
+				warnSegMemAssertion(s.SegmentedMem)
 			}
 		}
 		s.UpdatedAt = time.Now()

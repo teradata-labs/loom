@@ -27,10 +27,9 @@ package agent
 //           the config-set cap (not the hardcoded 20). Group B keyword
 //           discovery still populates the catalog even when the load fails.
 //
-//   Turn 4  manage_skills(unload) — load message removed from L1;
-//           walk-L1 no longer sees that skill active; ROM re-lists it in
-//           the catalog next turn. Self-heal without any explicit state
-//           bookkeeping.
+//   Turn 4  manage_skills(list) — active set confirmed, unchanged.
+//           v5 has no unload verb: an executed skill is retired only by the
+//           pressure pipeline (valve/fold), never by an inverse operation.
 //
 //   Turn 5  context explosion: LLM spams a mock heavy tool multiple times,
 //           L1 pressure crosses red, prepareContext dispatches Fold. Fold's
@@ -103,19 +102,6 @@ func respLoadSkill(callID, skillName string) llmtypes.LLMResponse {
 			Name: "manage_skills",
 			Input: map[string]interface{}{
 				"action": "load",
-				"name":   skillName,
-			},
-		}},
-	}
-}
-
-func respUnloadSkill(callID, skillName string) llmtypes.LLMResponse {
-	return llmtypes.LLMResponse{
-		ToolCalls: []llmtypes.ToolCall{{
-			ID:   callID,
-			Name: "manage_skills",
-			Input: map[string]interface{}{
-				"action": "unload",
 				"name":   skillName,
 			},
 		}},
@@ -240,10 +226,11 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 		respLoadSkill("t3-load-diff", "td-schema-diff"), // will hit cap
 		respEndTurn("cap hit for schema-diff, moving on"),
 
-		// -------- Turn 4: user "unload profile-deep" ----------------------
-		// LLM unloads td-profile-deep. Frees a cap slot for later turns.
-		respUnloadSkill("t4-unload-deep", "td-profile-deep"),
-		respEndTurn("unloaded deep"),
+		// -------- Turn 4: user "confirm active skills" -------------------
+		// LLM lists the active set. No unload path in v5 — retirement is
+		// the pressure pipeline's job, not the LLM's.
+		respListSkills("t4-list"),
+		respEndTurn("still have profile-basic, profile-deep, schema-check"),
 
 		// -------- Turn 5: user "check nulls with heavy work" --------------
 		// LLM spams the heavy tool. Each call adds a ballast tool_result
@@ -274,7 +261,7 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 	cfg.PatternConfig.UseLLMClassifier = false
 	cfg.SkillsConfig = &skills.SkillsConfig{
 		Enabled:             true,
-		MaxConcurrentSkills: 3, // cap: hit by turn 3's second load
+		LoadHardCap: 3, // hard-reject at load: hit by turn 3's second load
 	}
 	// Tight-ish budget so turn 5's heavy tool spam trips red. Ratio
 	// picked so a few 8KB tool results plus prior skill bodies cross
@@ -299,7 +286,7 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 		llm,
 		"test-agent",
 		nil, // no permission checker — no high-risk gate needed here
-	).WithMemory(ag.memory)
+	)
 	ag.RegisterTool(manageSkillsTool)
 	heavy := newHeavyBallastTool(8000)
 	ag.RegisterTool(heavy)
@@ -325,7 +312,7 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 		"profile Complaints",             // turn 1
 		"/td-profile-deep",               // turn 2
 		"check schema",                   // turn 3
-		"unload profile-deep",            // turn 4
+		"confirm active skills",          // turn 4
 		"check nulls heavy work",         // turn 5 — pressure
 		"profile again and schema check", // turn 6 — reload
 	}
@@ -455,14 +442,12 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 	assert.True(t, sawCapError, "turn 3: the second load must have returned ACTIVE_SKILL_CAP_EXCEEDED (cap=3)")
 
 	// ---------- Turn 4 ----------
-	// Unload td-profile-deep. Orchestrator drops it. Walk-L1 (via
-	// executeUnload's L1 mutation) no longer sees its load metadata.
-	assert.ElementsMatch(t, []string{"td-profile-basic", "td-schema-check"}, orchActiveAfterTurn[3])
-
-	// Next turn's ROM should re-list td-profile-deep.
-	rom5First := extractROM(calls[turnFirstCall[4]])
-	assert.Contains(t, rom5First, "td-profile-deep",
-		"turn 5 first call: profile-deep was unloaded on turn 4, back in catalog")
+	// List action confirms active set without changing it. Retirement is
+	// the pressure pipeline's job, not the LLM's — the active set persists.
+	assert.ElementsMatch(t,
+		[]string{"td-profile-basic", "td-profile-deep", "td-schema-check"},
+		orchActiveAfterTurn[3],
+		"turn 4 (list-only): active set must be unchanged from turn 3")
 
 	// ---------- Turn 5: fold ----------
 	// Post-turn 5, fold has fired: residue populated, compressor called with

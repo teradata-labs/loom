@@ -28,16 +28,17 @@ import (
 )
 
 // skillActiveSafetyCap is the hard ceiling on a session's active-skill set
-// (O-SKL-3, FR-030). It is a safety limit, not a target to eagerly fill:
-// past this many active skills a further manage_skills(load) is rejected
-// with an explicit error rather than silently evicting an existing skill.
-// The active set only shrinks via explicit unload or session end.
+// (O-SKL-3, FR-030). Past this many active skills a further manage_skills(load)
+// is rejected with an explicit error. The active set shrinks only when the
+// pressure pipeline reclaims the load body (valve/fold) — there is no explicit
+// unload: a skill load is an event in the append-only context, and events are
+// retired by release, not by inverse operations.
 const skillActiveSafetyCap = 20
 
-// ManageSkillsTool provides list/load/unload over the skill orchestrator and
+// ManageSkillsTool provides list/load over the skill orchestrator and
 // library. It is the sole activation entry point for skills (Seam 3): the
 // per-turn discovery block only ever surfaces a candidate menu, never
-// activates. A successful load returns a charter-classed (D-3) tool result
+// activates. A successful load returns a narrative-classed (D-3) tool result
 // that carries the skill's SourcePath (Seam 4); a high-risk skill returns an
 // explicit gate result instead of activating (Seam 2); a load past the
 // safety cap returns an explicit error instead of silently evicting another
@@ -50,15 +51,6 @@ type ManageSkillsTool struct {
 	llm               LLMProvider
 	agentID           string
 	permissionChecker *shuttle.PermissionChecker
-
-	// memory is set by the agent via WithMemory after construction. Used
-	// by executeUnload to remove the load message from L1 so walk-L1
-	// (ActiveSkillNames) sees the unloaded skill as inactive. Without this
-	// wiring, orchestrator says "not active" but L1 still carries the
-	// load metadata → ROM catalog filter mistakenly hides the unloaded
-	// skill. Optional: when nil, unload only touches the orchestrator
-	// (legacy behavior; L1 self-heals only via fold).
-	memory *Memory
 }
 
 // NewManageSkillsTool creates the manage_skills builtin.
@@ -82,14 +74,6 @@ func NewManageSkillsTool(
 	}
 }
 
-// WithMemory wires the agent's memory subsystem so executeUnload can
-// remove the load message from L1 (keeping walk-L1 aligned with the
-// orchestrator's active-set). See the memory field's comment.
-func (t *ManageSkillsTool) WithMemory(m *Memory) *ManageSkillsTool {
-	t.memory = m
-	return t
-}
-
 // Name returns the tool name.
 func (t *ManageSkillsTool) Name() string { return "manage_skills" }
 
@@ -98,16 +82,15 @@ func (t *ManageSkillsTool) Backend() string { return "" }
 
 // Description returns the tool description for the LLM.
 func (t *ManageSkillsTool) Description() string {
-	return `Manage the session's active skill set: list available skills, load one to activate it, or unload one to deactivate it.
+	return `Manage the session's active skill set: list available skills, or load one to activate it.
 
-Three actions available:
+Two actions available:
 1. list - List all available skills, with which ones are active this session
 2. load - Activate a skill by name so its instructions and tool preferences apply
-3. unload - Deactivate a skill by name
 
-A load may come back as a gate result (the skill is high-risk and needs approval before it can activate) or as a capacity error (the session already has too many active skills — unload one first). Neither is a failure to retry blindly; read the result and act on it (ask the user for approval, or free capacity with unload).
+A load may come back as a gate result (the skill is high-risk and needs approval before it can activate) or as a capacity error (the session already has too many active skills). Neither is a failure to retry blindly; read the result and act on it (ask the user for approval, or continue with the skills already active).
 
-Loading a skill does not happen automatically — discovery only ever surfaces a candidate menu. Use this tool to actually activate one.`
+Loading a skill does not happen automatically — discovery only ever surfaces a candidate menu. Use this tool to actually activate one. Active skills are retired only when the context pressure pipeline reclaims their load body; there is no manual unload.`
 }
 
 // InputSchema returns the JSON schema for tool parameters.
@@ -117,11 +100,11 @@ func (t *ManageSkillsTool) InputSchema() *shuttle.JSONSchema {
 		Properties: map[string]*shuttle.JSONSchema{
 			"action": {
 				Type:        "string",
-				Description: "Action to perform: 'list', 'load', or 'unload'",
+				Description: "Action to perform: 'list' or 'load'",
 			},
 			"name": {
 				Type:        "string",
-				Description: "(load/unload only) Skill name",
+				Description: "(load only) Skill name",
 			},
 		},
 		Required: []string{"action"},
@@ -146,14 +129,12 @@ func (t *ManageSkillsTool) Execute(ctx context.Context, input map[string]interfa
 		return t.executeList(sessionID)
 	case "load":
 		return t.executeLoad(ctx, sessionID, name)
-	case "unload":
-		return t.executeUnload(sessionID, name)
 	default:
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:    "INVALID_ACTION",
-				Message: fmt.Sprintf("unknown action %q; must be list, load, or unload", action),
+				Message: fmt.Sprintf("unknown action %q; must be list or load", action),
 			},
 		}, nil
 	}
@@ -227,14 +208,16 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 
 	wasActive := skillNameSet(t.orchestrator.GetActiveSkills(sessionID))[name]
 	if !wasActive {
-		// Cap resolution: honor operator-set max_concurrent_skills from
-		// agent config when >0, else fall back to the runaway-loop backstop.
-		// The YAML field previously wired only the discovery menu bound and
-		// left the active-set uncapped by operator intent, silently
-		// repurposing an existing config knob.
+		// Cap resolution: honor operator-set load_hard_cap from agent
+		// config when >0, else fall back to the runaway-loop backstop.
+		// LoadHardCap is the manage_skills(load) rejection ceiling;
+		// MaxConcurrentSkills is the orchestrator's eviction cap and is
+		// deliberately NOT consulted here — they are separate ceilings
+		// on the same axis, and reusing the eviction cap for hard-reject
+		// would silently change semantics of an existing config knob.
 		cap := skillActiveSafetyCap
-		if t.config != nil && t.config.SkillsConfig != nil && t.config.SkillsConfig.MaxConcurrentSkills > 0 {
-			cap = t.config.SkillsConfig.MaxConcurrentSkills
+		if t.config != nil && t.config.SkillsConfig != nil && t.config.SkillsConfig.LoadHardCap > 0 {
+			cap = t.config.SkillsConfig.LoadHardCap
 		}
 		activeCount := len(t.orchestrator.GetActiveSkills(sessionID))
 		if activeCount >= cap {
@@ -242,8 +225,8 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 				Success: false,
 				Error: &shuttle.Error{
 					Code:       "ACTIVE_SKILL_CAP_EXCEEDED",
-					Message:    fmt.Sprintf("session already has %d active skills (safety cap %d); no skill was evicted", activeCount, cap),
-					Suggestion: "Call manage_skills(action=\"unload\", name=\"<skill>\") to free capacity before loading another.",
+					Message:    fmt.Sprintf("session already has %d active skills (safety cap %d)", activeCount, cap),
+					Suggestion: "Continue with the skills already active; the pressure pipeline will reclaim older load bodies as context fills.",
 				},
 			}, nil
 		}
@@ -317,44 +300,6 @@ func (t *ManageSkillsTool) emitActivationTasks(ctx context.Context, sessionID st
 			zap.String("skill", skill.Name),
 			zap.Error(err))
 	}
-}
-
-// executeUnload deactivates a skill by name. Unloading a skill that is not
-// active is a no-op success (idempotent), not an error.
-func (t *ManageSkillsTool) executeUnload(sessionID, name string) (*shuttle.Result, error) {
-	if name == "" {
-		return &shuttle.Result{
-			Success: false,
-			Error:   &shuttle.Error{Code: "INVALID_PARAMETER", Message: "name is required for unload"},
-		}, nil
-	}
-
-	wasActive := skillNameSet(t.orchestrator.GetActiveSkills(sessionID))[name]
-	t.orchestrator.DeactivateSkill(sessionID, name)
-
-	// Remove the load message from L1 too, keeping walk-L1 aligned with
-	// the orchestrator's active-set. Without this, ActiveSkillNames still
-	// sees load metadata → ROM catalog filter mistakenly hides the just-
-	// unloaded skill on the next turn (and the LLM has no way to reload it
-	// via the catalog UI). See ManageSkillsTool.memory doc.
-	removedFromL1 := false
-	if wasActive && t.memory != nil {
-		if session, ok := t.memory.GetSession(sessionID); ok && session.SegmentedMem != nil {
-			if sm, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-				removedFromL1 = sm.RemoveSkillLoadMessage(name)
-			}
-		}
-	}
-
-	data := map[string]interface{}{
-		"action":          "unload",
-		"status":          "deactivated",
-		"skill":           name,
-		"was_active":      wasActive,
-		"removed_from_l1": removedFromL1,
-		"active_count":    len(t.orchestrator.GetActiveSkills(sessionID)),
-	}
-	return jsonResult(data)
 }
 
 // Ensure ManageSkillsTool implements shuttle.Tool.

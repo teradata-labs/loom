@@ -322,12 +322,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	}
 
 	// Install a deactivation callback that boosts graph memory salience for
-	// entities related to the deactivated skill. When a skill is unloaded,
-	// its related knowledge becomes more relevant (the agent just used it),
-	// so touching those memories strengthens future retrieval. Zero LLM
-	// calls — pure FTS search + TouchMemories. There is no implicit
-	// eviction (O-SKL-3): this only fires from an explicit
-	// manage_skills(unload) or DeactivateSkill call.
+	// entities related to the deactivated skill. Zero LLM calls — pure
+	// FTS search + TouchMemories. Fires from any DeactivateSkill call
+	// (session end, orchestrator-internal deactivation) — v5 has no
+	// user-triggered unload verb.
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
 		agentName := a.config.Name
@@ -2248,7 +2246,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// from the builtin set when available; missing tools log a Warn
 			// and the skill continues without them (the LLM still has access
 			// to whatever IS registered). The active set here reflects only
-			// explicit manage_skills(load)/unload calls and session end —
+			// explicit manage_skills(load) calls and session end —
 			// discovery above never mutates it (Seam 5, no implicit eviction).
 			a.enforceRequiredSkillTools(sessionID)
 		}
@@ -3353,7 +3351,7 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 	mst := NewManageSkillsTool(
 		a.skillOrchestrator, a.skillTaskEmitter, a.taskBoardConfig,
 		a.config, a.llm, a.id, a.permissionChecker,
-	).WithMemory(a.memory)
+	)
 	a.tools.Register(shuttle.Tool(mst))
 }
 

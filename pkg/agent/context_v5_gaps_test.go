@@ -382,7 +382,7 @@ func TestE2E_V5PostFoldOrdering(t *testing.T) {
 
 	manageSkillsTool := NewManageSkillsTool(
 		orch, nil, &loomv1.TaskBoardConfig{}, cfg, llm, "test-agent", nil,
-	).WithMemory(ag.memory)
+	)
 	ag.RegisterTool(manageSkillsTool)
 
 	ctx := context.Background()
