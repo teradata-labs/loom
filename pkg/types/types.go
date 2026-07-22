@@ -10,6 +10,7 @@ package types
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -267,6 +268,13 @@ type Session struct {
 	// Note: SegmentedMemory type will remain in pkg/agent
 	SegmentedMem interface{} // Keep as interface{} to avoid circular dependency
 
+	// RomCatalog is the per-session, append-only skill catalog rendered
+	// into the ROM slot. The router appends entries as it discovers
+	// relevant skills; entries whose skill is currently loaded are filtered
+	// out at ROM assembly time (by walking L1 for load-metadata). Not
+	// persisted — rebuilt on restore by the router as the session runs.
+	RomCatalog []SkillCatalogEntry
+
 	// FailureTracker tracks consecutive tool failures for escalation
 	// Note: consecutiveFailureTracker type will remain in pkg/agent
 	FailureTracker interface{} // Keep as interface{} to avoid circular dependency
@@ -293,6 +301,40 @@ type SegmentedMemoryInterface interface {
 	AddMessage(ctx context.Context, msg Message)
 	GetMessagesForLLM() []Message
 	GetL1MessageCount() int
+
+	// RomBase returns the static base ROM string (identity, guidance, protocols).
+	// The full ROM the LLM sees is composed by Session.GetMessages: RomBase
+	// concatenated with a rendered skill catalog whose entries are filtered
+	// against the currently-loaded skills. Splitting them here keeps
+	// SegmentedMemory's ROM byte-stable across turns and lets Session own the
+	// per-session catalog state without SegmentedMemory needing a Session
+	// handle.
+	RomBase() string
+
+	// GetL2Summary returns the fold residue text if a fold has run this session.
+	GetL2Summary() string
+
+	// GetMessages returns a copy of L1 (the conversation).
+	GetMessages() []Message
+
+	// ActiveSkillNames returns the set of skill names whose load-body is
+	// currently present in L1. A skill is active iff its manage_skills load
+	// tool_result is still resident — walked structurally, not textually, by
+	// reading msg.ToolResult.Metadata["action"]=="load" + ["skill"]. Empty on
+	// no memory (fresh session).
+	ActiveSkillNames() map[string]bool
+}
+
+// SkillCatalogEntry is one line in the session's per-session skill catalog
+// rendered into the ROM slot. The catalog is append-only within a session:
+// the router adds entries as it discovers skills relevant to the ongoing
+// conversation, and each entry stays until the session ends. At ROM
+// assembly time, entries whose skill is already active (body present in L1)
+// are filtered out — the LLM only ever sees candidates it might load, never
+// candidates it has already loaded.
+type SkillCatalogEntry struct {
+	Name        string
+	Description string
 }
 
 // AddMessage adds a message to the session history.
@@ -318,17 +360,30 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.TotalTokens += msg.TokenCount
 }
 
-// GetMessages returns a copy of the conversation history.
-// If SegmentedMem is configured, returns the optimized context window (ROM + Kernel + L1 + L2).
-// Otherwise returns the flat message list.
+// GetMessages returns the compiled message list for the LLM call.
+//
+// When SegmentedMem is configured this is the sole Contract 1 assembler:
+// ROM (system, exactly one, byte-stable between folds except for the
+// append-only per-session skill catalog) + fold residue (user, present
+// only after a fold) + L1 conversation. No other channel exists.
+//
+// The ROM composed here = SegmentedMem.RomBase() + a rendered skill
+// catalog filtered against the currently-loaded skills. The catalog
+// itself lives on Session.RomCatalog (append-only, router-fed); the
+// loaded set is walked structurally out of L1 via
+// SegmentedMem.ActiveSkillNames — "skill is loaded iff its
+// manage_skills(load) tool_result is still in L1", so unload / fold /
+// valve eviction of the load body all self-heal (skill returns to the
+// catalog next turn).
+//
+// Fallback (no SegmentedMem) returns a copy of the flat message list.
 func (s *Session) GetMessages() []Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Use segmented memory if configured (optimized message list for LLM)
 	if s.SegmentedMem != nil {
 		if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
-			return segMem.GetMessagesForLLM()
+			return s.assembleForLLM(segMem)
 		}
 	}
 
@@ -336,6 +391,98 @@ func (s *Session) GetMessages() []Message {
 	messages := make([]Message, len(s.Messages))
 	copy(messages, s.Messages)
 	return messages
+}
+
+// assembleForLLM is Contract 1: ROM + fold residue + L1. Called under
+// s.mu.RLock (via GetMessages). segMem's own methods take their own
+// RLock as needed — the two locks are not held simultaneously in a way
+// that could deadlock (s.mu is the outer lock, sm.mu the inner one, no
+// call from sm.* takes s.mu back).
+func (s *Session) assembleForLLM(segMem SegmentedMemoryInterface) []Message {
+	out := []Message{}
+
+	rom := composeROM(segMem.RomBase(), s.RomCatalog, segMem.ActiveSkillNames())
+	if rom != "" {
+		out = append(out, Message{Role: "system", Content: rom})
+	}
+
+	msgs := segMem.GetMessages()
+	if l2 := segMem.GetL2Summary(); l2 != "" {
+		out = append(out, Message{Role: "user", Content: "[Prior conversation summary]\n" + l2})
+	}
+	out = append(out, msgs...)
+	return out
+}
+
+// composeROM renders the ROM slot: base ROM concatenated with an
+// [Available Skills] section that lists every catalog entry whose skill
+// is NOT currently active (body not in L1). Order-stable: catalog
+// insertion order is preserved so the cache stays warm for descriptions
+// added earlier in the session. A catalog with no non-active entries
+// renders no section at all — no empty header ever leaks into ROM.
+func composeROM(base string, catalog []SkillCatalogEntry, active map[string]bool) string {
+	if len(catalog) == 0 {
+		return base
+	}
+	var lines []string
+	for _, e := range catalog {
+		if e.Name == "" {
+			continue
+		}
+		if active[e.Name] {
+			continue
+		}
+		if e.Description == "" {
+			lines = append(lines, "- "+e.Name)
+		} else {
+			lines = append(lines, "- "+e.Name+": "+e.Description)
+		}
+	}
+	if len(lines) == 0 {
+		return base
+	}
+	if base == "" {
+		return "[Available Skills]\n" + joinLines(lines)
+	}
+	return base + "\n\n[Available Skills]\n" + joinLines(lines)
+}
+
+func joinLines(lines []string) string {
+	var b strings.Builder
+	for i, l := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(l)
+	}
+	return b.String()
+}
+
+// AppendToRomCatalog adds a skill entry to the session's ROM catalog
+// if not already present (dedup by Name). Order-stable: first-seen wins,
+// later duplicates are ignored so cache remains warm.
+//
+// Called by the discovery/router path once per turn with candidates the
+// router surfaced from the user's message. Not persisted — the catalog
+// rebuilds naturally on restore as the router runs over subsequent turns.
+func (s *Session) AppendToRomCatalog(entries ...SkillCatalogEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	seen := make(map[string]bool, len(s.RomCatalog))
+	for _, e := range s.RomCatalog {
+		seen[e.Name] = true
+	}
+	for _, e := range entries {
+		if e.Name == "" || seen[e.Name] {
+			continue
+		}
+		s.RomCatalog = append(s.RomCatalog, e)
+		seen[e.Name] = true
+	}
 }
 
 // TrimLastN removes the last n messages from the flat Messages list.

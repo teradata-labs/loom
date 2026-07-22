@@ -50,6 +50,15 @@ type ManageSkillsTool struct {
 	llm               LLMProvider
 	agentID           string
 	permissionChecker *shuttle.PermissionChecker
+
+	// memory is set by the agent via WithMemory after construction. Used
+	// by executeUnload to remove the load message from L1 so walk-L1
+	// (ActiveSkillNames) sees the unloaded skill as inactive. Without this
+	// wiring, orchestrator says "not active" but L1 still carries the
+	// load metadata → ROM catalog filter mistakenly hides the unloaded
+	// skill. Optional: when nil, unload only touches the orchestrator
+	// (legacy behavior; L1 self-heals only via fold).
+	memory *Memory
 }
 
 // NewManageSkillsTool creates the manage_skills builtin.
@@ -71,6 +80,14 @@ func NewManageSkillsTool(
 		agentID:           agentID,
 		permissionChecker: permissionChecker,
 	}
+}
+
+// WithMemory wires the agent's memory subsystem so executeUnload can
+// remove the load message from L1 (keeping walk-L1 aligned with the
+// orchestrator's active-set). See the memory field's comment.
+func (t *ManageSkillsTool) WithMemory(m *Memory) *ManageSkillsTool {
+	t.memory = m
+	return t
 }
 
 // Name returns the tool name.
@@ -315,12 +332,27 @@ func (t *ManageSkillsTool) executeUnload(sessionID, name string) (*shuttle.Resul
 	wasActive := skillNameSet(t.orchestrator.GetActiveSkills(sessionID))[name]
 	t.orchestrator.DeactivateSkill(sessionID, name)
 
+	// Remove the load message from L1 too, keeping walk-L1 aligned with
+	// the orchestrator's active-set. Without this, ActiveSkillNames still
+	// sees load metadata → ROM catalog filter mistakenly hides the just-
+	// unloaded skill on the next turn (and the LLM has no way to reload it
+	// via the catalog UI). See ManageSkillsTool.memory doc.
+	removedFromL1 := false
+	if wasActive && t.memory != nil {
+		if session, ok := t.memory.GetSession(sessionID); ok && session.SegmentedMem != nil {
+			if sm, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+				removedFromL1 = sm.RemoveSkillLoadMessage(name)
+			}
+		}
+	}
+
 	data := map[string]interface{}{
-		"action":       "unload",
-		"status":       "deactivated",
-		"skill":        name,
-		"was_active":   wasActive,
-		"active_count": len(t.orchestrator.GetActiveSkills(sessionID)),
+		"action":          "unload",
+		"status":          "deactivated",
+		"skill":           name,
+		"was_active":      wasActive,
+		"removed_from_l1": removedFromL1,
+		"active_count":    len(t.orchestrator.GetActiveSkills(sessionID)),
 	}
 	return jsonResult(data)
 }

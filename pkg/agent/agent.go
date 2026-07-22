@@ -711,30 +711,6 @@ func toSkillMenuCandidatesFromMatches(matches []*skills.MatchResult) []skillMenu
 	return out
 }
 
-// formatSkillDiscoveryMenu renders the per-beat skill candidate menu: the
-// skills discovery surfaced for this turn, with no activation implied.
-// Returns "" when there are no candidates so an empty menu never adds a
-// tail-note section.
-func formatSkillDiscoveryMenu(candidates []skillMenuCandidate) string {
-	if len(candidates) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString("[Skill Discovery]\nCandidates for this turn (not active — call manage_skills(action=\"load\", name=\"<name>\") to activate):\n")
-	for _, c := range candidates {
-		fmt.Fprintf(&sb, "- %s", c.Name)
-		if c.Title != "" {
-			fmt.Fprintf(&sb, " (%s)", c.Title)
-		}
-		fmt.Fprintf(&sb, " — trigger: %s", c.TriggerType)
-		if c.TriggerValue != "" {
-			fmt.Fprintf(&sb, " %q", c.TriggerValue)
-		}
-		fmt.Fprintf(&sb, ", confidence %.2f\n", c.Confidence)
-	}
-	return sb.String()
-}
-
 // enforceRequiredSkillTools auto-registers tools listed in active skills'
 // SkillToolConfig.RequiredTools when they are available in the builtin
 // catalog and not already registered. Tools that aren't builtin-known are
@@ -2200,7 +2176,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// built below is rendered into this beat's tail note by
 	// buildBeatTailNote (D-2's tail-note seam), never injected as
 	// system/stored content.
-	var skillDiscoveryMenu string
+	// Skill discovery no longer injects a tail-note menu (former source of
+	// the "fake user turn after the real user turn" conversation-shape bug
+	// and of the re-load loop, since the menu lied about active state).
+	// Discovery still runs each turn but its candidates are appended to the
+	// session's ROM catalog (append-only), filtered against currently-loaded
+	// skills at Session.GetMessages assembly time.
 	if a.skillOrchestrator != nil && session != nil {
 		sessionID := session.ID
 		if sessionID == "" {
@@ -2242,7 +2223,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					candidates = toSkillMenuCandidatesFromMatches(matches)
 				}
 			}
-			skillDiscoveryMenu = formatSkillDiscoveryMenu(candidates)
+			// Append discovered candidates to the ROM catalog (dedup by name,
+			// append-only, order-stable — see Session.AppendToRomCatalog).
+			// Assembly-time filter in Session.GetMessages hides catalog entries
+			// whose skill is already loaded (SegmentedMemory.ActiveSkillNames),
+			// so the LLM's decision surface is always "candidates you might
+			// load" — no menu-shape user-turn injection, no re-load loop.
+			if len(candidates) > 0 {
+				entries := make([]types.SkillCatalogEntry, 0, len(candidates))
+				for _, c := range candidates {
+					if c.Name == "" {
+						continue
+					}
+					entries = append(entries, types.SkillCatalogEntry{
+						Name:        c.Name,
+						Description: c.Title,
+					})
+				}
+				session.AppendToRomCatalog(entries...)
+			}
 
 			// Enforce SkillToolConfig.required_tools across all active skills.
 			// required_tools that aren't yet registered are auto-registered
@@ -2394,7 +2393,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// appended to this LOCAL slice only — never session.AddMessage,
 		// never system-role (C-004). The note lives for this one LLM call;
 		// it is not part of l1Messages, so it never affects byte-stability.
-		if note := a.buildBeatTailNote(ctx, session, turnCount, toolExecutionCount, skillDiscoveryMenu); note != "" {
+		if note := a.buildBeatTailNote(ctx, session, turnCount, toolExecutionCount); note != "" {
 			messages = append(messages, Message{Role: "user", Content: note})
 
 			span.AddEvent("beat_tail_note.added", map[string]interface{}{
@@ -3351,11 +3350,11 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		return
 	}
 
-	tool := shuttle.Tool(NewManageSkillsTool(
+	mst := NewManageSkillsTool(
 		a.skillOrchestrator, a.skillTaskEmitter, a.taskBoardConfig,
 		a.config, a.llm, a.id, a.permissionChecker,
-	))
-	a.tools.Register(tool)
+	).WithMemory(a.memory)
+	a.tools.Register(shuttle.Tool(mst))
 }
 
 // checkAndRegisterManagePatternsTool registers the manage_patterns builtin
@@ -3411,13 +3410,21 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
-// buildBeatTailNote assembles the per-beat tail note: soft reminders (tool/turn
-// threshold nudges), any graph-memory recall for this beat, and the skill
-// discovery candidate menu (Seam 3, C-034). The result is meant to be
-// appended as a single Role:"user" message to the loop's LOCAL messages
-// slice for this one LLM call — never session.AddMessage, never
-// system-role (C-004, FR-004). Returns "" when there is nothing to add.
-func (a *Agent) buildBeatTailNote(ctx context.Context, session *types.Session, turnCount, toolExecutionCount int, skillMenu string) string {
+// buildBeatTailNote assembles the per-beat tail note: soft reminders
+// (tool/turn threshold nudges) and any graph-memory recall for this beat.
+// The result is appended as a single Role:"user" message to the loop's
+// LOCAL messages slice for this one LLM call — never session.AddMessage,
+// never system-role (C-004, FR-004). Returns "" when there is nothing to add.
+//
+// Skill discovery candidates NO LONGER flow through here — they land in
+// the session's ROM catalog and are rendered as part of the system slot
+// via Session.GetMessages assembly. Injecting the menu as a fake user
+// turn was the source of conversation-shape corruption (two consecutive
+// user messages, LLM treats the menu as the user's request) and of the
+// skill re-load loop (menu labels already-active skills as "not active,
+// call load"). Both fixed by moving the surface to ROM + filtering
+// against ActiveSkillNames at assembly time.
+func (a *Agent) buildBeatTailNote(ctx context.Context, session *types.Session, turnCount, toolExecutionCount int) string {
 	var parts []string
 
 	if reminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions); reminder != "" {
@@ -3428,9 +3435,6 @@ func (a *Agent) buildBeatTailNote(ctx context.Context, session *types.Session, t
 	}
 	if recall := a.graphMemoryRecall(ctx, session); recall != "" {
 		parts = append(parts, recall)
-	}
-	if skillMenu != "" {
-		parts = append(parts, strings.TrimSpace(skillMenu))
 	}
 
 	return strings.Join(parts, "\n\n")

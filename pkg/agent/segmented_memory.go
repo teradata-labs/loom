@@ -499,13 +499,21 @@ func (sm *SegmentedMemory) GetSchema(key string) (string, bool) {
 	return schema, ok
 }
 
-// GetMessages returns all L1 messages for building conversation context.
+// GetMessages returns a copy of L1 (the conversation).
+//
+// This is the L1 accessor Session.assembleForLLM calls when composing the
+// Contract 1 message list for an LLM call. Firing the context.compile beat
+// here — rather than from the older GetMessagesForLLM path — keeps the
+// observability wiring intact after the assembler moved into Session
+// (Session owns ROM composition now, SegmentedMemory owns L1 state).
+// The beat is DEBUG-gated in logContextSnapshot; zero cost at info.
 func (sm *SegmentedMemory) GetMessages() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	messages := make([]Message, len(sm.l1Messages))
 	copy(messages, sm.l1Messages)
+	sm.logContextSnapshot("compile")
 	return messages
 }
 
@@ -515,6 +523,137 @@ func (sm *SegmentedMemory) GetL2Summary() string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.l2Summary
+}
+
+// RomBase returns the static base ROM string (identity, guidance,
+// protocols) captured at construction. The full ROM emitted to the LLM
+// is composed by Session.GetMessages, which concatenates this base with
+// the per-session skill catalog (filtered against active skills). The
+// split lets SegmentedMemory keep its ROM byte-stable across turns
+// without knowing about session-level catalog state.
+func (sm *SegmentedMemory) RomBase() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.romContent
+}
+
+// RemoveSkillLoadMessage removes the most recent manage_skills(load, name)
+// tool_result from L1 for the given skill name. Called by executeUnload
+// to keep the L1 view aligned with the orchestrator's active-set: without
+// this, orchestrator says "not active" but walk-L1 (ActiveSkillNames)
+// still sees the load metadata and hides the skill from the ROM catalog
+// — a stale state that breaks the reload path.
+//
+// Also removes the paired assistant tool_call message that invoked the
+// load, so the API-valid tool_use/tool_result invariant holds after
+// removal. Returns true when a load message was found and removed.
+//
+// Safe under concurrent AddMessage: takes the write lock.
+func (sm *SegmentedMemory) RemoveSkillLoadMessage(skillName string) bool {
+	if skillName == "" {
+		return false
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Walk newest-first to find the most recent load for this skill.
+	for i := len(sm.l1Messages) - 1; i >= 0; i-- {
+		msg := sm.l1Messages[i]
+		if msg.Role != "tool" || msg.ToolResult == nil {
+			continue
+		}
+		md := msg.ToolResult.Metadata
+		if md == nil {
+			continue
+		}
+		action, _ := md["action"].(string)
+		if action != "load" {
+			continue
+		}
+		name, _ := md["skill"].(string)
+		if name != skillName {
+			continue
+		}
+
+		// Found the load tool_result at i. Also find its paired assistant
+		// message (immediately preceding, or somewhere earlier) that
+		// carries the ToolCall with matching ID — remove both to preserve
+		// tool_use/tool_result pairing.
+		toolUseID := msg.ToolUseID
+		pairIdx := -1
+		if toolUseID != "" {
+			for j := i - 1; j >= 0; j-- {
+				am := sm.l1Messages[j]
+				if am.Role != "assistant" {
+					continue
+				}
+				for _, tc := range am.ToolCalls {
+					if tc.ID == toolUseID {
+						pairIdx = j
+						break
+					}
+				}
+				if pairIdx >= 0 {
+					break
+				}
+			}
+		}
+
+		// Remove tool_result at i.
+		sm.l1Messages = append(sm.l1Messages[:i], sm.l1Messages[i+1:]...)
+		// Remove paired assistant if it ONLY held this tool_call (would
+		// otherwise leave a stranded assistant with an orphaned tool_call).
+		// If the assistant had multiple tool_calls, removing the whole
+		// assistant would orphan the others; in that case leave it alone
+		// and let the API reject-or-strip logic handle downstream.
+		if pairIdx >= 0 && pairIdx < len(sm.l1Messages) {
+			am := sm.l1Messages[pairIdx]
+			if len(am.ToolCalls) == 1 && am.ToolCalls[0].ID == toolUseID {
+				sm.l1Messages = append(sm.l1Messages[:pairIdx], sm.l1Messages[pairIdx+1:]...)
+			}
+		}
+		sm.l1Dirty = true
+		sm.updateTokenCount()
+		return true
+	}
+	return false
+}
+
+// ActiveSkillNames returns the set of skill names whose manage_skills
+// load-body is currently resident in L1. Walked structurally — read
+// ToolResult.Metadata["action"]=="load" and ["skill"] — not by content
+// parsing, so the answer stays correct across:
+//
+//   - Explicit unload (removes the load message from L1 → not seen here → skill returns to ROM catalog next turn)
+//   - Fold at red (narrative-classed load bodies compressed into residue → not in L1 → skill returns to catalog)
+//   - Valve at yellow (ballast-only path, never touches loads)
+//
+// The result feeds Session.assembleForLLM's catalog filter: entries whose
+// skill is in this set are hidden from the ROM catalog, so the LLM never
+// sees "call load" prompts for skills it has already loaded.
+func (sm *SegmentedMemory) ActiveSkillNames() map[string]bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	active := make(map[string]bool)
+	for _, msg := range sm.l1Messages {
+		if msg.Role != "tool" || msg.ToolResult == nil {
+			continue
+		}
+		md := msg.ToolResult.Metadata
+		if md == nil {
+			continue
+		}
+		action, _ := md["action"].(string)
+		if action != "load" {
+			continue
+		}
+		name, _ := md["skill"].(string)
+		if name != "" {
+			active[name] = true
+		}
+	}
+	return active
 }
 
 // HasL2Content returns true if L2 summary has content (compression occurred).
@@ -780,13 +919,7 @@ func truncateForLog(s string) string {
 	if len(s) <= maxLogFieldBytes {
 		return s
 	}
-	cut := s[:maxLogFieldBytes]
-	// Back up to the last complete UTF-8 rune boundary. utf8.RuneStart
-	// returns true for a byte that is not a continuation byte, so walking
-	// back until we hit one gives a safe cut position.
-	for i := len(cut) - 1; i > 0 && !utf8.RuneStart(cut[i]); i-- {
-		cut = cut[:i]
-	}
+	cut := runeSafeCut(s, maxLogFieldBytes)
 	return cut + fmt.Sprintf("…[+%d bytes]", len(s)-len(cut))
 }
 
@@ -798,11 +931,25 @@ func contextPreview(s string) string {
 	if len(s) <= 140 {
 		return s
 	}
-	cut := s[:140]
-	for i := len(cut) - 1; i > 0 && !utf8.RuneStart(cut[i]); i-- {
-		cut = cut[:i]
+	return runeSafeCut(s, 140) + "…"
+}
+
+// runeSafeCut returns s truncated at or before the maxBytes-th byte, aligned
+// to a UTF-8 rune boundary — the returned string never ends mid-rune. If
+// maxBytes falls in the middle of a multibyte rune, the entire partial rune
+// is dropped (bytes are lost from the tail, never from the head).
+func runeSafeCut(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
 	}
-	return cut + "…"
+	// Start at maxBytes and walk back until we land on a rune-start byte.
+	// That byte begins the rune that would have been split; we truncate
+	// AT that position (excluding the partial rune entirely).
+	i := maxBytes
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i]
 }
 
 // maxSummaryUserQueryChars caps user message content preserved in compression

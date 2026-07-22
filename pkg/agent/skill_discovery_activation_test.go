@@ -74,9 +74,20 @@ func (m *skillTurnScriptedLLM) getCalls() [][]Message {
 	return out
 }
 
-// --- Discovery: candidate menu appears only as a tail note, never force-activates ---
-
-func TestSkillDiscovery_MenuAppearsAsTailNoteOnly_NeverActivates(t *testing.T) {
+// --- Discovery: candidates surface in the ROM catalog, never force-activate ---
+//
+// The discovery menu previously injected as a Role:"user" tail note (a fake
+// user turn appended after the real user message). That shape caused two
+// bugs: (1) the LLM treated the menu as the human's request, obeyed the
+// "call manage_skills(load, ...)" text, and re-loaded already-active skills
+// every turn; (2) two consecutive user messages corrupted the conversation
+// shape the Anthropic API expects (alternation).
+//
+// The fix: router candidates are appended to session.RomCatalog (append-only,
+// dedup); Session.GetMessages composes the ROM slot = base ROM +
+// [Available Skills] entries filtered against SegmentedMemory.ActiveSkillNames
+// (skills currently loaded). No tail-note menu is injected. No fake user turn.
+func TestSkillDiscovery_CandidatesLandInROMCatalog_NeverActivate(t *testing.T) {
 	lib := newEmptySkillLibrary(t)
 	lib.Register(&skills.Skill{
 		Name:  "always-on-skill",
@@ -101,40 +112,54 @@ func TestSkillDiscovery_MenuAppearsAsTailNoteOnly_NeverActivates(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	// Discovery never activates: the always-on skill matched a candidate,
-	// but the active set must remain empty until an explicit
-	// manage_skills(load) call.
+	// Discovery never activates — the active set stays empty until an
+	// explicit manage_skills(load) call.
 	assert.Empty(t, orch.GetActiveSkills(sessionID),
 		"discovery must never force-activate a candidate skill")
 
+	// Candidates landed in the session's ROM catalog.
+	session, ok := ag.memory.GetSession(sessionID)
+	require.True(t, ok)
+	catalogNames := make([]string, 0, len(session.RomCatalog))
+	for _, e := range session.RomCatalog {
+		catalogNames = append(catalogNames, e.Name)
+	}
+	assert.Contains(t, catalogNames, "always-on-skill",
+		"the router's candidate must be in the session's ROM catalog")
+
+	// The LLM saw the catalog in the SYSTEM slot (not as a fake user turn).
 	calls := llm.getCalls()
 	require.NotEmpty(t, calls, "the scripted LLM must have been called at least once")
-
 	sent := calls[0]
 	require.NotEmpty(t, sent, "the LLM call must have received a non-empty message slice")
 
-	last := sent[len(sent)-1]
-	assert.Equal(t, "user", last.Role,
-		"the discovery menu must be carried as a Role:\"user\" tail note, never system")
-	assert.Contains(t, last.Content, "[Skill Discovery]",
-		"the tail note sent to the LLM must contain the discovery menu")
-	assert.Contains(t, last.Content, "always-on-skill")
-	assert.Contains(t, last.Content, "not active",
-		"the menu text must make explicit that candidates are not active")
+	require.Equal(t, "system", sent[0].Role,
+		"first message must be the system-role ROM")
+	assert.Contains(t, sent[0].Content, "[Available Skills]",
+		"the ROM must carry the skill catalog section")
+	assert.Contains(t, sent[0].Content, "always-on-skill",
+		"the candidate skill must appear in the ROM catalog")
 
-	// The tail note is a local, per-call construct only: it must never be
-	// persisted into the session's stored message history, nor smuggled in
-	// as system-role content (there is no inject channel left — D-2 deleted
-	// FormatActiveSkillsForLLM/InjectSkills).
-	session, ok := ag.memory.GetSession(sessionID)
-	require.True(t, ok)
-	for _, m := range session.GetMessages() {
+	// FORBIDDEN: no message carries the old tail-note "[Skill Discovery]"
+	// header — the anti-pattern is gone. Also no message duplicates the
+	// menu content as a user turn after the real user message.
+	for _, m := range sent {
 		assert.NotContains(t, m.Content, "[Skill Discovery]",
-			"the discovery menu tail note must never be persisted to session history, system or otherwise")
+			"the tail-note menu is deleted; skills live in the ROM catalog now")
+	}
+
+	// The persisted session must not carry the ROM catalog content in any
+	// message — the catalog lives in Session.RomCatalog (a session field),
+	// never in a stored Message.
+	for _, m := range session.GetMessages() {
 		if m.Role == "system" {
-			assert.NotContains(t, m.Content, "always-on-skill",
-				"no system-role message may carry skill content (no inject channel)")
+			// System-role output IS composed at read-time by GetMessages;
+			// it's not a persisted Message. The stored history holds no
+			// system message.
+			continue
 		}
+		assert.NotContains(t, m.Content, "always-on-skill",
+			"stored session messages must not carry ROM catalog content")
 	}
 }
 

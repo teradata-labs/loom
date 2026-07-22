@@ -4,8 +4,8 @@
 // you may not use this file except in compliance with the License.
 package agent
 
-// Follow-up tests requested during PR #266 review of TER-419. Each test
-// closes a specific gap the reviewer identified:
+// Regression tests for the v5 context pipeline. Each guards a specific
+// invariant against a known past failure or a fragile seam:
 //
 //   TestFold_262Regression_UserQuestionSurvivesRealFold
 //     End-to-end reproduction of the #262 shape: a real user question plus
