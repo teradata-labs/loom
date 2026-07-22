@@ -975,8 +975,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
-			// Default to service mode if endpoint is set, otherwise embedded
-			if config.Observability.HawkEndpoint != "" {
+			// Derive mode from whichever endpoint is configured.
+			// OTel takes priority so that otlp_endpoint alone activates otel mode
+			// without requiring an explicit mode: otel in the config (matches
+			// what Config.Validate() documents).
+			if config.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if config.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"
@@ -1028,6 +1033,30 @@ func runServe(cmd *cobra.Command, args []string) {
 				tracer = observability.NewNoOpTracer()
 			} else {
 				tracer = hawkTracer
+			}
+
+		case "otel":
+			logger.Info("Observability enabled with OTLP export",
+				zap.String("endpoint", config.Observability.OTLPEndpoint))
+			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
+				Endpoint:       config.Observability.OTLPEndpoint,
+				Headers:        config.Observability.OTLPHeaders,
+				Insecure:       config.Observability.OTLPInsecure,
+				ServiceName:    "looms",
+				ServiceVersion: rootCmd.Version,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
+				SpanFilter: observability.SpanFilterConfig{
+					IncludePrefixes: config.Observability.OTLPIncludeSpans,
+				},
+			})
+			if err != nil {
+				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = otelTracer
 			}
 
 		case "none":
@@ -1456,9 +1485,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		HuggingFaceModel: config.LLM.HuggingFaceModel,
 
 		// LiteLLM
-		LiteLLMEndpoint: config.LLM.LiteLLMEndpoint,
-		LiteLLMAPIKey:   config.LLM.LiteLLMAPIKey,
-		LiteLLMModel:    config.LLM.LiteLLMModel,
+		LiteLLMEndpoint:     config.LLM.LiteLLMEndpoint,
+		LiteLLMAPIKey:       config.LLM.LiteLLMAPIKey,
+		LiteLLMModel:        config.LLM.LiteLLMModel,
+		LiteLLMExtraHeaders: config.LLM.LiteLLMExtraHeaders,
 
 		// Common settings
 		MaxTokens:       config.LLM.MaxTokens,
@@ -3476,6 +3506,25 @@ func runServe(cmd *cobra.Command, args []string) {
 		case <-time.After(10 * time.Second):
 			logger.Warn("gRPC server graceful stop timeout after 10s, forcing shutdown")
 			grpcServer.Stop() // Force stop
+		}
+
+		// Flush and drain any buffered OTLP spans before exit.
+		// Must happen after gRPC stop so in-flight requests have landed their spans.
+		type otelShutdownable interface {
+			Flush(context.Context) error
+			Shutdown(context.Context) error
+		}
+		if otel, ok := tracer.(otelShutdownable); ok {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := otel.Flush(flushCtx); err != nil {
+				logger.Warn("Error flushing OTLP tracer", zap.Error(err))
+			}
+			if err := otel.Shutdown(flushCtx); err != nil {
+				logger.Warn("Error shutting down OTLP tracer", zap.Error(err))
+			} else {
+				logger.Info("OTLP tracer flushed and shut down")
+			}
 		}
 
 		logger.Info("Shutdown complete")

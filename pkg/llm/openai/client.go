@@ -40,14 +40,15 @@ var (
 
 // Client implements the LLMProvider interface for OpenAI's API.
 type Client struct {
-	apiKey      string
-	model       string
-	endpoint    string
-	httpClient  *http.Client
-	maxTokens   int
-	temperature float64
-	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
+	apiKey       string
+	model        string
+	endpoint     string
+	httpClient   *http.Client
+	maxTokens    int
+	temperature  float64
+	rateLimiter  *llm.RateLimiter
+	toolNameMap  map[string]string // sanitized name → original name
+	extraHeaders map[string]string // additional headers sent with every request
 }
 
 // Config holds configuration for the OpenAI client.
@@ -59,6 +60,14 @@ type Config struct {
 	MaxTokens         int           // Default: 4096
 	Temperature       float64       // Default: 1.0
 	RateLimiterConfig llm.RateLimiterConfig
+	// ExtraHeaders are additional HTTP headers sent with every request.
+	// Useful for proxy-specific metadata (e.g. LiteLLM user tracking tags).
+	//
+	// Headers are applied after Content-Type and Authorization, so a key
+	// present in ExtraHeaders will override those standard headers if the
+	// same name is used. Use with care when targeting proxies that require
+	// a different auth scheme.
+	ExtraHeaders map[string]string
 }
 
 // Default OpenAI configuration values.
@@ -113,16 +122,30 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:      config.APIKey,
-		model:       config.Model,
-		endpoint:    config.Endpoint,
-		maxTokens:   config.MaxTokens,
-		temperature: config.Temperature,
-		rateLimiter: rateLimiter,
+		apiKey:       config.APIKey,
+		model:        config.Model,
+		endpoint:     config.Endpoint,
+		maxTokens:    config.MaxTokens,
+		temperature:  config.Temperature,
+		rateLimiter:  rateLimiter,
+		extraHeaders: copyHeaders(config.ExtraHeaders),
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
 	}
+}
+
+// copyHeaders returns a shallow copy of m, or nil when m is nil/empty.
+// Prevents callers from racing with the client after construction.
+func copyHeaders(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
 }
 
 // getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
@@ -577,6 +600,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	for k, v := range c.extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
@@ -776,6 +802,9 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	for k, v := range c.extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	// Send request with rate limiting if enabled
 	var httpResp *http.Response

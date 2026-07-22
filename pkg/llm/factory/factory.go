@@ -87,9 +87,10 @@ type FactoryConfig struct {
 	HuggingFaceModel string
 
 	// LiteLLM configuration
-	LiteLLMEndpoint string
-	LiteLLMAPIKey   string
-	LiteLLMModel    string
+	LiteLLMEndpoint     string
+	LiteLLMAPIKey       string
+	LiteLLMModel        string
+	LiteLLMExtraHeaders map[string]string
 
 	// Common settings
 	MaxTokens       int
@@ -416,12 +417,13 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 	}
 
 	return litellm.NewClient(litellm.Config{
-		Endpoint:    endpoint,
-		APIKey:      apiKey,
-		Model:       model,
-		MaxTokens:   f.resolveMaxOutput("litellm", model),
-		Temperature: f.config.Temperature,
-		Timeout:     time.Duration(f.config.Timeout) * time.Second,
+		Endpoint:     endpoint,
+		APIKey:       apiKey,
+		Model:        model,
+		MaxTokens:    f.resolveMaxOutput("litellm", model),
+		Temperature:  f.config.Temperature,
+		Timeout:      time.Duration(f.config.Timeout) * time.Second,
+		ExtraHeaders: f.config.LiteLLMExtraHeaders,
 	}), nil
 }
 

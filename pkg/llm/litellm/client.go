@@ -70,6 +70,11 @@ type Config struct {
 	Timeout     time.Duration
 
 	RateLimiterConfig llm.RateLimiterConfig
+
+	// ExtraHeaders are additional HTTP headers forwarded to the LiteLLM proxy
+	// on every request. Use for proxy metadata such as X-LiteLLM-Tags or
+	// X-LiteLLM-User for cost attribution and routing control.
+	ExtraHeaders map[string]string
 }
 
 // Client implements types.LLMProvider and types.StreamingLLMProvider by
@@ -113,6 +118,7 @@ func NewClient(cfg Config) *Client {
 		MaxTokens:         cfg.MaxTokens,
 		Temperature:       cfg.Temperature,
 		RateLimiterConfig: cfg.RateLimiterConfig,
+		ExtraHeaders:      cfg.ExtraHeaders,
 	})
 
 	return &Client{inner: inner, model: cfg.Model}
