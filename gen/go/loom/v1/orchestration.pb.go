@@ -26,6 +26,121 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// GateTimeoutAction defines gate behavior on decision timeout.
+type GateTimeoutAction int32
+
+const (
+	// Unset — treated as GATE_TIMEOUT_ACTION_FAIL.
+	GateTimeoutAction_GATE_TIMEOUT_ACTION_UNSPECIFIED GateTimeoutAction = 0
+	// Fail the workflow run (safe default).
+	GateTimeoutAction_GATE_TIMEOUT_ACTION_FAIL GateTimeoutAction = 1
+	// Treat as a rejection (workflow ends without executing later stages).
+	GateTimeoutAction_GATE_TIMEOUT_ACTION_REJECT GateTimeoutAction = 2
+	// Auto-approve and continue (use only for advisory gates).
+	GateTimeoutAction_GATE_TIMEOUT_ACTION_APPROVE GateTimeoutAction = 3
+)
+
+// Enum value maps for GateTimeoutAction.
+var (
+	GateTimeoutAction_name = map[int32]string{
+		0: "GATE_TIMEOUT_ACTION_UNSPECIFIED",
+		1: "GATE_TIMEOUT_ACTION_FAIL",
+		2: "GATE_TIMEOUT_ACTION_REJECT",
+		3: "GATE_TIMEOUT_ACTION_APPROVE",
+	}
+	GateTimeoutAction_value = map[string]int32{
+		"GATE_TIMEOUT_ACTION_UNSPECIFIED": 0,
+		"GATE_TIMEOUT_ACTION_FAIL":        1,
+		"GATE_TIMEOUT_ACTION_REJECT":      2,
+		"GATE_TIMEOUT_ACTION_APPROVE":     3,
+	}
+)
+
+func (x GateTimeoutAction) Enum() *GateTimeoutAction {
+	p := new(GateTimeoutAction)
+	*p = x
+	return p
+}
+
+func (x GateTimeoutAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GateTimeoutAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_orchestration_proto_enumTypes[0].Descriptor()
+}
+
+func (GateTimeoutAction) Type() protoreflect.EnumType {
+	return &file_loom_v1_orchestration_proto_enumTypes[0]
+}
+
+func (x GateTimeoutAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GateTimeoutAction.Descriptor instead.
+func (GateTimeoutAction) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{0}
+}
+
+// GateAction is the human's decision at a gate.
+type GateAction int32
+
+const (
+	// Unset — invalid; hosts must supply an explicit action.
+	GateAction_GATE_ACTION_UNSPECIFIED GateAction = 0
+	// Continue to the next stage.
+	GateAction_GATE_ACTION_APPROVE GateAction = 1
+	// Restart at HITLGate.revise_target_stage_id with GateDecision.feedback
+	// threaded into that stage's prompt ({{revision_feedback}}).
+	GateAction_GATE_ACTION_REVISE GateAction = 2
+	// End the workflow without executing later stages.
+	GateAction_GATE_ACTION_REJECT GateAction = 3
+)
+
+// Enum value maps for GateAction.
+var (
+	GateAction_name = map[int32]string{
+		0: "GATE_ACTION_UNSPECIFIED",
+		1: "GATE_ACTION_APPROVE",
+		2: "GATE_ACTION_REVISE",
+		3: "GATE_ACTION_REJECT",
+	}
+	GateAction_value = map[string]int32{
+		"GATE_ACTION_UNSPECIFIED": 0,
+		"GATE_ACTION_APPROVE":     1,
+		"GATE_ACTION_REVISE":      2,
+		"GATE_ACTION_REJECT":      3,
+	}
+)
+
+func (x GateAction) Enum() *GateAction {
+	p := new(GateAction)
+	*p = x
+	return p
+}
+
+func (x GateAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GateAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_orchestration_proto_enumTypes[1].Descriptor()
+}
+
+func (GateAction) Type() protoreflect.EnumType {
+	return &file_loom_v1_orchestration_proto_enumTypes[1]
+}
+
+func (x GateAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GateAction.Descriptor instead.
+func (GateAction) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{1}
+}
+
 // MergeStrategy defines how to combine multiple agent outputs.
 type MergeStrategy int32
 
@@ -78,11 +193,11 @@ func (x MergeStrategy) String() string {
 }
 
 func (MergeStrategy) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_orchestration_proto_enumTypes[0].Descriptor()
+	return file_loom_v1_orchestration_proto_enumTypes[2].Descriptor()
 }
 
 func (MergeStrategy) Type() protoreflect.EnumType {
-	return &file_loom_v1_orchestration_proto_enumTypes[0]
+	return &file_loom_v1_orchestration_proto_enumTypes[2]
 }
 
 func (x MergeStrategy) Number() protoreflect.EnumNumber {
@@ -91,7 +206,7 @@ func (x MergeStrategy) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MergeStrategy.Descriptor instead.
 func (MergeStrategy) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{0}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{2}
 }
 
 // ScheduledSessionMode controls session lifecycle for scheduled workflow executions.
@@ -132,11 +247,11 @@ func (x ScheduledSessionMode) String() string {
 }
 
 func (ScheduledSessionMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_orchestration_proto_enumTypes[1].Descriptor()
+	return file_loom_v1_orchestration_proto_enumTypes[3].Descriptor()
 }
 
 func (ScheduledSessionMode) Type() protoreflect.EnumType {
-	return &file_loom_v1_orchestration_proto_enumTypes[1]
+	return &file_loom_v1_orchestration_proto_enumTypes[3]
 }
 
 func (x ScheduledSessionMode) Number() protoreflect.EnumNumber {
@@ -145,7 +260,7 @@ func (x ScheduledSessionMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ScheduledSessionMode.Descriptor instead.
 func (ScheduledSessionMode) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{3}
 }
 
 // WorkflowPattern defines orchestration patterns for multi-agent coordination.
@@ -610,7 +725,14 @@ type PipelineStage struct {
 	OutputSchema string `protobuf:"bytes,5,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
 	// Optional: Unified output validation policy. When set, takes precedence
 	// over the legacy validation_prompt + output_schema + retry_policy fields.
-	OutputPolicy  *OutputPolicy `protobuf:"bytes,6,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
+	OutputPolicy *OutputPolicy `protobuf:"bytes,6,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
+	// Optional: Human-in-the-loop approval gate evaluated AFTER this stage's
+	// output passes validation and BEFORE the next stage starts. When the gate
+	// fires, the executor either asks a configured HITLHandler for an inline
+	// decision or suspends the workflow with a WorkflowCheckpoint the host can
+	// persist and later resume. Gates are supported on pipeline and iterative
+	// patterns only.
+	HitlGate      *HITLGate `protobuf:"bytes,7,opt,name=hitl_gate,json=hitlGate,proto3" json:"hitl_gate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -687,6 +809,595 @@ func (x *PipelineStage) GetOutputPolicy() *OutputPolicy {
 	return nil
 }
 
+func (x *PipelineStage) GetHitlGate() *HITLGate {
+	if x != nil {
+		return x.HitlGate
+	}
+	return nil
+}
+
+// HITLGate declares a human approval gate on a pipeline stage boundary.
+// Gates are deterministic control flow — they always fire when configured,
+// unlike agent-initiated contact_human tool calls.
+type HITLGate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Prompt shown to the human reviewer. Supports the {{output}} placeholder,
+	// replaced with the gated stage's (possibly truncated) output.
+	// Empty = a default "review the output of stage N" prompt.
+	PromptTemplate string `protobuf:"bytes,1,opt,name=prompt_template,json=promptTemplate,proto3" json:"prompt_template,omitempty"`
+	// Request type shown to the host UI (approval, decision, input, review).
+	// Aligned with HITLRequestInfo.request_type. Default: "approval".
+	RequestType string `protobuf:"bytes,2,opt,name=request_type,json=requestType,proto3" json:"request_type,omitempty"`
+	// Advisory timeout for the human decision, in seconds. In suspend mode the
+	// HOST enforces expiry of the persisted checkpoint; in inline-handler mode
+	// the handler context is bounded by this timeout. 0 = host default.
+	TimeoutSeconds int32 `protobuf:"varint,3,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	// Stage (agent_id) to restart when the decision is REVISE.
+	// Empty = restart the gated stage itself. Must be at or before the gated
+	// stage in pipeline order — forward jumps are invalid.
+	ReviseTargetStageId string `protobuf:"bytes,4,opt,name=revise_target_stage_id,json=reviseTargetStageId,proto3" json:"revise_target_stage_id,omitempty"`
+	// Maximum REVISE round-trips this gate accepts before the workflow fails
+	// (prevents endless review loops). Default: 3.
+	MaxRevisions int32 `protobuf:"varint,5,opt,name=max_revisions,json=maxRevisions,proto3" json:"max_revisions,omitempty"`
+	// What to do when the decision times out (enforced by the host in suspend
+	// mode). Default (UNSPECIFIED) is treated as FAIL.
+	OnTimeout     GateTimeoutAction `protobuf:"varint,6,opt,name=on_timeout,json=onTimeout,proto3,enum=loom.v1.GateTimeoutAction" json:"on_timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HITLGate) Reset() {
+	*x = HITLGate{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HITLGate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HITLGate) ProtoMessage() {}
+
+func (x *HITLGate) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HITLGate.ProtoReflect.Descriptor instead.
+func (*HITLGate) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *HITLGate) GetPromptTemplate() string {
+	if x != nil {
+		return x.PromptTemplate
+	}
+	return ""
+}
+
+func (x *HITLGate) GetRequestType() string {
+	if x != nil {
+		return x.RequestType
+	}
+	return ""
+}
+
+func (x *HITLGate) GetTimeoutSeconds() int32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+func (x *HITLGate) GetReviseTargetStageId() string {
+	if x != nil {
+		return x.ReviseTargetStageId
+	}
+	return ""
+}
+
+func (x *HITLGate) GetMaxRevisions() int32 {
+	if x != nil {
+		return x.MaxRevisions
+	}
+	return 0
+}
+
+func (x *HITLGate) GetOnTimeout() GateTimeoutAction {
+	if x != nil {
+		return x.OnTimeout
+	}
+	return GateTimeoutAction_GATE_TIMEOUT_ACTION_UNSPECIFIED
+}
+
+// HITLGateRequest is what the executor hands the host (or HITLHandler) when a
+// gate fires: everything a UI needs to render the review and collect a decision.
+type HITLGateRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workflow ID of the suspended run (session determinism on resume).
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// Agent ID of the gated stage.
+	StageAgentId string `protobuf:"bytes,2,opt,name=stage_agent_id,json=stageAgentId,proto3" json:"stage_agent_id,omitempty"`
+	// 1-based stage number of the gated stage.
+	StageNumber int32 `protobuf:"varint,3,opt,name=stage_number,json=stageNumber,proto3" json:"stage_number,omitempty"`
+	// Rendered question for the human (prompt_template with {{output}} applied).
+	Question string `protobuf:"bytes,4,opt,name=question,proto3" json:"question,omitempty"`
+	// The full stage output under review.
+	StageOutput string `protobuf:"bytes,5,opt,name=stage_output,json=stageOutput,proto3" json:"stage_output,omitempty"`
+	// Request type (approval, decision, input, review).
+	RequestType string `protobuf:"bytes,6,opt,name=request_type,json=requestType,proto3" json:"request_type,omitempty"`
+	// Advisory decision timeout in seconds (from HITLGate.timeout_seconds).
+	TimeoutSeconds int32 `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	// Suggested decision options for the UI (e.g. approve, revise, reject).
+	Options       []string `protobuf:"bytes,8,rep,name=options,proto3" json:"options,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HITLGateRequest) Reset() {
+	*x = HITLGateRequest{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HITLGateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HITLGateRequest) ProtoMessage() {}
+
+func (x *HITLGateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HITLGateRequest.ProtoReflect.Descriptor instead.
+func (*HITLGateRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *HITLGateRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *HITLGateRequest) GetStageAgentId() string {
+	if x != nil {
+		return x.StageAgentId
+	}
+	return ""
+}
+
+func (x *HITLGateRequest) GetStageNumber() int32 {
+	if x != nil {
+		return x.StageNumber
+	}
+	return 0
+}
+
+func (x *HITLGateRequest) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *HITLGateRequest) GetStageOutput() string {
+	if x != nil {
+		return x.StageOutput
+	}
+	return ""
+}
+
+func (x *HITLGateRequest) GetRequestType() string {
+	if x != nil {
+		return x.RequestType
+	}
+	return ""
+}
+
+func (x *HITLGateRequest) GetTimeoutSeconds() int32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+func (x *HITLGateRequest) GetOptions() []string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+// GateDecision carries the human's decision back into the executor.
+type GateDecision struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The action to take.
+	Action GateAction `protobuf:"varint,1,opt,name=action,proto3,enum=loom.v1.GateAction" json:"action,omitempty"`
+	// Free-text feedback. Required for REVISE (it becomes {{revision_feedback}}
+	// in the restarted stage's prompt); optional context for APPROVE/REJECT.
+	Feedback string `protobuf:"bytes,2,opt,name=feedback,proto3" json:"feedback,omitempty"`
+	// Optional identity of the decision maker (audit metadata for the host).
+	DecidedBy     string `protobuf:"bytes,3,opt,name=decided_by,json=decidedBy,proto3" json:"decided_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GateDecision) Reset() {
+	*x = GateDecision{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GateDecision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GateDecision) ProtoMessage() {}
+
+func (x *GateDecision) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GateDecision.ProtoReflect.Descriptor instead.
+func (*GateDecision) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GateDecision) GetAction() GateAction {
+	if x != nil {
+		return x.Action
+	}
+	return GateAction_GATE_ACTION_UNSPECIFIED
+}
+
+func (x *GateDecision) GetFeedback() string {
+	if x != nil {
+		return x.Feedback
+	}
+	return ""
+}
+
+func (x *GateDecision) GetDecidedBy() string {
+	if x != nil {
+		return x.DecidedBy
+	}
+	return ""
+}
+
+// WorkflowCheckpoint is the durable suspension state of a pipeline or
+// iterative workflow, captured at a stage boundary when a HITL gate fires.
+// It never contains in-flight agent-loop state: gates only fire between
+// stages, so completed stage outputs plus counters fully describe the run.
+// Hosts persist this server-side; it is not intended for untrusted clients.
+type WorkflowCheckpoint struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Checkpoint schema version for forward evolution. Current version: 1.
+	CheckpointVersion int32 `protobuf:"varint,1,opt,name=checkpoint_version,json=checkpointVersion,proto3" json:"checkpoint_version,omitempty"`
+	// SHA-256 (hex) of the deterministically-marshaled WorkflowPattern this
+	// checkpoint was taken against. Resume MUST verify this matches the
+	// pattern it is resuming with — resuming against an edited workflow is
+	// how unreviewed changes would get executed.
+	ConfigFingerprint string `protobuf:"bytes,2,opt,name=config_fingerprint,json=configFingerprint,proto3" json:"config_fingerprint,omitempty"`
+	// Resolved workflow ID of the original run (keeps stage session IDs
+	// deterministic across suspend/resume).
+	WorkflowId string `protobuf:"bytes,3,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// Pattern type at suspension: "pipeline" or "iterative_pipeline".
+	PatternType string `protobuf:"bytes,4,opt,name=pattern_type,json=patternType,proto3" json:"pattern_type,omitempty"`
+	// 0-based index of the stage to execute on APPROVE (gated stage + 1).
+	NextStageIndex int32 `protobuf:"varint,5,opt,name=next_stage_index,json=nextStageIndex,proto3" json:"next_stage_index,omitempty"`
+	// Latest full output per completed stage, ordered by stage index for the
+	// current pass. Used to rehydrate {{previous}}/{{history}} context and to
+	// re-seed SharedMemory stage-N-output keys on resume.
+	StageSnapshots []*CheckpointStageSnapshot `protobuf:"bytes,6,rep,name=stage_snapshots,json=stageSnapshots,proto3" json:"stage_snapshots,omitempty"`
+	// Append-only execution history (all attempts, including superseded ones)
+	// so cost accounting stays accurate across suspend/resume.
+	AllResults []*AgentResult `protobuf:"bytes,7,rep,name=all_results,json=allResults,proto3" json:"all_results,omitempty"`
+	// Models used so far (agent_id -> model name).
+	ModelsUsed map[string]string `protobuf:"bytes,8,rep,name=models_used,json=modelsUsed,proto3" json:"models_used,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Validation warnings accumulated so far (plain pipeline graceful
+	// degradation path).
+	ValidationWarnings []string `protobuf:"bytes,9,rep,name=validation_warnings,json=validationWarnings,proto3" json:"validation_warnings,omitempty"`
+	// Iterative-pattern iteration counter at suspension (0 for plain pipeline).
+	Iteration int32 `protobuf:"varint,10,opt,name=iteration,proto3" json:"iteration,omitempty"`
+	// REVISE round-trips consumed per gate (keyed by gated stage agent_id).
+	GateRevisionCounts map[string]int32 `protobuf:"bytes,11,rep,name=gate_revision_counts,json=gateRevisionCounts,proto3" json:"gate_revision_counts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// The gate request awaiting a decision.
+	PendingGate *HITLGateRequest `protobuf:"bytes,12,opt,name=pending_gate,json=pendingGate,proto3" json:"pending_gate,omitempty"`
+	// Snapshot of agent-written WORKFLOW-namespace SharedMemory entries
+	// (stage-N-output keys are excluded — they are re-seeded from
+	// stage_snapshots). Restored on resume.
+	SharedMemory []*CheckpointMemoryEntry `protobuf:"bytes,13,rep,name=shared_memory,json=sharedMemory,proto3" json:"shared_memory,omitempty"`
+	// Checkpoint creation time (Unix milliseconds).
+	CreatedAtMs   int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowCheckpoint) Reset() {
+	*x = WorkflowCheckpoint{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowCheckpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowCheckpoint) ProtoMessage() {}
+
+func (x *WorkflowCheckpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowCheckpoint.ProtoReflect.Descriptor instead.
+func (*WorkflowCheckpoint) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *WorkflowCheckpoint) GetCheckpointVersion() int32 {
+	if x != nil {
+		return x.CheckpointVersion
+	}
+	return 0
+}
+
+func (x *WorkflowCheckpoint) GetConfigFingerprint() string {
+	if x != nil {
+		return x.ConfigFingerprint
+	}
+	return ""
+}
+
+func (x *WorkflowCheckpoint) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *WorkflowCheckpoint) GetPatternType() string {
+	if x != nil {
+		return x.PatternType
+	}
+	return ""
+}
+
+func (x *WorkflowCheckpoint) GetNextStageIndex() int32 {
+	if x != nil {
+		return x.NextStageIndex
+	}
+	return 0
+}
+
+func (x *WorkflowCheckpoint) GetStageSnapshots() []*CheckpointStageSnapshot {
+	if x != nil {
+		return x.StageSnapshots
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetAllResults() []*AgentResult {
+	if x != nil {
+		return x.AllResults
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetModelsUsed() map[string]string {
+	if x != nil {
+		return x.ModelsUsed
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetValidationWarnings() []string {
+	if x != nil {
+		return x.ValidationWarnings
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetIteration() int32 {
+	if x != nil {
+		return x.Iteration
+	}
+	return 0
+}
+
+func (x *WorkflowCheckpoint) GetGateRevisionCounts() map[string]int32 {
+	if x != nil {
+		return x.GateRevisionCounts
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetPendingGate() *HITLGateRequest {
+	if x != nil {
+		return x.PendingGate
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetSharedMemory() []*CheckpointMemoryEntry {
+	if x != nil {
+		return x.SharedMemory
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetCreatedAtMs() int64 {
+	if x != nil {
+		return x.CreatedAtMs
+	}
+	return 0
+}
+
+// CheckpointStageSnapshot is the latest full output of one completed stage.
+type CheckpointStageSnapshot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Agent ID of the stage.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// Full (untruncated) stage output.
+	FullOutput    string `protobuf:"bytes,2,opt,name=full_output,json=fullOutput,proto3" json:"full_output,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckpointStageSnapshot) Reset() {
+	*x = CheckpointStageSnapshot{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckpointStageSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckpointStageSnapshot) ProtoMessage() {}
+
+func (x *CheckpointStageSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckpointStageSnapshot.ProtoReflect.Descriptor instead.
+func (*CheckpointStageSnapshot) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CheckpointStageSnapshot) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *CheckpointStageSnapshot) GetFullOutput() string {
+	if x != nil {
+		return x.FullOutput
+	}
+	return ""
+}
+
+// CheckpointMemoryEntry is one preserved WORKFLOW-namespace SharedMemory entry.
+type CheckpointMemoryEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SharedMemory key.
+	Key string `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Raw value bytes.
+	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// Agent that wrote the entry.
+	AgentId string `protobuf:"bytes,3,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// Entry metadata.
+	Metadata      map[string]string `protobuf:"bytes,4,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckpointMemoryEntry) Reset() {
+	*x = CheckpointMemoryEntry{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckpointMemoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckpointMemoryEntry) ProtoMessage() {}
+
+func (x *CheckpointMemoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckpointMemoryEntry.ProtoReflect.Descriptor instead.
+func (*CheckpointMemoryEntry) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CheckpointMemoryEntry) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CheckpointMemoryEntry) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *CheckpointMemoryEntry) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *CheckpointMemoryEntry) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
 // Stages can trigger restarts of earlier stages via pub/sub coordination, enabling
 // agents to negotiate and self-correct without human intervention.
@@ -713,7 +1424,7 @@ type IterativeWorkflowPattern struct {
 
 func (x *IterativeWorkflowPattern) Reset() {
 	*x = IterativeWorkflowPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +1436,7 @@ func (x *IterativeWorkflowPattern) String() string {
 func (*IterativeWorkflowPattern) ProtoMessage() {}
 
 func (x *IterativeWorkflowPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +1449,7 @@ func (x *IterativeWorkflowPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IterativeWorkflowPattern.ProtoReflect.Descriptor instead.
 func (*IterativeWorkflowPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{5}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *IterativeWorkflowPattern) GetPipeline() *PipelinePattern {
@@ -798,7 +1509,7 @@ type RestartPolicy struct {
 
 func (x *RestartPolicy) Reset() {
 	*x = RestartPolicy{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -810,7 +1521,7 @@ func (x *RestartPolicy) String() string {
 func (*RestartPolicy) ProtoMessage() {}
 
 func (x *RestartPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -823,7 +1534,7 @@ func (x *RestartPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartPolicy.ProtoReflect.Descriptor instead.
 func (*RestartPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{6}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RestartPolicy) GetEnabled() bool {
@@ -890,7 +1601,7 @@ type RestartRequest struct {
 
 func (x *RestartRequest) Reset() {
 	*x = RestartRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -902,7 +1613,7 @@ func (x *RestartRequest) String() string {
 func (*RestartRequest) ProtoMessage() {}
 
 func (x *RestartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -915,7 +1626,7 @@ func (x *RestartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartRequest.ProtoReflect.Descriptor instead.
 func (*RestartRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{7}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RestartRequest) GetRequesterStageId() string {
@@ -979,7 +1690,7 @@ type RestartResponse struct {
 
 func (x *RestartResponse) Reset() {
 	*x = RestartResponse{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -991,7 +1702,7 @@ func (x *RestartResponse) String() string {
 func (*RestartResponse) ProtoMessage() {}
 
 func (x *RestartResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1004,7 +1715,7 @@ func (x *RestartResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartResponse.ProtoReflect.Descriptor instead.
 func (*RestartResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{8}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RestartResponse) GetTargetStageId() string {
@@ -1058,7 +1769,7 @@ type ParallelPattern struct {
 
 func (x *ParallelPattern) Reset() {
 	*x = ParallelPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1070,7 +1781,7 @@ func (x *ParallelPattern) String() string {
 func (*ParallelPattern) ProtoMessage() {}
 
 func (x *ParallelPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1083,7 +1794,7 @@ func (x *ParallelPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParallelPattern.ProtoReflect.Descriptor instead.
 func (*ParallelPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{9}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ParallelPattern) GetTasks() []*AgentTask {
@@ -1124,7 +1835,7 @@ type AgentTask struct {
 
 func (x *AgentTask) Reset() {
 	*x = AgentTask{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1136,7 +1847,7 @@ func (x *AgentTask) String() string {
 func (*AgentTask) ProtoMessage() {}
 
 func (x *AgentTask) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1149,7 +1860,7 @@ func (x *AgentTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTask.ProtoReflect.Descriptor instead.
 func (*AgentTask) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentTask) GetAgentId() string {
@@ -1202,7 +1913,7 @@ type ConditionalPattern struct {
 
 func (x *ConditionalPattern) Reset() {
 	*x = ConditionalPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1214,7 +1925,7 @@ func (x *ConditionalPattern) String() string {
 func (*ConditionalPattern) ProtoMessage() {}
 
 func (x *ConditionalPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1227,7 +1938,7 @@ func (x *ConditionalPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConditionalPattern.ProtoReflect.Descriptor instead.
 func (*ConditionalPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ConditionalPattern) GetConditionAgentId() string {
@@ -1301,7 +2012,7 @@ type WorkflowResult struct {
 
 func (x *WorkflowResult) Reset() {
 	*x = WorkflowResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1313,7 +2024,7 @@ func (x *WorkflowResult) String() string {
 func (*WorkflowResult) ProtoMessage() {}
 
 func (x *WorkflowResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1326,7 +2037,7 @@ func (x *WorkflowResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowResult.ProtoReflect.Descriptor instead.
 func (*WorkflowResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WorkflowResult) GetPatternType() string {
@@ -1482,7 +2193,7 @@ type DebateResult struct {
 
 func (x *DebateResult) Reset() {
 	*x = DebateResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1494,7 +2205,7 @@ func (x *DebateResult) String() string {
 func (*DebateResult) ProtoMessage() {}
 
 func (x *DebateResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1507,7 +2218,7 @@ func (x *DebateResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebateResult.ProtoReflect.Descriptor instead.
 func (*DebateResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DebateResult) GetRounds() []*DebateRound {
@@ -1566,7 +2277,7 @@ type AgentResult struct {
 
 func (x *AgentResult) Reset() {
 	*x = AgentResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1578,7 +2289,7 @@ func (x *AgentResult) String() string {
 func (*AgentResult) ProtoMessage() {}
 
 func (x *AgentResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1591,7 +2302,7 @@ func (x *AgentResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentResult.ProtoReflect.Descriptor instead.
 func (*AgentResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *AgentResult) GetAgentId() string {
@@ -1657,7 +2368,7 @@ type AgentExecutionCost struct {
 
 func (x *AgentExecutionCost) Reset() {
 	*x = AgentExecutionCost{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1669,7 +2380,7 @@ func (x *AgentExecutionCost) String() string {
 func (*AgentExecutionCost) ProtoMessage() {}
 
 func (x *AgentExecutionCost) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1682,7 +2393,7 @@ func (x *AgentExecutionCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentExecutionCost.ProtoReflect.Descriptor instead.
 func (*AgentExecutionCost) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{15}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *AgentExecutionCost) GetTotalTokens() int32 {
@@ -1744,7 +2455,7 @@ type WorkflowCost struct {
 
 func (x *WorkflowCost) Reset() {
 	*x = WorkflowCost{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1756,7 +2467,7 @@ func (x *WorkflowCost) String() string {
 func (*WorkflowCost) ProtoMessage() {}
 
 func (x *WorkflowCost) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1769,7 +2480,7 @@ func (x *WorkflowCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowCost.ProtoReflect.Descriptor instead.
 func (*WorkflowCost) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{16}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WorkflowCost) GetTotalCostUsd() float64 {
@@ -1823,7 +2534,7 @@ type WorkflowExecution struct {
 
 func (x *WorkflowExecution) Reset() {
 	*x = WorkflowExecution{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1835,7 +2546,7 @@ func (x *WorkflowExecution) String() string {
 func (*WorkflowExecution) ProtoMessage() {}
 
 func (x *WorkflowExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1848,7 +2559,7 @@ func (x *WorkflowExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowExecution.ProtoReflect.Descriptor instead.
 func (*WorkflowExecution) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{17}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *WorkflowExecution) GetId() string {
@@ -1912,14 +2623,19 @@ type ExecuteWorkflowRequest struct {
 	// Optional: Execution timeout (seconds)
 	TimeoutSeconds int32 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	// Optional: Enable tracing
-	EnableTrace   bool `protobuf:"varint,5,opt,name=enable_trace,json=enableTrace,proto3" json:"enable_trace,omitempty"`
+	EnableTrace bool `protobuf:"varint,5,opt,name=enable_trace,json=enableTrace,proto3" json:"enable_trace,omitempty"`
+	// Optional: Run a saved workflow by name instead of supplying a pattern.
+	// The server loads <workflow_ref>.yaml from its workflows directory, so a
+	// client can run an existing workflow with just variables — no need to
+	// re-supply the full pattern/YAML. Ignored when pattern is set.
+	WorkflowRef   string `protobuf:"bytes,6,opt,name=workflow_ref,json=workflowRef,proto3" json:"workflow_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecuteWorkflowRequest) Reset() {
 	*x = ExecuteWorkflowRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1931,7 +2647,7 @@ func (x *ExecuteWorkflowRequest) String() string {
 func (*ExecuteWorkflowRequest) ProtoMessage() {}
 
 func (x *ExecuteWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1944,7 +2660,7 @@ func (x *ExecuteWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{18}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ExecuteWorkflowRequest) GetPattern() *WorkflowPattern {
@@ -1982,6 +2698,159 @@ func (x *ExecuteWorkflowRequest) GetEnableTrace() bool {
 	return false
 }
 
+func (x *ExecuteWorkflowRequest) GetWorkflowRef() string {
+	if x != nil {
+		return x.WorkflowRef
+	}
+	return ""
+}
+
+// WorkflowSummary describes a saved workflow available to run by name.
+type WorkflowSummary struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name (the workflow_ref to pass to ExecuteWorkflow).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Human-readable description (from the workflow's metadata, if any).
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Pattern type (pipeline, debate, fork-join, ...).
+	Type          string `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowSummary) Reset() {
+	*x = WorkflowSummary{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowSummary) ProtoMessage() {}
+
+func (x *WorkflowSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowSummary.ProtoReflect.Descriptor instead.
+func (*WorkflowSummary) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *WorkflowSummary) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *WorkflowSummary) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *WorkflowSummary) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+// ListWorkflowsRequest lists saved workflows runnable by name.
+type ListWorkflowsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWorkflowsRequest) Reset() {
+	*x = ListWorkflowsRequest{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWorkflowsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWorkflowsRequest) ProtoMessage() {}
+
+func (x *ListWorkflowsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWorkflowsRequest.ProtoReflect.Descriptor instead.
+func (*ListWorkflowsRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{26}
+}
+
+// ListWorkflowsResponse returns the saved workflows.
+type ListWorkflowsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Workflows     []*WorkflowSummary     `protobuf:"bytes,1,rep,name=workflows,proto3" json:"workflows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWorkflowsResponse) Reset() {
+	*x = ListWorkflowsResponse{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWorkflowsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWorkflowsResponse) ProtoMessage() {}
+
+func (x *ListWorkflowsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWorkflowsResponse.ProtoReflect.Descriptor instead.
+func (*ListWorkflowsResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ListWorkflowsResponse) GetWorkflows() []*WorkflowSummary {
+	if x != nil {
+		return x.Workflows
+	}
+	return nil
+}
+
 // ExecuteWorkflowResponse contains the workflow execution result.
 type ExecuteWorkflowResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1995,7 +2864,7 @@ type ExecuteWorkflowResponse struct {
 
 func (x *ExecuteWorkflowResponse) Reset() {
 	*x = ExecuteWorkflowResponse{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2007,7 +2876,7 @@ func (x *ExecuteWorkflowResponse) String() string {
 func (*ExecuteWorkflowResponse) ProtoMessage() {}
 
 func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2020,7 +2889,7 @@ func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{19}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ExecuteWorkflowResponse) GetExecutionId() string {
@@ -2065,7 +2934,7 @@ type ScheduleConfig struct {
 
 func (x *ScheduleConfig) Reset() {
 	*x = ScheduleConfig{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2077,7 +2946,7 @@ func (x *ScheduleConfig) String() string {
 func (*ScheduleConfig) ProtoMessage() {}
 
 func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2090,7 +2959,7 @@ func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleConfig.ProtoReflect.Descriptor instead.
 func (*ScheduleConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{20}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ScheduleConfig) GetCron() string {
@@ -2176,7 +3045,7 @@ type ScheduledWorkflow struct {
 
 func (x *ScheduledWorkflow) Reset() {
 	*x = ScheduledWorkflow{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2188,7 +3057,7 @@ func (x *ScheduledWorkflow) String() string {
 func (*ScheduledWorkflow) ProtoMessage() {}
 
 func (x *ScheduledWorkflow) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2201,7 +3070,7 @@ func (x *ScheduledWorkflow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledWorkflow.ProtoReflect.Descriptor instead.
 func (*ScheduledWorkflow) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{21}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ScheduledWorkflow) GetId() string {
@@ -2309,7 +3178,7 @@ type ScheduleStats struct {
 
 func (x *ScheduleStats) Reset() {
 	*x = ScheduleStats{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2321,7 +3190,7 @@ func (x *ScheduleStats) String() string {
 func (*ScheduleStats) ProtoMessage() {}
 
 func (x *ScheduleStats) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2334,7 +3203,7 @@ func (x *ScheduleStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleStats.ProtoReflect.Descriptor instead.
 func (*ScheduleStats) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{22}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ScheduleStats) GetTotalExecutions() int32 {
@@ -2413,14 +3282,75 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x0fPipelinePattern\x12%\n" +
 	"\x0einitial_prompt\x18\x01 \x01(\tR\rinitialPrompt\x12.\n" +
 	"\x06stages\x18\x02 \x03(\v2\x16.loom.v1.PipelineStageR\x06stages\x12*\n" +
-	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\xa0\x02\n" +
+	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\xd0\x02\n" +
 	"\rPipelineStage\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12'\n" +
 	"\x0fprompt_template\x18\x02 \x01(\tR\x0epromptTemplate\x12+\n" +
 	"\x11validation_prompt\x18\x03 \x01(\tR\x10validationPrompt\x12=\n" +
 	"\fretry_policy\x18\x04 \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\x12#\n" +
 	"\routput_schema\x18\x05 \x01(\tR\foutputSchema\x12:\n" +
-	"\routput_policy\x18\x06 \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\"\x86\x02\n" +
+	"\routput_policy\x18\x06 \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\x12.\n" +
+	"\thitl_gate\x18\a \x01(\v2\x11.loom.v1.HITLGateR\bhitlGate\"\x94\x02\n" +
+	"\bHITLGate\x12'\n" +
+	"\x0fprompt_template\x18\x01 \x01(\tR\x0epromptTemplate\x12!\n" +
+	"\frequest_type\x18\x02 \x01(\tR\vrequestType\x12'\n" +
+	"\x0ftimeout_seconds\x18\x03 \x01(\x05R\x0etimeoutSeconds\x123\n" +
+	"\x16revise_target_stage_id\x18\x04 \x01(\tR\x13reviseTargetStageId\x12#\n" +
+	"\rmax_revisions\x18\x05 \x01(\x05R\fmaxRevisions\x129\n" +
+	"\n" +
+	"on_timeout\x18\x06 \x01(\x0e2\x1a.loom.v1.GateTimeoutActionR\tonTimeout\"\xa0\x02\n" +
+	"\x0fHITLGateRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\x12$\n" +
+	"\x0estage_agent_id\x18\x02 \x01(\tR\fstageAgentId\x12!\n" +
+	"\fstage_number\x18\x03 \x01(\x05R\vstageNumber\x12\x1a\n" +
+	"\bquestion\x18\x04 \x01(\tR\bquestion\x12!\n" +
+	"\fstage_output\x18\x05 \x01(\tR\vstageOutput\x12!\n" +
+	"\frequest_type\x18\x06 \x01(\tR\vrequestType\x12'\n" +
+	"\x0ftimeout_seconds\x18\a \x01(\x05R\x0etimeoutSeconds\x12\x18\n" +
+	"\aoptions\x18\b \x03(\tR\aoptions\"v\n" +
+	"\fGateDecision\x12+\n" +
+	"\x06action\x18\x01 \x01(\x0e2\x13.loom.v1.GateActionR\x06action\x12\x1a\n" +
+	"\bfeedback\x18\x02 \x01(\tR\bfeedback\x12\x1d\n" +
+	"\n" +
+	"decided_by\x18\x03 \x01(\tR\tdecidedBy\"\x92\a\n" +
+	"\x12WorkflowCheckpoint\x12-\n" +
+	"\x12checkpoint_version\x18\x01 \x01(\x05R\x11checkpointVersion\x12-\n" +
+	"\x12config_fingerprint\x18\x02 \x01(\tR\x11configFingerprint\x12\x1f\n" +
+	"\vworkflow_id\x18\x03 \x01(\tR\n" +
+	"workflowId\x12!\n" +
+	"\fpattern_type\x18\x04 \x01(\tR\vpatternType\x12(\n" +
+	"\x10next_stage_index\x18\x05 \x01(\x05R\x0enextStageIndex\x12I\n" +
+	"\x0fstage_snapshots\x18\x06 \x03(\v2 .loom.v1.CheckpointStageSnapshotR\x0estageSnapshots\x125\n" +
+	"\vall_results\x18\a \x03(\v2\x14.loom.v1.AgentResultR\n" +
+	"allResults\x12L\n" +
+	"\vmodels_used\x18\b \x03(\v2+.loom.v1.WorkflowCheckpoint.ModelsUsedEntryR\n" +
+	"modelsUsed\x12/\n" +
+	"\x13validation_warnings\x18\t \x03(\tR\x12validationWarnings\x12\x1c\n" +
+	"\titeration\x18\n" +
+	" \x01(\x05R\titeration\x12e\n" +
+	"\x14gate_revision_counts\x18\v \x03(\v23.loom.v1.WorkflowCheckpoint.GateRevisionCountsEntryR\x12gateRevisionCounts\x12;\n" +
+	"\fpending_gate\x18\f \x01(\v2\x18.loom.v1.HITLGateRequestR\vpendingGate\x12C\n" +
+	"\rshared_memory\x18\r \x03(\v2\x1e.loom.v1.CheckpointMemoryEntryR\fsharedMemory\x12\"\n" +
+	"\rcreated_at_ms\x18\x0e \x01(\x03R\vcreatedAtMs\x1a=\n" +
+	"\x0fModelsUsedEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aE\n" +
+	"\x17GateRevisionCountsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"U\n" +
+	"\x17CheckpointStageSnapshot\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1f\n" +
+	"\vfull_output\x18\x02 \x01(\tR\n" +
+	"fullOutput\"\xe1\x01\n" +
+	"\x15CheckpointMemoryEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x19\n" +
+	"\bagent_id\x18\x03 \x01(\tR\aagentId\x12H\n" +
+	"\bmetadata\x18\x04 \x03(\v2,.loom.v1.CheckpointMemoryEntry.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x86\x02\n" +
 	"\x18IterativeWorkflowPattern\x124\n" +
 	"\bpipeline\x18\x01 \x01(\v2\x18.loom.v1.PipelinePatternR\bpipeline\x12%\n" +
 	"\x0emax_iterations\x18\x02 \x01(\x05R\rmaxIterations\x12=\n" +
@@ -2537,17 +3467,25 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x05 \x01(\x03R\tstartedAt\x12!\n" +
 	"\fcompleted_at\x18\x06 \x01(\x03R\vcompletedAt\x12\x14\n" +
-	"\x05error\x18\a \x01(\tR\x05error\"\xc5\x02\n" +
+	"\x05error\x18\a \x01(\tR\x05error\"\xe8\x02\n" +
 	"\x16ExecuteWorkflowRequest\x122\n" +
 	"\apattern\x18\x01 \x01(\v2\x18.loom.v1.WorkflowPatternR\apattern\x12\x1f\n" +
 	"\vregistry_id\x18\x02 \x01(\tR\n" +
 	"registryId\x12L\n" +
 	"\tvariables\x18\x03 \x03(\v2..loom.v1.ExecuteWorkflowRequest.VariablesEntryR\tvariables\x12'\n" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12!\n" +
-	"\fenable_trace\x18\x05 \x01(\bR\venableTrace\x1a<\n" +
+	"\fenable_trace\x18\x05 \x01(\bR\venableTrace\x12!\n" +
+	"\fworkflow_ref\x18\x06 \x01(\tR\vworkflowRef\x1a<\n" +
 	"\x0eVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"m\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"[\n" +
+	"\x0fWorkflowSummary\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\"\x16\n" +
+	"\x14ListWorkflowsRequest\"O\n" +
+	"\x15ListWorkflowsResponse\x126\n" +
+	"\tworkflows\x18\x01 \x03(\v2\x18.loom.v1.WorkflowSummaryR\tworkflows\"m\n" +
 	"\x17ExecuteWorkflowResponse\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12/\n" +
 	"\x06result\x18\x02 \x01(\v2\x17.loom.v1.WorkflowResultR\x06result\"\xfc\x02\n" +
@@ -2586,7 +3524,18 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\vlast_status\x18\x05 \x01(\tR\n" +
 	"lastStatus\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x06 \x01(\tR\tlastError*}\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError*\x97\x01\n" +
+	"\x11GateTimeoutAction\x12#\n" +
+	"\x1fGATE_TIMEOUT_ACTION_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18GATE_TIMEOUT_ACTION_FAIL\x10\x01\x12\x1e\n" +
+	"\x1aGATE_TIMEOUT_ACTION_REJECT\x10\x02\x12\x1f\n" +
+	"\x1bGATE_TIMEOUT_ACTION_APPROVE\x10\x03*r\n" +
+	"\n" +
+	"GateAction\x12\x1b\n" +
+	"\x17GATE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13GATE_ACTION_APPROVE\x10\x01\x12\x16\n" +
+	"\x12GATE_ACTION_REVISE\x10\x02\x12\x16\n" +
+	"\x12GATE_ACTION_REJECT\x10\x03*}\n" +
 	"\rMergeStrategy\x12\x1e\n" +
 	"\x1aMERGE_STRATEGY_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tCONSENSUS\x10\x01\x12\n" +
@@ -2613,109 +3562,134 @@ func file_loom_v1_orchestration_proto_rawDescGZIP() []byte {
 	return file_loom_v1_orchestration_proto_rawDescData
 }
 
-var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_loom_v1_orchestration_proto_goTypes = []any{
-	(MergeStrategy)(0),               // 0: loom.v1.MergeStrategy
-	(ScheduledSessionMode)(0),        // 1: loom.v1.ScheduledSessionMode
-	(*WorkflowPattern)(nil),          // 2: loom.v1.WorkflowPattern
-	(*DebatePattern)(nil),            // 3: loom.v1.DebatePattern
-	(*ForkJoinPattern)(nil),          // 4: loom.v1.ForkJoinPattern
-	(*PipelinePattern)(nil),          // 5: loom.v1.PipelinePattern
-	(*PipelineStage)(nil),            // 6: loom.v1.PipelineStage
-	(*IterativeWorkflowPattern)(nil), // 7: loom.v1.IterativeWorkflowPattern
-	(*RestartPolicy)(nil),            // 8: loom.v1.RestartPolicy
-	(*RestartRequest)(nil),           // 9: loom.v1.RestartRequest
-	(*RestartResponse)(nil),          // 10: loom.v1.RestartResponse
-	(*ParallelPattern)(nil),          // 11: loom.v1.ParallelPattern
-	(*AgentTask)(nil),                // 12: loom.v1.AgentTask
-	(*ConditionalPattern)(nil),       // 13: loom.v1.ConditionalPattern
-	(*WorkflowResult)(nil),           // 14: loom.v1.WorkflowResult
-	(*DebateResult)(nil),             // 15: loom.v1.DebateResult
-	(*AgentResult)(nil),              // 16: loom.v1.AgentResult
-	(*AgentExecutionCost)(nil),       // 17: loom.v1.AgentExecutionCost
-	(*WorkflowCost)(nil),             // 18: loom.v1.WorkflowCost
-	(*WorkflowExecution)(nil),        // 19: loom.v1.WorkflowExecution
-	(*ExecuteWorkflowRequest)(nil),   // 20: loom.v1.ExecuteWorkflowRequest
-	(*ExecuteWorkflowResponse)(nil),  // 21: loom.v1.ExecuteWorkflowResponse
-	(*ScheduleConfig)(nil),           // 22: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),        // 23: loom.v1.ScheduledWorkflow
-	(*ScheduleStats)(nil),            // 24: loom.v1.ScheduleStats
-	nil,                              // 25: loom.v1.RestartRequest.ParametersEntry
-	nil,                              // 26: loom.v1.AgentTask.MetadataEntry
-	nil,                              // 27: loom.v1.ConditionalPattern.BranchesEntry
-	nil,                              // 28: loom.v1.WorkflowResult.MetadataEntry
-	nil,                              // 29: loom.v1.WorkflowResult.ModelsUsedEntry
-	nil,                              // 30: loom.v1.AgentResult.MetadataEntry
-	nil,                              // 31: loom.v1.WorkflowCost.AgentCostsUsdEntry
-	nil,                              // 32: loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	nil,                              // 33: loom.v1.ScheduleConfig.VariablesEntry
-	(*SwarmPattern)(nil),             // 34: loom.v1.SwarmPattern
-	(*PairProgrammingPattern)(nil),   // 35: loom.v1.PairProgrammingPattern
-	(*TeacherStudentPattern)(nil),    // 36: loom.v1.TeacherStudentPattern
-	(*OutputPolicy)(nil),             // 37: loom.v1.OutputPolicy
-	(*OutputRetryPolicy)(nil),        // 38: loom.v1.OutputRetryPolicy
-	(*SwarmResult)(nil),              // 39: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),    // 40: loom.v1.PairProgrammingResult
-	(*TeacherStudentResult)(nil),     // 41: loom.v1.TeacherStudentResult
-	(*CollaborationMetrics)(nil),     // 42: loom.v1.CollaborationMetrics
-	(*DebateRound)(nil),              // 43: loom.v1.DebateRound
+	(GateTimeoutAction)(0),           // 0: loom.v1.GateTimeoutAction
+	(GateAction)(0),                  // 1: loom.v1.GateAction
+	(MergeStrategy)(0),               // 2: loom.v1.MergeStrategy
+	(ScheduledSessionMode)(0),        // 3: loom.v1.ScheduledSessionMode
+	(*WorkflowPattern)(nil),          // 4: loom.v1.WorkflowPattern
+	(*DebatePattern)(nil),            // 5: loom.v1.DebatePattern
+	(*ForkJoinPattern)(nil),          // 6: loom.v1.ForkJoinPattern
+	(*PipelinePattern)(nil),          // 7: loom.v1.PipelinePattern
+	(*PipelineStage)(nil),            // 8: loom.v1.PipelineStage
+	(*HITLGate)(nil),                 // 9: loom.v1.HITLGate
+	(*HITLGateRequest)(nil),          // 10: loom.v1.HITLGateRequest
+	(*GateDecision)(nil),             // 11: loom.v1.GateDecision
+	(*WorkflowCheckpoint)(nil),       // 12: loom.v1.WorkflowCheckpoint
+	(*CheckpointStageSnapshot)(nil),  // 13: loom.v1.CheckpointStageSnapshot
+	(*CheckpointMemoryEntry)(nil),    // 14: loom.v1.CheckpointMemoryEntry
+	(*IterativeWorkflowPattern)(nil), // 15: loom.v1.IterativeWorkflowPattern
+	(*RestartPolicy)(nil),            // 16: loom.v1.RestartPolicy
+	(*RestartRequest)(nil),           // 17: loom.v1.RestartRequest
+	(*RestartResponse)(nil),          // 18: loom.v1.RestartResponse
+	(*ParallelPattern)(nil),          // 19: loom.v1.ParallelPattern
+	(*AgentTask)(nil),                // 20: loom.v1.AgentTask
+	(*ConditionalPattern)(nil),       // 21: loom.v1.ConditionalPattern
+	(*WorkflowResult)(nil),           // 22: loom.v1.WorkflowResult
+	(*DebateResult)(nil),             // 23: loom.v1.DebateResult
+	(*AgentResult)(nil),              // 24: loom.v1.AgentResult
+	(*AgentExecutionCost)(nil),       // 25: loom.v1.AgentExecutionCost
+	(*WorkflowCost)(nil),             // 26: loom.v1.WorkflowCost
+	(*WorkflowExecution)(nil),        // 27: loom.v1.WorkflowExecution
+	(*ExecuteWorkflowRequest)(nil),   // 28: loom.v1.ExecuteWorkflowRequest
+	(*WorkflowSummary)(nil),          // 29: loom.v1.WorkflowSummary
+	(*ListWorkflowsRequest)(nil),     // 30: loom.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),    // 31: loom.v1.ListWorkflowsResponse
+	(*ExecuteWorkflowResponse)(nil),  // 32: loom.v1.ExecuteWorkflowResponse
+	(*ScheduleConfig)(nil),           // 33: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),        // 34: loom.v1.ScheduledWorkflow
+	(*ScheduleStats)(nil),            // 35: loom.v1.ScheduleStats
+	nil,                              // 36: loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	nil,                              // 37: loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	nil,                              // 38: loom.v1.CheckpointMemoryEntry.MetadataEntry
+	nil,                              // 39: loom.v1.RestartRequest.ParametersEntry
+	nil,                              // 40: loom.v1.AgentTask.MetadataEntry
+	nil,                              // 41: loom.v1.ConditionalPattern.BranchesEntry
+	nil,                              // 42: loom.v1.WorkflowResult.MetadataEntry
+	nil,                              // 43: loom.v1.WorkflowResult.ModelsUsedEntry
+	nil,                              // 44: loom.v1.AgentResult.MetadataEntry
+	nil,                              // 45: loom.v1.WorkflowCost.AgentCostsUsdEntry
+	nil,                              // 46: loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	nil,                              // 47: loom.v1.ScheduleConfig.VariablesEntry
+	(*SwarmPattern)(nil),             // 48: loom.v1.SwarmPattern
+	(*PairProgrammingPattern)(nil),   // 49: loom.v1.PairProgrammingPattern
+	(*TeacherStudentPattern)(nil),    // 50: loom.v1.TeacherStudentPattern
+	(*OutputPolicy)(nil),             // 51: loom.v1.OutputPolicy
+	(*OutputRetryPolicy)(nil),        // 52: loom.v1.OutputRetryPolicy
+	(*SwarmResult)(nil),              // 53: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),    // 54: loom.v1.PairProgrammingResult
+	(*TeacherStudentResult)(nil),     // 55: loom.v1.TeacherStudentResult
+	(*CollaborationMetrics)(nil),     // 56: loom.v1.CollaborationMetrics
+	(*DebateRound)(nil),              // 57: loom.v1.DebateRound
 }
 var file_loom_v1_orchestration_proto_depIdxs = []int32{
-	3,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
-	4,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
-	5,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	11, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
-	13, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
-	34, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
-	35, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
-	36, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
-	7,  // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
-	0,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	0,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	37, // 11: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
-	6,  // 12: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
-	38, // 13: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	37, // 14: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
-	5,  // 15: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	8,  // 16: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
-	25, // 17: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
-	12, // 18: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
-	0,  // 19: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	26, // 20: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
-	37, // 21: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
-	27, // 22: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
-	2,  // 23: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
-	38, // 24: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	16, // 25: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
-	28, // 26: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
-	18, // 27: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
-	15, // 28: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
-	39, // 29: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
-	40, // 30: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
-	41, // 31: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
-	42, // 32: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
-	29, // 33: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
-	43, // 34: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
-	30, // 35: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
-	17, // 36: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
-	31, // 37: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
-	2,  // 38: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
-	14, // 39: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
-	2,  // 40: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	32, // 41: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	14, // 42: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
-	33, // 43: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
-	1,  // 44: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
-	2,  // 45: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
-	22, // 46: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
-	24, // 47: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
-	2,  // 48: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
-	49, // [49:49] is the sub-list for method output_type
-	49, // [49:49] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	5,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
+	6,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
+	7,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	19, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
+	21, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
+	48, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
+	49, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
+	50, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
+	15, // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
+	2,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	2,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	51, // 11: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
+	8,  // 12: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
+	52, // 13: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	51, // 14: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
+	9,  // 15: loom.v1.PipelineStage.hitl_gate:type_name -> loom.v1.HITLGate
+	0,  // 16: loom.v1.HITLGate.on_timeout:type_name -> loom.v1.GateTimeoutAction
+	1,  // 17: loom.v1.GateDecision.action:type_name -> loom.v1.GateAction
+	13, // 18: loom.v1.WorkflowCheckpoint.stage_snapshots:type_name -> loom.v1.CheckpointStageSnapshot
+	24, // 19: loom.v1.WorkflowCheckpoint.all_results:type_name -> loom.v1.AgentResult
+	36, // 20: loom.v1.WorkflowCheckpoint.models_used:type_name -> loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	37, // 21: loom.v1.WorkflowCheckpoint.gate_revision_counts:type_name -> loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	10, // 22: loom.v1.WorkflowCheckpoint.pending_gate:type_name -> loom.v1.HITLGateRequest
+	14, // 23: loom.v1.WorkflowCheckpoint.shared_memory:type_name -> loom.v1.CheckpointMemoryEntry
+	38, // 24: loom.v1.CheckpointMemoryEntry.metadata:type_name -> loom.v1.CheckpointMemoryEntry.MetadataEntry
+	7,  // 25: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	16, // 26: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
+	39, // 27: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
+	20, // 28: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
+	2,  // 29: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	40, // 30: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
+	51, // 31: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
+	41, // 32: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
+	4,  // 33: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
+	52, // 34: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	24, // 35: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
+	42, // 36: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
+	26, // 37: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
+	23, // 38: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
+	53, // 39: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
+	54, // 40: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
+	55, // 41: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
+	56, // 42: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
+	43, // 43: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
+	57, // 44: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
+	44, // 45: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
+	25, // 46: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
+	45, // 47: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
+	4,  // 48: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
+	22, // 49: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
+	4,  // 50: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	46, // 51: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	29, // 52: loom.v1.ListWorkflowsResponse.workflows:type_name -> loom.v1.WorkflowSummary
+	22, // 53: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
+	47, // 54: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
+	3,  // 55: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
+	4,  // 56: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
+	33, // 57: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
+	35, // 58: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
+	4,  // 59: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
+	60, // [60:60] is the sub-list for method output_type
+	60, // [60:60] is the sub-list for method input_type
+	60, // [60:60] is the sub-list for extension type_name
+	60, // [60:60] is the sub-list for extension extendee
+	0,  // [0:60] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_orchestration_proto_init() }
@@ -2735,7 +3709,7 @@ func file_loom_v1_orchestration_proto_init() {
 		(*WorkflowPattern_TeacherStudent)(nil),
 		(*WorkflowPattern_Iterative)(nil),
 	}
-	file_loom_v1_orchestration_proto_msgTypes[12].OneofWrappers = []any{
+	file_loom_v1_orchestration_proto_msgTypes[18].OneofWrappers = []any{
 		(*WorkflowResult_DebateResult)(nil),
 		(*WorkflowResult_SwarmResult)(nil),
 		(*WorkflowResult_PairProgrammingResult)(nil),
@@ -2746,8 +3720,8 @@ func file_loom_v1_orchestration_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_orchestration_proto_rawDesc), len(file_loom_v1_orchestration_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   32,
+			NumEnums:      4,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

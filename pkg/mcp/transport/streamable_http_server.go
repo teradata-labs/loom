@@ -15,10 +15,12 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,7 +36,31 @@ const DefaultSessionTTL = 30 * time.Minute
 
 // MCPHandler is a function that processes MCP JSON-RPC messages and returns a response.
 // For notifications (no id), it returns nil.
-type MCPHandler func(msg []byte) ([]byte, error)
+type MCPHandler func(ctx context.Context, msg []byte) ([]byte, error)
+
+// SSEWriter writes individual Server-Sent Events on a streaming POST response.
+// Each call emits one framed event (id/event/data) and flushes immediately.
+// A single response uses one SSEWriter; it is not safe for concurrent use.
+type SSEWriter interface {
+	// WriteEvent frames data as one SSE "message" event and flushes it.
+	// data must be a single JSON-RPC message with no literal newlines
+	// (standard JSON marshaling satisfies this).
+	WriteEvent(data []byte) error
+}
+
+// StreamingMCPHandler is an optional capability a Handler may also implement to
+// support POST-response Server-Sent Events. When a StreamHandler is configured
+// and a POST carries "Accept: text/event-stream", the transport routes the
+// request here instead of the synchronous Handler.
+//
+// The handler emits zero or more intermediate events (e.g. progress
+// notifications) via w, then returns the final JSON-RPC response bytes for the
+// transport to emit as the last event. Tool-level failures should be encoded
+// into the returned bytes (e.g. an isError result); a non-nil error is reserved
+// for unexpected transport-level failures.
+type StreamingMCPHandler interface {
+	HandleMessageStream(ctx context.Context, msg []byte, w SSEWriter) ([]byte, error)
+}
 
 // StreamableHTTPServer implements the MCP streamable-http server transport.
 // It provides a single POST endpoint that handles JSON-RPC messages
@@ -52,13 +78,14 @@ type MCPHandler func(msg []byte) ([]byte, error)
 //   - JSON responses for single messages
 //   - Automatic session cleanup with configurable TTL
 type StreamableHTTPServer struct {
-	handler     MCPHandler
-	sessions    map[string]*httpSession
-	mu          sync.RWMutex
-	logger      *zap.Logger
-	sessionTTL  time.Duration
-	stopCleanup chan struct{}
-	cleanupOnce sync.Once
+	handler       MCPHandler
+	streamHandler StreamingMCPHandler
+	sessions      map[string]*httpSession
+	mu            sync.RWMutex
+	logger        *zap.Logger
+	sessionTTL    time.Duration
+	stopCleanup   chan struct{}
+	cleanupOnce   sync.Once
 }
 
 type httpSession struct {
@@ -68,9 +95,13 @@ type httpSession struct {
 
 // StreamableHTTPServerConfig configures the HTTP server transport.
 type StreamableHTTPServerConfig struct {
-	Handler    MCPHandler // Required: processes MCP messages
-	Logger     *zap.Logger
-	SessionTTL time.Duration // TTL for idle sessions; 0 disables cleanup, default 30 minutes
+	Handler MCPHandler // Required: processes MCP messages
+	// StreamHandler is optional. When set, POST requests that carry
+	// "Accept: text/event-stream" are answered as Server-Sent Events, allowing
+	// long-running tool calls to stream progress before the final result.
+	StreamHandler StreamingMCPHandler
+	Logger        *zap.Logger
+	SessionTTL    time.Duration // TTL for idle sessions; 0 disables cleanup, default 30 minutes
 }
 
 // NewStreamableHTTPServer creates a new MCP streamable HTTP server handler.
@@ -90,11 +121,12 @@ func NewStreamableHTTPServer(config StreamableHTTPServerConfig) (*StreamableHTTP
 	}
 
 	s := &StreamableHTTPServer{
-		handler:     config.Handler,
-		sessions:    make(map[string]*httpSession),
-		logger:      config.Logger,
-		sessionTTL:  ttl,
-		stopCleanup: make(chan struct{}),
+		handler:       config.Handler,
+		streamHandler: config.StreamHandler,
+		sessions:      make(map[string]*httpSession),
+		logger:        config.Logger,
+		sessionTTL:    ttl,
+		stopCleanup:   make(chan struct{}),
 	}
 
 	if ttl > 0 {
@@ -112,8 +144,12 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case http.MethodDelete:
 		s.handleDelete(w, r)
 	case http.MethodGet:
-		// GET can be used for SSE streaming (future enhancement)
-		http.Error(w, "SSE streaming not yet implemented", http.StatusNotImplemented)
+		// The standalone server-initiated GET stream is not offered. Per the MCP
+		// spec, respond 405 so a client probing for it degrades gracefully.
+		// (POST-response SSE is supported via handlePost when a StreamHandler is
+		// configured.)
+		w.Header().Set("Allow", "POST, DELETE")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	default:
 		w.Header().Set("Allow", "POST, DELETE")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -164,8 +200,20 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Process message
-	resp, err := s.handler(body)
+	// POST-response SSE: when the client accepts an event stream, a StreamHandler
+	// is configured, the response writer can flush, and this is not the initialize
+	// handshake (which must create the session via the JSON path), answer as
+	// Server-Sent Events so a long-running tool call can stream progress.
+	if !isInit && s.streamHandler != nil && acceptsEventStream(r.Header.Get("Accept")) {
+		if flusher, ok := w.(http.Flusher); ok {
+			s.handleStreamingPost(w, r, flusher, body)
+			return
+		}
+	}
+
+	// Process message (pass the request context so auth/identity middleware
+	// data reaches the handler on the synchronous path too).
+	resp, err := s.handler(r.Context(), body)
 	if err != nil {
 		s.logger.Error("handler error", zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -195,6 +243,56 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(resp)
+}
+
+// acceptsEventStream reports whether the request's Accept header opts into SSE.
+func acceptsEventStream(accept string) bool {
+	return strings.Contains(accept, "text/event-stream")
+}
+
+// handleStreamingPost answers a POST as Server-Sent Events. It writes the SSE
+// headers, then delegates to the StreamHandler, which emits intermediate events
+// via the SSEWriter and returns the final JSON-RPC response (written last).
+func (s *StreamableHTTPServer) handleStreamingPost(w http.ResponseWriter, r *http.Request, flusher http.Flusher, body []byte) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Disable response buffering in intermediary proxies (nginx, tunnels) so
+	// events reach the client as they are flushed.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sw := &httpSSEWriter{w: w, flusher: flusher}
+	final, err := s.streamHandler.HandleMessageStream(r.Context(), body, sw)
+	if err != nil {
+		s.logger.Error("streaming handler error", zap.Error(err))
+		// The response is already 200/SSE; surface a generic JSON-RPC error event.
+		_ = sw.WriteEvent([]byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}`))
+		return
+	}
+	if final != nil {
+		if err := sw.WriteEvent(final); err != nil {
+			s.logger.Warn("failed to write final SSE event", zap.Error(err))
+		}
+	}
+}
+
+// httpSSEWriter frames JSON-RPC messages as SSE "message" events with a
+// monotonic id, matching the grammar in sse_parser.go and the MCP spec.
+type httpSSEWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	eventID int
+}
+
+func (s *httpSSEWriter) WriteEvent(data []byte) error {
+	s.eventID++
+	if _, err := fmt.Fprintf(s.w, "id: %d\nevent: message\ndata: %s\n\n", s.eventID, data); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
 }
 
 func (s *StreamableHTTPServer) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -295,11 +393,13 @@ func WarnIfNotLocalhost(logger *zap.Logger, addr string) {
 		return
 	}
 	host := addr
-	// Strip port if present.
-	if idx := strings.LastIndex(addr, ":"); idx >= 0 {
-		host = addr[:idx]
+	// Strip the port if present. net.SplitHostPort handles bracketed IPv6
+	// ("[::1]:8080" -> "::1") correctly, unlike a naive LastIndex(":") which
+	// would truncate a bare IPv6 literal mid-address.
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
 	}
-	// Strip brackets for IPv6.
+	// Strip brackets for a bracketed IPv6 host given without a port.
 	host = strings.Trim(host, "[]")
 
 	switch host {

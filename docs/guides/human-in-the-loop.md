@@ -1,7 +1,7 @@
 
 # Human-in-the-Loop Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -17,6 +17,7 @@
 - [Examples](#examples)
   - [Example 1: Database Deletion Approval](#example-1-database-deletion-approval)
   - [Example 2: Multi-Choice Decision](#example-2-multi-choice-decision)
+- [Workflow HITL Gates (Durable Checkpoint/Resume)](#workflow-hitl-gates-durable-checkpointresume)
 - [Troubleshooting](#troubleshooting)
 - [Next Steps](#next-steps)
 
@@ -29,8 +30,8 @@ Request human approval, input, or decision-making during agent execution using t
 
 ## Prerequisites
 
-- Loom v1.2.0+
-- Agent with ContactHumanTool enabled
+- Loom v1.3.0+
+- Agent with the `contact_human` tool enabled
 
 ## Quick Start
 
@@ -248,6 +249,91 @@ func selectDatabaseWithHuman(ctx context.Context, workload string) (string, erro
     return response["response"].(string), nil
 }
 ```
+
+## Workflow HITL Gates (Durable Checkpoint/Resume)
+
+✅ **Available** - Feature fully working with tests (see `pkg/orchestration/hitl_gate_test.go`)
+
+`contact_human` blocks an agent *mid-turn*. Workflow **HITL gates** are the
+complementary mechanism for pipelines: a declarative approval gate on a
+**stage boundary** that fires deterministically — no LLM decides whether to
+ask. Because gates only fire between stages, the workflow suspends into a
+small, durable `WorkflowCheckpoint` (proto) instead of a blocked goroutine:
+the process can exit, and any process holding the checkpoint can resume the
+run later.
+
+### Declaring a gate
+
+Gates are supported on `pipeline` and `iterative` patterns only:
+
+```yaml
+spec:
+  type: pipeline
+  initial_prompt: "Create a partitioned orders table in the sales database"
+  stages:
+    - agent_id: ddl-designer
+      prompt_template: "Design Teradata DDL for: {{previous}}"
+      hitl_gate:
+        prompt_template: "Review this DDL before execution:\n{{output}}"
+        request_type: approval          # approval | decision | input | review
+        timeout_seconds: 1800           # advisory; hosts enforce expiry in suspend mode
+        revise_target_stage_id: ddl-designer  # stage to restart on REVISE (default: this stage)
+        max_revisions: 3                # revision budget before the run fails
+        on_timeout: fail                # fail | reject | approve
+    - agent_id: ddl-executor
+      prompt_template: "Execute exactly this DDL: {{previous}}"
+```
+
+### Suspend / resume lifecycle
+
+1. The gated stage completes (including its output validation/retries).
+2. The executor emits a progress event carrying `HITLGateRequest`, then —
+   with no inline handler configured — returns a `*WorkflowSuspended` error
+   wrapping the checkpoint. Detect it with `errors.As`.
+3. The host persists the checkpoint and shows `pending_gate` to a human.
+4. `Orchestrator.ResumeWorkflow(ctx, pattern, checkpoint, decision)`:
+   - **APPROVE** — continues at the next stage.
+   - **REVISE** — jumps back to `revise_target_stage_id` with the feedback
+     threaded into that stage's prompt (`{{revision_feedback}}` placeholder,
+     or an appended `## REVISION FEEDBACK` section). The gate fires again
+     after the re-run; `max_revisions` bounds the loop.
+   - **REJECT** — returns `*GateRejected` without executing anything.
+5. The checkpoint records a SHA-256 fingerprint of the workflow definition;
+   resuming with a modified definition is refused (`fingerprint … changed
+   since suspension`) so edits can never bypass a pending review.
+
+### CLI
+
+```bash
+# Non-interactive (or with --suspend-to): a gate writes a checkpoint and exits
+looms workflow run create-table.yaml --suspend-to review.pb
+
+# Review, then resume with exactly one decision
+looms workflow resume create-table.yaml review.pb --approve
+looms workflow resume create-table.yaml review.pb --revise "Use MULTISET and add COMPRESS"
+looms workflow resume create-table.yaml review.pb --reject
+
+# On an interactive terminal, `run` prompts inline instead ([a]/[r]/[j]/[s])
+looms workflow run create-table.yaml
+```
+
+### Embedding hosts (inline decisions)
+
+A host that wants to decide gates in-process (chat bridge, terminal, tests)
+sets an `orchestration.HITLHandler` in `orchestration.Config`; returning
+`orchestration.ErrSuspendWorkflow` from the handler converts the gate into a
+durable suspension. Leave the handler nil to always suspend.
+
+### What a checkpoint contains (and does not)
+
+The checkpoint holds completed stage outputs, cost history, iteration and
+revision counters, the pending gate request, and agent-written
+workflow-namespace SharedMemory entries. It never contains in-flight
+agent-loop state — gates only fire at stage boundaries. Checkpoints are host
+state: persist them server-side, not on untrusted clients.
+
+See `examples/reference/workflows/orchestration-patterns/hitl-gated-pipeline.yaml`
+for a runnable example.
 
 ## Troubleshooting
 

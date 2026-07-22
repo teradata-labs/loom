@@ -705,3 +705,69 @@ func TestAgentManagementTool_ConcurrentOperations(t *testing.T) {
 	close(errors)
 	assert.Empty(t, errors, "Expected no errors in concurrent reads")
 }
+
+func TestUnknownToolNames(t *testing.T) {
+	tests := []struct {
+		name string
+		spec map[string]interface{}
+		want []string
+	}{
+		{
+			name: "flat list: phantom flagged, builtin/tool_search/MCP allowed",
+			spec: map[string]interface{}{"tools": []interface{}{
+				"tool_search", "web_search", "dbwrite:query", "mcp_mcp_sql_tool_all_table_names",
+			}},
+			want: []string{"mcp_mcp_sql_tool_all_table_names"},
+		},
+		{
+			name: "rich shape: tools.builtin validated, mcp servers ignored",
+			spec: map[string]interface{}{"tools": map[string]interface{}{
+				"builtin": []interface{}{"tool_search", "made_up_tool"},
+				"mcp":     []interface{}{map[string]interface{}{"server": "dbwrite", "tools": []interface{}{"*"}}},
+			}},
+			want: []string{"made_up_tool"},
+		},
+		{
+			name: "empty tools is fine (capability gap is the weaver's job, not a phantom)",
+			spec: map[string]interface{}{"tools": []interface{}{}},
+			want: nil,
+		},
+		{
+			name: "auto-injected names are not flagged",
+			spec: map[string]interface{}{"tools": []interface{}{"query_tool_result", "send_message", "graph_memory"}},
+			want: nil,
+		},
+		{
+			name: "no tools section",
+			spec: map[string]interface{}{},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unknownToolNames(tt.spec)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestConvertStructuredAgentToYAML_RejectsPhantomTool(t *testing.T) {
+	tool := &AgentManagementTool{}
+	cfg := map[string]interface{}{
+		"metadata": map[string]interface{}{"name": "q-gen"},
+		"spec": map[string]interface{}{
+			"system_prompt": "Generate SQL for the dreambase tables.",
+			"tools":         []interface{}{"mcp_mcp_sql_tool_all_table_names"},
+		},
+	}
+	_, _, err := tool.convertStructuredAgentToYAML(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown tool")
+	assert.Contains(t, err.Error(), "tool_search")
+
+	// A valid agent (tool_search) converts cleanly.
+	cfg["spec"].(map[string]interface{})["tools"] = []interface{}{"tool_search"}
+	_, name, err := tool.convertStructuredAgentToYAML(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "q-gen", name)
+}

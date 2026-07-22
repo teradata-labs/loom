@@ -1,7 +1,7 @@
 
 # MCP Examples
 
-**Version**: v1.2.0 | **Status**: ✅ Implemented
+**Version**: v1.3.0 | **Status**: ✅ Implemented
 
 ## Table of Contents
 

@@ -92,13 +92,7 @@ func main() {
 
 func runChat(cmd *cobra.Command, args []string) {
 	// Try to connect to server (but don't exit if it fails - show connection error in TUI instead)
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 
 	// Test if server is actually reachable by trying to list agents
 	serverAvailable := false

@@ -5,7 +5,7 @@ Architecture of Loom's pattern system - hot-reloadable domain knowledge library 
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -51,7 +51,7 @@ The Pattern System encodes **domain knowledge as reusable YAML patterns** that g
 4. **A/B Testing**: Compare pattern variants for continuous improvement
 5. **Effectiveness Tracking**: SQLite-backed metrics for learning agent feedback
 
-The system supports **104 patterns across 26 search paths** (13 top-level domains + 13 vendor-specific subdirectories including Teradata, Postgres, SQL, and Weaver patterns).
+The system ships **158 patterns** (`find patterns -name '*.yaml' | wc -l`) discovered across **28 default search paths** (13 top-level domains + 15 vendor/nested subdirectories including Teradata, Postgres, SQL, and Weaver patterns; see `pkg/patterns/library.go:66-96`).
 
 
 ## Design Goals
@@ -159,7 +159,7 @@ graph TB
 │  │  │     - Supports local development                   │     │          │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                              │         │  │
-│  │  Search Paths (26 total: 13 top-level + 13 vendor):         │          │  │
+│  │  Search Paths (28 total: 13 top-level + 15 vendor):         │          │  │
 │  │    Top-level: analytics, ml, timeseries, text,              │          │  │
 │  │    data_quality, rest_api, document, etl,                   │          │  │
 │  │    prompt_engineering, code, debugging, vision, evaluation  │          │  │
@@ -292,7 +292,7 @@ type Library struct {
 - **Filesystem fallback**: Allows hot-reload during development; checked after embedded FS
 - **RWMutex**: Optimizes for read-heavy workload (concurrent pattern lookups)
 
-**Search Paths** (26 paths: 13 top-level + 13 vendor-specific):
+**Search Paths** (28 paths: 13 top-level + 15 vendor/nested, from `pkg/patterns/library.go:66-96`):
 ```
 patterns/
 ├── analytics/              # Business intelligence, aggregations
@@ -576,8 +576,8 @@ func (o *Orchestrator) SetLLMProvider(provider types.LLMProvider)
 - Space: O(N) for pattern summaries
 
 **Performance**:
-- Index build: <100ms for 104 patterns
-- Query: <10ms for 104 patterns
+- Index build: <100ms for the full pattern library (158 patterns)
+- Query: <10ms for the full pattern library
 - Memory: ~500KB for pattern index
 
 **Rationale for Keyword-Based (not TF-IDF/embeddings)**:
@@ -857,7 +857,7 @@ examples:
 
 ### Pattern Search
 
-**Problem**: Find relevant patterns from 104 candidates in <10ms.
+**Problem**: Find relevant patterns from 158 candidates in <10ms.
 
 **Solution**: In-memory keyword matching with intent boosting and optional LLM re-ranking.
 
@@ -910,7 +910,7 @@ func (lib *Library) Search(query string) []PatternSummary {
 - Time: O(N × K) where N = patterns, K = keywords
 - Space: O(N) for results array
 
-**Performance**: <10ms for 104 patterns, 5 keywords
+**Performance**: <10ms for 158 patterns, 5 keywords
 
 
 ### Debounce Algorithm
@@ -1087,7 +1087,7 @@ selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 sp
 
 **Description**: Search algorithm is O(N) in pattern count
 
-**Current**: 104 patterns, <10ms search time
+**Current**: 158 patterns, <10ms search time
 
 **Impact**: 700 patterns → ~100ms search time (may become bottleneck)
 
@@ -1132,7 +1132,7 @@ selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 sp
 | Pattern load (cache hit) | <1ms | <1ms | In-memory map lookup |
 | Pattern load (embedded) | 8ms | 15ms | YAML parse |
 | Pattern load (filesystem) | 12ms | 25ms | File I/O + YAML parse |
-| Pattern search | 5ms | 10ms | 104 patterns, keyword matching |
+| Pattern search | 5ms | 10ms | 158 patterns, keyword matching |
 | Hot-reload (debounce) | 505ms | 520ms | 500ms debounce + 5-20ms reload |
 | Hot-reload (measured) | 89ms | 143ms | Optimized path, no debounce wait |
 | Intent classification | 2ms | 5ms | Keyword-based heuristics |
@@ -1142,7 +1142,7 @@ selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 sp
 
 | Component | Size |
 |-----------|------|
-| Pattern cache (104 patterns) | ~1.5MB (full structs) |
+| Pattern cache (158 patterns) | ~2MB (full structs) |
 | Pattern index (summaries) | ~500KB (metadata only) |
 | Hot-reloader | ~100KB (timers, watcher) |
 | **Total** | **~2MB** |
@@ -1150,7 +1150,7 @@ selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 sp
 ### Throughput
 
 - **Pattern loads**: 10,000+ req/s (cache hit)
-- **Pattern searches**: 1,000+ req/s (104 patterns)
+- **Pattern searches**: 1,000+ req/s (158 patterns)
 - **Hot-reloads**: N/A (filesystem-bound, rare operation)
 
 
@@ -1176,7 +1176,7 @@ selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 sp
 
 **Race Prevention**:
 - All tests run with `-race` detector
-- Zero race conditions in v1.2.0
+- Zero race conditions in v1.3.0
 
 
 ### Pattern Orchestrator

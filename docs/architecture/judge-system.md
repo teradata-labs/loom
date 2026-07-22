@@ -5,7 +5,7 @@ Multi-judge LLM evaluation system that coordinates multiple judges with differen
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents

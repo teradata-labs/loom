@@ -1,7 +1,7 @@
 
 # MCP Protocol Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 

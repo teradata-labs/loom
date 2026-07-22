@@ -24,6 +24,7 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 	return map[string]toolHandler{
 		// Core Agent
 		"loom_weave": b.handleWeave,
+		"loom_build": b.handleBuild,
 
 		// Patterns
 		"loom_load_patterns":  b.handleLoadPatterns,
@@ -61,6 +62,7 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 
 		// Workflow Orchestration
 		"loom_execute_workflow":           b.handleExecuteWorkflow,
+		"loom_list_workflows":             b.handleListWorkflows,
 		"loom_get_workflow_execution":     b.handleGetWorkflowExecution,
 		"loom_list_workflow_executions":   b.handleListWorkflowExecutions,
 		"loom_schedule_workflow":          b.handleScheduleWorkflow,
@@ -175,6 +177,14 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 			prop("agent_id", "string", "Agent ID to use (optional; if empty, server default or session routing applies). Pass a string; some clients may send other JSON scalar types, which are treated as explicit when non-empty."),
 		), conversationViewerURI, mv, weaveAnn),
 
+		tool("loom_build", "Build a Loom agent or workflow from a natural-language description. Loom's weaver — the system's expert at authoring agents and workflows — designs it, CREATES and SAVES it, then reports how to run it. Use this INSTEAD of writing workflow YAML, patterns, or stages yourself: the weaver knows Loom's components, tool wiring, and conventions far better than an external model. Returns the weaver's report (created agent_id(s) and/or workflow name + how to invoke it). For multi-step builds, pass the returned session_id back to refine.", objectSchema(
+			reqProp("intent", "string", "What to build, in plain language: the goal, expected inputs/outputs, steps, and any success criteria."),
+			prop("kind", "string", "What to build: 'agent', 'workflow', or 'auto' (default — let the weaver decide)."),
+			prop("name", "string", "Desired name for the created agent/workflow (optional)."),
+			prop("tools_hint", "array", "Capabilities it should use, e.g. [\"web_search\", \"sql\"] (optional hints for the weaver)."),
+			prop("session_id", "string", "Session ID to continue/refine a previous build (optional)."),
+		), conversationViewerURI, mv, weaveAnn),
+
 		// Patterns
 		tool("loom_load_patterns", "Load pattern definitions from a directory or repository.", objectSchema(
 			prop("source", "string", "Directory path or repository URL containing pattern YAML files"),
@@ -272,12 +282,16 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		tool("loom_list_models", "List all available LLM models.", objectSchema(), "", mv, ro),
 
 		// Workflow Orchestration
-		tool("loom_execute_workflow", "Execute a multi-agent workflow.", objectSchema(
+		tool("loom_execute_workflow", "Execute a multi-agent workflow (debate, pipeline, parallel, etc.) and stream its progress. The orchestrator wires the agents and their messaging itself — this is the reliable way to run multi-agent work, not ad-hoc ephemeral agents. To run an EXISTING saved workflow, just pass 'workflow_ref' (its name, from loom_list_workflows) plus any 'variables' — no need to re-supply the definition. Otherwise provide 'workflow_yaml' (a YAML spec with agents+tasks+type) or an inline 'pattern'. Returns each agent's final output.", objectSchema(
+			prop("workflow_ref", "string", "Name of a SAVED workflow to run (from loom_list_workflows). The easiest way to run an existing workflow: pass this + variables, nothing else. Takes precedence over workflow_yaml/pattern."),
+			prop("workflow_yaml", "string", "A complete workflow definition in YAML (agents, tasks, and workflow type). Use for an ad-hoc workflow; takes precedence over 'pattern'."),
+			prop("pattern", "object", "Inline WorkflowPattern (protojson oneof: debate/pipeline/parallel/...). Use workflow_yaml instead unless you already have a proto pattern."),
 			prop("registry_id", "string", "Agent registry to use for agent lookup"),
 			prop("variables", "object", "Variables for prompt interpolation"),
 			prop("timeout_seconds", "integer", "Execution timeout in seconds"),
 			prop("enable_trace", "boolean", "Enable execution tracing"),
 		), "", mv, mut),
+		tool("loom_list_workflows", "List saved workflows that can be run by name. Returns each workflow's name (pass as workflow_ref to loom_execute_workflow), description, and type. Use this to discover existing workflows instead of authoring one.", objectSchema(), "", mv, ro),
 		tool("loom_get_workflow_execution", "Get a workflow execution.", objectSchema(
 			reqProp("execution_id", "string", "Workflow execution ID"),
 		), "", mv, ro),

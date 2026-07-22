@@ -698,3 +698,18 @@ func TestExecutor_LargeParameterMetrics(t *testing.T) {
 	t.Logf("  Bytes: %d", statsAfter.LargeParamBytesStored)
 	t.Logf("  Errors: %d", statsAfter.LargeParamDerefErrors)
 }
+
+// TestFormatSharedMemoryResultSummary_JSONObjectSurfacesID is the executor-side
+// guard for the web_search read-back fix: a stored json_object must surface its
+// reference_id with a working query_tool_result call, not a "too large" dead end.
+func TestFormatSharedMemoryResultSummary_JSONObjectSurfacesID(t *testing.T) {
+	meta := &storage.DataMetadata{
+		DataType:        "json_object",
+		SizeBytes:       31865,
+		EstimatedTokens: 5711,
+	}
+	out := formatSharedMemoryResultSummary(meta, "ref_web_search_42")
+	require.Contains(t, out, "ref_web_search_42", "summary must surface the reference_id")
+	require.Contains(t, out, "query_tool_result", "summary must give a working retrieval call")
+	require.NotContains(t, out, "too large", "no dead-end message")
+}

@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -540,8 +541,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "gpt-5",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.007, // (1000 * 2.5 + 500 * 10) / 1M = 0.0075
-			wantMax:      0.008,
+			wantMin:      0.006240, // (1000 * 1.25 + 500 * 10) / 1M = 0.00625 (catalog)
+			wantMax:      0.006260,
 		},
 		{
 			name:         "gpt-5-mini",
@@ -580,8 +581,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "o3",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.029, // (1000 * 10.0 + 500 * 40.0) / 1M = 0.03
-			wantMax:      0.031,
+			wantMin:      0.005990, // (1000 * 2.0 + 500 * 8.0) / 1M = 0.006 (catalog)
+			wantMax:      0.006010,
 		},
 		{
 			name:         "o3-mini",
@@ -926,4 +927,150 @@ func TestChatRequest_MaxTokensField(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClient_ExtraHeaders(t *testing.T) {
+	// Verify that ExtraHeaders are sent with every HTTP request.
+	var receivedHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+
+		resp := ChatCompletionResponse{
+			ID:      "chatcmpl-123",
+			Object:  "chat.completion",
+			Created: 1234567890,
+			Model:   "gpt-4o",
+			Choices: []ChatCompletionChoice{
+				{
+					Index: 0,
+					Message: ChatMessage{
+						Role:    "assistant",
+						Content: "Hello",
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: ChatCompletionUsage{
+				PromptTokens:     10,
+				CompletionTokens: 5,
+				TotalTokens:      15,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		APIKey:   "test-key",
+		Model:    "gpt-4o",
+		Endpoint: server.URL,
+		ExtraHeaders: map[string]string{
+			"x-litellm-tags":  "user:alice@example.com",
+			"x-custom-header": "custom-value",
+		},
+	})
+
+	ctx := &mockContext{Context: context.Background()}
+	messages := []types.Message{
+		{Role: "user", Content: "Hi"},
+	}
+
+	_, err := client.Chat(ctx, messages, nil)
+	require.NoError(t, err)
+
+	// Verify extra headers were sent
+	assert.Equal(t, "user:alice@example.com", receivedHeaders.Get("x-litellm-tags"))
+	assert.Equal(t, "custom-value", receivedHeaders.Get("x-custom-header"))
+	// Standard headers should still be present
+	assert.Equal(t, "application/json", receivedHeaders.Get("Content-Type"))
+	assert.Equal(t, "Bearer test-key", receivedHeaders.Get("Authorization"))
+}
+
+func TestClient_ExtraHeaders_NilMap(t *testing.T) {
+	// Verify that nil ExtraHeaders does not cause issues.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := ChatCompletionResponse{
+			ID:      "chatcmpl-123",
+			Object:  "chat.completion",
+			Created: 1234567890,
+			Model:   "gpt-4o",
+			Choices: []ChatCompletionChoice{
+				{
+					Index: 0,
+					Message: ChatMessage{
+						Role:    "assistant",
+						Content: "Hello",
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: ChatCompletionUsage{
+				PromptTokens:     10,
+				CompletionTokens: 5,
+				TotalTokens:      15,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		APIKey:   "test-key",
+		Model:    "gpt-4o",
+		Endpoint: server.URL,
+		// No ExtraHeaders set (nil map)
+	})
+
+	ctx := &mockContext{Context: context.Background()}
+	messages := []types.Message{
+		{Role: "user", Content: "Hi"},
+	}
+
+	resp, err := client.Chat(ctx, messages, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "Hello", resp.Content)
+}
+
+func TestClient_ExtraHeaders_Stream(t *testing.T) {
+	// Verify that ExtraHeaders are forwarded on ChatStream requests.
+	var receivedHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		chunks := []string{
+			`{"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
+			`{"id":"2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		APIKey:   "test-key",
+		Model:    "gpt-4o",
+		Endpoint: server.URL,
+		ExtraHeaders: map[string]string{
+			"x-litellm-tags": "env=test",
+		},
+	})
+
+	ctx := &mockContext{Context: context.Background()}
+	messages := []types.Message{{Role: "user", Content: "Hi"}}
+
+	_, err := client.ChatStream(ctx, messages, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "env=test", receivedHeaders.Get("x-litellm-tags"))
+	assert.Equal(t, "Bearer test-key", receivedHeaders.Get("Authorization"))
 }

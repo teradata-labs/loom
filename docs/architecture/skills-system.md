@@ -4,7 +4,8 @@
 
 The skills system provides **domain-specific prompt injection and task decomposition** for Loom agents. Skills are YAML-defined units of expertise that get activated based on user intent, injected into the LLM context, decomposed into tracked tasks on the kanban board, and audited for board hygiene before each turn returns.
 
-**Status**: v1.2.0+ — Hierarchical discovery merged (PR #174); Anthropic-style skill import (PR #182) and the `SkillsImportService` gRPC surface with post-write router reload (PR #183) are live; end-of-turn task-board hygiene (PR #184) gates each turn's return.
+**Version**: v1.3.0
+**Status**: ✅ Shipped. Hierarchical discovery merged (PR #174); Anthropic-style skill import (PR #182) and the `SkillsImportService` gRPC surface with post-write router reload (PR #183) are live; end-of-turn task-board hygiene (PR #184) gates each turn's return. All paths above are wired and merged into the current release; remaining gaps are tracked in [`skills-overhaul.md`](./skills-overhaul.md#limitations-and-known-gaps) (notably `mcp_servers` activation and registry-side hot-reload wiring).
 
 **Companion deep-dives**: This document is the cohesive overview. See [`skills-overhaul.md`](./skills-overhaul.md) for the hierarchical discovery design, [`skills-import.md`](./skills-import.md) for the import pipeline and `SkillsImportService` internals, and [`skill-hygiene.md`](./skill-hygiene.md) for the end-of-turn audit design.
 
@@ -226,7 +227,7 @@ The router walks a pre-built tree of skill categories using LLM guidance:
   }
 ```
 
-**Caching**: Decisions are cached per `(sessionID, messageHash, bindingsHash)` with 5-minute TTL and 256-entry LRU.
+**Caching**: Decisions are cached per `(sessionID, messageHash, bindingsHash)` with 5-minute TTL and a 256-entry cap. Eviction is FIFO (oldest-by-insertion), not strict LRU — routing decisions are short-lived enough that the distinction does not matter (`pkg/skills/index/cache.go`).
 
 ---
 
@@ -526,14 +527,14 @@ Full design (taxonomy validator, graph-aware classifier, source-format adapters)
 
 ## Hot Reload
 
-`pkg/skills/hotreload.go` watches the configured `skills_dir` and rebuilds the in-memory `Library` cache when YAMLs change on disk. Debounced (default 250ms) so rapid editor saves don't thrash the index.
+`pkg/skills/hotreload.go` watches the configured `skills_dir` and rebuilds the in-memory `Library` cache when YAMLs change on disk. Debounced (default 500ms, `HotReloadConfig.DebounceMs`) so rapid editor saves don't thrash the index.
 
 ```
   fsnotify event (Create | Write | Rename)
        |
        v
   +-----------------------------+
-  | debounce window (250ms)     |
+  | debounce window (500ms)     |
   | coalesce burst of events    |
   +-----------------------------+
        |
@@ -697,7 +698,7 @@ pkg/skills/
   +-- index/
   |     +-- builder.go      Build skill tree from Library
   |     +-- router.go       LLM-guided tree walk
-  |     +-- cache.go        Per-session decision cache (LRU, 5min TTL)
+  |     +-- cache.go        Per-session decision cache (FIFO, 256-entry cap, 5min TTL)
   |     +-- store.go        Persistence interface (memory, SQL)
   |     +-- node.go         SkillIndexNode utilities
   |     +-- hotreload.go    HotReloadHandler (debounced rebuild → router → cache)

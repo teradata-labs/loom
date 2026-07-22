@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -60,7 +61,8 @@ func (s *AdminServer) checkAdminAuth(ctx context.Context) error {
 		return status.Error(codes.PermissionDenied, "missing x-admin-token header")
 	}
 
-	if tokens[0] != s.adminToken {
+	// Constant-time comparison to avoid a timing side-channel on the admin token.
+	if subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(s.adminToken)) != 1 {
 		return status.Error(codes.PermissionDenied, "invalid admin token")
 	}
 

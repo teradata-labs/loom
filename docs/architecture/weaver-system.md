@@ -4,7 +4,7 @@
 
 The weaver is Loom's **meta-agent** — a standard Loom agent whose job is to create other agents, workflows, and skills from natural language. It is not special infrastructure; it uses the same ROM, skills, tools, and memory system as any other agent. Its power comes from curated domain knowledge (ROM), restrictive tooling (agent_management), and skill-routed creation flows.
 
-**Status**: v1.2.0+ — Skills overhaul integrated (task emission for creation steps). End-of-turn task-board hygiene (PR #184) now audits weaver-emitted creation tasks before each turn returns; see [`skill-hygiene.md`](./skill-hygiene.md). Bulk skill ingestion is handled by the separate `SkillsImportService` ([`skills-import.md`](./skills-import.md)) rather than the weaver's `create_skill` tool — the weaver flow remains for conversational one-at-a-time authoring.
+**Status**: v1.3.0 — Skills overhaul integrated (task emission for creation steps). End-of-turn task-board hygiene (PR #184) now audits weaver-emitted creation tasks before each turn returns; see [`skill-hygiene.md`](./skill-hygiene.md). Bulk skill ingestion is handled by the separate `SkillsImportService` ([`skills-import.md`](./skills-import.md)) rather than the weaver's `create_skill` tool — the weaver flow remains for conversational one-at-a-time authoring.
 
 ---
 

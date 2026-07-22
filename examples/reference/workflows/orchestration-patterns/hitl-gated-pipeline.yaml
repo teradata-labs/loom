@@ -1,0 +1,85 @@
+# HITL-Gated DDL Pipeline
+# Pipeline with a human approval gate between design and execution:
+# analyze → design → [HUMAN REVIEW GATE] → execute
+#
+# The gate fires deterministically after the design stage's output passes
+# validation. With no interactive terminal (or with --suspend-to), the run
+# suspends into a durable checkpoint file; a human reviews the DDL and the
+# run resumes — approve to execute, revise to send feedback back to the
+# designer, reject to stop without executing anything.
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: hitl-gated-ddl-pipeline
+  description: Table-creation pipeline with a human approval gate before DDL execution
+  labels:
+    category: data-engineering
+    complexity: medium
+
+spec:
+  type: pipeline
+  initial_prompt: "Create a partitioned orders table in the sales database with order_id, customer_id, order_date, amount, and status columns. Partition by month on order_date."
+
+  stages:
+    - agent_id: schema-analyst
+      prompt_template: |
+        Analyze this table request and produce structured requirements
+        (target database, columns with types, primary index recommendation,
+        partitioning strategy, table options):
+
+        {{previous}}
+
+    - agent_id: ddl-designer
+      prompt_template: |
+        Generate syntactically correct Teradata CREATE TABLE DDL from these
+        requirements. Output ONLY the DDL statement.
+
+        {{previous}}
+
+        {{revision_feedback}}
+      validation_prompt: |
+        Is this valid Teradata CREATE TABLE DDL with an explicit SET/MULTISET
+        keyword and a PRIMARY INDEX clause? Answer yes or no.
+
+        {{output}}
+      retry_policy:
+        max_retries: 2
+      hitl_gate:
+        prompt_template: |
+          Review this DDL before it is executed against the database:
+
+          {{output}}
+        request_type: approval
+        timeout_seconds: 1800
+        revise_target_stage_id: ddl-designer
+        max_revisions: 3
+        on_timeout: fail
+
+    - agent_id: ddl-executor
+      prompt_template: |
+        Execute exactly the following approved DDL statement. Do not modify it.
+        Report the execution result verbatim.
+
+        {{previous}}
+
+  pass_full_history: false
+
+# Example execution:
+#
+#   # Interactive: the gate prompts on the terminal ([a]pprove/[r]evise/re[j]ect/[s]uspend)
+#   looms workflow run hitl-gated-pipeline.yaml
+#
+#   # Non-interactive: the gate writes a durable checkpoint and exits
+#   looms workflow run hitl-gated-pipeline.yaml --suspend-to review.pb
+#
+#   # Resume after review (the workflow file must be unchanged — the
+#   # checkpoint fingerprints the definition and refuses edited workflows)
+#   looms workflow resume hitl-gated-pipeline.yaml review.pb --approve
+#   looms workflow resume hitl-gated-pipeline.yaml review.pb --revise "Use MULTISET and COMPRESS the status column"
+#   looms workflow resume hitl-gated-pipeline.yaml review.pb --reject
+#
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - schema-analyst.yaml: read-only schema discovery and requirements analysis
+# - ddl-designer.yaml:   Teradata DDL generation (no execution tools)
+# - ddl-executor.yaml:   DDL execution against the target database

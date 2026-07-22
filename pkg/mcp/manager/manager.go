@@ -135,6 +135,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		// Streamable HTTP transport (MCP 2025-03-26 spec)
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
 			Endpoint:         config.URL,
+			Headers:          config.Headers,
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
 			Logger:           m.logger.With(zap.String("server", name)),

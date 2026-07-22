@@ -433,6 +433,83 @@ func TestResolveStoragePath(t *testing.T) {
 	}
 }
 
+func TestValidate_ObservabilityMode(t *testing.T) {
+	// Base config with valid LLM + storage so only observability is under test.
+	validBase := func() *Config {
+		return &Config{
+			Server:  ServerConfig{Port: 60051},
+			LLM:     LLMConfig{Provider: "ollama", OllamaEndpoint: "http://localhost:11434", OllamaModel: "test"},
+			Storage: StorageBackendConfig{Backend: "sqlite", SQLite: SQLiteConfig{Path: "/tmp/test.db"}},
+		}
+	}
+
+	// Regression: an enabled config with no explicit mode and no Hawk endpoint
+	// must validate (it resolves to embedded, matching the tracer builder in
+	// cmd_serve.go). Previously Validate() defaulted empty mode to "service" and
+	// then rejected it for a missing hawk_endpoint.
+	t.Run("enabled, empty mode, no endpoint -> valid (embedded)", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("enabled, empty mode, hawk endpoint set -> valid (service)", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, HawkEndpoint: "http://localhost:9090"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("enabled, mode=service, no endpoint -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "service"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hawk_endpoint is required")
+	})
+
+	t.Run("enabled, mode=embedded, sqlite storage, no path -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "embedded", StorageType: "sqlite"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sqlite_path is required")
+	})
+
+	t.Run("enabled, mode=otel, endpoint set -> valid", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "otel", OTLPEndpoint: "http://collector:4318/v1/traces"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("enabled, mode=otel, no endpoint -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "otel"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "otlp_endpoint is required")
+	})
+
+	t.Run("enabled, empty mode, otlp endpoint set -> valid (auto otel)", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, OTLPEndpoint: "http://collector:4318/v1/traces"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("enabled, invalid mode -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: true, Mode: "bogus"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be 'embedded', 'service', 'otel', or 'none'")
+	})
+
+	t.Run("disabled -> valid regardless of mode", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Observability = ObservabilityConfig{Enabled: false, Mode: "service"}
+		assert.NoError(t, cfg.Validate())
+	})
+}
+
 func TestValidate_StorageBackend(t *testing.T) {
 	// Helper to create a config with valid LLM settings
 	validBase := func() *Config {
