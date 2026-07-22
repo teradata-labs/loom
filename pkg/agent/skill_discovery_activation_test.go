@@ -229,8 +229,8 @@ func TestSkillActivation_ManageSkillsLoad_ActivatesAndClassifiesCharterWithFolde
 			continue
 		}
 		found = true
-		assert.Equal(t, ClassCharter, m.ContextClass,
-			"a manage_skills load result must be a charter-classed event")
+		assert.Equal(t, ClassNarrative, m.ContextClass,
+			"a manage_skills load result must be narrative-classed so fold summarizes into residue")
 		assert.Equal(t, "/skills/explicit-load-skill.yaml", meta["source_path"],
 			"the persisted load event must carry the skill's folder path")
 		assert.Contains(t, body, "Do the explicit thing.",

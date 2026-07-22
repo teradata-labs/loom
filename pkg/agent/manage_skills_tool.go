@@ -210,13 +210,22 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 
 	wasActive := skillNameSet(t.orchestrator.GetActiveSkills(sessionID))[name]
 	if !wasActive {
+		// Cap resolution: honor operator-set max_concurrent_skills from
+		// agent config when >0, else fall back to the runaway-loop backstop.
+		// The YAML field previously wired only the discovery menu bound and
+		// left the active-set uncapped by operator intent, silently
+		// repurposing an existing config knob.
+		cap := skillActiveSafetyCap
+		if t.config != nil && t.config.SkillsConfig != nil && t.config.SkillsConfig.MaxConcurrentSkills > 0 {
+			cap = t.config.SkillsConfig.MaxConcurrentSkills
+		}
 		activeCount := len(t.orchestrator.GetActiveSkills(sessionID))
-		if activeCount >= skillActiveSafetyCap {
+		if activeCount >= cap {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
 					Code:       "ACTIVE_SKILL_CAP_EXCEEDED",
-					Message:    fmt.Sprintf("session already has %d active skills (safety cap %d); no skill was evicted", activeCount, skillActiveSafetyCap),
+					Message:    fmt.Sprintf("session already has %d active skills (safety cap %d); no skill was evicted", activeCount, cap),
 					Suggestion: "Call manage_skills(action=\"unload\", name=\"<skill>\") to free capacity before loading another.",
 				},
 			}, nil
@@ -229,9 +238,13 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 		t.emitActivationTasks(ctx, sessionID, skill)
 	}
 
-	// v5 LLD (Part D, lines 140/106): the load result IS the charter event and
-	// must carry the skill's BODY into context — not a receipt. The result is
-	// charter-classed and exempt from ref-wrapping (executor.go).
+	// v5 LLD (Part D, lines 140/106): the load result carries the skill's
+	// BODY into context — not a receipt. Exempt from ref-wrapping at
+	// admission (executor.go). Classified as narrative (see toolResultClass)
+	// so fold's LLM compressor summarizes the body into residue when
+	// pressure hits red — the pre-fix charter classification pinned skill
+	// bodies forever and accumulated across load/unload cycles the LLM
+	// effectively never triggers.
 	//
 	// Data is the RAW skill body (markdown, verbatim). formatToolResult renders
 	// Data via fmt.Sprintf("%v", ...) — a string prints verbatim, matching the

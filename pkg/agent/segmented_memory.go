@@ -1779,9 +1779,18 @@ func (sm *SegmentedMemory) RetrieveL2Snapshots(ctx context.Context, limit int) (
 	}
 
 	// Extract content strings
+	// Extract summary text from each snapshot. Fold persists snapshots as a
+	// {residue, foldIndex} JSON envelope; consumers want the residue string
+	// (the actual summary), not the wire format. Legacy plain-text snapshots
+	// written before the envelope existed fall through unchanged.
 	contents := make([]string, len(snapshots))
 	for i, snapshot := range snapshots {
-		contents[i] = snapshot.Content
+		var rec foldRecord
+		if err := json.Unmarshal([]byte(snapshot.Content), &rec); err == nil && rec.Residue != "" {
+			contents[i] = rec.Residue
+		} else {
+			contents[i] = snapshot.Content
+		}
 	}
 
 	// Update statistics

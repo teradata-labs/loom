@@ -66,15 +66,32 @@ var loaderTools = map[string]bool{
 // reached tool resolution, or legacy-row restore, where no tool instance
 // is available and only the name is recoverable).
 func toolResultClass(toolName string, tool shuttle.Tool) ContextClass {
+	// Skill/pattern loads carry executable instructions the LLM is following.
+	// Narrative-classed so fold's LLM compressor summarizes them into residue
+	// when pressure hits red (rather than pinning permanently as charter and
+	// silently accumulating across load/unload cycles the LLM never triggers).
+	// The compressor is designed to capture "state reached, decisions, open
+	// commitments" — enough to resume a mid-workflow after fold.
 	if loaderTools[toolName] {
-		return ClassCharter
+		return ClassNarrative
 	}
+	// contact_human carries the user's out-of-band consent/answer — the same
+	// forward-correctness weight as a user turn. Ledger, permanent.
+	if toolName == "contact_human" {
+		return ClassLedger
+	}
+	// All other tool results: information the LLM consumed at one point,
+	// recoverable via the store if ever needed. Default ballast so valve can
+	// reclaim under yellow-zone pressure. Explicit per-tool opt-out via
+	// ContextClassHinter (retained but unused today; kept as an escape hatch
+	// for a future tool that must be pinned as ledger).
 	if hinter, ok := tool.(shuttle.ContextClassHinter); ok {
-		if hinter.ContextClassHint() == shuttle.ClassBallast {
-			return ClassBallast
+		hint := hinter.ContextClassHint()
+		if hint == shuttle.ClassLedger || hint == shuttle.ClassCharter {
+			return ContextClass(hint)
 		}
 	}
-	return ClassLedger
+	return ClassBallast
 }
 
 // reclassifyMessages resolves every message with an empty (unpersisted or

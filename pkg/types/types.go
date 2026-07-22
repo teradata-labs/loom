@@ -398,6 +398,21 @@ func (s *Session) MessageCount() int32 {
 	return int32(count)
 }
 
+// SnapshotMessages returns a copy of the flat message history under RLock.
+// Callers that need to read session.Messages from outside the type — e.g.,
+// prepareContext's zone-check inputs — must go through this accessor rather
+// than reading the field directly. Direct-field reads would race against
+// AddMessage's writes; the race is not tripped today (SendMessage
+// serializes per session) but the Session's thread-safety contract
+// requires all reads honor the same lock its writes take.
+func (s *Session) SnapshotMessages() []Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Message, len(s.Messages))
+	copy(out, s.Messages)
+	return out
+}
+
 // ExecutionStage represents the current stage of agent execution.
 type ExecutionStage string
 

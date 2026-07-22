@@ -85,64 +85,79 @@ var _ shuttle.ContextClassHinter = (*mockHintedTool)(nil)
 
 // --- toolResultClass: pure dispatch function (AC-2) ---
 
-func TestToolResultClass_LoaderToolNames_Charter(t *testing.T) {
+func TestToolResultClass_LoaderToolNames_Narrative(t *testing.T) {
+	// v5 correction: skill/pattern load results carry executable instructions
+	// the LLM follows. Under the previous charter classification these were
+	// pinned in L1 forever. Narrative-classed so fold's LLM compressor
+	// summarizes them into residue under pressure.
 	for _, name := range []string{"manage_skills", "manage_patterns"} {
 		t.Run(name, func(t *testing.T) {
 			got := toolResultClass(name, &mockNamedTool{toolName: name})
-			assert.Equal(t, ClassCharter, got, "loader tool %q must classify charter", name)
+			assert.Equal(t, ClassNarrative, got, "loader tool %q must classify narrative so fold can summarize into residue", name)
 		})
 	}
 }
 
-func TestToolResultClass_LoaderToolNames_Charter_NilTool(t *testing.T) {
-	// Restore-time resolution has no live tool handle — loader names must still
-	// resolve by name alone.
+func TestToolResultClass_LoaderToolNames_Narrative_NilTool(t *testing.T) {
 	for _, name := range []string{"manage_skills", "manage_patterns"} {
 		t.Run(name, func(t *testing.T) {
 			got := toolResultClass(name, nil)
-			assert.Equal(t, ClassCharter, got, "loader tool %q must classify charter with a nil tool handle", name)
+			assert.Equal(t, ClassNarrative, got, "loader tool %q must classify narrative with a nil tool handle", name)
 		})
 	}
 }
 
 func TestToolResultClass_WhitelistedReadOnlyHint_Ballast(t *testing.T) {
+	// Under the new default all non-loader non-contact_human tools are
+	// ballast; a hinter returning "ballast" is redundant with the default.
 	tool := &mockHintedTool{mockNamedTool: mockNamedTool{toolName: "read_only_data"}, hint: "ballast"}
 	got := toolResultClass("read_only_data", tool)
 	assert.Equal(t, ClassBallast, got, "a tool whose ContextClassHint() returns \"ballast\" must classify ballast")
 }
 
-func TestToolResultClass_MutatingTool_Ledger(t *testing.T) {
+func TestToolResultClass_MutatingTool_Ballast(t *testing.T) {
+	// v5 correction: mutating tools no longer classify ledger by default.
+	// Context visibility does not prevent double-execution — that's a
+	// tool-idempotency / approval-gate concern. All non-loader non-contact_human
+	// tool results (mutating or not) classify ballast; opt out via
+	// ContextClassHinter returning ledger if a specific tool needs pinning.
 	tool := &mockNamedTool{toolName: "delete_records"}
 	got := toolResultClass("delete_records", tool)
-	assert.Equal(t, ClassLedger, got, "a mutating (non-whitelisted) tool must default to ledger, never blacklist")
+	assert.Equal(t, ClassBallast, got, "under the new default, mutating tools without a ledger opt-out classify ballast")
 }
 
 func TestToolResultClass_ContactHuman_Ledger(t *testing.T) {
 	tool := &mockNamedTool{toolName: "contact_human"}
 	got := toolResultClass("contact_human", tool)
-	assert.Equal(t, ClassLedger, got, "contact_human must classify ledger (fail-safe retain)")
+	assert.Equal(t, ClassLedger, got, "contact_human must classify ledger (user consent, permanent)")
 }
 
-func TestToolResultClass_UnknownToolWithoutHint_Ledger(t *testing.T) {
-	// No ContextClassHinter implementation at all: must default to ledger, never ballast.
+func TestToolResultClass_UnknownToolWithoutHint_Ballast(t *testing.T) {
+	// Under the new default, every non-loader non-contact_human tool result
+	// is ballast so valve reclaims it under yellow-zone pressure.
 	got := toolResultClass("some_random_tool", &mockNamedTool{toolName: "some_random_tool"})
-	assert.Equal(t, ClassLedger, got)
+	assert.Equal(t, ClassBallast, got)
 }
 
-func TestToolResultClass_NoLiveToolHandle_Ledger(t *testing.T) {
-	// A whitelisted tool's ballast hint is only reachable through a live tool handle;
-	// with tool==nil (restore-time, non-loader name), the whitelist can't be consulted
-	// via the hint, so the result must still fail-safe to ledger.
+func TestToolResultClass_NoLiveToolHandle_Ballast(t *testing.T) {
+	// Restore-time (tool==nil) still reaches the same default: ballast.
 	got := toolResultClass("read_only_data", nil)
-	assert.Equal(t, ClassLedger, got)
+	assert.Equal(t, ClassBallast, got)
 }
 
-func TestToolResultClass_HintOnlyHonoursBallast(t *testing.T) {
-	// The hint is opt-in for "ballast" only — a tool cannot self-declare "charter" (or
-	// any other class) through the hint; only the loader name rule grants charter.
-	tool := &mockHintedTool{mockNamedTool: mockNamedTool{toolName: "weird_tool"}, hint: "charter"}
-	got := toolResultClass("weird_tool", tool)
-	assert.Equal(t, ClassLedger, got, "a non-\"ballast\" hint value must never elevate the class above the name-rule default")
+func TestToolResultClass_HintOptsOutToLedgerOrCharter(t *testing.T) {
+	// The hint is now an opt-OUT from the ballast default. "ledger" and
+	// "charter" opt out; "ballast" reaches ballast redundantly; anything
+	// else falls through to the default.
+	optOutLedger := &mockHintedTool{mockNamedTool: mockNamedTool{toolName: "audit_log"}, hint: "ledger"}
+	assert.Equal(t, ClassLedger, toolResultClass("audit_log", optOutLedger),
+		"hint \"ledger\" opts the tool out of the ballast default")
+	optOutCharter := &mockHintedTool{mockNamedTool: mockNamedTool{toolName: "pinned_tool"}, hint: "charter"}
+	assert.Equal(t, ClassCharter, toolResultClass("pinned_tool", optOutCharter),
+		"hint \"charter\" opts the tool out of the ballast default")
+	unknownHint := &mockHintedTool{mockNamedTool: mockNamedTool{toolName: "weird"}, hint: "narrative"}
+	assert.Equal(t, ClassBallast, toolResultClass("weird", unknownHint),
+		"any hint value other than the four classes falls through to the ballast default")
 }
 
 // --- contract: named constants match the persisted string values (LLD Seam 1) ---
@@ -304,7 +319,9 @@ func chatSessionMessages(t *testing.T, ag *Agent, sessionID string) []Message {
 	return session.Messages
 }
 
-func TestContextClass_ToolResult_LoaderTool_Charter(t *testing.T) {
+func TestContextClass_ToolResult_LoaderTool_Narrative(t *testing.T) {
+	// v5 correction: manage_skills load results tag narrative — fold's LLM
+	// compressor summarizes skill bodies into residue under pressure.
 	llm := &mockToolCallingLLM{
 		responses: []mockLLMResponse{
 			{toolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "manage_skills", Input: map[string]interface{}{}}}},
@@ -318,7 +335,7 @@ func TestContextClass_ToolResult_LoaderTool_Charter(t *testing.T) {
 	require.NoError(t, err)
 
 	toolMsg := findToolMessage(t, chatSessionMessages(t, ag, "loader-tool-session"), "call_1")
-	assert.Equal(t, ClassCharter, ContextClass(toolMsg.ContextClass), "manage_skills tool result must classify charter")
+	assert.Equal(t, ClassNarrative, ContextClass(toolMsg.ContextClass), "manage_skills tool result must classify narrative — fold summarizes into residue")
 }
 
 func TestContextClass_ToolResult_WhitelistedReadOnly_Ballast(t *testing.T) {
@@ -338,7 +355,11 @@ func TestContextClass_ToolResult_WhitelistedReadOnly_Ballast(t *testing.T) {
 	assert.Equal(t, ClassBallast, ContextClass(toolMsg.ContextClass), "whitelisted read-only tool result must classify ballast")
 }
 
-func TestContextClass_ToolResult_MutatingTool_Ledger(t *testing.T) {
+func TestContextClass_ToolResult_MutatingTool_Ballast(t *testing.T) {
+	// v5 correction: mutating tools no longer classify ledger by default.
+	// All non-loader non-contact_human tools are ballast; correctness for
+	// mutations is a tool-idempotency / approval-gate concern, not a
+	// context-visibility concern.
 	llm := &mockToolCallingLLM{
 		responses: []mockLLMResponse{
 			{toolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "calculator", Input: map[string]interface{}{"expression": "2+2"}}}},
@@ -352,7 +373,7 @@ func TestContextClass_ToolResult_MutatingTool_Ledger(t *testing.T) {
 	require.NoError(t, err)
 
 	toolMsg := findToolMessage(t, chatSessionMessages(t, ag, "mutating-tool-session"), "call_1")
-	assert.Equal(t, ClassLedger, ContextClass(toolMsg.ContextClass), "a non-whitelisted (mutating) tool result must classify ledger")
+	assert.Equal(t, ClassBallast, ContextClass(toolMsg.ContextClass), "under the new default, non-loader tool results classify ballast")
 }
 
 func TestContextClass_ToolResult_ContactHuman_Ledger(t *testing.T) {
@@ -372,11 +393,11 @@ func TestContextClass_ToolResult_ContactHuman_Ledger(t *testing.T) {
 	assert.Equal(t, ClassLedger, ContextClass(toolMsg.ContextClass), "contact_human tool result must classify ledger (fail-safe retain)")
 }
 
-// TestContextClass_SkipMsg_Ledger triggers the per-turn tool-call cap (MaxIterations): two
+// TestContextClass_SkipMsg_Ballast triggers the per-turn tool-call cap (MaxIterations): two
 // tool calls in a single LLM response, cap of 1, so the second is skipped with a synthetic
-// tool-role control message. It must classify ledger — the same dispatch as any other
-// non-whitelisted tool result.
-func TestContextClass_SkipMsg_Ledger(t *testing.T) {
+// tool-role control message. It must classify the same as any other non-loader tool result —
+// ballast under the new default.
+func TestContextClass_SkipMsg_Ballast(t *testing.T) {
 	llm := &mockToolCallingLLM{
 		responses: []mockLLMResponse{
 			{toolCalls: []llmtypes.ToolCall{
@@ -403,13 +424,14 @@ func TestContextClass_SkipMsg_Ledger(t *testing.T) {
 		}
 	}
 	require.NotNil(t, skipMsg, "test setup: the per-turn cap must have skipped the second tool call")
-	assert.Equal(t, ClassLedger, ContextClass(skipMsg.ContextClass), "the turn-limit skip control message must classify ledger, never narrative or ballast")
+	assert.Equal(t, ClassBallast, ContextClass(skipMsg.ContextClass), "the turn-limit skip control message classifies the same as any non-loader tool result — ballast under the new default")
 }
 
-// TestContextClass_DedupMsg_Ledger issues two identical tool calls (same name + input) in a
+// TestContextClass_DedupMsg_Ballast issues two identical tool calls (same name + input) in a
 // single LLM response; the second is served from the in-turn dedup cache as a synthetic
-// tool-role control message. It must classify ledger.
-func TestContextClass_DedupMsg_Ledger(t *testing.T) {
+// tool-role control message. It must classify the same as its underlying tool result —
+// ballast under the new default.
+func TestContextClass_DedupMsg_Ballast(t *testing.T) {
 	sameInput := map[string]interface{}{"expression": "3+3"}
 	llm := &mockToolCallingLLM{
 		responses: []mockLLMResponse{
@@ -434,7 +456,7 @@ func TestContextClass_DedupMsg_Ledger(t *testing.T) {
 		}
 	}
 	require.NotNil(t, dedupMsg, "test setup: the second identical call must have been deduplicated")
-	assert.Equal(t, ClassLedger, ContextClass(dedupMsg.ContextClass), "the dedup control message must classify ledger, never narrative or ballast")
+	assert.Equal(t, ClassBallast, ContextClass(dedupMsg.ContextClass), "the dedup control message classifies the same as its underlying tool result — ballast under the new default")
 }
 
 // findToolMessage returns the single tool-role message matching toolUseID, failing the test
@@ -488,7 +510,7 @@ func TestReclassifyMessages_LegacyAssistantRole_Narrative(t *testing.T) {
 	assert.Equal(t, ClassNarrative, ContextClass(out[0].ContextClass), "a legacy assistant-role row must reclassify to narrative")
 }
 
-func TestReclassifyMessages_LegacyToolRole_PairedLoaderName_Charter(t *testing.T) {
+func TestReclassifyMessages_LegacyToolRole_PairedLoaderName_Narrative(t *testing.T) {
 	msgs := []Message{
 		{Role: "user", Content: "load a skill"},
 		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc1", Name: "manage_skills"}}},
@@ -498,10 +520,10 @@ func TestReclassifyMessages_LegacyToolRole_PairedLoaderName_Charter(t *testing.T
 	out := reclassifyMessages(msgs)
 
 	require.Len(t, out, 3)
-	assert.Equal(t, ClassCharter, ContextClass(out[2].ContextClass), "a legacy tool row paired to a loader tool call must reclassify to charter")
+	assert.Equal(t, ClassNarrative, ContextClass(out[2].ContextClass), "a legacy tool row paired to a loader tool call reclassifies to narrative (fold summarizes into residue)")
 }
 
-func TestReclassifyMessages_LegacyToolRole_PairedGenericName_Ledger(t *testing.T) {
+func TestReclassifyMessages_LegacyToolRole_PairedGenericName_Ballast(t *testing.T) {
 	msgs := []Message{
 		{Role: "user", Content: "delete something"},
 		{Role: "assistant", ToolCalls: []ToolCall{{ID: "tc1", Name: "delete_records"}}},
@@ -511,7 +533,7 @@ func TestReclassifyMessages_LegacyToolRole_PairedGenericName_Ledger(t *testing.T
 	out := reclassifyMessages(msgs)
 
 	require.Len(t, out, 3)
-	assert.Equal(t, ClassLedger, ContextClass(out[2].ContextClass), "a legacy tool row paired to a non-whitelisted tool call must reclassify to ledger")
+	assert.Equal(t, ClassBallast, ContextClass(out[2].ContextClass), "a legacy tool row paired to a non-loader tool call reclassifies to ballast (valve-reclaimable)")
 }
 
 // TestReclassifyMessages_LegacyToolRole_PairingWalksBackward exercises multiple tool
@@ -531,8 +553,8 @@ func TestReclassifyMessages_LegacyToolRole_PairingWalksBackward(t *testing.T) {
 	out := reclassifyMessages(msgs)
 
 	require.Len(t, out, 4)
-	assert.Equal(t, ClassCharter, ContextClass(out[2].ContextClass), "tc1 pairs to manage_patterns -> charter")
-	assert.Equal(t, ClassLedger, ContextClass(out[3].ContextClass), "tc2 pairs to delete_records -> ledger")
+	assert.Equal(t, ClassNarrative, ContextClass(out[2].ContextClass), "tc1 pairs to manage_patterns -> narrative (fold summarizes into residue)")
+	assert.Equal(t, ClassBallast, ContextClass(out[3].ContextClass), "tc2 pairs to delete_records -> ballast (valve-reclaimable)")
 }
 
 // --- AC-5: pressure treatment is a function of class, not age ---
@@ -556,8 +578,8 @@ func TestReclassifyMessages_AgeInvariant_SameStructureDifferentTimestamps(t *tes
 	out := reclassifyMessages(msgs)
 
 	require.Len(t, out, 4)
-	assert.Equal(t, ClassCharter, ContextClass(out[1].ContextClass))
-	assert.Equal(t, ClassCharter, ContextClass(out[3].ContextClass))
+	assert.Equal(t, ClassNarrative, ContextClass(out[1].ContextClass))
+	assert.Equal(t, ClassNarrative, ContextClass(out[3].ContextClass))
 	assert.Equal(t, out[1].ContextClass, out[3].ContextClass, "identical structure at different ages must classify identically — age never influences the class")
 }
 
@@ -572,5 +594,5 @@ func TestToolResultClass_AgeInvariant(t *testing.T) {
 	second := toolResultClass("delete_records", tool)
 
 	assert.Equal(t, first, second, "toolResultClass has no age/time input: repeated calls must be deterministic regardless of elapsed wall-clock time")
-	assert.Equal(t, ClassLedger, first)
+	assert.Equal(t, ClassBallast, first, "under the new default, an unknown tool without a ledger/charter hint classifies ballast")
 }

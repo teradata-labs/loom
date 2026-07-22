@@ -36,7 +36,12 @@ func (a *Agent) prepareContext(ctx context.Context, session *types.Session) ([]M
 
 	switch {
 	case pct >= redPct:
-		if err := segMem.Fold(ctx, userLedgerCount(session), len(session.Messages)); err != nil {
+		// Snapshot the flat history under lock so the ledger-count read and
+		// flatLen argument are consistent with each other and with any
+		// concurrent AddMessage. Direct session.Messages reads would race
+		// against Session's own mutex and violate its documented contract.
+		flat := session.SnapshotMessages()
+		if err := segMem.Fold(ctx, countLedgerUsers(flat), len(flat)); err != nil {
 			return nil, err
 		}
 	case pct >= yellowPct:
@@ -44,13 +49,4 @@ func (a *Agent) prepareContext(ctx context.Context, session *types.Session) ([]M
 	}
 
 	return session.GetMessages(), nil
-}
-
-// userLedgerCount returns the count of ledger-class Role:"user" messages in
-// the flat session history (C-C, D-3) — the fold-index source's cross-check
-// input, passed to Fold as ledgerUserTurns. Fold derives its own
-// authoritative count from sm.l1Messages and only cross-checks this value
-// (logged on mismatch, never used for breaker logic).
-func userLedgerCount(session *types.Session) int {
-	return countLedgerUsers(session.Messages)
 }

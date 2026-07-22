@@ -119,13 +119,12 @@ func TestManageSkillsTool_Load_ActivatesAndReturnsFolderPath(t *testing.T) {
 	assert.Equal(t, "code-review", actives[0].Skill.Name)
 }
 
-func TestManageSkillsTool_Load_ResultClassifiesCharter(t *testing.T) {
-	// The manage_skills load result is the "charter-classed event" the AC
-	// requires; D-3's toolResultClass dispatch is the seam that assigns it,
-	// keyed only on the tool name (works even with a nil tool handle, e.g.
-	// on restore). Confirms the loader tool's name is the one D-3 whitelists.
-	assert.Equal(t, ClassCharter, toolResultClass("manage_skills", nil))
-	assert.Equal(t, ClassCharter, toolResultClass("manage_patterns", nil))
+func TestManageSkillsTool_Load_ResultClassifiesNarrative(t *testing.T) {
+	// v5 correction: manage_skills/manage_patterns load results tag narrative
+	// so fold's LLM compressor summarizes skill bodies into residue under
+	// pressure. The pre-fix charter class pinned skill bodies forever.
+	assert.Equal(t, ClassNarrative, toolResultClass("manage_skills", nil))
+	assert.Equal(t, ClassNarrative, toolResultClass("manage_patterns", nil))
 }
 
 // writeSkillYAMLFile writes a minimal valid skill YAML file to dir/name.yaml.
@@ -500,6 +499,6 @@ func TestManagePatternsTool_ListLoadUnload(t *testing.T) {
 	assert.Equal(t, true, unloadData["was_loaded"])
 }
 
-func TestManagePatternsTool_LoadResultClassifiesCharter(t *testing.T) {
-	assert.Equal(t, ClassCharter, toolResultClass("manage_patterns", nil))
+func TestManagePatternsTool_LoadResultClassifiesNarrative(t *testing.T) {
+	assert.Equal(t, ClassNarrative, toolResultClass("manage_patterns", nil))
 }

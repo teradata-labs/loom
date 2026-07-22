@@ -315,22 +315,19 @@ func TestResetSessionContext_ClearsFlatMessageList(t *testing.T) {
 	assert.Equal(t, 0, segMem.GetL1MessageCount())
 }
 
-// --- Fold/ValveEvict/userLedgerCount seam contracts (D-1 declared the surface; ValveEvict's
-// body is D-4's, Fold's and userLedgerCount's are D-5's — full behavioral coverage for both
+// --- Fold/ValveEvict/countLedgerUsers seam contracts (D-1 declared the surface; ValveEvict's
+// body is D-4's, Fold's and countLedgerUsers's are D-5's — full behavioral coverage for both
 // lives in valve_evict_test.go and fold_test.go/fold_capstone_test.go respectively). These
 // tests pin only the narrow D-1-level contracts: the wrapper's signature and delegation. ---
 
-func TestUserLedgerCount_CountsOnlyLedgerClassUserMessages(t *testing.T) {
-	session := &Session{
-		ID: "ledger-session",
-		Messages: []Message{
-			{Role: "user", Content: "one"}, // unclassified (narrative-default) — not counted
-			{Role: "assistant", Content: "two"},
-			{Role: "user", Content: "three", ContextClass: ClassLedger},
-		},
+func TestCountLedgerUsers_CountsOnlyLedgerClassUserMessages(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "one"}, // unclassified (narrative-default) — not counted
+		{Role: "assistant", Content: "two"},
+		{Role: "user", Content: "three", ContextClass: ClassLedger},
 	}
 
-	assert.Equal(t, 1, userLedgerCount(session), "userLedgerCount must count only Role:user messages classed ledger, delegating to the same countLedgerUsers basis Fold's breaker uses")
+	assert.Equal(t, 1, countLedgerUsers(msgs), "countLedgerUsers must count only Role:user messages classed ledger, matching the Fold breaker's basis")
 }
 
 func TestValveEvict_NoStoreConfigured_NoOp(t *testing.T) {
