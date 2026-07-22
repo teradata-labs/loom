@@ -14,7 +14,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,14 +42,19 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
 
 var (
-	workflowDir     string
-	workflowAgents  []string
-	workflowDryRun  bool
-	workflowTimeout int
+	workflowDir       string
+	workflowAgents    []string
+	workflowDryRun    bool
+	workflowTimeout   int
+	workflowSuspendTo string
+	resumeApprove     bool
+	resumeReject      bool
+	resumeRevise      string
 )
 
 // workflowCmd represents the workflow command
@@ -126,6 +133,32 @@ Examples:
 	Run:  runWorkflow,
 }
 
+// resumeCmd resumes a workflow suspended at a HITL gate
+var resumeCmd = &cobra.Command{
+	Use:   "resume <workflow-file> <checkpoint-file>",
+	Short: "Resume a workflow suspended at a HITL gate",
+	Long: `Resume a workflow that suspended at a human-in-the-loop gate.
+
+When a stage declares a hitl_gate and no interactive prompt is available,
+'looms workflow run' writes a durable checkpoint file and exits. Review the
+gated output, then resume with exactly one decision flag:
+
+  --approve            continue to the next stage
+  --revise "feedback"  restart the gate's revise target stage with feedback
+  --reject             end the workflow without executing later stages
+
+The workflow file must be IDENTICAL to the one the run started with — the
+checkpoint records a fingerprint of the definition and refuses to resume a
+changed workflow.
+
+Examples:
+  looms workflow resume create-table.yaml create-table.checkpoint.pb --approve
+  looms workflow resume create-table.yaml create-table.checkpoint.pb --revise "Use MULTISET and add COMPRESS"
+  looms workflow resume create-table.yaml create-table.checkpoint.pb --reject`,
+	Args: cobra.ExactArgs(2),
+	Run:  runResume,
+}
+
 // listCmd lists available workflow files
 var listCmd = &cobra.Command{
 	Use:   "list [directory]",
@@ -160,12 +193,21 @@ func init() {
 	// Add subcommands
 	workflowCmd.AddCommand(validateCmd)
 	workflowCmd.AddCommand(runCmd)
+	workflowCmd.AddCommand(resumeCmd)
 	workflowCmd.AddCommand(listCmd)
 
 	// Flags for run command
 	runCmd.Flags().StringSliceVar(&workflowAgents, "threads", []string{}, "Comma-separated thread IDs to register")
 	runCmd.Flags().BoolVar(&workflowDryRun, "dry-run", false, "Validate without executing")
 	runCmd.Flags().IntVar(&workflowTimeout, "timeout", 3600, "Execution timeout in seconds")
+	runCmd.Flags().StringVar(&workflowSuspendTo, "suspend-to", "", "Write the HITL gate checkpoint to this file on suspension (default: <workflow>.checkpoint.pb; also disables interactive gate prompts)")
+
+	// Flags for resume command
+	resumeCmd.Flags().BoolVar(&resumeApprove, "approve", false, "Approve the pending gate and continue")
+	resumeCmd.Flags().BoolVar(&resumeReject, "reject", false, "Reject the pending gate and end the workflow")
+	resumeCmd.Flags().StringVar(&resumeRevise, "revise", "", "Request a revision with this feedback")
+	resumeCmd.Flags().IntVar(&workflowTimeout, "timeout", 3600, "Execution timeout in seconds")
+	resumeCmd.Flags().StringVar(&workflowSuspendTo, "suspend-to", "", "Write the next HITL gate checkpoint to this file if the run suspends again")
 
 	// Flags for list command
 	listCmd.Flags().StringVarP(&workflowDir, "dir", "d", "", "Directory to search (default: auto-detect)")
@@ -210,6 +252,286 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	// Interactive gate prompting only makes sense on a TTY without an
+	// explicit suspend target; otherwise HITL gates suspend to a checkpoint.
+	rt, err := setupWorkflowRuntime(pattern, workflowSuspendTo == "" && stdinIsTTY())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
+	defer rt.Close()
+
+	// Execute workflow
+	fmt.Println("\n⚡ Executing workflow...")
+	startTime := time.Now()
+
+	ctx := context.Background()
+	if workflowTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(workflowTimeout)*time.Second)
+		defer cancel()
+	}
+
+	result, err := rt.orchestrator.ExecutePattern(ctx, pattern)
+	handleWorkflowOutcome(filePath, result, err, time.Since(startTime))
+}
+
+// runResume resumes a workflow suspended at a HITL gate.
+func runResume(cmd *cobra.Command, args []string) {
+	workflowPath, checkpointPath := args[0], args[1]
+
+	decision, err := buildResumeDecision()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
+
+	pattern, err := orchestration.LoadWorkflowFromYAML(workflowPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to load workflow: %v\n", err)
+		os.Exit(1)
+	}
+
+	ckptData, err := os.ReadFile(filepath.Clean(checkpointPath))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to read checkpoint: %v\n", err)
+		os.Exit(1)
+	}
+	ckpt := &loomv1.WorkflowCheckpoint{}
+	if err := proto.Unmarshal(ckptData, ckpt); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Invalid checkpoint file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("📄 Resuming workflow: %s\n", workflowPath)
+	printPatternSummary(pattern)
+	gate := ckpt.GetPendingGate()
+	fmt.Printf("   Pending gate: stage %d (%s), decision: %s\n",
+		gate.GetStageNumber(), gate.GetStageAgentId(), decision.Action.String())
+
+	// A rejection needs no agents or LLM — short-circuit before runtime setup.
+	if decision.Action == loomv1.GateAction_GATE_ACTION_REJECT {
+		fmt.Printf("\n🛑 Workflow rejected at gate on stage %s. No further stages executed.\n", gate.GetStageAgentId())
+		return
+	}
+
+	rt, err := setupWorkflowRuntime(pattern, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
+	defer rt.Close()
+
+	fmt.Println("\n⚡ Resuming workflow...")
+	startTime := time.Now()
+
+	ctx := context.Background()
+	if workflowTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(workflowTimeout)*time.Second)
+		defer cancel()
+	}
+
+	result, err := rt.orchestrator.ResumeWorkflow(ctx, pattern, ckpt, decision)
+	handleWorkflowOutcome(workflowPath, result, err, time.Since(startTime))
+}
+
+// buildResumeDecision maps the resume flags to a GateDecision, requiring
+// exactly one of --approve / --revise / --reject.
+func buildResumeDecision() (*loomv1.GateDecision, error) {
+	set := 0
+	if resumeApprove {
+		set++
+	}
+	if resumeReject {
+		set++
+	}
+	if resumeRevise != "" {
+		set++
+	}
+	if set != 1 {
+		return nil, fmt.Errorf("exactly one of --approve, --revise \"feedback\", or --reject is required")
+	}
+	switch {
+	case resumeApprove:
+		return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_APPROVE}, nil
+	case resumeReject:
+		return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REJECT}, nil
+	default:
+		return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: resumeRevise}, nil
+	}
+}
+
+// handleWorkflowOutcome prints the result of a run/resume, handling HITL
+// suspension (write checkpoint + resume instructions) and rejection.
+func handleWorkflowOutcome(workflowPath string, result *loomv1.WorkflowResult, err error, duration time.Duration) {
+	var suspended *orchestration.WorkflowSuspended
+	if errors.As(err, &suspended) {
+		writeCheckpointAndPrintGate(workflowPath, suspended.Checkpoint)
+		return
+	}
+	var rejected *orchestration.GateRejected
+	if errors.As(err, &rejected) {
+		fmt.Printf("\n🛑 Workflow rejected at gate on stage %s.\n", rejected.StageAgentID)
+		if rejected.Feedback != "" {
+			fmt.Printf("   Feedback: %s\n", rejected.Feedback)
+		}
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n❌ Execution failed: %v\n", err)
+		os.Exit(1)
+	}
+	printWorkflowResult(result, duration)
+}
+
+// writeCheckpointAndPrintGate persists a suspension checkpoint and prints the
+// pending gate with resume instructions.
+func writeCheckpointAndPrintGate(workflowPath string, ckpt *loomv1.WorkflowCheckpoint) {
+	path := workflowSuspendTo
+	if path == "" {
+		base := strings.TrimSuffix(filepath.Base(workflowPath), filepath.Ext(workflowPath))
+		path = base + ".checkpoint.pb"
+	}
+	data, err := proto.Marshal(ckpt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to marshal checkpoint: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to write checkpoint %s: %v\n", path, err)
+		os.Exit(1)
+	}
+
+	gate := ckpt.GetPendingGate()
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("⏸  WORKFLOW SUSPENDED — HUMAN REVIEW REQUIRED")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Printf("\nStage %d (%s) asks:\n\n%s\n", gate.GetStageNumber(), gate.GetStageAgentId(), gate.GetQuestion())
+	output := gate.GetStageOutput()
+	if len(output) > 4000 {
+		output = output[:4000] + "\n... (truncated — full output is in the checkpoint)"
+	}
+	fmt.Println("\n--- Output under review " + strings.Repeat("-", 55))
+	fmt.Println(output)
+	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("\n💾 Checkpoint written: %s\n", path)
+	fmt.Println("\nResume with one of:")
+	fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, path)
+	fmt.Printf("  looms workflow resume %s %s --revise \"<feedback>\"\n", workflowPath, path)
+	fmt.Printf("  looms workflow resume %s %s --reject\n", workflowPath, path)
+}
+
+// printWorkflowResult prints a completed workflow's results (shared by run
+// and resume).
+func printWorkflowResult(result *loomv1.WorkflowResult, duration time.Duration) {
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("✅ WORKFLOW COMPLETED")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Printf("\nDuration: %.2fs\n", duration.Seconds())
+	fmt.Printf("Total cost: $%.4f\n", result.Cost.TotalCostUsd)
+	fmt.Printf("Total tokens: %d\n", result.Cost.TotalTokens)
+	fmt.Printf("LLM calls: %d\n\n", result.Cost.LlmCalls)
+
+	// Print detailed results based on pattern type
+	if debateResult := result.GetDebateResult(); debateResult != nil {
+		printDebateResults(result, debateResult)
+	} else {
+		// Print merged output for non-debate patterns
+		fmt.Println("📊 Result:")
+		fmt.Println(strings.Repeat("-", 80))
+		fmt.Println(result.MergedOutput)
+		fmt.Println(strings.Repeat("-", 80))
+	}
+}
+
+// stdinIsTTY reports whether stdin is an interactive terminal.
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// terminalGateHandler decides HITL gates interactively on the terminal.
+type terminalGateHandler struct{}
+
+// RequestDecision prompts the user on stdin for a gate decision.
+func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGateRequest) (*loomv1.GateDecision, error) {
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("⏸  HUMAN REVIEW REQUIRED")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Printf("\nStage %d (%s) asks:\n\n%s\n", req.StageNumber, req.StageAgentId, req.Question)
+	output := req.StageOutput
+	if len(output) > 4000 {
+		output = output[:4000] + "\n... (truncated)"
+	}
+	fmt.Println("\n--- Output under review " + strings.Repeat("-", 55))
+	fmt.Println(output)
+	fmt.Println(strings.Repeat("-", 80))
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("\nDecision — [a]pprove / [r]evise / re[j]ect / [s]uspend to checkpoint: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("failed to read decision: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "a", "approve":
+			return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_APPROVE, DecidedBy: "terminal"}, nil
+		case "j", "reject":
+			return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REJECT, DecidedBy: "terminal"}, nil
+		case "s", "suspend":
+			return nil, orchestration.ErrSuspendWorkflow
+		case "r", "revise":
+			fmt.Print("Revision feedback: ")
+			feedback, err := reader.ReadString('\n')
+			if err != nil {
+				return nil, fmt.Errorf("failed to read feedback: %w", err)
+			}
+			feedback = strings.TrimSpace(feedback)
+			if feedback == "" {
+				fmt.Println("Feedback is required for a revision.")
+				continue
+			}
+			return &loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: feedback, DecidedBy: "terminal"}, nil
+		default:
+			fmt.Println("Please answer a, r, j, or s.")
+		}
+	}
+}
+
+// workflowRuntime bundles the orchestrator and everything it depends on for a
+// CLI workflow execution, plus the teardown for those dependencies.
+type workflowRuntime struct {
+	orchestrator *orchestration.Orchestrator
+	logger       *zap.Logger
+	closers      []func()
+}
+
+// Close tears down runtime dependencies in reverse construction order.
+func (rt *workflowRuntime) Close() {
+	for i := len(rt.closers) - 1; i >= 0; i-- {
+		rt.closers[i]()
+	}
+}
+
+// setupWorkflowRuntime creates the LLM provider, observability, stores, agent
+// registry, communication infrastructure, and orchestrator for the pattern,
+// then creates and registers every referenced agent with the standard
+// auto-injected tools. When promptGates is true, HITL gates are decided
+// interactively on the terminal; otherwise they suspend with a checkpoint.
+func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*workflowRuntime, error) {
+	rt := &workflowRuntime{}
+	ok := false
+	defer func() {
+		if !ok {
+			rt.Close()
+		}
+	}()
+
 	// Initialize LLM provider
 	llmProvider, providerName := createLLMProvider()
 	fmt.Printf("\n🤖 LLM Provider: %s\n", providerName)
@@ -220,10 +542,10 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	zapConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	logger, err := zapConfig.Build(zap.AddStacktrace(zap.ErrorLevel))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create logger: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}
-	defer func() { _ = logger.Sync() }()
+	rt.logger = logger
+	rt.closers = append(rt.closers, func() { _ = logger.Sync() })
 
 	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
@@ -266,11 +588,11 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 				tracer = observability.NewNoOpTracer()
 			} else {
 				tracer = embeddedTracer
-				defer func() {
+				rt.closers = append(rt.closers, func() {
 					if err := embeddedTracer.Close(); err != nil {
 						logger.Warn("Failed to close embedded tracer", zap.Error(err))
 					}
-				}()
+				})
 			}
 
 		case "service":
@@ -300,10 +622,9 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	}
 	sessionStore, err := agent.NewSessionStore(dbPath, tracer)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create session store: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to create session store: %w", err)
 	}
-	defer func() { _ = sessionStore.Close() }()
+	rt.closers = append(rt.closers, func() { _ = sessionStore.Close() })
 
 	// Initialize MCP manager if MCP servers are configured
 	var mcpMgr *mcpManager
@@ -337,8 +658,7 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		SessionStore: sessionStore,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create agent registry: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to create agent registry: %w", err)
 	}
 
 	// Initialize MessageBus and SharedMemory for workflow communication
@@ -347,8 +667,7 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	messageBus := communication.NewMessageBus(memoryStore, nil, tracer, logger)
 	sharedMemory, err := communication.NewSharedMemoryStore(tracer, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create shared memory: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to create shared memory: %w", err)
 	}
 	logger.Info("Initialized communication infrastructure",
 		zap.Bool("message_bus", true),
@@ -360,6 +679,13 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	logger.Info("LLM concurrency limit configured for workflow execution",
 		zap.Int("limit", llmConcurrencyLimit))
 
+	// HITL gates: prompt on the terminal when interactive, otherwise leave
+	// the handler nil so gates suspend with a durable checkpoint.
+	var hitlHandler orchestration.HITLHandler
+	if promptGates {
+		hitlHandler = terminalGateHandler{}
+	}
+
 	// Create orchestrator with registry and communication infrastructure
 	orchestrator := orchestration.NewOrchestrator(orchestration.Config{
 		Registry:     registry,
@@ -369,14 +695,14 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		MessageBus:   messageBus,
 		SharedMemory: sharedMemory,
 		LLMSemaphore: llmSemaphore,
+		HITLHandler:  hitlHandler,
 	})
 
 	// Load all agent configs from the directory first
 	ctx := context.Background()
 	fmt.Println("🔧 Loading agents from registry...")
 	if err := registry.LoadAgents(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "   ❌ Failed to load agents: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to load agents: %w", err)
 	}
 
 	// Extract agent IDs from workflow
@@ -400,14 +726,12 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		logger.Info("Creating agent", zap.String("agent", agentID))
 		ag, err := registry.CreateAgent(ctx, agentID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "   ❌ Failed to create agent %s: %v\n", agentID, err)
-			os.Exit(1)
+			return nil, fmt.Errorf("failed to create agent %s: %w", agentID, err)
 		}
 
 		// Start the agent (marks as running)
 		if err := registry.StartAgent(ctx, agentID); err != nil {
-			fmt.Fprintf(os.Stderr, "   ❌ Failed to start agent %s: %v\n", agentID, err)
-			os.Exit(1)
+			return nil, fmt.Errorf("failed to start agent %s: %w", agentID, err)
 		}
 
 		// Auto-inject restart coordination tool for iterative workflows
@@ -461,44 +785,9 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Execute workflow
-	fmt.Println("\n⚡ Executing workflow...")
-	startTime := time.Now()
-
-	// Add timeout to context if specified
-	if workflowTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(workflowTimeout)*time.Second)
-		defer cancel()
-	}
-
-	result, err := orchestrator.ExecutePattern(ctx, pattern)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n❌ Execution failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	duration := time.Since(startTime)
-
-	// Print results
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("✅ WORKFLOW COMPLETED")
-	fmt.Println(strings.Repeat("=", 80))
-	fmt.Printf("\nDuration: %.2fs\n", duration.Seconds())
-	fmt.Printf("Total cost: $%.4f\n", result.Cost.TotalCostUsd)
-	fmt.Printf("Total tokens: %d\n", result.Cost.TotalTokens)
-	fmt.Printf("LLM calls: %d\n\n", result.Cost.LlmCalls)
-
-	// Print detailed results based on pattern type
-	if debateResult := result.GetDebateResult(); debateResult != nil {
-		printDebateResults(result, debateResult)
-	} else {
-		// Print merged output for non-debate patterns
-		fmt.Println("📊 Result:")
-		fmt.Println(strings.Repeat("-", 80))
-		fmt.Println(result.MergedOutput)
-		fmt.Println(strings.Repeat("-", 80))
-	}
+	rt.orchestrator = orchestrator
+	ok = true
+	return rt, nil
 }
 
 // printDebateResults prints detailed debate results with thinking, tool usage, and model info.

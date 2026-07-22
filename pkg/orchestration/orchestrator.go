@@ -36,6 +36,10 @@ type WorkflowProgressEvent struct {
 
 	// Partial results available so far
 	PartialResults []*loomv1.AgentResult
+
+	// HITL gate awaiting a human decision (set when a gate fires, right
+	// before the workflow suspends or an inline handler is consulted)
+	HITLRequest *loomv1.HITLGateRequest
 }
 
 // WorkflowProgressCallback is called during workflow execution to report progress.
@@ -80,6 +84,10 @@ type Orchestrator struct {
 
 	// TaskManager for persistent workflow tracking (optional).
 	taskManager *task.Manager
+
+	// HITLHandler for inline gate decisions (optional). When nil, HITL gates
+	// suspend the workflow with a checkpoint instead (the durable default).
+	hitlHandler HITLHandler
 }
 
 // taskTrackingKey is a context key to prevent recursive task tracking.
@@ -117,6 +125,10 @@ type Config struct {
 	// When set, ExecutePattern wraps execution with task-based state tracking,
 	// providing persistence, resume capability, and progress visibility.
 	TaskManager *task.Manager
+
+	// HITLHandler decides HITL gates inline (optional). Leave nil to have
+	// gates suspend with a durable WorkflowCheckpoint (see ResumeWorkflow).
+	HITLHandler HITLHandler
 }
 
 // NewOrchestrator creates a new orchestrator instance.
@@ -139,6 +151,7 @@ func NewOrchestrator(config Config) *Orchestrator {
 		progressCallback: config.ProgressCallback,
 		llmSemaphore:     config.LLMSemaphore,
 		taskManager:      config.TaskManager,
+		hitlHandler:      config.HITLHandler,
 	}
 
 	// Initialize collaboration engine with orchestrator as provider
