@@ -86,15 +86,22 @@ jobs:
           curl -L -o looms-arm64.tar.gz "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-arm64.tar.gz"
           LOOMS_ARM64_HASH=$(shasum -a 256 looms-arm64.tar.gz | awk '{print $1}')
 
+          # Hash the source tag tarball for the loom-patterns resource block.
+          # --fail is required: without it a missing tag hashes an error page.
+          curl --fail -L -o loom-src.tar.gz "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz"
+          PATTERNS_HASH=$(shasum -a 256 loom-src.tar.gz | awk '{print $1}')
+
           echo "loom_amd64_hash=$LOOM_AMD64_HASH" >> $GITHUB_OUTPUT
           echo "loom_arm64_hash=$LOOM_ARM64_HASH" >> $GITHUB_OUTPUT
           echo "looms_amd64_hash=$LOOMS_AMD64_HASH" >> $GITHUB_OUTPUT
           echo "looms_arm64_hash=$LOOMS_ARM64_HASH" >> $GITHUB_OUTPUT
+          echo "patterns_hash=$PATTERNS_HASH" >> $GITHUB_OUTPUT
 
           echo "loom-darwin-amd64 hash: $LOOM_AMD64_HASH"
           echo "loom-darwin-arm64 hash: $LOOM_ARM64_HASH"
           echo "looms-darwin-amd64 hash: $LOOMS_AMD64_HASH"
           echo "looms-darwin-arm64 hash: $LOOMS_ARM64_HASH"
+          echo "source tarball hash: $PATTERNS_HASH"
 
       - name: Clone homebrew-tap
         env:
@@ -115,33 +122,54 @@ jobs:
           LOOM_ARM64_HASH="${{ steps.hashes.outputs.loom_arm64_hash }}"
           LOOMS_AMD64_HASH="${{ steps.hashes.outputs.looms_amd64_hash }}"
           LOOMS_ARM64_HASH="${{ steps.hashes.outputs.looms_arm64_hash }}"
+          PATTERNS_HASH="${{ steps.hashes.outputs.patterns_hash }}"
 
           cd homebrew-tap
 
+          # Binary and source URLs derive from v#{version} in the formulas
+          # (teradata-labs/homebrew-tap#9), so only `version` and the three
+          # sha256 values need rewriting per formula.
+
           # Update loom.rb
           sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom.rb
-          sed -i '' "s|releases/download/v[0-9.]*/loom-darwin-arm64.tar.gz|releases/download/v$VERSION/loom-darwin-arm64.tar.gz|" Formula/loom.rb
-          sed -i '' "s|releases/download/v[0-9.]*/loom-darwin-amd64.tar.gz|releases/download/v$VERSION/loom-darwin-amd64.tar.gz|" Formula/loom.rb
-
-          # Update SHA256 for arm64
+          # SHA256 for the loom-patterns resource (source tag tarball)
+          sed -i '' "\|archive/refs/tags|,/sha256/s/sha256 \".*\"/sha256 \"$PATTERNS_HASH\"/" Formula/loom.rb
+          # SHA256 for arm64
           sed -i '' "/loom-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_ARM64_HASH\"/" Formula/loom.rb
-          # Update SHA256 for amd64
+          # SHA256 for amd64
           sed -i '' "/loom-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_AMD64_HASH\"/" Formula/loom.rb
 
           # Update loom-server.rb
           sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom-server.rb
-          sed -i '' "s|releases/download/v[0-9.]*/looms-darwin-arm64.tar.gz|releases/download/v$VERSION/looms-darwin-arm64.tar.gz|" Formula/loom-server.rb
-          sed -i '' "s|releases/download/v[0-9.]*/looms-darwin-amd64.tar.gz|releases/download/v$VERSION/looms-darwin-amd64.tar.gz|" Formula/loom-server.rb
-
-          # Update SHA256 for arm64
+          # SHA256 for the loom-patterns resource (source tag tarball)
+          sed -i '' "\|archive/refs/tags|,/sha256/s/sha256 \".*\"/sha256 \"$PATTERNS_HASH\"/" Formula/loom-server.rb
+          # SHA256 for arm64
           sed -i '' "/looms-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_ARM64_HASH\"/" Formula/loom-server.rb
-          # Update SHA256 for amd64
+          # SHA256 for amd64
           sed -i '' "/looms-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_AMD64_HASH\"/" Formula/loom-server.rb
 
           echo "Updated formulas:"
           cat Formula/loom.rb | grep -A 2 "version\|url\|sha256"
           echo "---"
           cat Formula/loom-server.rb | grep -A 2 "version\|url\|sha256"
+
+      - name: Verify formulas reference no stale hashes
+        run: |
+          cd homebrew-tap
+          for f in Formula/loom.rb Formula/loom-server.rb; do
+            COUNT=$(grep -c 'sha256 "' "$f")
+            if [ "$COUNT" -ne 3 ]; then
+              echo "::error::$f has $COUNT sha256 lines, expected 3 (resource + arm64 + amd64)"
+              exit 1
+            fi
+          done
+          for h in "${{ steps.hashes.outputs.patterns_hash }}" "${{ steps.hashes.outputs.loom_arm64_hash }}" "${{ steps.hashes.outputs.loom_amd64_hash }}"; do
+            grep -q "$h" Formula/loom.rb || { echo "::error::expected hash $h missing from Formula/loom.rb"; exit 1; }
+          done
+          for h in "${{ steps.hashes.outputs.patterns_hash }}" "${{ steps.hashes.outputs.looms_arm64_hash }}" "${{ steps.hashes.outputs.looms_amd64_hash }}"; do
+            grep -q "$h" Formula/loom-server.rb || { echo "::error::expected hash $h missing from Formula/loom-server.rb"; exit 1; }
+          done
+          echo "All six sha256 values verified against computed hashes"
 
       - name: Create update branch and commit via API
         env:

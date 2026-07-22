@@ -45,10 +45,16 @@ v1.0.2–v1.3.0 shipped (January–June 2026): no publisher run ever triggered.
 
 1. Verifies the release and its four darwin tarballs exist
    (`loom`/`looms` × `arm64`/`amd64`).
-2. Downloads the tarballs and computes SHA256 hashes.
+2. Downloads the tarballs plus the `v<version>` source tag tarball and
+   computes SHA256 hashes for all five.
 3. Updates `Formula/loom.rb` and `Formula/loom-server.rb` on a
    `loom-<version>` branch via the GitHub API (commits are GitHub-signed,
-   satisfying the tap's required-signatures rule).
+   satisfying the tap's required-signatures rule). Each formula carries
+   three hashes: the two binary tarballs and the `loom-patterns` resource
+   (the source tarball, from which patterns install — see
+   teradata-labs/homebrew-tap#9). URLs derive from `v#{version}`, so only
+   `version` and the sha256 values are rewritten; a verification step
+   fails the run if any expected hash is missing afterward.
 4. Opens a PR against the tap and merges it with `gh pr merge --admin`.
 
 **Requirements:**
