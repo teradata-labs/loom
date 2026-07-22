@@ -439,3 +439,32 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: 'artifacts/*.tar.gz,artifacts/*.zip'
+
+  publish-packages:
+    name: Trigger Package Publishers
+    # The release is created with GITHUB_TOKEN, and GitHub suppresses
+    # `release: published` workflow triggers for events created by
+    # GITHUB_TOKEN, so publish-homebrew/publish-winget never fire on their
+    # release triggers. workflow_dispatch is exempt from that suppression,
+    # so dispatch them explicitly once all release assets exist.
+    needs: create-attestations
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch Homebrew publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run publish-homebrew.yml --repo ${{ github.repository }} -f version="$VERSION"
+          echo "Dispatched publish-homebrew.yml for version $VERSION"
+
+      - name: Dispatch winget publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run publish-winget.yml --repo ${{ github.repository }} -f version="$VERSION"
+          echo "Dispatched publish-winget.yml for version $VERSION"

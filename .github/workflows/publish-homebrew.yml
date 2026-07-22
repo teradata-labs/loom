@@ -270,10 +270,28 @@ jobs:
             --head "$BRANCH" \
             --base main
 
+      - name: Merge Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="loom-${VERSION}"
+
+          # The tap's default-branch ruleset requires an approving review,
+          # which no bot PR will ever get; repository admins bypass the
+          # ruleset. HOMEBREW_TAP_TOKEN must belong to a tap admin, and this
+          # step fails the workflow if the merge is rejected.
+          gh pr merge "$BRANCH" \
+            --repo teradata-labs/homebrew-tap \
+            --squash \
+            --delete-branch \
+            --admin
+
+          echo "Merged loom-${VERSION} into main"
+
       - name: Summary
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          echo "✅ Homebrew Tap PR submitted successfully!"
+          echo "✅ Homebrew Tap updated to version $VERSION"
           echo ""
-          echo "Version: $VERSION"
-          echo "Check PR status at: https://github.com/teradata-labs/homebrew-tap/pulls"
+          echo "Formulas: https://github.com/teradata-labs/homebrew-tap/tree/main/Formula"
