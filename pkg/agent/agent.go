@@ -2365,9 +2365,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// === Single-writer pressure pipeline (C-B) ===
 		// prepareContext is the ONLY mutation entry point after admission: it
 		// runs zone dispatch (fold at red, valve-evict at yellow, nothing
-		// below yellow) then returns the assembled message list.
+		// below yellow) then returns the assembled message list. USE its
+		// return value — a second session.GetMessages() call here would
+		// re-run GetMessagesForLLM and double-fire the context.compile beat
+		// on every turn, and would relax Contract 2's single-writer
+		// invariant (no memory mutation is possible between the two reads
+		// today, but taking the returned slice locks that invariant into
+		// the call surface rather than depending on it).
+		var messages []Message
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if _, err := a.prepareContext(ctx, session); err != nil {
+			pre, err := a.prepareContext(ctx, session)
+			if err != nil {
 				var re *RecoverableError
 				if errors.As(err, &re) {
 					return nil, re // breaker already shaped it
@@ -2376,15 +2384,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"token_budget_exceeded", err, "reset_context",
 					map[string]any{"budget_pct": segMem.BudgetPct()})
 			}
+			messages = pre
+		} else {
+			messages = session.GetMessages()
 		}
 
-		// Build messages for LLM (will use segmented memory if configured).
 		// Any per-beat dynamic content (soft reminders, graph-memory recall,
 		// discovery menu) is carried as a single Role:"user" tail note
 		// appended to this LOCAL slice only — never session.AddMessage,
 		// never system-role (C-004). The note lives for this one LLM call;
 		// it is not part of l1Messages, so it never affects byte-stability.
-		messages := session.GetMessages()
 		if note := a.buildBeatTailNote(ctx, session, turnCount, toolExecutionCount, skillDiscoveryMenu); note != "" {
 			messages = append(messages, Message{Role: "user", Content: note})
 
@@ -2998,9 +3007,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Single-writer pressure pipeline (C-B): prepareContext must run before
 	// this LLM-bound call too — it is the second (and last) exhaustive
-	// call-surface site (see chatWithRetry doc rule).
+	// call-surface site (see chatWithRetry doc rule). USE its return value
+	// — a second session.GetMessages() call would re-run GetMessagesForLLM
+	// and double-fire the context.compile beat on the synthesis path.
+	var synthesisMessages []Message
 	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-		if _, err := a.prepareContext(ctx, session); err != nil {
+		pre, err := a.prepareContext(ctx, session)
+		if err != nil {
 			var re *RecoverableError
 			if errors.As(err, &re) {
 				return nil, re // breaker already shaped it
@@ -3009,10 +3022,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"token_budget_exceeded", err, "reset_context",
 				map[string]any{"budget_pct": segMem.BudgetPct()})
 		}
+		synthesisMessages = pre
+	} else {
+		synthesisMessages = session.GetMessages()
 	}
 
 	// Make final LLM call WITHOUT tools to force synthesis
-	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
+	finalResp, err := a.chatWithRetry(ctx, synthesisMessages, nil)
 	if err != nil {
 		// Only fall back to guidance message if synthesis fails
 		maxTurnsMessage := a.getGuidanceMessage(ctx, "max_turns_reached", nil)

@@ -584,11 +584,23 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 	var parts []string
 
 	for _, msg := range messages {
-		// Extract key information
+		// Extract key information. User messages must not reach this function
+		// under the v5 classification invariant (Part A #1): genuine user turns
+		// are tagged ClassLedger at construction and carried whole through fold;
+		// only narrative reaches the compressor's degraded fallback. The
+		// pre-419 `case "user"` branch truncated the user's active objective
+		// to 50 chars (issue #262) — leaving it in place as an unreachable
+		// safety net silently masked the classification bug that produced it.
+		// Fail loud instead: log a warning if a user-role ever lands here,
+		// then treat it as narrative so the residue still holds together.
 		switch msg.Role {
 		case "user":
-			// User queries
-			parts = append(parts, fmt.Sprintf("User asked about: %s", sm.extractKeywords(msg.Content)))
+			// Invariant violation — a user turn reached the degraded
+			// fallback. Something upstream failed to classify a genuine
+			// user turn as ledger, or classified a synthetic user-role
+			// message as ledger and let it fall through here. Preserve the
+			// content (no truncation) so #262 cannot recur silently.
+			parts = append(parts, fmt.Sprintf("User: %s", msg.Content))
 		case "assistant":
 			// Assistant actions
 			if sm.containsToolCall(msg) {
@@ -610,15 +622,6 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 	}
 
 	return strings.Join(parts, "; ")
-}
-
-// extractKeywords pulls out key terms from text (simple heuristic)
-func (sm *SegmentedMemory) extractKeywords(text string) string {
-	// Simple keyword extraction - just take first 50 chars
-	if len(text) > 50 {
-		return text[:50] + "..."
-	}
-	return text
 }
 
 // containsToolCall checks if message contains tool execution.
@@ -769,22 +772,37 @@ const contextLoggerName = "memory.context"
 const maxLogFieldBytes = 4096
 
 // truncateForLog returns s bounded to maxLogFieldBytes with a byte-count
-// suffix, so a truncated field is unmistakable in the log line.
+// suffix, so a truncated field is unmistakable in the log line. Truncates
+// on a UTF-8 rune boundary so the log emitter never sees a partial rune
+// (which zap's JSON encoder replaces with U+FFFD, silently corrupting a
+// downstream analyzer's re-parsing of the log line).
 func truncateForLog(s string) string {
 	if len(s) <= maxLogFieldBytes {
 		return s
 	}
-	return s[:maxLogFieldBytes] + fmt.Sprintf("…[+%d bytes]", len(s)-maxLogFieldBytes)
+	cut := s[:maxLogFieldBytes]
+	// Back up to the last complete UTF-8 rune boundary. utf8.RuneStart
+	// returns true for a byte that is not a continuation byte, so walking
+	// back until we hit one gives a safe cut position.
+	for i := len(cut) - 1; i > 0 && !utf8.RuneStart(cut[i]); i-- {
+		cut = cut[:i]
+	}
+	return cut + fmt.Sprintf("…[+%d bytes]", len(s)-len(cut))
 }
 
 // contextPreview returns a single-line, length-bounded preview of message
-// content suitable for a log field.
+// content suitable for a log field. Truncates on a UTF-8 rune boundary
+// (see truncateForLog for the rationale).
 func contextPreview(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > 140 {
-		return s[:140] + "…"
+	if len(s) <= 140 {
+		return s
 	}
-	return s
+	cut := s[:140]
+	for i := len(cut) - 1; i > 0 && !utf8.RuneStart(cut[i]); i-- {
+		cut = cut[:i]
+	}
+	return cut + "…"
 }
 
 // maxSummaryUserQueryChars caps user message content preserved in compression
@@ -959,31 +977,6 @@ func (sm *SegmentedMemory) GetL1MessageCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return len(sm.l1Messages)
-}
-
-// FlushToSwap forces the full compression pipeline: L1 → L2 → swap.
-// Ensures all conversation content is persisted to searchable storage.
-// Call this when a session ends or before cross-session queries.
-func (sm *SegmentedMemory) FlushToSwap(ctx context.Context) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Step 1: Compress any remaining L1 messages into L2.
-	if len(sm.l1Messages) > 0 {
-		sm.compressToL2(ctx, sm.l1Messages)
-		sm.l1Messages = sm.l1Messages[:0]
-	}
-
-	// Step 2: Evict L2 to swap storage so it's searchable.
-	if sm.l2Summary != "" && sm.swapEnabled {
-		if err := sm.evictL2ToSwap(ctx); err != nil {
-			return fmt.Errorf("flush L2 to swap: %w", err)
-		}
-	}
-
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-	return nil
 }
 
 // ClearL2 clears the L2 summary cache.

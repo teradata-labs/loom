@@ -26,6 +26,21 @@ func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 
 **Three parts: ROM · fold residue · conversation. A channel not in this function does not exist.** Per-beat dynamic content (skill menu, soft reminders) is appended by the loop to its **local** `messages` slice after `prepareContext()` returns — one user-role note, this beat only, never stored, never system.
 
+> **Implementation note — residue role divergence.** The pseudocode emits the
+> fold residue as `Role: "system"`. The shipped implementation emits it as
+> `Role: "user"` (`assembler.go`). Both compile the same three-part output;
+> the divergence exists because the byte-stability contract Contract 1 buys
+> unconditionally requires the `system` field to be identical between folds
+> — and different Anthropic/Bedrock provider adapters hoist assistant/user
+> vs. system messages differently. Emitting the residue as user-role keeps
+> the provider's system field byte-identical (holding only the ROM); the
+> assembler contract test in `assembler_test.go` pins this by grepping the
+> LLM-bound message path to ensure no other code constructs a `Role:"system"`
+> message. The pseudocode above documents the design *intent* (residue is a
+> system-level continuation summary); the implementation carries it as
+> user-role for the same reason it never persists it as an L1 message —
+> byte stability of the prompt-cache prefix trumps role semantics.
+
 Properties this buys unconditionally: the `system` field is byte-stable except at a fold; the messages prefix is append-only between folds (cache-correct); position is carried by order (no standing-state channel can exist because no slot for one exists).
 
 **Deletion manifest 1** (everything the current assembler renders that Contract 1 doesn't):
@@ -122,6 +137,19 @@ Runs once, at RED, entirely inside `prepareContext`:
 4. `l2Summary = LLMCompressor.CompressMessages(narrative)` with the structured prompt (*state reached / decisions / open commitments / every ref id; never restate instructions or approvals — they are preserved elsewhere*) + `"Full pre-fold transcript: recall_context('<foldRef>')"`. Heuristic `summarizeMessages` only as logged degraded fallback.
 5. `l1Messages = carry` (carried items remain **real messages in original order** — Contract 1's assembler and the Anthropic client need zero changes; assert `l1Messages[0].Role=="user"`, which holds because M1 is ledger).
 6. **Persist `{l2Summary, foldIndex}`** via the session store (foldIndex = offset into the flat history). The carry set is *not* persisted — classification + closure are deterministic, so restore recomputes it.
+
+> **Design note — residue non-composition across folds.** Successive folds
+> do NOT compose their residues: fold N+1's compressor input is *only* the
+> narrative surviving into L1 at the moment fold N+1 fires. The residue
+> from fold N is at that point in `l2Summary` (a single system-level slot,
+> overwritten by fold N+1's own residue). Older-era detail is not lost —
+> the pre-fold-N transcript is still recoverable via `recall_context(fold:<foldIndex_N>)`
+> and the fold N residue itself is retrievable via the swap-layer snapshot
+> readers — but it is *not* automatically fed into the next residue's LLM
+> compression pass. This is intentional: composing residues would grow the
+> `l2Summary` slot without bound and violate the byte-stability contract
+> Contract 1 buys. The recovery model is pull-based (recall on demand),
+> not push-based (accumulate in place).
 
 ### Recall — `recall_context` (the fault handler)
 One new builtin: `{ref, query?}` → shared-store `Get`; optional plain-text excerpting; output capped at the admission threshold. Result is an ordinary tool message, class ballast (re-evictable). Returns **once, at the tail** — there is no other recall path (the promote-forever channel is deleted by Contract 1). SQL refs keep using the existing `query_tool_result`; stub text names the right tool.

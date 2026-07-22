@@ -1051,12 +1051,34 @@ var dataRefShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // messages row keyed by ToolUseID, or the pre-fold transcript, RLS-scoped to
 // the requesting session so a ref never crosses tenants (C-F, O-RCL-1).
 type RecallContextTool struct {
-	memory *Memory
+	memory   *Memory
+	maxBytes int // per-call output cap; 0 = default (recallCapBytes)
 }
 
 // NewRecallContextTool creates a new recall_context builtin.
 func NewRecallContextTool(memory *Memory) *RecallContextTool {
 	return &RecallContextTool{memory: memory}
+}
+
+// WithMaxBytes overrides the per-call output cap on recall_context results.
+// Values <=0 are ignored (default retained). The default is
+// SharedMemoryThresholdBytes (4 KiB), matching admission's oversize bar so a
+// recalled ballast result is itself re-admissable — a deployment can raise
+// this when its LLM window is wide and truncation loses value the agent
+// would use.
+func (t *RecallContextTool) WithMaxBytes(n int) *RecallContextTool {
+	if n > 0 {
+		t.maxBytes = n
+	}
+	return t
+}
+
+// effectiveMaxBytes returns the caller-configured cap or the default.
+func (t *RecallContextTool) effectiveMaxBytes() int {
+	if t.maxBytes > 0 {
+		return t.maxBytes
+	}
+	return recallCapBytes
 }
 
 // Name returns the tool name.
@@ -1158,7 +1180,7 @@ func (t *RecallContextTool) recallValve(ctx context.Context, sessionID, ref, que
 			if query != "" {
 				content = excerptContent(content, query)
 			}
-			return &shuttle.Result{Success: true, Data: capBytes(content, recallCapBytes)}, nil
+			return &shuttle.Result{Success: true, Data: capBytes(content, t.effectiveMaxBytes())}, nil
 		}
 	}
 
@@ -1198,7 +1220,7 @@ func (t *RecallContextTool) recallFold(ctx context.Context, sessionID, foldRef, 
 		content = excerptContent(content, query)
 	}
 
-	return &shuttle.Result{Success: true, Data: capBytes(content, recallCapBytes)}, nil
+	return &shuttle.Result{Success: true, Data: capBytes(content, t.effectiveMaxBytes())}, nil
 }
 
 // refNotAvailable is the fail-closed response for a ref that cannot be
@@ -1224,7 +1246,9 @@ func renderTranscript(messages []Message) string {
 
 // excerptContent returns a window of content around the first plain-text
 // (case-insensitive) match of query, or content unchanged if query doesn't
-// match — the caller caps the result afterward regardless.
+// match — the caller caps the result afterward regardless. Both window
+// edges are aligned to UTF-8 rune boundaries so a multibyte rune isn't
+// sliced in half at start or end.
 func excerptContent(content, query string) string {
 	idx := strings.Index(strings.ToLower(content), strings.ToLower(query))
 	if idx < 0 {
@@ -1239,6 +1263,15 @@ func excerptContent(content, query string) string {
 	end := idx + len(query) + window
 	if end > len(content) {
 		end = len(content)
+	}
+
+	// Align start forward to the next rune boundary (skip any continuation
+	// byte we may have landed on). Align end backward the same way.
+	for start > 0 && start < len(content) && !utf8.RuneStart(content[start]) {
+		start++
+	}
+	for end > start && end < len(content) && !utf8.RuneStart(content[end]) {
+		end--
 	}
 
 	excerpt := content[start:end]

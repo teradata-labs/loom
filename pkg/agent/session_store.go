@@ -263,61 +263,51 @@ func (s *SessionStore) initSchema() error {
 		}
 	}
 
-	// Migration: Add agent_id, parent_session_id, session_context columns for cross-session memory
-	agentMemoryMigrations := map[string]string{
-		"agent_id":              "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
-		"parent_session_id":     "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
-		"session_context":       "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
-		"message_agent_id":      "ALTER TABLE messages ADD COLUMN agent_id TEXT",      // Track which agent created each message
-		"message_context_class": "ALTER TABLE messages ADD COLUMN context_class TEXT", // Structural retention class (narrative/charter/ledger/ballast)
+	// Migration: Add agent_id, parent_session_id, session_context columns for cross-session memory.
+	// The migration KEY identifies each entry; the actual column and its table are named
+	// explicitly. Earlier revisions treated the key as the column name, which caused the
+	// `messages` table pre-checks to always miss (map keys were `message_agent_id` /
+	// `message_context_class`, but the columns are `agent_id` / `context_class`). The
+	// mismatch made the ALTER re-run on every startup and swallow the "duplicate column"
+	// error, quietly. Split table + column out of the key to fix.
+	type agentMemMig struct {
+		table    string
+		column   string
+		alterSQL string
+		indexSQL string // optional
+	}
+	agentMemoryMigrations := []agentMemMig{
+		{"sessions", "agent_id", "ALTER TABLE sessions ADD COLUMN agent_id TEXT", "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"},
+		{"sessions", "parent_session_id", "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL", "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)"},
+		{"messages", "session_context", "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'", "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"},
+		{"messages", "agent_id", "ALTER TABLE messages ADD COLUMN agent_id TEXT", "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"},
+		{"messages", "context_class", "ALTER TABLE messages ADD COLUMN context_class TEXT", ""}, // no index — no reader keys off context_class in SQLite; adding one grows the write path for no benefit
 	}
 
-	for columnName, migration := range agentMemoryMigrations {
-		// Check if column exists
-		var table string
-		if columnName == "session_context" || columnName == "message_agent_id" || columnName == "message_context_class" {
-			table = "messages"
-		} else {
-			table = "sessions"
-		}
-
+	for _, m := range agentMemoryMigrations {
 		// Validate table and column names are safe SQL identifiers to prevent injection.
 		// Parameterized queries cannot be used for SQLite pragma_table_info() arguments.
-		if !validSQLIdentifier.MatchString(table) || !validSQLIdentifier.MatchString(columnName) {
-			return fmt.Errorf("invalid SQL identifier: table=%q column=%q", table, columnName)
+		if !validSQLIdentifier.MatchString(m.table) || !validSQLIdentifier.MatchString(m.column) {
+			return fmt.Errorf("invalid SQL identifier: table=%q column=%q", m.table, m.column)
 		}
-		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", table, columnName) // #nosec G201 -- table and columnName validated above
+		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", m.table, m.column) // #nosec G201 -- table and column validated above
 		var count int
 		if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&count); err == nil && count == 0 {
-			if _, err := s.db.ExecContext(ctx, migration); err != nil {
+			if _, err := s.db.ExecContext(ctx, m.alterSQL); err != nil {
 				// Log but don't fail - column might already exist from another process
 				if span != nil {
-					span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s: %w", columnName, err))
+					span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s.%s: %w", m.table, m.column, err))
 				}
 			} else {
-				// Create corresponding index after successful column addition
-				var indexSQL string
-				switch columnName {
-				case "agent_id":
-					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"
-				case "parent_session_id":
-					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)"
-				case "session_context":
-					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"
-				case "message_agent_id":
-					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"
-				case "message_context_class":
-					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context_class ON messages(context_class)"
-				}
-				if indexSQL != "" {
-					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
+				if m.indexSQL != "" {
+					if _, err := s.db.ExecContext(ctx, m.indexSQL); err != nil {
 						if span != nil {
-							span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s index: %w", columnName, err))
+							span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s.%s index: %w", m.table, m.column, err))
 						}
 					}
 				}
 				if span != nil {
-					span.SetAttribute(fmt.Sprintf("migration_applied_%s", columnName), "true")
+					span.SetAttribute(fmt.Sprintf("migration_applied_%s_%s", m.table, m.column), "true")
 				}
 			}
 		}
