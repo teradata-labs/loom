@@ -193,6 +193,49 @@ func TestAgent_ChatWithContentBlocks_EmptyBlocks(t *testing.T) {
 	assert.Empty(t, userMsg.ContentBlocks, "no blocks supplied means none forwarded")
 }
 
+// TestAgent_ChatWithContentBlocks_ImageOnlyPrependsText guards against the
+// image-only footgun: providers build the request exclusively from
+// ContentBlocks when present, dropping Content — so an image-only block set
+// would silently send the image without the question. The agent must prepend
+// userMessage as a text block so the model still receives the prompt.
+func TestAgent_ChatWithContentBlocks_ImageOnlyPrependsText(t *testing.T) {
+	llm := &capturingLLM{response: "a red square on blue"}
+	ag := contentBlocksTestAgent(llm)
+
+	imageOnly := []ContentBlock{sampleBlocks()[1]} // just the image block
+
+	resp, err := ag.ChatWithContentBlocks(context.Background(), "img_only_session", "What is in this image?", imageOnly, nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	userMsg, ok := findUserMessage(llm.lastMessages(), "What is in this image?")
+	require.True(t, ok)
+	require.Len(t, userMsg.ContentBlocks, 2, "text block must be prepended to the image-only set")
+	assert.Equal(t, "text", userMsg.ContentBlocks[0].Type)
+	assert.Equal(t, "What is in this image?", userMsg.ContentBlocks[0].Text, "prepended text must be the canonical userMessage")
+	assert.Equal(t, "image", userMsg.ContentBlocks[1].Type)
+}
+
+// TestAgent_ChatWithContentBlocks_ExistingTextBlockNotDuplicated verifies the
+// prepend guard is a no-op when the caller already includes a text block: the
+// block set reaches the provider unchanged, with no duplicate prompt text.
+func TestAgent_ChatWithContentBlocks_ExistingTextBlockNotDuplicated(t *testing.T) {
+	llm := &capturingLLM{response: "ok"}
+	ag := contentBlocksTestAgent(llm)
+
+	blocks := sampleBlocks() // already text + image
+
+	resp, err := ag.ChatWithContentBlocks(context.Background(), "has_text_session", "What is in this image?", blocks, nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	userMsg, ok := findUserMessage(llm.lastMessages(), "What is in this image?")
+	require.True(t, ok)
+	require.Len(t, userMsg.ContentBlocks, 2, "caller-supplied blocks must pass through unchanged")
+	assert.Equal(t, "text", userMsg.ContentBlocks[0].Type)
+	assert.Equal(t, "image", userMsg.ContentBlocks[1].Type)
+}
+
 // TestAgent_ChatWithContentBlocks_SuccessWithProgressCallback exercises the
 // success path with a non-nil progress callback: the call succeeds, returns a
 // response, and — unlike the error path — never emits a StageFailed event.

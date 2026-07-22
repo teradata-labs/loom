@@ -1488,10 +1488,16 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 // ChatWithContentBlocks is like ChatWithProgress but the user turn carries
 // multimodal content blocks (text and/or images) alongside the plain-text
 // content. userMessage remains the canonical text (used for persistence,
-// graph-memory extraction, and providers without multimodal support);
-// contentBlocks take precedence when building the provider request for
-// providers that support them. progressCallback may be nil, in which case no
-// progress events are emitted (equivalent to Chat).
+// graph-memory extraction, and providers without multimodal support).
+//
+// When contentBlocks is non-empty, providers build the request from the blocks
+// only — Content is not sent. To keep userMessage canonical, if contentBlocks
+// contains no text block, userMessage is automatically prepended as one, so an
+// image-only call still delivers the question text to the model. Callers that
+// include their own text block are unaffected.
+//
+// progressCallback may be nil, in which case no progress events are emitted
+// (equivalent to Chat).
 func (a *Agent) ChatWithContentBlocks(ctx context.Context, sessionID string, userMessage string, contentBlocks []ContentBlock, progressCallback ProgressCallback) (*Response, error) {
 	return a.chat(ctx, sessionID, userMessage, chatParams{
 		spanName:            "agent.chat_with_content_blocks",
@@ -1528,12 +1534,31 @@ type chatParams struct {
 	reportContentBlocks bool
 }
 
+// hasTextBlock reports whether any of the blocks is a text block.
+func hasTextBlock(blocks []ContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == "text" {
+			return true
+		}
+	}
+	return false
+}
+
 // chat runs the full conversation lifecycle — span setup, user-message
 // persistence, graph-memory kick-off, the conversation loop, and success/error
 // telemetry — shared by the three public chat entry points. See chatParams for
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
 func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+	// Providers build the request exclusively from ContentBlocks when present,
+	// dropping Content — so an image-only block set would silently send the
+	// image without the question text. Keep userMessage truly canonical by
+	// prepending it as a text block when the caller didn't include one. This is
+	// a no-op for callers that already carry their prompt in a text block.
+	if len(p.contentBlocks) > 0 && !hasTextBlock(p.contentBlocks) && userMessage != "" {
+		p.contentBlocks = append([]ContentBlock{{Type: "text", Text: userMessage}}, p.contentBlocks...)
+	}
+
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
