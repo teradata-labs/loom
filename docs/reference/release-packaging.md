@@ -70,8 +70,18 @@ v1.0.2–v1.3.0 shipped (January–June 2026): no publisher run ever triggered.
 
 ### winget
 
-`publish-winget.yml` submits a PR to `microsoft/winget-pkgs`. Merging is
-controlled by Microsoft's review process, not by us.
+`publish-winget.yml` submits a PR to `microsoft/winget-pkgs` from the
+token owner's fork. Merging is controlled by Microsoft's review process,
+not by us.
+
+**Requirement:** the same `HOMEBREW_TAP_TOKEN` PAT is used here, and it
+needs the `workflow` scope. The job syncs the fork's `master` with
+upstream before branching, and upstream commits routinely touch
+`.github/workflows/` files — GitHub rejects pushes containing workflow
+changes from a PAT without that scope. Symptom: the run fails with
+"refusing to allow a Personal Access Token to create or update workflow
+… without `workflow` scope". Fix: edit the PAT's scopes (no need to
+rotate the secret) and re-dispatch.
 
 ## Manual recovery
 
