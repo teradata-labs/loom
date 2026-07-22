@@ -322,11 +322,11 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 	})
 
 	turnUserMsgs := []string{
-		"profile Complaints",     // turn 1
-		"/td-profile-deep",       // turn 2
-		"check schema",           // turn 3
-		"unload profile-deep",    // turn 4
-		"check nulls heavy work", // turn 5 — pressure
+		"profile Complaints",             // turn 1
+		"/td-profile-deep",               // turn 2
+		"check schema",                   // turn 3
+		"unload profile-deep",            // turn 4
+		"check nulls heavy work",         // turn 5 — pressure
 		"profile again and schema check", // turn 6 — reload
 	}
 
