@@ -17,6 +17,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,6 +29,39 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
 )
+
+// dumpLLMCall prints the full messages slice handed to the scripted LLM
+// when LOOM_TEST_DUMP_CONTEXT=1 is set in the env. Off by default so normal
+// test runs stay quiet. Prints role, content (full), tool_calls, and
+// tool_use_id per message — the exact artifact the provider layer would
+// have converted into an Anthropic/OpenAI request body.
+func dumpLLMCall(callIdx int, messages []Message) {
+	if os.Getenv("LOOM_TEST_DUMP_CONTEXT") != "1" {
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n===== LLM CALL #%d =====\n", callIdx)
+	for i, m := range messages {
+		fmt.Fprintf(&b, "[%d] role=%s", i, m.Role)
+		if m.ToolUseID != "" {
+			fmt.Fprintf(&b, " tool_use_id=%s", m.ToolUseID)
+		}
+		if m.ContextClass != "" {
+			fmt.Fprintf(&b, " class=%s", m.ContextClass)
+		}
+		b.WriteString("\n")
+		if m.Content != "" {
+			b.WriteString("  content: ")
+			b.WriteString(strings.ReplaceAll(m.Content, "\n", "\n           "))
+			b.WriteString("\n")
+		}
+		for _, tc := range m.ToolCalls {
+			fmt.Fprintf(&b, "  tool_call: id=%s name=%s input=%v\n", tc.ID, tc.Name, tc.Input)
+		}
+	}
+	fmt.Fprintf(&b, "===== END CALL #%d =====\n", callIdx)
+	fmt.Print(b.String())
+}
 
 // skillTurnScriptedLLM is a minimal LLMProvider fake that returns queued
 // responses in order (holding on the last one once exhausted) and records
@@ -49,6 +85,8 @@ func (m *skillTurnScriptedLLM) Chat(ctx context.Context, messages []Message, too
 	cp := make([]Message, len(messages))
 	copy(cp, messages)
 	m.calls = append(m.calls, cp)
+
+	dumpLLMCall(len(m.calls), messages)
 
 	if len(m.responses) == 0 {
 		return &LLMResponse{Content: "done", StopReason: "end_turn"}, nil
