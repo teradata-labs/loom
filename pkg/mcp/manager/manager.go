@@ -158,10 +158,10 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		})
 	case "streamable-http":
 		// Streamable HTTP transport (MCP 2025-03-26 spec).
-		// Expand ${VAR} references in header values so tokens stored as env vars
-		// at deploy time (e.g. MCP_SERVERNAME_AUTHORIZATION) resolve at pod startup.
+		// Expand ${VAR} references in URL and header values so tokens and endpoints
+		// stored as env vars at deploy time resolve at pod startup.
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
-			Endpoint:         config.URL,
+			Endpoint:         os.ExpandEnv(config.URL),
 			Headers:          expandEnvHeaders(config.Headers),
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
@@ -172,7 +172,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		// Expands ${VAR} references and forwards headers.
 		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
-			Endpoint: config.URL,
+			Endpoint: os.ExpandEnv(config.URL),
 			Headers:  expandEnvHeaders(config.Headers),
 			Logger:   m.logger.With(zap.String("server", name)),
 		})

@@ -122,3 +122,46 @@ func TestCreateLiteLLMProvider_MaxTokensOverride(t *testing.T) {
 	// We can only assert it doesn't error; the inner token value is encapsulated
 	// inside the openai.Client delegate and not exposed publicly.
 }
+
+// TestCreateLiteLLMProvider_ExpandsEnvPlaceholder verifies that ${VAR}
+// placeholders in config values are expanded by NewProviderFactory so the
+// factory code path produces working providers. This is the pattern used by
+// avmo-tera-cloud: looms.yaml contains litellm_endpoint: ${LITELLM_BASE_URL}
+// and the real value is injected as a pod env var.
+func TestCreateLiteLLMProvider_ExpandsEnvPlaceholder(t *testing.T) {
+	t.Setenv("LITELLM_BASE_URL", "http://real-litellm:4000")
+
+	f := NewProviderFactory(FactoryConfig{
+		LiteLLMEndpoint: "${LITELLM_BASE_URL}",
+		LiteLLMAPIKey:   "${LITELLM_API_KEY}", // unset → expands to ""
+	})
+
+	// After expansion, the endpoint should be the real URL, not the placeholder.
+	assert.Equal(t, "http://real-litellm:4000", f.config.LiteLLMEndpoint)
+	assert.Equal(t, "", f.config.LiteLLMAPIKey) // unset env var → empty
+
+	raw, err := f.createLiteLLMProvider("")
+	require.NoError(t, err)
+	require.NotNil(t, raw)
+}
+
+// TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack verifies that when an
+// env-var placeholder references an unset variable, it expands to "" and the
+// factory falls back to the direct env lookup (LITELLM_ENDPOINT / LITELLM_BASE_URL).
+func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
+	// LITELLM_BASE_URL is NOT set in the config placeholder, but IS set as a
+	// direct env var for the fallback lookup.
+	t.Setenv("MY_CUSTOM_ENDPOINT", "") // placeholder target unset
+	t.Setenv("LITELLM_BASE_URL", "http://fallback-litellm:4000")
+
+	f := NewProviderFactory(FactoryConfig{
+		LiteLLMEndpoint: "${MY_CUSTOM_ENDPOINT}", // expands to ""
+	})
+
+	// Endpoint placeholder expanded to "" so the factory falls back to env.
+	assert.Equal(t, "", f.config.LiteLLMEndpoint)
+
+	raw, err := f.createLiteLLMProvider("")
+	require.NoError(t, err)
+	require.NotNil(t, raw)
+}

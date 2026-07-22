@@ -105,10 +105,36 @@ type FactoryConfig struct {
 // so that per-provider creation can consult the built-in catalog for the
 // model-specific MaxOutputTokens. A non-zero MaxTokens is treated as an
 // explicit user override and honored as-is.
+//
+// Config values may contain ${VAR} env-var placeholders (used by
+// avmo-tera-cloud runtime pods that write looms.yaml with placeholders and
+// supply real values via pod env vars). These are expanded eagerly so that
+// every factory-created provider sees the resolved value.
 func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	if config.Temperature == 0 {
 		config.Temperature = 1.0
 	}
+
+	// Expand ${VAR} references in all credential/endpoint fields so the
+	// factory code paths that check `if field == ""` see the resolved value
+	// (matching the behavior of cmd_serve.go's createProviderWithRateLimit).
+	config.AnthropicAPIKey = os.ExpandEnv(config.AnthropicAPIKey)
+	config.BedrockRegion = os.ExpandEnv(config.BedrockRegion)
+	config.BedrockAccessKeyID = os.ExpandEnv(config.BedrockAccessKeyID)
+	config.BedrockSecretAccessKey = os.ExpandEnv(config.BedrockSecretAccessKey)
+	config.BedrockSessionToken = os.ExpandEnv(config.BedrockSessionToken)
+	config.BedrockBearerToken = os.ExpandEnv(config.BedrockBearerToken)
+	config.OllamaEndpoint = os.ExpandEnv(config.OllamaEndpoint)
+	config.OpenAIAPIKey = os.ExpandEnv(config.OpenAIAPIKey)
+	config.AzureOpenAIEndpoint = os.ExpandEnv(config.AzureOpenAIEndpoint)
+	config.AzureOpenAIDeploymentID = os.ExpandEnv(config.AzureOpenAIDeploymentID)
+	config.AzureOpenAIAPIKey = os.ExpandEnv(config.AzureOpenAIAPIKey)
+	config.AzureOpenAIEntraToken = os.ExpandEnv(config.AzureOpenAIEntraToken)
+	config.MistralAPIKey = os.ExpandEnv(config.MistralAPIKey)
+	config.GeminiAPIKey = os.ExpandEnv(config.GeminiAPIKey)
+	config.HuggingFaceToken = os.ExpandEnv(config.HuggingFaceToken)
+	config.LiteLLMEndpoint = os.ExpandEnv(config.LiteLLMEndpoint)
+	config.LiteLLMAPIKey = os.ExpandEnv(config.LiteLLMAPIKey)
 
 	return &ProviderFactory{
 		config: config,
