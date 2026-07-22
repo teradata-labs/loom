@@ -313,6 +313,14 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "e2e-multi-skill"
 
+	llm.SetStateSnapshotter(func() string {
+		s, ok := ag.memory.GetSession(sessionID)
+		if !ok {
+			return "(session not yet created)\n"
+		}
+		return renderSegMemState(s)
+	})
+
 	turnUserMsgs := []string{
 		"profile Complaints",     // turn 1
 		"/td-profile-deep",       // turn 2

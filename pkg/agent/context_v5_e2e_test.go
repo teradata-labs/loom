@@ -183,6 +183,16 @@ func TestE2E_V5ContextShape_MultiTurnPressurePipeline(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "e2e-v5-shape"
 
+	// Wire state snapshotter so LOOM_TEST_DUMP_DIR captures state+context
+	// pairs per LLM call for the loom-v5-eval consumer.
+	llm.SetStateSnapshotter(func() string {
+		s, ok := ag.memory.GetSession(sessionID)
+		if !ok {
+			return "(session not yet created)\n"
+		}
+		return renderSegMemState(s)
+	})
+
 	// -------- Turn 1: ledger admission --------
 	_, err := ag.Chat(ctx, sessionID, "call the ledger tool")
 	require.NoError(t, err, "turn 1 ledger admission must not error")

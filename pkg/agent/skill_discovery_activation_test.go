@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,17 +29,130 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
-// dumpLLMCall prints the full messages slice handed to the scripted LLM
-// when LOOM_TEST_DUMP_CONTEXT=1 is set in the env. Off by default so normal
-// test runs stay quiet. Prints role, content (full), tool_calls, and
-// tool_use_id per message — the exact artifact the provider layer would
-// have converted into an Anthropic/OpenAI request body.
-func dumpLLMCall(callIdx int, messages []Message) {
-	if os.Getenv("LOOM_TEST_DUMP_CONTEXT") != "1" {
+// dumpLLMCall records what the LLM would have seen on this call. When
+// LOOM_TEST_DUMP_CONTEXT=1 the messages slice is printed to stdout for a
+// quick eyeball. When LOOM_TEST_DUMP_DIR is set (regardless of the stdout
+// flag) each call is also written to two files under that directory:
+//
+//	call-NNN.context.txt   — the compiled messages slice, verbatim.
+//	call-NNN.state.txt     — a snapshot of the segmented-memory state at
+//	                         the same moment (ROM base, catalog, active
+//	                         set, L1, L2 residue, fold count).
+//
+// The two-file split is what the loom-v5-eval command consumes: it feeds
+// (state, context) pairs to an LLM and asks "given this state, is this the
+// context you'd want to reason on for this turn?" That LLM is speaking as
+// the CONSUMER of the context, not an auditor of the pipeline.
+//
+// snapState is optional. When nil (or the fake wasn't wired with a session
+// provider) only the context is dumped.
+func dumpLLMCall(callIdx int, messages []Message, snapState func() string) {
+	stdoutOn := os.Getenv("LOOM_TEST_DUMP_CONTEXT") == "1"
+	dumpDir := os.Getenv("LOOM_TEST_DUMP_DIR")
+	if !stdoutOn && dumpDir == "" {
 		return
 	}
+	contextText := renderContext(callIdx, messages)
+	if stdoutOn {
+		fmt.Print(contextText)
+	}
+	if dumpDir != "" {
+		if err := os.MkdirAll(dumpDir, 0o755); err != nil {
+			return
+		}
+		_ = os.WriteFile(filepath.Join(dumpDir, fmt.Sprintf("call-%03d.context.txt", callIdx)), []byte(contextText), 0o644)
+		if snapState != nil {
+			stateText := snapState()
+			_ = os.WriteFile(filepath.Join(dumpDir, fmt.Sprintf("call-%03d.state.txt", callIdx)), []byte(stateText), 0o644)
+		}
+	}
+}
+
+// renderSegMemState builds a human-readable snapshot of a session's
+// segmented-memory state at the moment of the LLM call. Fed to the
+// loom-v5-eval command alongside the compiled context; the LLM
+// consumer asks "given this state, is the context I got the one I'd
+// want to reason on?"
+func renderSegMemState(session *types.Session) string {
+	if session == nil {
+		return "(no session)\n"
+	}
+	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
+	var b strings.Builder
+	fmt.Fprintf(&b, "===== SEGMEM STATE =====\n")
+	fmt.Fprintf(&b, "session_id: %s\n", session.ID)
+
+	if segMem == nil {
+		b.WriteString("(no segmented memory)\n")
+		return b.String()
+	}
+
+	// ROM base — the persistent header content.
+	base := segMem.RomBase()
+	fmt.Fprintf(&b, "\n--- ROM BASE (%d chars) ---\n%s\n", len(base), base)
+
+	// Skill catalog on the session (per-turn discovery accumulates here).
+	fmt.Fprintf(&b, "\n--- ROM CATALOG (%d entries) ---\n", len(session.RomCatalog))
+	for _, e := range session.RomCatalog {
+		fmt.Fprintf(&b, "- %s: %s\n", e.Name, e.Description)
+	}
+
+	// Skills the walk-L1 filter considers active.
+	active := segMem.ActiveSkillNames()
+	fmt.Fprintf(&b, "\n--- ACTIVE SKILLS (walk-L1) ---\n")
+	if len(active) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for name := range active {
+		fmt.Fprintf(&b, "- %s\n", name)
+	}
+
+	// L1 messages in order.
+	l1 := segMem.GetMessages()
+	fmt.Fprintf(&b, "\n--- L1 MESSAGES (%d) ---\n", len(l1))
+	for i, m := range l1 {
+		fmt.Fprintf(&b, "[%d] role=%s class=%s", i, m.Role, m.ContextClass)
+		if m.ToolUseID != "" {
+			fmt.Fprintf(&b, " tool_use_id=%s", m.ToolUseID)
+		}
+		b.WriteString("\n")
+		if m.Content != "" {
+			content := m.Content
+			if len(content) > 800 {
+				content = content[:800] + fmt.Sprintf("...(+%d chars truncated)", len(m.Content)-800)
+			}
+			b.WriteString("    ")
+			b.WriteString(strings.ReplaceAll(content, "\n", "\n    "))
+			b.WriteString("\n")
+		}
+		for _, tc := range m.ToolCalls {
+			fmt.Fprintf(&b, "    tool_call: id=%s name=%s input=%v\n", tc.ID, tc.Name, tc.Input)
+		}
+	}
+
+	// L2 residue (post-fold summary carrier).
+	l2 := segMem.GetL2Summary()
+	fmt.Fprintf(&b, "\n--- L2 RESIDUE (%d chars) ---\n", len(l2))
+	if l2 != "" {
+		b.WriteString(l2)
+		b.WriteString("\n")
+	}
+
+	// Fold count so far (unsafe getter would need lock; approximate via
+	// public accessor if available — for the dump, an "unknown" fallback
+	// is fine).
+	segMem.mu.RLock()
+	fmt.Fprintf(&b, "\nfold_count: %d\n", len(segMem.foldTurnHistory))
+	segMem.mu.RUnlock()
+
+	fmt.Fprintf(&b, "===== END STATE =====\n")
+	return b.String()
+}
+
+func renderContext(callIdx int, messages []Message) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n===== LLM CALL #%d =====\n", callIdx)
 	for i, m := range messages {
@@ -60,18 +174,32 @@ func dumpLLMCall(callIdx int, messages []Message) {
 		}
 	}
 	fmt.Fprintf(&b, "===== END CALL #%d =====\n", callIdx)
-	fmt.Print(b.String())
+	return b.String()
 }
 
 // skillTurnScriptedLLM is a minimal LLMProvider fake that returns queued
 // responses in order (holding on the last one once exhausted) and records
 // every messages slice it was called with, so a test can inspect exactly
 // what was sent to the model for a given turn.
+//
+// When wired via SetStateSnapshotter, each Chat call also captures a
+// human-readable snapshot of the segmented-memory state at that moment —
+// the input consumed by the loom-v5-eval tool.
 type skillTurnScriptedLLM struct {
-	mu        sync.Mutex
-	responses []LLMResponse
-	idx       int
-	calls     [][]Message
+	mu           sync.Mutex
+	responses    []LLMResponse
+	idx          int
+	calls        [][]Message
+	snapshotFunc func() string
+}
+
+// SetStateSnapshotter installs a callback that returns a text snapshot of
+// segmented-memory state. Invoked on every Chat call so state and context
+// dumps are aligned.
+func (m *skillTurnScriptedLLM) SetStateSnapshotter(f func() string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshotFunc = f
 }
 
 func newSkillTurnScriptedLLM(responses ...LLMResponse) *skillTurnScriptedLLM {
@@ -86,7 +214,7 @@ func (m *skillTurnScriptedLLM) Chat(ctx context.Context, messages []Message, too
 	copy(cp, messages)
 	m.calls = append(m.calls, cp)
 
-	dumpLLMCall(len(m.calls), messages)
+	dumpLLMCall(len(m.calls), messages, m.snapshotFunc)
 
 	if len(m.responses) == 0 {
 		return &LLMResponse{Content: "done", StopReason: "end_turn"}, nil

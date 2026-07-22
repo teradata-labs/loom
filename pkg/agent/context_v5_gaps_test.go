@@ -162,6 +162,14 @@ func TestE2E_V5RecallRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "e2e-v5-recall"
 
+	llm.SetStateSnapshotter(func() string {
+		s, ok := ag.memory.GetSession(sessionID)
+		if !ok {
+			return "(session not yet created)\n"
+		}
+		return renderSegMemState(s)
+	})
+
 	// -------- Turn 1 --------
 	_, err := ag.Chat(ctx, sessionID, "populate ballast")
 	require.NoError(t, err)
