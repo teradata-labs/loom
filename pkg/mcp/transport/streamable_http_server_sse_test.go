@@ -172,6 +172,14 @@ func TestStreamableHTTPServer_POST_SSE_HappyPath(t *testing.T) {
 
 	events := parseSSE(t, string(bodyBytes))
 
+	// wasCalled() must be checked only after the body is fully read. The
+	// server flushes the SSE response headers before invoking the stream
+	// handler (see handleStreamingPost), and http.Client.Do returns as soon
+	// as those headers arrive — so checking earlier races the handler
+	// goroutine and flakes. Once the SSE body is complete, the handler has
+	// necessarily run and returned.
+	assert.True(t, sh.wasCalled(), "stream handler should be invoked")
+
 	require.Len(t, events, 3, "expected 2 progress events + 1 final result")
 
 	// First two events are progress notifications.
