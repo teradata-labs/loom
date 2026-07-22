@@ -100,6 +100,12 @@ func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 }
 
 // parseHeadersEnv parses "key=val,key2=val2" into a map.
+// ParseHeadersEnv parses a comma-separated "key=value" string into a map.
+// This is the format used by OTEL_EXPORTER_OTLP_TRACES_HEADERS.
+func ParseHeadersEnv(raw string) map[string]string {
+	return parseHeadersEnv(raw)
+}
+
 func parseHeadersEnv(raw string) map[string]string {
 	out := make(map[string]string)
 	for _, pair := range strings.Split(raw, ",") {

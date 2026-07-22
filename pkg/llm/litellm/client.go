@@ -89,7 +89,7 @@ type Client struct {
 // The Endpoint may be either a full chat-completions URL
 // (http://host:4000/v1/chat/completions) or a bare base URL
 // (http://host:4000 / http://host:4000/v1). The latter is what
-// avmo-tera-cloud injects via LOOM_LLM_LITELLM_ENDPOINT — this function
+// avmo-tera-cloud injects via LITELLM_BASE_URL — this function
 // normalises it to the full path automatically.
 func NewClient(cfg Config) *Client {
 	if cfg.Endpoint == "" {
@@ -152,7 +152,7 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 }
 
 // normalizeEndpoint ensures the endpoint is the full chat-completions path.
-// avmo-tera-cloud injects LOOM_LLM_LITELLM_ENDPOINT as a bare base URL
+// avmo-tera-cloud injects LITELLM_BASE_URL as a bare base URL
 // (e.g. "http://litellm:4000"), so we append the standard path when it is absent.
 func normalizeEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(endpoint, "/")

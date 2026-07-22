@@ -1756,8 +1756,10 @@ func (c *Config) Validate() error {
 			}
 			// Note: HawkAPIKey is optional - not required for local Hawk installations
 		case "otel":
-			// OTel mode: validate endpoint
-			if c.Observability.OTLPEndpoint == "" {
+			// OTel mode: validate endpoint — also accept the platform env var
+			// injected by AgentOpsCore at deploy time (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).
+			// cmd_serve.go will apply this override before building the tracer.
+			if c.Observability.OTLPEndpoint == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
 				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel")
 			}
 		case "none":

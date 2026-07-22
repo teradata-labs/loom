@@ -390,7 +390,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-r.Context().Done():
 				return
 			case <-heartbeatDone:
 				return
