@@ -76,12 +76,6 @@ jobs:
 
           Write-Host "Combined package hash: $combinedHash"
 
-      - name: Install wingetcreate
-        shell: pwsh
-        run: |
-          Write-Host "Installing wingetcreate..."
-          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" -OutFile wingetcreate.exe
-
       - name: Fork and clone winget-pkgs
         shell: pwsh
         env:
@@ -121,41 +115,12 @@ jobs:
           git merge upstream/master
           git push origin master
 
-      - name: Update manifests with wingetcreate
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $combinedHash = "${{ steps.hashes.outputs.combined_hash }}"
-
-          cd winget-pkgs
-
-          # Create branch
-          $branch = "teradata-loom-$version"
-          git checkout -b $branch
-
-          # Create manifest directory
-          $manifestDir = "manifests/t/Teradata/Loom/$version"
-          New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
-
-          # Use wingetcreate to update manifests
-          ..\wingetcreate.exe update `
-            --version $version `
-            --urls "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-x64.zip" `
-            --submit `
-            --token $env:GH_TOKEN `
-            Teradata.Loom
-
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "✅ wingetcreate submitted PR successfully"
-          } else {
-            Write-Host "⚠️  wingetcreate failed, falling back to manual PR creation"
-            exit 1
-          }
-
-      - name: Alternative - Manual PR creation (if wingetcreate submit fails)
-        if: failure()
+      # The former wingetcreate path never succeeded (its CLI rejected the
+      # invocation on every run since January 2026) and its exit 1 marked
+      # every run failed even when this fallback then submitted the PR.
+      # The manifest-template path below is the one that has actually
+      # merged into winget-pkgs, so it is now the only path.
+      - name: Create manifests and submit PR
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
