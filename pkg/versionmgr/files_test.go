@@ -213,6 +213,22 @@ end
 			expectedURL:   "https://example.com/v3.0.0/mac.tar.gz",
 			expectExtract: []string{"1.0.0"},
 		},
+		{
+			name: "source tag archive resource",
+			inputContent: `class Loom < Formula
+  version "1.2.3"
+  resource "loom-patterns" do
+    url "https://github.com/teradata-labs/loom/archive/refs/tags/v1.2.3.tar.gz"
+    sha256 "abc123"
+  end
+  url "https://github.com/teradata-labs/loom/releases/download/v1.2.3/loom-darwin-arm64.tar.gz"
+  sha256 "def456"
+end
+`,
+			updateVersion: Version{Major: 2, Minor: 0, Patch: 0},
+			expectedURL:   "https://github.com/teradata-labs/loom/archive/refs/tags/v2.0.0.tar.gz",
+			expectExtract: []string{"1.2.3"},
+		},
 	}
 
 	for _, tt := range tests {
