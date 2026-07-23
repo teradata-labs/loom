@@ -379,6 +379,7 @@ func ValidatePatternConfig(cfg *PatternConfig) error {
 // Type aliases for backward compatibility with code that imports pkg/agent.
 // These types are now defined in pkg/types to break import cycles.
 type Message = types.Message
+type ContentBlock = types.ContentBlock
 type ToolCall = types.ToolCall
 type Usage = types.Usage
 type LLMResponse = types.LLMResponse
