@@ -152,6 +152,7 @@ The version manager updates 20+ files across the codebase:
 - Scoop manifests (loom.json, loom-server.json)
 - Winget manifests (installer.yaml, locale.yaml)
 - Documentation (README.md, CLAUDE.md)
+- Homepage (web/index.html, published to gh-pages on release)
 
 ### CI/CD Integration
 
