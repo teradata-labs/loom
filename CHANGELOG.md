@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
 - `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
+- **Skills: `max_concurrent_skills` no longer limits how many skills a session can have loaded**; it only limits how many skill suggestions appear per turn. Each session can load up to 20 different skills; `manage_skills(unload)` is removed — a loaded skill stays until context compression removes its instructions, after which it can be loaded again.
 
 ## [1.3.0] - 2026-06-01
 

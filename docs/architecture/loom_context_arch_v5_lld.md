@@ -118,7 +118,7 @@ Tagging is structural, at exactly three places:
 ### B-1 Admission
 - `SharedMemoryThresholdBytes = 4096` in Tera agent config activates the existing `handleLargeResult` (`executor.go:284`) — oversized ballast enters as preview + `DataReference`.
 - **Constants policy (decided):** implement with these defaults and tune post-implementation from real traces — admission 4096 bytes · yellow 70 · red 85 · `minValvePayoff` 20000 tokens · `keepRecentBallast` 3 · active-set cap 20. All are config-surfaced; none block implementation.
-- **Exemption rule (part of the admission spec, not an afterthought): only ballast-class results are wrappable.** Charter/ledger-class tools (`manage_skills`, `manage_patterns`, `contact_human`, `recall_context`) are exempt, same mechanism as the existing `get_tool_result`/`query_tool_result` exclusion (`executor.go:181-183`). Without this the 24KB skill body would be wrapped into a ref and the charter would never enter context.
+- **Exemption rule (part of the admission spec, not an afterthought): only explicitly ballast-hinted results are wrappable.** The named builtins (`manage_skills`, `manage_patterns`, `contact_human`, `recall_context`) are exempt regardless, same mechanism as the existing `get_tool_result`/`query_tool_result` exclusion. A tool without a hint classifies ballast but its results enter whole — reclaimed later by valve/fold rather than wrapped at admission. Without the exemption the 24KB skill body would be wrapped into a ref and never enter context.
 
 ### B-2 Valve — `ValveEvict(ctx)`
 - Candidates: `l1Messages` oldest→newest where `Role=="tool" && ContextClass==ballast`, excluding the newest `keepRecentBallast=3` ballast items and existing stubs.

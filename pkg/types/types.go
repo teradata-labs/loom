@@ -445,24 +445,6 @@ func (s *Session) assembleForLLM(segMem SegmentedMemoryInterface) []Message {
 // insertion order is preserved so the cache stays warm for descriptions
 // added earlier in the session. A catalog with no non-active entries
 // renders no section at all — no empty header ever leaks into ROM.
-//
-// Cache economics — WHY this is an acceptable trade, not a regression:
-//
-// This is a small mutation region at the tail of the ROM system slot.
-// Pre-v5 loom had the SAME mutation region at the same byte position,
-// carrying full skill BODIES rewritten every turn — thousands of bytes
-// per active skill. V5 shrank that region to descriptions only, gated
-// on catalog activity rather than per-turn active-set. Any change here
-// (load, fold reclaim) invalidates the Anthropic prompt-cache prefix
-// from this byte onward — including all of L1 — but L1 changes anyway
-// on every user turn, so the marginal cache cost of a skill event is
-// bounded by a single extra turn's worth of re-processing.
-//
-// Future improvement: hoist the [Available Skills] block into its own
-// system-block breakpoint (Anthropic supports up to 4 cache_control
-// markers) so the base ROM keeps its cache slot across skill events.
-// Not done here — requires provider-adapter changes and per-provider
-// verification, and the current cost is bounded by L1 churn anyway.
 func composeROM(base string, catalog []SkillCatalogEntry, active map[string]bool) string {
 	if len(catalog) == 0 {
 		return base

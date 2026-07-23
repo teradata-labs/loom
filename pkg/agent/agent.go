@@ -691,8 +691,8 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 // points of that event — executeLoad (live load) and session restore
 // (replay of a resident load) — so the LLM's very next step after the
 // instructions appear has the machinery they name. Idempotent; registers
-// via a.tools directly (never Agent.RegisterTool) so it stays safe to call
-// while Memory's lock is held on the restore path.
+// via a.tools directly (never Agent.RegisterTool). On the restore path it
+// runs after Memory's lock is released.
 //
 // MCP servers (SkillToolConfig.MCPServers) are not yet activated by skill
 // activation; the field is parsed but not enforced.

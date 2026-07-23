@@ -1,19 +1,10 @@
 // loom-v5-eval reads state+context pairs dumped by the segmented-memory
-// e2e tests and asks an LLM — positioned as the CONSUMER of the context,
-// not an auditor — whether the context it received is the one it would
-// want to reason on given the state.
+// e2e tests and asks an LLM to judge each compiled context from the
+// consumer's seat: given the state the system had available, is this the
+// context best suited for producing the next response? (See evalPrompt.)
 //
-// The prompt frames the LLM's role deliberately:
-//
-//	"You are about to reason on this context to answer the user's most
-//	 recent turn. STATE shows what the segmented-memory system had
-//	 available; CONTEXT shows what it chose to send you. As the consumer
-//	 that has to do the work, is this the context you'd want? Concrete
-//	 concerns only — no rubric answers, no praise. Return JSON."
-//
-// This is the only test in the suite that measures the thing we care
-// about DIRECTLY (does the LLM get a good context for the job) instead
-// of via a proxy (does the pipeline follow its own rules).
+// It measures context usefulness for the work directly, rather than
+// conformance to the pipeline's rules.
 //
 // Requires ANTHROPIC_API_KEY. Not a CI gate — an on-demand quality lens.
 //
