@@ -27,12 +27,9 @@ import (
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 )
 
-// skillActiveSafetyCap is the hard ceiling on a session's active-skill set
-// (O-SKL-3, FR-030). Past this many active skills a further manage_skills(load)
-// is rejected with an explicit error. The active set shrinks only when the
-// pressure pipeline reclaims the load body (valve/fold) — there is no explicit
-// unload: a skill load is an event in the append-only context, and events are
-// retired by release, not by inverse operations.
+// skillActiveSafetyCap limits how many different skills one session can
+// load via manage_skills(load). Loading an already-loaded skill does not
+// count against it.
 const skillActiveSafetyCap = 20
 
 // ManageSkillsTool provides list/load over the skill orchestrator and
@@ -223,13 +220,8 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 
 	wasActive := skillNameSet(t.orchestrator.GetActiveSkills(sessionID))[name]
 	if !wasActive {
-		// Cap resolution: honor operator-set load_hard_cap from agent
-		// config when >0, else fall back to the runaway-loop backstop.
-		// LoadHardCap is the manage_skills(load) rejection ceiling;
-		// MaxConcurrentSkills is the orchestrator's eviction cap and is
-		// deliberately NOT consulted here — they are separate ceilings
-		// on the same axis, and reusing the eviction cap for hard-reject
-		// would silently change semantics of an existing config knob.
+		// Counts first-time loads only; loading an already-loaded skill
+		// skips this check (wasActive above).
 		cap := skillActiveSafetyCap
 		if t.config != nil && t.config.SkillsConfig != nil && t.config.SkillsConfig.LoadHardCap > 0 {
 			cap = t.config.SkillsConfig.LoadHardCap
@@ -240,8 +232,8 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 				Success: false,
 				Error: &shuttle.Error{
 					Code:       "ACTIVE_SKILL_CAP_EXCEEDED",
-					Message:    fmt.Sprintf("session already has %d active skills (safety cap %d)", activeCount, cap),
-					Suggestion: "Continue with the skills already active; the pressure pipeline will reclaim older load bodies as context fills.",
+					Message:    fmt.Sprintf("session has already loaded %d different skills (limit %d)", activeCount, cap),
+					Suggestion: "Already-loaded skills can be loaded again; no new skill can be added in this session.",
 				},
 			}, nil
 		}

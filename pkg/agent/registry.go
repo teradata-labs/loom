@@ -2438,8 +2438,9 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 
 	// deps.SkillsConfig.MaxConcurrentSkills bounds the discovery candidate
 	// menu (consumed by MatchSkills/Discovery below), not the orchestrator's
-	// active set — there is no active-set cap to wire here (O-SKL-3): the
-	// active set only shrinks via explicit unload or session end.
+	// active set — there is no active-set cap to wire here (O-SKL-3). The
+	// manage_skills(load) gate enforces its own safety backstop; skill
+	// instructions are reclaimed by the context pressure pipeline.
 	orchOpts := []skills.OrchestratorOption{
 		skills.WithOrchestratorTracer(deps.Tracer),
 		skills.WithOrchestratorLogger(logger),

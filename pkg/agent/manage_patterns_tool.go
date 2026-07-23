@@ -24,11 +24,11 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// ManagePatternsTool mirrors ManageSkillsTool's list/load/unload shape over
-// the pattern library. Patterns have no risk classification and no
-// orchestrator-level active-set cap — those are skill-specific (Seam 2,
-// Seam 5) — so this tool only tracks, per session, which pattern names have
-// been explicitly loaded, purely to give unload/list something to report.
+// ManagePatternsTool provides list/load/unload over the pattern library.
+// Patterns have no risk classification and no load cap. Unlike skills,
+// unload exists here: it only flips this tool's own per-session loaded-set
+// (used by list) and never touches the context — a loaded pattern's body
+// stays in L1 until the pressure pipeline reclaims it.
 type ManagePatternsTool struct {
 	orchestrator *patterns.Orchestrator
 

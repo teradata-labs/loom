@@ -38,13 +38,6 @@ type Orchestrator struct {
 	tracer         observability.Tracer
 	logger         *zap.Logger
 	activeSessions map[string][]*ActiveSkill // sessionID -> active skills
-
-	// onSkillDeactivate (optional) is called after a skill leaves the active
-	// set via DeactivateSkill. Used by the agent layer to boost graph memory
-	// salience for entities related to the deactivated skill. There is no
-	// implicit eviction (O-SKL-3): this only ever fires from an explicit
-	// unload or equivalent, never from ActivateSkill.
-	onSkillDeactivate func(sessionID string, skill *Skill, activeFor time.Duration)
 }
 
 // OrchestratorOption configures an Orchestrator during construction.
@@ -68,25 +61,6 @@ func WithOrchestratorLogger(l *zap.Logger) OrchestratorOption {
 			o.logger = l
 		}
 	}
-}
-
-// WithOnSkillDeactivate installs a callback that fires after a skill leaves
-// the active set via DeactivateSkill. The callback receives the session ID,
-// the deactivated skill, and how long the skill was active. Used by the
-// agent layer to boost graph memory salience for entities related to the
-// deactivated skill.
-func WithOnSkillDeactivate(fn func(sessionID string, skill *Skill, activeFor time.Duration)) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.onSkillDeactivate = fn
-	}
-}
-
-// SetOnSkillDeactivate installs a deactivation callback at runtime. Safe for
-// concurrent use with DeactivateSkill.
-func (o *Orchestrator) SetOnSkillDeactivate(fn func(sessionID string, skill *Skill, activeFor time.Duration)) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.onSkillDeactivate = fn
 }
 
 // NewOrchestrator creates a new skill orchestrator backed by the given library.
@@ -113,17 +87,13 @@ type SkillsConfig struct {
 	// synthesizing the implicit binding set.
 	DisabledSkills    []string
 	MinAutoConfidence float64
-	// MaxConcurrentSkills is the orchestrator's eviction cap: when the
-	// active set reaches this size on ActivateSkill, the lowest-confidence
-	// non-sticky skill is evicted to make room. Distinct from LoadHardCap,
-	// which gates the manage_skills(load) tool at a separate ceiling.
+	// Deprecated: no longer limits how many skills a session can have
+	// loaded. Still read as the number of skill suggestions shown per turn.
 	MaxConcurrentSkills int
-	// LoadHardCap is the ceiling manage_skills(load) enforces before
-	// activating a new skill. A load at or above this cap is refused with
-	// an explicit ACTIVE_SKILL_CAP_EXCEEDED error rather than silently
-	// evicting. Distinct from MaxConcurrentSkills (the eviction cap
-	// consulted by orchestrator-internal callers). When 0, falls back to
-	// the runaway-loop backstop skillActiveSafetyCap.
+	// LoadHardCap overrides the built-in limit (skillActiveSafetyCap) on
+	// how many different skills one session can load; loading an
+	// already-loaded skill does not count. Unset means the built-in limit.
+	// Test-only knob — not read from YAML or proto.
 	LoadHardCap          int
 	SkillsDir            string
 	ContextBudgetPercent int
@@ -166,12 +136,6 @@ type SkillsConfig struct {
 // router's per-leaf decisions reach the orchestrator without being
 // silently trimmed. See pkg/skills/index/router.go's maxCandidates
 // comment for the rationale.
-//
-// LoadHardCap is left at 0 (fall through to skillActiveSafetyCap = 20)
-// so the manage_skills(load) tool's rejection ceiling stays a runaway
-// backstop, not a target — matching pre-v5 behavior where the active
-// set could grow to the orchestrator's eviction cap without operator
-// intervention.
 func DefaultSkillsConfig() *SkillsConfig {
 	return &SkillsConfig{
 		Enabled:               true,
@@ -428,12 +392,6 @@ func (o *Orchestrator) DeactivateSkill(sessionID, skillName string) {
 				zap.Duration("active_for", activeFor),
 				zap.Int("active_count", len(o.activeSessions[sessionID])),
 			)
-			// Fire the deactivation callback (outside critical path, async).
-			if o.onSkillDeactivate != nil && active.Skill != nil {
-				fn := o.onSkillDeactivate
-				skill := active.Skill
-				go fn(sessionID, skill, activeFor)
-			}
 			return
 		}
 	}

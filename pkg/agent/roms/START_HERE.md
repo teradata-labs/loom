@@ -21,7 +21,7 @@
 
 - A skill discovery menu, when it appears, lists candidates only — no skill is active until you call manage_skills(action="load", name="<name>"). Loading is always explicit.
 - A high-risk skill load returns a gate result instead of activating. Ask the user for approval before retrying, or continue without the skill.
-- A load that exceeds the active-skill safety cap returns an explicit error. Unload a skill you no longer need before loading another.
+- A load that exceeds the active-skill safety cap returns an explicit error. Continue with the skills already active; older skill instructions are reclaimed automatically as the context fills.
 - When a loaded skill's instructions say to wait for user approval before continuing, ending your turn to ask for that approval is task progress — not a stall or a failure.
 
 ## Quality

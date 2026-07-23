@@ -331,7 +331,7 @@ func TestManageSkillsTool_Load_PastCap_ReturnsExplicitErrorNoEviction(t *testing
 	require.False(t, result.Success)
 	require.NotNil(t, result.Error)
 	assert.Equal(t, "ACTIVE_SKILL_CAP_EXCEEDED", result.Error.Code)
-	assert.Contains(t, result.Error.Message, "safety cap")
+	assert.Contains(t, result.Error.Message, "limit")
 	assert.NotEmpty(t, result.Error.Suggestion)
 
 	// No implicit eviction: the active set is unchanged at exactly the cap,

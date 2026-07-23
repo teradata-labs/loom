@@ -19,12 +19,6 @@ package agent
 //     directly against computeCarryInclude to assert a well-defined empty
 //     inclusion mask.
 //
-//   TestOrchestrator_OnSkillDeactivate_FiresOnUnload
-//     The rewired OnSkillDeactivate callback (post-419 replacement for the
-//     old eviction-callback path) had no direct test. Registers a callback,
-//     activates then deactivates a skill, asserts the callback fires with
-//     the expected session id and skill.
-//
 //   TestPrepareContext_RaceValveEvictVsAddMessage
 //   TestPrepareContext_RaceFoldVsAddMessage
 //     Race coverage the deleted pre-419 TestSwapLayerConcurrency provided —
@@ -36,14 +30,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/teradata-labs/loom/pkg/skills"
 )
 
 // ============================================================================
@@ -167,83 +158,6 @@ func TestComputeCarryInclude_EmptyLedger_NoUserFallback(t *testing.T) {
 func TestComputeCarryInclude_Empty_Nil(t *testing.T) {
 	assert.Empty(t, computeCarryInclude(nil), "computeCarryInclude(nil) must return empty include mask")
 	assert.Empty(t, computeCarryInclude([]Message{}), "computeCarryInclude([]) must return empty include mask")
-}
-
-// ============================================================================
-// Orchestrator.OnSkillDeactivate callback — rewire coverage
-// ============================================================================
-
-// TestOrchestrator_OnSkillDeactivate_FiresOnUnload registers a callback via
-// SetOnSkillDeactivate, activates then deactivates a skill, and asserts the
-// callback fired exactly once with the expected session id and skill name.
-// The old eviction-callback tests were deleted with the D-6 removal of the
-// score-based eviction path (Part D #3); nothing directly covered the new
-// runtime setter until now.
-func TestOrchestrator_OnSkillDeactivate_FiresOnUnload(t *testing.T) {
-	tmp := t.TempDir()
-	library := skills.NewLibrary(skills.WithSearchPaths(tmp))
-	library.Register(&skills.Skill{Name: "skill-A", Title: "Skill A", SourcePath: tmp + "/skill-A"})
-	orch := skills.NewOrchestrator(library)
-
-	sessionID := "orch-deact"
-	var (
-		fireCount   int32
-		gotSession  string
-		gotSkill    string
-		gotDuration time.Duration
-		mu          sync.Mutex
-	)
-	orch.SetOnSkillDeactivate(func(sid string, s *skills.Skill, activeFor time.Duration) {
-		atomic.AddInt32(&fireCount, 1)
-		mu.Lock()
-		gotSession = sid
-		if s != nil {
-			gotSkill = s.Name
-		}
-		gotDuration = activeFor
-		mu.Unlock()
-	})
-
-	skill, err := library.Load("skill-A")
-	require.NoError(t, err)
-	require.NotNil(t, orch.ActivateSkill(sessionID, skill, "manual", "skill-A", 1.0))
-
-	// Sleep a beat so activeFor is measurably >0 (locks the "duration
-	// carried through" side of the contract).
-	time.Sleep(10 * time.Millisecond)
-
-	orch.DeactivateSkill(sessionID, "skill-A")
-
-	// Callback fires in a goroutine (see orchestrator.go DeactivateSkill:
-	// "Fire the deactivation callback (outside critical path, async)"),
-	// so poll briefly for it to land rather than sleep-then-check.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for atomic.LoadInt32(&fireCount) == 0 && time.Now().Before(deadline) {
-		time.Sleep(1 * time.Millisecond)
-	}
-	assert.Equal(t, int32(1), atomic.LoadInt32(&fireCount), "callback must fire exactly once per DeactivateSkill call")
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, sessionID, gotSession, "callback must receive the deactivating session id")
-	assert.Equal(t, "skill-A", gotSkill, "callback must receive the deactivated skill")
-	assert.Greater(t, gotDuration, time.Duration(0), "activeFor must reflect the elapsed activation window")
-}
-
-// TestOrchestrator_OnSkillDeactivate_UnknownSkill_NoFire pins the negative
-// case: DeactivateSkill for a skill that was never active is a no-op; the
-// callback must not fire on a phantom deactivation.
-func TestOrchestrator_OnSkillDeactivate_UnknownSkill_NoFire(t *testing.T) {
-	tmp := t.TempDir()
-	library := skills.NewLibrary(skills.WithSearchPaths(tmp))
-	orch := skills.NewOrchestrator(library)
-
-	var fireCount int32
-	orch.SetOnSkillDeactivate(func(string, *skills.Skill, time.Duration) {
-		atomic.AddInt32(&fireCount, 1)
-	})
-
-	orch.DeactivateSkill("some-session", "nonexistent-skill")
-	assert.Equal(t, int32(0), atomic.LoadInt32(&fireCount), "callback must not fire for a phantom deactivation")
 }
 
 // ============================================================================

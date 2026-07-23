@@ -402,14 +402,13 @@ func TestSnapshotMessages_ConcurrentWithAddMessage_NoRaceNoTear(t *testing.T) {
 }
 
 // ============================================================================
-// Fix 5 — YAML max_concurrent_skills honored by the safety cap
+// LoadHardCap overrides the built-in load limit
 // ============================================================================
 
-// TestManageSkillsLoad_HonorsConfigMaxConcurrentSkillsCap verifies that
-// executeLoad's active-set cap comes from SkillsConfig.MaxConcurrentSkills
-// when the operator has set it, and falls back to skillActiveSafetyCap
-// otherwise. Pre-Fix-5, the cap was the hardcoded 20 regardless of YAML.
-func TestManageSkillsLoad_HonorsConfigMaxConcurrentSkillsCap(t *testing.T) {
+// TestManageSkillsLoad_LoadHardCapOverridesBuiltinLimit verifies that
+// executeLoad's limit comes from SkillsConfig.LoadHardCap when set,
+// and falls back to skillActiveSafetyCap otherwise.
+func TestManageSkillsLoad_LoadHardCapOverridesBuiltinLimit(t *testing.T) {
 	ctx := context.Background()
 
 	tmp := t.TempDir()
@@ -438,18 +437,18 @@ func TestManageSkillsLoad_HonorsConfigMaxConcurrentSkillsCap(t *testing.T) {
 		tool.orchestrator.ActivateSkill(sessionID, seeded[names[i]], "manual", names[i], 1.0)
 	}
 
-	// Try to load a 4th. Under Fix 5 with cap=3, this must return the cap
-	// error naming cap=3 (not the hardcoded 20).
+	// Try to load a 4th. With LoadHardCap=3, this must return the limit
+	// error naming 3 (not the built-in 20).
 	res, err := tool.executeLoad(ctx, sessionID, "skill_d")
-	require.NoError(t, err, "cap breach returns Result{Success:false}, not a Go error")
+	require.NoError(t, err, "limit breach returns Result{Success:false}, not a Go error")
 	require.NotNil(t, res)
-	require.False(t, res.Success, "load past the operator-set cap must fail")
+	require.False(t, res.Success, "load past LoadHardCap must fail")
 	require.NotNil(t, res.Error)
 	assert.Equal(t, "ACTIVE_SKILL_CAP_EXCEEDED", res.Error.Code)
-	assert.Contains(t, res.Error.Message, "safety cap 3",
-		"error message must name the config-set cap (3), not the hardcoded backstop (20)")
-	assert.NotContains(t, res.Error.Message, "safety cap 20",
-		"the hardcoded 20 must NOT appear — Fix 5's whole point is to honor operator config")
+	assert.Contains(t, res.Error.Message, "limit 3",
+		"error message must name the configured limit (3), not the built-in 20")
+	assert.NotContains(t, res.Error.Message, "limit 20",
+		"the built-in 20 must not appear when LoadHardCap is set")
 }
 
 // ============================================================================
