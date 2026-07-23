@@ -55,6 +55,7 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-darwin-arm64.tar.gz"
             "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-amd64.tar.gz"
             "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-arm64.tar.gz"
+            "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz"
           )
 
           for url in "${URLS[@]}"; do
@@ -124,28 +125,30 @@ jobs:
           LOOMS_ARM64_HASH="${{ steps.hashes.outputs.looms_arm64_hash }}"
           PATTERNS_HASH="${{ steps.hashes.outputs.patterns_hash }}"
 
+          # The repo's packaging templates are the single source of truth
+          # for formula structure. Hand-edits to the tap get overwritten on
+          # the next release — make structural changes in
+          # packaging/macos/homebrew/ instead. Inside a Homebrew `resource`
+          # block, #{version} resolves to the (unset) resource version, not
+          # the formula's, so all URLs use literal versions and are stamped
+          # here along with `version` and the three sha256 values.
+          cp packaging/macos/homebrew/loom.rb homebrew-tap/Formula/loom.rb
+          cp packaging/macos/homebrew/loom-server.rb homebrew-tap/Formula/loom-server.rb
+
           cd homebrew-tap
 
-          # Binary and source URLs derive from v#{version} in the formulas
-          # (teradata-labs/homebrew-tap#9), so only `version` and the three
-          # sha256 values need rewriting per formula.
+          for f in Formula/loom.rb Formula/loom-server.rb; do
+            sed -i '' "s/version \".*\"/version \"$VERSION\"/" "$f"
+            sed -i '' "s|releases/download/v[0-9.]*/|releases/download/v$VERSION/|g" "$f"
+            sed -i '' "s|archive/refs/tags/v[0-9.]*\.tar\.gz|archive/refs/tags/v$VERSION.tar.gz|" "$f"
+            # SHA256 for the loom-patterns resource (source tag tarball)
+            sed -i '' "\|archive/refs/tags|,/sha256/s/sha256 \".*\"/sha256 \"$PATTERNS_HASH\"/" "$f"
+          done
 
-          # Update loom.rb
-          sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom.rb
-          # SHA256 for the loom-patterns resource (source tag tarball)
-          sed -i '' "\|archive/refs/tags|,/sha256/s/sha256 \".*\"/sha256 \"$PATTERNS_HASH\"/" Formula/loom.rb
-          # SHA256 for arm64
+          # SHA256 for the binaries
           sed -i '' "/loom-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_ARM64_HASH\"/" Formula/loom.rb
-          # SHA256 for amd64
           sed -i '' "/loom-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_AMD64_HASH\"/" Formula/loom.rb
-
-          # Update loom-server.rb
-          sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom-server.rb
-          # SHA256 for the loom-patterns resource (source tag tarball)
-          sed -i '' "\|archive/refs/tags|,/sha256/s/sha256 \".*\"/sha256 \"$PATTERNS_HASH\"/" Formula/loom-server.rb
-          # SHA256 for arm64
           sed -i '' "/looms-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_ARM64_HASH\"/" Formula/loom-server.rb
-          # SHA256 for amd64
           sed -i '' "/looms-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_AMD64_HASH\"/" Formula/loom-server.rb
 
           echo "Updated formulas:"
@@ -153,13 +156,25 @@ jobs:
           echo "---"
           cat Formula/loom-server.rb | grep -A 2 "version\|url\|sha256"
 
-      - name: Verify formulas reference no stale hashes
+      - name: Verify formulas reference no stale hashes or URLs
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           cd homebrew-tap
           for f in Formula/loom.rb Formula/loom-server.rb; do
+            ruby -c "$f"
             COUNT=$(grep -c 'sha256 "' "$f")
             if [ "$COUNT" -ne 3 ]; then
               echo "::error::$f has $COUNT sha256 lines, expected 3 (resource + arm64 + amd64)"
+              exit 1
+            fi
+            if grep -q 'sha256 "0\{64\}"' "$f"; then
+              echo "::error::$f still contains a placeholder sha256"
+              exit 1
+            fi
+            grep -q "releases/download/v$VERSION/" "$f" || { echo "::error::$f binary URLs not stamped to v$VERSION"; exit 1; }
+            grep -q "archive/refs/tags/v$VERSION.tar.gz" "$f" || { echo "::error::$f patterns resource URL not stamped to v$VERSION"; exit 1; }
+            if grep -q '#{version}' "$f"; then
+              echo "::error::$f uses #{version} interpolation, which is nil inside resource blocks — use literal versions"
               exit 1
             fi
           done
