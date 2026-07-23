@@ -363,11 +363,22 @@ function renderChart(data) {
   });
 }
 
-// Listen for postMessage data from MCP client
+// Listen for postMessage data from MCP client.
+// Origin validation: trust-on-first-use, matching the other MCP app viewers.
+// The host origin is not known at build time because this app runs as an
+// embedded MCP Apps resource (ui:// scheme), so lock to the origin of the
+// first well-formed chart-data message and reject all other origins after.
+var trustedOrigin = null;
 window.addEventListener('message', function(event) {
-  if (event.data && event.data.type === 'chart-data') {
-    renderChart(event.data.payload);
+  if (trustedOrigin && event.origin !== trustedOrigin) return;
+  var data = event.data;
+  if (!data || typeof data !== 'object' || data.type !== 'chart-data') return;
+  var payload = data.payload;
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.labels) || !Array.isArray(payload.values)) return;
+  if (!trustedOrigin && event.origin) {
+    trustedOrigin = event.origin;
   }
+  renderChart(payload);
 });
 
 // Render default data on load
