@@ -113,13 +113,7 @@ func validateSessionArtifactPathSegment(sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("session ID is required")
 	}
-	if strings.Contains(sessionID, "..") {
-		return fmt.Errorf("invalid session ID")
-	}
-	if strings.ContainsAny(sessionID, "/\\") {
-		return fmt.Errorf("invalid session ID")
-	}
-	return nil
+	return ValidateSessionID(sessionID)
 }
 
 // SessionArtifactsRoot returns $LOOM_DATA_DIR/artifacts/sessions/<sessionID>.

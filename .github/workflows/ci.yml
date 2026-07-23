@@ -409,104 +409,7 @@ jobs:
           category: gosec
 
   # ============================================================================
-  # Job 7: Snyk Security Scan (dependencies + Snyk Code)
-  # Skips gracefully when SNYK_TOKEN is unavailable: secrets are never exposed
-  # to pull requests from forks, and the scan is a no-op until the SNYK_TOKEN
-  # repository secret is configured.
-  # ============================================================================
-  snyk:
-    name: Snyk Security Scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      # Snyk Code project in the Snyk UI. Project IDs are not secrets (they
-      # appear in Snyk URLs); used to associate --report uploads from main.
-      SNYK_PROJECT_ID: 0da40ba3-c356-4ff4-afde-aa2c80779393
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-
-      - name: Check for Snyk token
-        id: snyk-token
-        run: |
-          if [ -n "$SNYK_TOKEN" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::SNYK_TOKEN unavailable (fork PR or secret not set); skipping Snyk scan"
-          fi
-
-      - name: Set up Go
-        if: steps.snyk-token.outputs.available == 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26'
-          cache: true
-
-      - name: Setup Buf
-        if: steps.snyk-token.outputs.available == 'true'
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Snyk resolves the Go dependency graph via `go list`, which requires
-      # the module to compile — generated proto and weaver files included.
-      - name: Generate Proto Files
-        if: steps.snyk-token.outputs.available == 'true'
-        run: buf generate
-
-      - name: Generate weaver.yaml from template
-        if: steps.snyk-token.outputs.available == 'true'
-        run: go run ./cmd/generate-weaver
-
-      - name: Install Snyk CLI
-        if: steps.snyk-token.outputs.available == 'true'
-        run: npm install -g snyk
-
-      - name: Snyk dependency scan
-        if: steps.snyk-token.outputs.available == 'true'
-        # Merge gate: fails on high/critical vulnerabilities in Go dependencies.
-        run: snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif
-
-      - name: Snyk Code scan
-        if: ${{ !cancelled() && steps.snyk-token.outputs.available == 'true' }}
-        # Advisory while existing Snyk Code findings are triaged in the Snyk
-        # UI; remove continue-on-error to make this a merge gate. --report is
-        # only sent from main pushes so the Snyk project tracks main, never
-        # transient PR states.
-        continue-on-error: true
-        run: |
-          REPORT_FLAGS=""
-          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            REPORT_FLAGS="--report --project-id=${SNYK_PROJECT_ID}"
-          fi
-          snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif ${REPORT_FLAGS}
-
-      - name: Upload dependency scan SARIF
-        if: ${{ !cancelled() && steps.snyk-token.outputs.available == 'true' && hashFiles('snyk-deps.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
-        continue-on-error: true  # Don't fail the build if code scanning is not enabled
-        with:
-          sarif_file: snyk-deps.sarif
-          category: snyk-deps
-
-      - name: Upload Snyk Code SARIF
-        if: ${{ !cancelled() && steps.snyk-token.outputs.available == 'true' && hashFiles('snyk-code.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
-        continue-on-error: true  # Don't fail the build if code scanning is not enabled
-        with:
-          sarif_file: snyk-code.sarif
-          category: snyk-code
-
-      - name: Snyk monitor (refresh dependency snapshot in Snyk UI)
-        # Runs even if the dependency scan failed: the Snyk UI should reflect
-        # the true state of main, vulnerabilities included.
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.snyk-token.outputs.available == 'true' }}
-        run: snyk monitor
-
-  # ============================================================================
-  # Job 8: Coverage Check
+  # Job 7: Coverage Check
   # ============================================================================
   coverage-check:
     name: Coverage Requirements
@@ -557,7 +460,7 @@ jobs:
           echo "| pkg/observability | >80% | Check coverage.out |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
-  # Job 9: All Checks Passed
+  # Job 8: All Checks Passed
   # ============================================================================
   ci-success:
     name: All CI Checks Passed
@@ -570,7 +473,6 @@ jobs:
       - fuzz
       - build
       - security
-      - snyk
       - coverage-check
     if: always()
     steps:

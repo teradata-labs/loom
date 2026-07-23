@@ -5,7 +5,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 
 **Version**: v1.3.0
 **Status**: Beta - Feature Complete, API Stabilizing
-**Quality**: 3,743 test functions across 397 test files, 0 race conditions
+**Quality**: 3,851 test functions across 424 test files, 0 race conditions
 
 
 ## Core Principles
