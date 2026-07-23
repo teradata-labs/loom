@@ -260,7 +260,7 @@ func TestE2E_SkillLifecycle_MultiTurnCatalogFoldReload(t *testing.T) {
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	cfg.SkillsConfig = &skills.SkillsConfig{
-		Enabled:             true,
+		Enabled:     true,
 		LoadHardCap: 3, // hard-reject at load: hit by turn 3's second load
 	}
 	// Tight-ish budget so turn 5's heavy tool spam trips red. Ratio

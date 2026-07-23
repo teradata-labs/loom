@@ -51,6 +51,21 @@ type ManageSkillsTool struct {
 	llm               LLMProvider
 	agentID           string
 	permissionChecker *shuttle.PermissionChecker
+
+	// wireTools is the "load body enters context" event's wiring effect,
+	// installed by the agent (Agent.wireSkillTools). executeLoad fires it
+	// immediately after activation so the LLM's next step in the SAME turn
+	// has the tools the just-delivered instructions name — wiring lands
+	// with the words, not a turn later. Optional: nil skips (bare test
+	// constructions, MCP bridge).
+	wireTools func(*skills.Skill)
+}
+
+// WithSkillWiring installs the wiring effect executeLoad fires on a
+// successful activation. See the wireTools field doc.
+func (t *ManageSkillsTool) WithSkillWiring(fn func(*skills.Skill)) *ManageSkillsTool {
+	t.wireTools = fn
+	return t
 }
 
 // NewManageSkillsTool creates the manage_skills builtin.
@@ -233,6 +248,12 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 	}
 
 	active := t.orchestrator.ActivateSkill(sessionID, skill, "manual", name, 1.0)
+
+	// Wire the skill's required tools NOW — the body is about to enter the
+	// context, and the LLM's next step in this same turn will follow it.
+	if t.wireTools != nil {
+		t.wireTools(skill)
+	}
 
 	if !wasActive && t.taskEmitter != nil {
 		t.emitActivationTasks(ctx, sessionID, skill)

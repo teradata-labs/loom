@@ -60,10 +60,28 @@ type Memory struct {
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
 	maxToolResults       int                        // Max tool results in kernel (0 = use default)
 
+	// skillReplayHandler fires the "load body enters context" event for
+	// skills found resident after a session restore: replay put their load
+	// tool_results back into L1, and this handler re-applies the event's
+	// effect (orchestrator activation + tool wiring) that lived only in the
+	// previous process. Installed by the agent (SetSkillReplayHandler);
+	// invoked AFTER m.mu is released — the handler touches the orchestrator
+	// and tool registry, and must never run under Memory's lock.
+	skillReplayHandler func(sessionID string, residentSkills []string)
+
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
 	observers   map[string][]MemoryObserver
 	observersMu sync.RWMutex
+}
+
+// SetSkillReplayHandler installs the handler invoked with the names of
+// skills whose load bodies a session restore replayed into L1. See the
+// skillReplayHandler field doc.
+func (m *Memory) SetSkillReplayHandler(fn func(sessionID string, residentSkills []string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skillReplayHandler = fn
 }
 
 // NewMemory creates a new in-memory session manager.
@@ -231,13 +249,27 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// C-031/032): with a persisted fold it recomputes the fold-time
 			// carry and seeds L2 from the residue; otherwise it falls back to
 			// a full verbatim restore and the next red beat re-folds.
+			var replayedSkills []string
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
 					restoreSegmentedMemory(ctx, store, sessionID, session.Messages, segMem, logger)
+					// Collect skills whose load bodies replay put back into
+					// L1 — the "load body enters context" event just re-fired
+					// for them, and its effect (activation + tool wiring)
+					// must re-fire too. Handler runs after m.mu releases.
+					if m.skillReplayHandler != nil {
+						for name := range segMem.ActiveSkillNames() {
+							replayedSkills = append(replayedSkills, name)
+						}
+					}
 				}
 			}
 			m.sessions[sessionID] = session
+			handler := m.skillReplayHandler
 			m.mu.Unlock()
+			if handler != nil && len(replayedSkills) > 0 {
+				handler(sessionID, replayedSkills)
+			}
 			return session
 		}
 	}

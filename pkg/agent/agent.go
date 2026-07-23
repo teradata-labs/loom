@@ -152,6 +152,32 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		return a.getSystemPrompt(ctx)
 	})
 
+	// Session restore replays resident skill load bodies into L1 — the
+	// "load body enters context" event re-firing. Re-apply its effect:
+	// orchestrator activation + tool wiring, which lived only in the
+	// previous process. Activation only — no task emission, no new
+	// tool_result (the context already carries the body). A skill no
+	// longer in the library logs a warning and is skipped: its
+	// instructions stay in context without machinery, explicit in the
+	// log instead of silent.
+	a.memory.SetSkillReplayHandler(func(sessionID string, residentSkills []string) {
+		if a.skillOrchestrator == nil {
+			return
+		}
+		for _, name := range residentSkills {
+			skill, err := a.skillOrchestrator.GetLibrary().Load(name)
+			if err != nil {
+				zap.L().Warn("resident skill not in library; instructions restored without wiring",
+					zap.String("session_id", sessionID),
+					zap.String("skill", name),
+					zap.Error(err))
+				continue
+			}
+			a.skillOrchestrator.ActivateSkill(sessionID, skill, "replay", name, 1.0)
+			a.wireSkillTools(skill)
+		}
+	})
+
 	// Set context limits for memory (if configured)
 	if a.config.MaxContextTokens > 0 || a.config.ReservedOutputTokens > 0 {
 		a.memory.SetContextLimits(a.config.MaxContextTokens, a.config.ReservedOutputTokens)
@@ -730,30 +756,47 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 		if as == nil || as.Skill == nil {
 			continue
 		}
-		for _, name := range as.Skill.Tools.RequiredTools {
-			if a.tools.IsRegistered(name) {
-				continue
-			}
-			tool := builtin.ByName(name)
-			if tool == nil {
-				zap.L().Warn("skill required tool not available; skipping",
-					zap.String("skill", as.Skill.Name),
-					zap.String("tool", name))
-				continue
-			}
-			a.tools.Register(tool)
-			zap.L().Debug("skill required tool auto-registered",
-				zap.String("skill", as.Skill.Name),
+		a.wireSkillTools(as.Skill)
+	}
+}
+
+// wireSkillTools applies a single skill's tool wiring: registers the
+// skill's required builtin tools that aren't yet registered. This is the
+// effect of the "load body enters context" event and fires at both entry
+// points of that event — executeLoad (live load) and session restore
+// (replay of a resident load) — so the LLM's very next step after the
+// instructions appear has the machinery they name. Idempotent; registers
+// via a.tools directly (never Agent.RegisterTool) so it stays safe to call
+// while Memory's lock is held on the restore path.
+//
+// MCP servers (SkillToolConfig.MCPServers) are not yet activated by skill
+// activation; the field is parsed but not enforced.
+func (a *Agent) wireSkillTools(skill *skills.Skill) {
+	if skill == nil {
+		return
+	}
+	for _, name := range skill.Tools.RequiredTools {
+		if a.tools.IsRegistered(name) {
+			continue
+		}
+		tool := builtin.ByName(name)
+		if tool == nil {
+			zap.L().Warn("skill required tool not available; skipping",
+				zap.String("skill", skill.Name),
 				zap.String("tool", name))
+			continue
 		}
-		// Surface MCP-server requests so operators see when a skill has
-		// declared servers that aren't yet honored. Logged once per turn
-		// per skill rather than per server to avoid log spam.
-		if len(as.Skill.Tools.MCPServers) > 0 {
-			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
-				zap.String("skill", as.Skill.Name),
-				zap.Int("count", len(as.Skill.Tools.MCPServers)))
-		}
+		a.tools.Register(tool)
+		zap.L().Debug("skill required tool auto-registered",
+			zap.String("skill", skill.Name),
+			zap.String("tool", name))
+	}
+	// Surface MCP-server requests so operators see when a skill has
+	// declared servers that aren't yet honored.
+	if len(skill.Tools.MCPServers) > 0 {
+		zap.L().Debug("skill declares mcp_servers; activation not yet supported",
+			zap.String("skill", skill.Name),
+			zap.Int("count", len(skill.Tools.MCPServers)))
 	}
 }
 
@@ -3351,7 +3394,7 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 	mst := NewManageSkillsTool(
 		a.skillOrchestrator, a.skillTaskEmitter, a.taskBoardConfig,
 		a.config, a.llm, a.id, a.permissionChecker,
-	)
+	).WithSkillWiring(a.wireSkillTools)
 	a.tools.Register(shuttle.Tool(mst))
 }
 
