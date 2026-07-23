@@ -169,7 +169,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session knowl
 - **Salience scoring** with time decay and access boosting ranks memories by importance
 - **Lineage tracking** for corrections (SUPERSEDES) and merges (CONSOLIDATES)
 - **FTS5 search** over memory content, summaries, and tags
-- **Token-budgeted context injection** per turn (default 10% of context window)
+- **Token-budgeted context injection** per turn (default 20% of context window)
 - **Enabled by default** (opt-out) when storage backend supports it
 
 ```yaml
@@ -178,7 +178,7 @@ agent:
   memory:
     graph_memory:
       enabled: true              # default when store available
-      context_budget_percent: 10 # % of context window
+      context_budget_percent: 20 # % of context window
       decay_rate: 0.995          # salience decay per day
 ```
 
