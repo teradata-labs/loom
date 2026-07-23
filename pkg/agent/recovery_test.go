@@ -109,14 +109,15 @@ func TestRecovery_OutputTokenCB_SelfHeals(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, recovered)
 
-	// Verify trim was called
-	assert.Equal(t, 1, segMem.trimCalled)
+	// The class-blind trim is gone (O-SW-3): recoverOutputTokenCB must no longer trim memory,
+	// only inject the recovery nudge. Trimming is confined solely to reset_context now.
+	assert.Equal(t, 0, segMem.trimCalled)
 
 	// Verify failure tracker was reset
 	assert.Equal(t, 0, tracker.outputTokenExhaustions)
 
-	// Verify recovery message was injected
-	assert.Len(t, session.messages, 3) // 10 - 8 trimmed + 1 recovery msg = 3
+	// Verify recovery message was injected (10 original + 1 recovery msg, nothing trimmed)
+	assert.Len(t, session.messages, 11)
 	lastMsg := session.messages[len(session.messages)-1]
 	assert.Equal(t, "user", lastMsg.Role)
 	assert.Contains(t, lastMsg.Content, "Simplify your approach")
@@ -197,50 +198,6 @@ func TestRecovery_ToolCB_DisablesTool(t *testing.T) {
 	assert.True(t, recovery.disabledTools["web_search"])
 }
 
-// --- Test: Token Budget Aggressive Trim ---
-
-func TestRecovery_TokenBudget_AggressiveTrim(t *testing.T) {
-	_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "test")
-	config := &RecoveryConfig{AggressiveTrimKeepLastN: 4}
-	recovery := newRecoveryOrchestrator(config, span)
-
-	session := &mockSessionForRecovery{messages: make([]Message, 20)}
-	segMem := &mockTrimableMemory{
-		messages:   make([]Message, 20),
-		tokenCount: 2000,
-	}
-
-	callCount := 0
-	budgetChecker := func() float64 {
-		callCount++
-		// After aggressive trim, budget drops below 85%
-		return 60.0
-	}
-
-	recovered, err := recovery.recoverTokenBudget(context.Background(), session, segMem, budgetChecker)
-	require.NoError(t, err)
-	assert.True(t, recovered)
-	assert.Equal(t, 4, segMem.aggressiveN)
-	assert.Equal(t, 1, callCount)
-}
-
-// --- Test: Token Budget Unrecoverable ---
-
-func TestRecovery_TokenBudget_Unrecoverable(t *testing.T) {
-	_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "test")
-	recovery := newRecoveryOrchestrator(nil, span)
-
-	session := &mockSessionForRecovery{messages: make([]Message, 20)}
-	segMem := &mockTrimableMemory{messages: make([]Message, 20), tokenCount: 2000}
-
-	// Budget stays critical even after trim.
-	budgetChecker := func() float64 { return 90.0 }
-
-	recovered, err := recovery.recoverTokenBudget(context.Background(), session, segMem, budgetChecker)
-	require.NoError(t, err)
-	assert.False(t, recovered)
-}
-
 // --- Test: RecoverableError Interface ---
 
 func TestRecoverableError_Interface(t *testing.T) {
@@ -291,13 +248,9 @@ func TestRecovery_Observability(t *testing.T) {
 	tools := []shuttle.Tool{&shuttle.MockTool{MockName: "broken_tool"}}
 	recovered, _ = recovery.recoverToolCB(context.Background(), "broken_tool", &tools)
 	assert.True(t, recovered)
-
-	// Token budget recovery emits an event.
-	session2 := &mockSessionForRecovery{messages: make([]Message, 20)}
-	segMem2 := &mockTrimableMemory{messages: make([]Message, 20), tokenCount: 2000}
-	recovery2 := newRecoveryOrchestrator(nil, span)
-	_, _ = recovery2.recoverTokenBudget(context.Background(), session2, segMem2, func() float64 { return 50.0 })
-	// No panics = observability integration works.
+	// No panics = observability integration works. Token-budget recovery is no
+	// longer part of recoveryOrchestrator (O-SW-3): that pressure path moved to
+	// Agent.prepareContext (see prepare_context_test.go).
 }
 
 // --- Test: Concurrent Access ---

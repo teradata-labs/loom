@@ -125,6 +125,32 @@ func TestLibrary_LoadFromFilesystem(t *testing.T) {
 	assert.Equal(t, skill, skill2)
 }
 
+// TestLibrary_LoadFromFilesystem_SetsSourcePath confirms Library.Load, via
+// loadFromFilesystem's delegation to LoadSkill, populates SourcePath with
+// the on-disk path of the resolved skill (Seam 4, O-SKL-1) — the folder
+// path the manage_skills(load) builtin surfaces in its result.
+func TestLibrary_LoadFromFilesystem_SetsSourcePath(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "path-tracked", "code", "Path Tracked", nil, nil)
+
+	lib := NewLibrary(WithSearchPaths(dir))
+	skill, err := lib.Load("path-tracked")
+	require.NoError(t, err)
+
+	wantPath := filepath.Join(dir, "path-tracked.yaml")
+	assert.Equal(t, filepath.Clean(wantPath), skill.SourcePath)
+}
+
+func TestLibrary_Register_LeavesSourcePathEmpty(t *testing.T) {
+	// Programmatically-registered skills have no on-disk origin.
+	lib := NewLibrary(WithSearchPaths())
+	lib.Register(&Skill{Name: "in-memory-skill"})
+
+	skill, err := lib.Load("in-memory-skill")
+	require.NoError(t, err)
+	assert.Empty(t, skill.SourcePath)
+}
+
 func TestLibrary_Load_NotFound(t *testing.T) {
 	lib := NewLibrary(WithSearchPaths(t.TempDir()))
 	_, err := lib.Load("nonexistent")

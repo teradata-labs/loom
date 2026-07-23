@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // Known strings whose token counts are pinned by these tests.
@@ -139,56 +141,23 @@ func TestBaseline_SegmentedMemory_AddMessage_ExactCounts(t *testing.T) {
 	assert.Equal(t, 73, step3, "ROM + 3 messages")
 }
 
-// TestBaseline_SegmentedMemory_InjectPattern_ExactDelta pins the exact token
-// delta when a pattern is injected.
-func TestBaseline_SegmentedMemory_InjectPattern_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.InjectPattern(baselinePattern, "sql-helper")
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("Pattern injection: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Equal(t, 14, delta, "pattern token delta must match CountTokens(baselinePattern)")
-}
-
-// TestBaseline_SegmentedMemory_InjectSkills_ExactDelta pins the exact token
-// delta when skills are injected.
-func TestBaseline_SegmentedMemory_InjectSkills_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.InjectSkills(baselineSkill, []string{"db-explorer"})
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("Skill injection: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Equal(t, 11, delta, "skill token delta must match CountTokens(baselineSkill)")
-}
-
-// TestBaseline_SegmentedMemory_CacheSchema_ExactDelta pins the exact token
-// delta when a schema is cached.
-func TestBaseline_SegmentedMemory_CacheSchema_ExactDelta(t *testing.T) {
+// TestBaseline_SegmentedMemory_CacheSchema_NoLongerCounted pins the D-2 contract that
+// kernel-layer accounting (tool results / schema cache) no longer contributes to reported
+// token usage — the LLM never receives these tokens (Seam 4, O-TOK-1). Pre-D-2 this delta
+// was positive (CacheSchema fed cachedKernelTokens); it must now be exactly zero.
+func TestBaseline_SegmentedMemory_CacheSchema_NoLongerCounted(t *testing.T) {
 	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
 
 	before := sm.GetTokenCount()
 	sm.CacheSchema("users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
 	after := sm.GetTokenCount()
 
-	delta := after - before
-	t.Logf("CacheSchema: before=%d, after=%d, delta=%d", before, after, delta)
-	// Schema is counted as: CountTokens("users: CREATE TABLE users ...")
-	assert.Greater(t, delta, 0, "schema must increase token count")
-	// Pin the exact value
-	tc := GetTokenCounter()
-	expected := tc.CountTokens("users: CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
-	assert.Equal(t, expected, delta, "schema delta must match CountTokens of 'key: schema'")
+	assert.Equal(t, before, after, "CacheSchema must no longer change reported token count — kernel-cache accounting is retired")
 }
 
-// TestBaseline_SegmentedMemory_AddToolResult_ExactDelta pins the token delta
-// when a tool result is added.
-func TestBaseline_SegmentedMemory_AddToolResult_ExactDelta(t *testing.T) {
+// TestBaseline_SegmentedMemory_AddToolResult_NoLongerCounted mirrors the CacheSchema case
+// for the other kernel-cache accounting path this D-2 seam retires.
+func TestBaseline_SegmentedMemory_AddToolResult_NoLongerCounted(t *testing.T) {
 	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
 
 	before := sm.GetTokenCount()
@@ -199,9 +168,7 @@ func TestBaseline_SegmentedMemory_AddToolResult_ExactDelta(t *testing.T) {
 	})
 	after := sm.GetTokenCount()
 
-	delta := after - before
-	t.Logf("AddToolResult: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Greater(t, delta, 0, "tool result must increase token count")
+	assert.Equal(t, before, after, "AddToolResult must no longer change reported token count — kernel-cache accounting is retired")
 }
 
 // TestBaseline_SegmentedMemory_FullSession pins the complete token count for
@@ -210,17 +177,10 @@ func TestBaseline_SegmentedMemory_FullSession(t *testing.T) {
 	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
 	ctx := context.Background()
 
-	// Set tools directly (internal field, same package)
-	sm.mu.Lock()
-	sm.tools = []string{"execute_sql", "get_schema", "list_tables"}
-	sm.tokenCountDirty = true
-	sm.mu.Unlock()
-
-	sm.CacheSchema("users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
-	sm.InjectPattern(baselinePattern, "sql-helper")
+	sm.RecomputeToolSchema([]shuttle.Tool{&mockCalculatorTool{}})
 
 	afterSetup := sm.GetTokenCount()
-	t.Logf("After setup (ROM + tools + schema + pattern): %d", afterSetup)
+	t.Logf("After setup (ROM + tool-schema cost): %d", afterSetup)
 
 	sm.AddMessage(ctx, Message{Role: "user", Content: baselineUserMsg})
 	afterUser := sm.GetTokenCount()

@@ -788,6 +788,54 @@ task_template:
 	assert.Equal(t, []int32{0}, step1.DependsOn)
 }
 
+// TestLoadSkill_SetsSourcePath confirms LoadSkill records the resolved
+// filesystem path it read from onto the returned Skill (Seam 4, O-SKL-1),
+// so callers like the manage_skills(load) builtin can surface the skill's
+// folder path in the load result.
+func TestLoadSkill_SetsSourcePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "path-skill.yaml")
+	content := `apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: path-skill
+  domain: general
+prompt:
+  instructions: Do the thing.`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	skill, err := LoadSkill(path)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Clean(path), skill.SourcePath,
+		"LoadSkill must record the cleaned filesystem path it loaded from")
+}
+
+// TestLoadSkill_SourcePath_NotPartOfAuthoredYAML confirms SourcePath is
+// filesystem metadata, not skill content: it does not round-trip through
+// SkillToYAML, and a freshly-loaded copy of the same file gets its own
+// SourcePath independent of anything present in the YAML body.
+func TestLoadSkill_SourcePath_NotPartOfAuthoredYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "roundtrip-skill.yaml")
+	content := `apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: roundtrip-skill
+  domain: general
+prompt:
+  instructions: Do the thing.`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	skill, err := LoadSkill(path)
+	require.NoError(t, err)
+	require.NotEmpty(t, skill.SourcePath)
+
+	data, err := SkillToYAML(skill)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), skill.SourcePath,
+		"SourcePath must not be serialized into the authored YAML")
+}
+
 // TestSkillToYAML_RoundTrip_NewFields ensures the new fields survive a Go ->
 // YAML -> Go round trip without loss.
 func TestSkillToYAML_RoundTrip_NewFields(t *testing.T) {

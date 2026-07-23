@@ -106,14 +106,16 @@ func TestSegmentedMemory_CompressionMetrics_DataIntensive(t *testing.T) {
 	assert.Equal(t, 50, mockTracer.events[0].attributes["warning_threshold_percent"])
 	assert.Equal(t, 70, mockTracer.events[0].attributes["critical_threshold_percent"])
 
-	// Add large messages to trigger token-based compression
-	// Each message ~600 tokens, 8 messages = ~4800 tokens > 4000 limit
+	// Add large messages — AddMessage is pure admission (never compresses,
+	// per the single-writer pressure pipeline), so populate L1 first, then
+	// explicitly compact — the only route left that emits these metrics.
 	for i := 0; i < 8; i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat(fmt.Sprintf("Test message %d with substantial content to consume tokens ", i), 80), // ~600 tokens
 		})
 	}
+	sm.CompactMemory(context.Background())
 
 	// Verify compression metrics were recorded
 	assert.Greater(t, len(mockTracer.metrics), 0, "Should record compression metrics")
@@ -186,14 +188,15 @@ func TestSegmentedMemory_CompressionMetrics_ConversationalProfile(t *testing.T) 
 	assert.Equal(t, "conversational", mockTracer.events[0].attributes["profile"])
 	assert.Equal(t, 9600, mockTracer.events[0].attributes["max_l1_tokens"])
 
-	// Add many large messages to trigger compression (token-based)
-	// Each message ~700 tokens, 20 messages = ~14K tokens > 9600 limit
+	// Add many large messages — AddMessage is pure admission (never
+	// compresses), so populate L1 first, then explicitly compact.
 	for i := 0; i < 20; i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat(fmt.Sprintf("Conversational message %d ", i), 100), // ~700 tokens
 		})
 	}
+	sm.CompactMemory(context.Background())
 
 	// Verify metrics were recorded
 	var found bool
@@ -241,13 +244,15 @@ func TestSegmentedMemory_CompressionMetrics_BatchSizeLabels(t *testing.T) {
 			mockTracer := &mockTracerForMetrics{}
 			sm.SetTracer(mockTracer)
 
-			// Add messages to trigger compression
+			// AddMessage is pure admission (never compresses) — populate L1,
+			// then explicitly compact to exercise the batch-size labeling.
 			for i := 0; i < 10; i++ {
 				sm.AddMessage(context.Background(), Message{
 					Role:    "user",
 					Content: "Message with content to fill budget " + string(make([]byte, 500)),
 				})
 			}
+			sm.CompactMemory(context.Background())
 
 			// Find compression events
 			var batchSizeLabels []string
@@ -313,7 +318,7 @@ func TestSegmentedMemory_ProfileConfigurationEvent(t *testing.T) {
 }
 
 func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
-	// Test that compression works without tracer (no crashes)
+	// Test that explicit compaction works without a tracer set (no crashes).
 	romContent := "Test documentation"
 	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
 
@@ -322,7 +327,8 @@ func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
 
 	// Don't set tracer - should work without crashes
 
-	// Add messages to trigger compression
+	// AddMessage is pure admission (never compresses); populate L1, then
+	// explicitly compact — the tracer-optional path under test.
 	for i := 0; i < 10; i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
@@ -330,6 +336,8 @@ func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
 		})
 	}
 
-	// Should complete without panic
-	assert.LessOrEqual(t, len(sm.l1Messages), profile.MaxL1Tokens, "Compression should still work")
+	assert.NotPanics(t, func() {
+		sm.CompactMemory(context.Background())
+	}, "compaction without a tracer configured must not panic")
+	assert.LessOrEqual(t, sm.GetL1MessageCount(), 1, "CompactMemory should have compressed down to at most the last user message")
 }

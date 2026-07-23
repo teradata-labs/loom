@@ -118,39 +118,6 @@ func TestCheckTokenBudget_HighBudget(t *testing.T) {
 	assert.Greater(t, info.maxOutputTokens, 8192) // Should exceed old fixed cap
 }
 
-func TestEnforceTokenBudget_NormalUsage(t *testing.T) {
-	sm := NewSegmentedMemory("Normal ROM content", 0, 0)
-
-	info := checkTokenBudget(sm)
-	compressed, err := enforceTokenBudget(context.Background(), sm, info)
-
-	require.NoError(t, err)
-	assert.False(t, compressed) // Shouldn't compress at low usage
-}
-
-func TestEnforceTokenBudget_CriticalUsage(t *testing.T) {
-	// Create large ROM to push budget over 85%
-	largeROM := strings.Repeat("Large ROM content for testing compression. ", 15000)
-	sm := NewSegmentedMemory(largeROM, 0, 0)
-
-	// Add many messages to L1
-	for i := 0; i < 10; i++ {
-		sm.AddMessage(context.Background(), Message{
-			Role:    "user",
-			Content: strings.Repeat("Test message ", 50),
-		})
-	}
-
-	info := checkTokenBudget(sm)
-	if info.budgetPct > 85 {
-		compressed, err := enforceTokenBudget(context.Background(), sm, info)
-		require.NoError(t, err)
-		assert.True(t, compressed) // Should compress at critical usage
-	} else {
-		t.Skip("ROM not large enough to trigger critical threshold")
-	}
-}
-
 func TestBuildSoftReminderLegacy(t *testing.T) {
 	// Test with default config (MaxToolExecutions=50, threshold at 37)
 	maxTools := 50

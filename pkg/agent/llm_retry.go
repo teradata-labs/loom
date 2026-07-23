@@ -26,6 +26,11 @@ import (
 // chatWithRetry wraps LLM Chat calls with exponential backoff retry logic.
 // If the provider supports streaming and a progress callback is configured,
 // it will use streaming with token buffering to emit real-time progress.
+//
+// messages passed here must come from prepareContext — it is the single
+// mutation entry point into segmented memory after admission, and the two
+// runConversationLoop call sites of chatWithRetry are its exhaustive
+// LLM-bound call surface.
 func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
 	// Check if provider supports streaming and we have a progress callback
 	supportsStreaming := llmtypes.SupportsStreaming(a.llm)

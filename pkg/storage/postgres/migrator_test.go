@@ -25,12 +25,13 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 18 migrations.
+	// Verify we have all 19 migrations.
 	// Bumped from 11 by 000012_skill_index and 000013_task_idempotency
 	// (skills overhaul Phases 4 and 8), then 000014_analytics_views,
 	// 000015_rls_infrastructure_tables, 000016_rls_honor_jwt_sub,
-	// 000017_graph_rls_honor_jwt, then 000018_tool_outcomes_policy_denied.
-	assert.Len(t, migrations, 18, "should have 18 migration versions")
+	// 000017_graph_rls_honor_jwt, 000018_tool_outcomes_policy_denied, then
+	// 000019_message_context_class.
+	assert.Len(t, migrations, 19, "should have 19 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {

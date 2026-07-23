@@ -93,35 +93,10 @@ type tokenBudgetInfo struct {
 	maxOutputTokens int
 }
 
-// getModelOutputCapacity determines the optimal output token cap based on model name.
-// This ensures smaller models aren't overwhelmed with output requirements while
-// allowing larger models to use their full capabilities.
-//
-//nolint:unused // Reserved for future dynamic output capacity adjustment
-func getModelOutputCapacity(modelName string) int {
-	modelLower := strings.ToLower(modelName)
-
-	// Small models (7B-8B parameters) - more focused outputs
-	// These models perform better with shorter, more concise responses
-	if strings.Contains(modelLower, "7b") || strings.Contains(modelLower, "8b") ||
-		strings.Contains(modelLower, "gemma") || // Gemma models are typically smaller
-		strings.Contains(modelLower, "phi") { // Phi models are compact
-		return 4096 // 4K tokens for small models
-	}
-
-	// Medium models (13B-32B parameters) - balanced outputs
-	if strings.Contains(modelLower, "13b") || strings.Contains(modelLower, "14b") ||
-		strings.Contains(modelLower, "20b") || strings.Contains(modelLower, "32b") {
-		return 6144 // 6K tokens for medium models
-	}
-
-	// Large models (70B+ parameters, Claude, GPT-4, etc.) - full capacity
-	// These models can handle longer, more detailed responses
-	return 8192 // 8K tokens for large models
-}
-
 // checkTokenBudget calculates current token budget status.
-// Returns budget info for logging and decision making.
+// Returns budget info for logging and decision making. Read-only: it never
+// mutates memory — the single-writer pressure pipeline (prepareContext) is
+// the only code that does.
 func checkTokenBudget(segmentedMem *SegmentedMemory) tokenBudgetInfo {
 	currentTokens := segmentedMem.GetTokenCount()
 
@@ -149,26 +124,31 @@ func checkTokenBudget(segmentedMem *SegmentedMemory) tokenBudgetInfo {
 	}
 }
 
-// enforceTokenBudget checks token usage and triggers compression if needed.
-// Returns true if compression was performed.
-func enforceTokenBudget(ctx context.Context, segmentedMem *SegmentedMemory, budgetInfo tokenBudgetInfo) (bool, error) {
-	// Force aggressive compression if budget is critical (>70% - lowered from 85%)
-	// This prevents context overflow in data-intensive workloads with many tool executions
-	if budgetInfo.budgetPct > 70 {
-		messagesCompressed, tokensSaved := segmentedMem.CompactMemory(ctx)
-		if messagesCompressed > 0 {
-			// Note: In production, use structured logging here
-			_ = fmt.Sprintf("pre_llm_compression_forced: messages=%d tokens_saved=%d new_count=%d",
-				messagesCompressed, tokensSaved, segmentedMem.GetTokenCount())
-			return true, nil
-		}
-	} else if budgetInfo.budgetPct > 60 {
-		// Warning level - log but don't force compression yet
-		_ = fmt.Sprintf("token_budget_warning: tokens=%d pct=%.2f",
-			budgetInfo.currentTokens, budgetInfo.budgetPct)
+// getModelOutputCapacity determines the optimal output token cap based on model name.
+// This ensures smaller models aren't overwhelmed with output requirements while
+// allowing larger models to use their full capabilities.
+//
+//nolint:unused // Reserved for future dynamic output capacity adjustment
+func getModelOutputCapacity(modelName string) int {
+	modelLower := strings.ToLower(modelName)
+
+	// Small models (7B-8B parameters) - more focused outputs
+	// These models perform better with shorter, more concise responses
+	if strings.Contains(modelLower, "7b") || strings.Contains(modelLower, "8b") ||
+		strings.Contains(modelLower, "gemma") || // Gemma models are typically smaller
+		strings.Contains(modelLower, "phi") { // Phi models are compact
+		return 4096 // 4K tokens for small models
 	}
 
-	return false, nil
+	// Medium models (13B-32B parameters) - balanced outputs
+	if strings.Contains(modelLower, "13b") || strings.Contains(modelLower, "14b") ||
+		strings.Contains(modelLower, "20b") || strings.Contains(modelLower, "32b") {
+		return 6144 // 6K tokens for medium models
+	}
+
+	// Large models (70B+ parameters, Claude, GPT-4, etc.) - full capacity
+	// These models can handle longer, more detailed responses
+	return 8192 // 8K tokens for large models
 }
 
 // buildSoftReminder creates a soft reminder message after many tool executions.

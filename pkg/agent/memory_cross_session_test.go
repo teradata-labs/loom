@@ -390,7 +390,7 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	require.True(t, ok, "Reattached SegmentedMem should be *SegmentedMemory")
 
 	// Verify it has the correct compression profile
-	assert.Equal(t, 9600, segMem2.maxL1Tokens, "Should have conversational maxL1Tokens (12 messages worth ~9600)")
+	assert.Equal(t, 9600, segMem2.compressionProfile.MaxL1Tokens, "Should have conversational MaxL1Tokens (12 messages worth ~9600)")
 	assert.Equal(t, "conversational", segMem2.compressionProfile.Name, "Should have conversational profile")
 
 	// Add another message and verify it goes to SegmentedMemory

@@ -88,3 +88,21 @@ func (p *PromptAwareTool) Execute(ctx context.Context, params map[string]interfa
 func (p *PromptAwareTool) Backend() string {
 	return p.tool.Backend()
 }
+
+// ContextClassHint forwards to the wrapped tool when it implements
+// ContextClassHinter, so wrapping a tool for externalized descriptions never
+// hides its opt-in ballast-class retention signal from the admission gate
+// (Executor.handleLargeResult) or the context-class tagger (toolResultClass,
+// D-4/D-3). Returns "" (no opinion) when the wrapped tool doesn't implement
+// ContextClassHinter, which callers treat identically to the interface being
+// absent entirely.
+func (p *PromptAwareTool) ContextClassHint() string {
+	if hinter, ok := p.tool.(ContextClassHinter); ok {
+		return hinter.ContextClassHint()
+	}
+	return ""
+}
+
+// Ensure PromptAwareTool implements ContextClassHinter (unconditionally, per
+// the forwarding contract above).
+var _ ContextClassHinter = (*PromptAwareTool)(nil)

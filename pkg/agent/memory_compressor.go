@@ -80,6 +80,36 @@ func (c *LLMCompressor) CompressMessages(ctx context.Context, messages []Message
 	return strings.TrimSpace(summary), nil
 }
 
+// CompressMessagesStrict behaves like CompressMessages but never silently
+// substitutes the heuristic fallback: an LLM-call failure or an empty
+// summary is returned as a non-nil error instead. CompressMessages' own
+// swallow-and-fallback contract stays unchanged (its callers and pinned
+// tests rely on it always returning a non-empty string with a nil error);
+// this sibling method exists for callers that must distinguish a genuine
+// LLM summary from a degraded heuristic one — e.g. Fold's logged
+// degraded-fallback requirement (via the StrictMemoryCompressor interface).
+func (c *LLMCompressor) CompressMessagesStrict(ctx context.Context, messages []Message) (string, error) {
+	if !c.enabled {
+		return "", fmt.Errorf("llm compressor disabled")
+	}
+
+	var conversationParts []string
+	for _, msg := range messages {
+		conversationParts = append(conversationParts, fmt.Sprintf("[%s]: %s", msg.Role, msg.Content))
+	}
+	conversationText := strings.Join(conversationParts, "\n")
+
+	summary, err := c.llmCaller.CompressConversation(ctx, conversationText)
+	if err != nil {
+		return "", fmt.Errorf("llm compression failed: %w", err)
+	}
+	if summary == "" {
+		return "", fmt.Errorf("llm compressor returned an empty summary")
+	}
+
+	return strings.TrimSpace(summary), nil
+}
+
 // simpleCompress performs basic keyword extraction without LLM.
 // Used as fallback when LLM is unavailable or errors occur.
 func (c *LLMCompressor) simpleCompress(messages []Message) string {

@@ -15,6 +15,7 @@ package shuttle
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -80,6 +81,10 @@ func (r *Registry) ListTools() []Tool {
 	for _, tool := range r.tools {
 		tools = append(tools, tool)
 	}
+	// Name-sorted so the advertised tool list is byte-stable across calls:
+	// the tools block leads the provider's cached prompt prefix, and an
+	// order change there invalidates the cache for the entire request.
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
 	return tools
 }
 

@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -59,10 +60,28 @@ type Memory struct {
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
 	maxToolResults       int                        // Max tool results in kernel (0 = use default)
 
+	// skillReplayHandler fires the "load body enters context" event for
+	// skills found resident after a session restore: replay put their load
+	// tool_results back into L1, and this handler re-applies the event's
+	// effect (orchestrator activation + tool wiring) that lived only in the
+	// previous process. Installed by the agent (SetSkillReplayHandler);
+	// invoked AFTER m.mu is released — the handler touches the orchestrator
+	// and tool registry, and must never run under Memory's lock.
+	skillReplayHandler func(sessionID string, residentSkills []string)
+
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
 	observers   map[string][]MemoryObserver
 	observersMu sync.RWMutex
+}
+
+// SetSkillReplayHandler installs the handler invoked with the names of
+// skills whose load bodies a session restore replayed into L1. See the
+// skillReplayHandler field doc.
+func (m *Memory) SetSkillReplayHandler(fn func(sessionID string, residentSkills []string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skillReplayHandler = fn
 }
 
 // NewMemory creates a new in-memory session manager.
@@ -205,6 +224,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
 		if err == nil && session != nil {
+			// Reclassify-on-restore: persisted classes are applied verbatim
+			// (SaveMessage/LoadMessages round-trip); rows predating the
+			// context_class column (or otherwise persisted empty) reclassify
+			// by the same structural rules used at construction.
+			session.Messages = reclassifyMessages(session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
 			// (they aren't persisted). Recreate them so compression and error
@@ -218,16 +242,34 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// Replay DB-loaded messages into a freshly built SegmentedMem so
 			// GetMessagesForLLM returns full history after server restart.
 			//
-			// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
-			// compression from firing between an assistant tool_use and its
-			// tool_result — see ReplayMessages doc for details.
+			// CRITICAL: Use ReplayMessages/RestoreFold (never AddMessage in a
+			// loop) to prevent compression from firing between an assistant
+			// tool_use and its tool_result — see ReplayMessages doc for
+			// details. restoreSegmentedMemory is fold-aware (O-RST-1/2,
+			// C-031/032): with a persisted fold it recomputes the fold-time
+			// carry and seeds L2 from the residue; otherwise it falls back to
+			// a full verbatim restore and the next red beat re-folds.
+			var replayedSkills []string
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-					segMem.ReplayMessages(ctx, session.Messages)
+					restoreSegmentedMemory(ctx, store, sessionID, session.Messages, segMem, logger)
+					// Collect skills whose load bodies replay put back into
+					// L1 — the "load body enters context" event just re-fired
+					// for them, and its effect (activation + tool wiring)
+					// must re-fire too. Handler runs after m.mu releases.
+					if m.skillReplayHandler != nil {
+						for name := range segMem.ActiveSkillNames() {
+							replayedSkills = append(replayedSkills, name)
+						}
+					}
 				}
 			}
 			m.sessions[sessionID] = session
+			handler := m.skillReplayHandler
 			m.mu.Unlock()
+			if handler != nil && len(replayedSkills) > 0 {
+				handler(sessionID, replayedSkills)
+			}
 			return session
 		}
 	}
@@ -359,6 +401,51 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 			segMem.maxToolResults = maxToolRes
 		}
 	}
+}
+
+// restoreSegmentedMemory performs the fold-aware restore (O-RST-1/2,
+// C-031/032, FR-027): with a persisted fold, L1 is set to
+// recompute_carry(flat[:foldIndex]) + flat[foldIndex:] and L2 to the
+// persisted residue; with an absent or unreadable fold, a full verbatim
+// restore occurs and the next red beat re-folds. No pressure is applied
+// either way — restore is pure bulk-load, no compression or eviction runs
+// here.
+//
+// The most recent fold is the LAST element of LoadMemorySnapshots (which
+// orders ASC, oldest first) — not a LIMIT 1 query, which would return the
+// OLDEST fold and restore a stale one once a session has folded more than
+// once (SC-003).
+func restoreSegmentedMemory(ctx context.Context, store SessionStorage, sessionID string, flat []Message, segMem *SegmentedMemory, logger *zap.Logger) {
+	if store == nil {
+		segMem.ReplayMessages(ctx, flat)
+		return
+	}
+
+	snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "l2_summary", 0)
+	switch {
+	case err != nil:
+		logger.Warn("Failed to load fold record — falling back to verbatim restore",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	case len(snaps) > 0:
+		latest := snaps[len(snaps)-1]
+		var rec foldRecord
+		if jsonErr := json.Unmarshal([]byte(latest.Content), &rec); jsonErr == nil &&
+			rec.FoldIndex >= 0 && rec.FoldIndex <= len(flat) {
+			carry := computeCarry(flat[:rec.FoldIndex])
+			l1 := make([]Message, 0, len(carry)+len(flat)-rec.FoldIndex)
+			l1 = append(l1, carry...)
+			l1 = append(l1, flat[rec.FoldIndex:]...)
+			segMem.RestoreFold(ctx, rec.Residue, l1, len(flat))
+			return
+		}
+		logger.Warn("Fold record unreadable — falling back to verbatim restore",
+			zap.String("session_id", sessionID))
+	}
+
+	// Absent or unreadable fold: full verbatim restore. l2Summary stays
+	// empty (ReplayMessages never touches it) — the next red beat re-folds.
+	segMem.ReplayMessages(ctx, flat)
 }
 
 // GetSession retrieves a session by ID.

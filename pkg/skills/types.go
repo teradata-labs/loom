@@ -114,6 +114,13 @@ type Skill struct {
 	// nil = not specified (default true), &false = explicitly suppressed.
 	// EffectiveEmitTasks() resolves this against zero-value semantics.
 	EmitTasks *bool `json:"emit_tasks,omitempty"`
+
+	// SourcePath is the filesystem path this skill was loaded from. Set by
+	// LoadSkill; empty for skills constructed programmatically (e.g. via
+	// Library.Register) or loaded from an embedded FS. Not part of the
+	// authored YAML — it is filesystem metadata, not skill content — so it
+	// round-trips through neither yamlToSkill nor SkillToYAML.
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 // EffectiveEmitTasks returns the resolved emit-tasks decision for this skill,

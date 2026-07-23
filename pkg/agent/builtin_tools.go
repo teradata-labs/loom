@@ -17,8 +17,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
@@ -1033,213 +1036,285 @@ func (t *QueryToolResultTool) Backend() string {
 // Ensure QueryToolResultTool implements shuttle.Tool interface.
 var _ shuttle.Tool = (*QueryToolResultTool)(nil)
 
-// RecordFindingTool allows agents to record verified findings in working memory.
-// This prevents hallucination by maintaining structured facts discovered during analysis.
-//
-// Findings are stored in the SegmentedMemory Kernel layer and automatically injected
-// into LLM context as a "Verified Findings" summary, providing working memory across
-// tool executions.
-type RecordFindingTool struct {
-	memory *Memory // Agent's memory manager to access sessions
+// recallCapBytes is the byte cap applied to recall_context's returned
+// content — the same admission threshold the valve evicted the original
+// result at (D-4 Seam 3, C-F).
+const recallCapBytes = int(shuttle.DefaultAdmissionThresholdBytes)
+
+// dataRefShape matches storage.GenerateID()'s output: 16 bytes hex-encoded
+// (32 lowercase hex characters). Used to disambiguate a SQL/data reference
+// from a provider ToolUseID (e.g. "toolu_...") at recall_context resolution.
+var dataRefShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// RecallContextTool resolves a ref emitted by a valve eviction stub (Seam 2)
+// or a fold pointer (D-5) back into its original content: the durable
+// messages row keyed by ToolUseID, or the pre-fold transcript, RLS-scoped to
+// the requesting session so a ref never crosses tenants (C-F, O-RCL-1).
+type RecallContextTool struct {
+	memory   *Memory
+	maxBytes int // per-call output cap; 0 = default (recallCapBytes)
 }
 
-// NewRecordFindingTool creates a new RecordFindingTool.
-func NewRecordFindingTool(memory *Memory) *RecordFindingTool {
-	return &RecordFindingTool{
-		memory: memory,
+// NewRecallContextTool creates a new recall_context builtin.
+func NewRecallContextTool(memory *Memory) *RecallContextTool {
+	return &RecallContextTool{memory: memory}
+}
+
+// WithMaxBytes overrides the per-call output cap on recall_context results.
+// Values <=0 are ignored (default retained). The default is
+// SharedMemoryThresholdBytes (4 KiB), matching admission's oversize bar so a
+// recalled ballast result is itself re-admissable — a deployment can raise
+// this when its LLM window is wide and truncation loses value the agent
+// would use.
+func (t *RecallContextTool) WithMaxBytes(n int) *RecallContextTool {
+	if n > 0 {
+		t.maxBytes = n
 	}
+	return t
+}
+
+// effectiveMaxBytes returns the caller-configured cap or the default.
+func (t *RecallContextTool) effectiveMaxBytes() int {
+	if t.maxBytes > 0 {
+		return t.maxBytes
+	}
+	return recallCapBytes
 }
 
 // Name returns the tool name.
-func (t *RecordFindingTool) Name() string {
-	return "record_finding"
+func (t *RecallContextTool) Name() string {
+	return "recall_context"
 }
 
 // Description returns the tool description for the LLM.
-func (t *RecordFindingTool) Description() string {
-	return `Record verified findings in working memory to prevent hallucination.
+func (t *RecallContextTool) Description() string {
+	return `Recovers the full content behind a ref, resolving either a valve eviction stub or a pre-fold transcript pointer.
 
-Use this tool to store structured facts discovered during analysis. These findings are
-automatically injected into your context as a "Verified Findings" summary, providing
-working memory across tool executions.
-
-When to record findings:
-- After counting rows: record_finding(path="table_name.row_count", value=2195, category="statistic")
-- After schema discovery: record_finding(path="table_name.columns", value=["col1", "col2"], category="schema")
-- After null analysis: record_finding(path="table_name.column_name.null_rate", value=0.17, category="statistic", note="376 out of 2195 rows")
-- After finding patterns: record_finding(path="table_name.observation", value="All sites have unique site_id", category="observation")
-- After distribution analysis: record_finding(path="table_name.region.distribution", value={"Americas": 0.54, "EMEA": 0.27}, category="distribution")
-
-Path naming conventions:
-- Use hierarchical structure: "table.column.metric" or "table.metric"
-- Use snake_case for consistency
-- Examples: "customers.row_count", "orders.status.null_rate", "sales.region.distribution"
-
-Categories:
-- "statistic": Counts, percentages, aggregates (e.g., row counts, null rates, averages)
-- "schema": Table/column structures, data types, relationships
-- "observation": Patterns, anomalies, business insights
-- "distribution": Value distributions, frequency analysis, grouping results
+Use this when the conversation shows a stub like:
+  [evicted: <tool> result, N tok → recall_context('<ref>')]
+and you need the original content back, or when a fold residue names a
+fold:<index> pointer to the pre-fold transcript.
 
 Input:
-- path (required): Hierarchical key for the finding (e.g., "table.column.metric")
-- value (required): The actual data (number, string, array, object)
-- category (optional): Type of finding ("statistic", "schema", "observation", "distribution")
-- note (optional): Additional context or explanation
-- source (optional): Tool call ID that produced this finding
+- ref: the ref named in the stub or fold pointer
+- query (optional): a plain-text excerpt query — when set, only a window around the first match is returned instead of the full content
 
-Examples:
-- record_finding(path="vantage_sites.row_count", value=2195, category="statistic")
-- record_finding(path="vantage_sites.columns", value=["site_id", "customer_id", "region"], category="schema")
-- record_finding(path="vantage_sites.customer_id.null_rate", value=0.17, category="statistic", note="376 out of 2195 rows")
-- record_finding(path="vantage_sites.site_id.uniqueness", value="100% unique - likely primary key", category="observation")
-- record_finding(path="vantage_sites.business_region.distribution", value={"Americas": 1183, "EMEA": 589, "APJ": 423}, category="distribution")`
+Output is appended as a new tool result at the end of the conversation, capped at 4096 bytes.
+
+SQL/data references produced by large tool results (32-character hex ids) are not handled here — use query_tool_result for those.`
 }
 
 // InputSchema returns the JSON schema for the tool input.
-func (t *RecordFindingTool) InputSchema() *shuttle.JSONSchema {
+func (t *RecallContextTool) InputSchema() *shuttle.JSONSchema {
 	return &shuttle.JSONSchema{
 		Type: "object",
 		Properties: map[string]*shuttle.JSONSchema{
-			"path": {
+			"ref": {
 				Type:        "string",
-				Description: "Hierarchical key for the finding (e.g., 'table.column.metric')",
+				Description: "The ref named in a valve eviction stub (a ToolUseID) or a fold:<index> pointer.",
 			},
-			"value": {
+			"query": {
 				Type:        "string",
-				Description: "The actual data as JSON string (number, string, array, or object)",
-			},
-			"category": {
-				Type:        "string",
-				Description: "Type of finding: 'statistic', 'schema', 'observation', or 'distribution'",
-			},
-			"note": {
-				Type:        "string",
-				Description: "Optional additional context or explanation",
-			},
-			"source": {
-				Type:        "string",
-				Description: "Optional tool call ID that produced this finding",
+				Description: "Optional plain-text excerpt query; when set, only a window around the first match is returned.",
 			},
 		},
-		Required: []string{"path", "value"},
+		Required: []string{"ref"},
 	}
 }
 
-// Execute records the finding in working memory.
-func (t *RecordFindingTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	// Extract session_id from context (typed key)
+// Execute resolves ref against the requesting session's durable rows.
+func (t *RecallContextTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
+	ref, _ := input["ref"].(string)
+	if ref == "" {
+		return &shuttle.Result{
+			Success: false,
+			Error:   &shuttle.Error{Code: "INVALID_PARAMETER", Message: "ref is required"},
+		}, nil
+	}
+	query, _ := input["query"].(string)
+
 	sessionID := session.SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return &shuttle.Result{
 			Success: false,
-			Error: &shuttle.Error{
-				Code:    "no_session",
-				Message: "Session ID not found in context",
-			},
+			Error:   &shuttle.Error{Code: "MISSING_SESSION_ID", Message: "session ID not found in context"},
 		}, nil
 	}
 
-	// Get session from memory
-	session, exists := t.memory.GetSession(sessionID)
-	if !exists {
+	if foldRef, ok := strings.CutPrefix(ref, "fold:"); ok {
+		return t.recallFold(ctx, sessionID, foldRef, query)
+	}
+
+	if dataRefShape.MatchString(ref) {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
-				Code:    "session_not_found",
-				Message: fmt.Sprintf("Session %s not found", sessionID),
+				Code:       "SQL_REF_NOT_SUPPORTED",
+				Message:    "SQL/data references are retrieved via query_tool_result, not recall_context",
+				Suggestion: fmt.Sprintf("query_tool_result(reference_id=%q, offset=0, limit=100)", ref),
 			},
 		}, nil
 	}
 
-	// Get SegmentedMemory from session
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	if !ok || segMem == nil {
+	return t.recallValve(ctx, sessionID, ref, query)
+}
+
+// recallValve resolves a valve ref (the evicted tool result's ToolUseID)
+// against the session's durable rows. Fails closed — never another user's
+// bytes — when the ref isn't found among this RLS-scoped session's rows,
+// which is also what happens for a ref that belongs to a different session.
+func (t *RecallContextTool) recallValve(ctx context.Context, sessionID, ref, query string) (*shuttle.Result, error) {
+	store := t.memory.GetStore()
+	if store == nil {
+		return refNotAvailable(), nil
+	}
+
+	rows, err := store.LoadMessages(ctx, sessionID)
+	if err != nil {
+		return refNotAvailable(), nil
+	}
+
+	for _, row := range rows {
+		if row.ToolUseID == ref {
+			content := row.Content
+			if query != "" {
+				content = excerptContent(content, query)
+			}
+			return &shuttle.Result{Success: true, Data: capBytes(content, t.effectiveMaxBytes())}, nil
+		}
+	}
+
+	return refNotAvailable(), nil
+}
+
+// recallFold resolves a fold:<index> ref into the pre-fold transcript:
+// LoadMessages(session)[:foldIndex]. foldIndex is the flatLen value D-5's
+// Fold recorded at fold time (the same value passed as flatLen to
+// SegmentedMemory.Fold), embedded directly in the ref — identity-derived,
+// never minted, and reproducible byte-identically after restore.
+func (t *RecallContextTool) recallFold(ctx context.Context, sessionID, foldRef, query string) (*shuttle.Result, error) {
+	foldIndex, err := strconv.Atoi(foldRef)
+	if err != nil || foldIndex < 0 {
 		return &shuttle.Result{
 			Success: false,
-			Error: &shuttle.Error{
-				Code:    "no_segmented_memory",
-				Message: "Session does not have segmented memory enabled",
-			},
+			Error:   &shuttle.Error{Code: "INVALID_REF", Message: "invalid fold ref"},
 		}, nil
 	}
 
-	// Validate path
-	path, ok := input["path"].(string)
-	if !ok || path == "" {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "path must be a non-empty string",
-			},
-		}, nil
+	store := t.memory.GetStore()
+	if store == nil {
+		return refNotAvailable(), nil
 	}
 
-	// Validate value (required, can be any type)
-	value, hasValue := input["value"]
-	if !hasValue {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "value is required",
-			},
-		}, nil
+	rows, err := store.LoadMessages(ctx, sessionID)
+	if err != nil {
+		return refNotAvailable(), nil
 	}
 
-	// Extract optional parameters
-	category := ""
-	if cat, ok := input["category"].(string); ok {
-		category = cat
+	if foldIndex > len(rows) {
+		foldIndex = len(rows)
 	}
 
-	note := ""
-	if n, ok := input["note"].(string); ok {
-		note = n
+	content := renderTranscript(rows[:foldIndex])
+	if query != "" {
+		content = excerptContent(content, query)
 	}
 
-	source := ""
-	if src, ok := input["source"].(string); ok {
-		source = src
-	}
+	return &shuttle.Result{Success: true, Data: capBytes(content, t.effectiveMaxBytes())}, nil
+}
 
-	// Validate category if provided
-	validCategories := map[string]bool{
-		"statistic":    true,
-		"schema":       true,
-		"observation":  true,
-		"distribution": true,
-	}
-	if category != "" && !validCategories[category] {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "invalid_input",
-				Message:    fmt.Sprintf("Invalid category '%s'. Must be one of: statistic, schema, observation, distribution", category),
-				Suggestion: "Use 'statistic' for counts/percentages, 'schema' for structure, 'observation' for patterns, 'distribution' for value distributions",
-			},
-		}, nil
-	}
-
-	// Record finding in session's segmented memory
-	segMem.RecordFinding(path, value, category, note, source)
-
+// refNotAvailable is the fail-closed response for a ref that cannot be
+// resolved within the requesting session — including a ref that belongs to
+// another session/user, which must never be distinguishable from "not
+// found" (never another user's bytes).
+func refNotAvailable() *shuttle.Result {
 	return &shuttle.Result{
-		Success: true,
-		Data: map[string]interface{}{
-			"recorded": true,
-			"path":     path,
-			"category": category,
-		},
-	}, nil
+		Success: false,
+		Error:   &shuttle.Error{Code: "REF_NOT_AVAILABLE", Message: "ref not available"},
+	}
+}
+
+// renderTranscript flattens messages into a plain-text transcript for the
+// fold-ref recall path.
+func renderTranscript(messages []Message) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		fmt.Fprintf(&sb, "%s: %s\n", msg.Role, msg.Content)
+	}
+	return sb.String()
+}
+
+// excerptContent returns a window of content around the first plain-text
+// (case-insensitive) match of query, or content unchanged if query doesn't
+// match — the caller caps the result afterward regardless. Both window
+// edges are aligned to UTF-8 rune boundaries so a multibyte rune isn't
+// sliced in half at start or end.
+func excerptContent(content, query string) string {
+	idx := strings.Index(strings.ToLower(content), strings.ToLower(query))
+	if idx < 0 {
+		return content
+	}
+
+	const window = 1024
+	start := idx - window
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(query) + window
+	if end > len(content) {
+		end = len(content)
+	}
+
+	// Align start forward to the next rune boundary (skip any continuation
+	// byte we may have landed on). Align end backward the same way.
+	for start > 0 && start < len(content) && !utf8.RuneStart(content[start]) {
+		start++
+	}
+	for end > start && end < len(content) && !utf8.RuneStart(content[end]) {
+		end--
+	}
+
+	excerpt := content[start:end]
+	if start > 0 {
+		excerpt = "…" + excerpt
+	}
+	if end < len(content) {
+		excerpt += "…"
+	}
+	return excerpt
+}
+
+// capBytes truncates s to at most max bytes without splitting a multi-byte
+// UTF-8 rune at the boundary.
+func capBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	trimmed := s[:max]
+	for len(trimmed) > 0 {
+		r, size := utf8.DecodeLastRuneInString(trimmed)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed
 }
 
 // Backend returns the backend type this tool requires.
 // Empty string means backend-agnostic (works with any agent).
-func (t *RecordFindingTool) Backend() string {
+func (t *RecallContextTool) Backend() string {
 	return "" // Backend-agnostic built-in tool
 }
 
-// Ensure RecordFindingTool implements shuttle.Tool interface.
-var _ shuttle.Tool = (*RecordFindingTool)(nil)
+// ContextClassHint opts recall_context's own result into ballast-class
+// retention: the recovered content is re-evictable by a later valve pass
+// (C-F). recall_context is also named in pkg/shuttle's admission exemption
+// set, so its own result is never wrapped away regardless of size.
+func (t *RecallContextTool) ContextClassHint() string {
+	return shuttle.ClassBallast
+}
+
+// Ensure RecallContextTool implements shuttle.Tool and shuttle.ContextClassHinter.
+var _ shuttle.Tool = (*RecallContextTool)(nil)
+var _ shuttle.ContextClassHinter = (*RecallContextTool)(nil)

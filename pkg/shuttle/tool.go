@@ -44,6 +44,44 @@ type Tool interface {
 	Backend() string
 }
 
+// Context-class string constants. This is the single shared signal both the
+// pkg/agent tagger (D-3) and the pkg/shuttle/executor.go admission gate
+// (D-4) read — pkg/agent's ClassNarrative/ClassCharter/ClassLedger/
+// ClassBallast are declared in terms of these values, so the two packages
+// agree by construction.
+const (
+	ClassNarrative = ""
+	ClassCharter   = "charter"
+	ClassLedger    = "ledger"
+	ClassBallast   = "ballast"
+)
+
+// ContextClassHinter lets a tool override the classifier's defaults
+// (pkg/agent toolResultClass: loaders → narrative, contact_human → ledger,
+// everything else → ballast). Returning "ledger" or "charter" pins the
+// tool's results against valve eviction and fold drop; returning "ballast"
+// additionally makes results wrappable at admission (see IsBallast).
+type ContextClassHinter interface {
+	// ContextClassHint returns "ballast", "ledger", or "charter".
+	// Any other value (including "") is treated as no opinion.
+	ContextClassHint() string
+}
+
+// IsBallast reports whether tool explicitly hints ballast via
+// ContextClassHinter. The admission gate (Executor.handleLargeResult,
+// D-4 Seam 1) wraps a result into a preview + reference only when this
+// returns true. Note the asymmetry with the classifier: a tool without a
+// hint CLASSIFIES ballast (valve/fold reclaim applies) but is not wrapped
+// at admission — its results enter L1 whole and are reclaimed later under
+// pressure. Only hinted-ballast tools get admission wrapping.
+func IsBallast(tool Tool) bool {
+	if tool == nil {
+		return false
+	}
+	hinter, ok := tool.(ContextClassHinter)
+	return ok && hinter.ContextClassHint() == ClassBallast
+}
+
 // Result represents the outcome of tool execution.
 type Result struct {
 	// Success indicates if the tool executed successfully

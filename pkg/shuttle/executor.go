@@ -62,15 +62,25 @@ type Executor struct {
 	largeParamDerefErrors atomic.Int64 // Count of dereference failures
 }
 
+// DefaultAdmissionThresholdBytes is the default byte threshold at which a
+// wrappable (ballast-class) tool result is admitted as a preview + reference
+// instead of entering context whole (O-ADM-1, D-4 Seam 1). Overridable via
+// agent config (SetSharedMemory's threshold parameter): negative disables
+// wrapping entirely (inline everything), 0 wraps unconditionally, >0 sets an
+// explicit byte threshold.
+const DefaultAdmissionThresholdBytes int64 = 4096
+
 // NewExecutor creates a new tool executor.
 func NewExecutor(registry *Registry) *Executor {
 	return &Executor{
 		registry:  registry,
-		threshold: storage.DefaultSharedMemoryThreshold,
+		threshold: DefaultAdmissionThresholdBytes,
 	}
 }
 
 // SetSharedMemory configures shared memory for large result handling.
+// threshold is the admission wrap bar in bytes; a negative value keeps
+// the executor's current threshold.
 func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, threshold int64) {
 	e.sharedMemory = sharedMemory
 	if threshold >= 0 {
@@ -177,10 +187,14 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
 
-		// Handle large results EXCEPT for progressive disclosure tools which retrieve already-stored large data
-		// Wrapping these outputs creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
-		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
-		if toolName != "get_tool_result" && toolName != "query_tool_result" {
+		// Handle large results, but only when the result is wrappable: ballast-
+		// class only (charter/ledger always enter whole), and never a named
+		// exemption — progressive disclosure tools (get_tool_result,
+		// query_tool_result) would recurse (DataRef A → query_tool_result(A) →
+		// DataRef B → ...), and charter/ledger tools (manage_skills,
+		// manage_patterns, contact_human, recall_context) must never be
+		// wrapped even if they omit a ContextClassHinter (D-4 Seam 1).
+		if Wrappable(toolName, tool) {
 			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				// The result is still valid, just not optimized
@@ -257,9 +271,9 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
 
-		// Handle large results EXCEPT for get_tool_result (deprecated) which retrieves large data
-		// query_tool_result output SHOULD be wrapped to prevent context overflow
-		if tool.Name() != "get_tool_result" {
+		// Handle large results, but only when the result is wrappable: ballast-
+		// class only, and never a named exemption (D-4 Seam 1, see Execute).
+		if Wrappable(tool.Name(), tool) {
 			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				if result.Metadata == nil {
@@ -279,6 +293,40 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	return result, nil
 }
 
+// admissionExemptTools names tools whose results must never be wrapped at
+// admission, regardless of ContextClassHinter — a belt-and-suspenders skip
+// alongside the ballast-only gate in Wrappable, so a charter/ledger tool
+// that omits a hint is still never wrapped (D-4 Seam 1). get_tool_result and
+// query_tool_result are exempt because wrapping their own output would
+// recurse (DataRef A → query_tool_result(A) → DataRef B → ...); the rest are
+// the charter/ledger builtins whose results must enter whole.
+var admissionExemptTools = map[string]bool{
+	"get_tool_result":   true,
+	"query_tool_result": true,
+	"manage_skills":     true,
+	"manage_patterns":   true,
+	"contact_human":     true,
+	"recall_context":    true,
+}
+
+// Wrappable reports whether a tool result is a candidate for admission
+// wrapping: explicitly-hinted ballast only (IsBallast), and never a named
+// charter/ledger exemption. Results of tools without a hint enter L1 whole
+// even though the classifier tags them ballast — they are reclaimed later
+// by valve/fold rather than wrapped at admission (see IsBallast).
+//
+// Exported so every wrap/format path that decides whether to store a tool
+// result as a preview + reference shares this single gate — not just
+// Executor.handleLargeResult, but also pkg/agent's formatToolResult, which
+// runs a second, independent wrap decision downstream of the executor and
+// must agree with it (D-4 Seam 1).
+func Wrappable(toolName string, tool Tool) bool {
+	if admissionExemptTools[toolName] {
+		return false
+	}
+	return IsBallast(tool)
+}
+
 // handleLargeResult checks if result data is large and stores it appropriately.
 // SQL results go to SQLResultStore (queryable), other data goes to SharedMemoryStore (blob).
 func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error {
@@ -292,8 +340,10 @@ func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error 
 		return fmt.Errorf("failed to serialize result: %w", err)
 	}
 
-	// Check if result exceeds threshold
-	if int64(len(data)) <= e.threshold {
+	// Check if result meets the admission threshold. A result of exactly
+	// threshold bytes is admitted (wrapped) — O-ADM-1 is "≥ threshold wraps",
+	// not "> threshold wraps" — so only a strictly-smaller result stays inline.
+	if int64(len(data)) < e.threshold {
 		return nil // Small result, keep inline
 	}
 

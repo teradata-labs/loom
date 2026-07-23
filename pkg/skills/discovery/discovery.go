@@ -187,7 +187,7 @@ func (d *Discovery) Discover(ctx context.Context, sessionID, message string,
 		}
 	}
 
-	maxConcurrent := config.MaxConcurrentSkills
+	maxConcurrent := config.MaxConcurrentSkills //nolint:staticcheck // deprecated as a load cap; this is its remaining use — the per-turn suggestion bound
 	if maxConcurrent <= 0 {
 		maxConcurrent = 3
 	}

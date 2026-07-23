@@ -46,15 +46,14 @@ func (t *ConversationMemoryTool) Name() string {
 func (t *ConversationMemoryTool) Description() string {
 	return `Access conversation history from long-term storage.
 
-Three actions available:
-1. recall - Retrieve specific messages by offset/limit from current session
-2. search - Search for relevant messages using natural language queries (supports session scopes)
-3. clear - Remove recalled messages from context to free token budget
+Actions available:
+1. recall - Retrieve specific messages by offset/limit from current session; results are returned directly in this tool's response
+2. search - Search for relevant messages using natural language queries (supports session scopes); results are returned directly in this tool's response
+3. clear - Deprecated no-op, retained for compatibility
 
 Use this when:
 - User references earlier discussions no longer in recent context
-- Need to find specific topics across conversation history
-- Token budget is tight and old context needs clearing`
+- Need to find specific topics across conversation history`
 }
 
 // Backend returns the backend type this tool requires (empty = backend-agnostic).
@@ -206,18 +205,6 @@ func (t *ConversationMemoryTool) executeRecall(ctx context.Context, input map[st
 			Error: &shuttle.Error{
 				Code:    "RETRIEVAL_FAILED",
 				Message: fmt.Sprintf("Failed to retrieve messages: %v", err),
-			},
-		}, nil
-	}
-
-	// Promote messages to context
-	if err := segMem.PromoteMessagesToContext(messages); err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "PROMOTION_FAILED",
-				Message:    fmt.Sprintf("Failed to add messages to context (token budget may be full): %v", err),
-				Suggestion: "Try clearing recalled context first: conversation_memory(action='clear')",
 			},
 		}, nil
 	}
@@ -378,20 +365,6 @@ func (t *ConversationMemoryTool) searchCurrentSession(ctx context.Context, query
 		}, nil
 	}
 
-	// Promote to context
-	if len(messages) > 0 {
-		if err := segMem.PromoteMessagesToContext(messages); err != nil {
-			return &shuttle.Result{
-				Success: false,
-				Error: &shuttle.Error{
-					Code:       "PROMOTION_FAILED",
-					Message:    fmt.Sprintf("Found results but failed to add to context: %v", err),
-					Suggestion: "Try clearing recalled context first: conversation_memory(action='clear')",
-				},
-			}, nil
-		}
-	}
-
 	return t.formatSearchResults(messages, query, "current")
 }
 
@@ -507,7 +480,10 @@ func (t *ConversationMemoryTool) formatSearchResults(messages []Message, query s
 	}, nil
 }
 
-// executeClear removes promoted messages from context.
+// executeClear validates the session as before, but is now otherwise a
+// no-op: recalled and searched messages are returned directly in the tool
+// response (see executeRecall/searchCurrentSession) instead of being added
+// to a separate promoted-context channel, so there is nothing left to clear.
 func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
 	// Extract session ID
 	sessionID := session.SessionIDFromContext(ctx)
@@ -522,8 +498,7 @@ func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[str
 	}
 
 	// Get session
-	session, exists := t.memory.GetSession(sessionID)
-	if !exists {
+	if _, exists := t.memory.GetSession(sessionID); !exists {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -533,29 +508,10 @@ func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[str
 		}, nil
 	}
 
-	// Get segmented memory
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	if !ok {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "SWAP_NOT_SUPPORTED",
-				Message: "This session does not support recalled context",
-			},
-		}, nil
-	}
-
-	// Get count before clearing
-	promoted := segMem.GetPromotedContext()
-	count := len(promoted)
-
-	// Clear promoted context
-	segMem.ClearPromotedContext()
-
 	responseData := map[string]interface{}{
 		"action":        "clear",
 		"success":       true,
-		"cleared_count": count,
+		"cleared_count": 0,
 	}
 
 	responseJSON, _ := json.MarshalIndent(responseData, "", "  ")

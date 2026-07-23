@@ -107,14 +107,14 @@ func CalculateDynamicMemoryAllocation(
 	}
 
 	// Apply profile multiplier to L1 allocation
-	maxL1Tokens := int(float64(availableTokens) * l1TargetPercent * multiplier)
+	l1TokenBudget := int(float64(availableTokens) * l1TargetPercent * multiplier)
 
 	// Enforce sane bounds
-	if maxL1Tokens < 1000 {
-		maxL1Tokens = 1000 // Absolute minimum (1-2 lightweight messages)
+	if l1TokenBudget < 1000 {
+		l1TokenBudget = 1000 // Absolute minimum (1-2 lightweight messages)
 	}
-	if maxL1Tokens > 150000 {
-		maxL1Tokens = 150000 // Reasonable maximum (even for 200K models)
+	if l1TokenBudget > 150000 {
+		l1TokenBudget = 150000 // Reasonable maximum (even for 200K models)
 	}
 
 	// Calculate minL1Messages (minimum messages to keep for recency)
@@ -133,13 +133,15 @@ func CalculateDynamicMemoryAllocation(
 	// Create adjusted profile
 	adjusted := CompressionProfile{
 		Name:                     fmt.Sprintf("%s-dynamic", baseProfile.Name),
-		MaxL1Tokens:              maxL1Tokens,
+		MaxL1Tokens:              l1TokenBudget,
 		MinL1Messages:            minL1Messages,
 		WarningThresholdPercent:  baseProfile.WarningThresholdPercent,  // Keep profile behavior
 		CriticalThresholdPercent: baseProfile.CriticalThresholdPercent, // Keep profile behavior
 		NormalBatchSize:          baseProfile.NormalBatchSize,
 		WarningBatchSize:         baseProfile.WarningBatchSize,
 		CriticalBatchSize:        baseProfile.CriticalBatchSize,
+		YellowThresholdPercent:   baseProfile.YellowThresholdPercent, // Keep profile behavior
+		RedThresholdPercent:      baseProfile.RedThresholdPercent,    // Keep profile behavior
 	}
 
 	return adjusted, maxL2Tokens
@@ -247,10 +249,7 @@ func NewSegmentedMemoryWithDynamicAllocation(
 		schemaCache:        make(map[string]string),
 		schemaAccessLog:    make(map[string]time.Time),
 		maxSchemas:         10,
-		findingsCache:      make(map[string]Finding),
-		maxFindings:        50,
 		l1Messages:         make([]Message, 0),
-		promotedContext:    make([]Message, 0),
 		sessionStore:       nil,
 		sessionID:          "",
 		swapEnabled:        false,
@@ -261,10 +260,11 @@ func NewSegmentedMemoryWithDynamicAllocation(
 		tokenBudget:        tokenBudget,
 		compressor:         nil,
 		tracer:             observability.NewNoOpTracer(),
-		maxL1Tokens:        profile.MaxL1Tokens,   // DYNAMIC based on available budget
 		minL1Messages:      profile.MinL1Messages, // DYNAMIC based on available budget
 		maxToolResults:     5,
 		compressionProfile: profile,
+		yellowPct:          effectiveZonePct(profile.YellowThresholdPercent, 70),
+		redPct:             effectiveZonePct(profile.RedThresholdPercent, 85),
 	}
 
 	return sm

@@ -93,8 +93,6 @@ func (r *recoveryOrchestrator) recoverOutputTokenCB(
 	}
 	r.outputTokenCBRecoveryAttempted = true
 
-	trimmed := segMem.TrimLastN(threshold)
-	session.TrimLastN(threshold)
 	failureTracker.clearOutputTokenExhaustion()
 
 	recoveryMsg := Message{
@@ -106,8 +104,7 @@ func (r *recoveryOrchestrator) recoverOutputTokenCB(
 
 	if r.span != nil {
 		r.span.AddEvent("recovery.output_token_cb.attempted", map[string]any{
-			"trimmed_messages": trimmed,
-			"threshold":        threshold,
+			"threshold": threshold,
 		})
 	}
 
@@ -147,41 +144,6 @@ func (r *recoveryOrchestrator) recoverToolCB(
 			Message: fmt.Sprintf("Tool %s unavailable due to repeated failures. Use alternatives.", toolName),
 		},
 	}
-}
-
-// recoverTokenBudget attempts aggressive trimming when normal compression
-// (CompactMemory) was already tried and the budget is still critical.
-func (r *recoveryOrchestrator) recoverTokenBudget(
-	_ context.Context,
-	session sessionForRecovery,
-	segMem TrimableMemory,
-	budgetChecker func() float64,
-) (bool, error) {
-	keepLastN := r.config.AggressiveTrimKeepLastN
-	beforeTokens, afterTokens := segMem.AggressiveTrim(keepLastN)
-	session.TrimLastN(0) // sync flat list — 0 means "trim to match segmented memory"
-
-	// Re-check budget after aggressive trim.
-	if budgetChecker() > 85.0 {
-		if r.span != nil {
-			r.span.AddEvent("recovery.token_budget.failed", map[string]any{
-				"before_tokens": beforeTokens,
-				"after_tokens":  afterTokens,
-				"keep_last_n":   keepLastN,
-			})
-		}
-		return false, nil
-	}
-
-	if r.span != nil {
-		r.span.AddEvent("recovery.token_budget.succeeded", map[string]any{
-			"before_tokens": beforeTokens,
-			"after_tokens":  afterTokens,
-			"keep_last_n":   keepLastN,
-		})
-	}
-
-	return true, nil
 }
 
 // buildRecoverableError constructs a RecoverableError for Tier 3.

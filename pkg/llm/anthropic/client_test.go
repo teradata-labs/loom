@@ -227,6 +227,90 @@ func TestClient_ConvertMessages(t *testing.T) {
 	}
 }
 
+// TestClient_ConvertMessages_SystemRoleHoisted enforces v5 Contract 1 at the
+// provider boundary: system-role messages (produced by Session.GetMessages
+// as the ROM slot) must be lifted out of the messages array into a separate
+// system-prompt field. The remaining apiMessages must be user/assistant only
+// (Anthropic API rejects "system" as a role in the messages array).
+func TestClient_ConvertMessages_SystemRoleHoisted(t *testing.T) {
+	client := &Client{}
+
+	messages := []types.Message{
+		{Role: "system", Content: "ROM slot content: [Available Skills] ..."},
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi"},
+		{Role: "user", Content: "again"},
+	}
+
+	systemPrompt, apiMessages := client.convertMessages(messages)
+
+	// System prompt must be extracted (non-empty) and carry the ROM content.
+	if len(systemPrompt) == 0 {
+		t.Fatalf("Contract 1: system-role message must be hoisted into systemPrompt, got 0 blocks")
+	}
+	joined := ""
+	for _, b := range systemPrompt {
+		joined += b.Text
+	}
+	if !contains(joined, "ROM slot content") {
+		t.Errorf("systemPrompt must contain the hoisted ROM content, got %q", joined)
+	}
+
+	// apiMessages must be user/assistant only — no "system" role must survive.
+	if len(apiMessages) != 3 {
+		t.Errorf("Expected 3 user/assistant messages after hoist, got %d", len(apiMessages))
+	}
+	for i, m := range apiMessages {
+		if m.Role == "system" {
+			t.Errorf("apiMessages[%d]: system role must not appear in the messages array (Anthropic rejects it); got role=%q", i, m.Role)
+		}
+	}
+}
+
+// TestClient_ConvertMessages_MultipleSystemMessages_Combined asserts that
+// if v5 ever produced more than one system-role message (Contract 1 forbids
+// this at the assembler, but the adapter is the last line of defense) the
+// adapter joins them rather than putting one in the messages array.
+func TestClient_ConvertMessages_MultipleSystemMessages_Combined(t *testing.T) {
+	client := &Client{}
+	messages := []types.Message{
+		{Role: "system", Content: "part-A"},
+		{Role: "user", Content: "u1"},
+		{Role: "system", Content: "part-B"},
+		{Role: "assistant", Content: "a1"},
+	}
+	systemPrompt, apiMessages := client.convertMessages(messages)
+	if len(systemPrompt) == 0 {
+		t.Fatalf("both system messages must have been hoisted")
+	}
+	joined := ""
+	for _, b := range systemPrompt {
+		joined += b.Text
+	}
+	if !contains(joined, "part-A") || !contains(joined, "part-B") {
+		t.Errorf("both system contents must be preserved in the joined systemPrompt; got %q", joined)
+	}
+	for i, m := range apiMessages {
+		if m.Role == "system" {
+			t.Errorf("apiMessages[%d]: no system-role message may survive in the messages array", i)
+		}
+	}
+}
+
+// contains is a tiny substring helper — avoids pulling strings into just
+// this test block.
+func contains(hay, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(hay); i++ {
+		if hay[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestContentBlock_MarshalJSON_ToolUseAlwaysHasInput(t *testing.T) {
 	// Anthropic API requires tool_use blocks to always have "input" present.
 	// Even when the LLM returns a tool call with no arguments, the serialized
