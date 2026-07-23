@@ -270,7 +270,10 @@ func ReadSessionArtifactMetadata(sessionID string) (*SessionArtifactMetadata, er
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	// filepath.Clean is a semantic no-op here (the path is already contained by
+	// SessionArtifactsRoot) but gosec's G304 check is intraprocedural and needs
+	// the sanitizer at the read site.
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
