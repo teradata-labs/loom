@@ -41,7 +41,7 @@ func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 > user-role for the same reason it never persists it as an L1 message —
 > byte stability of the prompt-cache prefix trumps role semantics.
 
-Properties this buys unconditionally: the `system` field is byte-stable except at a fold; the messages prefix is append-only between folds (cache-correct); position is carried by order (no standing-state channel can exist because no slot for one exists).
+Properties this buys unconditionally: the `system` field's base is byte-stable — only its trailing skill-catalog section changes, on skill discovery/load/reclaim; the messages prefix is append-only between folds (cache-correct); position is carried by order (no standing-state channel can exist because no slot for one exists).
 
 **Deletion manifest 1** (everything the current assembler renders that Contract 1 doesn't):
 
@@ -106,7 +106,7 @@ func (a *Agent) prepareContext(ctx context.Context, session *Session) ([]Message
 
 Tagging is structural, at exactly three places:
 1. **Genuine user messages → ledger**, tagged at their two construction sites (`agent.go:1467`, `:1662`). *Not* a role-based rule: the harness also creates `Role:"user"` messages (`nudgeMsg:2498`, `synthesisMsg:2953`, v5's tail notes) and `AgentID` cannot distinguish them (genuine messages set it too, `:1470`); synthetic ones stay narrative.
-2. **Tool results**, at toolMsg construction (`agent.go:~2855`): loader tools (`manage_skills`, `manage_patterns`) → charter; whitelisted read-only data tools → ballast (opt-in via a `ContextClass()` method on the tool / MCP `readOnlyHint`; **whitelist, never blacklist**); everything else — including all mutating tools (execution records) and `contact_human` — → ledger.
+2. **Tool results**, at toolMsg construction (`agent.go:~2855`): loader tools (`manage_skills`, `manage_patterns`) → narrative (fold summarizes skill bodies into residue); `contact_human` → ledger (out-of-band user consent); everything else → ballast (valve/fold reclaim applies), with a per-tool opt-out to ledger/charter via `shuttle.ContextClassHinter`.
 3. Assistant messages → narrative (default).
 
 **On restore**, classes come from the persisted column; rows predating the column are reclassified by the same rules (user-site provenance for ledger; tool name recovered by pairing `ToolUseID` to the preceding assistant's `ToolCalls[].Name`).

@@ -79,6 +79,8 @@ func NewExecutor(registry *Registry) *Executor {
 }
 
 // SetSharedMemory configures shared memory for large result handling.
+// threshold is the admission wrap bar in bytes; a negative value keeps
+// the executor's current threshold.
 func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, threshold int64) {
 	e.sharedMemory = sharedMemory
 	if threshold >= 0 {
@@ -308,8 +310,10 @@ var admissionExemptTools = map[string]bool{
 }
 
 // Wrappable reports whether a tool result is a candidate for admission
-// wrapping: ballast-class only (IsBallast), and never a named charter/ledger
-// exemption. Charter and ledger results always enter whole (O-ADM-1).
+// wrapping: explicitly-hinted ballast only (IsBallast), and never a named
+// charter/ledger exemption. Results of tools without a hint enter L1 whole
+// even though the classifier tags them ballast — they are reclaimed later
+// by valve/fold rather than wrapped at admission (see IsBallast).
 //
 // Exported so every wrap/format path that decides whether to store a tool
 // result as a preview + reference shares this single gate — not just
@@ -327,11 +331,6 @@ func Wrappable(toolName string, tool Tool) bool {
 // SQL results go to SQLResultStore (queryable), other data goes to SharedMemoryStore (blob).
 func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error {
 	if result.Data == nil {
-		return nil
-	}
-
-	// A negative threshold explicitly disables wrapping: inline everything.
-	if e.threshold < 0 {
 		return nil
 	}
 

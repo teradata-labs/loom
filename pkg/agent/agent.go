@@ -2633,7 +2633,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				break
 			}
 
-			// Per-turn cap: skip remaining calls with an error result
+			// Per-turn cap: skip remaining calls with an error result.
+			// Resolve the live tool handle so a ContextClassHinter's
+			// ledger/charter opt-out survives into skip/dedup copies too.
+			classTool, _ := a.tools.Get(toolCall.Name)
 			if turnToolCount >= maxPerTurn {
 				skipMsg := Message{
 					Role:      "tool",
@@ -2647,7 +2650,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						},
 					},
 					AgentID:      a.id,
-					ContextClass: toolResultClass(toolCall.Name, nil),
+					ContextClass: toolResultClass(toolCall.Name, classTool),
 					Timestamp:    time.Now(),
 				}
 				session.AddMessage(ctx, skipMsg)
@@ -2669,7 +2672,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					ToolUseID:    toolCall.ID,
 					ToolResult:   cachedResult,
 					AgentID:      a.id,
-					ContextClass: toolResultClass(toolCall.Name, nil),
+					ContextClass: toolResultClass(toolCall.Name, classTool),
 					Timestamp:    time.Now(),
 				}
 				session.AddMessage(ctx, dedupMsg)

@@ -28,43 +28,40 @@ type ContextClass = string
 // tagger here and the admission gate in pkg/shuttle/executor.go agree by
 // construction (see shuttle.ContextClassHinter).
 const (
-	// ClassNarrative is the default class (the Go zero value): assistant
-	// messages and synthetic user-role content (empty-response nudges,
-	// max-turn synthesis, tail notes).
+	// ClassNarrative is the Go zero value: assistant messages, synthetic
+	// user-role content (empty-response nudges, max-turn synthesis, tail
+	// notes), and loader tool results (skill/pattern bodies — fold
+	// summarizes them into residue).
 	ClassNarrative ContextClass = shuttle.ClassNarrative
 
-	// ClassCharter marks messages that install standing capability — loader
-	// tool results (manage_skills, manage_patterns).
+	// ClassCharter marks messages pinned as standing capability. No tool
+	// classifies charter by default; a tool opts in via
+	// shuttle.ContextClassHinter.
 	ClassCharter ContextClass = shuttle.ClassCharter
 
-	// ClassLedger marks messages that must survive verbatim across a fold:
-	// genuine user messages and every tool result that is neither charter
-	// nor an opt-in ballast whitelist match (mutating tools, contact_human,
-	// and any tool without a read-only hint all fail safe to ledger).
+	// ClassLedger marks messages that survive verbatim across a fold:
+	// genuine user messages and contact_human results (out-of-band user
+	// consent). A tool can opt in via shuttle.ContextClassHinter.
 	ClassLedger ContextClass = shuttle.ClassLedger
 
-	// ClassBallast marks whitelisted read-only tool results. A tool must
-	// opt in via shuttle.ContextClassHinter; never assigned by default.
+	// ClassBallast is the default for tool results: data the LLM consumed
+	// once, evictable by the valve and droppable by fold, recoverable via
+	// recall_context.
 	ClassBallast ContextClass = shuttle.ClassBallast
 )
 
-// loaderTools is the charter-class whitelist: tools that install standing
-// capability (skills/patterns) rather than returning data. Structural, not
-// configurable — the opposite of the ballast whitelist, which tools opt
-// into individually via shuttle.ContextClassHinter.
+// loaderTools names the tools whose results carry skill/pattern bodies —
+// classified narrative so fold's compressor rolls them into residue.
 var loaderTools = map[string]bool{
 	"manage_skills":   true,
 	"manage_patterns": true,
 }
 
-// toolResultClass classifies a tool-result message by tool name and, if a
-// live tool handle is available and implements shuttle.ContextClassHinter,
-// its opt-in read-only hint. Whitelist only, never a blacklist: absent a
-// charter name or a ballast hint, the result classifies ledger — fail-safe
-// retention for mutating tools, contact_human, and any tool this process
-// cannot look up (e.g. skipped/deduplicated calls, where the call never
-// reached tool resolution, or legacy-row restore, where no tool instance
-// is available and only the name is recoverable).
+// toolResultClass classifies a tool-result message: loaders → narrative,
+// contact_human → ledger, everything else → ballast unless the live tool
+// handle opts out via shuttle.ContextClassHinter (ledger/charter). A nil
+// tool handle (skipped/deduplicated calls, legacy-row restore) classifies
+// by name alone, so a hinter's opt-out is not recovered there.
 func toolResultClass(toolName string, tool shuttle.Tool) ContextClass {
 	// Skill/pattern loads carry executable instructions the LLM is following.
 	// Narrative-classed so fold's LLM compressor summarizes them into residue
@@ -129,7 +126,8 @@ func reclassifyMessages(messages []Message) []Message {
 // precedingToolCallName walks backward from a tool-role message at index i to
 // the assistant message that issued it, matching on ToolUseID against that
 // assistant message's ToolCalls, and returns the originating tool's name.
-// Returns "" if no matching call is found (classifies ledger, fail-safe).
+// Returns "" if no matching call is found (toolResultClass then applies the
+// ballast default).
 func precedingToolCallName(messages []Message, i int) string {
 	toolUseID := messages[i].ToolUseID
 	if toolUseID == "" {

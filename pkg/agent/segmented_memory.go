@@ -88,7 +88,7 @@ type SegmentedMemory struct {
 	tokenCountDirty bool          // Whether token count needs recalculation
 
 	// Per-layer token count caches (avoids full recalculation on every AddMessage)
-	cachedROMTokens        int    // Tokens in ROM layer (changes only on init)
+	cachedROMTokens        int    // Tokens in the base ROM only. The [Available Skills] catalog Session.GetMessages appends is not counted — a bounded undercount (a few lines per discovered skill) accepted to keep BudgetPct free of per-turn recompute.
 	cachedL1Tokens         int    // Tokens in L1 messages
 	cachedL2Tokens         int    // Tokens in L2 summary
 	cachedToolSchemaTokens int    // Measured tool-schema cost (Σ CountTokens(json(tool.InputSchema()))), recomputed only when the registered/effective tool set changes
@@ -659,6 +659,9 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 			// user turn as ledger, or classified a synthetic user-role
 			// message as ledger and let it fall through here. Preserve the
 			// content (no truncation) so #262 cannot recur silently.
+			zap.L().Warn("user-role message reached the fold compressor's degraded fallback",
+				zap.String("session_id", sm.sessionID),
+				zap.Int("content_len", len(msg.Content)))
 			parts = append(parts, fmt.Sprintf("User: %s", msg.Content))
 		case "assistant":
 			// Assistant actions

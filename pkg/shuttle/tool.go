@@ -56,25 +56,24 @@ const (
 	ClassBallast   = "ballast"
 )
 
-// ContextClassHinter is implemented by tools that opt into ballast-class
-// context retention: a read-only data tool whose results are wrappable at
-// admission and evictable by the valve, recoverable via recall_context.
-// This is a whitelist mechanism, never a blacklist — a tool that does not
-// implement this interface (or returns anything other than "ballast")
-// classifies as ledger, the fail-safe default for tool results.
+// ContextClassHinter lets a tool override the classifier's defaults
+// (pkg/agent toolResultClass: loaders → narrative, contact_human → ledger,
+// everything else → ballast). Returning "ledger" or "charter" pins the
+// tool's results against valve eviction and fold drop; returning "ballast"
+// additionally makes results wrappable at admission (see IsBallast).
 type ContextClassHinter interface {
-	// ContextClassHint returns "ballast" to opt into ballast-class retention.
+	// ContextClassHint returns "ballast", "ledger", or "charter".
 	// Any other value (including "") is treated as no opinion.
 	ContextClassHint() string
 }
 
-// IsBallast reports whether tool has opted into ballast-class context
-// retention via ContextClassHinter. The admission gate (Executor.
-// handleLargeResult, D-4 Seam 1) wraps a result into a preview + reference
-// only when this returns true — charter and ledger results always enter
-// whole, regardless of size. A tool that does not implement
-// ContextClassHinter, or whose hint is anything other than "ballast", is
-// never wrappable.
+// IsBallast reports whether tool explicitly hints ballast via
+// ContextClassHinter. The admission gate (Executor.handleLargeResult,
+// D-4 Seam 1) wraps a result into a preview + reference only when this
+// returns true. Note the asymmetry with the classifier: a tool without a
+// hint CLASSIFIES ballast (valve/fold reclaim applies) but is not wrapped
+// at admission — its results enter L1 whole and are reclaimed later under
+// pressure. Only hinted-ballast tools get admission wrapping.
 func IsBallast(tool Tool) bool {
 	if tool == nil {
 		return false

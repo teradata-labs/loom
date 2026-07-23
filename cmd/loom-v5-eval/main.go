@@ -43,15 +43,13 @@ import (
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
-const evalPrompt = `You are an LLM about to reason on the CONTEXT below to answer the user's most recent turn.
+const evalPrompt = `Judge the CONTEXT below from the consumer's seat: the model that must reason on it to answer the user's most recent turn.
 
-The STATE block shows what the segmented-memory system HAD AVAILABLE at this moment (ROM base, catalog of discovered skills, currently loaded skills, L1 messages in order, L2 residue summary, fold count). The CONTEXT block shows what it actually chose to send you.
+The STATE block shows what the segmented-memory system HAD AVAILABLE at this moment (ROM base, catalog of discovered skills, currently loaded skills, L1 messages in order, L2 residue summary, fold count). The CONTEXT block shows what was actually compiled for the model.
 
-Speaking as the LLM that has to do the work — not as an auditor of the pipeline:
+Given this state, is this the context best suited for producing the next response? Consider order of information, whether anything is mangled, jumbled, duplicated, or garbage, whether fidelity is at the right level (too much detail? too little? summary too opaque?), whether the user's current intent is easy to find, whether anything the response needs is missing.
 
-Given this state, is the context you got the one you would want to reason on for this turn? Consider order of information, whether anything is mangled, jumbled, duplicated, or garbage, whether fidelity is at the right level (too much detail? too little? summary too opaque?), whether the user's current intent is easy to find, whether anything you'd need is missing.
-
-Concrete concerns only. No praise. No rubric answers. No general observations. If the context is well-shaped for the job, return an empty concerns array.
+Judge usefulness for the work, not conformance to the pipeline's rules. Concrete concerns only. No praise. No general observations. If the context is well-shaped for the job, return an empty concerns array.
 
 Return JSON only (no prose, no markdown fences), matching this schema exactly:
 
