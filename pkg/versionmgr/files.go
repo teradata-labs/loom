@@ -192,6 +192,10 @@ func updateHomebrewFormula(path string, version Version) error {
 	re2 := regexp.MustCompile(`/v[0-9]+\.[0-9]+\.[0-9]+/`)
 	text = re2.ReplaceAllString(text, fmt.Sprintf("/%s/", version.WithV()))
 
+	// Replace source tag archive URLs: refs/tags/vX.Y.Z.tar.gz
+	re3 := regexp.MustCompile(`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz`)
+	text = re3.ReplaceAllString(text, fmt.Sprintf("refs/tags/%s.tar.gz", version.WithV()))
+
 	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
@@ -213,6 +217,14 @@ func extractHomebrewFormula(path string) ([]string, error) {
 	// Extract versions from URLs
 	re2 := regexp.MustCompile(`/v([0-9]+\.[0-9]+\.[0-9]+)/`)
 	for _, match := range re2.FindAllStringSubmatch(string(content), -1) {
+		if len(match) >= 2 {
+			versions[match[1]] = true
+		}
+	}
+
+	// Extract versions from source tag archive URLs: refs/tags/vX.Y.Z.tar.gz
+	re3 := regexp.MustCompile(`refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz`)
+	for _, match := range re3.FindAllStringSubmatch(string(content), -1) {
 		if len(match) >= 2 {
 			versions[match[1]] = true
 		}
