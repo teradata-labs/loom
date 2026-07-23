@@ -2227,6 +2227,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	tools = a.applySkillExcludedTools(tools, session)
 	tools = a.applyPermissionToolFilter(tools)
 
+	// refreshToolMenu retakes the advertised-tool snapshot. The slice above
+	// is a copy of the registry taken once per turn; a skill load mid-turn
+	// registers its required tools into the registry but cannot reach this
+	// local — so the load event calls this closure (carried to executeLoad
+	// via the tool-execution context) and the LLM's next call in the SAME
+	// turn advertises what the just-delivered instructions name. Runs on
+	// the tool-execution goroutine only; no concurrent access to `tools`.
+	refreshToolMenu := func() {
+		t := a.tools.ListTools()
+		t = a.applySkillExcludedTools(t, session)
+		t = a.applyPermissionToolFilter(t)
+		tools = t
+	}
+
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
 
@@ -2722,8 +2736,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 			toolSpan.SetAttribute("tool_name", toolCall.Name)
 
-			// Execute with self-correction (circuit breaker + SQL correction)
-			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+			// Execute with self-correction (circuit breaker + SQL correction).
+			// The wrapped context carries refreshToolMenu so the skill-load
+			// event can update this turn's advertised tools (see closure doc).
+			toolCtx := &contextWithValue{Context: ctx, key: toolMenuRefreshCtxKey, val: refreshToolMenu}
+			result, err := a.executeToolWithSelfCorrection(toolCtx, toolCall.Name, toolCall.Input, session.ID)
 
 			// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 			if err != nil && strings.Contains(err.Error(), "circuit breaker open") && recovery != nil {

@@ -190,6 +190,7 @@ type skillTurnScriptedLLM struct {
 	responses    []LLMResponse
 	idx          int
 	calls        [][]Message
+	toolsPerCall [][]string // advertised tool names, per LLM call
 	snapshotFunc func() string
 }
 
@@ -214,6 +215,17 @@ func (m *skillTurnScriptedLLM) Chat(ctx context.Context, messages []Message, too
 	copy(cp, messages)
 	m.calls = append(m.calls, cp)
 
+	// Capture the advertised tool list — the menu the model was told about.
+	// A real provider only emits tool_use for advertised tools, so tests
+	// asserting tool availability must assert HERE, not on the registry.
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil {
+			names = append(names, tool.Name())
+		}
+	}
+	m.toolsPerCall = append(m.toolsPerCall, names)
+
 	dumpLLMCall(len(m.calls), messages, m.snapshotFunc)
 
 	if len(m.responses) == 0 {
@@ -237,6 +249,15 @@ func (m *skillTurnScriptedLLM) getCalls() [][]Message {
 	defer m.mu.Unlock()
 	out := make([][]Message, len(m.calls))
 	copy(out, m.calls)
+	return out
+}
+
+// getToolsPerCall returns the advertised tool names captured per LLM call.
+func (m *skillTurnScriptedLLM) getToolsPerCall() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]string, len(m.toolsPerCall))
+	copy(out, m.toolsPerCall)
 	return out
 }
 

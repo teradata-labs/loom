@@ -51,10 +51,11 @@ func newWiringAgent(t *testing.T, lib *skills.Library, llm *skillTurnScriptedLLM
 }
 
 // TestSkillWiring_LiveLoad_RequiredToolRegisteredSameTurn drives a single
-// Chat turn whose scripted LLM loads td-wire mid-turn. The per-turn
-// enforceRequiredSkillTools pass ran BEFORE the load (skill inactive then),
-// so http_request being registered after this one turn proves the wiring
-// fired at the load event itself — with the words, not a turn later.
+// Chat turn whose scripted LLM loads td-wire mid-turn, then asserts at the
+// LLM boundary: the call BEFORE the load must not advertise http_request,
+// the call AFTER the load (same turn) must. Registry state alone is not
+// asserted as proof — a real provider only calls advertised tools, so the
+// menu the model was handed is the fact that matters.
 func TestSkillWiring_LiveLoad_RequiredToolRegisteredSameTurn(t *testing.T) {
 	lib := newWiringSkillLibrary(t)
 	llm := newSkillTurnScriptedLLM(
@@ -71,6 +72,16 @@ func TestSkillWiring_LiveLoad_RequiredToolRegisteredSameTurn(t *testing.T) {
 	assert.True(t, ag.tools.IsRegistered("http_request"),
 		"load event must register the skill's required tool within the same turn")
 	assert.Len(t, orch.GetActiveSkills("sess-wire-live"), 1)
+
+	// Boundary assertion: the menu handed to the model.
+	toolsPerCall := llm.getToolsPerCall()
+	require.GreaterOrEqual(t, len(toolsPerCall), 2,
+		"the turn must contain the load call and a follow-up LLM call")
+	assert.NotContains(t, toolsPerCall[0], "http_request",
+		"call 1 (issuing the load) must not yet advertise the required tool")
+	assert.Contains(t, toolsPerCall[1], "http_request",
+		"call 2 (same turn, after the load) must advertise the required tool — "+
+			"the load event retakes the advertised-tool snapshot")
 }
 
 // TestSkillWiring_Restore_ResidentLoadRefiresEffect persists a session

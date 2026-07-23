@@ -32,6 +32,12 @@ import (
 // count against it.
 const skillActiveSafetyCap = 20
 
+// toolMenuRefreshCtxKey carries the current turn's advertised-tool refresh
+// closure (set by runConversationLoop) into tool execution, so the skill
+// load event can update the menu the LLM sees for the rest of the turn —
+// not just the registry. Value type: func().
+const toolMenuRefreshCtxKey = "tool_menu_refresh"
+
 // ManageSkillsTool provides list/load over the skill orchestrator and
 // library. It is the sole activation entry point for skills (Seam 3): the
 // per-turn discovery block only ever surfaces a candidate menu, never
@@ -245,6 +251,12 @@ func (t *ManageSkillsTool) executeLoad(ctx context.Context, sessionID, name stri
 	// context, and the LLM's next step in this same turn will follow it.
 	if t.wireTools != nil {
 		t.wireTools(skill)
+	}
+	// Retake the turn's advertised-tool snapshot so the LLM's next call in
+	// this same turn is TOLD the wired tools exist — registering alone only
+	// makes them callable, not advertised (the menu is a per-turn copy).
+	if fn, ok := ctx.Value(toolMenuRefreshCtxKey).(func()); ok && fn != nil {
+		fn()
 	}
 
 	if !wasActive && t.taskEmitter != nil {
