@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/skills"
 )
 
@@ -60,7 +61,17 @@ func TestSkillWiring_LiveLoad_RequiredToolRegisteredSameTurn(t *testing.T) {
 	lib := newWiringSkillLibrary(t)
 	llm := newSkillTurnScriptedLLM(
 		respLoadSkill("t1-load", "td-wire"),
-		respEndTurn("loaded"),
+		// Same turn, immediately after the load: call the tool the skill's
+		// instructions name. Closes the loop end-to-end — advertised AND
+		// executable, not just registered.
+		llmtypes.LLMResponse{
+			ToolCalls: []llmtypes.ToolCall{{
+				ID:    "t1-call",
+				Name:  "http_request",
+				Input: map[string]interface{}{},
+			}},
+		},
+		respEndTurn("done"),
 	)
 	ag, orch := newWiringAgent(t, lib, llm)
 	require.False(t, ag.tools.IsRegistered("http_request"),
@@ -82,6 +93,25 @@ func TestSkillWiring_LiveLoad_RequiredToolRegisteredSameTurn(t *testing.T) {
 	assert.Contains(t, toolsPerCall[1], "http_request",
 		"call 2 (same turn, after the load) must advertise the required tool — "+
 			"the load event retakes the advertised-tool snapshot")
+
+	// Execution assertion: the same-turn http_request call must have reached
+	// the tool — its result (success or tool-internal error) enters the
+	// session as a tool message that is NOT a tool-not-found rejection.
+	session, ok := ag.memory.GetSession("sess-wire-live")
+	require.True(t, ok)
+	sawExecuted := false
+	for _, m := range session.Messages {
+		if m.Role == "tool" && m.ToolUseID == "t1-call" {
+			sawExecuted = true
+			low := strings.ToLower(m.Content)
+			assert.NotContains(t, low, "not found",
+				"same-turn call of the just-wired tool must resolve, not fail as unknown: %q", m.Content)
+			assert.NotContains(t, low, "unknown tool",
+				"same-turn call of the just-wired tool must resolve: %q", m.Content)
+		}
+	}
+	assert.True(t, sawExecuted,
+		"the same-turn http_request call must have produced a tool result")
 }
 
 // TestSkillWiring_Restore_ResidentLoadRefiresEffect persists a session
