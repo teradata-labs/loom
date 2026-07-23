@@ -14,6 +14,17 @@ same findings from scratch.
 | Path Traversal (Medium) | `pkg/artifacts/store.go` | `ValidateSessionID` (strict allowlist: `[A-Za-z0-9._-]`, no `..`) now gates `GetArtifactDir` and `GetScratchpadDir`; `session_metadata.go`'s weaker blocklist validator delegates to it. Session IDs arrive from API callers via context, so this was a real (if low-exploitability) gap. |
 | Insufficient postMessage Validation (Low) | `pkg/mcp/apps/html/data-chart.html` | Adopted the trust-on-first-use origin-pinning guard already used by the other three MCP app viewers, plus a payload shape check (`labels`/`values` arrays). |
 
+## CodeQL follow-up (2026-07-23)
+
+The PR #271 hardening itself surfaced three `go/path-injection` CodeQL alerts
+(#666–668) in `pkg/artifacts/session_metadata.go` (`WriteSessionArtifactMetadata`:
+`os.MkdirAll`, `os.CreateTemp`, `os.Rename`). Not exploitable — `ValidateSessionID`
+already allowlists `[A-Za-z0-9._-]` and rejects `..` — but CodeQL doesn't model that
+function as a sanitizer. Fixed by adding the CodeQL-recognized containment pattern
+(`filepath.Clean` + `filepath.Rel` + `filepath.IsLocal`) inside `SessionArtifactsRoot`,
+the single choke point every session metadata path derives from;
+`ReadSessionArtifactMetadata`'s duplicate inline check was folded into it.
+
 ## No fix available upstream
 
 | Finding | Location | Status |

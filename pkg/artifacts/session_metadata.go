@@ -117,12 +117,25 @@ func validateSessionArtifactPathSegment(sessionID string) error {
 }
 
 // SessionArtifactsRoot returns $LOOM_DATA_DIR/artifacts/sessions/<sessionID>.
+// The joined path is verified to stay inside the sessions directory, so the
+// returned root is safe to use in filesystem operations even though sessionID
+// originates from API callers. ValidateSessionID already rejects separators
+// and traversal sequences; the Rel/IsLocal check makes that containment
+// explicit at the path level.
 func SessionArtifactsRoot(sessionID string) (string, error) {
 	if err := validateSessionArtifactPathSegment(sessionID); err != nil {
 		return "", err
 	}
-	base := config.GetLoomDataDir()
-	return filepath.Join(base, "artifacts", "sessions", sessionID), nil
+	base := filepath.Join(config.GetLoomDataDir(), "artifacts", "sessions")
+	root := filepath.Clean(filepath.Join(base, sessionID))
+	rel, err := filepath.Rel(base, root)
+	if err != nil {
+		return "", fmt.Errorf("invalid session artifact path: %w", err)
+	}
+	if !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("invalid session artifact path")
+	}
+	return root, nil
 }
 
 // sessionMetadataPath returns the path to metadata.json for a session.
@@ -250,27 +263,17 @@ func WriteSessionArtifactMetadata(meta *SessionArtifactMetadata) error {
 }
 
 // ReadSessionArtifactMetadata reads and parses metadata.json under the session artifact root.
-// The resolved path is checked so the file cannot lie outside that directory. If the file
-// is missing, the error typically wraps [os.ErrNotExist].
+// Path containment is enforced by [SessionArtifactsRoot], which every metadata path derives
+// from. If the file is missing, the error typically wraps [os.ErrNotExist].
 func ReadSessionArtifactMetadata(sessionID string) (*SessionArtifactMetadata, error) {
 	path, err := sessionMetadataPath(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	root, err := SessionArtifactsRoot(sessionID)
-	if err != nil {
-		return nil, err
-	}
-	root = filepath.Clean(root)
-	cleanPath := filepath.Clean(path)
-	rel, err := filepath.Rel(root, cleanPath)
-	if err != nil {
-		return nil, fmt.Errorf("invalid session metadata path: %w", err)
-	}
-	if !filepath.IsLocal(rel) {
-		return nil, fmt.Errorf("invalid session metadata path")
-	}
-	data, err := os.ReadFile(cleanPath)
+	// filepath.Clean is a semantic no-op here (the path is already contained by
+	// SessionArtifactsRoot) but gosec's G304 check is intraprocedural and needs
+	// the sanitizer at the read site.
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
