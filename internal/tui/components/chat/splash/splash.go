@@ -249,8 +249,8 @@ func (s *splashCmp) agentDescription() string {
 Tell me what you need, and I'll suggest which agent to use.
 
 You can also:
-  • Press ctrl+e to browse all agents
-  • Press ctrl+w to browse workflows
+  • Press alt+a to browse all agents
+  • Press alt+w to browse workflows
   • Select Weaver from the sidebar to create a new agent
 
 Examples:
