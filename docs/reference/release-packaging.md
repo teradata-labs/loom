@@ -17,6 +17,23 @@ Pushing a `v*` tag triggers `release.yml`, which runs these jobs in order:
 5. `publish-packages` — dispatches `publish-homebrew.yml` and
    `publish-winget.yml` via `workflow_dispatch` with the release version.
    Skipped for alpha/beta/rc tags.
+6. `publish-homepage` — publishes `web/` from the tagged commit to the
+   `gh-pages` branch (https://teradata-labs.github.io/loom/) and requests
+   a Pages build. Skipped for alpha/beta/rc tags.
+
+## Homepage (`web/`)
+
+`web/` on `main` is the single source of truth for the GitHub Pages site.
+Hand-edits made directly on `gh-pages` are overwritten on the next release —
+change `web/` instead.
+
+Version strings in `web/index.html` are wrapped in
+`<span data-loom-version>vX.Y.Z</span>` markers. The version manager bumps
+only those spans (historical mentions like "since v1.1.0" are untouched), and
+`publish-homepage` fails the release if the stamped version doesn't match the
+tag. The job requests a Pages build explicitly via
+`POST /repos/{owner}/{repo}/pages/builds` because the gh-pages push is made
+with `GITHUB_TOKEN` (see trigger-suppression section below).
 
 ## Why publishers are dispatched explicitly
 
@@ -97,4 +114,16 @@ Verify the tap picked it up:
 ```bash
 gh api repos/teradata-labs/homebrew-tap/contents/Formula/loom.rb \
   --jq '.content' | base64 -d | grep version
+```
+
+If the homepage publish was missed, re-run the `publish-homepage` job from
+the release run, or publish by hand from the tagged commit:
+
+```bash
+git checkout v1.3.0
+git fetch origin gh-pages:gh-pages
+git worktree add /tmp/gh-pages gh-pages
+rsync -a --delete --exclude .git web/ /tmp/gh-pages/
+cd /tmp/gh-pages && git add -A && git commit -m "Publish homepage for v1.3.0" && git push origin gh-pages
+gh api --method POST /repos/teradata-labs/loom/pages/builds
 ```

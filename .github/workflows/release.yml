@@ -468,3 +468,60 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           gh workflow run publish-winget.yml --repo ${{ github.repository }} -f version="$VERSION"
           echo "Dispatched publish-winget.yml for version $VERSION"
+
+  publish-homepage:
+    name: Publish Homepage
+    # web/ on the tagged commit is the single source of truth for the
+    # GitHub Pages site (https://teradata-labs.github.io/loom/). The version
+    # strings in web/index.html are stamped by the version manager in the
+    # release bump commit, so this job only verifies and publishes — any
+    # hand-edits made directly on gh-pages are overwritten here.
+    needs: create-attestations
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Verify homepage is stamped with release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ ! -f web/index.html ]; then
+            echo "::error::web/index.html missing from tagged tree"
+            exit 1
+          fi
+          if ! grep -Fq "data-loom-version>v$VERSION<" web/index.html; then
+            echo "::error::web/index.html not stamped to v$VERSION — was the version manager run before tagging?"
+            exit 1
+          fi
+          echo "Homepage stamped to v$VERSION"
+
+      - name: Publish web/ to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages:gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          rsync -a --delete --exclude .git web/ /tmp/gh-pages/
+          cd /tmp/gh-pages
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Homepage unchanged; nothing to publish"
+            exit 0
+          fi
+          git commit -m "Publish homepage for ${GITHUB_REF_NAME}"
+          git push origin gh-pages
+          echo "Pushed homepage for ${GITHUB_REF_NAME} to gh-pages"
+
+      - name: Request Pages build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Pushes made with GITHUB_TOKEN can be exempt from triggering the
+          # managed pages-build-deployment workflow (the same suppression
+          # that broke the tap publishers), so request a build explicitly.
+          gh api --method POST /repos/${{ github.repository }}/pages/builds
+          echo "Requested GitHub Pages build"
