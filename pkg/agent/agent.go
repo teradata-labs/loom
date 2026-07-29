@@ -1773,6 +1773,19 @@ func hasTextBlock(blocks []ContentBlock) bool {
 }
 
 // chat runs the full conversation lifecycle — span setup, user-message
+// maxPreviewLen is the maximum number of runes recorded in span preview attributes
+// to avoid bloating OTLP traces with large message bodies.
+const maxPreviewLen = 200
+
+// truncatePreview returns up to maxPreviewLen runes of s, appending "\u2026" when truncated.
+func truncatePreview(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxPreviewLen {
+		return s
+	}
+	return string(runes[:maxPreviewLen]) + "\u2026"
+}
+
 // persistence, graph-memory kick-off, the conversation loop, and success/error
 // telemetry — shared by the three public chat entry points. See chatParams for
 // how each entry point tailors span name, multimodal content, and progress
@@ -1811,7 +1824,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", userMessage)
+	span.SetAttribute("message.preview", truncatePreview(userMessage))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
