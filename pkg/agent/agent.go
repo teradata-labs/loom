@@ -1810,7 +1810,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncatePreview(userMessage))
+	span.SetAttribute("message.preview", userMessage)
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
