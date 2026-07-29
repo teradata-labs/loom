@@ -227,6 +227,45 @@ func TestClient_ConvertMessages(t *testing.T) {
 	}
 }
 
+func TestClient_ConvertMessages_SkillBodySidecarCoalesces(t *testing.T) {
+	client := &Client{}
+
+	messages := []types.Message{
+		{Role: "user", Content: "load the alpha skill"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{
+			{ID: "t1", Name: "manage_skills",
+				Input: map[string]interface{}{"action": "load", "name": "alpha"}},
+		}},
+		{Role: "tool", ToolUseID: "t1", Content: "Skill loaded: alpha"},
+		{Role: "user", Content: "ALPHA SKILL BODY"},
+	}
+
+	_, apiMessages := client.convertMessages(messages)
+
+	// The tool_result (user-role on the wire) and the following sidecar text
+	// coalesce into ONE user message with mixed blocks — never two consecutive
+	// user-role wire messages (Anthropic 400: roles must alternate).
+	if len(apiMessages) != 3 {
+		t.Fatalf("expected 3 wire messages (sidecar coalesced), got %d", len(apiMessages))
+	}
+	for i := 1; i < len(apiMessages); i++ {
+		if apiMessages[i].Role == "user" && apiMessages[i-1].Role == "user" {
+			t.Fatalf("consecutive user-role wire messages at index %d", i)
+		}
+	}
+	last := apiMessages[2]
+	if last.Role != "user" || len(last.Content) != 2 {
+		t.Fatalf("expected one user message with 2 blocks (tool_result + sidecar text), got role=%s blocks=%d",
+			last.Role, len(last.Content))
+	}
+	if last.Content[0].Type != "tool_result" || last.Content[0].ToolUseID != "t1" {
+		t.Errorf("first block must be the t1 tool_result, got %+v", last.Content[0])
+	}
+	if last.Content[1].Type != "text" || last.Content[1].Text != "ALPHA SKILL BODY" {
+		t.Errorf("second block must be the sidecar text, got %+v", last.Content[1])
+	}
+}
+
 func TestContentBlock_MarshalJSON_ToolUseAlwaysHasInput(t *testing.T) {
 	// Anthropic API requires tool_use blocks to always have "input" present.
 	// Even when the LLM returns a tool call with no arguments, the serialized

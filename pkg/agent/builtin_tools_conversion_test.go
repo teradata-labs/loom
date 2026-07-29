@@ -278,11 +278,11 @@ func TestConvertAndQuery_JSONArray(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store in memory
-	ref, err := memoryStore.Store("test_json", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("test_json", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := memoryStore.GetMetadata(ref)
+	meta, err := memoryStore.GetMetadata(ref, "") // same partition these fixtures store under
 	require.NoError(t, err)
 
 	// Test SQL query - use CAST to compare numbers properly
@@ -388,11 +388,11 @@ func TestConvertAndQuery_CSV(t *testing.T) {
 5,Eve,91`
 
 	// Store in memory
-	ref, err := memoryStore.Store("test_csv", []byte(csvData), "text/csv", nil)
+	ref, err := memoryStore.Store("test_csv", []byte(csvData), "text/csv", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := memoryStore.GetMetadata(ref)
+	meta, err := memoryStore.GetMetadata(ref, "") // same partition these fixtures store under
 	require.NoError(t, err)
 
 	// Test SQL query
@@ -444,11 +444,11 @@ func TestConvertAndQuery_InvalidDataType(t *testing.T) {
 	}
 
 	// Store plain text (not JSON or CSV)
-	ref, err := memoryStore.Store("test_text", []byte("Just plain text"), "text/plain", nil)
+	ref, err := memoryStore.Store("test_text", []byte("Just plain text"), "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := memoryStore.GetMetadata(ref)
+	meta, err := memoryStore.GetMetadata(ref, "") // same partition these fixtures store under
 	require.NoError(t, err)
 
 	// Try to query (should fail)
@@ -482,11 +482,11 @@ func TestConvertAndQuery_JSONObject(t *testing.T) {
 
 	// Store single JSON object (not array)
 	jsonData := `{"name": "Alice", "score": 95}`
-	ref, err := memoryStore.Store("test_obj", []byte(jsonData), "application/json", nil)
+	ref, err := memoryStore.Store("test_obj", []byte(jsonData), "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := memoryStore.GetMetadata(ref)
+	meta, err := memoryStore.GetMetadata(ref, "") // same partition these fixtures store under
 	require.NoError(t, err)
 
 	// Try to query (should fail - only arrays are convertible)
@@ -547,9 +547,9 @@ func TestQueryToolResult_JSONObjectRetrievable(t *testing.T) {
 	tool := &QueryToolResultTool{memoryStore: memoryStore}
 
 	jsonData := `{"provider":"tavily","query":"lazarus hours","result_count":1,"results":[{"title":"Lazarus","content":"Closes at 10pm daily","url":"https://x"}]}`
-	ref, err := memoryStore.Store("ref_web_search_123", []byte(jsonData), "application/json", nil)
+	ref, err := memoryStore.Store("ref_web_search_123", []byte(jsonData), "application/json", nil, "")
 	require.NoError(t, err)
-	meta, err := memoryStore.GetMetadata(ref)
+	meta, err := memoryStore.GetMetadata(ref, "") // same partition these fixtures store under
 	require.NoError(t, err)
 	require.Equal(t, "json_object", meta.DataType, "fixture must be a json_object")
 

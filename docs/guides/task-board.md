@@ -16,7 +16,6 @@ The task board gives agents the ability to:
 1. **Decompose** complex goals into dependency-tracked subtasks using an LLM.
 2. **Track** work via a kanban board with status transitions.
 3. **Remember** what they are working on across context window compaction.
-4. **Coordinate** with skills that emit tasks automatically.
 
 ---
 
@@ -48,9 +47,9 @@ memory:
 | `default_board_id` | "" | Board ID used when none is specified. Empty means the agent creates/uses a board named after itself |
 | `max_depth` | 3 | Maximum decomposition depth |
 | `default_strategy` | BACKWARD | Default LLM decomposition strategy |
-| `context_budget_tokens` | 500 | Max tokens for the task context block injected into the system prompt. 0 disables injection |
+| `context_budget_tokens` | 500 | Max tokens for the task context block rendered into the system prompt. 0 disables it |
 
-**Two-axis split**: Setting `enabled: false` hides the `task_board` tool and context injection from the agent but does NOT prevent skills from emitting tasks (Phase D emission). This allows background task tracking for stickiness checking without cluttering the agent's UI.
+**What `enabled: false` does**: it hides the `task_board` tool and the task context block from the agent. Tasks already on a board stay in the store and remain readable and writable over the gRPC `TaskService`.
 
 ---
 
@@ -235,109 +234,24 @@ Without `board_id`, lists all boards. With `board_id`, returns the board info an
 
 ---
 
-## Task Context Injection
+## Task Context in the System Prompt
 
-When `enabled: true` and `context_budget_tokens > 0`, the agent's system prompt is supplemented each turn with a `--- TASK CONTEXT ---` block rebuilt from the database. This block contains:
+When `enabled: true` and `context_budget_tokens > 0`, the agent's system prompt carries a `--- TASK CONTEXT ---` block built from the database when the session is created. This block contains:
 
 1. **Current tasks**: Tasks the agent has claimed (IN_PROGRESS), with objective, approach, and recent notes.
 2. **Ready front**: Tasks available to claim, with priority and effort estimates.
 3. **Recent completions**: Last 3 closed tasks with close reasons (for momentum).
 4. **Board stats**: Total/open/in_progress/blocked/done counts.
 
-This context survives context window compaction because it is rebuilt from the database each turn, not carried in conversation history.
+The block lives in the system prompt, not in conversation history, so compaction of the conversation never drops it. It reflects board state as of session creation; changes made during the session show up on the next session.
 
 **Budget enforcement**: The context block is truncated to `context_budget_tokens * 4` characters (rough 4-chars-per-token estimate). Default is 500 tokens (2000 characters).
 
 ---
 
-## Skills That Emit Tasks
-
-### How It Works
-
-When a skill activates (Phase D of the skills overhaul pipeline), the skill task emitter automatically creates tasks on the agent's board. This happens regardless of whether `task_board.enabled` is true -- emission is gated only by `taskManager != nil` at the server level and the skill's `emit_tasks` flag.
-
-### Skill-Level Configuration
-
-In a skill YAML file:
-
-```yaml
-name: code-review
-title: Code Review
-emit_tasks: true  # default when omitted
-
-task_template:
-  max_tasks: 5
-  steps:
-    - title: "Understand the change"
-      objective: "Read diff and summarize purpose"
-      category: research
-      priority: P2
-      estimated_effort: "5 min"
-      depends_on: []
-      tags: [understanding]
-
-    - title: "Check correctness"
-      objective: "Verify logic, edge cases, error handling"
-      category: review
-      priority: P1
-      estimated_effort: "10 min"
-      depends_on: [0]
-      tags: [correctness]
-
-    - title: "Check style and conventions"
-      objective: "Verify naming, formatting, Go idioms"
-      category: review
-      priority: P2
-      estimated_effort: "5 min"
-      depends_on: [0]
-      tags: [style]
-
-    - title: "Write review summary"
-      objective: "Produce actionable feedback organized by severity"
-      category: writing
-      priority: P1
-      estimated_effort: "5 min"
-      depends_on: [1, 2]
-      tags: [output]
-```
-
-**Fields in `task_template`**:
-- `steps`: Array of task definitions. `depends_on` uses 0-based indices into this array.
-- `max_tasks`: Cap on emitted tasks (default: 8).
-- `root_title`: Optional parent task title.
-- `ephemeral_on_deactivate`: If true, unstarted (OPEN) tasks are deleted when the skill deactivates.
-
-**Per-skill opt-out**: Set `emit_tasks: false` to prevent a skill from creating tasks.
-
-### Decomposer Fallback
-
-If a skill does NOT declare a `task_template`, the emitter falls back to the LLM-driven Decomposer, using the skill's prompt as the goal (forward strategy, max depth 2).
-
-### Idempotency
-
-All skill-emitted tasks carry a `skill_idempotency_key` of the form:
-```
-skill:<name>|sess:<sessionID>|step:<index>
-```
-
-Re-activation of the same skill on the same session returns existing tasks rather than creating duplicates. This prevents duplicate boards when:
-- A skill re-triggers on multiple user turns
-- The conversation loop retries
-- The agent is restarted mid-session
-
-### Agent-Level Master Switch
-
-The skills config has a `tasks_enabled` flag (default: true). When set to false, no skill emits tasks regardless of per-skill settings.
-
-### Periodic Skill Maintenance
+## Periodic Skill Maintenance
 
 The `skill-health-audit` workflow template (`/template skill-health-audit`) is available for periodic skill library maintenance. It runs a 2-agent pipeline that audits all skills for staleness (confidence decay below threshold, deprecated status, missing validation timestamps) and produces an actionable report. Schedule it weekly to keep the skill library healthy.
-
-### Sticky-While-Open-Tasks
-
-When a skill has open (non-terminal) tasks on the board, it is treated as "sticky" during eviction. The orchestrator will not evict it to make room for a new skill, even if its confidence is lower. This prevents abandoning in-flight work.
-
-If ALL active skills are sticky, the concurrent skill cap is allowed to overflow for that turn rather than evicting load-bearing skills.
 
 ---
 
@@ -345,7 +259,7 @@ If ALL active skills are sticky, the concurrent skill cap is allowed to overflow
 
 ### Creating a Board
 
-Boards are auto-created when needed (by `resolveBoardForWrite` in the tool or `ensureBoard` in the emitter). To create one explicitly:
+Boards are auto-created when needed (by `resolveBoardForWrite` in the tool). To create one explicitly:
 
 ```bash
 # TaskService is gRPC-only — it is NOT registered with the HTTP/REST gateway
@@ -439,7 +353,7 @@ If your agent has a MessageBus connected, these events fire:
 
 ### "FOREIGN KEY constraint failed"
 
-The task's `board_id` references a board that does not exist. This should be auto-handled by `resolveBoardForWrite` and `ensureBoard`, but if you see this error:
+The task's `board_id` references a board that does not exist. This should be auto-handled by `resolveBoardForWrite`, but if you see this error:
 1. Create the board explicitly via `CreateBoard`.
 2. Ensure `default_board_id` in the agent config matches an existing board.
 
@@ -447,16 +361,9 @@ The task's `board_id` references a board that does not exist. This should be aut
 
 Check:
 1. `task_board.enabled` is `true` in agent config.
-2. `context_budget_tokens` is > 0 (0 disables injection).
+2. `context_budget_tokens` is > 0 (0 disables the block).
 3. Tasks exist on the configured `default_board_id`.
-
-### Skills not emitting tasks
-
-Check:
-1. The server has `taskManager` initialized (requires task table migrations).
-2. The skill does not have `emit_tasks: false`.
-3. The agent-level `tasks_enabled` is not set to `false` in skills config.
-4. For decomposer fallback: the skill has no `task_template` AND an LLM provider is available.
+4. The tasks were on the board before the session started — the block is built at session creation, so start a new session to pick up newer tasks.
 
 ### Stuck claimed tasks
 
@@ -472,4 +379,4 @@ grpcurl -d '{"task_id": "abc123", "session_id": "the-session"}' \
 
 - [Task System Architecture](../architecture/task-system.md): Design rationale and internals
 - [TaskService API Reference](../reference/task-service.md): Complete RPC specifications
-- [Skills Overhaul Architecture](../architecture/skills-overhaul.md): Phase D context
+- [Skills Overhaul Architecture](../architecture/skills-overhaul.md): the skills subsystem

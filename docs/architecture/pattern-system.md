@@ -19,6 +19,7 @@ Architecture of Loom's pattern system - hot-reloadable domain knowledge library 
   - [Hot-Reload System](#hot-reload-system)
   - [Pattern Orchestrator](#pattern-orchestrator)
   - [Search and Matching](#search-and-matching)
+  - [Pattern Delivery](#pattern-delivery)
   - [A/B Testing](#ab-testing)
   - [Pattern Effectiveness Tracker](#pattern-effectiveness-tracker)
 - [Key Interactions](#key-interactions)
@@ -43,13 +44,16 @@ Architecture of Loom's pattern system - hot-reloadable domain knowledge library 
 
 ## Overview
 
-The Pattern System encodes **domain knowledge as reusable YAML patterns** that guide agent behavior without hardcoded prompts. It combines:
+The Pattern System stores **domain knowledge as reusable YAML patterns** that the model pulls on demand. It combines:
 
 1. **Pattern Library**: Cache-backed pattern storage with embedded + filesystem sources
 2. **Hot-Reload**: Zero-downtime pattern updates via fsnotify (89-143ms latency)
 3. **Hybrid Search**: Keyword-based pattern matching with intent classification, plus optional LLM-based re-ranking for ambiguous cases
-4. **A/B Testing**: Compare pattern variants for continuous improvement
-5. **Effectiveness Tracking**: SQLite-backed metrics for learning agent feedback
+4. **On-Demand Delivery**: The `load_pattern` builtin returns a pattern body as an ordinary tool result
+5. **A/B Testing**: Compare pattern variants for continuous improvement
+6. **Effectiveness Tracking**: SQLite-backed metrics for learning agent feedback
+
+Patterns never enter the system prompt. There is no per-turn pattern selection and no prompt injection step: the model asks for a pattern by reference and receives its body as tool data.
 
 The system ships **158 patterns** (`find patterns -name '*.yaml' | wc -l`) discovered across **28 default search paths** (13 top-level domains + 15 vendor/nested subdirectories including Teradata, Postgres, SQL, and Weaver patterns; see `pkg/patterns/library.go:66-96`).
 
@@ -120,7 +124,7 @@ graph TB
 **External Dependencies**:
 - **Filesystem**: YAML pattern files (hot-reloadable)
 - **Embedded FS**: Compiled-in patterns (fallback, immutable)
-- **Agent Runtime**: Pattern consumer (ROM layer)
+- **Agent Runtime**: Hosts the `load_pattern` builtin the model calls to pull a pattern body
 - **Learning Agent**: Pattern effectiveness tracking (SQLite)
 - **Hawk**: Observability tracing
 
@@ -441,6 +445,8 @@ lib.mu.Unlock()
 
 **Responsibility**: Intent classification, execution planning, and pattern recommendation.
 
+**Scope**: The orchestrator is a library-level API for callers that want a recommendation. The agent conversation loop does not call `ClassifyIntent`, `RecommendPattern`, `PlanExecution` or `GetRoutingRecommendation` — it uses the orchestrator only to reach the library behind `load_pattern`. Nothing described below runs automatically per turn.
+
 **Intent Classification**:
 ```
 User Message ───▶ Intent Classifier ───▶ Intent (string) + Confidence
@@ -532,9 +538,8 @@ func (o *Orchestrator) SetLLMProvider(provider types.LLMProvider)
 ```
 
 **Routing Recommendations**:
-- Orchestrator provides guidance for tool/pattern selection
-- Injected into agent system prompt
-- Helps LLM choose efficient execution path
+- `GetRoutingRecommendation(intent)` returns guidance for tool/pattern selection as a string to its caller
+- The return value is not written to the system prompt or any other context slot; what a caller does with it is the caller's choice
 
 
 ### Search and Matching
@@ -597,6 +602,43 @@ When an LLM provider is configured on the orchestrator (via `SetLLMProvider()`),
 - Three or more candidates score above 0.60
 
 This provides semantic understanding beyond keyword matching without requiring embedding models or vector databases.
+
+
+### Pattern Delivery
+
+**Responsibility**: Put a pattern body in front of the model when the model asks for it.
+
+**Mechanism**: the `load_pattern` builtin (`pkg/agent/load_pattern_tool.go`). It is registered at agent construction whenever a pattern library is configured, so it is advertised from the first turn. It exposes a single action — load by reference:
+
+```go
+// Input schema
+{"reference": "<pattern reference>"}
+
+// Execute: library lookup, then the pattern's LLM rendering as string tool-result data
+pattern, err := t.orchestrator.GetLibrary().Load(reference)
+return &shuttle.Result{Success: true, Data: pattern.FormatForLLM()}
+```
+
+**How the model learns which references exist**: a skill declares `pattern_refs` in its YAML. `manage_skills(load)` appends those references to the skill body it delivers ("Referenced patterns (load via `load_pattern`): ..."). That is the only place a reference is surfaced; the model then passes one back to `load_pattern`.
+
+```
+manage_skills(load, name) ──▶ skill body + pattern references
+                                        │
+                                        ▼
+                          load_pattern(reference) ──▶ pattern body as tool data
+```
+
+**Where the body lands**: in the conversation as a tool result, exactly like any other tool's output. It is subject to the same handling:
+- Below the 64 KiB result threshold (`storage.DefaultSharedMemoryThreshold`): stays inline in L1
+- At or above it: stored by reference, with a summary returned in its place
+- Once in L1 it compacts and evicts under the ordinary memory rules
+
+**What it is not**:
+- Not a system-prompt insert — the ROM layer holds the system prompt, never pattern content
+- Not automatic — no turn selects a pattern on the model's behalf, and the active-pattern slot (`SegmentedMemory.GetActivePattern()`) stays empty
+- Not budgeted separately — `PatternConfig.Enabled` and `MaxPatternsPerTurn` remain in the config surface but drive no runtime behaviour
+
+**Failure mode**: an unknown reference returns a `PATTERN_NOT_FOUND` error result, so no pattern content enters the conversation.
 
 
 ### A/B Testing
@@ -670,7 +712,7 @@ Execute Variant ───▶ Collect Metrics ───▶ Pattern Effectiveness 
 **Storage**: SQLite database (schema in `pkg/metaagent/learning/schema.go`, logic in `pkg/metaagent/learning/pattern_tracker.go`)
 
 **Integration Points**:
-1. **Agent Execution**: Records metrics after pattern use (via `Orchestrator.RecordPatternUsage()`)
+1. **Caller-driven recording**: `Orchestrator.RecordPatternUsage()` writes a usage record when a caller invokes it; the agent conversation loop does not call it
 2. **Judge System**: Exports scores to tracker (multi-dimensional: pass rate, criterion scores)
 3. **Learning Agent**: Queries tracker for analysis
 4. **MessageBus**: Publishes aggregated metrics to `meta.pattern.effectiveness` topic
@@ -682,8 +724,10 @@ Execute Variant ───▶ Collect Metrics ───▶ Pattern Effectiveness 
 
 ### Pattern Loading
 
+**Trigger**: a `load_pattern(reference)` tool call from the model. The tool resolves the reference through the library; the resolved body returns to the model as the tool result.
+
 ```
-Agent Request     Library       Cache        Embedded FS    Filesystem
+load_pattern      Library       Cache        Embedded FS    Filesystem
   │                 │              │              │             │               
   ├─ Load(name) ───▶│              │              │             │               
   │                 ├─ Check Cache ▶│              │             │              
@@ -743,8 +787,10 @@ Text Editor    Filesystem    fsnotify      Debouncer     Library      Agent
 
 ### Pattern Matching
 
+**Trigger**: an explicit `Orchestrator.RecommendPattern()` call from an embedding caller. This is not part of the agent's turn.
+
 ```
-User Query      Orchestrator    Library       Pattern Index
+Caller Query    Orchestrator    Library       Pattern Index
   │                 │               │                │                          
   ├─ "Analyze ─────▶│               │                │                          
   │  customer       ├─ Classify ───┤                │                           
@@ -1281,8 +1327,8 @@ Hot-Reload Validation Failure ───▶ Log + Trace ───▶ Keep Old Pat
 
 ### Architecture Deep Dives
 
-- [Agent System Architecture](agent-system-design.md) - Pattern integration with ROM layer
-- [Memory System Architecture](memory-systems.md) - ROM layer immutability for hot-reload
+- [Agent System Architecture](agent-system-design.md) - How the agent registers and advertises `load_pattern`
+- [Memory System Architecture](memory-systems.md) - Memory layers a loaded pattern body passes through
 - [Learning Agent Architecture](learning-agent.md) - Pattern effectiveness tracking
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
 

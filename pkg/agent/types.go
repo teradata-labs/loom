@@ -103,12 +103,11 @@ type Agent struct {
 	// Pattern orchestration
 	orchestrator *patterns.Orchestrator
 
-	// Skill orchestration. The skillOrchestrator manages activation lifecycle
-	// and prompt injection. The discovery component (when present) is the
-	// new entry point introduced by the skills overhaul: it composes
-	// binding resolution, the hierarchical PageIndex router, and the FTS5
-	// fallback. When discovery is nil, runConversationLoop falls back to
-	// the legacy MatchSkills filter path for backward compatibility.
+	// Skill orchestration. The skillOrchestrator owns the activation lifecycle;
+	// skills enter the conversation only through manage_skills, never by prompt
+	// injection. The discovery component (when present) composes binding
+	// resolution, the hierarchical PageIndex router and the FTS5 fallback for
+	// callers that drive it directly — the conversation loop does not.
 	skillOrchestrator *skills.Orchestrator
 	skillDiscovery    *discovery.Discovery
 	// skillTaskEmitter materializes tasks for newly-activated skills onto
@@ -156,11 +155,6 @@ type Agent struct {
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
-	// Automatic finding extraction
-	enableFindingExtraction       bool // Whether automatic extraction is enabled
-	extractionCadence             int  // Number of tool executions between extractions
-	toolExecutionsSinceExtraction int  // Counter for tool executions since last extraction
-
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
 
@@ -184,6 +178,24 @@ type Agent struct {
 	// agent code only consults this map.
 	suppressedBuiltinTools map[string]bool
 
+	// Per-session advertised-tool projection. The shared tools Registry is the
+	// definition store (what CAN exist); advertisement is scoped per session so
+	// one session's event never changes another's tool list.
+	//
+	// sessionToolLedger maps a session ID to the set of tool names THIS
+	// session's own events registered (skill required_tools, progressive-
+	// disclosure error/query tools). scopedToolNames is the union of every
+	// session-scoped name across all sessions: a name in this set is advertised
+	// to a session ONLY when that session's ledger holds it. baseToolNames is
+	// the always-advertised set captured once, before any event-driven
+	// registration, so a base tool a skill happens to require is not mistaken
+	// for a session-scoped tool. Base tools never enter scopedToolNames, so the
+	// projection can never drop one. Guarded by a.mu.
+	sessionToolLedger map[string]map[string]bool
+	scopedToolNames   map[string]bool
+	baseToolNames     map[string]bool
+	baseToolsOnce     sync.Once
+
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
@@ -203,6 +215,17 @@ type Agent struct {
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
 	graphTurnsSinceExtraction          int
+
+	// Debug context-dump sink. Lazily constructed on the first provider call
+	// that has dumping enabled; stays nil on the production path. See
+	// context_dump.go.
+	contextDump     *contextDumper
+	contextDumpOnce sync.Once
+
+	// Per-mutation debug carrier injected into the memory and skill components.
+	// Shares the context-dump switch; a no-op on the production path. See
+	// context_debug.go.
+	ctxDebug *contextDebug
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -290,6 +313,20 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
+
+	// Debug holds opt-in diagnostic switches, all off by default.
+	Debug DebugConfig
+}
+
+// DebugConfig holds opt-in diagnostic switches. Every field defaults to its
+// zero value (off) so the production path stays untouched unless a switch is
+// explicitly set.
+type DebugConfig struct {
+	// ContextDump enables one un-redacted dump record per provider call,
+	// capturing the compiled (messages, tools) about to be dispatched. Written
+	// only to a local per-run sink, never to zap/Hawk. Off by default; also
+	// enabled via the LOOM_DEBUG_CONTEXT_DUMP environment variable.
+	ContextDump bool
 }
 
 // PatternConfig holds pattern injection configuration

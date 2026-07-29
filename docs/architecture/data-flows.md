@@ -20,7 +20,7 @@ End-to-end data flows showing how information moves through Loom's multi-layered
   - [Agent Conversation Flow](#agent-conversation-flow)
   - [Tool Execution Flow](#tool-execution-flow)
   - [Memory Management Flow](#memory-management-flow)
-  - [Pattern Matching Flow](#pattern-matching-flow)
+  - [Pattern Load Flow](#pattern-load-flow)
 - [Advanced Flows](#advanced-flows)
   - [Reference-Based Data Passing](#reference-based-data-passing)
   - [Multi-Agent Workflow Flow](#multi-agent-workflow-flow)
@@ -44,7 +44,7 @@ Loom's architecture involves complex data flows across 10+ subsystems. This docu
 1. **Agent Conversation Flow**: User message → LLM invocation → tool execution → response
 2. **Tool Execution Flow**: Tool call → backend query → result processing → memory storage
 3. **Memory Management Flow**: Message addition → L1 cache → L2 compression → Swap eviction → SQLite persistence
-4. **Pattern Matching Flow**: Query → keyword-based search → pattern selection → prompt injection
+4. **Pattern Load Flow**: Model calls `load_pattern(reference)` → library lookup → pattern body returned as tool data
 5. **Reference-Based Data Passing**: Large result → gzip compression → shared memory → reference ID
 6. **Multi-Agent Workflow Flow**: YAML load → pattern routing → stage execution → result merge
 7. **Session Recovery Flow**: Crash → session load → memory reconstruction → resume
@@ -110,7 +110,7 @@ flowchart TB
 ### 1. Request-Response Flows
 - Agent conversation (client → agent → LLM → client)
 - Tool execution (LLM → executor → backend → executor → LLM)
-- Pattern matching (query → matcher → patterns → prompt)
+- Pattern load (LLM → `load_pattern` → library → tool result → LLM)
 
 ### 2. State Management Flows
 - Memory management (messages → L1 → L2 → Swap → SQLite)
@@ -137,7 +137,7 @@ flowchart TB
 **Sequence Diagram**:
 ```
 Client         Agent        Memory       Pattern      LLM         Executor     Backend      Tracer
-  │              │            │          Matcher    Provider       │            
+  │              │            │          Library    Provider       │            
   ├─ POST ──────▶│            │            │           │           │            
   │  /chat       │            │            │           │           │            
   │  sessionID   ├─ StartSpan ┼────────────┼───────────┼───────────┼────────────
@@ -150,10 +150,6 @@ Client         Agent        Memory       Pattern      LLM         Executor     B
   │              │  Message    │            │           │           │           
   │              │  (user)     │            │           │           │           
   │              │◀─ OK ───────┤            │           │           │           
-  │              │             │            │           │           │           
-  │              ├─ Match ─────┼───────────▶│           │           │           
-  │              │  Pattern    │            │           │           │           
-  │              │◀─ Pattern ──┼────────────┤           │           │           
   │              │             │            │           │           │           
   │              ├─ Build ─────▶│            │           │           │          
   │              │  Context    │            │           │           │           
@@ -176,7 +172,11 @@ Client         Agent        Memory       Pattern      LLM         Executor     B
   │              │             │            │           │           │           
   │              ├─ Execute ───┼────────────┼───────────┼──────────▶│           
   │              │  Tools      │            │           │           │           
-  │              │  [get_schema, execute_sql]           │            │          
+  │              │  [get_schema, execute_sql, load_pattern]           │         
+  │              │             │            │           │           │           
+  │              │             │            │◀─ Load ───┼───────────┤           
+  │              │             │            │  Pattern  │           │           
+  │              │             │            ├─ Body ────┼──────────▶│           
   │              │             │            │           │           │           
   │              │             │            │           │           ├─ Query ───
   │              │             │            │           │           │           
@@ -229,7 +229,7 @@ Client         Agent        Memory       Pattern      LLM         Executor     B
 
 **Data Transformations** ⚠️:
 1. **User message** → String (UTF-8, 1-10K chars typical)
-2. **Pattern match** → Matched pattern + score (keyword-based scoring with optional LLM re-ranking)
+2. **Pattern load** (only when the model calls `load_pattern`) → Pattern body as string tool-result data
 3. **Context build** → Concatenated messages (ROM + Kernel + L1 + L2 + Swap within 180K token budget; 200K context - 20K output reserve)
 4. **LLM request** → JSON with messages array + tools array
 5. **LLM response** → Streaming chunks → final Response proto
@@ -397,13 +397,11 @@ Available Input: 180,000 tokens
 Memory Layers (not fixed percentages — adaptive based on workload profile):
 ├─ ROM: Static documentation/prompts (never changes during session)
 │  ├─ System prompt
-│  ├─ Tool definitions
-│  └─ Pattern content (cached)
+│  └─ Tool definitions
 │
 ├─ Kernel: Tool definitions, recent results, schema cache
 │  ├─ Tool results (max 5 kept in kernel)
-│  ├─ Schema discoveries (LRU cache, max 10)
-│  └─ Verified findings (working memory, max 100)
+│  └─ Schema discoveries (LRU cache, max 10)
 │
 ├─ L1 Cache: Recent messages (token-based eviction, not message count)
 │  └─ Balanced profile: ~6,400 max tokens (min 4 messages)
@@ -431,94 +429,47 @@ Memory Layers (not fixed percentages — adaptive based on workload profile):
 - **Memory overhead**: 50KB per session (L1 + L2 in RAM)
 
 
-### Pattern Matching Flow
+### Pattern Load Flow
 
-**Description**: Keyword-based pattern selection from library with intent classification and confidence scoring.
+**Description**: The model pulls a pattern body on demand through the `load_pattern` builtin. Nothing selects a pattern on the model's behalf, and no pattern content is written to the system prompt.
 
 **Sequence Diagram**:
 ```
-Agent       Orchestrator   PatternLib    Keyword     Patterns     Scorer      Memory
-  │             │              │          Matcher      YAML         │
-  ├─ Match ────▶│              │            │           │           │
-  │  Pattern    │              │            │           │           │
-  │  query="show sales"        │            │           │           │
-  │             │              │            │           │           │
-  │             ├─ Search ─────▶│            │           │           │
-  │             │              │            │           │           │
-  │             │              ├─ Extract ───▶│           │           │
-  │             │              │  Keywords   │           │           │
-  │             │              │  ["show", "sales"]      │           │
-  │             │              │◀─ Keywords ──┤           │           │
-  │             │              │            │           │           │
-  │             │              ├─ Match ─────▶│           │           │
-  │             │              │  Against    │           │           │
-  │             │              │  Index      │           │           │
-  │             │              │◀─ Hits ──────┤           │           │
-  │             │              │            │           │           │
-  │             │              ├─ Score ─────▶│           │           │
-  │             │              │  Intent +   │           │           │
-  │             │              │  Keywords   │           │           │
-  │             │              │◀─ Scores ────┤           │           │
-  │             │              │  [0.85, 0.72, 0.31, ...]│           │
-  │             │              │            │           │           │
-  │             │              ├─ Top-K ──────┤           │           │
-  │             │              │  (k=3)      │           │           │
-  │             │              │◀─ Patterns ──┤           │           │
-  │             │              │  [{id, score}, ...]      │           │
-  │             │              │            │           │           │
-  │             │              ├─ Load ───────┼───────────▶│           │
-  │             │              │  Pattern    │           │           │
-  │             │              │  YAML       │           │           │
-  │             │              │◀─ Content ───┼───────────┤           │
-  │             │              │            │           │           │
-  │             │              ├─ Evaluate ───┼───────────┼──────────▶│
-  │             │              │  Confidence │           │           │
-  │             │              │◀─ Score ─────┼───────────┼───────────┤
-  │             │              │  0.92       │           │           │
-  │             │              │            │           │           │
-  │             │◀─ Pattern ───┤            │           │           │
-  │             │  (best match)│            │           │           │
-  │             │            │           │           │           │           │
-  │             ├─ Inject ─────┼────────────┼───────────┼───────────┼──────────▶
-  │             │  Pattern    │            │           │           │           │
-  │             │  into ROM   │            │           │           │           │
-  │◀─ Pattern ──┤            │           │           │           │           │
-  │  Matched    │            │           │           │           │           │
-  │             │            │           │           │           │           │
+LLM          Executor      load_pattern   PatternLib    L1 Memory
+  │             │              │              │            │
+  ├─ tool_use ─▶│              │              │            │
+  │  load_pattern              │              │            │
+  │  {reference} │              │              │            │
+  │             ├─ Execute ────▶│              │            │
+  │             │              │              │            │
+  │             │              ├─ Load(ref) ──▶│            │
+  │             │              │              │            │
+  │             │              │◀─ Pattern ───┤            │
+  │             │              │  (or error)  │            │
+  │             │              │              │            │
+  │             │              ├─ FormatForLLM()           │
+  │             │              │  → string    │            │
+  │             │◀─ Result ────┤              │            │
+  │             │  {data}      │              │            │
+  │             │              │              │            │
+  │             ├─ Threshold check (64 KiB)   │            │
+  │             │  < 64 KiB → inline ─────────┼───────────▶│
+  │             │  ≥ 64 KiB → store by ref,   │            │
+  │             │              summary inline ┼───────────▶│
+  │             │              │              │            │
+  │◀─ tool_result ─────────────┼──────────────┼────────────┤
+  │  (pattern body or summary) │              │            │
+  │             │              │              │            │
 ```
 
-**Keyword-Based Scoring** (from `pkg/patterns/orchestrator.go`):
-```
-Query: "show sales by region"
-Keywords: ["show", "sales", "region"] (stop words filtered)
+**Reference Discovery**: the model can only pass a reference it has been given. A skill declares `pattern_refs` in its YAML; `manage_skills(load)` appends them to the skill body it delivers as a user-role message. That is the only channel through which a pattern reference reaches the model.
 
-Intent Classification: defaultIntentClassifier → analytics (0.85 confidence)
-
-Pattern 1: "sales_by_region" (category: analytics)
-  Category matches intent (analytics):    +0.5
-  Keyword match rate (3/3 matched):       +0.5
-  Name contains "sales":                  +0.2
-  Title contains "region":                +0.1
-  Total Score: 1.3 → normalized confidence: 0.85
-
-Pattern 2: "revenue_analysis" (category: analytics)
-  Category matches intent (analytics):    +0.5
-  Keyword match rate (1/3 matched):       +0.17
-  Total Score: 0.67 → normalized confidence: 0.72
-
-Pattern 3: "user_management" (category: admin)
-  Category does not match intent:         +0.0
-  Keyword match rate (0/3 matched):       +0.0
-  Total Score: 0.0 → filtered out
-
-Result: Pattern 1 selected (highest score: 0.85)
-```
+**Error Path**: an unknown reference returns a `PATTERN_NOT_FOUND` error result. No pattern content enters the conversation.
 
 **Performance Metrics**:
-- **Index build**: 89-143ms (59 patterns, 11 libraries)
-- **Search latency**: 5-15ms (keyword matching + scoring)
+- **Library index build**: 89-143ms (startup, full library)
+- **Load (cache hit)**: <1ms; **(cold)**: 8-20ms (file I/O + YAML parse)
 - **Memory overhead**: 2MB (pattern index + pattern cache)
-- **Match accuracy**: 92% (validated via Judge system)
 
 
 ## Advanced Flows
@@ -800,7 +751,7 @@ Note: Messages are stored in a separate `messages` table, not as a JSON column w
    - Load messages from messages table → Message[] array
    - Recent messages → L1 cache (based on compression profile limits)
    - Retrieve L2 snapshots from swap storage if enabled
-   - Rebuild ROM (system prompt, tools, patterns)
+   - Rebuild ROM (system prompt, tool definitions)
 5. **Resume conversation**: Agent continues from last message
 
 **Performance Metrics**:
@@ -1145,7 +1096,7 @@ message LLMCost {
 |------|-----------|------------|
 | Agent conversation | 1 conversation/1.2s | LLM API latency |
 | Tool execution | 100+ tools/s | Goroutine spawning |
-| Pattern matching | 1000+ queries/s | Keyword index lookup |
+| Pattern library search | 1000+ queries/s | Keyword index lookup |
 | Memory persistence | 200 writes/s | SQLite transaction |
 | Trace export | 100 spans/request | HTTP batch size |
 | Pattern hot-reload | <1 reload/min | Filesystem watch (500ms debounce) |
@@ -1157,7 +1108,7 @@ message LLMCost {
 | Agent conversation | 1.2s | 3.5s | LLM API call (800ms) + tool execution (400ms) |
 | Tool execution | 500ms | 1.6s | Backend query |
 | Memory management | 15ms | 45ms | SQLite write |
-| Pattern matching | 5ms | 15ms | Keyword-based search |
+| Pattern library search | 5ms | 15ms | Keyword-based search |
 | Reference storage | 10ms | 35ms | Compression (gzip) |
 | Workflow execution | 5.3s | 12s | N × stage_latency (sequential) |
 | Session recovery | 15ms | 45ms | SQLite load + JSON parse |
@@ -1195,7 +1146,7 @@ message LLMCost {
 |-----------|-----|-------------|
 | LLM invocation | 1% | Network-bound (waiting) |
 | Tool execution | 5-20% | Goroutine-based (parallel) |
-| Pattern matching | 2-5% | Keyword matching |
+| Pattern library search | 2-5% | Keyword matching |
 | Memory compression | 10-30% | LLM API call |
 | Trace export | 1-3% | JSON serialization |
 | Pattern hot-reload | 15-40% | Pattern index rebuild |
@@ -1246,7 +1197,7 @@ message LLMCost {
 - [Multi-Agent Orchestration](multi-agent.md) - Workflow patterns
 - [Communication System](communication-system-design.md) - Quad-modal messaging
 - [Observability Architecture](observability.md) - Hawk integration
-- [Pattern System](pattern-system.md) - Keyword-based pattern matching
+- [Pattern System](pattern-system.md) - Pattern library, hot-reload, and on-demand delivery
 
 ### Reference Documentation
 

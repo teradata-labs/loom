@@ -7,9 +7,11 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
@@ -207,35 +209,28 @@ func TestSegmentedMemory_BackwardsCompatibility(t *testing.T) {
 func TestAddMessage_DataIntensiveTriggersCompressionEarlier(t *testing.T) {
 	romContent := "Test documentation"
 
-	// Create two memories with different profiles but same context budget
-	dataIntensiveSM := NewSegmentedMemoryWithCompression(
-		romContent, 50000, 5000,
-		ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE],
-	)
-	dataIntensiveSM.SetCompressor(&mockCompressor{enabled: true})
-
-	conversationalSM := NewSegmentedMemoryWithCompression(
-		romContent, 50000, 5000,
-		ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL],
-	)
-	conversationalSM.SetCompressor(&mockCompressor{enabled: true})
-
-	// Add same messages to both
-	largeMessage := Message{
-		Role:    "user",
-		Content: "This is a large message with lots of content to consume tokens. " + string(make([]byte, 1000)),
+	// Count how many identical messages each profile absorbs before its budget
+	// usage crosses its warning threshold and compaction first fires. The
+	// data_intensive profile warns at 50%, conversational at 70%, so on the same
+	// window the data_intensive memory must compress after fewer messages.
+	firesAfter := func(profile CompressionProfile) int {
+		sm := NewSegmentedMemoryWithCompression(romContent, 50000, 5000, profile)
+		sm.SetCompressor(&mockCompressor{enabled: true})
+		ctx := context.Background()
+		content := strings.Repeat("large payload message ", 40)
+		n := 0
+		for i := 0; i < 500 && !sm.HasL2Content(); i++ {
+			sm.AddMessage(ctx, Message{Role: "user", Content: content})
+			n++
+		}
+		require.True(t, sm.HasL2Content(), "profile %q should eventually compress", profile.Name)
+		return n
 	}
 
-	ctx := context.Background()
+	dataIntensiveFires := firesAfter(ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE])
+	conversationalFires := firesAfter(ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL])
 
-	// Add enough messages to trigger warning threshold
-	for i := 0; i < 10; i++ {
-		dataIntensiveSM.AddMessage(ctx, largeMessage)
-		conversationalSM.AddMessage(ctx, largeMessage)
-	}
-
-	// Data intensive should have compressed more aggressively (lower maxL1)
-	// because it has lower thresholds (50% vs 70%) and smaller maxL1 (5 vs 12)
-	assert.LessOrEqual(t, len(dataIntensiveSM.l1Messages), 5, "Data intensive should have maxL1=5")
-	assert.LessOrEqual(t, len(conversationalSM.l1Messages), 12, "Conversational should have maxL1=12")
+	// Data intensive's lower warning threshold (50% vs 70%) makes it compress earlier.
+	assert.Less(t, dataIntensiveFires, conversationalFires,
+		"data_intensive should trigger compression after fewer messages than conversational")
 }

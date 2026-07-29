@@ -1,19 +1,29 @@
 # Skills Overhaul
 
 **Version:** v1.3.0
-**Status:** ✅ Implemented (all 13 phases + deferred-work A–E; remaining gaps are `mcp_servers` activation and registry-side hot-reload wiring — see Limitations)
+**Status:** ✅ Implemented (all 13 phases + deferred-work A–E; remaining gaps are `mcp_servers` activation, skill-activation task emission, and registry-side hot-reload wiring — see Limitations)
 **History:** landed on `feat/skills-overhaul`, merged to `main`
 
 This document describes the three-part overhaul of the Loom skills subsystem
-introduced by the skills overhaul branch. It supersedes the skill section
-in `agent-system-design.md` for the new code paths; the legacy paths are
-preserved for backward compatibility and described where relevant.
+introduced by the skills overhaul branch, and what each phase landed. It
+supersedes the skill section in `agent-system-design.md` for the new code
+paths; the legacy paths are preserved for backward compatibility and
+described where relevant.
+
+**Read this alongside the runtime.** Skill activation has since moved to a
+model-pull model: the system prompt carries a menu of bound skills, and the
+model loads one by calling the `manage_skills` builtin. The conversation loop
+runs no discovery, matching or activation of its own. The components this
+overhaul landed — binding resolver, PageIndex router, FTS5 search, task
+emitter — are built and tested; which of them the turn loop drives today is
+stated per section below, and the current runtime is documented in
+[`skills-system.md`](./skills-system.md).
 
 ## Goals
 
-The legacy skills system (v1.2.0) is a per-session prompt-injection layer:
-skills are matched per turn (slash command, keyword, intent category), then
-the matched skill's `instructions` are injected into the LLM context.
+The legacy skills system (v1.2.0) was a per-session prompt-injection layer:
+skills were matched per turn (slash command, keyword, intent category), then
+the matched skill's `instructions` were injected into the LLM context.
 
 Three structural limits motivated this overhaul:
 
@@ -52,7 +62,7 @@ Three structural limits motivated this overhaul:
 | 6 | `pkg/skills/tasks/` emitter (template + decomposer fallback) | ✅ |
 | 7 | `pkg/skills/discovery/` top-level orchestrator | ✅ |
 | 8 | `task.skill_idempotency_key` + `Manager.CreateTaskIdempotent` | ✅ |
-| 9 | `pkg/agent/agent.go` four-phase pipeline | ✅ |
+| 9 | `pkg/agent/agent.go` four-phase pipeline (superseded by the pull model) | ✅ |
 | 10 | `pkg/skills/index.HotReloadHandler` | ✅ |
 | 11 | `loom skills migrate` CLI | ✅ |
 | 12 | Architecture docs (this file) | ✅ |
@@ -60,10 +70,10 @@ Three structural limits motivated this overhaul:
 
 ### Discovery Pipeline
 
-The new per-turn pipeline lives in `pkg/agent/agent.go` `runConversationLoop`
-and replaces the legacy single-pass `MatchSkills` filter at the location
-formerly known as the "skill activation" block. The legacy path is preserved
-when `WithSkillDiscovery` is not wired, so v1.2.0 agents continue to work.
+Phase 9 landed a per-turn pipeline in `pkg/agent/agent.go`
+`runConversationLoop`, replacing the legacy single-pass `MatchSkills` filter
+at the location formerly known as the "skill activation" block. The shape it
+landed with:
 
 ```
 runConversationLoop()
@@ -87,8 +97,18 @@ runConversationLoop()
   |          └─ else (LLM available + emit_tasks)  → task.Decomposer.Decompose
   |
   v
-  Phase E - existing FormatActiveSkillsForLLM + InjectSkills + pattern co-injection
+  Phase E - existing FormatActiveSkillsForLLM + prompt injection + pattern co-injection
 ```
+
+The turn loop no longer runs any of it. `Discovery` is still constructed and
+wired onto the agent (`WithSkillDiscovery`) for callers that drive
+`Discovery.Discover` directly, and the registry still warms and persists the
+router index. Phases C and E were replaced by the `manage_skills` load path —
+`Orchestrator.ActivatePinned`, per-session required-tool registration, and
+body delivery as a user-role message. Phase D was dropped with no
+replacement: nothing calls the emitter. `MatchSkills` and
+`FormatActiveSkillsForLLM` remain on the orchestrator for the same
+direct-caller reason.
 
 ### Package Map
 
@@ -104,9 +124,9 @@ pkg/skills/
     router.go                # Router.Route (LLM-driven BFS tree walk)
     cache.go                 # FIFO/TTL CacheKey-keyed router decision cache
     hotreload.go             # HotReloadHandler (debounced rebuild → router → cache)
-  tasks/                     # ✅ Phase 6
+  tasks/                     # ✅ Phase 6 (📋 no caller — see Limitations)
     emitter.go               # EmitForActivation (template OR decomposer)
-  discovery/                 # ✅ Phase 7
+  discovery/                 # ✅ Phase 7 (wired onto the agent; not driven per turn)
     discovery.go             # Top-level Discover() composing slash → router → FTS5
   importer/                  # ✅ Deferred D (PR #182, #183)
     parse.go                 # SKILL.md + references → importer.Skill
@@ -142,11 +162,15 @@ These were pinned by the user during planning:
    resolver supports exact-name, FQN (`enterprise/sql/sql-optimization`),
    `path.Match`-style globs, and label AND-selectors. Exact-name binds
    beat glob binds for the same skill (resolver.pickBest tie-break).
-2. **Discovery**: router-first with FTS5 fallback. The router fires on
-   every (cache-miss) message when configured; FTS5 runs only when the
-   router returns zero candidates or errors. Slash commands bypass both.
-3. **Tasks**: decomposer-by-default. Skills get tasks unless `emit_tasks`
-   is explicitly false. Authored `task_template` overrides the decomposer.
+2. **Discovery**: router-first with FTS5 fallback. Within
+   `Discovery.Discover`, the router fires on every cache-miss message when
+   configured; FTS5 runs only when the router returns zero candidates or
+   errors, and slash commands bypass both. No turn calls `Discover` — skill
+   selection is the model's, through `manage_skills`.
+3. **Tasks**: decomposer-by-default, in the emitter's own design — a skill
+   gets tasks unless `emit_tasks` is explicitly false, and an authored
+   `task_template` overrides the decomposer. No path calls the emitter, so
+   loading a skill creates no tasks.
 4. **Compatibility**: additive proto fields plus a runtime resolver shim.
    v1.2.0 YAML files keep working without modification. The
    `loom skills migrate` CLI is non-destructive.
@@ -175,14 +199,17 @@ Warn but never bubble — Discovery falls back to FTS5, identical to the
 v1.2.0 baseline.
 
 **Deferred B** (`pkg/agent/agent.go` `enforceRequiredSkillTools` /
-`applySkillExcludedTools`): per-turn enforcement of tool preferences.
-After Phase C activation, `RequiredTools` are auto-registered from the
-builtin catalog when not already present (unknown names log Warn);
-`ExcludedTools` are unioned across all active skills and filtered from
-the LLM tool list for that turn. The `tools := a.tools.ListTools()` call
-moved from before the skill block to after, so required tools land in
-the LLM's view and excluded ones don't. `mcp_servers` is now logged at
-Debug when declared (see Limitations below).
+`applySkillExcludedTools`): enforcement of a skill's tool preferences.
+`RequiredTools` are auto-registered from the builtin catalog when not
+already present (unknown names log Warn); `ExcludedTools` are unioned
+across all active skills and filtered from the tool list offered to the
+model. Under the pull model both are driven by the load: the
+`manage_skills` tool calls `enforceRequiredSkillTools` immediately after
+activating, and the required tool is advertised into **that session's**
+ledger rather than agent-wide. `advertisedTools(session)` re-derives the
+projection before every provider call, so a tool a load registered is
+usable on the same turn. `mcp_servers` is logged at Debug when declared
+(see Limitations below).
 
 **Deferred C** (`pkg/skills/orchestrator.go` + `pkg/task` storage):
 the orchestrator now respects a `StickinessChecker` callback during
@@ -193,7 +220,9 @@ are treated as sticky regardless of `Skill.Sticky`. When every active
 skill is sticky, `MaxConcurrentSkills` overflows for that turn rather
 than abandoning in-flight work. `WithMaxConcurrentSkills` also fixes a
 pre-existing bug where `ActivateSkill` ignored config and used a
-hardcoded cap of 3.
+hardcoded cap of 3. All of this belongs to `ActivateSkill`; the pull
+path uses `ActivatePinned`, which applies no cap and never evicts, so
+stickiness has nothing to protect there.
 
 **Deferred D** (`pkg/skills/importer/` + `proto/loom/v1/skills_import.proto`
 + `cmd/looms/cmd_serve.go` registration): Anthropic-style Agent Skill
@@ -222,10 +251,11 @@ design lives in [`skill-hygiene.md`](./skill-hygiene.md).
 
 ### Wiring Requirements
 
-The four-phase pipeline has two independent integration points that must be
-satisfied at server startup. Phase 13 E2E verification surfaced that "the
-code is merged" is not the same as "the path is reachable" — both injectors
-below must be in place for Phase D (task emission) to fire.
+Two independent integration points must be satisfied at server startup for
+the skills subsystem to reach its task-side behaviour. Phase 13 E2E
+verification surfaced the general lesson that "the code is merged" is not the
+same as "the path is reachable" — the same lesson now applies to the emitter
+itself, which is constructed and has no caller.
 
 ```
                        cmd/looms/cmd_serve.go
@@ -247,7 +277,7 @@ below must be in place for Phase D (task emission) to fire.
                     │       Agent         │
                     │                     │
                     │  taskManager   ◀──── never nil when (2) is wired
-                    │  skillTaskEmitter◀── auto-built (agent.go:284)
+                    │  skillTaskEmitter◀── auto-built; no caller
                     │  taskBoardConfig ◀── always set; Enabled flag
                     │                     │   gates only tool/context
                     └─────────────────────┘
@@ -260,36 +290,36 @@ selection but matters for the router cost-control model (see Cost Model
 below).
 
 **Injection contract (2) — Task subsystem.** Without
-`SetTaskManager`, `a.taskManager` stays nil after `buildAgent` returns;
-the auto-emitter constructor at `pkg/agent/agent.go:284`
-(`if a.skillTaskEmitter == nil && a.skillOrchestrator != nil &&
-a.taskManager != nil`) short-circuits, and Phase D silently no-ops.
-The skill still activates (Phase C) and its prompt still injects
-(Phase E) — only the task-emission half of "activations produce
-trackable work" fails. This was the production gap in the initial
-overhaul landing.
+`SetTaskManager`, `a.taskManager` stays nil after `buildAgent` returns,
+and the constructors guarded by
+`a.skillOrchestrator != nil && a.taskManager != nil` short-circuit: no
+skill task emitter, no stickiness checker, no hygiene auditor or
+enforcer. Skill loading is unaffected — a skill still activates and its
+body still reaches the conversation. This missing injection was the
+production gap in the initial overhaul landing.
 
-**Two-axis separation: emission vs. tool surfacing.** Once contract (2)
-is satisfied:
+**Two-axis separation: task machinery vs. tool surfacing.** Once contract
+(2) is satisfied:
 
 | Behavior | Gated by |
 |----------|----------|
-| Skill task emission (Phase D) | `taskManager != nil` |
-| Sticky-while-open-tasks check | `taskManager != nil` |
+| Skill task emitter constructed (📋 no caller) | `taskManager != nil` |
+| Sticky-while-open-tasks checker installed | `taskManager != nil` |
+| End-of-turn hygiene auditor + enforcer | `taskManager != nil` |
 | `task_board` builtin tool registered | `taskBoardConfig.Enabled` |
 | Kanban prompt supplement injected | `taskBoardConfig.Enabled` |
 | In-context task summary (`buildTaskContext`) | `taskBoardConfig.Enabled` |
 
-The split means a server-level operator decision (wire the task
-subsystem on or off) and a per-agent author decision (does this agent
-need to *interact* with the board, or is it a fire-and-forget producer
-of work for downstream agents?) are now orthogonal — matching the
-overhaul's "activations always produce trackable work" invariant
-without forcing every agent to carry the kanban tool surface.
+The split keeps a server-level operator decision (wire the task
+subsystem on or off) orthogonal to a per-agent author decision (does
+this agent need to *interact* with the board?), so an agent can produce
+work for downstream agents without carrying the kanban tool surface.
+The overhaul's "activations always produce trackable work" invariant is
+not met today: the emission step it depended on has no call path.
 
 ### Skill Governance Extensions
 
-Three governance mechanisms layer on top of the Phase C activation gate:
+Three governance mechanisms layer on top of activation:
 
 **Confidence decay.** Each skill carries `confidence` (float, 0.0-1.0), `status`
 (auto_generated / enriched / validated / deprecated), and `last_validated_ms`
@@ -297,14 +327,19 @@ Three governance mechanisms layer on top of the Phase C activation gate:
 computed lazily at query time (same exponential decay math as graph memory salience).
 `FindByKeywords` multiplies the FTS5 relevance score by effective confidence and
 excludes skills whose decayed value drops below 0.1. Hand-authored skills with
-`confidence == 0` default to 1.0 (no decay).
+`confidence == 0` default to 1.0 (no decay). `FindByKeywords` is the only consumer:
+`Library.Load` and `Library.ListAll`, which back `manage_skills`, ignore confidence,
+so a decayed skill still lists and still loads on request.
 
 **Risk-level gate.** Skills may declare `risk_level: high` or `risk_level: restricted`
-(proto enum `SKILL_RISK_LEVEL_HIGH`, `SKILL_RISK_LEVEL_RESTRICTED`). During Phase C,
-after discovery returns candidates but before `ActivateSkill` is called, the agent
-checks `Skill.IsHighRisk()`. When the server runs with `--require-approval` (not
-`--yolo`), HIGH/RESTRICTED candidates are blocked and logged; the skill does not
-activate. With `--yolo`, the gate is bypassed and all risk levels activate normally.
+(proto enum `SKILL_RISK_LEVEL_HIGH`, `SKILL_RISK_LEVEL_RESTRICTED`). The gate lives in
+the `manage_skills` load path: before activating, the tool checks
+`Skill.IsHighRisk()` against the agent's permission checker. A high-risk skill is
+blocked when a checker is wired and not in YOLO mode — the call returns
+`Success=false` with code `approval_required` and `Metadata.activated=false`, and the
+active set is untouched, so the model sees the refusal and can surface it. YOLO mode
+(`tools.permissions.yolo=true`) bypasses the gate; **a nil permission checker disables
+it entirely** and high-risk skills load unchallenged.
 
 **Staleness audit.** The `skill-health-audit` workflow template
 (`WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT`, enum value 7) runs a 2-agent pipeline that
@@ -320,15 +355,27 @@ template service (`/template skill-health-audit`).
   yet activate (start/connect) the named servers when a skill activates.
   Honoring this requires an MCPManager hook that does not exist yet;
   it is a follow-up to the skills overhaul.
+- 📋 **Skill-activation task emission has no call path.**
+  `pkg/skills/tasks.Emitter` is implemented, tested and constructed by the
+  agent, but nothing calls `EmitForActivation`. Loading a skill creates no
+  tasks. End-of-turn hygiene still runs; its inventory is keyed on
+  `skill:<name>|sess:<id>|` task keys, so it finds nothing to classify
+  until some path stamps that key.
+- 📋 **`max_prompt_tokens` and `context_budget_percent` are not applied.**
+  Both are parsed and carried on the skill and the config. The loaded body
+  is delivered whole as a user-role message; the token-budgeted injection
+  formatters (`FormatSkillsForInjection`,
+  `Orchestrator.FormatActiveSkillsForLLM`) are only reachable through the
+  match path.
 - 📋 **`preferred_order` is informational.** The field communicates
   author intent inside the skill prompt; the LLM still chooses tool
   invocation order. There is no mechanism to enforce ordering at the
   agent layer, and that's intentional — order is a runtime decision.
 - ✅ **Disk persistence of the skill index.** The registry wires
   `SQLStore` (SQLite dialect) onto the router when its DB handle is
-  non-nil: `SkillsWiringDeps.IndexStoreDB` is set to `r.db`
-  (`pkg/agent/registry.go:2224`), and `NewSQLStore` is constructed at
-  `registry.go:2474`. Cold start tries `store.LatestIndex` first for an
+  non-nil: `SkillsWiringDeps.IndexStoreDB` is set to `r.db`, and
+  `skillindex.NewSQLStore` is constructed in
+  `BuildSkillsOptions`. Cold start tries `store.LatestIndex` first for an
   instant `SetTree` before rebuilding (see Deferred A). When the DB
   handle is nil, persistence is skipped and the router runs from an
   in-memory tree (re-summarised each boot).
@@ -354,8 +401,9 @@ truth.
 
 ### Cost Model (Router LLM Calls)
 
-Router-first means an LLM call per cache-miss message. Default cost
-controls baked into the design:
+Router-first means an LLM call per cache-miss message **when the router is
+driven**. No cost accrues on the pull path, which resolves a skill by name.
+The controls below are the ones baked into the discovery design:
 
 - **FTS5 shortcut for high-confidence keyword hits.** When `MinAutoConfidence`
   fires on a strong FTS5 match, the discovery flow uses it without invoking
@@ -368,11 +416,11 @@ controls baked into the design:
 - **Optional `router_model_override`.** Field on `SkillsConfig`
   for pointing routing at a smaller/cheaper model (Haiku, local Ollama).
   ✅ Honored by the registry: `BuildSkillsOptions` resolves the named
-  provider from the provider pool (`pkg/agent/registry.go:2430`), falling
-  back with a Warn when the name is absent. (See Deferred A.)
+  provider from the provider pool, falling back with a Warn when the name
+  is absent. (See Deferred A.)
 
-Estimated worst case at heavy use with Sonnet-class routing: ~$0.30 per
-agent per day. Acceptable for the discovery quality gain at scale.
+Estimated worst case for a router-driven caller at heavy use with
+Sonnet-class routing: ~$0.30 per agent per day.
 
 ### References
 

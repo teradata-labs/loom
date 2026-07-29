@@ -26,6 +26,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/session"
 )
 
 // SQLResultStore stores SQL query results in queryable SQLite tables.
@@ -122,12 +123,20 @@ func (s *SQLResultStore) initMetadataTable() error {
 			columns_json TEXT NOT NULL,
 			stored_at INTEGER NOT NULL,
 			accessed_at INTEGER NOT NULL,
-			size_bytes INTEGER NOT NULL
+			size_bytes INTEGER NOT NULL,
+			session_id TEXT NOT NULL DEFAULT ''
 		)
 	`
 	_, err := s.db.Exec(createSQL)
 	if err != nil {
 		return fmt.Errorf("failed to create metadata table: %w", err)
+	}
+
+	// Migrate databases created before session partitioning: add session_id when
+	// the table predates it. A duplicate-column error means it already exists.
+	if _, err := s.db.Exec(`ALTER TABLE sql_result_metadata ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("failed to add session_id column: %w", err)
 	}
 
 	// Create index on stored_at for efficient TTL cleanup
@@ -164,10 +173,14 @@ func IsSQLResult(data interface{}) bool {
 	return false
 }
 
-// Store stores SQL result data in a queryable table.
-func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (*loomv1.DataReference, error) {
+// Store stores SQL result data in a queryable table, owned by the caller's
+// session partition (from ctx). Query/GetMetadata resolve the id only for that
+// same session.
+func (s *SQLResultStore) Store(ctx context.Context, id string, data interface{}) (*loomv1.DataReference, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	sessionID := session.SessionIDFromContext(ctx)
 
 	// Extract columns and rows
 	m := data.(map[string]interface{})
@@ -262,12 +275,12 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 
 	insertMetaSQL := `
 		INSERT OR REPLACE INTO sql_result_metadata
-		(id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		(id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes, session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := s.db.Exec(insertMetaSQL,
 		id, tableName, len(rows), len(columns), string(columnsJSON),
-		now.Unix(), now.Unix(), sizeBytes)
+		now.Unix(), now.Unix(), sizeBytes, sessionID)
 	if err != nil {
 		// Cleanup table if metadata insert fails
 		_, _ = s.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)) // #nosec G201 -- tableName sanitized via sanitizeIdentifier
@@ -286,10 +299,13 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 	return ref, nil
 }
 
-// Query executes a SQL query against a stored result.
-func (s *SQLResultStore) Query(_ context.Context, id, query string) (interface{}, error) {
+// Query executes a SQL query against a stored result. The id resolves only
+// within the caller's session partition (from ctx); a foreign id is not-found.
+func (s *SQLResultStore) Query(ctx context.Context, id, query string) (interface{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	sessionID := session.SessionIDFromContext(ctx)
 
 	// Load metadata from database (not in-memory map)
 	var tableName string
@@ -297,8 +313,8 @@ func (s *SQLResultStore) Query(_ context.Context, id, query string) (interface{}
 	err := s.db.QueryRow(`
 		SELECT table_name, stored_at
 		FROM sql_result_metadata
-		WHERE id = ?
-	`, id).Scan(&tableName, &storedAt)
+		WHERE id = ? AND session_id = ?
+	`, id, sessionID).Scan(&tableName, &storedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("result %s not found", id)
@@ -368,10 +384,13 @@ func (s *SQLResultStore) Query(_ context.Context, id, query string) (interface{}
 	}, nil
 }
 
-// GetMetadata returns metadata about a stored result.
-func (s *SQLResultStore) GetMetadata(_ context.Context, id string) (*SQLResultMetadata, error) {
+// GetMetadata returns metadata about a stored result. The id resolves only
+// within the caller's session partition (from ctx); a foreign id is not-found.
+func (s *SQLResultStore) GetMetadata(ctx context.Context, id string) (*SQLResultMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	sessionID := session.SessionIDFromContext(ctx)
 
 	var meta SQLResultMetadata
 	var columnsJSON string
@@ -380,8 +399,8 @@ func (s *SQLResultStore) GetMetadata(_ context.Context, id string) (*SQLResultMe
 	err := s.db.QueryRow(`
 		SELECT id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes
 		FROM sql_result_metadata
-		WHERE id = ?
-	`, id).Scan(&meta.ID, &meta.TableName, &meta.RowCount, &meta.ColumnCount,
+		WHERE id = ? AND session_id = ?
+	`, id, sessionID).Scan(&meta.ID, &meta.TableName, &meta.RowCount, &meta.ColumnCount,
 		&columnsJSON, &storedAt, &accessedAt, &meta.SizeBytes)
 
 	if err == sql.ErrNoRows {

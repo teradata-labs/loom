@@ -1,6 +1,6 @@
 # Loom
 
-An LLM agent framework for Go. Create agents from natural language, orchestrate them with workflow patterns, and improve them through pattern-guided learning.
+An LLM agent framework for Go. Create agents from natural language, orchestrate them with workflow patterns, and give them domain knowledge as skills and patterns the model loads on demand.
 
 [![CI](https://github.com/teradata-labs/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/teradata-labs/loom/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/teradata-labs/loom.svg)](https://pkg.go.dev/github.com/teradata-labs/loom)
@@ -50,15 +50,21 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 
 ## How It Works
 
-Instead of prompt engineering, Loom uses **pattern-guided learning**. Domain knowledge is encoded as reusable YAML patterns that agents select and apply based on user intent:
+Domain knowledge lives outside the system prompt, as YAML skills and patterns the model pulls into the conversation when it decides it needs them. Nothing is injected: the model decides what enters its own context.
 
 ```
-User message → Pattern selection (from 158 patterns) → LLM call with context → Tool execution → Response
-     ↑                                                                                             |
-     └────────────────────── Learning feedback loop (optional) ────────────────────────────────────┘
+User message → LLM call ─┬─ manage_skills(list)      → the skill catalog, each entry marked
+                         │                             active for this session or not
+                         ├─ manage_skills(load NAME) → skill instructions enter the conversation
+                         ├─ load_pattern(REFERENCE)  → pattern content enters as a tool result
+                         └─ any other tool           → result enters the conversation
+                                                                     ↓
+                                                                  Response
 ```
 
-Patterns are plain-English YAML files anyone can write. They turn generic LLMs into domain specialists for SQL optimization, data quality, Teradata analytics, code review, and more.
+The system prompt carries only a menu of the agent's bound skills — name and description — rendered once when the session is created. A skill's body reaches the model only after a `manage_skills` load, and a pattern's body only after a `load_pattern` call.
+
+Patterns and skills are plain-English YAML files anyone can write. They turn generic LLMs into domain specialists for SQL optimization, data quality, Teradata analytics, code review, and more.
 
 ---
 
@@ -144,6 +150,8 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 
 | Tool | Description |
 |------|-------------|
+| `manage_skills` | Two actions: `list` the skill library annotated with what is active for the session, or `load` a skill by name so its instructions and required tools enter the session |
+| `load_pattern` | Load one pattern's content by reference (references come from a loaded skill's pattern list) |
 | `web_search` | Web search ([Tavily](https://www.tavily.com), [Brave](https://brave.com/search/api/), SerpAPI, or DuckDuckGo) |
 | `file_read` / `file_write` | File system operations |
 | `http_request` / `grpc_call` | External service calls |
@@ -190,7 +198,15 @@ Session-scoped file storage with SQLite FTS5 full-text search, automatic metadat
 
 ### Skills System
 
-LLM-agnostic activatable behaviors combining prompt injection, tool preferences, and trigger conditions. Skills activate via slash commands (`/skill-name`), keyword auto-detection, or always-on mode. Includes hot-reload via fsnotify and token budget control. See `pkg/skills/`.
+LLM-agnostic YAML behaviors the model loads by name through the `manage_skills` tool. Each skill carries instructions, the tools it requires, and optional pattern references.
+
+- The system prompt lists the agent's bound skills as `name — description` only, rendered once at session creation
+- `manage_skills` has two actions, `list` and `load`. There is no unload: a loaded skill stays active, and its required tools stay registered, until the session ends
+- A load returns a short confirmation as the tool result and delivers the skill body as a separate user-role message
+- A `high`- or `restricted`-risk skill returns an `approval_required` error instead of loading, unless YOLO mode is enabled or no permission checker is wired
+- Skill files hot-reload via fsnotify
+
+See `pkg/skills/`.
 
 ### Per-Role LLM Providers
 
@@ -219,7 +235,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 
 - **Guide agent** greets you and helps find the right agent for your task
 - **Slash commands** — `/clear`, `/quit`, `/sessions`, `/model`, `/agents`, `/workflows`, `/patterns`, `/help`, and more
-- **Sidebar** shows Weaver status, MCP servers, loaded patterns, model info, keyboard hints
+- **Sidebar** shows Weaver status, MCP servers, the installed pattern library by category, model info, keyboard hints
 - **Mid-session model switching** with cost transparency
 - **Multi-agent colors** (6 predefined + golden-ratio generation for 50+ agents)
 - **Streaming** with animated progress, tool execution states, cost tracking

@@ -46,13 +46,11 @@ func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedro
 	// Track pending tool results to aggregate them
 	var pendingToolResults []bedrocktypes.ContentBlock
 
-	// Helper to flush pending tool results
+	// Helper to flush pending tool results — routes through appendUserOrCoalesce
+	// so tool_results merge into any adjacent user-role message.
 	flushToolResults := func() {
 		if len(pendingToolResults) > 0 {
-			converseMessages = append(converseMessages, bedrocktypes.Message{
-				Role:    bedrocktypes.ConversationRoleUser,
-				Content: pendingToolResults,
-			})
+			converseMessages = appendUserOrCoalesceConverse(converseMessages, pendingToolResults)
 			pendingToolResults = nil
 		}
 	}
@@ -108,10 +106,10 @@ func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedro
 			}
 
 			if len(contentBlocks) > 0 {
-				converseMessages = append(converseMessages, bedrocktypes.Message{
-					Role:    bedrocktypes.ConversationRoleUser,
-					Content: contentBlocks,
-				})
+				// Coalesce with any adjacent user message (e.g. a just-flushed
+				// tool_result plus a manage_skills text_body sidecar) so we
+				// never emit two consecutive user wire messages.
+				converseMessages = appendUserOrCoalesceConverse(converseMessages, contentBlocks)
 			}
 
 		case "assistant":
@@ -193,6 +191,28 @@ func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedro
 	flushToolResults()
 
 	return systemBlocks, converseMessages
+}
+
+// appendUserOrCoalesceConverse appends content blocks to the last user message
+// in the list when that last message is user-role; otherwise it appends a new
+// user message. This is the sole path by which user-role wire messages are
+// produced by the converter, so it guarantees the outgoing message list never
+// contains two consecutive user-role messages — which Bedrock/Anthropic reject
+// as "roles must alternate". It also lets a tool_result and an immediately-
+// following user-role text (e.g. the manage_skills skill-body sidecar) share
+// a single wire user message with mixed content blocks.
+func appendUserOrCoalesceConverse(msgs []bedrocktypes.Message, blocks []bedrocktypes.ContentBlock) []bedrocktypes.Message {
+	if len(blocks) == 0 {
+		return msgs
+	}
+	if n := len(msgs); n > 0 && msgs[n-1].Role == bedrocktypes.ConversationRoleUser {
+		msgs[n-1].Content = append(msgs[n-1].Content, blocks...)
+		return msgs
+	}
+	return append(msgs, bedrocktypes.Message{
+		Role:    bedrocktypes.ConversationRoleUser,
+		Content: blocks,
+	})
 }
 
 // convertToolsToConverse converts shuttle tools to Bedrock Converse ToolConfiguration.

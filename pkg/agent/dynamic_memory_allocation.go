@@ -247,8 +247,6 @@ func NewSegmentedMemoryWithDynamicAllocation(
 		schemaCache:        make(map[string]string),
 		schemaAccessLog:    make(map[string]time.Time),
 		maxSchemas:         10,
-		findingsCache:      make(map[string]Finding),
-		maxFindings:        50,
 		l1Messages:         make([]Message, 0),
 		promotedContext:    make([]Message, 0),
 		sessionStore:       nil,

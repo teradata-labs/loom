@@ -339,8 +339,63 @@ spec:
 | Category | Behavior |
 |---|---|
 | **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search` |
-| **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result), `graph_memory` (when graph memory store configured) |
+| **Registered at construction** (not listed in `spec.tools`; present from the first turn when their subsystem is wired) | `load_pattern` (always), `manage_skills` (skill orchestrator wired), `graph_memory` (graph memory store configured and enabled), `task_board` (task manager wired and `task_board.enabled`) |
+| **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result or first tool result returned by reference) |
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
+
+The server's tool policy withholds some of these from the model while their subsystems keep running: `tools.minimal` suppresses `graph_memory` and `task_board`; `tools.none` additionally suppresses `conversation_memory`, `session_memory`, `get_error_details`, `query_tool_result`, the workflow-injected tools, and `manage_ephemeral_agents`. `manage_skills` and `load_pattern` are not suppressed by either policy.
+
+#### manage_skills
+
+**Registered when**: `spec.config.skills.enabled` is true and a skill library is wired.
+**Available since**: v1.3.0
+
+The model's only route to a skill body. Skills are never injected into the prompt: the system prompt carries a static `name — description` menu of the agent's bound skills, rendered once at session creation, and the body of a skill arrives only when the model loads it.
+
+**Input**:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `action` | `enum` (`list`, `load`) | Yes | Operation to perform |
+| `name` | `string` | For `load` | Skill name |
+
+**Behavior**:
+
+- `list` returns the whole library as JSON: `session_id`, `active_count`, and one entry per skill with its catalog summary plus an `active` flag for this session.
+- `load` activates the skill for this session, registers the skill's `required_tools` for this session, returns `Skill loaded: <name>` as the tool result, and delivers the verbatim skill body as a separate user-role message. Pattern references declared by the skill are appended to that message as `load_pattern` references.
+- There is no `unload` action. A load appends to the session's active set; it never displaces an already-active skill, and no skill-count cap bounds the set. Loading a skill that is already active replaces its entry in place.
+- Activation is per session and lasts until the session ends.
+
+**Errors**:
+
+| Code | Condition |
+|---|---|
+| `invalid_input` | `action` is neither `load` nor `list`, or `load` was called without `name` |
+| `not_found` | No skill by that name in the library |
+| `approval_required` | Skill's `risk_level` is `HIGH` or `RESTRICTED`, a permission checker is wired, and YOLO mode is off. The skill is not activated. A nil permission checker or `tools.permissions.yolo=true` disables the gate. |
+
+#### load_pattern
+
+**Registered when**: always — every agent gets a pattern library object, whose content comes from `patterns_dir`. With no pattern directory configured, every reference resolves to `PATTERN_NOT_FOUND`.
+**Available since**: v1.3.0
+
+Pulls one pattern's content into the conversation. Patterns are never injected; the reference comes from the pattern list surfaced by a `manage_skills` load.
+
+**Input**:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reference` | `string` | Yes | Pattern reference, as surfaced by `manage_skills(load)` |
+
+**Behavior**: returns the pattern's LLM rendering as ordinary string tool-result data. It lands in L1 like any other tool result and is subject to the same size threshold and compaction rules. It never populates the system-prompt pattern slot.
+
+**Errors**:
+
+| Code | Condition |
+|---|---|
+| `INVALID_PARAMETER` | `reference` empty |
+| `PATTERN_LIBRARY_UNAVAILABLE` | No pattern library configured |
+| `PATTERN_NOT_FOUND` | Unknown reference. No pattern content enters the conversation. |
 
 ---
 
@@ -354,10 +409,12 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `0` | 0 = always reference; -1 = never reference; >0 = reference if result exceeds N bytes |
+| `shared_memory_threshold_bytes` | `int64` | `65536` (64 KiB) | Byte threshold for offloading a tool result: `>0` offloads results of at least N bytes, `-1` selects the 64 KiB default. Only a non-zero value is applied, so `0` in YAML is indistinguishable from unset and leaves the agent on the 64 KiB default; the always-offload mode (threshold 0) is reachable only through the Go API `SetSharedMemoryThreshold`. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
+
+**Large tool results**: the same byte threshold governs both offload sites (the tool executor and the agent's result formatter). A result at or above it is stored by reference and replaced in the conversation with a preview plus a handle; the model recalls the full data with `query_tool_result`. Three tools are exempt and always enter whole regardless of size: `manage_skills` (its load body is delivered as its own message), `get_tool_result` and `query_tool_result` (re-offloading a recall tool would recurse).
 
 ---
 
@@ -405,13 +462,17 @@ spec:
 
 Conversation history compression using a tiered L1/L2 cache with workload-aware thresholds.
 
+Compression triggers on one criterion: token-budget usage above the profile's `warning_threshold_percent`, measured against the session's real context window. There is no fixed L1 message or token cap — L1 grows until the budget is under pressure. Once triggered, the batch size is chosen by severity (normal / warning / critical), and compression stops while L1 is down to `min_l1_messages`.
+
+Compressed batches are summarized by the LLM compressor when both an LLM (the `compressor_llm` role if set, otherwise the agent LLM) and a prompt registry are configured; otherwise a heuristic summarizer is used, and it is also the fallback when a compression prompt fails to load.
+
 Under `spec.memory.memory_compression`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `workload_profile` | `string` | `balanced` | `balanced`, `data_intensive`, or `conversational` |
-| `max_l1_messages` | `int` | profile-dependent | Messages in L1 before compression triggers |
-| `min_l1_messages` | `int` | max_l1 / 2 | Min messages after compression |
+| `max_l1_messages` | `int` | profile-dependent | No longer drives behaviour. Still parsed: it sets the profile's L1 token target (`max_l1_messages` × 800), which is reported in memory stats and startup logs but does not gate compression. |
+| `min_l1_messages` | `int` | max_l1 / 2 | Min messages left in L1 after compression |
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
@@ -420,11 +481,13 @@ Under `spec.memory.memory_compression`.
 
 **Workload profiles**:
 
-| Profile | max_l1 | warning | critical | batch (N/W/C) | Use case |
-|---|---|---|---|---|---|
-| `balanced` | 8 | 60% | 75% | 3/5/7 | General-purpose agents |
-| `data_intensive` | 5 | 50% | 70% | 2/4/6 | SQL, large file operations |
-| `conversational` | 12 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
+| Profile | L1 token target | min_l1 | warning | critical | batch (N/W/C) | Use case |
+|---|---|---|---|---|---|---|
+| `balanced` | 6400 | 4 | 60% | 75% | 3/5/7 | General-purpose agents |
+| `data_intensive` | 4000 | 3 | 50% | 70% | 2/4/6 | SQL, large file operations |
+| `conversational` | 9600 | 6 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
+
+The L1 token target is a reporting figure only; `warning` is the value that triggers compression.
 
 ---
 
@@ -450,26 +513,17 @@ Under `spec.config` (k8s-style) or `agent.behavior` (legacy).
 
 Under `spec.config.patterns` (k8s-style) or `agent.behavior.patterns` (legacy).
 
-Pattern-guided learning injects domain-specific templates into LLM context based on user intent classification.
+Patterns reach the conversation on demand only, through the `load_pattern` tool. The conversation loop performs no intent classification, no pattern selection and no pattern injection, so the fields below no longer drive runtime behaviour. They remain in the YAML schema and the proto, and are still parsed.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `*bool` | `true` | Enable pattern injection |
-| `min_confidence` | `*float64` | `0.75` | Minimum confidence threshold (0.0 - 1.0) |
-| `max_patterns_per_turn` | `*int` | `1` | Max patterns injected per turn |
-| `enable_tracking` | `*bool` | `true` | Track pattern effectiveness metrics |
-| `use_llm_classifier` | `*bool` | `true` | Use LLM for intent classification (more accurate, adds ~300ms latency) |
+| `enabled` | `*bool` | `true` | No longer drives behaviour. There is no injection path to enable or disable; `load_pattern` is registered regardless. |
+| `min_confidence` | `*float64` | `0.75` | No longer drives behaviour. Parsed and validated (0.0 - 1.0), never read at runtime. |
+| `max_patterns_per_turn` | `*int` | `1` | No longer drives behaviour. Nothing injects patterns per turn; the model may call `load_pattern` as often as it needs. |
+| `enable_tracking` | `*bool` | `true` | No longer drives behaviour on the agent path. |
+| `use_llm_classifier` | `*bool` | `true` | Installs an LLM intent classifier on the pattern orchestrator, using `classifier_llm` when set. The conversation loop does not invoke it; only callers that drive the pattern orchestrator directly do. |
 
-```yaml
-spec:
-  config:
-    patterns:
-      enabled: true
-      use_llm_classifier: true
-      min_confidence: 0.80
-      max_patterns_per_turn: 2
-      enable_tracking: true
-```
+Pattern content is pulled with references a loaded skill declares. See [manage_skills](#manage_skills) and [load_pattern](#load_pattern).
 
 ---
 
@@ -477,16 +531,21 @@ spec:
 
 Under `spec.config.skills` (k8s-style) or `agent.behavior.skills` (legacy).
 
+Skills reach the conversation on demand only, through the `manage_skills` tool. The system prompt carries a static `name — description` menu of the skills bound to this agent, rendered once at session creation; a skill body enters the conversation only after a load. There is no keyword or intent auto-activation, no slash-command activation, no always-on mode, and no per-turn discovery pass. The YAML trigger modes (`AUTO`, `ALWAYS`, `HYBRID`), `sticky`, and `max_prompt_tokens` in a skill file are parsed but no longer drive runtime behaviour.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `*bool` | not set | Enable skills system |
-| `enabled_skills` | `[]string` | `[]` | Whitelist of skill names |
-| `disabled_skills` | `[]string` | `[]` | Blacklist of skill names |
-| `min_auto_confidence` | `*float64` | (framework default) | Min confidence for auto-invocation |
-| `max_concurrent_skills` | `*int` | (framework default) | Max concurrent skill executions |
+| `enabled` | `*bool` | `true` once any skills field is set | Master switch for the skills subsystem. A skills config is built when any skill field is present (`enabled`, `bindings`, `enabled_skills`, `disabled_skills`, the router knobs, the task knobs). With no skills config at all, or with `enabled: false`, no orchestrator is built, `manage_skills` is not registered, and no skill menu is rendered. |
+| `bindings` | `[]SkillBinding` | `[]` | Declarative skill attachment: which skills this agent is bound to, and therefore what the prompt menu lists. Each entry takes `name` (exact name, fully-qualified name, or glob — `*` does not cross `/`), `mode`, `priority`, `label_match` (ANDed across keys), and `min_version`. `mode` (`EAGER`, `LAZY`, `ALWAYS`) is parsed but does not change what reaches the conversation: every bound skill appears in the menu, and none of them enters the context until the model loads it. |
+| `enabled_skills` | `[]string` | `[]` | Whitelist of skill names. Legacy shim: used only when `bindings` is empty, where each name becomes an eager binding. |
+| `disabled_skills` | `[]string` | `[]` | Blacklist of skill names. Legacy shim: used only when both `bindings` and `enabled_skills` are empty, where the binding set becomes the whole library minus these names. |
+| `min_auto_confidence` | `*float64` | `0.7` | No longer drives behaviour on the conversation path: a load is always explicit, so nothing is scored against this floor. It still bounds keyword-match candidates for callers that drive skill discovery directly. |
+| `max_concurrent_skills` | `*int` | `3` | No longer caps the active set. A `manage_skills` load appends to the session's active set and never evicts. The value still bounds search candidates for callers that drive skill matching directly. |
 | `skills_dir` | `string` | `""` | Directory containing skill definitions |
-| `context_budget_percent` | `*int` | (framework default) | % of context for skill output |
+| `context_budget_percent` | `*int` | `5` | No longer drives behaviour. A loaded skill body enters whole; it is not trimmed to a share of the context window. |
 | `hygiene` | `HygieneConfig` | (defaults) | End-of-turn task-board hygiene for skill-emitted tasks. See below. |
+
+**High-risk skills**: a skill whose `risk_level` is `HIGH` or `RESTRICTED` is not loaded when a permission checker is wired and YOLO mode is off; the load returns an `approval_required` error and the active set is untouched. A nil permission checker disables the gate, as does `tools.permissions.yolo=true`.
 
 #### HygieneConfig
 
@@ -803,7 +862,7 @@ kind: Agent
 metadata:
   name: teradata-expert
   version: "1.0.0"
-  description: Teradata SQL analyst with pattern-guided learning
+  description: Teradata SQL analyst with bound performance skills
   labels:
     backend: teradata
 spec:
@@ -839,11 +898,13 @@ spec:
     max_turns: 25
     max_tool_executions: 50
     timeout_seconds: 300
-    patterns:
+    skills:
       enabled: true
-      use_llm_classifier: true
-      min_confidence: 0.75
+      bindings:
+        - name: "teradata/performance/*"
 ```
+
+The bound skills appear in the system prompt as a name-and-description menu. The agent loads one with `manage_skills`, and loads any pattern the skill references with `load_pattern`.
 
 ### Multi-Provider Agent with Role Overrides
 

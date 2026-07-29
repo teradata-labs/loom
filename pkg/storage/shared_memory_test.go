@@ -32,7 +32,7 @@ func TestSharedMemoryStore_StoreAndGet(t *testing.T) {
 	})
 
 	data := []byte("hello world")
-	ref, err := store.Store("test1", data, "text/plain", map[string]string{"key": "value"})
+	ref, err := store.Store("test1", data, "text/plain", map[string]string{"key": "value"}, "")
 	require.NoError(t, err)
 	require.NotNil(t, ref)
 	assert.Equal(t, "test1", ref.Id)
@@ -40,7 +40,7 @@ func TestSharedMemoryStore_StoreAndGet(t *testing.T) {
 	assert.False(t, ref.Compressed) // Too small to compress
 
 	// Retrieve
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, data, retrieved)
 
@@ -59,12 +59,12 @@ func TestSharedMemoryStore_Compression(t *testing.T) {
 
 	// Create compressible data (repeated pattern)
 	data := bytes.Repeat([]byte("abcdefghijklmnop"), 1000) // 16KB
-	ref, err := store.Store("test-compressed", data, "application/octet-stream", nil)
+	ref, err := store.Store("test-compressed", data, "application/octet-stream", nil, "")
 	require.NoError(t, err)
 	assert.True(t, ref.Compressed)
 
 	// Retrieve and verify
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, data, retrieved)
 
@@ -81,18 +81,18 @@ func TestSharedMemoryStore_LRUEviction(t *testing.T) {
 
 	// Store multiple items to trigger eviction
 	data1 := bytes.Repeat([]byte("a"), 300)
-	ref1, err := store.Store("item1", data1, "text/plain", nil)
+	ref1, err := store.Store("item1", data1, "text/plain", nil, "")
 	require.NoError(t, err)
 	store.Release("item1") // Release so it can be evicted
 
 	data2 := bytes.Repeat([]byte("b"), 300)
-	ref2, err := store.Store("item2", data2, "text/plain", nil)
+	ref2, err := store.Store("item2", data2, "text/plain", nil, "")
 	require.NoError(t, err)
 	store.Release("item2")
 
 	// Trigger eviction by adding more data
 	data3 := bytes.Repeat([]byte("c"), 300)
-	ref3, err := store.Store("item3", data3, "text/plain", nil)
+	ref3, err := store.Store("item3", data3, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Verify at least one item was evicted
@@ -100,13 +100,13 @@ func TestSharedMemoryStore_LRUEviction(t *testing.T) {
 	assert.Greater(t, stats.Evictions, int64(0))
 
 	// Verify item3 (most recent) is accessible
-	retrieved3, err := store.Get(ref3)
+	retrieved3, err := store.Get(ref3, "")
 	require.NoError(t, err)
 	assert.Equal(t, data3, retrieved3)
 
 	// At least one of the older items should be evicted
-	_, err1 := store.Get(ref1)
-	_, err2 := store.Get(ref2)
+	_, err1 := store.Get(ref1, "")
+	_, err2 := store.Get(ref2, "")
 	assert.True(t, err1 != nil || err2 != nil, "At least one item should be evicted")
 }
 
@@ -118,25 +118,25 @@ func TestSharedMemoryStore_RefCounting(t *testing.T) {
 	})
 
 	data1 := bytes.Repeat([]byte("a"), 400)
-	ref1, err := store.Store("item1", data1, "text/plain", nil)
+	ref1, err := store.Store("item1", data1, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Access item1 to increment ref count
-	_, err = store.Get(ref1)
+	_, err = store.Get(ref1, "")
 	require.NoError(t, err)
 
 	data2 := bytes.Repeat([]byte("b"), 400)
-	ref2, err := store.Store("item2", data2, "text/plain", nil)
+	ref2, err := store.Store("item2", data2, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Try to store item3 - should NOT evict item1 because it's referenced
 	data3 := bytes.Repeat([]byte("c"), 400)
-	_, err = store.Store("item3", data3, "text/plain", nil)
+	_, err = store.Store("item3", data3, "text/plain", nil, "")
 
 	// Should fail or evict item2 instead of item1
 	if err == nil {
 		// If it succeeded, verify item1 is still there
-		_, err = store.Get(ref1)
+		_, err = store.Get(ref1, "")
 		assert.NoError(t, err)
 	}
 
@@ -144,7 +144,7 @@ func TestSharedMemoryStore_RefCounting(t *testing.T) {
 	store.Release("item1")
 
 	// Verify item2 might have been evicted instead
-	_, _ = store.Get(ref2)
+	_, _ = store.Get(ref2, "")
 	// Item2 might be evicted, that's OK
 }
 
@@ -169,14 +169,14 @@ func TestSharedMemoryStore_ConcurrentAccess(t *testing.T) {
 				data := []byte(fmt.Sprintf("data-%d-%d", id, j))
 
 				// Store
-				ref, err := store.Store(key, data, "text/plain", nil)
+				ref, err := store.Store(key, data, "text/plain", nil, "")
 				if err != nil {
 					t.Logf("Store error: %v", err)
 					continue
 				}
 
 				// Retrieve immediately
-				retrieved, err := store.Get(ref)
+				retrieved, err := store.Get(ref, "")
 				if err != nil {
 					t.Logf("Get error: %v", err)
 					continue
@@ -205,11 +205,11 @@ func TestSharedMemoryStore_Delete(t *testing.T) {
 	})
 
 	data := []byte("test data")
-	ref, err := store.Store("test1", data, "text/plain", nil)
+	ref, err := store.Store("test1", data, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Verify it exists
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	require.NoError(t, err)
 
 	// Delete
@@ -217,7 +217,7 @@ func TestSharedMemoryStore_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's gone
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	assert.Error(t, err)
 
 	stats := store.Stats()
@@ -232,11 +232,11 @@ func TestSharedMemoryStore_Cleanup(t *testing.T) {
 	})
 
 	data := []byte("test data")
-	ref, err := store.Store("test1", data, "text/plain", nil)
+	ref, err := store.Store("test1", data, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Access to update access time
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	require.NoError(t, err)
 
 	// Release ref count so it can be cleaned up (twice: once for Store, once for Get)
@@ -250,7 +250,7 @@ func TestSharedMemoryStore_Cleanup(t *testing.T) {
 	store.cleanup()
 
 	// Verify it was cleaned up
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	assert.Error(t, err)
 }
 
@@ -262,14 +262,14 @@ func TestSharedMemoryStore_ChecksumValidation(t *testing.T) {
 	})
 
 	data := []byte("test data")
-	ref, err := store.Store("test1", data, "text/plain", nil)
+	ref, err := store.Store("test1", data, "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Tamper with checksum
 	ref.Checksum = "invalid"
 
 	// Should fail checksum validation
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	assert.Error(t, err)
 }
 
@@ -282,18 +282,18 @@ func TestSharedMemoryStore_Lifecycle(t *testing.T) {
 	})
 
 	data := []byte("lifecycle test")
-	ref, err := store.Store("lifecycle", data, "text/plain", map[string]string{"test": "true"})
+	ref, err := store.Store("lifecycle", data, "text/plain", map[string]string{"test": "true"}, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, ref.Id)
 	assert.NotEmpty(t, ref.Checksum)
 
 	// Get and verify
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, data, retrieved)
 
 	// Get again (should hit cache)
-	retrieved, err = store.Get(ref)
+	retrieved, err = store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, data, retrieved)
 
@@ -306,7 +306,7 @@ func TestSharedMemoryStore_Lifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify deleted
-	_, err = store.Get(ref)
+	_, err = store.Get(ref, "")
 	assert.Error(t, err)
 
 	stats := store.Stats()
@@ -323,12 +323,12 @@ func TestSharedMemoryStore_LargeData(t *testing.T) {
 
 	// Create 10MB of data
 	data := bytes.Repeat([]byte("large data test "), 640*1024) // ~10MB
-	ref, err := store.Store("large", data, "application/octet-stream", nil)
+	ref, err := store.Store("large", data, "application/octet-stream", nil, "")
 	require.NoError(t, err)
 	assert.True(t, ref.Compressed)
 
 	// Retrieve and verify
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, len(data), len(retrieved))
 	assert.Equal(t, data, retrieved)
@@ -352,7 +352,7 @@ func BenchmarkSharedMemoryStore_Store(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := fmt.Sprintf("bench-%d", i)
-		_, err := store.Store(key, data, "application/octet-stream", nil)
+		_, err := store.Store(key, data, "application/octet-stream", nil, "")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -367,14 +367,14 @@ func BenchmarkSharedMemoryStore_Get(b *testing.B) {
 	})
 
 	data := bytes.Repeat([]byte("benchmark"), 1000)
-	ref, err := store.Store("bench", data, "application/octet-stream", nil)
+	ref, err := store.Store("bench", data, "application/octet-stream", nil, "")
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := store.Get(ref)
+		_, err := store.Get(ref, "")
 		if err != nil {
 			b.Fatal(err)
 		}

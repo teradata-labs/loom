@@ -366,9 +366,9 @@ Working on a laptop or SSH session?
 ### 7. Use Patterns for Complex Tasks
 
 Patterns provide domain expertise to agents:
-- Agents automatically select relevant patterns based on your query
-- Pattern selection happens server-side via keyword-based intent classification
-- No sidebar interaction needed; patterns are injected into context transparently
+- The agent pulls a pattern on demand with the `load_pattern` tool
+- Pattern references reach the agent through a loaded skill, which lists them in its body
+- Pattern content returns as a tool result in the conversation; no sidebar interaction needed
 
 ## Troubleshooting
 
@@ -453,7 +453,7 @@ Create specialized agents via weaver, then use workflows to orchestrate them:
 
 1. Switch to weaver: Click "Weaver" in sidebar
 2. Create pattern-aware agent: "Create an agent that uses SQL optimization patterns"
-3. Test agent: Switch to new agent via `ctrl+e`, verify pattern selection in responses
+3. Test agent: Switch to new agent via `ctrl+e`, verify it calls `load_pattern` for the referenced patterns
 
 ## Keyboard Shortcut Reference Card
 

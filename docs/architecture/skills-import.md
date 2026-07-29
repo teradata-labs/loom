@@ -299,10 +299,10 @@ on a flaky provider.
 ### Special cases
 
 **Parent-index skills** (`-skill-index` suffix) are deliberately skipped
-by the classifier. They live at their own well-known position
-(`unclassified/meta-agent` after `chooseDomain` sees `*-skill-index`)
-because their `mode: ALWAYS` makes them surface every turn regardless of
-routing.
+by the classifier. They are catalogues of other skills rather than
+subject-matter skills, so bucketing them by topic is meaningless; they
+live at their own well-known position (`unclassified/meta-agent` after
+`chooseDomain` sees `*-skill-index`).
 
 ## Phase 4: YAML emission
 

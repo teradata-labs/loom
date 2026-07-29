@@ -20,7 +20,7 @@
   - [Single Agent](#single-agent)
   - [Multi-Agent Workflow](#multi-agent-workflow)
 - [Creating Skills](#creating-skills)
-  - [Skill Activation Modes](#skill-activation-modes)
+  - [How Skills Reach an Agent](#how-skills-reach-an-agent)
 - [Workflow Types](#workflow-types)
   - [Orchestration Workflows](#orchestration-workflows)
   - [Coordination Workflows](#coordination-workflows)
@@ -200,14 +200,14 @@ The weaver always creates agents first, then creates the workflow that reference
 
 ## Creating Skills
 
-The weaver can create skills -- LLM-agnostic prompt injections that provide domain expertise to agents. The weaver always asks for your consent before creating a new skill.
+The weaver can create skills -- reusable instruction bodies that provide domain expertise to agents. The weaver always asks for your consent before creating a new skill.
 
 ```
 You: Create an agent for analyzing Python performance
 
 Weaver: I don't have a Python performance skill yet. I can create one that would:
         - Provide specialized knowledge about cProfile, memory_profiler, and py-spy
-        - Activate when you mention 'slow python' or use the /perf command
+        - Be loadable on demand when a Python performance task comes up
         - Be reusable across any Python-focused agent
 
         Would you like me to create this skill? (yes to create, skip to continue without it)
@@ -219,14 +219,9 @@ Weaver: [Uses agent_management with action="create_skill"]
         [Configures the skill in the agent's spec.skills section]
 ```
 
-### Skill Activation Modes
+### How Skills Reach an Agent
 
-| Mode | Behavior |
-|------|----------|
-| `MANUAL` | Only via slash command (e.g., `/perf`) |
-| `AUTO` | Automatically when keywords are detected (e.g., "slow python") |
-| `HYBRID` | Both slash command and keyword activation |
-| `ALWAYS` | Injected on every agent turn |
+A skill bound to an agent contributes its name and description to a static menu rendered once into that agent's system prompt. The model calls `manage_skills(load)` when it judges the skill relevant; the tool result is a short confirmation and the skill's full body arrives as a separate message in the conversation. Skill bodies never enter the system prompt.
 
 
 ## Workflow Types

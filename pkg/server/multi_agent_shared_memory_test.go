@@ -70,12 +70,12 @@ func TestMultiAgentServer_ConfigureSharedMemory(t *testing.T) {
 
 	// Verify shared memory works by storing and retrieving data
 	testData := []byte("test data for all agents")
-	ref, err := sharedMemory.Store("test-shared", testData, "text/plain", nil)
+	ref, err := sharedMemory.Store("test-shared", testData, "text/plain", nil, "")
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 
 	// Verify data can be retrieved
-	retrieved, err := sharedMemory.Get(ref)
+	retrieved, err := sharedMemory.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, testData, retrieved)
 
@@ -110,10 +110,10 @@ func TestMultiAgentServer_AddAgent_WithSharedMemory(t *testing.T) {
 
 	// Store data and verify it's accessible (agent2 should have access to shared memory)
 	testData := []byte("test data for agent2")
-	ref, err := sharedMemory.Store("test-agent2", testData, "text/plain", nil)
+	ref, err := sharedMemory.Store("test-agent2", testData, "text/plain", nil, "")
 	require.NoError(t, err)
 
-	retrieved, err := sharedMemory.Get(ref)
+	retrieved, err := sharedMemory.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, testData, retrieved)
 }
@@ -151,12 +151,12 @@ func TestMultiAgentServer_SharedMemory_CrossAgentDataAccess(t *testing.T) {
 	ref, err := sharedMemory.Store("cross-agent-data", largeData, "application/octet-stream", map[string]string{
 		"source": "agent1",
 		"type":   "large-result",
-	})
+	}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 
 	// Agent2 retrieves the data
-	retrieved, err := sharedMemory.Get(ref)
+	retrieved, err := sharedMemory.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, largeData, retrieved)
 
@@ -204,12 +204,12 @@ func TestMultiAgentServer_SharedMemory_LargeToolResults(t *testing.T) {
 	// Store it in shared memory (simulating what the executor would do)
 	ref, err := sharedMemory.Store("tool-result-1", resultJSON, "application/json", map[string]string{
 		"tool": "mock-large-tool",
-	})
+	}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 
 	// Verify it can be retrieved
-	retrieved, err := sharedMemory.Get(ref)
+	retrieved, err := sharedMemory.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, resultJSON, retrieved)
 }
@@ -244,11 +244,11 @@ func TestMultiAgentServer_SharedMemory_ConcurrentAccess(t *testing.T) {
 			// Each agent stores and retrieves data
 			for i := 0; i < 10; i++ {
 				data := []byte(id + "-data-" + string(rune('0'+i)))
-				ref, err := sharedMemory.Store(id+"-"+string(rune('0'+i)), data, "text/plain", nil)
+				ref, err := sharedMemory.Store(id+"-"+string(rune('0'+i)), data, "text/plain", nil, "")
 				assert.NoError(t, err)
 				assert.NotNil(t, ref)
 
-				retrieved, err := sharedMemory.Get(ref)
+				retrieved, err := sharedMemory.Get(ref, "")
 				assert.NoError(t, err)
 				assert.Equal(t, data, retrieved)
 

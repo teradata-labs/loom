@@ -327,14 +327,12 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, [
 						}
 					}
 				}
-				if len(content) > 0 {
-					sdkMessages = append(sdkMessages, anthropic.NewUserMessage(content...))
-				}
+				sdkMessages = appendUserOrCoalesceSDK(sdkMessages, content)
 			} else if msg.Content != "" {
 				// Plain text message
-				sdkMessages = append(sdkMessages, anthropic.NewUserMessage(
+				sdkMessages = appendUserOrCoalesceSDK(sdkMessages, []anthropic.ContentBlockParamUnion{
 					anthropic.NewTextBlock(msg.Content),
-				))
+				})
 			}
 
 		case "assistant":
@@ -362,9 +360,14 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, [
 			}
 
 		case "tool":
-			sdkMessages = append(sdkMessages, anthropic.NewUserMessage(
+			// Tool results go under user role; coalesce with any adjacent user
+			// message so we never emit consecutive user wire messages
+			// (Anthropic 400: "roles must alternate"). Also lets a tool_result
+			// and a following user text sidecar (e.g. manage_skills's skill
+			// body) share one wire user message with mixed content blocks.
+			sdkMessages = appendUserOrCoalesceSDK(sdkMessages, []anthropic.ContentBlockParamUnion{
 				anthropic.NewToolResultBlock(msg.ToolUseID, msg.Content, false),
-			))
+			})
 		}
 	}
 
@@ -372,6 +375,25 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, [
 	systemPrompt := strings.Join(systemPrompts, "\n\n")
 
 	return systemPrompt, sdkMessages
+}
+
+// appendUserOrCoalesceSDK appends content blocks to the last user message in
+// the slice when that last message is user-role; otherwise it appends a new
+// user message. This is the sole path by which user-role wire messages are
+// produced by the SDK converter, so it guarantees the outgoing message list
+// never contains two consecutive user-role messages — which Anthropic rejects
+// with 400 "roles must alternate". It also lets a tool_result and an
+// immediately-following user-role text (e.g. the manage_skills skill-body
+// sidecar) share a single wire user message with mixed content blocks.
+func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.ContentBlockParamUnion) []anthropic.MessageParam {
+	if len(blocks) == 0 {
+		return msgs
+	}
+	if n := len(msgs); n > 0 && msgs[n-1].Role == anthropic.MessageParamRoleUser {
+		msgs[n-1].Content = append(msgs[n-1].Content, blocks...)
+		return msgs
+	}
+	return append(msgs, anthropic.NewUserMessage(blocks...))
 }
 
 // convertToolsToSDK converts shuttle tools to Anthropic SDK format.

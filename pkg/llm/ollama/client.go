@@ -355,17 +355,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ollamaMessage {
 				// Combine text parts
 				content := strings.Join(textParts, "\n")
 
-				apiMessages = append(apiMessages, ollamaMessage{
-					Role:    "user",
-					Content: content,
-					Images:  images,
-				})
+				apiMessages = appendUserOrCoalesceOllama(apiMessages, content, images)
 			} else {
 				// Fallback to plain text (backward compatible)
-				apiMessages = append(apiMessages, ollamaMessage{
-					Role:    msg.Role,
-					Content: msg.Content,
-				})
+				apiMessages = appendUserOrCoalesceOllama(apiMessages, msg.Content, nil)
 			}
 
 		case "assistant":
@@ -376,22 +369,52 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ollamaMessage {
 
 		case "tool":
 			if c.supportsNativeTools() {
-				// Native tool format (Ollama v0.12.3+)
+				// Native tool format (Ollama v0.12.3+) — separate role, safe
+				// alongside a following user-role sidecar (no consecutive
+				// same-role messages).
 				apiMessages = append(apiMessages, ollamaMessage{
 					Role:    "tool",
 					Content: msg.Content,
 				})
 			} else {
-				// Fallback: Include as user message
-				apiMessages = append(apiMessages, ollamaMessage{
-					Role:    "user",
-					Content: fmt.Sprintf("Tool result: %s", msg.Content),
-				})
+				// Fallback path: tool_result inlined as a user message. Route
+				// through the coalesce helper so a following user-role sidecar
+				// (e.g. manage_skills's skill body) folds into the same
+				// message instead of producing consecutive user messages.
+				apiMessages = appendUserOrCoalesceOllama(apiMessages, fmt.Sprintf("Tool result: %s", msg.Content), nil)
 			}
 		}
 	}
 
 	return apiMessages
+}
+
+// appendUserOrCoalesceOllama appends user content to the last user message in
+// the slice when that last message is user-role; otherwise it appends a new
+// user message. Prevents consecutive user-role wire messages, which some
+// Ollama models reject. Also lets a tool_result (in the non-native fallback
+// path) and an immediately-following user text (e.g. the manage_skills
+// skill-body sidecar) share a single user message.
+func appendUserOrCoalesceOllama(msgs []ollamaMessage, content string, images []string) []ollamaMessage {
+	if content == "" && len(images) == 0 {
+		return msgs
+	}
+	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
+		if msgs[n-1].Content != "" && content != "" {
+			msgs[n-1].Content = msgs[n-1].Content + "\n\n" + content
+		} else if content != "" {
+			msgs[n-1].Content = content
+		}
+		if len(images) > 0 {
+			msgs[n-1].Images = append(msgs[n-1].Images, images...)
+		}
+		return msgs
+	}
+	return append(msgs, ollamaMessage{
+		Role:    "user",
+		Content: content,
+		Images:  images,
+	})
 }
 
 // cleanJSONString removes common formatting issues from JSON strings.

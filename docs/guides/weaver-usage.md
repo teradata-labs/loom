@@ -160,7 +160,7 @@ User: "Read-only for now"
 ```
 Weaver: "Based on your needs, I recommend:
 
-🎯 sql-optimization (/optimize) - RECOMMENDED
+🎯 sql-optimization - RECOMMENDED
    Analyzes query execution plans and suggests improvements
    Includes index recommendations and query rewrites
 
@@ -189,7 +189,7 @@ Agent Name: postgresql-query-optimizer
 Purpose: Analyze slow PostgreSQL queries and recommend optimizations
 Database: PostgreSQL (read-only)
 Tools: execute_sql, tool_search
-Skills: sql-optimization (/optimize)
+Skills: sql-optimization
 Success: Identify bottlenecks and suggest fixes
 
 Ready to create? (yes to proceed, no to revise)"
@@ -219,20 +219,20 @@ User: "/agent-plan"
 
 > **New in v1.2.0**: Weaver recommends and creates skills to enhance your agents.
 
-Skills are LLM-agnostic prompt injections that provide domain expertise. Weaver automatically recommends relevant skills based on your problem domain.
+Skills are reusable instruction bodies that provide domain expertise. A skill bound to an agent appears by name and description in the agent's system-prompt menu; the model pulls the full body on demand with `manage_skills(load)`. Weaver recommends relevant skills based on your problem domain.
 
 ### Built-in Skills
 
 Weaver knows about these existing skills:
 
-| Skill | Activation | Use Case | Status |
-|-------|-----------|----------|--------|
-| `sql-optimization` | `/optimize` or "slow query" | Database performance analysis | ✅ Implemented |
-| `code-review` | `/review` or "review code" | Security and quality checks | ✅ Implemented |
-| `data-quality-check` | `/dq` or "validate data" | Data validation and cleaning | ✅ Implemented |
-| `multi-agent-coordinator` | `/coordinate` | Task delegation across agents | ⚠️ Catalog only |
-| `agent-discovery` | `/find-agent` | Locate specialist agents | ⚠️ Catalog only |
-| `request-response-coordinator` | `/ask-agent` | Synchronous agent communication | ⚠️ Catalog only |
+| Skill | Use Case | Status |
+|-------|----------|--------|
+| `sql-optimization` | Database performance analysis | ✅ Implemented |
+| `code-review` | Security and quality checks | ✅ Implemented |
+| `data-quality-check` | Data validation and cleaning | ✅ Implemented |
+| `multi-agent-coordinator` | Task delegation across agents | ⚠️ Catalog only |
+| `agent-discovery` | Locate specialist agents | ⚠️ Catalog only |
+| `request-response-coordinator` | Synchronous agent communication | ⚠️ Catalog only |
 
 **Example recommendation:**
 
@@ -241,7 +241,7 @@ User: "Create an agent for PostgreSQL optimization"
 
 Weaver: "I recommend the sql-optimization skill because:
 • Provides specialized knowledge about query optimization
-• Automatically activates with /optimize or when you mention 'slow query'
+• The agent can load it on demand when a query needs tuning
 • Includes EXPLAIN plan analysis and index recommendations
 • Reusable across any SQL-focused agent
 
@@ -259,7 +259,7 @@ User: "Create an agent for analyzing Python performance"
 
 Weaver: "I don't have a Python performance skill yet. I recommend creating one because:
 • It would provide specialized knowledge about Python profiling and optimization
-• Automatically activates when you mention 'slow python' or use /perf command
+• The agent can load it on demand when a Python performance task comes up
 • Includes cProfile, memory_profiler, and py-spy guidance
 • Reusable across any Python-focused agent you create
 
@@ -278,11 +278,7 @@ Weaver: [Creates skill at $LOOM_DATA_DIR/skills/python-performance-analysis.yaml
 - ✅ Clear explanation of what the skill does and why it's beneficial
 - ✅ Skills saved to `$LOOM_DATA_DIR/skills/` for reuse
 
-**Skill activation modes:**
-- `MANUAL` - Only via slash command (e.g., `/perf`)
-- `AUTO` - Automatically when keywords detected (e.g., "slow python")
-- `HYBRID` - Both slash command and keywords
-- `ALWAYS` - Injected on every agent turn
+**How a created skill reaches the agent:** binding the skill to an agent puts its name and description in that agent's system-prompt menu. The model calls `manage_skills(load)` when it decides the skill applies, and the body arrives as a message in the conversation.
 
 
 ## Creating Agents
@@ -565,7 +561,7 @@ User: "Both would be helpful"
 
 Weaver: "I don't have a Python performance skill yet. I recommend creating one because:
 • It would provide specialized knowledge about Python profiling and optimization
-• Automatically activates when you mention 'slow python' or use /perf command
+• The agent can load it on demand when a Python performance task comes up
 • Includes cProfile, memory_profiler, and py-spy guidance
 • Reusable across any Python-focused agent you create
 
@@ -579,7 +575,7 @@ Agent Name: python-performance-analyzer
 Purpose: Identify bottlenecks in Python code and suggest optimizations
 Python Version: 3.11
 Tools: file_read, shell_execute, tool_search
-Skills: python-performance-analysis (/perf) - CREATED
+Skills: python-performance-analysis - CREATED
 Capabilities:
   • Profile running Python scripts
   • Analyze static code for performance issues
@@ -598,9 +594,8 @@ Weaver: [Creates skill at $LOOM_DATA_DIR/skills/python-performance-analysis.yaml
 To use it:
 loom --thread python-performance-analyzer
 
-The python-performance-analysis skill activates when you:
-- Use /perf command
-- Mention 'slow python' or 'bottleneck'
+The agent loads the python-performance-analysis skill with
+manage_skills when a request needs it.
 
 Example: "This function is slow: def process_data()..."
 
