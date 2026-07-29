@@ -18,9 +18,9 @@ Detailed architecture of Loom's agent runtime - the conversation loop, segmented
   - [Agent Core](#agent-core)
   - [Memory Controller](#memory-controller)
   - [Conversation Loop](#conversation-loop)
-  - [Pattern Matcher](#pattern-matcher)
+  - [Pattern and Skill Access](#pattern-and-skill-access)
   - [Tool Executor Integration](#tool-executor-integration)
-  - [Self-Correction (Judge)](#self-correction-judge)
+  - [Self-Correction](#self-correction)
   - [Session Persistence](#session-persistence)
 - [Key Interactions](#key-interactions)
   - [Single Turn Execution](#single-turn-execution)
@@ -35,6 +35,7 @@ Detailed architecture of Loom's agent runtime - the conversation loop, segmented
   - [Context Window Management](#context-window-management)
   - [Token Budget Calculation](#token-budget-calculation)
   - [Memory Eviction Policy](#memory-eviction-policy)
+- [Context Observability](#context-observability)
 - [Design Trade-offs](#design-trade-offs)
 - [Constraints and Limitations](#constraints-and-limitations)
 - [Performance Characteristics](#performance-characteristics)
@@ -50,11 +51,13 @@ Detailed architecture of Loom's agent runtime - the conversation loop, segmented
 
 The Agent System is the core runtime for autonomous LLM-powered agent threads. It orchestrates a conversation loop that:
 1. Maintains segmented memory across multiple turns
-2. Matches user queries to domain-specific patterns
+2. Compiles the provider context from that memory on every call
 3. Invokes LLM providers with streaming support
-4. Executes tools concurrently via the Shuttle system
-5. Validates responses with judge-based self-correction
+4. Executes the model's tool calls in order via the Shuttle system
+5. Isolates tool failures with guardrails and circuit breakers
 6. Persists session state for crash recovery
+
+Domain knowledge is not pushed into the context. Skills and patterns are pulled by the model through the `manage_skills` and `load_pattern` tools, and arrive as ordinary conversation messages.
 
 The agent is designed to be **backend-agnostic** (SQL, REST, documents), **LLM-agnostic** (Anthropic, Bedrock, Ollama, etc.), and **thread-safe** for concurrent session management.
 
@@ -64,13 +67,13 @@ The agent is designed to be **backend-agnostic** (SQL, REST, documents), **LLM-a
 1. **Autonomy**: Agent drives conversation with minimal human intervention
 2. **Memory Efficiency**: Bounded token usage via segmented memory (ROM/Kernel/L1/L2/Swap)
 3. **Crash Recovery**: Session persistence enables recovery from any failure
-4. **Observable**: Every decision traced to Hawk for debugging and evaluation
+4. **Observable**: Turn and tool spans exported to Hawk; the exact compiled context capturable to a local debug sink
 5. **Pluggable**: Swap backends, LLMs, tools, patterns without agent code changes
 
 **Non-goals**:
 - Real-time sub-second response (P50 latency ~1200ms)
 - Multi-modal input/output beyond text + vision tools
-- Goal-seeking autonomous agents (pattern-guided, not goal-driven)
+- Goal-seeking autonomous agents (tool-driven, not goal-driven)
 
 
 ## System Context
@@ -93,22 +96,22 @@ graph TB
 
         subgraph Support["Support Systems"]
             Memory[Memory Manager<br/>ROM/K/L1/L2]
-            Pattern[Pattern Matcher<br/>LLM/Keyword]
+            Library[Skill + Pattern Library<br/>pulled by tool call]
             BackendIf[Backend Interface<br/>SQL/REST/MCP]
         end
 
         subgraph Persistence["Persistence & Observability"]
             Session[Session Storage<br/>SQLite]
-            Judge[Judge System<br/>self-correction]
+            Guard[Guardrails +<br/>Circuit Breakers]
             Trace[Trace Export<br/>Hawk]
         end
 
         ConvLoop --> LLMInvoke --> ToolExec
         ConvLoop --> Memory
-        LLMInvoke --> Pattern
+        ToolExec --> Library
         ToolExec --> BackendIf
+        ToolExec --> Guard
         ConvLoop --> Session
-        ConvLoop --> Judge
         ConvLoop --> Trace
     end
 
@@ -152,7 +155,7 @@ graph TB
 │  │  │  │ Never changes during session.           │     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
 │  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
-│  │  │  │ Kernel (tool results, schemas, findings)│     │     │            │  │
+│  │  │  │ Kernel (tool results, schema cache)     │     │     │            │  │
 │  │  │  │ Working memory from tool executions.    │     │     │            │  │
 │  │  │  │ LRU eviction for schemas (max 10).      │     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
@@ -178,33 +181,33 @@ graph TB
 │  │                   Conversation Loop                         │          │  │
 │  │                                                             │          │  │
 │  │  1. Load/Create Session                                    │           │  │
-│  │  2. Match Patterns (LLM-based intent classification)        │           │  │
-│  │  3. Build Context (ROM + L2 + patterns + skills + L1)      │           │  │
-│  │  4. LLM Invoke (streaming)                                 │           │  │
-│  │  5. Parse Tool Calls                                       │           │  │
-│  │  6. Execute Tools (concurrent via Shuttle)                 │           │  │
-│  │  7. Judge Validation (optional self-correction)            │           │  │
+│  │  2. Enforce Token Budget (compress L1 → L2 when over)      │           │  │
+│  │  3. Compile Context (ROM + L2 + promoted + L1)             │           │  │
+│  │  4. Project Advertised Tools (per session)                 │           │  │
+│  │  5. LLM Invoke (streaming)                                 │           │  │
+│  │  6. Parse Tool Calls                                       │           │  │
+│  │  7. Execute Tools (in call order via Shuttle)              │           │  │
 │  │  8. Persist Turn (session → SQLite)                        │           │  │
 │  │  9. Return Response                                        │           │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                              │                                               │
 │                              ▼                                               │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │                Self-Correction (Judge)                      │          │  │
+│  │            Self-Correction (per tool execution)              │          │  │
 │  │                                                             │          │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
-│  │  │  Judge Config    │──────────▶│    Judge LLM     │       │           │  │
-│  │  │  (criteria)      │           │    (scoring)     │       │           │  │
+│  │  │  Circuit Breaker │──────────▶│  Tool Executor   │       │           │  │
+│  │  │  (per tool name) │           │  (Shuttle)       │       │           │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                          │                 │           │  │
 │  │                                          ▼                 │           │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
-│  │                              │   Aggregator     │          │           │  │
-│  │                              │   (strategy)     │          │           │  │
+│  │                              │   Guardrails     │          │           │  │
+│  │                              │  (error record)  │          │           │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                       │                    │           │  │
 │  │                                       ▼                    │           │  │
-│  │                           Pass/Fail Decision               │           │  │
+│  │                   Error analysis for the next turn         │           │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -217,7 +220,7 @@ graph TB
 
 **Responsibility**: Orchestrate all agent subsystems and expose the `Chat`/`ChatWithProgress` API.
 
-**Fields** (from `pkg/agent/types.go`):
+**Fields** (representative subset of `pkg/agent/types.go`; see that file for the full definition):
 ```go
 type Agent struct {
     id                  string                         // Unique agent identifier (UUID v4)
@@ -253,6 +256,11 @@ type Agent struct {
     lazyToolSets        []lazyToolSet                  // Conditionally-registered tools
     graphMemoryStore    memory.GraphMemoryStore        // Graph-backed episodic memory
     graphMemoryConfig   *loomv1.GraphMemoryConfig      // Graph memory configuration
+    sessionToolLedger   map[string]map[string]bool     // sessionID → tools that session's events registered
+    scopedToolNames     map[string]bool                // Union of session-scoped names across sessions
+    baseToolNames       map[string]bool                // Always-advertised set, frozen before any event
+    contextDump         *contextDumper                 // Debug-only context sink (nil unless enabled)
+    ctxDebug            *contextDebug                  // Per-mutation debug carrier (no-op when off)
 }
 ```
 
@@ -289,9 +297,18 @@ type Memory struct {
     maxContextTokens     int                            // Context window size
     reservedOutputTokens int                            // Output reservation
     compressionProfile   *CompressionProfile            // Compression behavior profile
+    compressor           MemoryCompressor               // LLM compactor for L2 (nil = heuristic)
     maxToolResults       int                            // Max tool results in kernel
     observers            map[string][]MemoryObserver    // Real-time cross-session observers
     observersMu          sync.RWMutex                   // Protects observers map
+
+    // Restore re-fire hooks, set by the agent layer. After a restart replay the
+    // restore walk calls these to rebuild a session's runtime state from its
+    // durable messages. A nil hook disables that re-fire.
+    restoreActivateSkill          func(sessionID, skillName string) // re-activate a loaded skill + its required tools
+    restoreRegisterDisclosureTool func(sessionID, toolName string)  // re-advertise a first-need disclosure tool
+
+    ctxDebug             *contextDebug                  // Per-mutation debug carrier (no-op when off)
 }
 ```
 
@@ -319,46 +336,41 @@ type Memory struct {
    ├─ If miss, load from SQLite                                                 
    └─ If not found, create new session with segmented memory                    
 
-2. Match Patterns
-   ├─ Classify user intent (LLM-based by default, keyword fallback)
-   ├─ Score patterns against classified intent
-   └─ Select top-K patterns (K=1 by default, configurable up to 5)
+2. Freeze Base Tool Set
+   ├─ Capture the always-advertised tool names, once per agent
+   └─ Promote lazy tool sets whose trigger matches the user message (global)
 
-3. Build Context
-   ├─ ROM: System prompt (immutable)
-   ├─ L2: Summarized history (LLM-compressed)
-   ├─ Pattern: Injected domain knowledge (if matched)
-   ├─ Skills: Active skill instructions (if configured)
-   ├─ Findings: Working memory from tool executions
-   ├─ Promoted: Retrieved context from swap layer
-   └─ L1: Recent messages (sliding window)
-
-4. Check Token Budget
+3. Check Token Budget
    ├─ Calculate total tokens across all layers
-   ├─ If exceeds warning threshold, compress oldest L1 messages to L2
+   ├─ If usage exceeds the enforcement threshold, compress oldest L1 into L2
    ├─ If L2 exceeds maxL2Tokens, evict L2 to swap (database)
    └─ Adaptive batch sizes based on budget pressure (profile-dependent)                                                
 
-5. LLM Invoke
-   ├─ Format messages (system + history + user)                                 
+4. Compile Context (GetMessagesForLLM)
+   ├─ ROM: System prompt (immutable, includes the static skill menu)
+   ├─ L2: Summarized history as a "Previous conversation summary" system message
+   ├─ Promoted: Messages retrieved from swap, behind a system header
+   └─ L1: Recent messages (sliding window)
+
+5. Project Advertised Tools
+   ├─ Every registered tool that is base, plus this session's ledger entries
+   ├─ Remove skill-excluded and permission-hidden tools
+   └─ Re-derived per provider call, so a mid-turn registration surfaces at once
+
+6. LLM Invoke
    ├─ Stream completion with tool calling                                       
    └─ Parse assistant response and tool calls                                   
 
-6. Execute Tools
-   ├─ If no tool calls, skip to step 8                                          
-   ├─ Validate tool calls (parameters, availability)                            
-   ├─ Execute tools concurrently via Shuttle                                    
-   └─ Aggregate results                                                         
-
-7. Judge Validation (Optional)
-   ├─ If judge configured, validate response                                    
-   ├─ If score < threshold, retry with correction                               
-   └─ Max 3 retry attempts                                                      
+7. Execute Tools
+   ├─ If no tool calls, finish the turn                                         
+   ├─ Execute in call order via Shuttle, behind circuit breaker + guardrails    
+   ├─ Reuse the cached result for a duplicate call within the same turn         
+   ├─ Render each result into a tool message (offload if at/over the threshold) 
+   └─ Append buffered text_body sidecars as user messages after the batch       
 
 8. Persist Turn
    ├─ Append messages to session history                                        
-   ├─ Update L1 (add new turn, evict if full)                                   
-   ├─ Update L2 (summarize evicted L1 messages)                                 
+   ├─ Update L1 (add new turn, compress oldest into L2 under budget pressure)   
    ├─ Write session to SQLite                                                   
    └─ Export trace to Hawk                                                      
 
@@ -373,87 +385,95 @@ type Memory struct {
 - Unrecoverable error (e.g., backend connection lost)
 
 
-### Pattern Matcher
+### Pattern and Skill Access
 
-**Responsibility**: Select relevant domain patterns for user query.
+**Responsibility**: Deliver domain knowledge to the model on demand, as conversation content.
 
-**Algorithm**: LLM-Based Intent Classification (default) with Keyword Fallback
+Neither skills nor patterns are injected into the compiled context. Both are pulled by the model through tools, so their cost is visible in the conversation and they are subject to the same size and compaction rules as any other tool output.
+
+**Skills** (`manage_skills`, registered at construction whenever a skill orchestrator is wired):
 ```
-1. Preprocessing (pattern library load):
-   ├─ Build pattern index (name, title, description, category, use cases)
-   ├─ Store index as []PatternSummary
-   └─ Store in atomic.Value for hot-reload
+1. Session creation:
+   └─ ROM carries a static menu of the agent's bound skills — name and
+      description only, rendered once, so ROM stays byte-stable per session
 
-2. Query matching (LLM classifier, default):
-   ├─ Send user message + pattern summaries to classifier LLM
-   ├─ LLM selects best-fit pattern with confidence score
-   └─ Return top-K patterns (K=1 by default, configurable up to 5)
+2. manage_skills(list):
+   └─ Returns the library annotated with this session's active set, as JSON
 
-2b. Query matching (keyword fallback, when UseLLMClassifier=false):
-   ├─ Classify intent via defaultIntentClassifier (keyword lists + containsAny)
-   ├─ Extract keywords from user message (split, lowercase, filter stop words)
-   ├─ Score each pattern: category match (+0.5), keyword match rate (up to +0.5),
-   │   name match (+0.2), title match (+0.1)
-   ├─ Sort by score (descending)
-   └─ Return top-K patterns (K=1)
-
-3. Hot-reload (fsnotify):
-   ├─ Detect file change event
-   ├─ Reload YAML files
-   ├─ Rebuild pattern index
-   └─ Atomic swap (atomic.Store)
+3. manage_skills(load, name):
+   ├─ Activates the skill for this session (pinned)
+   ├─ Wires the skill's required tools into THIS session's advertised set
+   ├─ tool_result payload is a short confirmation: "Skill loaded: <name>"
+   └─ The skill body (plus any pattern references) is returned as a
+      text_body sidecar, which the loop appends as a Role="user" message
+      after every tool_result in the batch is in place
 ```
 
-**Complexity**:
-- Indexing: O(n) where n = pattern count
-- Query (keyword): O(n x m) where m = keywords per pattern
-- Query (LLM): One LLM call per turn (latency dominated by LLM inference)
-- Space: O(n) for pattern summaries
+**Patterns** (`load_pattern`, registered at construction whenever a pattern library is configured):
+```
+1. Library load:
+   ├─ Parse pattern YAML files
+   └─ Optional fsnotify hot-reload rebuilds the library in place
 
-**Performance**: <10ms for keyword matching over the pattern library (158 patterns), 89-143ms hot-reload latency.
+2. load_pattern(reference):
+   ├─ Reference comes from a skill's pattern references, surfaced by
+   │   manage_skills(load)
+   ├─ Library.Load(reference) → Pattern.FormatForLLM()
+   ├─ Content is returned as ordinary string tool-result data
+   └─ Unknown reference returns an error result; no content enters context
+```
 
-**See**: [Pattern System Architecture](pattern-system.md)
+`PatternConfig.Enabled` and the `WithPatternInjection` option remain in the config surface but no longer gate any injection path.
+
+**Performance**: 89-143ms pattern hot-reload latency.
+
+**See**: [Pattern System Architecture](pattern-system.md), [Skills System Architecture](skills-system.md)
 
 
 ### Tool Executor Integration
 
-**Responsibility**: Interface with Shuttle for concurrent tool execution.
+**Responsibility**: Interface with Shuttle for tool execution.
 
 **Integration**:
 ```go
-// Agent calls Shuttle executor for each tool (single-tool API)
+// Agent calls the Shuttle executor for each tool (single-tool API)
 result, err := a.executor.Execute(ctx, toolName, params)
 
-// Or use ExecuteWithTool for a specific tool instance
+// Or ExecuteWithTool for a specific tool instance
 result, err := a.executor.ExecuteWithTool(ctx, tool, params)
 
-// Concurrent execution: Agent spawns goroutines for multiple tool calls
-// from a single LLM response, then aggregates results
+// The agent walks a response's tool calls in order. Each result is rendered
+// and appended before the next call runs, so tool_use↔tool_result adjacency
+// holds and a later call can see an earlier one's effect.
 for _, tc := range toolCalls {
-    go func(call ToolCall) {
-        result, err := a.executor.Execute(ctx, call.Name, call.Input)
-        resultChan <- ToolExecution{ToolName: call.Name, Result: result, Error: err}
-    }(tc)
+    result, err := a.executeToolWithSelfCorrection(ctx, tc.Name, tc.Input, session.ID)
+    session.AddMessage(ctx, toolMessage(tc, result, err))
 }
 ```
 
 **Error Handling**:
-- Tool execution errors aggregated, not short-circuited
-- Partial success: Some tools succeed, others fail
-- Agent receives all results, decides whether to retry
+- Tool execution errors are recorded as results, not short-circuited
+- Partial success: some tools succeed, others fail; the model sees both
+- A failure is rendered as an error reference (see [Agent Runtime Architecture](agent-runtime.md))
 
-**Timeout**: Per-tool timeout via `context.WithTimeout` (default: 30s).
+**Result rendering**: A string result is rendered verbatim; a composite result is marshalled to JSON. Go `%v` map syntax never reaches the model.
+
+**Large results**: One byte threshold governs both offload sites — the agent's `formatToolResult` and the executor's `handleLargeResult`. Default 64 KiB (`storage.DefaultSharedMemoryThreshold`), overridable per agent. Strictly below it, the result stays inline; at or above it, the payload is stored and replaced by a reference plus an inline metadata summary. Three tools are exempt and always enter whole: `manage_skills`, `get_tool_result`, `query_tool_result`.
 
 **See**: Tool execution is handled by the Shuttle system in `pkg/shuttle/executor.go`
 
 
-### Self-Correction (Judge)
+### Self-Correction
 
-**Responsibility**: Validate agent responses using multi-judge evaluation.
+**Responsibility**: Contain tool failures inside the conversation loop, and score responses out of band.
 
-**Architecture**:
+**In the loop** (`executeToolWithSelfCorrection` in `pkg/agent/agent.go`): every tool call is wrapped by an optional per-tool circuit breaker and an optional guardrail engine. A success clears the session's error record; a failure is classified into an `ErrorAnalysisInfo` and handed to the guardrail engine, which shapes what the next turn sees. There is no response-scoring or retry-with-correction step inside the loop.
+
+**Out of band** (`pkg/evals/judges`): judge-based evaluation runs in the evals runner and the judge gRPC service over recorded agent responses. The conversation loop never calls a judge; `judgeLLM` on the Agent is the role-specific provider those callers resolve.
+
+**Judge architecture**:
 ```
-User Query ────▶ Agent Response                                                 
+Recorded Response                                                               
                       │                                                         
                       ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -483,25 +503,11 @@ User Query ────▶ Agent Response
 5. **MIN_SCORE**: Use the minimum score across all judges
 6. **MAX_SCORE**: Use the maximum score across all judges
 
-**Retry Logic**:
-```
-attempt = 0
-while attempt < max_retries:
-    response = llm.invoke(context)
-    score = judge.evaluate(response)
-    if score >= threshold:
-        return response
-    attempt += 1
-    context.append(correction_message)
-return response  # Return last attempt even if failed
-```
-
 **Configuration**:
 - Threshold: 0.0-1.0 (default: 0.7)
-- Max retries: 1-10 (default: 3)
 - Aggregation strategy: weighted_average, all_must_pass, majority_pass, any_pass, min_score, max_score
 
-**See**: Judge implementation in `pkg/evals/judges/judge.go`, aggregator in `pkg/evals/judges/aggregator.go`
+**See**: Judge implementation in `pkg/evals/judges/judge.go`, aggregator in `pkg/evals/judges/aggregator.go`, and [Judge System Architecture](judge-system.md)
 
 
 ### Session Persistence
@@ -588,8 +594,8 @@ Client         Agent          Memory       LLM          Shuttle      Backend
   │              ├─ GetOrCreate ▶│            │             │           │       
   │              │◀─ Session ───┤            │             │           │        
   │              │              │            │             │           │        
-  │              ├─ MatchPattern│            │             │           │        
-  │              ├─ BuildContext│            │             │           │        
+  │              ├─ Compile ────┤            │             │           │        
+  │              ├─ Advertise ──┤            │             │           │        
   │              │              │            │             │           │        
   │              ├─ Invoke ─────┼───────────▶│             │           │        
   │              │◀─ Stream ────┼────────────┤             │           │        
@@ -614,29 +620,30 @@ Client         Agent          Memory       LLM          Shuttle      Backend
 ```
 Agent            Shuttle         Tool 1          Tool 2          Tool 3
   │                │               │               │               │            
-  ├─ Execute ─────▶│               │               │               │            
-  │                │               │               │               │            
-  │                ├─ Spawn ──────▶│ (goroutine)   │               │            
-  │                ├─ Spawn ───────┼──────────────▶│ (goroutine)   │            
-  │                ├─ Spawn ───────┼───────────────┼──────────────▶│            
-  │                │               │               │               │            
+  ├─ Execute 1 ───▶│               │               │               │            
+  │                ├─ Call ───────▶│               │               │            
   │                │               ├─ Execute SQL ─┤               │            
-  │                │               │◀─ Result ─────┤               │            
   │                │◀─ Result ─────┤               │               │            
+  │◀─ Result ──────┤               │               │               │            
+  ├─ Append tool message                                           │            
   │                │               │               │               │            
+  ├─ Execute 2 ───▶│               │               │               │            
+  │                ├─ Call ────────┼──────────────▶│               │            
   │                │               │               ├─ API call ────┤            
-  │                │               │               │◀─ Result ─────┤            
   │                │◀─────────────Result ──────────┤               │            
+  │◀─ Result ──────┤               │               │               │            
+  ├─ Append tool message                                           │            
   │                │               │               │               │            
+  ├─ Execute 3 ───▶│               │               │               │            
+  │                ├─ Call ────────┼───────────────┼──────────────▶│            
   │                │               │               │               ├─ File read 
-  │                │               │               │               │◀─ Result ──
   │                │◀─────────────Result ─────────────────────────┤             
-  │                │               │               │               │            
-  │◀─ All Results ─┤               │               │               │            
+  │◀─ Result ──────┤               │               │               │            
+  ├─ Append tool message, then drain buffered sidecars             │            
   │                │               │               │               │            
 ```
 
-**Concurrency**: N goroutines for N tools, results aggregated via buffered channel.
+**Ordering**: One call at a time, in the order the model emitted them. A duplicate call within the same turn reuses the first result instead of re-executing. Any `text_body` sidecars produced during the batch are appended after every tool message is in place, so tool_use↔tool_result adjacency is preserved.
 
 
 ### Session Recovery
@@ -751,9 +758,9 @@ type SegmentedMemory struct {
 
     // Kernel Layer (changes per conversation)
     tools              []string                // Available tool names
-    toolResults        []CachedToolResult      // Recent tool results (max 5)
+    toolResults        []CachedToolResult      // Recent tool results (constructor keeps the last 5)
     schemaCache        map[string]string       // LRU schema cache (max 10)
-    findingsCache      map[string]Finding      // Verified findings (working memory)
+    schemaAccessLog    map[string]time.Time    // LRU tracking for the schema cache
 
     // L1 Cache (hot - recent messages)
     l1Messages         []Message               // Recent conversation (sliding window)
@@ -763,17 +770,25 @@ type SegmentedMemory struct {
 
     // Swap Layer (cold - database-backed long-term storage)
     sessionStore       SessionStorage          // Database for persistent storage
+    sessionID          string                  // Session identifier for swap operations
     swapEnabled        bool                    // Whether swap layer is configured
+    maxL2Tokens        int                     // L2 ceiling before eviction to swap
+    promotedContext    []Message               // Messages retrieved from swap into context
 
     // Token management
     tokenCounter       *TokenCounter           // Accurate token counting
     tokenBudget        *TokenBudget            // Token budget enforcement
-    maxL1Tokens        int                     // Token-based L1 capacity
+    maxL1Tokens        int                     // Profile L1 target, reported in stats only
     compressionProfile CompressionProfile      // Adaptive compression thresholds
+
+    // Observability
+    ctxDebug           *contextDebug           // Per-mutation debug carrier (no-op when off)
 
     mu                 sync.RWMutex
 }
 ```
+
+The kernel layer holds tool names, the most recent tool result and the schema cache. It is used by `GetContextWindow()`, which renders a single flattened context string for callers that want one; it is not part of the message list `GetMessagesForLLM()` compiles for the provider.
 
 **Invariants**:
 ```
@@ -797,27 +812,18 @@ L2 evicts to Swap (database) when exceeding maxL2Tokens (default: 5000 tokens)
 func GetMessagesForLLM() []Message:
     messages = []
 
-    // ROM always included (immutable system prompt)
-    messages += Message{role: "system", content: romContent}
+    // ROM (immutable system prompt, including the static skill menu)
+    if romContent != "":
+        messages += Message{role: "system", content: romContent}
 
     // L2 summary (compressed history, if exists)
     if l2Summary != "":
         messages += Message{role: "system", content: "Previous conversation summary: " + l2Summary}
 
-    // Pattern content (if injected for this turn)
-    if patternContent != "":
-        messages += Message{role: "system", content: patternContent}
-
-    // Skill content (if active skills injected)
-    if skillContent != "":
-        messages += Message{role: "system", content: skillContent}
-
-    // Findings summary (working memory from tool executions)
-    if findingsCache not empty:
-        messages += Message{role: "system", content: findingsSummary}
-
-    // Promoted context from swap (retrieved old messages)
+    // Promoted context from swap (retrieved old messages, behind a header)
     if promotedContext not empty:
+        messages += Message{role: "system",
+                            content: "Retrieved conversation history (N messages):"}
         messages += promotedContext
 
     // L1 messages (recent conversation)
@@ -825,6 +831,8 @@ func GetMessagesForLLM() []Message:
 
     return messages
 ```
+
+These four channels are the whole of the compiled context. There is no skill block, no pattern block and no findings block. Skill bodies and pattern content enter as ordinary L1 messages when the model loads them. The findings channel is retired: there is no findings cache, no extractor and no `record_finding` tool, and the `EnableFindingExtraction`, `ExtractionCadence` and `MaxFindings` config fields — which survive on the config and proto surface — drive nothing.
 
 **Complexity**: O(n) where n = total messages across all layers.
 
@@ -837,22 +845,27 @@ func GetMessagesForLLM() []Message:
 
 **Algorithm**:
 ```
-func CountTokens(messages []Message) int:
+func EstimateMessagesTokens(messages []Message) int:
     total = 0
     for msg in messages:
-        // Count message content tokens
+        // Per-message overhead (role + formatting)
+        total += 10
+
+        // Message text — already the rendered form the model receives,
+        // including the rendered form of any tool result
         total += tokenizer.Count(msg.Content)
 
-        // Count tool call tokens
-        for tool in msg.ToolCalls:
-            total += tokenizer.Count(tool.Name)
-            total += tokenizer.Count(serialize(tool.Parameters))
+        // Tool-call blocks, when the message carries them
+        if len(msg.ToolCalls) > 0:
+            total += tokenizer.Count(serialize(msg.ToolCalls))
 
-        // Add overhead (role, timestamps, etc.)
-        total += 4  // Approximate overhead per message
+        // msg.ToolResult is the raw record kept for restore and telemetry.
+        // It is never dispatched, so it carries no token weight.
 
     return total
 ```
+
+Accounting follows dispatch: only what is actually sent to the provider is counted. A large result that was offloaded by reference contributes the tokens of its inline summary, not of the stored payload.
 
 **Accuracy**: ±5% error margin (acceptable for budget management).
 
@@ -867,45 +880,41 @@ func CountTokens(messages []Message) int:
 ```
 func AddMessage(msg):
     l1Messages.append(msg)
+
+    // Incremental L1 update: count only the new message (overhead + text +
+    // tool-call blocks), then refresh the total from the per-layer caches
+    cachedL1Tokens += estimateMessageTokens(msg)
     updateTokenCount()
 
-    // Two compression triggers (profile-dependent):
-    // 1. L1 token count exceeds maxL1Tokens
-    // 2. Overall token budget exceeds warning threshold
-    l1Tokens = countTokens(l1Messages)
+    // Single compression trigger: overall budget usage against the profile's
+    // warning threshold. maxL1Tokens is a reported target, not a gate.
     budgetUsage = tokenBudget.UsagePercentage()
     warningThreshold = compressionProfile.WarningThresholdPercent
 
-    if (l1Tokens > maxL1Tokens || budgetUsage > warningThreshold)
-       && len(l1Messages) > minL1Messages:
+    if budgetUsage > warningThreshold && len(l1Messages) > minL1Messages:
 
         // Adaptive batch sizing based on budget pressure
         if budgetUsage > criticalThreshold:
             batchSize = compressionProfile.CriticalBatchSize  // Aggressive
-        elif budgetUsage > warningThreshold:
-            batchSize = compressionProfile.WarningBatchSize    // Moderate
         else:
-            batchSize = compressionProfile.NormalBatchSize     // Normal
+            batchSize = compressionProfile.WarningBatchSize   // Moderate
+        batchSize = min(batchSize, len(l1Messages) - minL1Messages)
 
-        // Adjust boundary to avoid splitting tool_use/tool_result pairs
-        batchSize = adjustCompressionBoundary(batchSize)
-
-        // Compress oldest messages to L2
-        evicted = l1Messages[:batchSize]
-        l1Messages = l1Messages[batchSize:]
+        // evictL1Prefix pins the active user message and adjusts the
+        // boundary so tool_use/tool_result pairs are never split
+        evicted = evictL1Prefix(batchSize)
 
         // LLM-powered compression if available, otherwise heuristic fallback
         if compressor != nil && compressor.IsEnabled():
             summary = compressor.CompressMessages(evicted)
         else:
-            summary = extractKeywords(evicted)  // Simple heuristic
+            summary = summarizeMessages(evicted)  // Simple heuristic
 
         l2Summary += summary
 
         // If L2 exceeds maxL2Tokens and swap is enabled, evict to database
         if swapEnabled && countTokens(l2Summary) > maxL2Tokens:
-            sessionStore.SaveMemorySnapshot(sessionID, "l2_summary", l2Summary)
-            l2Summary = ""  // Clear and start fresh
+            evictL2ToSwap()  // SaveMemorySnapshot, then clear L2
 ```
 
 **Compression Profiles** (defined in `pkg/agent/compression_profiles.go`):
@@ -914,6 +923,16 @@ func AddMessage(msg):
 - `conversational`: warning=70%, critical=85%, batches=4/6/8
 
 **Eviction Frequency**: Depends on profile and message size; adaptive rather than fixed.
+
+
+## Context Observability
+
+The exact `(messages, tools)` pair handed to the provider is capturable for offline inspection. One switch — `Config.Debug.ContextDump` or the `LOOM_DEBUG_CONTEXT_DUMP` environment variable — turns on both:
+
+- **Context dump**: one JSON record per provider call (session id, per-session turn number, the compiled messages, and the advertised tools projected to name, description and input schema), appended to a per-run file under `LOOM_DEBUG_DIR` or the OS temp directory.
+- **Mutation debug logs**: one zap Debug line per context mutation — skill load, compaction, large-result offload, per-session tool assembly, restore re-fire — tagged with session id and in-flight turn.
+
+The switch is off by default. The dump record is deliberately un-redacted, so it is written only to the local per-run file, mode 0600 — never to the tracer and never to the logger. A sink failure is logged and swallowed; it never disturbs the provider call.
 
 
 ## Design Trade-offs
@@ -965,23 +984,26 @@ func AddMessage(msg):
 - ❌ Single-writer bottleneck (mitigated by per-agent session files)
 
 
-### Decision 3: Concurrent vs. Sequential Tool Execution
+### Decision 3: Sequential Tool Execution Within a Turn
 
-**Chosen**: Concurrent (goroutine per tool)
+**Chosen**: Sequential, in the order the model emitted the calls
+
+**Rationale**: The conversation record is the product of the turn, not just the results. Executing in order lets each result be rendered and appended before the next call runs, which keeps tool_use↔tool_result adjacency intact for providers that require it, keeps `text_body` sidecars placeable after the batch, and lets a later call in the same response observe an earlier one's effect.
 
 **Alternatives**:
-1. **Sequential execution**:
-   - ✅ Simpler implementation
-   - ❌ High latency (3 tools × 100ms = 300ms) → rejected
+1. **Concurrent execution (goroutine per call)**:
+   - ✅ Lower wall-clock latency for independent calls
+   - ❌ Result ordering becomes non-deterministic, breaking message adjacency → rejected
+   - ❌ A later call can no longer depend on an earlier one in the same response → rejected
 
 2. **Worker pool**:
    - ✅ Bounded goroutines
-   - ❌ Added complexity, no measurable benefit → unnecessary
+   - ❌ Same ordering problem, plus added complexity → unnecessary
 
 **Consequences**:
-- ✅ Parallel execution (3 tools × 100ms = 100ms P99)
-- ❌ Race condition risk (mitigated with `-race` testing)
-- ❌ Goroutine overhead (negligible for <100 tools)
+- ✅ Deterministic message order, safe for provider pairing rules
+- ✅ Per-turn deduplication is trivially correct (an identical repeat reuses the cached result)
+- ❌ Latency is the sum of the calls in a turn, not the maximum
 
 
 ## Constraints and Limitations
@@ -1027,10 +1049,8 @@ func AddMessage(msg):
 |-----------|-----|-----|-------|
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
-| Pattern match | 8ms | 15ms | Keyword matching over the pattern library |
 | LLM invoke | 850ms | 2100ms | Network + Claude Sonnet 4.5 generation |
 | Tool execution | 45ms | 180ms | Backend-dependent (SQL query) |
-| Judge evaluation | 920ms | 2300ms | LLM-based scoring |
 | End-to-end turn | 1200ms | 3500ms | All steps combined |
 
 ### Throughput
@@ -1049,15 +1069,15 @@ func AddMessage(msg):
 
 ### Threading
 
-- **One goroutine per agent conversation**: Agents run independently
-- **One goroutine per tool**: Concurrent tool execution within agent
+- **One goroutine per agent conversation**: Agents run independently; tool calls within a turn run on that goroutine, in order
+- **Background goroutines for graph-memory extraction**: Fired on cadence, tracked by a WaitGroup
 - **Single goroutine for pattern hot-reload**: Watches file system
 
 ### Synchronization
 
 - **Memory.sessions**: Protected by `sync.RWMutex` (concurrent reads, exclusive writes)
-- **Pattern index**: Atomic pointer swap (`atomic.Value`) for hot-reload
-- **Tool results**: Buffered channel for aggregation
+- **SegmentedMemory**: `sync.RWMutex` per session; the compiled message list is built under a read lock
+- **Agent tool ledgers**: `a.mu` guards the base, scoped and per-session tool name sets
 
 ### Race Prevention
 
@@ -1089,7 +1109,8 @@ Backend Error ───▶ Tool Error ───▶ Agent Error ───▶ gRPC
 
 - **Session Persistence**: Recover from crashes via SQLite
 - **Retry Logic**: LLM calls retry with exponential backoff (max 3 attempts)
-- **Judge Self-Correction**: Invalid responses retried with corrections (max 3 attempts)
+- **Circuit Breakers**: A tool whose breaker is open is refused rather than executed, isolating the failure from the rest of the turn
+- **Self-Healing**: When `EnableSelfHealing` is set, a recovery orchestrator aggressively trims context or drops a tool from the advertised set before an error propagates to the caller
 
 
 ## Security Considerations
@@ -1105,7 +1126,7 @@ Backend Error ───▶ Tool Error ───▶ Agent Error ───▶ gRPC
 **Prompt Injection**:
 - User input isolated in `role: user` messages
 - System prompt (ROM) immutable per session
-- Judge validation detects anomalous outputs
+- Skill and pattern content enters only through an explicit tool call, never by silent injection
 
 **Tool Abuse**:
 - Tool whitelisting per agent config
@@ -1126,10 +1147,10 @@ Backend Error ───▶ Tool Error ───▶ Agent Error ───▶ gRPC
    - Loom differs: Turn-based loop with explicit persistence
 
 2. **AutoGPT** (Python): Goal-seeking autonomous agent
-   - Loom differs: Pattern-guided, not goal-driven
+   - Loom differs: Tool-driven, not goal-driven
 
 3. **Semantic Kernel** (C#): Skill-based orchestration
-   - Loom differs: YAML patterns, Go concurrency
+   - Loom differs: Skills and patterns pulled by the model on demand, Go concurrency
 
 ### Memory Systems
 
@@ -1154,8 +1175,9 @@ Backend Error ───▶ Tool Error ───▶ Agent Error ───▶ gRPC
 
 ### Architecture
 - [Memory Systems Architecture](memory-systems.md) - Segmented memory deep dive
-- [Pattern System Architecture](pattern-system.md) - Intent classification and hot-reload
-- [Judge System Architecture](judge-system.md) - Self-correction and evaluation
+- [Pattern System Architecture](pattern-system.md) - Pattern library, references and hot-reload
+- [Skills System Architecture](skills-system.md) - Skill binding, the menu and manage_skills
+- [Judge System Architecture](judge-system.md) - Multi-judge evaluation, out of band
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
 - [Observability Architecture](observability.md) - Hawk tracing and metrics
 

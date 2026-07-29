@@ -85,7 +85,7 @@ func TestReferenceLifecycle_Integration(t *testing.T) {
 	storedRef, err := sharedMem.Store(refID, largeData, "text/plain", map[string]string{
 		"tool_name":  "test_tool",
 		"session_id": sessionID,
-	})
+	}, sessionID)
 	require.NoError(t, err)
 	assert.Equal(t, refID, storedRef.Id)
 
@@ -158,7 +158,7 @@ func TestReferenceLifecycle_MultipleReferences(t *testing.T) {
 		_, err := sharedMem.Store(refID, largeData, "text/plain", map[string]string{
 			"tool_name":  "test_tool",
 			"session_id": sessionID,
-		})
+		}, sessionID)
 		require.NoError(t, err)
 
 		agent.refTracker.PinForSession(sessionID, refID)
@@ -214,7 +214,7 @@ func TestReferenceLifecycle_NoStore(t *testing.T) {
 	_, err := sharedMem.Store(refID, largeData, "text/plain", map[string]string{
 		"tool_name":  "test_tool",
 		"session_id": sessionID,
-	})
+	}, sessionID)
 	require.NoError(t, err)
 
 	agent.refTracker.PinForSession(sessionID, refID)

@@ -222,7 +222,7 @@ Phases 1, 2, 6 are independent — can be built in parallel.
 ## Open Questions for Implementer
 
 1. **Does `LLMProvider.Chat()` support per-call `max_tokens` override?** If yes, use a reduced value for the Tier 2 synthesis call. If no, document as follow-up.
-2. **Is `session.FailureTracker` accessed by background goroutines (e.g., finding extraction)?** If yes, add a dedicated mutex to `consecutiveFailureTracker`. If no, the existing session.mu coverage is sufficient.
+2. **Is `session.FailureTracker` accessed by background goroutines?** If yes, add a dedicated mutex to `consecutiveFailureTracker`. If no, the existing session.mu coverage is sufficient.
 3. **Aggressive trim constant (`keepLastN = 4`)** — should this be configurable via `RecoveryConfig`? Recommend: yes, as a field with default 4.
 
 ---

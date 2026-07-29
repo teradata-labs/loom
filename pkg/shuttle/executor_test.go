@@ -376,7 +376,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"bool":         true,
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -401,7 +401,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"small_param": "small",
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -438,7 +438,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"large3": strings.Repeat("c", 5000),
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -457,7 +457,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"large_param": strings.Repeat("a", 5000),
 		}
 
-		result, err := execNoMem.handleLargeParameters(params)
+		result, err := execNoMem.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -489,7 +489,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"bool":   true,
 		}
 
-		result, err := exec.dereferenceLargeParameters(params)
+		result, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("dereferenceLargeParameters() error = %v", err)
 		}
@@ -507,7 +507,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 		// First, store data in shared memory
 		largeContent := strings.Repeat("test", 1000) // 4KB
 		id := storage.GenerateID()
-		ref, err := sharedMem.Store(id, []byte("\""+largeContent+"\""), "application/json", nil)
+		ref, err := sharedMem.Store(id, []byte("\""+largeContent+"\""), "application/json", nil, "")
 		if err != nil {
 			t.Fatalf("Failed to store: %v", err)
 		}
@@ -517,7 +517,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"small_param": "small",
 		}
 
-		result, err := exec.dereferenceLargeParameters(params)
+		result, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("dereferenceLargeParameters() error = %v", err)
 		}
@@ -544,7 +544,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"invalid": invalidRef,
 		}
 
-		_, err := exec.dereferenceLargeParameters(params)
+		_, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err == nil {
 			t.Error("Expected error for invalid reference")
 		}

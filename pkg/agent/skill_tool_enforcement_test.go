@@ -24,6 +24,11 @@ func newTestAgentWithSkills(t *testing.T) *Agent {
 		id:                "test-agent",
 		tools:             shuttle.NewRegistry(),
 		skillOrchestrator: skills.NewOrchestrator(skills.NewLibrary()),
+		// Mirror NewAgent's per-session tool-ledger maps: registerSessionTool
+		// writes into these, and enforcement reaches it via a hand-built Agent
+		// that bypasses NewAgent.
+		sessionToolLedger: make(map[string]map[string]bool),
+		scopedToolNames:   make(map[string]bool),
 	}
 	return a
 }

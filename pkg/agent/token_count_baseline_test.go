@@ -139,34 +139,6 @@ func TestBaseline_SegmentedMemory_AddMessage_ExactCounts(t *testing.T) {
 	assert.Equal(t, 73, step3, "ROM + 3 messages")
 }
 
-// TestBaseline_SegmentedMemory_InjectPattern_ExactDelta pins the exact token
-// delta when a pattern is injected.
-func TestBaseline_SegmentedMemory_InjectPattern_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.InjectPattern(baselinePattern, "sql-helper")
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("Pattern injection: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Equal(t, 14, delta, "pattern token delta must match CountTokens(baselinePattern)")
-}
-
-// TestBaseline_SegmentedMemory_InjectSkills_ExactDelta pins the exact token
-// delta when skills are injected.
-func TestBaseline_SegmentedMemory_InjectSkills_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.InjectSkills(baselineSkill, []string{"db-explorer"})
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("Skill injection: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Equal(t, 11, delta, "skill token delta must match CountTokens(baselineSkill)")
-}
-
 // TestBaseline_SegmentedMemory_CacheSchema_ExactDelta pins the exact token
 // delta when a schema is cached.
 func TestBaseline_SegmentedMemory_CacheSchema_ExactDelta(t *testing.T) {
@@ -217,10 +189,9 @@ func TestBaseline_SegmentedMemory_FullSession(t *testing.T) {
 	sm.mu.Unlock()
 
 	sm.CacheSchema("users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
-	sm.InjectPattern(baselinePattern, "sql-helper")
 
 	afterSetup := sm.GetTokenCount()
-	t.Logf("After setup (ROM + tools + schema + pattern): %d", afterSetup)
+	t.Logf("After setup (ROM + tools + schema): %d", afterSetup)
 
 	sm.AddMessage(ctx, Message{Role: "user", Content: baselineUserMsg})
 	afterUser := sm.GetTokenCount()

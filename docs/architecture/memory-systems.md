@@ -26,6 +26,7 @@ Architecture of Loom's 5-layer segmented memory system with profile-based adapti
   - [Context Building](#context-building)
   - [Adaptive Compression](#adaptive-compression)
   - [Memory Eviction](#memory-eviction)
+  - [Session Restore](#session-restore)
 - [Data Structures](#data-structures)
 - [Algorithms](#algorithms)
   - [Token Budget Calculation](#token-budget-calculation)
@@ -49,7 +50,7 @@ The Memory System implements a **5-layer segmented memory hierarchy** inspired b
 The system combines:
 1. **Immutable knowledge** (ROM: system prompt, patterns, schema)
 2. **Stable session context** (Kernel: user identity, goals)
-3. **Recent conversation** (L1: token-budget-based window with profile-driven adaptive compression)
+3. **Recent conversation** (L1: verbatim recent messages, compacted when overall token budget usage crosses the profile's warning threshold)
 4. **Compressed history** (L2: LLM-powered summarization)
 5. **Long-term storage** (Swap: database-backed persistence)
 6. **Learned optimizations** (Learned: DSPy compiled signatures, optional, via gRPC API)
@@ -59,7 +60,7 @@ Additionally, **Shared Memory** provides tiered storage (memory → disk) for la
 
 ## Design Goals
 
-1. **Bounded Token Usage**: Guarantee total context ≤ MaxContextTokens - OutputReserve (predictable cost)
+1. **Bounded Token Usage**: Hold total context near MaxContextTokens - OutputReserve by compacting on budget pressure (predictable cost)
 2. **Conversation Continuity**: Maintain coherent multi-turn conversations despite memory eviction
 3. **Long-Term Context**: Preserve summary of conversation history beyond sliding window
 4. **Hot-Reload Support**: Enable pattern updates without session restart (ROM immutability)
@@ -86,8 +87,8 @@ graph TB
     subgraph MemSystem["Memory System"]
         subgraph Segmented["5-Layer Segmented Memory"]
             ROM[ROM 5k<br/>System prompt, patterns]
-            Kernel[Kernel 2k<br/>Tool defs, schema cache, findings]
-            L1[L1 4-9.6k<br/>Recent messages profile-based]
+            Kernel[Kernel 2k<br/>Tool defs, schema cache, tool results]
+            L1[L1<br/>Recent messages verbatim]
             L2[L2 3k<br/>Summarized history LLM]
             Swap[Swap cold<br/>Database-backed storage]
             Learned[Learned<br/>DSPy optimizations optional]
@@ -142,6 +143,7 @@ graph TB
 │  │  │  │ ROM (Read-Only Memory)                   │     │     │           │  │
 │  │  │  │ - System prompt (never changes)          │     │     │           │  │
 │  │  │  │ - Pattern library (hot-reloadable)       │     │     │           │  │
+│  │  │  │ - Bound-skill menu (names + descriptions)│     │     │           │  │
 │  │  │  │ - Backend schema                         │     │     │           │  │
 │  │  │  │ Size: ~5k tokens                         │     │     │           │  │
 │  │  │  │ Mutability: Immutable per session        │     │     │           │  │
@@ -152,20 +154,18 @@ graph TB
 │  │  │  │ - Tool definitions (available tools)     │     │     │           │  │
 │  │  │  │ - Schema cache (LRU, max 10 schemas)     │     │     │           │  │
 │  │  │  │ - Tool results (sliding window, max 5)    │     │     │           │  │
-│  │  │  │ - Findings cache (max 50, LRU eviction)  │     │     │           │  │
 │  │  │  │ Size: ~2k tokens                         │     │     │           │  │
 │  │  │  │ Mutability: Updated per conversation     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
 │  │  │  ┌──────────────────────────────────────────┐     │     │           │  │
 │  │  │  │ L1 Cache (Hot - Recent Messages)         │     │     │           │  │
-│  │  │  │ - Token-based sizing (profile-dependent) │     │     │           │  │
-│  │  │  │ - Profile-based compression triggers:    │     │     │           │  │
+│  │  │  │ - Verbatim messages, no size cap         │     │     │           │  │
+│  │  │  │ - Trigger: budget usage > warning%       │     │     │           │  │
 │  │  │  │   * Warning%: Compress N msgs (profile)  │     │     │           │  │
 │  │  │  │   * Critical%: Compress N msgs (profile) │     │     │           │  │
-│  │  │  │   * L1 > MaxTokens: Normal batch         │     │     │           │  │
+│  │  │  │ - Recency floor: minL1Messages kept      │     │     │           │  │
 │  │  │  │ - Tool pair preservation (never split)   │     │     │           │  │
-│  │  │  │ Size: 4-9.6k tokens (profile-dependent)  │     │     │           │  │
 │  │  │  │ Eviction: FIFO to L2                     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
@@ -173,7 +173,7 @@ graph TB
 │  │  │  │ L2 Cache (Warm - Compressed History)     │     │     │           │  │
 │  │  │  │ - LLM-powered summarization              │     │     │           │  │
 │  │  │  │ - Fallback: Heuristic compression        │     │     │           │  │
-│  │  │  │ - Append-only (summaries accumulate)     │     │     │           │  │
+│  │  │  │ - Cumulative (summaries accumulate)      │     │     │           │  │
 │  │  │  │ Size: up to maxL2Tokens (default 5000)   │     │     │           │  │
 │  │  │  │ Eviction: To swap when > maxL2Tokens     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
@@ -223,6 +223,7 @@ graph TB
 **Content**:
 - System prompt (agent instructions, persona, constraints)
 - Pattern library (domain knowledge, hot-reloadable)
+- Bound-skill menu: each bound skill's name and description, rendered once at session creation so ROM stays byte-stable for the whole session. Skill *bodies* are never in ROM — a skill's instructions enter the conversation only when the agent calls `manage_skills` with the load action, and they arrive as ordinary conversation messages that live in L1 like any other message.
 - Backend schema (tables, columns, types)
 
 **Size**: ~5,000 tokens
@@ -257,7 +258,6 @@ type SegmentedMemory struct {
 - Tool definitions (available tools for this agent)
 - Schema cache (LRU, max 10 schemas)
 - Tool results (sliding window, max 5 in memory)
-- Findings cache (verified facts from tool executions, max 50, LRU eviction)
 
 **Size**: ~2,000 tokens
 
@@ -282,86 +282,82 @@ Schema Request → Check Cache
 - Large tool results (>threshold) can be stored in Shared Memory
 - DataReference kept in Kernel when shared memory threshold is exceeded
 
-**Findings Cache** (working memory):
-- Verified facts extracted from tool executions
-- Structured as path/value pairs with categories (statistic, schema, observation, distribution)
-- Max 50 findings with LRU eviction
-- Injected into LLM context as formatted markdown summary
-- Prevents hallucination by maintaining verified data
-
 **Rationale**:
 - **Tool definitions stable**: Rarely change during conversation
 - **Schema cache**: Avoids repeated backend metadata queries (50-100ms each)
 - **Tool results sliding window**: Keeps recent context without unbounded growth
-- **Findings cache**: Prevents hallucination by maintaining verified structured data from tool executions
+
+**Not a context block**: Kernel state is session bookkeeping and budget accounting. It is counted against the token budget (`recountKernel`), but it is not emitted as its own message in the compiled context — tool definitions reach the provider through the API's tool-definition field, and tool results reach it as ordinary L1 messages.
 
 
 ### L1 Cache (Recent Conversation)
 
 **Responsibility**: Recent conversation turns with adaptive compression.
 
-**Content**: Recent messages, sized by token budget (not fixed message count). Default balanced profile: 6400 tokens with minimum 4 messages preserved.
+**Content**: Recent messages, verbatim.
 
-**Size**: Profile-dependent (4000-9600 tokens depending on workload profile)
+**Size**: Uncapped. L1 is not bounded by a message count or by an L1 token ceiling — it grows until overall token budget pressure triggers compaction, and shrinks by whole batches when it does. The only floor is `minL1Messages`, the recency floor that compaction will not compress below.
 
-**Eviction Policy**: FIFO (First-In-First-Out) to L2 when capacity exceeded
+**Eviction Policy**: FIFO (First-In-First-Out) to L2, driven by budget pressure
 
 **Compression Profiles** (workload-dependent thresholds):
 ```
-Profile          │ MaxL1Tokens │ MinMsgs │ Warning% │ Critical% │ Batch (N/W/C)
-─────────────────┼─────────────┼─────────┼──────────┼───────────┼──────────────
-data_intensive   │ 4000        │ 3       │ 50%      │ 70%       │ 2/4/6
-balanced         │ 6400        │ 4       │ 60%      │ 75%       │ 3/5/7
-conversational   │ 9600        │ 6       │ 70%      │ 85%       │ 4/6/8
+Profile          │ MinMsgs │ Warning% │ Critical% │ Batch (Warning/Critical)
+─────────────────┼─────────┼──────────┼───────────┼─────────────────────────
+data_intensive   │ 3       │ 50%      │ 70%       │ 4/6
+balanced         │ 4       │ 60%      │ 75%       │ 5/7
+conversational   │ 6       │ 70%      │ 85%       │ 6/8
 ```
+
+`MaxL1Tokens` also exists per profile — 4000 / 6400 / 9600 as static fallbacks, or derived from the real window by dynamic memory allocation — but it gates nothing. It is validated at profile load and reported as a stat and log field (`GetStats` as `l1_max_tokens`, profile-init logs); no code path compares L1 size against it.
 
 **Adaptive Compression Triggers** (balanced profile as example):
 ```
-Token Budget % │ Action
-───────────────┼────────────────────────────────────
-< 60%          │ No compression
-60% (warning)  │ Compress oldest 5 messages (warning batch)
-75% (critical) │ Compress oldest 7 messages (critical batch)
-L1 > MaxTokens │ Compress oldest 3 messages (normal batch)
+Token Budget %    │ Action
+──────────────────┼────────────────────────────────────
+≤ 60%             │ No compression
+> 60% (warning)   │ Compress oldest 5 messages (warning batch)
+> 75% (critical)  │ Compress oldest 7 messages (critical batch)
 ```
 
+The trigger is a single condition: overall token budget usage above the profile's warning threshold. `NormalBatchSize` is configured and validated per profile but selects no batch — compaction only runs once usage is already above the warning threshold, so the warning or critical batch always wins.
+
+The same trigger runs at two sites: `AddMessage` (per message, during a live turn) and `ReplayMessages` (once, after a session restore has bulk-loaded the full history — replaying through `AddMessage` would fire compaction between a `tool_use` and its not-yet-replayed `tool_result` and orphan the pair).
+
 **Tool Pair Preservation**:
-- `tool_use` and `tool_result` messages are atomic pairs
-- Never split across L1/L2 boundary
-- If evicting would split pair, the assistant message is excluded from compression to keep the pair in L1
-- Tool pairs are excluded from compression entirely (compression converts to text, losing block structure required by Bedrock/Anthropic API)
+- `tool_use` and `tool_result` messages are atomic pairs; parallel tool calls form a group (one assistant message with N `tool_use` blocks and its N `tool_result` messages)
+- Never split across the L1/L2 boundary — compression converts messages to text and would lose the block structure the Bedrock/Anthropic API requires
+- `adjustCompressionBoundary` walks the proposed boundary backwards until it no longer falls inside a group. A group wholly inside the batch is compressed as a unit; a group straddling the boundary stays in L1 in full
+
+**Active-Objective Pin**: the most recent user message is never evicted. If it falls inside the eviction window, the window widens by one and the pinned message is spliced out and kept at the head of L1, so a mid-task objective is never replaced by its own summary.
 
 **Rationale**:
 - **Recent conversation most relevant**: Chain-of-thought reasoning requires immediate history
 - **Adaptive compression**: Gradual degradation under token pressure, not sudden cutoff
 - **Tool pair atomicity**: LLMs cannot understand `tool_result` without corresponding `tool_use`
 
-**Algorithm** (`pkg/agent/segmented_memory.go:306`, inside `AddMessage`):
+**Algorithm** (`pkg/agent/segmented_memory.go`, inside `AddMessage`):
 
-Compression is triggered inline during `AddMessage()` based on two criteria:
-1. L1 exceeds token budget (token-based, not message-based)
-2. Overall token budget exceeds profile's warning threshold
+Compression is triggered inline during `AddMessage()` on one criterion: overall token budget usage exceeds the profile's warning threshold.
 
 ```go
-// Simplified from AddMessage() - actual code uses profile-based thresholds
-l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+// Simplified from AddMessage()
 budgetUsage := sm.tokenBudget.UsagePercentage()
+warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
 
-shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
-
-if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
+if budgetUsage > warningThreshold && len(sm.l1Messages) > sm.minL1Messages {
+    headroom := len(sm.l1Messages) - sm.minL1Messages // recency floor
     var toCompressCount int
-    if budgetUsage > criticalThreshold {
-        toCompressCount = sm.compressionProfile.CriticalBatchSize
-    } else if budgetUsage > warningThreshold {
-        toCompressCount = sm.compressionProfile.WarningBatchSize
+    if budgetUsage > float64(sm.compressionProfile.CriticalThresholdPercent) {
+        toCompressCount = min(sm.compressionProfile.CriticalBatchSize, headroom)
     } else {
-        toCompressCount = sm.compressionProfile.NormalBatchSize
+        toCompressCount = min(sm.compressionProfile.WarningBatchSize, headroom)
     }
-    // adjustCompressionBoundary ensures tool_use/tool_result pairs stay together
-    toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
-    sm.compressToL2(ctx, sm.l1Messages[:toCompressCount])
-    sm.l1Messages = sm.l1Messages[toCompressCount:]
+    // evictL1Prefix pins the newest user message and calls
+    // adjustCompressionBoundary so tool groups are never split
+    if toCompress := sm.evictL1Prefix(toCompressCount); len(toCompress) > 0 {
+        sm.compressToL2(ctx, toCompress)
+    }
 }
 ```
 
@@ -375,30 +371,21 @@ if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
 **Size**: Up to maxL2Tokens (default 5000 tokens); evicts to swap when exceeded
 
 **Compression Strategy**:
-1. **Primary**: LLM summarization via `MemoryCompressor` interface (if configured)
-2. **Fallback**: Heuristic compression (keyword extraction, sentence truncation)
+1. **Primary**: LLM summarization via the `MemoryCompressor` interface. The shipped compressor calls the LLM under a prompt loaded from the prompt registry under key `memory.compaction` — loom takes no hardcoded prompts. The registry prompt is sent as a system instruction and the batch as user content, so the conversation reaches the model unescaped. Compression runs under a 5-second timeout derived from the caller's context.
+2. **Fallback**: Heuristic summariser (`simpleCompress`) — used when no compressor is wired, when the registry or LLM provider is absent, and whenever the LLM call errors, times out, or returns empty. It preserves the user's question and reduces assistant and tool turns to short markers.
 
-**Append-Only**: Summaries accumulate, never deleted
+**Cumulative Summary**: L2 is a single string. Each compaction appends its summary, so L2 accumulates across the session until it crosses `maxL2Tokens`, at which point the whole summary is snapshotted to swap and L2 is cleared to start fresh.
+
+**What the compaction prompt preserves**: decisions and approvals *with their exact scope* (the approval plus the precise question it answered — an approval without its scope is not preserved), open commitments and pending actions with their conditions, reference and reload pointers (identifiers, paths, session/result handles, tool references needed to retrieve full detail later), and constraints, requirements and preferences that still bind. It compresses aggressively in the other direction: reasoning and intermediate exploration keep the outcome and drop the derivation; data reproducible from a preserved reference or a re-run keeps the pointer and drops the payload.
 
 **Rationale**:
 - **LLM summarization preserves semantics**: Better than simple truncation
-- **Append-only simplifies concurrency**: No complex eviction logic, predictable growth
-- **Bounded by compression ratio**: 10K tokens → ~1-2K summary (5-10x compression)
-
-**Summarization Prompt**:
-```
-Summarize the following conversation exchange in 1-2 sentences,
-preserving key facts, decisions, and context needed for future turns:
-
-{evicted_messages}
-
-Summary:
-```
+- **Scope-bound decisions**: a summary that loses what an approval applied to is worse than no summary — the agent acts on a decision it cannot bound
+- **Pointers over payloads**: anything reachable through a stored handle costs one line in L2 instead of its full size
 
 **Performance**:
-- Summarization latency: 500-800ms (depends on configured LLM)
+- Summarization latency: 500-800ms (depends on configured LLM), capped by the 5-second compression timeout
 - Compression ratio: 5-10x typical
-- Accuracy: >90% key fact retention (evaluated on test set)
 
 
 ### Swap Layer (Long-Term Storage)
@@ -770,12 +757,21 @@ Cross-agent access (blocked):
 - Internal context that shouldn't be shared (private notes, internal state)
 - Temporary computation results (agent-local caching)
 
-**Integration**:
-- **Backend Wrapper** (`pkg/fabric/shared_backend.go`): Stores results exceeding threshold (default 100KB) in shared memory
-- **Tool Executor** (`pkg/shuttle/executor.go`): Intercepts large tool results
-- **Agent Context Builder**: Includes only DataReference, not full data
-- **On-Demand Retrieval**: Agent can fetch full data when needed
-- **Note**: The storage-level default threshold (`DefaultSharedMemoryThreshold` in `pkg/storage/shared_memory.go`) is -1 (inline everything). The SharedBackendWrapper applies its own 100KB threshold separately. Per-agent override is available via `MemoryConfig.SharedMemoryThresholdBytes`.
+**Large Tool Result Offload**:
+
+One threshold governs both offload sites: `storage.DefaultSharedMemoryThreshold`, **64 KiB**. A serialized tool result strictly below it stays inline in the conversation; a result at or above it is stored by reference. Per-agent override via `MemoryConfig.SharedMemoryThresholdBytes` (`-1` = use the default, `0` = always reference, `>0` = reference at or above N bytes).
+
+The two sites:
+- **Tool Executor** (`pkg/shuttle/executor.go`, `handleLargeResult`): intercepts the result as it leaves the tool. SQL-shaped results go to the queryable `SQLResultStore`; everything else goes to the `SharedMemoryStore` as a blob.
+- **Agent result formatting** (`pkg/agent/agent.go`): applies the same byte threshold when rendering a tool result into the conversation.
+
+**Exempt set** — `manage_skills`, `get_tool_result`, `query_tool_result` — enters the conversation whole regardless of size. `manage_skills` delivers a skill body that must arrive intact; the two recall tools already return stored data, so re-wrapping them would recurse (`query_tool_result` → ref A → `query_tool_result(A)` → …).
+
+**What lands in context**: a preview plus a handle — a rendered summary carrying the data type, byte size, estimated tokens, a first/last-items preview, schema when derivable, and the reference id.
+
+**Recall**: `query_tool_result(reference_id, …)` returns the stored data — a page of rows by default, or the result of a SQL query against a stored SQL result. `get_tool_result` exists as a type and stays in the exempt set, but its registration is commented out in `NewAgent`, so agents do not see it; the inline preview plus `query_tool_result` cover retrieval.
+
+**Session partitioning**: every store is keyed by session. `SharedMemoryStore.Store` records the owning session and `Get`/`GetMetadata` resolve a handle only for a caller carrying that same session; `SQLResultStore.Store` partitions by the session id on the context, and `Query`/`GetMetadata` resolve an id only within that partition. The metadata/describe path is scoped like the read path — there is no unscoped way to learn about another session's stored result.
 
 **Concurrency**:
 - **RWMutex**: Protects memory tier map
@@ -794,38 +790,24 @@ Cross-agent access (blocked):
 
 ### Context Building
 
+`GetMessagesForLLM` (`pkg/agent/segmented_memory.go`) compiles the message list that is dispatched to the provider. It is a fixed, four-part concatenation:
+
 ```
-Agent           Memory          Token Counter       LLM
-  │               │                    │             │                          
-  ├─ BuildContext ▶│                    │             │                         
-  │               ├─ Collect ROM       │             │                          
-  │               ├─ Collect Kernel    │             │                          
-  │               ├─ Collect L1        │             │                          
-  │               ├─ Collect L2        │             │                          
-  │               │                    │             │                          
-  │               ├─ CountTokens ─────▶│             │                          
-  │               │◀─ TotalTokens ─────┤             │                          
-  │               │                    │             │                          
-  │               ├─ CheckBudget       │             │                          
-  │               │  (under limit?)    │             │                          
-  │               │                    │             │                          
-  │               ├─ MaybeCompress     │             │                          
-  │               │  (adaptive)        │             │                          
-  │               │                    │             │                          
-  │◀─ Context ────┤                    │             │                          
-  │               │                    │             │                          
-  ├─ Invoke ──────┼────────────────────┼────────────▶│                          
-  │               │                    │             │                          
+  [system]  ROM                       — if romContent != ""
+  [system]  "Previous conversation summary: " + l2Summary
+                                      — if l2Summary != ""
+  [system]  "Retrieved conversation history (N messages):"
+  […]       promotedContext           — both only if promotedContext is non-empty
+  […]       l1Messages                — always, in order
 ```
 
-**Steps**:
-1. Collect ROM (always included, immutable)
-2. Collect Kernel (tool defs, schema cache)
-3. Collect L1 (recent messages)
-4. Collect L2 (summaries)
-5. Count total tokens
-6. If exceeds budget, trigger adaptive compression
-7. Return assembled context
+These four parts are the whole context. Nothing else is injected per turn: everything an agent knows beyond ROM arrives as conversation. A skill's instructions, in particular, enter as ordinary messages when `manage_skills(load)` returns them, and from that point live in L1 and age like any other message — which is what makes a loaded skill subject to the same compaction as the rest of the turn.
+
+**Order and why**: ROM first because it is the byte-stable prefix a provider can cache; L2 next because it is the compressed past; promoted swap context after it because it is older-but-recalled material that must not be mistaken for the live turn (hence its own labelling system message); L1 last so the newest turn sits closest to the model's generation point.
+
+Kernel state does not appear here — see [Kernel Layer](#kernel-layer-session-context).
+
+**Token accounting**: `updateTokenCount` counts what is actually dispatched — message text plus tool-call blocks — layered as ROM + kernel + L1 + L2 + promoted, with per-layer caches so a single `AddMessage` need not re-run tiktoken over untouched layers. The raw tool-result record attached to a message is kept for restore and telemetry, is never sent, and carries no token weight. The total is written to the budget with `Set`, not `Use`: an over-window count must report above 100% so the compaction trigger fires, where `Use` would reject it and leave usage reading zero.
 
 
 ### Adaptive Compression
@@ -850,10 +832,11 @@ Memory          Compressor      LLM (if available)
 ```
 
 **Compression Levels** (profile-dependent, balanced profile shown):
-- **L1 > MaxTokens**: Compress normal batch (3 messages) to L2
-- **60% budget (warning)**: Compress warning batch (5 messages) to L2
-- **75% budget (critical)**: Compress critical batch (7 messages) to L2
+- **budget > 60% (warning)**: Compress warning batch (5 messages) to L2
+- **budget > 75% (critical)**: Compress critical batch (7 messages) to L2
 - **L2 > maxL2Tokens**: Evict L2 summary to swap storage (SQLite)
+
+Each batch is clamped to the headroom above the recency floor (`len(l1Messages) - minL1Messages`), then pair-adjusted, so a batch never eats into the floor and never splits a tool group.
 
 
 ### Memory Eviction
@@ -861,7 +844,7 @@ Memory          Compressor      LLM (if available)
 ```
 Memory          L1 Cache        L2 Cache        Swap DB
   │                │               │              │                             
-  ├─ L1 Full ──────▶│               │              │                            
+  ├─ Budget > W% ──▶│               │              │                            
   │                ├─ Select       │              │                             
   │                │  oldest N     │              │                             
   │                │  (FIFO)       │              │                             
@@ -879,19 +862,36 @@ Memory          L1 Cache        L2 Cache        Swap DB
 ```
 
 **FIFO Eviction**:
-1. L1 exceeds token budget or overall budget exceeds warning threshold
-2. Select oldest N messages (N = profile batch size, adjusted for tool pair preservation)
-3. Summarize with LLM compressor (if available), otherwise heuristic extraction
-4. Append summary to L2
+1. Overall token budget usage exceeds the profile's warning threshold
+2. Select oldest N messages (N = profile batch size, clamped to the headroom above `minL1Messages`, pair-adjusted, with the newest user message pinned out of the batch)
+3. Summarize with the LLM compressor (if wired), otherwise heuristic extraction
+4. Append summary to the cumulative L2 string
 5. Remove messages from L1
-6. If L2 exceeds maxL2Tokens (default 5000), evict L2 summary to swap (SQLite `memory_snapshots` table)
+6. If L2 exceeds maxL2Tokens (default 5000), snapshot the L2 summary to swap (SQLite `memory_snapshots` table) and clear L2
+
+
+### Session Restore
+
+Restoring a session rebuilds two things: the messages, and the runtime state those messages implied.
+
+**Messages** are replayed through `ReplayMessages`, which bulk-loads the whole history into L1 and then runs a single compaction pass. Replaying through `AddMessage` instead would compact per message and could fire between an assistant `tool_use` and its not-yet-replayed `tool_result` — leaving an orphaned `tool_result` in L1 whose `tool_use` is already L2 prose, which the Anthropic/Bedrock API rejects.
+
+**Runtime state** is re-fired from durable markers found in the replayed messages (`reFireOnRestore`), so a restored session advertises the same tools and reports the same active skills as a live one:
+
+| Marker in the replayed message | Re-fired |
+|---|---|
+| `manage_skills` load result carrying a `{skill, …}` metadata marker | Re-activate the skill and re-register its tools. A blocked, approval-required load carries `activated=false` and never touched the active set, so it is not re-fired |
+| Tool result naming `get_error_details` | Re-register `get_error_details` |
+| A stored `DataReference`, or the offload summary text | Re-register `query_tool_result` |
+
+Re-firing a skill load re-activates and re-registers only. It does not re-inject the skill body: the body is already in the replayed messages, at whatever position and compaction state it had reached.
 
 
 ## Data Structures
 
 ### SegmentedMemory
 
-**Definition** (`pkg/agent/segmented_memory.go:67`):
+**Definition** (`pkg/agent/segmented_memory.go`):
 ```go
 type SegmentedMemory struct {
     // ROM Layer (never changes during session)
@@ -899,17 +899,16 @@ type SegmentedMemory struct {
 
     // Kernel Layer (changes per conversation)
     tools           []string             // Available tool names
-    toolResults     []CachedToolResult   // Recent tool execution results (max 5)
+    toolResults     []CachedToolResult   // Recent tool execution results
     schemaCache     map[string]string    // Cached schema discoveries
     schemaAccessLog map[string]time.Time // LRU tracking for schema cache
     maxSchemas      int                  // Maximum schemas to cache (default: 10)
-    findingsCache   map[string]Finding   // Verified findings (working memory, max 50)
 
     // L1 Cache (hot - recent messages)
-    l1Messages []Message // Recent messages (token-budget-based)
+    l1Messages []Message // Recent messages, verbatim, uncapped
 
     // L2 Cache (warm - summarized history)
-    l2Summary string // Compressed summary of older conversation
+    l2Summary string // Cumulative compressed summary of older conversation
 
     // Swap Layer (cold - database-backed long-term storage)
     sessionStore       SessionStorage // Database for persistent storage (optional)
@@ -920,14 +919,23 @@ type SegmentedMemory struct {
 
     // Token management
     tokenCounter    *TokenCounter  // tiktoken-based token counting
-    tokenBudget     *TokenBudget   // Token budget enforcement
-    compressor      MemoryCompressor // LLM-powered compression (optional)
+    tokenBudget     *TokenBudget   // Token budget accounting
+    tokenCount      int            // Current total across all layers
+    tokenCountDirty bool           // Whether a full recount is owed
+
+    // Per-layer token caches (avoid re-running tiktoken over untouched layers)
+    cachedROMTokens, cachedKernelTokens, cachedL1Tokens int
+    cachedL2Tokens, cachedPromotedTokens                int
+    kernelDirty, l1Dirty                                bool
+
+    compressor      MemoryCompressor           // LLM-powered compression (optional)
     sharedMemory    *storage.SharedMemoryStore // For large tool results (optional)
-    llmProvider     LLMProvider    // For reranking search results (optional)
+    llmProvider     LLMProvider                // For reranking search results (optional)
 
     // Configuration
-    maxL1Tokens        int                // Max tokens in L1 before compression
-    minL1Messages      int                // Minimum messages to keep in L1
+    maxL1Tokens        int                // Profile L1 token target; stats/logging only, gates nothing
+    minL1Messages      int                // Recency floor: messages compaction will not go below
+    maxToolResults     int                // Max tool results kept in kernel
     compressionProfile CompressionProfile // Profile-based compression behavior
 
     mu sync.RWMutex
@@ -936,7 +944,10 @@ type SegmentedMemory struct {
 
 **Invariants**:
 ```
-∀ t: tokens(romContent) + tokens(kernel) + tokens(l1Messages) + tokens(l2Summary) ≤ tokenBudget
+Budget usage is the compaction control signal, not a hard ceiling:
+∀ t: tokenBudget.usage(t) = tokens(ROM) + tokens(kernel) + tokens(L1)
+                          + tokens(L2) + tokens(promoted)
+  (recorded with Set, so it may read >100%; that is what fires compaction)
 
 ∀ m ∈ L1: m.Timestamp > ∀ m' ∈ L2: m'.Timestamp
   (L1 messages always newer than L2)
@@ -944,8 +955,15 @@ type SegmentedMemory struct {
 ROM immutable per session:
 ∀ t1, t2 ∈ [session_start, session_end]: ROM(t1) = ROM(t2)
 
-Tool pairs atomic:
-∀ (tool_use, tool_result) ∈ L1: both in L1 or both evicted
+Recency floor:
+len(L1) ≥ minL1Messages after any compaction that found work to do
+
+Tool groups atomic:
+∀ group (assistant with N tool_use, its N tool_result) ∈ L1:
+  all in L1 or all evicted
+
+Active objective pinned:
+the newest user message in L1 is never evicted
 ```
 
 
@@ -1009,19 +1027,29 @@ type TokenCounter struct {
     encoder  *tiktoken.Tiktoken
 }
 
-// updateTokenCount calculates actual token usage across all memory layers
+// updateTokenCount sums the per-layer caches, recounting only dirty layers.
+// ROM is counted once at construction; kernel and L1 are recounted when their
+// dirty flags are set; L2 and promoted are updated by whoever mutates them.
 func (sm *SegmentedMemory) updateTokenCount() {
-    count := 0
-    count += sm.tokenCounter.CountTokens(sm.romContent)           // ROM
-    count += sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages) // L1
-    count += sm.tokenCounter.CountTokens(sm.l2Summary)            // L2
-    count += sm.tokenCounter.CountTokens(sm.patternContent)       // Patterns
-    count += sm.tokenCounter.CountTokens(sm.skillContent)         // Skills
-    // ... plus kernel (tools, tool results, schema cache) and promoted context
-    sm.tokenBudget.Reset()
-    sm.tokenBudget.Use(count)
+    if sm.kernelDirty {
+        sm.recountKernel() // tools + tool results + schema cache
+        sm.kernelDirty = false
+    }
+    if sm.l1Dirty {
+        sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+        sm.l1Dirty = false
+    }
+
+    sm.tokenCount = sm.cachedROMTokens + sm.cachedKernelTokens +
+        sm.cachedL1Tokens + sm.cachedL2Tokens + sm.cachedPromotedTokens
+
+    // Set, not Use: an over-window count must report >100% so the compaction
+    // trigger fires. Use would reject it and leave usage reading 0.
+    sm.tokenBudget.Set(sm.tokenCount)
 }
 ```
+
+**What is counted**: what is dispatched to the provider — message text plus tool-call blocks, at 10 tokens of per-message overhead. The raw tool-result record hanging off a message (`Message.ToolResult`) is retained for restore and telemetry, is never sent, and is therefore not counted.
 
 **Accuracy**: ±5% error margin (acceptable for budget management)
 
@@ -1043,7 +1071,7 @@ pool via tiktoken's internal `encodingMap` cache.
 
 **Problem**: Gradual context degradation under token pressure, not sudden cutoff.
 
-**Solution**: Profile-dependent compression thresholds. Compression is triggered inline during `AddMessage()` (not as a separate function). Thresholds and batch sizes are configured per workload profile (see `CompressionProfile` in `pkg/agent/compression_profiles.go`).
+**Solution**: A single trigger — overall token budget usage above the profile's warning threshold — with the batch size scaling by how far past the threshold usage has gone. Compression runs inline during `AddMessage()` (not as a separate function), and once more in `ReplayMessages()` after a restore. Thresholds and batch sizes are configured per workload profile (see `CompressionProfile` in `pkg/agent/compression_profiles.go`).
 
 **Algorithm**: See the code example in the [L1 Cache section](#l1-cache-recent-conversation) for the actual compression logic inside `AddMessage()`.
 
@@ -1158,7 +1186,7 @@ func (sm *SegmentedMemory) CacheSchema(key, schema string) {
 **Consequences**:
 - ✅ Smooth token usage curve (no spikes)
 - ✅ Preserves more conversation context
-- ❌ Added complexity (3 compression levels per profile, 3 workload profiles)
+- ❌ Added complexity (two active batch sizes per profile, 3 workload profiles)
 - ❌ Requires LLM calls for summarization (500-800ms latency), falls back to heuristic
 
 
@@ -1362,13 +1390,13 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 
 ### Constraint 1: Total Token Budget
 
-**Description**: ROM + Kernel + L1 + L2 ≤ MaxContextTokens - ReservedOutputTokens
+**Description**: ROM + Kernel + L1 + L2 + promoted is held near MaxContextTokens - ReservedOutputTokens by compaction. The budget is a control signal, not a hard gate: the count is recorded even when it exceeds the window, and exceeding the warning threshold is what fires compaction on the next `AddMessage`.
 
 **Value**: 200K - 20K = 180K tokens typical (Claude Sonnet 4.5)
 
 **Rationale**: LLM providers enforce context window limits
 
-**Impact**: Long conversations must compress/evict old messages
+**Impact**: Long conversations must compress/evict old messages. A single message larger than the remaining headroom cannot be compacted away — the recency floor and tool-group atomicity both bound how much one pass can remove.
 
 **Workaround**: Increase MaxContextTokens (if provider supports) or reduce ReservedOutputTokens (risk truncated outputs)
 
@@ -1377,11 +1405,9 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 
 **Description**: Summaries drop detail compared to verbatim messages
 
-**Accuracy**: >90% key fact retention, but loses nuances
+**Impact**: Agent may miss subtle context from early conversation. The compaction prompt bounds the loss deliberately — decisions with scope, open commitments and reload pointers survive; derivations and reproducible payloads do not.
 
-**Impact**: Agent may miss subtle context from early conversation
-
-**Workaround**: Increase L1 capacity (reduces compression frequency) or use Swap layer for full history retrieval
+**Workaround**: Raise the profile's warning threshold or pick the `conversational` profile (both compact later and less often), or recall full history from the Swap layer
 
 
 ### Constraint 3: Swap Retrieval is Agent-Initiated
@@ -1421,7 +1447,7 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 |-----------|-----|-----|-------|
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
-| Context build | 5ms | 12ms | Collect ROM+K+L1+L2 + token count |
+| Context build | 5ms | 12ms | Concatenate ROM + L2 + promoted + L1 + token count |
 | Adaptive compression | 550ms | 850ms | LLM summarization (configured provider) |
 | L1 eviction | 600ms | 900ms | Summarize + move to L2 |
 | **L2 eviction to swap** | **3ms** | **10ms** | **SQLite write + tracing** |
@@ -1438,14 +1464,13 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 
 | Component | Size |
 |-----------|------|
-| ROM | ~5KB (system prompt + patterns) |
+| ROM | ~5KB (system prompt + patterns + skill menu) |
 | Kernel | ~2KB (tool defs + schema cache) |
-| L1 | ~4-10KB (profile-dependent, token-based sizing) |
+| L1 | Uncapped; bounded in practice by the token budget — compaction starts once total usage passes the warning threshold, so L1 tends toward (window − ROM − kernel − L2 − promoted) |
 | L2 | up to ~5KB (summaries, evicts to swap at maxL2Tokens) |
 | Session struct | ~1KB (metadata) |
-| **Total** | **~21KB per session** |
 
-**Multi-agent server**: 1000 sessions = ~21MB (not including shared memory)
+**Sizing implication**: per-session footprint is dominated by L1 and therefore by the configured context window, not by a fixed layer budget. A 180K-token window sustains an L1 approaching the low hundreds of KB of message text at steady state.
 
 ### Shared Memory Usage
 
@@ -1542,8 +1567,9 @@ Session Persist Failure ───▶ Retry (idempotent) ───▶ Return Erro
 - Shared Memory tier limits (1GB memory, 10GB disk)
 
 **Data Exfiltration**:
-- Shared Memory references scoped to session
-- No cross-session access (session ID validated)
+- Every store is partitioned by session: `SharedMemoryStore` records the owning session at `Store` and validates it on `Get`; `SQLResultStore` partitions rows by the session id on the context and resolves an id only within that partition
+- The metadata/describe path is scoped identically to the read path, so a handle from another session cannot even be characterized
+- Error records are held per session by `ErrorStore` and surfaced only through the session's own `get_error_details`
 - SHA-256 checksums detect tampering
 
 

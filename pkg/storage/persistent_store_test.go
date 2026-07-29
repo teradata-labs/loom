@@ -38,12 +38,12 @@ func TestGetGlobalSharedMemory_Singleton(t *testing.T) {
 	assert.Same(t, store1, store2, "GetGlobalSharedMemory should return same instance")
 
 	// Should work across "agent instances"
-	ref, err := store1.Store("test_ref", []byte("test data"), "text/plain", nil)
+	ref, err := store1.Store("test_ref", []byte("test data"), "text/plain", nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, ref)
 
 	// Retrieve from "different agent"
-	data, err := store2.Get(ref)
+	data, err := store2.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, "test data", string(data))
 }
@@ -66,7 +66,7 @@ func TestGetGlobalSharedMemory_Stats(t *testing.T) {
 	require.NotNil(t, store)
 
 	// Store some data
-	_, err := store.Store("test1", []byte("data1"), "text/plain", nil)
+	_, err := store.Store("test1", []byte("data1"), "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Get stats
@@ -97,7 +97,7 @@ func TestGetGlobalSharedMemory_PersistenceEnabled(t *testing.T) {
 		largeData[i] = byte(i % 256)
 	}
 
-	ref, err := store.Store("large_test", largeData, "application/octet-stream", nil)
+	ref, err := store.Store("large_test", largeData, "application/octet-stream", nil, "")
 	// Should either succeed (disk overflow) or fail gracefully
 	if err != nil {
 		t.Logf("Large data storage failed (expected if no disk space): %v", err)

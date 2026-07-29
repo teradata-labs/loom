@@ -17,7 +17,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/teradata-labs/loom/pkg/prompts"
 )
+
+// compactionPromptKey is the prompt-registry key for the L2 compaction prompt.
+// The prompt instructs preservation of decisions and approvals with their exact
+// scope, open commitments, and reference/reload pointers.
+const compactionPromptKey = "memory.compaction"
 
 // LLMCompressor is a concrete implementation of MemoryCompressor that uses
 // an LLM to create intelligent summaries of conversation history.
@@ -135,6 +142,55 @@ func (c *LLMCompressor) IsEnabled() bool {
 func (c *LLMCompressor) SetLLMCaller(llmCaller LLMCaller) {
 	c.llmCaller = llmCaller
 	c.enabled = llmCaller != nil
+}
+
+// promptRegistryCompressor implements LLMCaller by summarising conversation
+// text with an LLM, using the compaction prompt sourced from the prompt
+// registry (loom law: no hardcoded prompts). The registry-supplied prompt is
+// sent as a system instruction and the conversation as user content, so the
+// conversation reaches the model unescaped.
+type promptRegistryCompressor struct {
+	llm     LLMProvider
+	prompts prompts.PromptRegistry
+}
+
+// newPromptRegistryCompressor builds an LLMCaller backed by an LLM provider and
+// a prompt registry. Both must be non-nil for compression to run; a nil registry
+// or a failed prompt load surfaces as an error so LLMCompressor falls back to
+// the heuristic.
+func newPromptRegistryCompressor(llm LLMProvider, registry prompts.PromptRegistry) *promptRegistryCompressor {
+	return &promptRegistryCompressor{llm: llm, prompts: registry}
+}
+
+// CompressConversation loads the compaction prompt from the registry and asks
+// the LLM to summarise conversationText under it.
+func (c *promptRegistryCompressor) CompressConversation(ctx context.Context, conversationText string) (string, error) {
+	if c.llm == nil {
+		return "", fmt.Errorf("compaction requires an LLM provider")
+	}
+	if c.prompts == nil {
+		return "", fmt.Errorf("compaction requires a prompt registry")
+	}
+
+	instruction, err := c.prompts.Get(ctx, compactionPromptKey, nil)
+	if err != nil {
+		return "", fmt.Errorf("load compaction prompt %q: %w", compactionPromptKey, err)
+	}
+	if instruction == "" {
+		return "", fmt.Errorf("compaction prompt %q is empty", compactionPromptKey)
+	}
+
+	resp, err := c.llm.Chat(ctx, []Message{
+		{Role: "system", Content: instruction},
+		{Role: "user", Content: conversationText},
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", fmt.Errorf("compaction returned no response")
+	}
+	return resp.Content, nil
 }
 
 // SimpleCompressor is a basic compressor that doesn't use LLM.

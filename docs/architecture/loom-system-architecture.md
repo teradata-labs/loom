@@ -144,7 +144,7 @@ graph TB
 
         subgraph AgentRuntime["Agent Runtime with Self-Improvement (pkg/agent/)"]
             subgraph Memory["5-Layer Memory"]
-                ROM["ROM (5k): Immutable system prompt,<br/>patterns, schema"]
+                ROM["ROM (5k): Immutable system prompt<br/>(incl. static skill menu)"]
                 Kernel["Kernel (2k): Tool defs,<br/>schema cache, tool results"]
                 L1["L1 (10k): Recent messages<br/>adaptive compression"]
                 L2["L2 (3k): LLM-compressed summaries<br/>append-only"]
@@ -152,7 +152,6 @@ graph TB
             end
 
             ConversationLoop[Conversation Loop]
-            PatternMatcher[Pattern Matcher]
             MultiJudge[Multi-Judge<br/>Evaluation]
             LLMInvoke[LLM Invoke<br/>streaming]
             SelfCorrect[Self-Correct<br/>Judge-based]
@@ -160,8 +159,7 @@ graph TB
             ToolExecutor[Tool Executor<br/>Shuttle - concurrent]
             BackendInterface[Backend Interface<br/>pluggable]
 
-            ConversationLoop --> PatternMatcher
-            PatternMatcher --> MultiJudge
+            ConversationLoop --> MultiJudge
             ConversationLoop --> LLMInvoke
             SelfCorrect --> LLMInvoke
             MultiJudge --> SelfCorrect
@@ -211,7 +209,7 @@ Loom consists of **14 documented subsystems** (across 150+ packages in `pkg/` an
 **Key Features**:
 - Turn-based LLM interaction with streaming support
 - 5-layer segmented memory (ROM/Kernel/L1/L2/Swap)
-- Pattern-guided domain knowledge injection
+- Domain knowledge pulled on demand by the model (`manage_skills`, `load_pattern`)
 - Judge-based self-correction
 - Crash recovery via SQLite session persistence
 
@@ -224,7 +222,7 @@ Loom consists of **14 documented subsystems** (across 150+ packages in `pkg/` an
 **Architecture**:
 ```mermaid
 graph TD
-    ROM[ROM 5k tokens<br/>Immutable system prompt,<br/>patterns, schema]
+    ROM[ROM 5k tokens<br/>Immutable system prompt<br/>incl. static skill menu]
     Kernel[Kernel 2k tokens<br/>Tool definitions,<br/>schema cache LRU,<br/>tool results]
     L1[L1 10k tokens<br/>Recent messages<br/>adaptive compression<br/>70%/80%/85% budget]
     L2[L2 3k tokens<br/>LLM-compressed summaries<br/>append-only]
@@ -828,7 +826,7 @@ flowchart LR
 **Chosen Approach**: Five-layer segmented memory (ROM/Kernel/L1/L2/Swap)
 
 **Rationale**:
-- **ROM**: Immutable system prompt, patterns, schema (never changes)
+- **ROM**: Immutable system prompt, including the static name+description menu of bound skills (never changes)
 - **Kernel**: Tool definitions, schema cache (LRU), tool results (database-backed, max 1 in memory)
 - **L1**: Recent messages with adaptive compression (70%/80%/85% budget triggers)
 - **L2**: LLM-compressed summaries (append-only, token-efficient)
@@ -937,13 +935,13 @@ sequenceDiagram
     participant Backend
 
     Client->>Agent: Query
-    Agent->>Pattern: Match
-    Pattern-->>Agent: Top-3
     Agent->>Agent: Build Memory (ROM+K+L1+L2+Swap)
     Agent->>DSPy: LLM Provider
     DSPy-->>Agent: Response
     Agent->>Backend: Execute Tools
     Backend-->>Agent: Results
+    Agent->>Pattern: load_pattern(reference) — only if the model asks
+    Pattern-->>Agent: Pattern body as tool result
     Agent->>Judge: Judge
     Judge->>Learning: Quality
     Judge->>Learning: Safety
@@ -958,7 +956,7 @@ sequenceDiagram
     Learning->>Pattern: Hot-Reload
     Agent->>Backend: Persist Session → DB
     Agent-->>Client: Response
-    Note over Agent,Pattern: Next turn uses improved pattern
+    Note over Agent,Pattern: The improved pattern is served on the next load_pattern call
 ```
 
 **Key Properties**:

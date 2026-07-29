@@ -508,6 +508,80 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 	return active
 }
 
+// ActivatePinned activates a skill for a session and appends it to the active
+// set WITHOUT the MaxConcurrentSkills eviction that ActivateSkill applies. It is
+// the load path for explicitly pulled skills (the manage_skills builtin): an
+// explicit load never displaces an already-active skill, and no skill-count cap
+// bounds it. MaxConcurrentSkills remains only the search-candidate bound used by
+// MatchSkills. A skill already active under the same name is replaced in place
+// rather than duplicated.
+func (o *Orchestrator) ActivatePinned(sessionID string, skill *Skill, triggerType, triggerValue string, confidence float64) *ActiveSkill {
+	_, span := o.tracer.StartSpan(context.Background(), "skills.orchestrator.activate_pinned")
+	defer o.tracer.EndSpan(span)
+
+	active := &ActiveSkill{
+		Skill:        skill,
+		TriggerType:  triggerType,
+		TriggerValue: triggerValue,
+		Confidence:   confidence,
+		ActivatedAt:  time.Now(),
+		SessionID:    sessionID,
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	sessions := o.activeSessions[sessionID]
+
+	// Replace an existing activation of the same skill rather than duplicate it.
+	for i, existing := range sessions {
+		if existing.Skill.Name == skill.Name {
+			sessions[i] = active
+			o.activeSessions[sessionID] = sessions
+			if span != nil {
+				span.SetAttribute("skill.name", skill.Name)
+				span.SetAttribute("action", "replaced")
+			}
+			o.logger.Info("skill pinned (replaced)",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.String("trigger", triggerType),
+				zap.String("trigger_value", triggerValue),
+				zap.Float64("confidence", confidence),
+				zap.Int("active_count", len(sessions)),
+			)
+			return active
+		}
+	}
+
+	sessions = append(sessions, active)
+	o.activeSessions[sessionID] = sessions
+
+	if span != nil {
+		span.SetAttribute("skill.name", skill.Name)
+		span.SetAttribute("session.id", sessionID)
+		span.SetAttribute("active.count", fmt.Sprintf("%d", len(sessions)))
+		span.SetAttribute("action", "pinned")
+	}
+
+	o.tracer.RecordMetric("skills.orchestrator.activate_pinned", 1.0, map[string]string{
+		"skill":   skill.Name,
+		"session": sessionID,
+		"trigger": triggerType,
+	})
+
+	o.logger.Info("skill pinned",
+		zap.String("skill", skill.Name),
+		zap.String("session", sessionID),
+		zap.String("trigger", triggerType),
+		zap.String("trigger_value", triggerValue),
+		zap.Float64("confidence", confidence),
+		zap.Int("active_count", len(sessions)),
+	)
+
+	return active
+}
+
 // DeactivateSkill removes a skill from a session.
 func (o *Orchestrator) DeactivateSkill(sessionID, skillName string) {
 	o.mu.Lock()

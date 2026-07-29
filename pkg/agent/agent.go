@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	skillbinding "github.com/teradata-labs/loom/pkg/skills/binding"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
@@ -84,10 +86,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		tracer:       observability.NewNoOpTracer(),
 		prompts:      nil, // Will be set via options
 		tokenCounter: GetTokenCounter(),
+
+		sessionToolLedger: make(map[string]map[string]bool),
+		scopedToolNames:   make(map[string]bool),
 	}
 
-	// Default shared memory threshold: -1 means use storage.DefaultSharedMemoryThreshold
-	a.sharedMemoryThreshold = -1
+	// Mutation-debug carrier: its closures read this agent's switch and turn
+	// source at log time, so it is safe to wire before options finalize config.
+	a.ctxDebug = a.newContextDebug()
+
+	// Default shared memory threshold: 64 KiB (storage.DefaultSharedMemoryThreshold).
+	a.sharedMemoryThreshold = int64(storage.DefaultSharedMemoryThreshold)
 
 	// Enable self-correction by default (guardrails + circuit breakers)
 	// Users can opt-out via WithoutSelfCorrection() or provide custom implementations
@@ -103,18 +112,6 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.PatternConfig == nil {
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
-
-	// Initialize automatic finding extraction with defaults if not set
-	if a.config.ExtractionCadence == 0 {
-		a.config.ExtractionCadence = 3 // Default: extract every 3 tool calls
-	}
-	if a.config.MaxFindings == 0 {
-		a.config.MaxFindings = 50 // Default: keep 50 findings
-	}
-	// Enable by default (can be explicitly disabled by setting enable_finding_extraction: false in config)
-	a.enableFindingExtraction = true
-	a.extractionCadence = a.config.ExtractionCadence
-	a.toolExecutionsSinceExtraction = 0
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -150,6 +147,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Create executor with tool registry
 	// Note: Pass instrumented executor via SetExecutor() if you want tool tracing
 	a.executor = shuttle.NewExecutor(a.tools)
+
+	// Wire the executor's large-result offload debug log to this agent's
+	// context-dump switch and turn source. The closures read at log time, so
+	// ordering against config-setting options does not matter.
+	a.executor.SetContextDebug(a.contextDebugEnabled, a.contextDebugTurn)
 
 	// Set permission checker on executor if provided
 	if a.permissionChecker != nil {
@@ -192,6 +194,20 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		} else {
 			a.memory.SetLLMProvider(a.llm)
 		}
+
+		// Default-on memory compression: wire an LLM-backed compressor so L2
+		// compaction preserves decisions and approvals-with-scope via the
+		// registry-sourced compaction prompt. Requires both an LLM (dedicated
+		// compressor LLM preferred) and a prompt registry; without either, the
+		// heuristic summariser remains the fallback.
+		compressorLLM := a.llm
+		if a.compressorLLM != nil {
+			compressorLLM = a.compressorLLM
+		}
+		if compressorLLM != nil && a.prompts != nil {
+			caller := newPromptRegistryCompressor(compressorLLM, a.prompts)
+			a.memory.SetCompressor(NewLLMCompressor(caller))
+		}
 	}
 
 	// Set shared memory on executor so large tool results are stored in the same store
@@ -207,9 +223,8 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
 	// See formatToolResult() for automatic registration when error store is used
 
-	// REMOVED: Manual record_finding tool (replaced by automatic extraction)
-	// Findings are now automatically extracted from tool results using LLM-based semantic analysis
-	// See finding_extractor.go for implementation
+	// The findings channel is retired: neither the record_finding tool nor automatic
+	// extraction exists. Durable notes belong in the conversation or in the stores.
 
 	// Initialize SQL result store for queryable large SQL results
 	// This allows filtering/aggregating SQL results without context blowout
@@ -237,10 +252,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
 
-	// Register built-in get_tool_result tool for retrieving metadata
-	// EXPERIMENT: get_tool_result removed - inline metadata makes it unnecessary
-	// Inline metadata now includes preview, schema, size, and retrieval hints directly in tool responses.
-	// Agents should use query_tool_result for advanced querying (pagination, SQL filters).
+	// get_tool_result is NOT registered: the inline summary already carries preview,
+	// schema, size and retrieval hints, and query_tool_result covers pagination and
+	// SQL filters. The type and its offload exemption remain for callers that wire it
+	// directly.
 	//
 	// v1.0.1: Now returns only metadata, accepts both memory and SQL stores
 	// if a.sharedMemory != nil || sqlResultStore != nil {
@@ -277,6 +292,8 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
+	a.checkAndRegisterManageSkillsTool()
+	a.checkAndRegisterLoadPatternTool()
 
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between
@@ -406,7 +423,89 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		})
 	}
 
+	// Wire restore re-fire: after a restart replay, the memory manager walks a
+	// session's durable messages and calls back here to re-activate each loaded
+	// skill (with its required tools) and re-register the disclosure tools
+	// implied by durable error/large-result records, so a restored session
+	// advertises the same tools and reports the same active skills as a live one.
+	if a.memory != nil {
+		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation, a.reFireDisclosureTool)
+		a.memory.SetContextDebug(a.ctxDebug)
+	}
+
 	return a
+}
+
+// reFireSkillActivation re-activates a skill by name during restore replay:
+// it pins the skill (no-evict) into the session and wires its required tools,
+// mirroring a manage_skills load so a restored session's active skills and
+// advertised tools match a live one. Called from the memory manager's restore
+// walk for each durable load marker. A skill missing from the library is
+// logged and skipped.
+func (a *Agent) reFireSkillActivation(sessionID, skillName string) {
+	// A restore can be the FIRST thing a fresh process does, before any turn has
+	// run. Freeze the base set here too: re-firing wires the skill's required
+	// tools, and with no base snapshot yet every one of them — including tools
+	// that are base for all sessions — would be marked session-scoped and hidden
+	// from every other session for the process's lifetime. captureBaseTools is
+	// idempotent, so whichever of restore or the first turn arrives first wins,
+	// and both run after the embedder's construction-time registration.
+	a.captureBaseTools()
+	if a.skillOrchestrator == nil {
+		return
+	}
+	lib := a.skillOrchestrator.GetLibrary()
+	if lib == nil {
+		return
+	}
+	skill, err := lib.Load(skillName)
+	if err != nil {
+		zap.L().Warn("restore re-fire: skill not found; skipping",
+			zap.String("skill", skillName),
+			zap.String("session", sessionID),
+			zap.Error(err))
+		return
+	}
+	a.skillOrchestrator.ActivatePinned(sessionID, skill, "restore_replay", skillName, 1.0)
+	a.enforceRequiredSkillTools(sessionID)
+}
+
+// reFireDisclosureTool re-registers a first-need disclosure tool into a session
+// during restore replay, mirroring the progressive-disclosure path in
+// formatToolResult: it registers the tool definition once when the backing
+// store is wired and the builtin is not suppressed, then advertises it into the
+// session's ledger. Called from the memory manager's restore walk for each
+// durable error (get_error_details) or large-result (query_tool_result) record.
+func (a *Agent) reFireDisclosureTool(sessionID, toolName string) {
+	// Same ordering hazard as reFireSkillActivation: a restore may precede the
+	// first turn, and this path scopes tools into a session's ledger.
+	a.captureBaseTools()
+	switch toolName {
+	case "get_error_details":
+		if a.errorStore == nil || a.isBuiltinToolSuppressed("get_error_details") {
+			return
+		}
+		if !a.tools.IsRegistered("get_error_details") {
+			errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+			if a.prompts != nil {
+				errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+			}
+			a.tools.Register(errorTool)
+		}
+		a.registerSessionTool(sessionID, "get_error_details")
+	case "query_tool_result":
+		if (a.sqlResultStore == nil && a.sharedMemory == nil) || a.isBuiltinToolSuppressed("query_tool_result") {
+			return
+		}
+		if !a.tools.IsRegistered("query_tool_result") {
+			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+			if a.prompts != nil {
+				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+			}
+			a.tools.Register(queryTool)
+		}
+		a.registerSessionTool(sessionID, "query_tool_result")
+	}
 }
 
 // Option is a functional option for configuring an Agent.
@@ -618,11 +717,10 @@ func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
 	}
 }
 
-// WithSkillDiscovery wires the new top-level Discovery (introduced by the
-// skills overhaul). When set, runConversationLoop uses the four-phase
-// pipeline (binding -> discovery -> activate -> emit tasks) instead of the
-// legacy MatchSkills filter path. Requires WithSkillOrchestrator to also
-// be set so the activation lifecycle still has somewhere to land.
+// WithSkillDiscovery wires the top-level Discovery. Skills are pulled by the
+// model through manage_skills, so the conversation loop performs no discovery,
+// matching or activation of its own; the wired Discovery is available to
+// callers that drive it directly.
 func WithSkillDiscovery(d *discovery.Discovery) Option {
 	return func(a *Agent) {
 		a.skillDiscovery = d
@@ -639,17 +737,77 @@ func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 	}
 }
 
-// skillNameSet returns the names currently active on a session as a set
-// keyed by skill name. Used by the four-phase pipeline to decide which
-// activations are "new this turn" so the task emitter only fires once per
-// activation event.
-func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
-	out := make(map[string]bool, len(active))
-	for _, as := range active {
-		if as != nil && as.Skill != nil {
-			out[as.Skill.Name] = true
+// captureBaseTools records the always-advertised tool set — every tool present
+// before any event-driven (session-scoped) registration. Idempotent: the first
+// call wins, so it must run before the first skill-required or progressive-
+// disclosure registration of the agent's life (the top of runConversationLoop).
+func (a *Agent) captureBaseTools() {
+	a.baseToolsOnce.Do(func() {
+		names := a.tools.List()
+		a.mu.Lock()
+		a.baseToolNames = make(map[string]bool, len(names))
+		for _, n := range names {
+			a.baseToolNames[n] = true
+		}
+		a.mu.Unlock()
+	})
+}
+
+// registerSessionTool records name into sessionID's advertised set so the tool
+// surfaces for THIS session on its next — and current, since the set is
+// re-derived per provider call — turn. A base always-advertised name is not
+// marked session-scoped, so a skill requiring a base tool never hides it from
+// other sessions. This is the API D-A (manage_skills load) and D-restore
+// (replay) use to advertise a tool into a single session.
+func (a *Agent) registerSessionTool(sessionID string, name string) {
+	if name == "" {
+		return
+	}
+	if sessionID == "" {
+		sessionID = a.id
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessionToolLedger[sessionID] == nil {
+		a.sessionToolLedger[sessionID] = make(map[string]bool)
+	}
+	a.sessionToolLedger[sessionID][name] = true
+	if !a.baseToolNames[name] {
+		a.scopedToolNames[name] = true
+	}
+}
+
+// advertisedTools is the per-session tool projection offered on a provider call:
+// every registered tool that is base (not session-scoped) or present in this
+// session's ledger, with skill-excluded and permission-hidden tools removed and
+// the result name-sorted for a deterministic order that is byte-stable across
+// consecutive calls unless this session's own ledger changed. Re-derived per
+// provider call so a mid-turn registration surfaces on the same turn.
+func (a *Agent) advertisedTools(session *Session) []shuttle.Tool {
+	all := a.tools.ListTools()
+
+	sessionID := a.id
+	if session != nil && session.ID != "" {
+		sessionID = session.ID
+	}
+
+	a.mu.RLock()
+	ledger := a.sessionToolLedger[sessionID]
+	out := make([]shuttle.Tool, 0, len(all))
+	for _, t := range all {
+		name := t.Name()
+		if !a.scopedToolNames[name] || ledger[name] {
+			out = append(out, t)
 		}
 	}
+	a.mu.RUnlock()
+
+	out = a.applySkillExcludedTools(out, session)
+	out = a.applyPermissionToolFilter(out)
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name() < out[j].Name()
+	})
 	return out
 }
 
@@ -675,20 +833,23 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 			continue
 		}
 		for _, name := range as.Skill.Tools.RequiredTools {
-			if a.tools.IsRegistered(name) {
-				continue
-			}
-			tool := builtin.ByName(name)
-			if tool == nil {
-				zap.L().Warn("skill required tool not available; skipping",
+			if !a.tools.IsRegistered(name) {
+				tool := builtin.ByName(name)
+				if tool == nil {
+					zap.L().Warn("skill required tool not available; skipping",
+						zap.String("skill", as.Skill.Name),
+						zap.String("tool", name))
+					continue
+				}
+				a.tools.Register(tool)
+				zap.L().Debug("skill required tool auto-registered",
 					zap.String("skill", as.Skill.Name),
 					zap.String("tool", name))
-				continue
 			}
-			a.tools.Register(tool)
-			zap.L().Debug("skill required tool auto-registered",
-				zap.String("skill", as.Skill.Name),
-				zap.String("tool", name))
+			// Advertise the required tool into THIS session even when another
+			// session registered the definition first. Base tools are ignored
+			// by registerSessionTool, so requiring one never hides it elsewhere.
+			a.registerSessionTool(sessionID, name)
 		}
 		// Surface MCP-server requests so operators see when a skill has
 		// declared servers that aren't yet honored. Logged once per turn
@@ -800,7 +961,8 @@ func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(string) boo
 
 // evaluateLazyTools promotes any lazy tool sets whose trigger matches msg
 // into the active registry. Idempotent — already-registered tools are skipped.
-// Called once per turn, before ListTools(), from the conversation loop.
+// Promoted tools are base (not session-scoped), so they advertise to every
+// session. Called from the conversation loop before the per-turn tool projection.
 func (a *Agent) evaluateLazyTools(msg string) {
 	a.mu.RLock()
 	sets := make([]lazyToolSet, len(a.lazyToolSets))
@@ -1079,7 +1241,54 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// so the agent sees "here's your state" before "here's how to manage it".
 	basePrompt += a.taskBoardPromptSupplement()
 
+	// Append the static menu of bound skills. Rendered once here into ROM at
+	// session creation, so it stays byte-stable for the whole session.
+	basePrompt += a.skillMenuPromptSupplement()
+
 	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
+}
+
+// skillMenuPromptSupplement renders the agent's bound skills as a
+// `name — description` menu. It names every bound skill without loading any
+// skill body: a skill's instructions enter the conversation only when the agent
+// calls manage_skills with the load action for that skill. Returns an empty
+// string when no skill library is wired or when skills are disabled.
+func (a *Agent) skillMenuPromptSupplement() string {
+	if a.skillOrchestrator == nil {
+		return ""
+	}
+	lib := a.skillOrchestrator.GetLibrary()
+	if lib == nil {
+		return ""
+	}
+
+	skillsConfig := a.config.SkillsConfig
+	if skillsConfig == nil {
+		skillsConfig = skills.DefaultSkillsConfig()
+	}
+	if !skillsConfig.Enabled {
+		return ""
+	}
+
+	resolved, err := skillbinding.NewResolver(lib).Resolve(skillsConfig)
+	if err != nil || len(resolved) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n---\n\nAVAILABLE SKILLS\n\n")
+	b.WriteString("These skills are bound to this agent. Load one with the manage_skills load action to bring its instructions into the conversation; until then only the name and description below are in context.\n\n")
+	for _, rb := range resolved {
+		if rb.Skill == nil {
+			continue
+		}
+		if rb.Skill.Description != "" {
+			b.WriteString(fmt.Sprintf("- %s — %s\n", rb.Skill.Name, rb.Skill.Description))
+		} else {
+			b.WriteString(fmt.Sprintf("- %s\n", rb.Skill.Name))
+		}
+	}
+	return b.String()
 }
 
 // graphMemoryPromptSupplement returns instructions for agents with graph memory enabled.
@@ -1165,6 +1374,51 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 
 	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
 	a.tools.Register(tbTool)
+}
+
+// checkAndRegisterManageSkillsTool registers the manage_skills builtin whenever
+// the skill orchestrator is wired. It is a base advertised tool (present from the
+// first turn), so it is registered at construction. Idempotent: re-entry is a
+// no-op once the tool is registered.
+func (a *Agent) checkAndRegisterManageSkillsTool() {
+	if a.isBuiltinToolSuppressed("manage_skills") {
+		return
+	}
+	if a.tools.IsRegistered("manage_skills") {
+		return
+	}
+	// Guard the library too, mirroring checkAndRegisterLoadPatternTool: load/list
+	// nil-deref GetLibrary() otherwise (an orchestrator can be wired without one).
+	if a.skillOrchestrator == nil || a.skillOrchestrator.GetLibrary() == nil {
+		return
+	}
+
+	tool := NewManageSkillsTool(
+		a.skillOrchestrator,
+		a.skillOrchestrator.GetLibrary(),
+		a.permissionChecker,
+		a.enforceRequiredSkillTools,
+	)
+	tool.ctxDebug = a.ctxDebug
+	a.tools.Register(tool)
+}
+
+// checkAndRegisterLoadPatternTool registers the load_pattern builtin whenever a
+// pattern library is configured. It is a base advertised tool (present from the
+// first turn), so it is registered at construction. Idempotent: re-entry is a
+// no-op once the tool is registered.
+func (a *Agent) checkAndRegisterLoadPatternTool() {
+	if a.isBuiltinToolSuppressed("load_pattern") {
+		return
+	}
+	if a.tools.IsRegistered("load_pattern") {
+		return
+	}
+	if a.orchestrator == nil || a.orchestrator.GetLibrary() == nil {
+		return
+	}
+
+	a.tools.Register(NewLoadPatternTool(a.orchestrator))
 }
 
 // buildTaskContext queries the task store and builds a compact context block
@@ -1936,6 +2190,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	defer ctx.Tracer().EndSpan(span)
 
 	session := ctx.Session()
+
+	// Freeze the base always-advertised set before any skill-required or
+	// progressive-disclosure registration can scope a tool to a session, so a
+	// base tool a skill later requires is never mistaken for session-scoped.
+	a.captureBaseTools()
+
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
@@ -1971,253 +2231,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Inject graph memory context (if enabled and available).
 	a.injectGraphMemoryContext(ctx, session)
 
-	// --- Skill activation ---
-	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
-	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
-	// Format/inject). When skillDiscovery is nil we fall back to the legacy
-	// path so existing tests and configs that don't wire Discovery still
-	// behave exactly as v1.2.0 did.
-	if a.skillOrchestrator != nil && session != nil {
-		sessionID := session.ID
-		if sessionID == "" {
-			sessionID = a.id
-		}
-
-		skillsConfig := a.config.SkillsConfig
-		if skillsConfig == nil {
-			skillsConfig = skills.DefaultSkillsConfig()
-		}
-
-		if skillsConfig.Enabled {
-			msgs := session.GetMessages()
-			// Find the most-recent user message rather than just inspecting
-			// the last entry: system prompts and context messages can be
-			// appended AFTER the user's turn (graph memory inject, ROM
-			// hydration, etc.), so msgs[len-1].Role is often "system".
-			// Mirrors the lazy-tool-disclosure walk above.
-			lastMsg := ""
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role == "user" {
-					lastMsg = msgs[i].Content
-					break
-				}
-			}
-
-			// Phase B: discover candidates.
-			activatedThisTurn := map[string]*skills.Skill{}
-			activeBefore := skillNameSet(a.skillOrchestrator.GetActiveSkills(sessionID))
-			if a.skillDiscovery != nil {
-				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
-					for _, c := range candidates {
-						if c.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
-							zap.L().Info("high-risk skill blocked (requires HITL approval)",
-								zap.String("skill", c.Skill.Name),
-								zap.String("risk_level", c.Skill.RiskLevel))
-							continue
-						}
-						if !activeBefore[c.Skill.Name] {
-							activatedThisTurn[c.Skill.Name] = c.Skill
-						}
-						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
-							c.TriggerType, c.TriggerValue, c.Confidence)
-					}
-				} else {
-					zap.L().Debug("skill discovery failed; skipping activation",
-						zap.String("session", sessionID),
-						zap.Error(err))
-				}
-			} else if lastMsg != "" {
-				// Legacy path: direct MatchSkills via the orchestrator.
-				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
-					for _, m := range matches {
-						if m.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
-							zap.L().Info("high-risk skill blocked (requires HITL approval)",
-								zap.String("skill", m.Skill.Name),
-								zap.String("risk_level", m.Skill.RiskLevel))
-							continue
-						}
-						if !activeBefore[m.Skill.Name] {
-							activatedThisTurn[m.Skill.Name] = m.Skill
-						}
-						a.skillOrchestrator.ActivateSkill(sessionID, m.Skill,
-							m.TriggerType, m.TriggerValue, m.Confidence)
-					}
-				}
-			}
-
-			// Phase D: emit tasks for newly-activated skills (overhaul-only).
-			if a.skillTaskEmitter != nil && len(activatedThisTurn) > 0 {
-				agentTasksEnabled := skillsConfig.EffectiveTasksEnabled()
-				boardID := skillsConfig.SkillTaskBoardID
-				if boardID == "" && a.taskBoardConfig != nil {
-					boardID = a.taskBoardConfig.DefaultBoardId
-				}
-				for name, skill := range activatedThisTurn {
-					_, err := a.skillTaskEmitter.EmitForActivation(ctx, skilltasks.EmitRequest{
-						Skill:             skill,
-						SessionID:         sessionID,
-						AgentID:           a.id,
-						BoardID:           boardID,
-						LLM:               a.llm,
-						AgentTasksEnabled: agentTasksEnabled,
-					})
-					if err != nil {
-						zap.L().Warn("skill task emission failed",
-							zap.String("skill", name),
-							zap.Error(err))
-					}
-				}
-			}
-
-			// Format and inject skill prompts (existing logic).
-			maxTokens := 1500
-			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
-				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
-			}
-			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
-			if skillContent != "" {
-				activeNames := make([]string, 0)
-				for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
-					activeNames = append(activeNames, as.Skill.Name)
-				}
-				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-					segMem.InjectSkills(skillContent, activeNames)
-				}
-			}
-
-			// Co-inject pattern refs from active skills (existing logic).
-			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
-				for _, ref := range as.Skill.PatternRefs {
-					if a.orchestrator != nil {
-						if pattern, err := a.orchestrator.GetLibrary().Load(ref); err == nil {
-							formatted := pattern.FormatForLLM()
-							if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-								segMem.InjectPattern(formatted, ref)
-							}
-						}
-					}
-				}
-			}
-
-			// Enforce SkillToolConfig.required_tools across all active skills.
-			// required_tools that aren't yet registered are auto-registered
-			// from the builtin set when available; missing tools log a Warn
-			// and the skill continues without them (the LLM still has access
-			// to whatever IS registered).
-			a.enforceRequiredSkillTools(sessionID)
-		}
-	}
-
-	// Get available tools. Done AFTER the skill block so any required_tools
-	// that the skill auto-registered show up; the excluded-tools filter
-	// below removes any active skill's excluded set for this turn.
-	tools := a.tools.ListTools()
-	tools = a.applySkillExcludedTools(tools, session)
-	tools = a.applyPermissionToolFilter(tools)
-
-	// Emit pattern selection progress
-	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
-
-	// === PATTERN SELECTION INTEGRATION ===
-	var selectedPattern *patterns.Pattern
-	var patternConfidence float64
-
-	// Get pattern config (use defaults if not set)
-	patternConfig := a.config.PatternConfig
-	if patternConfig == nil {
-		patternConfig = DefaultPatternConfig()
-	}
-
-	// Only select patterns if enabled and prerequisites are met
-	if patternConfig.Enabled && a.orchestrator != nil && session != nil {
-		// Get most recent user message
-		messages := session.GetMessages()
-		var lastUserMessage string
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" {
-				lastUserMessage = messages[i].Content
-				break
-			}
-		}
-
-		if lastUserMessage != "" {
-			// Start pattern selection span — always created
-			_, patternSpan := a.tracer.StartSpan(ctx, "agent.pattern_selection")
-			defer a.tracer.EndSpan(patternSpan)
-
-			// Build context data
-			backendType := "meta-agent" // Default for agents without backends
-			if a.backend != nil {
-				backendType = a.backend.Name()
-			}
-			contextData := map[string]interface{}{
-				"backend_type": backendType,
-				"session_id":   session.ID,
-			}
-
-			// Step 1: Classify intent
-			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
-
-			patternSpan.SetAttribute("intent.category", intent)
-			patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
-
-			// Step 2: Recommend pattern based on keyword matching and intent
-			// Always attempt pattern recommendation regardless of intent classification.
-			// RecommendPattern uses its own keyword-based search which can find relevant
-			// patterns even when the intent classifier returns an empty string (e.g., for
-			// meta-agent workflows or domain-specific queries not covered by the default
-			// intent classifier).
-			{
-				patternName, patternConf := a.orchestrator.RecommendPattern(lastUserMessage, intent)
-				patternConfidence = patternConf
-
-				patternSpan.SetAttribute("pattern.name", patternName)
-				patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
-
-				// Step 3: Load pattern if confidence threshold met
-				if patternName != "" && patternConf >= patternConfig.MinConfidence {
-					pattern, err := a.orchestrator.GetLibrary().Load(patternName)
-					if err == nil {
-						selectedPattern = pattern
-
-						// Format and inject pattern
-						formattedPattern := pattern.FormatForLLM()
-
-						// Inject into segmented memory
-						if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-							segMem.InjectPattern(formattedPattern, pattern.Name)
-
-							tokenCount := a.tokenCounter.CountTokens(formattedPattern)
-							patternSpan.SetAttribute("pattern.tokens", tokenCount)
-							patternSpan.SetAttribute("pattern.injected", "true")
-						}
-
-						// Record metrics
-						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
-							"pattern":    patternName,
-							"intent":     intent,
-							"confidence": fmt.Sprintf("%.0f", patternConf*100),
-						})
-					} else {
-						patternSpan.RecordError(fmt.Errorf("pattern load failed: %w", err))
-					}
-				}
-			}
-
-			// Update progress with pattern info
-			if selectedPattern != nil {
-				emitProgress(ctx, StagePatternSelection, 15,
-					fmt.Sprintf("Selected pattern: %s (%.0f%% confidence)",
-						selectedPattern.Title, patternConfidence*100), "")
-			}
-		}
-	}
-	// === END PATTERN SELECTION ===
-
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
 		turnCount++
-		turnStartTime := time.Now()
 
 		// Record turn start on conversation_loop span
 		span.AddEvent("turn.started", map[string]interface{}{
@@ -2244,7 +2260,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				})
 			}
 
-			// Force compression at 85% threshold
+			// Force compression once budget usage passes enforceTokenBudget's threshold
 			compressed, err := enforceTokenBudget(ctx, segMem, budgetInfo)
 			if err != nil {
 				return nil, fmt.Errorf("token budget enforcement failed: %w", err)
@@ -2308,6 +2324,26 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Emit LLM generation progress
 		emitProgress(ctx, StageLLMGeneration, 20+clampInt32(turnCount*10), fmt.Sprintf("Generating response (turn %d)", turnCount), "")
+
+		// Re-derive the advertised tools for this provider call so a mid-turn
+		// registration (skill load, progressive disclosure) surfaces on the
+		// same turn. Circuit-breaker-disabled tools stay filtered across turns.
+		tools := a.advertisedTools(session)
+		tools = recovery.activeTools(tools)
+
+		// Mutation-debug: the per-session tool projection about to be advertised
+		// on this provider call. No-op unless the context-dump switch is on.
+		if a.contextDebugEnabled() {
+			advertised := make([]string, 0, len(tools))
+			for _, t := range tools {
+				advertised = append(advertised, t.Name())
+			}
+			zap.L().Debug("context mutation: tool assembly",
+				zap.String("session_id", session.ID),
+				zap.Int("turn", turnCount),
+				zap.Int("count", len(advertised)),
+				zap.Strings("advertised", advertised))
+		}
 
 		// Call LLM
 		llmResp, err := a.chatWithRetry(ctx, messages, tools)
@@ -2460,22 +2496,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
 			}
 
-			// Record pattern usage for text-only responses (no tool calls).
-			// Pattern was selected and injected — track effectiveness even without tools.
-			if selectedPattern != nil && patternConfig.EnableTracking {
-				latency := time.Since(turnStartTime)
-				costUSD := 0.0
-				if llmResp.Usage.InputTokens > 0 {
-					costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
-						float64(llmResp.Usage.OutputTokens)*0.000015
-				}
-				a.orchestrator.RecordPatternUsage(
-					ctx, selectedPattern.Name, a.config.Name,
-					true, costUSD, latency, "",
-					"anthropic", "claude-sonnet-4-5",
-				)
-			}
-
 			// Record conversation completion on span
 			span.AddEvent("conversation.completed", map[string]interface{}{
 				"turns":           turnCount,
@@ -2562,6 +2582,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 		turnToolCount := 0
 		turnDedup := make(map[string]*shuttle.Result) // dedup key → result
+
+		// pendingSidecars: text_body sidecar messages (e.g. skill body from
+		// manage_skills(load)) buffered across the whole tool batch. Draining
+		// them AFTER every tool_result in the batch has been appended keeps
+		// each tool_use adjacent to its tool_result — required by Anthropic's
+		// "tool_use ids must be followed by tool_result blocks" pairing rule
+		// when the model fires multiple tools in parallel.
+		var pendingSidecars []Message
 
 		for i, toolCall := range llmResp.ToolCalls {
 			if toolExecutionCount >= a.config.MaxToolExecutions {
@@ -2808,14 +2836,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				toolSpan.RecordError(persistErr)
 			}
 
-			// === AUTOMATIC FINDING EXTRACTION ===
-			// After each tool execution, check if we should extract findings
-			if a.enableFindingExtraction {
-				a.toolExecutionsSinceExtraction++
-				if a.toolExecutionsSinceExtraction >= a.extractionCadence {
-					// Run extraction in background (non-blocking)
-					go a.extractFindingsAsync(ctx, session.ID)
-					a.toolExecutionsSinceExtraction = 0
+			// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
+			// — the skill body belongs under the user-instruction slot, not the
+			// tool-result data slot), BUFFER it. Sidecars from an entire tool
+			// batch are appended AFTER every tool_result in the batch, so
+			// tool_use↔tool_result adjacency is preserved (Anthropic pairing).
+			if result != nil && result.Metadata != nil {
+				if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
+					pendingSidecars = append(pendingSidecars, Message{
+						Role:      "user",
+						Content:   textBody,
+						AgentID:   a.id,
+						Timestamp: time.Now(),
+					})
 				}
 			}
 
@@ -2835,56 +2868,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// === PATTERN EFFECTIVENESS TRACKING ===
-		// Track pattern usage after each turn (with or without tool execution).
-		// A pattern was selected and injected into the prompt — record its effectiveness.
-		if selectedPattern != nil && patternConfig.EnableTracking {
-			// Determine success and error type from tool executions if any ran;
-			// otherwise treat a pure-LLM response as successful.
-			success := true
-			errorType := ""
-			if len(allToolExecutions) > 0 {
-				lastExecution := allToolExecutions[len(allToolExecutions)-1]
-				success = lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
-				if !success {
-					if lastExecution.Error != nil {
-						errorType = "execution_error"
-					} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
-						errorType = lastExecution.Result.Error.Code
-					}
-				}
+		// Drain buffered text_body sidecars from this batch AFTER every
+		// tool_result is in place. Order within the batch preserved so a
+		// multi-load turn (rare but possible) still stamps its bodies in
+		// call order.
+		for _, sidecar := range pendingSidecars {
+			session.AddMessage(ctx, sidecar)
+			if persistErr := a.memory.PersistMessage(ctx, session.ID, sidecar); persistErr != nil {
+				zap.L().Warn("Failed to persist text_body sidecar message",
+					zap.String("session_id", session.ID),
+					zap.String("role", sidecar.Role),
+					zap.Error(persistErr))
 			}
-
-			// Calculate cost (rough estimate based on LLM usage)
-			costUSD := 0.0
-			if llmResp != nil && llmResp.Usage.InputTokens > 0 {
-				// Anthropic pricing (approximate): $3/million input, $15/million output
-				costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
-					float64(llmResp.Usage.OutputTokens)*0.000015
-			}
-
-			// Calculate latency from turn start
-			latency := time.Since(turnStartTime)
-
-			// Extract LLM provider and model info
-			llmProvider := "anthropic" // Default
-			llmModel := "claude-sonnet-4-5"
-			// TODO: Extract actual provider/model from LLM provider interface when available
-
-			// Record pattern usage for effectiveness tracking
-			a.orchestrator.RecordPatternUsage(
-				ctx,
-				selectedPattern.Name,
-				a.config.Name,
-				success,
-				costUSD,
-				latency,
-				errorType,
-				llmProvider,
-				llmModel,
-			)
 		}
-		// === END PATTERN EFFECTIVENESS TRACKING ===
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3522,14 +3518,19 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			})
 
 			if storeErr == nil {
-				// Progressive disclosure: Register get_error_details tool after first
-				// error, unless the server has suppressed it (tools.none).
-				if !a.tools.IsRegistered("get_error_details") && !a.isBuiltinToolSuppressed("get_error_details") {
-					errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-					if a.prompts != nil {
-						errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+				// Progressive disclosure: advertise get_error_details after the
+				// first error into THIS session, unless the server suppressed it
+				// (tools.none). Register the definition once; the ledger scopes
+				// the advertisement per session.
+				if !a.isBuiltinToolSuppressed("get_error_details") {
+					if !a.tools.IsRegistered("get_error_details") {
+						errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+						if a.prompts != nil {
+							errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+						}
+						a.tools.Register(errorTool)
 					}
-					a.tools.Register(errorTool)
+					a.registerSessionTool(sessionID, "get_error_details")
 				}
 
 				// Successfully stored - return reference
@@ -3565,14 +3566,19 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				})
 
 				if storeErr == nil {
-					// Progressive disclosure: Register get_error_details tool after first
-					// error, unless the server has suppressed it (tools.none).
-					if !a.tools.IsRegistered("get_error_details") && !a.isBuiltinToolSuppressed("get_error_details") {
-						errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-						if a.prompts != nil {
-							errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+					// Progressive disclosure: advertise get_error_details after the
+					// first error into THIS session, unless the server suppressed it
+					// (tools.none). Register the definition once; the ledger scopes
+					// the advertisement per session.
+					if !a.isBuiltinToolSuppressed("get_error_details") {
+						if !a.tools.IsRegistered("get_error_details") {
+							errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+							if a.prompts != nil {
+								errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+							}
+							a.tools.Register(errorTool)
 						}
-						a.tools.Register(errorTool)
+						a.registerSessionTool(sessionID, "get_error_details")
 					}
 
 					// Successfully stored - return reference
@@ -3604,30 +3610,43 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 	// Progressive disclosure: a tool returned a STORED REFERENCE (e.g. an MCP tool
 	// like dbwrite:query that pre-stores a large {columns, rows} result and tells
 	// the model to use query_tool_result). The agent's own large-result path
-	// registers query_tool_result in formatToolResult, but a pre-stored reference
-	// bypasses that — so register it here too, the moment any tool hands back a
-	// reference. Keeps it out of the fresh tool list while ensuring it's available
-	// as soon as there's something to page.
+	// advertises query_tool_result in formatToolResult, but a pre-stored reference
+	// bypasses that — so advertise it here too, the moment any tool hands back a
+	// reference. Scoped to THIS session's ledger so it appears only where there's
+	// something to page.
 	// query_tool_result reads from EITHER the SQL result store or shared memory,
-	// so register it when either is wired. Requiring only the SQL store missed
+	// so advertise it when either is wired. Requiring only the SQL store missed
 	// shared-memory references (e.g. web_search results stored by the executor) —
 	// the agent saw the reference but had no tool to page it.
 	if result.DataReference != nil && (a.sqlResultStore != nil || a.sharedMemory != nil) &&
-		!a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
-		queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
-		if a.prompts != nil {
-			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		!a.isBuiltinToolSuppressed("query_tool_result") {
+		if !a.tools.IsRegistered("query_tool_result") {
+			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+			if a.prompts != nil {
+				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+			}
+			a.tools.Register(queryTool)
 		}
-		a.tools.Register(queryTool)
+		a.registerSessionTool(sessionID, "query_tool_result")
 	}
 
 	// Format successful result with smart truncation
 	if result.Data != nil {
-		dataStr := fmt.Sprintf("%v", result.Data)
+		// Render a string result verbatim; marshal a composite result as JSON.
+		// A Go map must never be rendered with %v.
+		var dataStr string
+		switch v := result.Data.(type) {
+		case string:
+			dataStr = v
+		default:
+			if b, marshalErr := json.Marshal(v); marshalErr == nil {
+				dataStr = string(b)
+			} else {
+				dataStr = fmt.Sprintf("[unserializable result: %v]", marshalErr)
+			}
+		}
 
-		// Check if result is large enough to warrant reference storage
 		tokenCount := a.tokenCounter.CountTokens(dataStr)
-		const maxInlineTokens = 1000 // Keep small results inline, store large ones
 
 		// Skip reference creation if MCP tool already truncated (#1: Stop Double-Truncation)
 		// MCP tools handle truncation intelligently at 4096 bytes, creating another
@@ -3639,26 +3658,26 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			}
 		}
 
-		// Respect the configured byte-based threshold from SetSharedMemoryThreshold.
-		// The executor's handleLargeResult already checks the byte threshold and
-		// stores large results in shared memory. If the executor kept the result
-		// inline (bytes <= threshold), we must not override that decision with the
-		// hardcoded token-based check below. This ensures the admin-configured
-		// threshold (e.g. 40KB) is authoritative — not the 1000-token heuristic.
+		// Offload is byte-thresholded only, matching the executor's handleLargeResult:
+		// a result strictly below the configured byte threshold stays inline; one at or
+		// above it is stored by reference. Both offload sites share this single threshold.
 		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
 		if a.sharedMemoryThreshold >= 0 {
 			byteThreshold = a.sharedMemoryThreshold
 		}
 		dataBytes := int64(len(dataStr))
-		if byteThreshold > 0 && dataBytes <= byteThreshold {
-			// Result fits within the configured byte threshold — keep inline
+		if byteThreshold > 0 && dataBytes < byteThreshold {
+			// Strictly below the configured byte threshold — keep inline
 			return dataStr
 		}
 
-		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory
-		// Wrapping them again creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
-		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
-		if tokenCount > maxInlineTokens && toolName != "get_tool_result" && toolName != "query_tool_result" {
+		// Larger than the byte threshold: store by reference EXCEPT for the exempt set,
+		// whose outputs must enter whole. Recall tools already retrieve stored data, so
+		// re-wrapping them recurses: query_tool_result → DataRef A → query_tool_result(A) → ...
+		// manage_skills delivers the skill body as its own message, so its result must
+		// enter whole rather than be stored by reference regardless of size.
+		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
+		if toolName != "get_tool_result" && toolName != "query_tool_result" && toolName != "manage_skills" {
 			// Large result - store reference and provide summary
 
 			// Try shared memory first (fastest, in-process)
@@ -3685,28 +3704,42 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				storageMeta["session_id"] = sessionID
 
 				// Store in shared memory
-				dataRef, storeErr := a.sharedMemory.Store(refID, []byte(dataStr), contentType, storageMeta)
+				dataRef, storeErr := a.sharedMemory.Store(refID, []byte(dataStr), contentType, storageMeta, sessionID)
 				if storeErr == nil {
+					// Mutation-debug: a large result was offloaded by reference.
+					// No-op unless the context-dump switch is on.
+					if a.contextDebugEnabled() {
+						zap.L().Debug("context mutation: large-result offload",
+							zap.String("session_id", sessionID),
+							zap.Int("turn", a.contextDebugTurn(sessionID)),
+							zap.String("reference_id", dataRef.Id),
+							zap.Int64("size_bytes", dataBytes),
+							zap.Int64("threshold_bytes", byteThreshold))
+					}
 					// Pin reference for session (auto-cleanup on session end)
 					// This prevents LRU eviction while session is active and ensures cleanup when session ends
 					if a.refTracker != nil {
 						a.refTracker.PinForSession(sessionID, dataRef.Id)
 					}
 
-					// Progressive disclosure: Register query_tool_result after first large
-					// result, unless the server has suppressed it (tools.none). We're
-					// inside `a.sharedMemory != nil` and just stored there, so the tool
-					// has a backing store regardless of whether the SQL store is wired.
-					if !a.tools.IsRegistered("query_tool_result") && !a.isBuiltinToolSuppressed("query_tool_result") {
-						queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
-						if a.prompts != nil {
-							queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+					// Progressive disclosure: advertise query_tool_result after the
+					// first large result into THIS session, unless the server
+					// suppressed it (tools.none). We're inside `a.sharedMemory !=
+					// nil` and just stored there, so the tool has a backing store
+					// regardless of whether the SQL store is wired.
+					if !a.isBuiltinToolSuppressed("query_tool_result") {
+						if !a.tools.IsRegistered("query_tool_result") {
+							queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+							if a.prompts != nil {
+								queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+							}
+							a.tools.Register(queryTool)
 						}
-						a.tools.Register(queryTool)
+						a.registerSessionTool(sessionID, "query_tool_result")
 					}
 
 					// Get metadata to create rich inline summary (eliminates need for get_tool_result call)
-					meta, metaErr := a.sharedMemory.GetMetadata(dataRef)
+					meta, metaErr := a.sharedMemory.GetMetadata(dataRef, sessionID)
 					if metaErr == nil && meta != nil {
 						// Format rich metadata inline (same as executor.go does)
 						richSummary := formatAgentSharedMemoryResult(meta, dataRef.Id, toolName)
@@ -3736,7 +3769,7 @@ Token efficiency: %d tokens → ~50 tokens (%.1f%% reduction)`,
 			return truncateWithStructure(dataStr, 800, result.Metadata)
 		}
 
-		// Small result - return inline
+		// Exempt tool (recall tools / manage_skills) over the threshold: return whole.
 		return dataStr
 	}
 
@@ -3952,12 +3985,21 @@ func (a *Agent) ListSessions() []*Session {
 // DeleteSession removes a session.
 func (a *Agent) DeleteSession(sessionID string) {
 	a.memory.DeleteSession(sessionID)
+	// Drop the session's advertised-tool ledger too, or it grows unbounded on a
+	// long-running multi-session server. scopedToolNames is process-global (a
+	// name is scoped once any session scopes it) and is intentionally not pruned.
+	a.mu.Lock()
+	delete(a.sessionToolLedger, sessionID)
+	a.mu.Unlock()
 }
 
 // ClearAllSessions removes all sessions from memory.
 // Used by the benchmark server to free memory between scenarios.
 func (a *Agent) ClearAllSessions() {
 	a.memory.ClearAll()
+	a.mu.Lock()
+	a.sessionToolLedger = make(map[string]map[string]bool)
+	a.mu.Unlock()
 }
 
 // cleanupSessionReferences releases all shared memory references for a session.
@@ -4188,6 +4230,16 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 // -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
 func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
+	// Re-push to the executor: it captured the threshold at SetSharedMemory time,
+	// so a setter call afterwards (the registry configures it post-construction)
+	// would otherwise leave the two offload sites at different thresholds.
+	if a.executor != nil && a.sharedMemory != nil {
+		eff := int64(storage.DefaultSharedMemoryThreshold)
+		if threshold >= 0 {
+			eff = threshold
+		}
+		a.executor.SetSharedMemory(a.sharedMemory, eff)
+	}
 }
 
 // SetMaxToolResults configures how many tool results to keep in the conversation kernel.
@@ -4224,10 +4276,8 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 		a.memory.SetSharedMemory(sharedMemory)
 	}
 
-	// EXPERIMENT: get_tool_result removed - inline metadata makes it unnecessary
-	// Re-register GetToolResultTool with the new store
-	// This ensures the tool uses the correct store instance for retrievals
-	// v1.0.1: Pass both memory and SQL stores (SQL store passed as nil here, configured separately)
+	// GetToolResultTool is not registered (see NewAgent), so there is nothing to
+	// re-point at the new store here. Kept for callers that wire it directly.
 	// if sharedMemory != nil && a.tools != nil {
 	// 	a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
 	// }

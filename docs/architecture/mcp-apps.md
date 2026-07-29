@@ -262,7 +262,7 @@ Defense-in-depth. Even though the spec is validated, using `textContent` elimina
 
 ### Why lazily register agent tools?
 
-Agent tools are not registered upfront for every conversation. Instead, `ContainsUIIntent` performs a case-insensitive keyword scan on each user message. When it detects visualization intent (e.g., "dashboard", "chart", "create ui"), the four UI app tools are injected into the agent's tool set for that turn. This avoids inflating the tool list for conversations that never need UI creation, while still making tools available without per-agent configuration.
+Agent tools are not registered upfront for every conversation. Instead, `ContainsUIIntent` performs a case-insensitive keyword scan on each user message. The first time it detects visualization intent (e.g., "dashboard", "chart", "create ui"), the four UI app tools are promoted into the agent's tool registry and stay there. This avoids inflating the tool list for agents that never need UI creation, while still making the tools available without per-agent configuration.
 
 ### Why in-memory registry, not SQLite?
 

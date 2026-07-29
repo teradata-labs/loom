@@ -269,17 +269,11 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 						}
 					}
 				}
-				apiMessages = append(apiMessages, Message{
-					Role:    "user",
-					Content: content,
-				})
+				apiMessages = appendUserOrCoalesce(apiMessages, content)
 			} else {
 				// Fallback to plain text (backward compatible)
-				apiMessages = append(apiMessages, Message{
-					Role: "user",
-					Content: []ContentBlock{
-						{Type: "text", Text: msg.Content},
-					},
+				apiMessages = appendUserOrCoalesce(apiMessages, []ContentBlock{
+					{Type: "text", Text: msg.Content},
 				})
 			}
 
@@ -316,15 +310,16 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 			}
 
 		case "tool":
-			// Tool results
-			apiMessages = append(apiMessages, Message{
-				Role: "user",
-				Content: []ContentBlock{
-					{
-						Type:      "tool_result",
-						ToolUseID: msg.ToolUseID,
-						Content:   msg.Content,
-					},
+			// Tool results — go under user role; coalesce with any adjacent
+			// user message so we never emit two consecutive user wire messages
+			// (Anthropic 400: "roles must alternate"). This also lets a
+			// tool_result and a following text sidecar (e.g. manage_skills's
+			// skill body) ride in one wire message with mixed content blocks.
+			apiMessages = appendUserOrCoalesce(apiMessages, []ContentBlock{
+				{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolUseID,
+					Content:   msg.Content,
 				},
 			})
 		}
@@ -345,6 +340,26 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		},
 	}
 	return systemBlocks, apiMessages
+}
+
+// appendUserOrCoalesce appends content blocks to the last user message in the
+// list when that last message is user-role; otherwise it appends a new user
+// message. This is the sole path by which user-role wire messages are produced
+// by the converter, so it guarantees the outgoing message list never contains
+// two consecutive user-role messages — which Anthropic rejects with 400
+// "roles must alternate". It also lets a tool_result and an immediately-
+// following user-role text (e.g. the manage_skills skill-body sidecar) share
+// a single wire user message with mixed content blocks — the Anthropic-native
+// shape for a Skill-tool style load event.
+func appendUserOrCoalesce(msgs []Message, blocks []ContentBlock) []Message {
+	if len(blocks) == 0 {
+		return msgs
+	}
+	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
+		msgs[n-1].Content = append(msgs[n-1].Content, blocks...)
+		return msgs
+	}
+	return append(msgs, Message{Role: "user", Content: blocks})
 }
 
 // convertTools converts shuttle tools to Anthropic format.

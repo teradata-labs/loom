@@ -143,13 +143,18 @@ func TestRegisterYAMLBuiltinTools_EmptyConfig_NoOp(t *testing.T) {
 	withViperMinimalMode(t, false, false)
 	ag := agent.NewAgent(nil, nil)
 
+	// The agent registers its own base tools at construction (e.g. load_pattern);
+	// the helper must add nothing on top of that set.
+	baseline := ag.ListTools()
+
 	// nil Tools
 	registerYAMLBuiltinTools(ag, &loomv1.AgentConfig{}, nil, zap.NewNop(), "  ", "agent_management")
-	assert.Empty(t, ag.ListTools(), "no Tools section in YAML means no tools registered from the helper")
+	assert.ElementsMatch(t, baseline, ag.ListTools(),
+		"no Tools section in YAML means no tools registered from the helper")
 
 	// empty Builtin slice
 	registerYAMLBuiltinTools(ag, newCfg(), nil, zap.NewNop(), "  ", "agent_management")
-	assert.Empty(t, ag.ListTools(), "empty Builtin slice is a no-op")
+	assert.ElementsMatch(t, baseline, ag.ListTools(), "empty Builtin slice is a no-op")
 }
 
 // TestRegisterYAMLBuiltinTools_UnknownTool_NotRegistered verifies that a
