@@ -556,6 +556,19 @@ translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
 
 **Invariant**: Every Loom attribute is represented in the exported OTel span — either under its canonical `gen_ai.*` name or under a `loom.*` prefixed fallback. No data is silently dropped.
 
+### Loop-Configuration Attributes
+
+Root conversation spans carry the loop configuration so results are attributable at the model + loop-configuration level (the Harness-Bench conclusion — same-model scores swing double digits across harness configurations):
+
+| Attribute | Meaning |
+|---|---|
+| `config.loop_fingerprint` | `v1:<sha256>` over the explicit loop-shape field list (stop conditions, budgets, retry policy, self-healing). Version prefix bumps whenever the field list changes; fingerprints across versions are never comparable. |
+| `config.max_turns`, `config.max_tool_executions`, `config.max_iterations` | Loop stop conditions and per-turn tool cap |
+| `config.max_context_tokens`, `config.output_token_cb_threshold` | Context budget and output-token circuit breaker |
+| `config.self_healing`, `config.retry_max_attempts` | Recovery tier and LLM retry policy |
+
+Model and provider are deliberately **not** part of the fingerprint — they are separate attributes (`llm.provider`, `llm.model`); attribution uses both together. These attributes flow to OTLP as `loom.config.*` (unmapped-key fallback) and into `EvalRun.ConfigurationJSON` via the embedded tracer's span-to-eval conversion, so eval runs are attributable to a specific loop design and loop changes can be A/B-compared with existing infrastructure.
+
 
 ## Design Trade-offs
 

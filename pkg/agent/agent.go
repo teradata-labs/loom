@@ -1835,6 +1835,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("llm.model", currentLLM.Model())
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+	span.SetAttribute("config.max_iterations", a.config.MaxIterations)
+	span.SetAttribute("config.max_context_tokens", a.config.MaxContextTokens)
+	span.SetAttribute("config.self_healing", a.config.EnableSelfHealing)
+	span.SetAttribute("config.retry_max_attempts", a.config.Retry.MaxRetries)
+	span.SetAttribute("config.output_token_cb_threshold", a.config.OutputTokenCBThreshold)
+	// Loop-shape identifier for Harness-Bench-style attribution: results are
+	// meaningful at the model+loop-configuration level. Flows to OTLP as
+	// loom.config.loop_fingerprint and into EvalRun.ConfigurationJSON.
+	span.SetAttribute("config.loop_fingerprint", a.getLoopFingerprint())
 
 	// Record conversation started event
 	startedEvent := map[string]interface{}{

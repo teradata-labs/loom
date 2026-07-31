@@ -96,6 +96,11 @@ type Agent struct {
 	// Config holds agent configuration
 	config *Config
 
+	// Loop fingerprint cache: computed lazily at first chat so it reflects
+	// post-defaulting effective config values (see loop_fingerprint.go).
+	loopFingerprintOnce sync.Once
+	loopFingerprint     string
+
 	// Optional self-correction components (injected via options)
 	guardrails      *fabric.GuardrailEngine
 	circuitBreakers *fabric.CircuitBreakerManager

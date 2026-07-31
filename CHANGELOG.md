@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Loop-Configuration Fingerprint on Conversation Spans
+- Root conversation spans now carry `config.loop_fingerprint` — `v1:<sha256>` over the explicit loop-shape field list (max_turns, max_tool_executions, max_iterations, output-token CB threshold, context/output token budgets, self-healing, retry policy) — plus individual `config.*` attributes (`max_iterations`, `max_context_tokens`, `self_healing`, `retry_max_attempts`, `output_token_cb_threshold`)
+- Model/provider are excluded by design (separate `llm.*` attributes); attribution = model + loop fingerprint together
+- Zero downstream wiring: flows to OTLP as `loom.config.*` and into `EvalRun.ConfigurationJSON`, making eval runs attributable to a specific loop configuration
+- Versioning policy: any field-list change bumps the `v1:` prefix; fingerprints across versions are never comparable
+
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
