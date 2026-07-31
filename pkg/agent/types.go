@@ -96,6 +96,11 @@ type Agent struct {
 	// Config holds agent configuration
 	config *Config
 
+	// Patterns loaded via load_pattern per in-flight session, drained for
+	// effectiveness attribution at the end of each Chat (pattern_usage.go).
+	loadedPatternsMu sync.Mutex
+	loadedPatterns   map[string][]string
+
 	// Optional self-correction components (injected via options)
 	guardrails      *fabric.GuardrailEngine
 	circuitBreakers *fabric.CircuitBreakerManager

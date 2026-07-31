@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Pattern Effectiveness Recording Re-wired (load_pattern era)
+- `load_pattern` now records which patterns a conversation loaded (canonical pattern name, per session, deduplicated); at the end of each Chat every loaded pattern is attributed the **whole-conversation outcome** via `RecordPatternUsage` — success (Chat error, and forward-compatibly output-verification failure / cost-limit trip), conversation cost, latency, and live provider/model (fixes the historical hardcoded provider/model defect)
+- Gated by `behavior.patterns.enable_tracking` (default true); no-op without a wired tracker
+- New span event `pattern.effectiveness_recorded {patterns, success, cost_usd}` on the conversation root span
+- Documented semantics: per-Chat attribution windows (drain-on-read); multi-pattern conversations attribute full cost to each pattern (summing double-counts); same-session concurrent Chats attribute best-effort
+
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).

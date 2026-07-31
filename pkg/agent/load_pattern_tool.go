@@ -28,11 +28,16 @@ import (
 // the one surfaced from a skill's PatternRefs by manage_skills(load).
 type LoadPatternTool struct {
 	orchestrator *patterns.Orchestrator
+
+	// recorder receives load notifications for effectiveness attribution.
+	// Nil disables recording; the tool result is unaffected either way.
+	recorder patternLoadRecorder
 }
 
-// NewLoadPatternTool creates a load_pattern tool backed by the pattern orchestrator.
-func NewLoadPatternTool(orchestrator *patterns.Orchestrator) *LoadPatternTool {
-	return &LoadPatternTool{orchestrator: orchestrator}
+// NewLoadPatternTool creates a load_pattern tool backed by the pattern
+// orchestrator. recorder may be nil (loads are then not attributed).
+func NewLoadPatternTool(orchestrator *patterns.Orchestrator, recorder patternLoadRecorder) *LoadPatternTool {
+	return &LoadPatternTool{orchestrator: orchestrator, recorder: recorder}
 }
 
 func (t *LoadPatternTool) Name() string    { return "load_pattern" }
@@ -76,6 +81,15 @@ func (t *LoadPatternTool) Execute(ctx context.Context, params map[string]interfa
 	pattern, err := t.orchestrator.GetLibrary().Load(reference)
 	if err != nil {
 		return errorResult("PATTERN_NOT_FOUND", "unknown pattern reference: "+reference), nil
+	}
+
+	// Record the load for effectiveness attribution under the canonical
+	// pattern name (aliases aggregate). Loads outside a conversation carry
+	// no session identity and are silently not recorded.
+	if t.recorder != nil {
+		if sessionID, _ := ctx.Value("session_id").(string); sessionID != "" {
+			t.recorder.RecordPatternLoaded(sessionID, pattern.Name)
+		}
 	}
 
 	return &shuttle.Result{

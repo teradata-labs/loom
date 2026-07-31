@@ -1418,7 +1418,7 @@ func (a *Agent) checkAndRegisterLoadPatternTool() {
 		return
 	}
 
-	a.tools.Register(NewLoadPatternTool(a.orchestrator))
+	a.tools.Register(NewLoadPatternTool(a.orchestrator, a))
 }
 
 // buildTaskContext queries the task store and builds a compact context block
@@ -1924,6 +1924,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			"duration_ms": duration.Milliseconds(),
 		})
 
+		// Attribute the failure to any patterns loaded during this chat
+		// (cost 0: no usable usage total on the error path).
+		if recorded := a.recordPatternEffectiveness(ctx, sessionID, err, nil, 0, duration); len(recorded) > 0 {
+			span.AddEvent("pattern.effectiveness_recorded", map[string]interface{}{
+				"patterns": recorded,
+				"success":  false,
+			})
+		}
+
 		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
 			observability.AttrSessionID: sessionID,
 		})
@@ -1965,6 +1974,17 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			zap.String("session_id", sessionID),
 			zap.Error(err))
 		span.RecordError(err)
+	}
+
+	// Attribute the conversation outcome to any patterns loaded during this
+	// chat (whole-conversation semantics; final-call cost as the total until
+	// a running conversation total exists).
+	if recorded := a.recordPatternEffectiveness(ctx, sessionID, nil, response.Metadata, response.Usage.CostUSD, duration); len(recorded) > 0 {
+		span.AddEvent("pattern.effectiveness_recorded", map[string]interface{}{
+			"patterns": recorded,
+			"success":  true,
+			"cost_usd": response.Usage.CostUSD,
+		})
 	}
 
 	// Record success metrics and span attributes

@@ -520,7 +520,7 @@ Patterns reach the conversation on demand only, through the `load_pattern` tool.
 | `enabled` | `*bool` | `true` | No longer drives behaviour. There is no injection path to enable or disable; `load_pattern` is registered regardless. |
 | `min_confidence` | `*float64` | `0.75` | No longer drives behaviour. Parsed and validated (0.0 - 1.0), never read at runtime. |
 | `max_patterns_per_turn` | `*int` | `1` | No longer drives behaviour. Nothing injects patterns per turn; the model may call `load_pattern` as often as it needs. |
-| `enable_tracking` | `*bool` | `true` | No longer drives behaviour on the agent path. |
+| `enable_tracking` | `*bool` | `true` | Enables pattern-effectiveness recording: every pattern loaded via `load_pattern` during a conversation is attributed the whole-conversation outcome (success, cost, latency, provider/model) at the end of that Chat, feeding the `pattern_effectiveness` store and the `meta.pattern.effectiveness` bus topic. Attribution semantics: each loaded pattern receives the full conversation cost, so summing cost across patterns double-counts; concurrent Chats on the same session attribute best-effort to whichever finishes first. |
 | `use_llm_classifier` | `*bool` | `true` | Installs an LLM intent classifier on the pattern orchestrator, using `classifier_llm` when set. The conversation loop does not invoke it; only callers that drive the pattern orchestrator directly do. |
 
 Pattern content is pulled with references a loaded skill declares. See [manage_skills](#manage_skills) and [load_pattern](#load_pattern).
