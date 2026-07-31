@@ -614,13 +614,27 @@ backup:
 # Runtime Image (teradata/loom-runtime)
 # =============================================================================
 
-# Build the loom-runtime Docker image
+# Build the loom-runtime Docker image for the local platform (single-arch, fast).
+# For multi-arch CI builds use `just build-runtime-multiarch`.
 build-runtime tag="1.0.0":
     docker build \
         --build-arg VERSION=$(cat VERSION) \
         --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
         -t teradata/loom-runtime:{{tag}} \
         -f docker/Dockerfile.runtime \
+        .
+
+# Build multi-arch loom-runtime image (linux/amd64 + linux/arm64) via Docker Buildx.
+# Requires a buildx builder with QEMU support.  The image is loaded into the local
+# docker daemon for testing (use --push instead of --load to push to a registry).
+build-runtime-multiarch tag="1.0.0":
+    docker buildx build \
+        --platform linux/amd64,linux/arm64 \
+        --build-arg VERSION=$(cat VERSION) \
+        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+        -t teradata/loom-runtime:{{tag}} \
+        -f docker/Dockerfile.runtime \
+        --load \
         .
 
 # Build and load loom-runtime image into ALL nodes of a minikube cluster.
