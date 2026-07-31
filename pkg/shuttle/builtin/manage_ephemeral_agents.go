@@ -115,7 +115,7 @@ func (t *ManageEphemeralAgentsTool) InputSchema() *shuttle.JSONSchema {
 			// Spawn parameters
 			"agent_id":        shuttle.NewStringSchema("(spawn) ID or name of an existing agent to spawn — use 'list' to see options"),
 			"preset":          shuttle.NewStringSchema("(spawn) Preset template name — use 'list' to see available presets"),
-			"initial_message": shuttle.NewStringSchema("(spawn) Task description to send to the spawned agent"),
+			"initial_message": shuttle.NewStringSchema("(spawn) Task description delivered to the spawned agent via the first successfully subscribed auto_subscribe topic. Requires auto_subscribe (rejected otherwise). The spawned agent processes it asynchronously and publishes its response back to the same topic."),
 			"workflow_id":     shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)"),
 			"auto_subscribe":  shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
 			// Despawn parameters

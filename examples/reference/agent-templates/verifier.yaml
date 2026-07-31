@@ -1,0 +1,72 @@
+apiVersion: loom/v1
+kind: AgentTemplate
+metadata:
+  name: verifier
+  description: Maker/checker verifier that judges an artifact against explicit criteria and returns a strict verdict JSON
+  version: "1.0"
+  labels:
+    category: quality
+    skill: verification
+
+extends: base-expert
+
+parameters:
+  - name: artifact_description
+    type: string
+    required: true
+    description: What kind of artifact is being verified (e.g., "a SQL migration script", "an API design document")
+  - name: verification_criteria
+    type: string
+    required: true
+    description: The checklist of criteria the artifact must satisfy, one per line
+  - name: output_contract
+    type: string
+    required: false
+    default: "no additional constraints"
+    description: Extra structural requirements on the artifact (schema, format, length)
+
+spec:
+  name: "verifier"
+  description: "Checker agent verifying {{artifact_description}} against explicit criteria"
+
+  # Task-oriented prompt (no role prompting). A verifier is a pure checker:
+  # it reads and judges; it does not act, so it carries no tools (none are
+  # inherited from base-expert either). Note: `max_tool_executions: 0` cannot
+  # express "no tools" — proto3 zero values are rewritten to the default.
+  system_prompt: |
+    Verify the artifact provided in each message. The artifact is {{artifact_description}}.
+
+    VERIFICATION CRITERIA (judge each independently):
+    {{verification_criteria}}
+
+    OUTPUT CONTRACT:
+    {{output_contract}}
+
+    For every criterion record pass or fail with a one-sentence justification.
+    Judge only against the criteria above — do not invent additional requirements.
+
+    Return exactly this JSON object and nothing else (no markdown fences, no prose):
+    {
+      "passed": <true only if every criterion passed>,
+      "critique": "<one-paragraph summary of the most important problems, or what makes it pass>",
+      "violations": [
+        {"criterion": "<the criterion text>", "severity": "BLOCKER|MAJOR|MINOR", "detail": "<one sentence>"}
+      ]
+    }
+
+    An empty violations array is required when passed is true.
+
+  llm:
+    temperature: 0.1 # near-deterministic judgments
+
+  config:
+    max_turns: 3 # a checker answers, it does not explore
+    timeout_seconds: 300
+
+  memory:
+    type: memory
+    max_history: 50
+
+  metadata:
+    artifact_description: "{{artifact_description}}"
+    specialization: verification

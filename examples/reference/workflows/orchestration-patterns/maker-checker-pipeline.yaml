@@ -1,0 +1,79 @@
+# Maker/Checker Pipeline
+# Stage 1 (maker) produces an artifact; stage 2 (checker) is a verifier agent
+# that judges it against explicit criteria and must return a strict verdict
+# JSON — enforced deterministically by output_schema, retried with feedback
+# by retry_policy.
+#
+# The checker verifies its OWN output shape via output_schema (the verdict
+# JSON). For automated maker-regeneration loops, use the iterative pipeline
+# pattern; for human-gated revision, add a hitl_gate to the checker stage.
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: maker-checker-pipeline
+  description: Two-stage maker/checker flow with a schema-enforced verdict
+  labels:
+    category: quality
+    complexity: medium
+
+spec:
+  type: pipeline
+  initial_prompt: "Write a SQL migration that adds a soft-delete column (deleted_at TIMESTAMP NULL) to the orders table, with an index for filtering live rows."
+
+  stages:
+    # Maker: produces the artifact.
+    - agent_id: sql-maker
+      prompt_template: |
+        {{previous}}
+
+        Produce the complete migration script (up and down), ready to run.
+
+    # Checker: a verifier-template agent (examples/reference/agent-templates/verifier.yaml)
+    # instantiated with verification criteria. Its verdict must be valid JSON
+    # matching the schema below; failures retry the checker with feedback.
+    - agent_id: verifier
+      prompt_template: |
+        Verify this artifact:
+
+        {{previous}}
+      output_schema: |
+        {
+          "type": "object",
+          "required": ["passed", "critique", "violations"],
+          "properties": {
+            "passed": {"type": "boolean"},
+            "critique": {"type": "string"},
+            "violations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["criterion", "severity", "detail"],
+                "properties": {
+                  "criterion": {"type": "string"},
+                  "severity": {"type": "string", "enum": ["BLOCKER", "MAJOR", "MINOR"]},
+                  "detail": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      retry_policy:
+        max_retries: 2
+        session_mode: fresh
+        include_valid_values: true
+
+  pass_full_history: false
+
+# Example execution:
+#   looms workflow run maker-checker-pipeline.yaml
+#
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - sql-maker.yaml: any agent that writes SQL
+# - verifier.yaml: instantiate from the verifier agent template with
+#   artifact_description: "a SQL migration script"
+#   verification_criteria: |
+#     - Adds deleted_at TIMESTAMP NULL to orders
+#     - Provides a reversible down migration
+#     - Creates a partial/filtered index for live rows
+#     - No destructive statements (DROP TABLE, TRUNCATE)

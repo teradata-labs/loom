@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Maker/Checker Verification (verifier template + spawn initial_message delivery)
+- `verifier` agent template (`examples/reference/agent-templates/verifier.yaml`): pure checker (no tools, temperature 0.1) returning a strict verdict JSON `{passed, critique, violations[]}`; parameterized by artifact description and verification criteria
+- `maker-checker-pipeline` example workflow: checker stage's verdict enforced deterministically via stage `output_schema` + `retry_policy`
+- `docs/guides/maker-checker.md`: pipeline (gating) vs ephemeral-spawn (advisory) variants, verdict-handling rules, known limitations
+- `manage_ephemeral_agents(spawn).initial_message` is now **delivered**: published at spawn to the first successfully subscribed `auto_subscribe` topic with the parent as sender; the spawned agent processes it and publishes its response back to the same topic
+
+### Changed
+- ⚠️ **Behavior change**: `manage_ephemeral_agents(spawn)` with `initial_message` but no `auto_subscribe` is now rejected (`InvalidArgument`) instead of silently storing the message in metadata; delivery failures abort the spawn instead of succeeding silently
+
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).

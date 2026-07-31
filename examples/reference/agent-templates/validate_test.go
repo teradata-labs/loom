@@ -25,10 +25,11 @@ import (
 // Test that all example agent templates are valid and can be loaded
 func TestExampleTemplates(t *testing.T) {
 	examples := []struct {
-		name     string
-		file     string
-		extends  string // Parent template if any
-		testVars map[string]string
+		name          string
+		file          string
+		extends       string // Parent template if any
+		testVars      map[string]string
+		expectNoTools bool // pure-checker templates deliberately carry no tools
 	}{
 		{
 			name:    "base-expert",
@@ -63,6 +64,16 @@ func TestExampleTemplates(t *testing.T) {
 				"review_depth": "standard",
 			},
 		},
+		{
+			name:    "verifier",
+			file:    "verifier.yaml",
+			extends: "base-expert",
+			testVars: map[string]string{
+				"artifact_description":  "a SQL migration script",
+				"verification_criteria": "- reversible\n- non-destructive",
+			},
+			expectNoTools: true,
+		},
 	}
 
 	for _, ex := range examples {
@@ -96,9 +107,16 @@ func TestExampleTemplates(t *testing.T) {
 				assert.NotEmpty(t, config.Name, "Config name is empty")
 				assert.NotEmpty(t, config.SystemPrompt, "System prompt is empty")
 				// LLM config may be nil (inherits from server defaults)
-				// Tools should be configured
-				assert.NotNil(t, config.Tools, "Tools config should not be nil")
-				assert.NotEmpty(t, config.Tools.Builtin, "Builtin tools should be configured")
+				if ex.expectNoTools {
+					// Pure checkers read and judge; they carry no tools.
+					if config.Tools != nil {
+						assert.Empty(t, config.Tools.Builtin, "checker template must not carry tools")
+					}
+				} else {
+					// Tools should be configured
+					assert.NotNil(t, config.Tools, "Tools config should not be nil")
+					assert.NotEmpty(t, config.Tools.Builtin, "Builtin tools should be configured")
+				}
 			}
 		})
 	}

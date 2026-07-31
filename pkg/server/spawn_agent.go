@@ -31,6 +31,11 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 	if req.AgentID == "" {
 		return nil, fmt.Errorf("agent ID is required")
 	}
+	// initial_message is delivered via pub-sub: without a subscription there
+	// is nowhere to deliver it. Fail loudly instead of silently stashing it.
+	if req.InitialMessage != "" && len(req.AutoSubscribe) == 0 {
+		return nil, fmt.Errorf("initial_message requires auto_subscribe: the message is delivered to the first successfully subscribed topic")
+	}
 
 	// Check registry is available
 	s.mu.RLock()
@@ -44,6 +49,10 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 	}
 	if logger == nil {
 		logger = zap.NewNop()
+	}
+
+	if req.InitialMessage != "" && messageBus == nil {
+		return nil, fmt.Errorf("initial_message requires a message bus, but none is configured")
 	}
 
 	logger.Info("Spawning sub-agent",
@@ -139,6 +148,39 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		}
 	}
 
+	// Deliver initial_message to the first *successfully subscribed* topic
+	// (individual Subscribe failures are tolerated above, so AutoSubscribe[0]
+	// may have no subscription). Subscriptions and notification channels are
+	// registered synchronously with buffered channels, so publishing here is
+	// race-free: the message buffers until runSpawnedAgentLoop starts and
+	// drains it. FromAgent is the parent, so the child's self-echo filter
+	// does not suppress it. Publishing before the agent is tracked lets a
+	// delivery failure abort the spawn cleanly.
+	if req.InitialMessage != "" {
+		if len(subscribedTopics) == 0 {
+			return nil, fmt.Errorf("initial_message could not be delivered: all %d auto_subscribe subscriptions failed", len(req.AutoSubscribe))
+		}
+		initialMsg := &loomv1.BusMessage{
+			Id:        fmt.Sprintf("%s-initial-%d", sessionID, time.Now().UnixNano()),
+			Topic:     subscribedTopics[0],
+			FromAgent: req.ParentAgentID,
+			Payload: &loomv1.MessagePayload{
+				Data: &loomv1.MessagePayload_Value{
+					Value: []byte(req.InitialMessage),
+				},
+			},
+			Metadata:  map[string]string{"initial_message": "true"},
+			Timestamp: time.Now().UnixMilli(),
+		}
+		if _, _, err := messageBus.Publish(ctx, subscribedTopics[0], initialMsg); err != nil {
+			return nil, fmt.Errorf("failed to deliver initial_message to topic %s: %w", subscribedTopics[0], err)
+		}
+		logger.Info("Delivered initial_message to spawned agent",
+			zap.String("sub_agent_id", subAgentID),
+			zap.String("topic", subscribedTopics[0]),
+			zap.String("message_preview", truncateString(req.InitialMessage, 50)))
+	}
+
 	// Inject workflow communication context into spawned agent
 	spawnCommCtx := &agent.WorkflowCommunicationContext{}
 
@@ -201,19 +243,6 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.String("session_id", sessionID),
 		zap.String("sub_agent_id", subAgentID),
 		zap.Int("subscribed_topics", len(subscribedTopics)))
-
-	// TODO: Send initial message if provided
-	// For now, parent must send initial message via send_message or publish
-	// The initial_message parameter is stored in metadata for future use
-	if req.InitialMessage != "" {
-		if spawnedAgent.metadata == nil {
-			spawnedAgent.metadata = make(map[string]string)
-		}
-		spawnedAgent.metadata["initial_message"] = req.InitialMessage
-		logger.Info("Initial message stored in metadata (parent should send via send_message/publish)",
-			zap.String("session_id", sessionID),
-			zap.String("message_preview", truncateString(req.InitialMessage, 50)))
-	}
 
 	// Start background monitoring for sub-agent lifecycle
 	go s.monitorSpawnedAgent(subCtx, sessionID)
