@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agent-Loop Output Verification (`behavior.output_policy`)
+- Final-output verification in the conversation loop: `output_schema` (JSON Schema, deterministic) then `acceptance_criteria` (one no-tools LLM call, strict `PASS`/`FAIL: <reason>` verdict). On failure, feedback is injected and the loop retries, capped at `min(retry_policy.max_retries, 10)`. Exhaustion degrades gracefully (last output + `output_verification: failed` metadata); malformed verdicts fail open (`judge_inconclusive`) and burn no retry. Forced-synthesis answers are not verified (`skipped_budget_exhausted`).
+- New proto field `BehaviorConfig.output_policy` (reuses `OutputPolicy` from collaboration.proto). In this context `validator_agent_id`, `judge_config_id`, and session modes `FRESH`/`ESCALATE` are rejected at config load with pointers to workflow-stage `output_policy`.
+- New shared leaf package `pkg/validation/output` (JSON extraction, schema validation, retry-feedback building with `{{error}}`/`{{previous_output}}`/`{{attempt}}`/`{{max_retries}}` templates, verdict parsing) now used by both the pipeline executor and the agent loop.
+- `agent.ApplyBehaviorConfig` consolidates the proto→runtime behavior mapping that was previously duplicated across three construction sites; the server path now honors `output_token_cb_threshold` and `max_iterations` from agent YAML (both were silently dropped on one path before).
+
+### Removed
+- Dead `pkg/orchestration/output_validator.go` (`OutputValidator.ValidateAndRetry`): zero callers, zero tests; schema validation subsumed by `pkg/validation/output`, retry-session semantics already live in the pipeline executor's `retryStage`.
+
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).

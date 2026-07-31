@@ -314,6 +314,10 @@ type Config struct {
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
 
+	// OutputVerification enables final-output verification in the
+	// conversation loop (from BehaviorConfig.output_policy). Nil = disabled.
+	OutputVerification *OutputVerificationConfig
+
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig
 }

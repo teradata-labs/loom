@@ -683,49 +683,22 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithDescription(config.Description))
 	}
 
-	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
+	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold,
+	// patterns, output_policy) if provided. ApplyBehaviorConfig is the single
+	// proto→runtime mapping and preserves the legacy zero-value defaulting.
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:                   config.Name, // Preserve name from config
-			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
-			MaxTurns:               int(config.Behavior.MaxTurns),
-			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
-			EnableSelfHealing:      config.Metadata["_enable_self_healing"] != "false",
+			Name:              config.Name, // Preserve name from config
+			EnableSelfHealing: config.Metadata["_enable_self_healing"] != "false",
 		}
-		// Use defaults if not specified
-		if agentConfig.MaxToolExecutions == 0 {
-			agentConfig.MaxToolExecutions = 50
-		}
-		if agentConfig.MaxTurns == 0 {
-			agentConfig.MaxTurns = 25 // Default from config_loader.go:258
-		}
-		if agentConfig.OutputTokenCBThreshold == 0 {
-			agentConfig.OutputTokenCBThreshold = 8
+		if err := ApplyBehaviorConfig(agentConfig, config.Behavior); err != nil {
+			return nil, fmt.Errorf("invalid behavior config for agent %s: %w", config.Name, err)
 		}
 		// Extract skills config from metadata and attach to Go config
 		if sc := ExtractSkillsConfig(config.Metadata); sc != nil {
 			agentConfig.SkillsConfig = sc
 		}
 		opts = append(opts, WithConfig(agentConfig))
-
-		// Apply pattern config from YAML/proto if provided.
-		// Start from Go defaults, then overlay non-zero proto values. Bool fields
-		// are applied directly since the YAML parser already merged user values
-		// with sensible defaults before populating the proto message.
-		if config.Behavior.Patterns != nil {
-			pc := config.Behavior.Patterns
-			patternCfg := DefaultPatternConfig()
-			patternCfg.Enabled = pc.Enabled
-			patternCfg.EnableTracking = pc.EnableTracking
-			patternCfg.UseLLMClassifier = pc.UseLlmClassifier
-			if pc.MinConfidence > 0 {
-				patternCfg.MinConfidence = float64(pc.MinConfidence)
-			}
-			if pc.MaxPatternsPerTurn > 0 {
-				patternCfg.MaxPatternsPerTurn = int(pc.MaxPatternsPerTurn)
-			}
-			opts = append(opts, WithPatternConfig(patternCfg))
-		}
 	}
 
 	// Set tracer if provided

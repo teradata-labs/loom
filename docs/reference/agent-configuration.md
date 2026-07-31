@@ -506,6 +506,64 @@ Under `spec.config` (k8s-style) or `agent.behavior` (legacy).
 | `output_token_cb_threshold` | `int` | `8` | Consecutive truncated-tool-call turns before circuit breaker fires. `0` = default (8). `-1` = disabled. |
 | `patterns` | object | optional | See [Pattern Configuration](#pattern-configuration) |
 | `skills` | object | optional | See [Skills Configuration](#skills-configuration) |
+| `output_policy` | object | optional | See [Output Verification](#output-verification) |
+
+---
+
+### Output Verification
+
+Under `spec.config.output_policy` (k8s-style) or `agent.behavior.output_policy` (legacy).
+
+**Available since**: v1.4.0 (unreleased)
+
+When set, the final assistant output of every conversation is verified before it is returned. Verifiers run in cost order: `output_schema` first (JSON Schema, deterministic, no LLM call), then `acceptance_criteria` (one no-tools LLM call using the agent's own provider, strict `PASS` / `FAIL: <reason>` first-line verdict). On failure, feedback explaining what failed is injected as a user message and the conversation loop continues; retries are capped at `min(retry_policy.max_retries, 10)`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `output_schema` | `string` | `""` | JSON Schema for the final output. JSON embedded in prose is extracted before validation. Empty skips structural validation. |
+| `acceptance_criteria` | `string` | `""` | Criteria evaluated by one LLM call. Supports the `{{output}}` placeholder to inline the output into the criteria text. Empty skips semantic validation. |
+| `validator_agent_id` | `string` | — | **Not supported in the agent loop** — rejected at config load. Use a workflow-stage `output_policy`. |
+| `judge_config_id` | `string` | — | **Not supported in the agent loop** — rejected at config load. Use a workflow-stage `output_policy`. |
+| `retry_policy.max_retries` | `int` | `0` | Feedback-and-retry attempts after a failed verification. Capped at 10. `0` = verify once, no retries. |
+| `retry_policy.include_valid_values` | `*bool` | `true` | Include the schema / criteria text in the retry feedback. |
+| `retry_policy.session_mode` | `string` | `continue` | Only `continue` is valid in the agent loop (the live conversation is the session). `fresh` and `escalate` are rejected at config load. |
+| `retry_policy.feedback_template` | `string` | `""` | Custom retry feedback. Variables: `{{error}}`, `{{previous_output}}`, `{{attempt}}`, `{{max_retries}}`. |
+| `retry_policy.cooldown_ms` | `int` | `0` | Context-aware wait between retries. |
+
+**Behavior**:
+- **Graceful degradation**: exhausted retries return the last output unchanged with failure metadata — verification never turns a completed conversation into an error.
+- **Fail-open judge**: a malformed verdict (neither `PASS` nor `FAIL:` on the first line) returns the response with `output_verification: "judge_inconclusive"` and burns no retry. Judge call errors behave the same.
+- **Never rewritten**: the response content is validated, not modified. Prose-plus-JSON responses are legal; machine consumers extract downstream.
+- **Never streamed**: the acceptance-criteria evaluation runs with the progress callback stripped, so verdicts are not visible as partial content. A `self_correction` progress event marks each retry injection.
+- **Budget interaction**: verification retries consume conversation turns (`max_turns` bounds total work). The forced-synthesis answer produced on budget exhaustion is not verified — metadata reads `output_verification: "skipped_budget_exhausted"`.
+- **Cost**: each `acceptance_criteria` check is a paid LLM call; each retry re-runs the conversation turn.
+- **Layering with workflows**: this policy applies to *every* conversation the agent runs, including pipeline stage executions and stage retries. Combining it with stage-level `output_schema`/`validation_prompt`/`retry_policy` multiplies retries and judge cost — set one layer, not both.
+
+**Response metadata**:
+
+| Key | Values |
+|---|---|
+| `output_verification` | `passed` \| `failed` \| `judge_inconclusive` \| `skipped_budget_exhausted` |
+| `output_verification_attempts` | `int` |
+| `output_verification_error` | last failure string (only when `failed`) |
+
+**Example**:
+
+```yaml
+agent:
+  name: structured-answerer
+  behavior:
+    max_turns: 25
+    output_policy:
+      output_schema: |
+        {"type": "object", "required": ["answer", "confidence"]}
+      acceptance_criteria: "The answer cites at least one table name from the schema."
+      retry_policy:
+        max_retries: 2
+        cooldown_ms: 500
+```
+
+**See also**: workflow-stage `output_policy` for FRESH-session retries, validator agents, and judge configs.
 
 ---
 

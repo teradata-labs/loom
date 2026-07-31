@@ -1626,28 +1626,22 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentOpts = append(agentOpts, agent.WithSystemPrompt(cfg.SystemPrompt))
 				}
 
-				// Create config from proto LLMConfig
-				// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
-				maxTurns := 25          // Default from pkg/agent/types.go:145
-				maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-				if cfg.Behavior != nil {
-					if cfg.Behavior.MaxTurns > 0 {
-						maxTurns = int(cfg.Behavior.MaxTurns)
-					}
-					if cfg.Behavior.MaxToolExecutions > 0 {
-						maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
-					}
-				}
-
+				// Create config from proto LLMConfig. Behavior mapping (max_turns,
+				// max_tool_executions, output_token_cb_threshold, patterns,
+				// output_policy) goes through the shared ApplyBehaviorConfig helper.
 				agentCfg := &agent.Config{
-					Name:              cfg.Name,
-					Description:       cfg.Description,
-					SystemPrompt:      cfg.SystemPrompt,
-					Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-					Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-					MaxTurns:          maxTurns,
-					MaxToolExecutions: maxToolExecutions,
-					EnableTracing:     config.Observability.Enabled,
+					Name:          cfg.Name,
+					Description:   cfg.Description,
+					SystemPrompt:  cfg.SystemPrompt,
+					Rom:           cfg.Rom,      // ROM identifier for domain-specific knowledge
+					Metadata:      cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
+					EnableTracing: config.Observability.Enabled,
+				}
+				if err := agent.ApplyBehaviorConfig(agentCfg, cfg.Behavior); err != nil {
+					logger.Error("  Invalid behavior config; skipping agent",
+						zap.String("agent", cfg.Name),
+						zap.Error(err))
+					continue
 				}
 
 				// Set context limits if specified in LLM config
@@ -1657,17 +1651,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 					if cfg.Llm.ReservedOutputTokens > 0 {
 						agentCfg.ReservedOutputTokens = int(cfg.Llm.ReservedOutputTokens)
-					}
-				}
-
-				// Transfer pattern configuration from proto if present
-				if cfg.Behavior != nil && cfg.Behavior.Patterns != nil {
-					agentCfg.PatternConfig = &agent.PatternConfig{
-						Enabled:            cfg.Behavior.Patterns.Enabled,
-						MinConfidence:      float64(cfg.Behavior.Patterns.MinConfidence),
-						MaxPatternsPerTurn: int(cfg.Behavior.Patterns.MaxPatternsPerTurn),
-						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
-						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
 					}
 				}
 
@@ -2913,39 +2896,19 @@ func runServe(cmd *cobra.Command, args []string) {
 				backend = &mockBackend{}
 			}
 
-			// Create agent configuration
-			// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
-			maxTurns := 25          // Default from pkg/agent/types.go:145
-			maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-			if agentConfig.Behavior != nil {
-				if agentConfig.Behavior.MaxTurns > 0 {
-					maxTurns = int(agentConfig.Behavior.MaxTurns)
-				}
-				if agentConfig.Behavior.MaxToolExecutions > 0 {
-					maxToolExecutions = int(agentConfig.Behavior.MaxToolExecutions)
-				}
-			}
-
+			// Create agent configuration. Behavior mapping goes through the
+			// shared ApplyBehaviorConfig helper (max_turns, max_tool_executions,
+			// output_token_cb_threshold, patterns, output_policy + defaulting).
 			cfg := &agent.Config{
-				Name:              agentConfig.Name,
-				Description:       agentConfig.Description,
-				MaxTurns:          maxTurns,
-				MaxToolExecutions: maxToolExecutions,
-				SystemPrompt:      agentConfig.SystemPrompt,
-				Rom:               agentConfig.Rom,      // ROM identifier for domain-specific knowledge
-				Metadata:          agentConfig.Metadata, // Metadata includes backend_path for ROM auto-detection
-				EnableTracing:     config.Observability.Enabled,
+				Name:          agentConfig.Name,
+				Description:   agentConfig.Description,
+				SystemPrompt:  agentConfig.SystemPrompt,
+				Rom:           agentConfig.Rom,      // ROM identifier for domain-specific knowledge
+				Metadata:      agentConfig.Metadata, // Metadata includes backend_path for ROM auto-detection
+				EnableTracing: config.Observability.Enabled,
 			}
-
-			// Transfer pattern configuration from proto if present
-			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
-				cfg.PatternConfig = &agent.PatternConfig{
-					Enabled:            agentConfig.Behavior.Patterns.Enabled,
-					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
-					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
-					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
-					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
-				}
+			if err := agent.ApplyBehaviorConfig(cfg, agentConfig.Behavior); err != nil {
+				return fmt.Errorf("invalid behavior config for agent %s: %w", agentConfig.Name, err)
 			}
 
 			// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns

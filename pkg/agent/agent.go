@@ -1835,6 +1835,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("llm.model", currentLLM.Model())
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+	span.SetAttribute("config.output_verification", a.config.OutputVerification != nil)
 
 	// Record conversation started event
 	startedEvent := map[string]interface{}{
@@ -2202,6 +2203,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
+	var verifState verificationState            // output-verification bookkeeping (behavior.output_policy)
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
@@ -2525,11 +2527,48 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				continue
 			}
 
+			// Final-output verification (behavior.output_policy). Runs after
+			// hygiene so the post-fixup answer is what gets verified. On
+			// failure with retries remaining, feedback was injected — re-enter
+			// the loop for a revised answer.
+			vRetry, vOutcome := a.runOutputVerification(ctx, session, content, &verifState)
+			if vRetry {
+				span.AddEvent("output_verification.retry_injected", map[string]interface{}{
+					"attempt": verifState.attempts,
+					"reason":  preview(verifState.lastError, 200),
+				})
+				continue
+			}
+			switch vOutcome {
+			case verificationPassed:
+				span.AddEvent("output_verification.passed", map[string]interface{}{
+					"attempts": verifState.attempts,
+				})
+			case verificationFailed:
+				span.AddEvent("output_verification.exhausted", map[string]interface{}{
+					"attempts":   verifState.attempts,
+					"last_error": preview(verifState.lastError, 200),
+				})
+			case verificationInconclusive:
+				span.AddEvent("output_verification.judge_inconclusive", nil)
+			}
+			if vOutcome != "" {
+				span.SetAttribute("verification.attempts", verifState.attempts)
+				span.SetAttribute("verification.outcome", string(vOutcome))
+			}
+
 			meta := map[string]interface{}{
 				"turns":           turnCount,
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
+			}
+			if vOutcome != "" {
+				meta["output_verification"] = string(vOutcome)
+				meta["output_verification_attempts"] = verifState.attempts
+				if vOutcome == verificationFailed {
+					meta["output_verification_error"] = verifState.lastError
+				}
 			}
 			if hygieneLast != nil {
 				meta["hygiene_policy"] = hygieneLast.Policy.String()
@@ -2933,18 +2972,26 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
 	}
 
+	synthMeta := map[string]interface{}{
+		"turns":           turnCount + 1, // Include synthesis turn
+		"tool_executions": toolExecutionCount,
+		"max_turns_hit":   turnCount >= a.config.MaxTurns,
+		"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
+		"synthesized":     true,
+	}
+	if a.config.OutputVerification != nil {
+		// The synthesized answer is produced after the loop budget is spent;
+		// verifying it could not retry, so verification is skipped — stated,
+		// never silent.
+		synthMeta["output_verification"] = "skipped_budget_exhausted"
+	}
+
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
-		Metadata: map[string]interface{}{
-			"turns":           turnCount + 1, // Include synthesis turn
-			"tool_executions": toolExecutionCount,
-			"max_turns_hit":   turnCount >= a.config.MaxTurns,
-			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
-			"synthesized":     true,
-		},
+		Metadata:       synthMeta,
 	}, nil
 }
 

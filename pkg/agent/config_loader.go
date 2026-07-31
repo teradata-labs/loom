@@ -20,6 +20,60 @@ import (
 
 // safeInt32 safely converts an int to int32 with bounds checking.
 // Returns an error if the value is outside the int32 range.
+// outputPolicyFromYAML converts a YAML output_policy block into the proto
+// OutputPolicy. Syntax-level validation only (unknown session_mode strings);
+// semantic rejection of workflow-only fields happens in ApplyBehaviorConfig.
+func outputPolicyFromYAML(op *OutputPolicyYAML) (*loomv1.OutputPolicy, error) {
+	policy := &loomv1.OutputPolicy{
+		OutputSchema:       op.OutputSchema,
+		AcceptanceCriteria: op.AcceptanceCriteria,
+		ValidatorAgentId:   op.ValidatorAgentID,
+		JudgeConfigId:      op.JudgeConfigID,
+	}
+
+	if rp := op.RetryPolicy; rp != nil {
+		maxRetries, err := safeInt32(rp.MaxRetries, "OutputPolicy.RetryPolicy.MaxRetries")
+		if err != nil {
+			return nil, err
+		}
+		cooldownMs, err := safeInt32(rp.CooldownMs, "OutputPolicy.RetryPolicy.CooldownMs")
+		if err != nil {
+			return nil, err
+		}
+
+		var sessionMode loomv1.RetrySessionMode
+		switch strings.ToLower(strings.TrimSpace(rp.SessionMode)) {
+		case "":
+			sessionMode = loomv1.RetrySessionMode_RETRY_SESSION_MODE_UNSPECIFIED
+		case "continue":
+			sessionMode = loomv1.RetrySessionMode_RETRY_SESSION_MODE_CONTINUE
+		case "fresh":
+			sessionMode = loomv1.RetrySessionMode_RETRY_SESSION_MODE_FRESH
+		case "escalate":
+			sessionMode = loomv1.RetrySessionMode_RETRY_SESSION_MODE_ESCALATE
+		default:
+			return nil, fmt.Errorf("output_policy.retry_policy.session_mode %q is not one of: continue, fresh, escalate", rp.SessionMode)
+		}
+
+		// YAML can distinguish unset from false: default include_valid_values
+		// to true (the documented default the proto3 bool cannot express).
+		includeValidValues := true
+		if rp.IncludeValidValues != nil {
+			includeValidValues = *rp.IncludeValidValues
+		}
+
+		policy.RetryPolicy = &loomv1.OutputRetryPolicy{
+			MaxRetries:         maxRetries,
+			IncludeValidValues: includeValidValues,
+			SessionMode:        sessionMode,
+			FeedbackTemplate:   rp.FeedbackTemplate,
+			CooldownMs:         cooldownMs,
+		}
+	}
+
+	return policy, nil
+}
+
 func safeInt32(val int, fieldName string) (int32, error) {
 	if val > math.MaxInt32 {
 		return 0, fmt.Errorf("%s value %d exceeds maximum int32 value (%d)", fieldName, val, math.MaxInt32)
@@ -248,6 +302,27 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	OutputPolicy           *OutputPolicyYAML  `yaml:"output_policy"`
+}
+
+// OutputPolicyYAML represents agent-loop output verification in YAML.
+// Only output_schema and acceptance_criteria are supported in this context;
+// validator_agent_id / judge_config_id are workflow-only and rejected.
+type OutputPolicyYAML struct {
+	OutputSchema       string                 `yaml:"output_schema"`
+	AcceptanceCriteria string                 `yaml:"acceptance_criteria"`
+	ValidatorAgentID   string                 `yaml:"validator_agent_id"`
+	JudgeConfigID      string                 `yaml:"judge_config_id"`
+	RetryPolicy        *OutputRetryPolicyYAML `yaml:"retry_policy"`
+}
+
+// OutputRetryPolicyYAML represents retry behavior for output verification.
+type OutputRetryPolicyYAML struct {
+	MaxRetries         int    `yaml:"max_retries"`
+	IncludeValidValues *bool  `yaml:"include_valid_values"`
+	SessionMode        string `yaml:"session_mode"`
+	FeedbackTemplate   string `yaml:"feedback_template"`
+	CooldownMs         int    `yaml:"cooldown_ms"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -681,6 +756,15 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		MaxTurns:               maxTurns,
 		MaxToolExecutions:      maxToolExecutions,
 		OutputTokenCbThreshold: outputTokenCBThreshold,
+	}
+
+	// Parse output verification policy if present
+	if op := yaml.Agent.Behavior.OutputPolicy; op != nil {
+		policy, err := outputPolicyFromYAML(op)
+		if err != nil {
+			return nil, fmt.Errorf("invalid behavior config: %w", err)
+		}
+		config.Behavior.OutputPolicy = policy
 	}
 
 	// Parse pattern config if present
