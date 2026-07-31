@@ -340,6 +340,7 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 		ctx, span := tr.StartSpan(context.Background(), "llm.completion")
 		if span == nil {
 			t.Fatal("span should not be nil")
+			return // unreachable; satisfies staticcheck SA5011
 		}
 		if span.Name != "llm.completion" {
 			t.Errorf("span name = %q, want %q", span.Name, "llm.completion")
