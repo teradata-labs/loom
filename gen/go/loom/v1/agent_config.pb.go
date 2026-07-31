@@ -1564,8 +1564,26 @@ type BehaviorConfig struct {
 	// with truncated calls — it does NOT trigger on verbose text responses.
 	// Set to 0 to use the default. Set to -1 to disable entirely.
 	OutputTokenCbThreshold int32 `protobuf:"varint,8,opt,name=output_token_cb_threshold,json=outputTokenCbThreshold,proto3" json:"output_token_cb_threshold,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Output verification for the agent conversation loop (optional).
+	// When set, the final assistant output of each conversation is verified
+	// before it is returned: output_schema (JSON Schema, deterministic) first,
+	// then acceptance_criteria (one no-tools LLM call, strict PASS/FAIL verdict).
+	// On failure, feedback is injected and the loop continues, capped at
+	// min(retry_policy.max_retries, 10). Exhaustion degrades gracefully: the
+	// last output is returned with failure metadata, never an error.
+	//
+	// In this (agent-loop) context only output_schema and acceptance_criteria
+	// are honored: validator_agent_id and judge_config_id are workflow-only and
+	// are rejected at config load. retry_policy.session_mode must be CONTINUE
+	// or unspecified (unspecified maps to CONTINUE); FRESH and ESCALATE are
+	// rejected — the live conversation is the session.
+	//
+	// Applies to every conversation the agent runs, including workflow stage
+	// executions: avoid combining with stage-level output_schema /
+	// validation_prompt / retry_policy, or retries and judge cost multiply.
+	OutputPolicy  *OutputPolicy `protobuf:"bytes,9,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BehaviorConfig) Reset() {
@@ -1652,6 +1670,13 @@ func (x *BehaviorConfig) GetOutputTokenCbThreshold() int32 {
 		return x.OutputTokenCbThreshold
 	}
 	return 0
+}
+
+func (x *BehaviorConfig) GetOutputPolicy() *OutputPolicy {
+	if x != nil {
+		return x.OutputPolicy
+	}
+	return nil
 }
 
 // PatternConfig defines pattern-guided learning configuration
@@ -2119,7 +2144,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\x1a\x12loom/v1/task.proto\"\xf0\a\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x1bloom/v1/collaboration.proto\x1a\x13loom/v1/skill.proto\x1a\x12loom/v1/task.proto\"\xf0\a\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -2233,7 +2258,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x19warning_threshold_percent\x18\x04 \x01(\x05R\x17warningThresholdPercent\x12<\n" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
-	"batchSizes\"\xf7\x02\n" +
+	"batchSizes\"\xb3\x03\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +
@@ -2242,7 +2267,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\tmax_turns\x18\x05 \x01(\x05R\bmaxTurns\x12.\n" +
 	"\x13max_tool_executions\x18\x06 \x01(\x05R\x11maxToolExecutions\x122\n" +
 	"\bpatterns\x18\a \x01(\v2\x16.loom.v1.PatternConfigR\bpatterns\x129\n" +
-	"\x19output_token_cb_threshold\x18\b \x01(\x05R\x16outputTokenCbThreshold\"\xda\x01\n" +
+	"\x19output_token_cb_threshold\x18\b \x01(\x05R\x16outputTokenCbThreshold\x12:\n" +
+	"\routput_policy\x18\t \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\"\xda\x01\n" +
 	"\rPatternConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0emin_confidence\x18\x02 \x01(\x02R\rminConfidence\x121\n" +
@@ -2345,6 +2371,7 @@ var file_loom_v1_agent_config_proto_goTypes = []any{
 	nil,                                 // 24: loom.v1.AgentProfile.OverridesEntry
 	(*SkillsConfig)(nil),                // 25: loom.v1.SkillsConfig
 	(DecomposeStrategy)(0),              // 26: loom.v1.DecomposeStrategy
+	(*OutputPolicy)(nil),                // 27: loom.v1.OutputPolicy
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
@@ -2370,19 +2397,20 @@ var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	1,  // 20: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
 	14, // 21: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
 	17, // 22: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	19, // 23: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 24: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 25: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	24, // 26: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	22, // 27: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 28: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 29: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 30: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	27, // 23: loom.v1.BehaviorConfig.output_policy:type_name -> loom.v1.OutputPolicy
+	19, // 24: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 25: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 26: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	24, // 27: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	22, // 28: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 29: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 30: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 31: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2390,6 +2418,7 @@ func file_loom_v1_agent_config_proto_init() {
 	if File_loom_v1_agent_config_proto != nil {
 		return
 	}
+	file_loom_v1_collaboration_proto_init()
 	file_loom_v1_skill_proto_init()
 	file_loom_v1_task_proto_init()
 	type x struct{}

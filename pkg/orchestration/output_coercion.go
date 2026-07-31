@@ -6,7 +6,6 @@
 package orchestration
 
 import (
-	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -112,110 +111,4 @@ func stripCommonPrefixes(s string) string {
 		}
 	}
 	return s
-}
-
-// extractJSONFromText attempts to find and parse JSON from mixed text+JSON output.
-// Returns the extracted JSON string if found, or empty string if no valid JSON found.
-func extractJSONFromText(output string) string {
-	// Try parsing the whole output as JSON first
-	output = strings.TrimSpace(output)
-	if isValidJSON(output) {
-		return output
-	}
-
-	// Strip markdown code fences: ```json ... ``` or ``` ... ```
-	if extracted := extractFromCodeFences(output); extracted != "" && isValidJSON(extracted) {
-		return extracted
-	}
-
-	// Search for JSON object: find outermost { ... }
-	if extracted := extractOutermostJSON(output, '{', '}'); extracted != "" {
-		return extracted
-	}
-
-	// Search for JSON array: find outermost [ ... ]
-	if extracted := extractOutermostJSON(output, '[', ']'); extracted != "" {
-		return extracted
-	}
-
-	return ""
-}
-
-// isValidJSON checks if a string is valid JSON.
-func isValidJSON(s string) bool {
-	var v interface{}
-	return json.Unmarshal([]byte(s), &v) == nil
-}
-
-// extractFromCodeFences extracts content from markdown code fences.
-func extractFromCodeFences(s string) string {
-	// Match ```json\n...\n``` or ```\n...\n```
-	re := regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\n?```")
-	matches := re.FindStringSubmatch(s)
-	if len(matches) >= 2 {
-		return strings.TrimSpace(matches[1])
-	}
-	return ""
-}
-
-// extractOutermostJSON finds the outermost balanced JSON structure in text.
-// If the first balanced candidate is not valid JSON, continues searching
-// for the next occurrence.
-func extractOutermostJSON(s string, open, close byte) string {
-	searchFrom := 0
-	for searchFrom < len(s) {
-		start := strings.IndexByte(s[searchFrom:], open)
-		if start == -1 {
-			return ""
-		}
-		start += searchFrom
-
-		depth := 0
-		inString := false
-		escaped := false
-
-		for i := start; i < len(s); i++ {
-			if escaped {
-				escaped = false
-				continue
-			}
-
-			ch := s[i]
-			if ch == '\\' && inString {
-				escaped = true
-				continue
-			}
-
-			if ch == '"' {
-				inString = !inString
-				continue
-			}
-
-			if inString {
-				continue
-			}
-
-			if ch == open {
-				depth++
-			} else if ch == close {
-				depth--
-				if depth == 0 {
-					candidate := s[start : i+1]
-					if isValidJSON(candidate) {
-						return candidate
-					}
-					// Not valid JSON — continue searching after this candidate
-					searchFrom = i + 1
-					break
-				}
-			}
-		}
-
-		// If we exited the inner loop without finding a balanced close, stop
-		if depth != 0 {
-			return ""
-		}
-	}
-
-	return ""
 }

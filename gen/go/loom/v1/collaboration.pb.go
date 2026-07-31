@@ -302,6 +302,9 @@ func (x *OutputRetryPolicy) GetCooldownMs() int32 {
 
 // OutputPolicy defines how agent output is validated and optionally retried.
 // Attachable to workflow stages, tasks, parallel agent executions, or direct invocations.
+// Also embeddable in BehaviorConfig.output_policy for agent-loop final-output
+// verification — in that context only output_schema and acceptance_criteria are
+// honored, and retry_policy.session_mode must be CONTINUE or unspecified.
 type OutputPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// JSON Schema string for structural validation (instant, free, deterministic).

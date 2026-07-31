@@ -55,6 +55,9 @@ enum RetrySessionMode {
 
 // OutputPolicy defines how agent output is validated and optionally retried.
 // Attachable to workflow stages, tasks, parallel agent executions, or direct invocations.
+// Also embeddable in BehaviorConfig.output_policy for agent-loop final-output
+// verification — in that context only output_schema and acceptance_criteria are
+// honored, and retry_policy.session_mode must be CONTINUE or unspecified.
 message OutputPolicy {
   // JSON Schema string for structural validation (instant, free, deterministic).
   string output_schema = 1;

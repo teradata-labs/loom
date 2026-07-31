@@ -4285,6 +4285,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Output token circuit breaker threshold: number of consecutive turns where\nthe LLM hits the output token limit AND returns truncated tool calls before\nthe circuit breaker fires (default: 8, was hardcoded to 3).\n\nThe circuit breaker only triggers when the agent is stuck in a tool loop\nwith truncated calls — it does NOT trigger on verbose text responses.\nSet to 0 to use the default. Set to -1 to disable entirely."
+        },
+        "outputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Output verification for the agent conversation loop (optional).\nWhen set, the final assistant output of each conversation is verified\nbefore it is returned: output_schema (JSON Schema, deterministic) first,\nthen acceptance_criteria (one no-tools LLM call, strict PASS/FAIL verdict).\nOn failure, feedback is injected and the loop continues, capped at\nmin(retry_policy.max_retries, 10). Exhaustion degrades gracefully: the\nlast output is returned with failure metadata, never an error.\n\nIn this (agent-loop) context only output_schema and acceptance_criteria\nare honored: validator_agent_id and judge_config_id are workflow-only and\nare rejected at config load. retry_policy.session_mode must be CONTINUE\nor unspecified (unspecified maps to CONTINUE); FRESH and ESCALATE are\nrejected — the live conversation is the session.\n\nApplies to every conversation the agent runs, including workflow stage\nexecutions: avoid combining with stage-level output_schema /\nvalidation_prompt / retry_policy, or retries and judge cost multiply."
         }
       },
       "title": "BehaviorConfig defines agent behavior constraints"
@@ -6713,7 +6717,7 @@
           "description": "Retry behavior when any validation fails."
         }
       },
-      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations."
+      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations.\nAlso embeddable in BehaviorConfig.output_policy for agent-loop final-output\nverification — in that context only output_schema and acceptance_criteria are\nhonored, and retry_policy.session_mode must be CONTINUE or unspecified."
     },
     "v1OutputRetryPolicy": {
       "type": "object",

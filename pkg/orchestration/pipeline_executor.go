@@ -11,11 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xeipuuv/gojsonschema"
-
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/types"
+	outputval "github.com/teradata-labs/loom/pkg/validation/output"
 	"go.uber.org/zap"
 )
 
@@ -793,29 +792,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 // When the output contains JSON embedded in prose, the extracted JSON is returned
 // so the caller can normalize result.Output for downstream stages.
 func (e *PipelineExecutor) validateStageOutputSchema(output string, schema string) (string, error) {
-	// Try to extract JSON from mixed text+JSON output
-	jsonStr := extractJSONFromText(output)
-	if jsonStr == "" {
-		return "", fmt.Errorf("no valid JSON found in output")
-	}
-
-	schemaLoader := gojsonschema.NewStringLoader(schema)
-	documentLoader := gojsonschema.NewStringLoader(jsonStr)
-
-	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
-	if err != nil {
-		return "", fmt.Errorf("schema validation error: %w", err)
-	}
-
-	if !result.Valid() {
-		var violations []string
-		for _, err := range result.Errors() {
-			violations = append(violations, err.String())
-		}
-		return "", fmt.Errorf("schema violations: %s", strings.Join(violations, "; "))
-	}
-
-	return jsonStr, nil
+	return outputval.ValidateJSONSchema(output, schema)
 }
 
 // retryStage retries a pipeline stage after validation failure. Each retry uses
@@ -903,44 +880,21 @@ func (e *PipelineExecutor) retryStage(
 // and shows the expected output format. When includeValidValues is true (the default),
 // the JSON schema or validation criteria is included in the prompt.
 func (e *PipelineExecutor) buildStageRetryPrompt(originalPrompt, failedOutput, validationFailure, schema string, includeValidValues bool, attempt, maxRetries int) string {
+	feedback := outputval.BuildRetryFeedback(outputval.FeedbackParams{
+		PreviousOutput:      failedOutput,
+		Failure:             validationFailure,
+		Requirement:         schema,
+		RequirementIsSchema: true,
+		IncludeValidValues:  includeValidValues,
+		Attempt:             attempt,
+		MaxRetries:          maxRetries,
+	})
+
+	// FRESH-mode stage retries start a new session, so the task must travel
+	// with the feedback (CONTINUE-mode agent-loop retries omit it).
 	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("⚠️ OUTPUT VALIDATION FAILED (retry %d of %d)\n\n", attempt, maxRetries))
-
-	// Show failed output (truncated)
-	truncated := failedOutput
-	if len(truncated) > 500 {
-		truncated = truncated[:500] + "... (truncated)"
-	}
-	sb.WriteString("YOUR PREVIOUS OUTPUT:\n---\n")
-	sb.WriteString(truncated)
-	sb.WriteString("\n---\n\n")
-
-	// Explain why it failed
-	sb.WriteString("WHY IT FAILED:\n")
-	sb.WriteString(validationFailure)
-	sb.WriteString("\n\n")
-
-	// Include schema/criteria when includeValidValues is true (default behavior).
-	// Proto3 bool default is false; callers should pass true unless explicitly disabled.
-	if includeValidValues && schema != "" {
-		sb.WriteString("REQUIRED JSON SCHEMA:\n")
-		sb.WriteString(schema)
-		sb.WriteString("\n\n")
-		sb.WriteString("WHAT TO DO:\n")
-		sb.WriteString("1. Your output MUST be valid JSON conforming to the schema above.\n")
-		sb.WriteString("2. Output ONLY the JSON object — no markdown, no explanation, no code fences.\n")
-		sb.WriteString("3. Ensure all required fields are present and have the correct types.\n\n")
-	} else {
-		sb.WriteString("WHAT TO DO:\n")
-		sb.WriteString("1. Re-read the original task below.\n")
-		sb.WriteString("2. Ensure your output satisfies the validation criteria.\n")
-		sb.WriteString("3. If the validation expects a specific format (JSON, structured data, etc.),\n")
-		sb.WriteString("   output ONLY that format with no surrounding explanation.\n\n")
-	}
-
-	sb.WriteString("ORIGINAL TASK:\n")
+	sb.WriteString(feedback)
+	sb.WriteString("\nORIGINAL TASK:\n")
 	sb.WriteString(originalPrompt)
-
 	return sb.String()
 }

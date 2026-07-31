@@ -7,6 +7,7 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/collaboration.proto";
 import "loom/v1/skill.proto";
 import "loom/v1/task.proto";
 
@@ -434,6 +435,25 @@ message BehaviorConfig {
   // with truncated calls — it does NOT trigger on verbose text responses.
   // Set to 0 to use the default. Set to -1 to disable entirely.
   int32 output_token_cb_threshold = 8;
+
+  // Output verification for the agent conversation loop (optional).
+  // When set, the final assistant output of each conversation is verified
+  // before it is returned: output_schema (JSON Schema, deterministic) first,
+  // then acceptance_criteria (one no-tools LLM call, strict PASS/FAIL verdict).
+  // On failure, feedback is injected and the loop continues, capped at
+  // min(retry_policy.max_retries, 10). Exhaustion degrades gracefully: the
+  // last output is returned with failure metadata, never an error.
+  //
+  // In this (agent-loop) context only output_schema and acceptance_criteria
+  // are honored: validator_agent_id and judge_config_id are workflow-only and
+  // are rejected at config load. retry_policy.session_mode must be CONTINUE
+  // or unspecified (unspecified maps to CONTINUE); FRESH and ESCALATE are
+  // rejected — the live conversation is the session.
+  //
+  // Applies to every conversation the agent runs, including workflow stage
+  // executions: avoid combining with stage-level output_schema /
+  // validation_prompt / retry_policy, or retries and judge cost multiply.
+  OutputPolicy output_policy = 9;
 }
 
 // PatternConfig defines pattern-guided learning configuration

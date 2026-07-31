@@ -102,7 +102,7 @@ func TestPipelineRetry_LLMValidationRetryPrompt(t *testing.T) {
 	assert.Contains(t, prompt, "bad output")
 	assert.Contains(t, prompt, "LLM validation failed")
 	assert.NotContains(t, prompt, "REQUIRED JSON SCHEMA")
-	assert.Contains(t, prompt, "Re-read the original task below")
+	assert.Contains(t, prompt, "ORIGINAL TASK:")
 	assert.Contains(t, prompt, "Original task here")
 }
 
@@ -123,7 +123,9 @@ func TestPipelineRetry_IncludeValidValuesFalse(t *testing.T) {
 
 	// Schema should NOT be included when includeValidValues is false
 	assert.NotContains(t, prompt, "REQUIRED JSON SCHEMA")
-	assert.Contains(t, prompt, "Re-read the original task below")
+	assert.NotContains(t, prompt, schema)
+	assert.Contains(t, prompt, "ORIGINAL TASK:")
+	assert.Contains(t, prompt, "Original task here")
 }
 
 func TestPipelineRetry_BothSchemaAndLLMValidation(t *testing.T) {

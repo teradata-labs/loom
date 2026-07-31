@@ -1285,7 +1285,7 @@
           "description": "Retry behavior when any validation fails."
         }
       },
-      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations."
+      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations.\nAlso embeddable in BehaviorConfig.output_policy for agent-loop final-output\nverification — in that context only output_schema and acceptance_criteria are\nhonored, and retry_policy.session_mode must be CONTINUE or unspecified."
     },
     "v1OutputRetryPolicy": {
       "type": "object",
