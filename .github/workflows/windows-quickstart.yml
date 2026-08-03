@@ -36,9 +36,15 @@ jobs:
           cache: true
 
       - name: Install Just (Windows)
+        shell: pwsh
         run: |
-          choco install just -y
-          just --version
+          # Download just directly from GitHub Releases — avoids flaky Chocolatey CDN.
+          $version = "1.40.0"
+          $url = "https://github.com/casey/just/releases/download/$version/just-$version-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\just.zip" -UseBasicParsing
+          Expand-Archive -Path "$env:TEMP\just.zip" -DestinationPath "$env:TEMP\just-bin" -Force
+          echo "$env:TEMP\just-bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$env:TEMP\just-bin\just.exe" --version
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
