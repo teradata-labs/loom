@@ -80,7 +80,7 @@ var loomToGenAI = map[string]string{ //nolint:gochecknoglobals
 
 	// Session / user — kept as-is so backends index them without a loom. prefix
 	"session.id": "session.id",
-	"user.id":    "user.id",
+	"user.id":    "user.id", // #nosec G101 -- attribute key name, not a credential
 	"trace.id":   "trace.id",
 }
 
