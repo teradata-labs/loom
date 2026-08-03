@@ -337,7 +337,6 @@ func (t *HawkTracer) flushNow() error {
 	return fmt.Errorf("hawk export failed after %d attempts: %w", t.config.MaxRetries+1, lastErr)
 }
 
-
 // redact applies privacy rules to span before export.
 // This removes sensitive data (credentials, PII) while preserving debugging utility.
 func (t *HawkTracer) redact(span *Span) *Span {
