@@ -637,6 +637,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		for k, v := range c.extraHeaders {
+			httpReq.Header.Set(k, v)
+		}
 
 		var doErr error
 		if c.rateLimiter != nil {
@@ -848,6 +851,9 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		for k, v := range c.extraHeaders {
+			httpReq.Header.Set(k, v)
+		}
 
 		var doErr error
 		if c.rateLimiter != nil {
