@@ -165,14 +165,14 @@ func TestGenAISystemNormalization(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"anthropic", "anthropic"},        // already matches spec — no normalization
-		{"openai", "openai"},              // already matches spec
-		{"ollama", "ollama"},              // community convention, kept as-is
-		{"mistral", "mistral"},            // kept as-is
-		{"bedrock", "aws.bedrock"},        // normalized
-		{"azure-openai", "azure_openai"},  // normalized
+		{"anthropic", "anthropic"},         // already matches spec — no normalization
+		{"openai", "openai"},               // already matches spec
+		{"ollama", "ollama"},               // community convention, kept as-is
+		{"mistral", "mistral"},             // kept as-is
+		{"bedrock", "aws.bedrock"},         // normalized
+		{"azure-openai", "azure_openai"},   // normalized
 		{"gemini", "google.generative_ai"}, // normalized
-		{"huggingface", "hugging_face"},   // normalized
+		{"huggingface", "hugging_face"},    // normalized
 	}
 	for _, tc := range tests {
 		t.Run(tc.provider, func(t *testing.T) {
@@ -205,10 +205,10 @@ func TestRedactOTelSpan(t *testing.T) {
 
 	t.Run("credential keys removed when RedactCredentials=true", func(t *testing.T) {
 		span := &Span{Attributes: map[string]interface{}{
-			"password":    "s3cr3t",
-			"api_key":     "key123",
-			"llm.model":   "claude-3",
-			"token":       "tok",
+			"password":     "s3cr3t",
+			"api_key":      "key123",
+			"llm.model":    "claude-3",
+			"token":        "tok",
 			"access_token": "at",
 		}}
 		out := redactOTelSpan(span, PrivacyConfig{RedactCredentials: true})
@@ -328,7 +328,7 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTelTracer: %v", err)
 	}
-	defer tr.Shutdown(context.Background())
+	t.Cleanup(func() { _ = tr.Shutdown(context.Background()) })
 
 	t.Run("StartSpan returns non-nil span and context", func(t *testing.T) {
 		ctx, span := tr.StartSpan(context.Background(), "llm.completion")
