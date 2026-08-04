@@ -187,6 +187,19 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		zap.Int("status", resp.StatusCode),
 		zap.Bool("started", started))
 
+	// A POST that carries only notifications/responses (e.g. the
+	// notifications/initialized message) is acknowledged by the server with
+	// 202 Accepted and no JSON-RPC body, per the MCP streamable-http spec.
+	// Such acknowledgments carry no Content-Type guarantee — some servers
+	// (e.g. Atlassian's remote MCP) return "text/plain" — so treat any 202 as
+	// a successful acknowledgment with nothing to read, before the
+	// Content-Type switch rejects it as unexpected.
+	if resp.StatusCode == http.StatusAccepted {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		t.logger.Debug("Request acknowledged (202 Accepted), no body to read")
+		return nil
+	}
+
 	switch contentType {
 	case "text/event-stream":
 		// SSE stream response
