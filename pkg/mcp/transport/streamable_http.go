@@ -159,8 +159,18 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Extract session ID from response (on first request)
-	if !started && t.enableSessions {
+	// Extract session ID from the response (on the first request).
+	//
+	// Capture the server-issued Mcp-Session-Id whenever one is present,
+	// regardless of the enable_sessions config flag. Per the MCP streamable-http
+	// spec, if the server returns a session ID on initialize, the client MUST
+	// echo it on every subsequent request (including the initialized
+	// notification). Session-based servers such as Atlassian's remote MCP
+	// otherwise reject the follow-up notification with HTTP 400
+	// ("Request must be an initialize request if no session ID is provided").
+	// The enable_sessions flag still controls proactive session termination on
+	// Close (see below).
+	if !started {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
