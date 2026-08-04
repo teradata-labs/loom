@@ -103,6 +103,28 @@ func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testi
 		"follow-up request must echo the server-issued Mcp-Session-Id")
 }
 
+// TestStreamableHTTPTransport_Accepts202PlainTextAck reproduces the Atlassian
+// remote MCP behaviour: a notification (e.g. notifications/initialized) is
+// acknowledged with 202 Accepted and Content-Type text/plain, which must be
+// treated as a successful acknowledgment rather than an unexpected Content-Type.
+func TestStreamableHTTPTransport_Accepts202PlainTextAck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("Accepted"))
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{
+		Endpoint: srv.URL,
+	})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)),
+		"a 202 Accepted with text/plain body must be treated as a successful acknowledgment")
+}
+
 func TestNewStreamableHTTPTransport(t *testing.T) {
 	tests := []struct {
 		name      string
