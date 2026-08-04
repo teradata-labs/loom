@@ -50,6 +50,59 @@ func TestStreamableHTTPTransport_SendsCustomHeaders(t *testing.T) {
 		"custom Authorization header must be applied to the outgoing request")
 }
 
+// TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions is a
+// regression test for the Atlassian remote MCP HTTP 400 failure: a session-based
+// streamable-http server issues an Mcp-Session-Id on the initialize response and
+// requires the client to echo it on every subsequent request (including the
+// initialized notification). Per the MCP spec, a server-issued session ID must
+// be echoed regardless of the client's enable_sessions setting, so the transport
+// must capture and replay it even when EnableSessions is false. Previously the
+// capture was gated on EnableSessions, so the follow-up notification was sent
+// without the session ID and the server rejected it with
+// "Request must be an initialize request if no session ID is provided" (400).
+func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testing.T) {
+	const sessionID = "sess-abc-123"
+	var followUpSession string
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		if reqCount == 1 {
+			// initialize response establishes the session
+			w.Header().Set("Mcp-Session-Id", sessionID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		// every subsequent request must carry the session id
+		followUpSession = r.Header.Get("Mcp-Session-Id")
+		if followUpSession == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"Request must be an initialize request if no session ID is provided."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{
+		Endpoint:       srv.URL,
+		EnableSessions: false, // deliberately off — server still mandates the session id
+	})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)))
+	require.Equal(t, sessionID, tr.GetSessionID(),
+		"session id from the initialize response must be captured even when EnableSessions is false")
+
+	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
+	assert.Equal(t, sessionID, followUpSession,
+		"follow-up request must echo the server-issued Mcp-Session-Id")
+}
+
 func TestNewStreamableHTTPTransport(t *testing.T) {
 	tests := []struct {
 		name      string
