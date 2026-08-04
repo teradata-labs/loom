@@ -185,13 +185,11 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	}
 
 	// Adopt a session ID whenever a legacy server mints one and none is held.
-	// Only the initialize response carries this header (2026-07-28 servers
-	// never send it), but which POST that is depends on probe order — the
-	// server/discover probe precedes initialize on auto-negotiated
-	// connections, so gating on "first request" would discard the session and
-	// break every subsequent call against strict legacy session servers. This
-	// also re-adopts a fresh session after ErrSessionExpired cleared the old
-	// one and the client re-initialized.
+	// Captures Mcp-Session-Id regardless of enable_sessions — per the MCP spec,
+	// if the server issues a session ID on initialize the client MUST echo it on
+	// every subsequent request; session-based servers like Atlassian's remote MCP
+	// reject follow-up notifications without it. The enable_sessions flag still
+	// controls proactive session termination on Close.
 	if t.enableSessions && !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
