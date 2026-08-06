@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -153,4 +154,76 @@ spec:
 
 	t.Logf("✓ Coordinator: %s", coordinator.Name)
 	t.Logf("✓ Sub-agents: %v", expectedSubAgents)
+}
+
+// TestLoadWorkflowAgents_ForkJoinPatternType verifies the registry loader accepts the
+// canonical hyphenated spelling used by the workflow validator, the canonical converter
+// and Weaver's template emitter. The underscored fork_join form is an internal Go and
+// proto identifier, not part of the YAML vocabulary, and is rejected.
+func TestLoadWorkflowAgents_ForkJoinPatternType(t *testing.T) {
+	const workflowTemplate = `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-forkjoin
+  description: Test fork-join workflow
+spec:
+  type: %s
+  agent_ids:
+    - agent-a
+    - agent-b
+  prompt: 'Research the target: {{input}}'
+  merge_strategy: summary
+`
+
+	tests := []struct {
+		name        string
+		patternType string
+		wantErr     string
+	}{
+		{
+			name:        "canonical hyphenated form loads",
+			patternType: "fork-join",
+		},
+		{
+			name:        "internal underscored form is rejected",
+			patternType: "fork_join",
+			wantErr:     "unsupported workflow pattern type: fork_join",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflowPath := filepath.Join(t.TempDir(), "test-forkjoin.yaml")
+			workflowYAML := fmt.Sprintf(workflowTemplate, tt.patternType)
+			require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+			configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+
+			if tt.wantErr != "" {
+				require.Error(t, err, "expected %q to be rejected", tt.patternType)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+
+			var coordinator *loomv1.AgentConfig
+			subAgents := make(map[string]*loomv1.AgentConfig)
+			for _, config := range configs {
+				if config.Metadata["role"] == "coordinator" {
+					coordinator = config
+					continue
+				}
+				subAgents[config.Name] = config
+			}
+
+			require.NotNil(t, coordinator, "no coordinator generated")
+			assert.Equal(t, "test-forkjoin", coordinator.Name)
+			assert.Equal(t, "fork-join", coordinator.Metadata["pattern"])
+
+			require.Len(t, subAgents, 2)
+			assert.Contains(t, subAgents, "test-forkjoin:agent-a")
+			assert.Contains(t, subAgents, "test-forkjoin:agent-b")
+		})
+	}
 }
