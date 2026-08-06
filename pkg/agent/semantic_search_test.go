@@ -59,7 +59,7 @@ func TestSearchMessages_BasicQuery(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		err := store.SaveMessage(ctx, sessionID, msg)
+		err := store.SaveMessage(ctx, sessionID, &msg, false)
 		require.NoError(t, err)
 	}
 
@@ -116,10 +116,10 @@ func TestSearchMessages_SessionFiltering(t *testing.T) {
 	msg1 := Message{Role: "user", Content: "Database query optimization techniques", Timestamp: time.Now()}
 	msg2 := Message{Role: "user", Content: "Database performance tuning guide", Timestamp: time.Now()}
 
-	err = store.SaveMessage(ctx, session1, msg1)
+	err = store.SaveMessage(ctx, session1, &msg1, false)
 	require.NoError(t, err)
 
-	err = store.SaveMessage(ctx, session2, msg2)
+	err = store.SaveMessage(ctx, session2, &msg2, false)
 	require.NoError(t, err)
 
 	// Search in session1 only
@@ -160,7 +160,7 @@ func TestSearchMessages_BM25Ranking(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		err := store.SaveMessage(ctx, sessionID, msg)
+		err := store.SaveMessage(ctx, sessionID, &msg, false)
 		require.NoError(t, err)
 	}
 
@@ -225,7 +225,7 @@ func TestSearchMessages_NoResults(t *testing.T) {
 
 	// Add a message
 	msg := Message{Role: "user", Content: "Database optimization techniques", Timestamp: time.Now()}
-	err = store.SaveMessage(ctx, sessionID, msg)
+	err = store.SaveMessage(ctx, sessionID, &msg, false)
 	require.NoError(t, err)
 
 	// Search for unrelated content
@@ -399,7 +399,7 @@ func TestSearchMessages_Integration(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		err := store.SaveMessage(ctx, sessionID, msg)
+		err := store.SaveMessage(ctx, sessionID, &msg, false)
 		require.NoError(t, err)
 	}
 
@@ -409,58 +409,4 @@ func TestSearchMessages_Integration(t *testing.T) {
 
 	assert.Equal(t, 2, len(results), "Should return top 2 results")
 	assert.Contains(t, results[0].Content, "SQL", "First result should be about SQL")
-}
-
-// TestSearchMessages_TokenBudget tests that promotion respects token budget.
-func TestSearchMessages_TokenBudget(t *testing.T) {
-	tmpDB := t.TempDir() + "/test.db"
-	defer func() { _ = os.Remove(tmpDB) }()
-
-	tracer := observability.NewNoOpTracer()
-	store, err := NewSessionStore(tmpDB, tracer)
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-
-	// Create memory with small token budget
-	memory := NewMemory()
-	memory.store = store
-	memory.maxContextTokens = 500
-	memory.reservedOutputTokens = 100
-
-	sessionID := "budget-session"
-	session := memory.GetOrCreateSession(context.Background(), sessionID)
-
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	require.True(t, ok)
-
-	ctx := context.Background()
-
-	// Fill context near capacity
-	for i := 0; i < 10; i++ {
-		msg := Message{
-			Role:      "user",
-			Content:   "This is a message to fill up the token budget with some content.",
-			Timestamp: time.Now(),
-		}
-		segMem.AddMessage(context.Background(), msg)
-	}
-
-	// Save large messages to database
-	largeMsg := Message{
-		Role:      "user",
-		Content:   "This is a very long message that will exceed the token budget when promoted." + string(make([]byte, 2000)),
-		Timestamp: time.Now(),
-	}
-	err = store.SaveMessage(ctx, sessionID, largeMsg)
-	require.NoError(t, err)
-
-	// Search and attempt to promote
-	results, err := segMem.SearchMessages(ctx, "long message", 1)
-	require.NoError(t, err)
-	assert.Greater(t, len(results), 0, "Should find the message")
-
-	// Try to promote - should fail due to budget
-	err = segMem.PromoteMessagesToContext(results)
-	assert.Error(t, err, "Should fail to promote due to token budget exceeded")
-	assert.Contains(t, err.Error(), "token budget exceeded")
 }

@@ -31,7 +31,7 @@ func TestProfileDefaults(t *testing.T) {
 			expectedMaxL1:         6400, // 8 messages @ 800 tokens each
 			expectedMinL1:         4,
 			expectedWarning:       60,
-			expectedCritical:      75,
+			expectedCritical:      90,
 			expectedNormalBatch:   3,
 			expectedWarningBatch:  5,
 			expectedCriticalBatch: 7,
@@ -41,8 +41,8 @@ func TestProfileDefaults(t *testing.T) {
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE,
 			expectedMaxL1:         4000, // 5 messages @ 800 tokens each
 			expectedMinL1:         3,
-			expectedWarning:       50,
-			expectedCritical:      70,
+			expectedWarning:       60,
+			expectedCritical:      90,
 			expectedNormalBatch:   2,
 			expectedWarningBatch:  4,
 			expectedCriticalBatch: 6,
@@ -52,8 +52,8 @@ func TestProfileDefaults(t *testing.T) {
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL,
 			expectedMaxL1:         9600, // 12 messages @ 800 tokens each
 			expectedMinL1:         6,
-			expectedWarning:       70,
-			expectedCritical:      85,
+			expectedWarning:       60,
+			expectedCritical:      90,
 			expectedNormalBatch:   4,
 			expectedWarningBatch:  6,
 			expectedCriticalBatch: 8,
@@ -142,7 +142,7 @@ func TestResolveCompressionProfile_Overrides(t *testing.T) {
 
 	assert.Equal(t, 8000, profile.MaxL1Tokens, "Should use overridden value: 10 messages × 800")
 	assert.Equal(t, 3, profile.MinL1Messages, "Should use profile default")
-	assert.Equal(t, 50, profile.WarningThresholdPercent, "Should use profile default")
+	assert.Equal(t, 60, profile.WarningThresholdPercent, "Should use profile default")
 }
 
 func TestResolveCompressionProfile_FullCustomization(t *testing.T) {

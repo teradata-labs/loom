@@ -29,11 +29,18 @@ type ChatCompletionRequest struct {
 	Tools               []Tool                 `json:"tools,omitempty"`
 	ToolChoice          interface{}            `json:"tool_choice,omitempty"` // "auto", "none", or {"type": "function", "function": {"name": "..."}}
 	Stream              bool                   `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions         `json:"stream_options,omitempty"`
 	User                string                 `json:"user,omitempty"`
 	ResponseFormat      map[string]interface{} `json:"response_format,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.
+// StreamOptions requests a final usage chunk during streaming so token and
+// prompt-cache accounting is available (OpenAI/litellm stream_options).
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
+}
+
 type ChatMessage struct {
 	Role       string      `json:"role"` // "system", "user", "assistant", "tool"
 	Content    interface{} `json:"content,omitempty"`
@@ -91,6 +98,26 @@ type ChatCompletionUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Prompt-cache accounting. litellm forwards Anthropic usage as these two
+	// top-level fields; some gateways use the OpenAI-style
+	// prompt_tokens_details.cached_tokens instead — read both.
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokensDetails      *struct {
+		CachedTokens int `json:"cached_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
+// CacheRead returns the prompt-cache read tokens from whichever field the
+// gateway populated.
+func (u ChatCompletionUsage) CacheRead() int {
+	if u.CacheReadInputTokens > 0 {
+		return u.CacheReadInputTokens
+	}
+	if u.PromptTokensDetails != nil {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return 0
 }
 
 // OpenAIError represents an error from the OpenAI API.

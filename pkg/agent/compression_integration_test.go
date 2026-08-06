@@ -44,8 +44,8 @@ agent:
 	assert.Equal(t, "data_intensive", profile.Name)
 	assert.Equal(t, 4000, profile.MaxL1Tokens, "Should use data_intensive MaxL1Tokens (4000)")
 	assert.Equal(t, 3, profile.MinL1Messages)
-	assert.Equal(t, 50, profile.WarningThresholdPercent)
-	assert.Equal(t, 70, profile.CriticalThresholdPercent)
+	assert.Equal(t, 60, profile.WarningThresholdPercent)
+	assert.Equal(t, 90, profile.CriticalThresholdPercent)
 
 	// Step 3: Create agent with compression profile
 	agent := createTestAgentWithProfile(profile)
@@ -63,8 +63,8 @@ agent:
 	assert.Equal(t, 4000, segMem.maxL1Tokens, "Should use data_intensive maxL1Tokens (4000 tokens)")
 	assert.Equal(t, 3, segMem.minL1Messages, "Should use data_intensive minL1Messages")
 	assert.Equal(t, "data_intensive", segMem.compressionProfile.Name)
-	assert.Equal(t, 50, segMem.compressionProfile.WarningThresholdPercent)
-	assert.Equal(t, 70, segMem.compressionProfile.CriticalThresholdPercent)
+	assert.Equal(t, 60, segMem.compressionProfile.WarningThresholdPercent)
+	assert.Equal(t, 90, segMem.compressionProfile.CriticalThresholdPercent)
 }
 
 // TestCompressionProfile_EndToEnd_Conversational verifies conversational profile
@@ -90,8 +90,8 @@ agent:
 	assert.Equal(t, "conversational", profile.Name)
 	assert.Equal(t, 9600, profile.MaxL1Tokens, "Should use conversational MaxL1Tokens (9600)")
 	assert.Equal(t, 6, profile.MinL1Messages)
-	assert.Equal(t, 70, profile.WarningThresholdPercent)
-	assert.Equal(t, 85, profile.CriticalThresholdPercent)
+	assert.Equal(t, 60, profile.WarningThresholdPercent)
+	assert.Equal(t, 90, profile.CriticalThresholdPercent)
 
 	// Create agent and verify memory uses conversational profile
 	agent := createTestAgentWithProfile(profile)
@@ -129,7 +129,7 @@ agent:
 	assert.Equal(t, 55, profile.WarningThresholdPercent, "Custom warning threshold should override balanced default")
 	// Non-overridden values should use balanced defaults
 	assert.Equal(t, 4, profile.MinL1Messages, "Should use balanced default minL1Messages")
-	assert.Equal(t, 75, profile.CriticalThresholdPercent, "Should use balanced default critical threshold")
+	assert.Equal(t, 90, profile.CriticalThresholdPercent, "Should use balanced default critical threshold")
 
 	agent := createTestAgentWithProfile(profile)
 	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")

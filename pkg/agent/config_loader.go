@@ -1486,12 +1486,7 @@ Description: %s
 
 Your role is to orchestrate the workflow execution, manage agent coordination, and ensure proper sequencing of tasks.
 
-Sub-agents: %s
-
-You can use session_memory to search past workflow sessions:
-- session_memory(action="list") - list your own coordinator sessions
-- session_memory(action="list", agent_id="agent-name") - list sessions for a specific sub-agent
-- session_memory(action="summary", session_id="...") - retrieve conversation summary from a session`,
+Sub-agents: %s`,
 		workflowName, patternType, description, strings.Join(agentIDs, ", "))
 
 	coordinatorConfig := &loomv1.AgentConfig{
@@ -1500,7 +1495,7 @@ You can use session_memory to search past workflow sessions:
 		SystemPrompt: coordinatorPrompt,
 		Llm:          llmConfig,
 		Tools: &loomv1.ToolsConfig{
-			Builtin: []string{"send_message", "publish", "shared_memory_read", "shared_memory_write", "session_memory"},
+			Builtin: []string{"send_message", "publish", "shared_memory_read", "shared_memory_write"},
 		},
 		Memory: &loomv1.MemoryConfig{
 			Type:       "sqlite",

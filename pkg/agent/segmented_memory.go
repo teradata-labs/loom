@@ -19,15 +19,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
-	"go.uber.org/zap"
 )
 
 // MemoryLayer represents different tiers of context memory
@@ -35,78 +32,97 @@ type MemoryLayer string
 
 const (
 	LayerROM    MemoryLayer = "rom"    // Read-only: Documentation, system prompt (never changes)
-	LayerKernel MemoryLayer = "kernel" // Tool definitions, recent tool results (per conversation)
-	LayerL1     MemoryLayer = "l1"     // Hot: Recent messages (last 5-10 exchanges)
-	LayerL2     MemoryLayer = "l2"     // Warm: Summarized history (compressed older messages)
-	LayerSwap   MemoryLayer = "swap"   // Cold: Long-term storage (database-backed)
+	LayerKernel MemoryLayer = "kernel" // Advertised tool schemas (ride the provider tools parameter)
+	LayerL1     MemoryLayer = "l1"     // The message list, in order
+	LayerL2     MemoryLayer = "l2"     // The session summary: one cumulative text
 )
 
-// SegmentedMemory manages context using a tiered memory hierarchy.
+// SegmentedMemory holds the context segments (HLD §2 — data, no logic):
 //
-// Architecture:
-// - ROM Layer: Static documentation/prompts (never changes during session)
-// - Kernel Layer: Tool definitions, recent results, schema cache (per conversation)
-// - L1 Cache: Hot - Recent messages (last 10 messages / 5 exchanges)
-// - L2 Cache: Warm - Compressed history summaries
-// - Swap: Cold - Database-backed long-term storage
+//   - KERNEL — the advertised tool schemas ride the provider tools parameter;
+//     only their serialized byte count is tracked here (blueprint A6).
+//   - ROM — the system prompt. Byte-stable for the life of the session.
+//   - L2 — the session summary: ONE cumulative text, empty until the first
+//     fold; persisted as version rows, the newest version is the summary.
+//   - L1 — the message list, in order. In memory during a turn (full natural
+//     forms); rebuilt from rows on the next turn or on reload.
 //
-// Features:
-// - Adaptive compression: Triggers at 70% token budget usage
-// - LRU schema caching: Max 10 schemas with least-recently-used eviction
-// - Database-backed tool results: Keeps only immediate previous result in memory
-// - Token budget enforcement: 200K context, 20K output reserve = 180K available
+// All logic lives in ContextCompilation (context_compilation.go): compile
+// renders, releasePressure is the only mutator of context state. Arrival
+// appends; nothing here examines, sizes, flags, or transforms at arrival.
 type SegmentedMemory struct {
 	// ROM Layer (never changes during session)
 	romContent string // Static documentation content
 
-	// Kernel Layer (changes per conversation)
-	tools           []string             // Available tool names
-	toolResults     []CachedToolResult   // Recent tool execution results (max 1 for database-backed optimization)
-	schemaCache     map[string]string    // Cached schema discoveries
-	schemaAccessLog map[string]time.Time // LRU tracking for schema cache
-	maxSchemas      int                  // Maximum schemas to cache (default: 10)
+	// Kernel Layer: advertised tool names (stats only) and the serialized
+	// bytes of the advertised tool schemas as built for the provider call.
+	tools       []string
+	kernelBytes int
 
-	// L1 Cache (hot - recent messages)
-	l1Messages []Message // Last N messages (configurable, default: 10)
+	// L1 — the message list (renamed from l1Messages: rename-enforcement, D7).
+	contextMessages []Message
 
-	// L2 Cache (warm - summarized history)
-	l2Summary string // Compressed summary of older conversation
+	// L2 — the session summary (renamed from l2Summary: one cumulative text,
+	// versioned; HLD §2).
+	summary summaryState
 
-	// Swap Layer (cold - database-backed long-term storage)
-	sessionStore       SessionStorage // Database for persistent storage (optional)
-	sessionID          string         // Session identifier for swap operations
-	swapEnabled        bool           // Whether swap layer is configured
-	maxL2Tokens        int            // Maximum tokens in L2 before eviction to swap (default: 5000)
-	swapEvictionCount  int            // Number of L2 evictions to swap (statistics)
-	swapRetrievalCount int            // Number of retrievals from swap (statistics)
-	promotedContext    []Message      // Messages retrieved from swap and promoted to context
+	// foldedSkills accumulates skills deactivated by fold (§4.5) and not yet
+	// reloaded. Re-pinned as a note at the end of every summary version so the
+	// note survives a later fold whose compressor would otherwise paraphrase it
+	// away — the note is STATE, not compressor output. Keyed by skill name.
+	foldedSkills map[string]bool
 
-	// Token management
-	tokenCounter    *TokenCounter // Accurate token counting
-	tokenBudget     *TokenBudget  // Token budget enforcement
-	tokenCount      int           // Actual token count of current context
-	tokenCountDirty bool          // Whether token count needs recalculation
+	// Store binding for relief transactions and reload (optional).
+	sessionStore SessionStorage
+	sessionID    string
 
-	// Per-layer token count caches (avoids full recalculation on every AddMessage)
-	cachedROMTokens      int  // Tokens in ROM layer (changes only on init)
-	cachedKernelTokens   int  // Tokens in kernel layer (tools + results + schemas)
-	cachedL1Tokens       int  // Tokens in L1 messages
-	cachedL2Tokens       int  // Tokens in L2 summary
-	cachedPromotedTokens int  // Tokens in promoted context
-	kernelDirty          bool // Whether kernel layer needs recounting
-	l1Dirty              bool // Whether L1 needs full recount (e.g., after compression)
+	// Token management (internal caches; nothing acts on them — the only
+	// actionable measure is releasePressure's estimate).
+	tokenCounter    *TokenCounter
+	tokenBudget     *TokenBudget
+	tokenCount      int
+	tokenCountDirty bool
 
-	// Memory compression
-	compressor MemoryCompressor // LLM-powered compression (optional)
+	// Per-layer token count caches (reporting only)
+	cachedROMTokens    int
+	cachedKernelTokens int
+	cachedL1Tokens     int
+	cachedL2Tokens     int
+	kernelDirty        bool
+	l1Dirty            bool
 
-	// Shared memory for large data
-	sharedMemory *storage.SharedMemoryStore // Shared memory store for large tool results (optional)
+	// msgTokenCache memoises the tiktoken count of a rendered message content,
+	// so the compile-time estimate (§5.1) does not re-tokenize unchanged
+	// messages on every provider call. Keyed by the rendered string, so a stub,
+	// a whole row, and a folded form each cache separately.
+	msgTokenCache map[string]int
+
+	// Memory compression (the fold compressor)
+	compressor MemoryCompressor
+
+	// Shared memory for large data (backs explicit shared_memory tools only)
+	sharedMemory *storage.SharedMemoryStore
+
+	// threshold is the one threshold value (HLD §5.1): compile-time offload
+	// bound, persist-time row bound, retrieval page bound. Bytes.
+	threshold int
+
+	// protectedRecentTurns is K (HLD §5.1): the K newest turns are never
+	// touched by relief.
+	protectedRecentTurns int
+
+	// reliefInFlight guards ReleasePressure: fold releases the lock across
+	// its compressor call, and this keeps a second pass from interleaving.
+	reliefInFlight bool
+
+	// skillDeactivation is the skills orchestrator's deactivation path, called
+	// when fold flags a region containing a manage_skills load pair.
+	skillDeactivation func(sessionID, skillName string)
 
 	// Observability
-	tracer observability.Tracer // Tracer for error logging and metrics (optional)
+	tracer observability.Tracer
 
-	// Per-mutation debug carrier (optional). When its switch is on, each
-	// compaction emits a debug log; nil or off is a no-op.
+	// Per-mutation debug carrier (optional).
 	ctxDebug *contextDebug
 
 	// Semantic search
@@ -115,11 +131,10 @@ type SegmentedMemory struct {
 	// Active pattern tracking (optional)
 	patternName string // Name of the active pattern, surfaced via GetActivePattern
 
-	// Configuration
-	maxL1Tokens        int                // Profile L1 token target, exposed in stats/logging (does not gate compression)
-	minL1Messages      int                // Minimum messages to keep in L1 (for recency)
-	maxToolResults     int                // Max tool results kept in the kernel window (constructor sets 5)
-	compressionProfile CompressionProfile // Compression behavior profile (thresholds, batch sizes)
+	// Configuration (the profile carries the relief water marks, §5.1)
+	maxL1Tokens        int
+	minL1Messages      int
+	compressionProfile CompressionProfile
 
 	mu sync.RWMutex
 }
@@ -132,14 +147,6 @@ type MemoryCompressor interface {
 }
 
 // NewSegmentedMemory creates a new segmented memory instance with ROM content.
-// The ROM content is static documentation/prompts that never change during the session.
-//
-// Configuration:
-// - Token Budget: Configurable context window and output reserve
-// - L1 Cache: Last 10 messages (5 exchanges) for focused context
-// - Kernel: last 5 tool results (sliding window; full results live in the stores)
-// - Schema Cache: Max 10 schemas with LRU eviction
-//
 // If maxContextTokens or reservedOutputTokens are 0, defaults to Claude Sonnet 4.5 values (200K/20K)
 func NewSegmentedMemory(romContent string, maxContextTokens, reservedOutputTokens int) *SegmentedMemory {
 	// Use balanced profile as default (backwards compatibility)
@@ -147,16 +154,11 @@ func NewSegmentedMemory(romContent string, maxContextTokens, reservedOutputToken
 	return NewSegmentedMemoryWithCompression(romContent, maxContextTokens, reservedOutputTokens, balancedProfile)
 }
 
-// NewSegmentedMemoryWithCompression creates a new segmented memory instance with custom compression profile.
-// This allows fine-grained control over compression behavior for different workload types.
-//
-// Configuration:
-// - Token Budget: Configurable context window and output reserve
-// - L1 Cache: Configurable based on profile (data_intensive=5, balanced=8, conversational=12)
-// - Kernel: last 5 tool results (sliding window; full results live in the stores)
-// - Schema Cache: Max 10 schemas with LRU eviction
-//
-// If maxContextTokens or reservedOutputTokens are 0, defaults to Claude Sonnet 4.5 values (200K/20K)
+// NewSegmentedMemoryWithCompression creates a new segmented memory instance
+// with a custom profile. The profile's CriticalThresholdPercent /
+// WarningThresholdPercent are the relief water marks (HWM/LWM, HLD §5.1),
+// percentages of usable context; a missing or inverted pair falls back to
+// 90/60.
 func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, reservedOutputTokens int, profile CompressionProfile) *SegmentedMemory {
 	// Use defaults if not specified (backwards compatibility)
 	if maxContextTokens == 0 {
@@ -165,8 +167,7 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 	if reservedOutputTokens == 0 {
 		reservedOutputTokens = maxContextTokens / 10 // 10% of the window, not a flat 20K
 	}
-	// Reserve must leave a positive working budget, or UsagePercentage goes
-	// negative and the compaction trigger never fires. Cap the reserve at half
+	// Reserve must leave a positive working budget. Cap the reserve at half
 	// the window on small/misconfigured limits.
 	if reservedOutputTokens >= maxContextTokens {
 		reservedOutputTokens = maxContextTokens / 2
@@ -177,28 +178,20 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 	tokenBudget := NewTokenBudget(maxContextTokens, reservedOutputTokens)
 
 	sm := &SegmentedMemory{
-		romContent:         romContent,
-		tools:              make([]string, 0),
-		toolResults:        make([]CachedToolResult, 0),
-		schemaCache:        make(map[string]string),
-		schemaAccessLog:    make(map[string]time.Time),
-		maxSchemas:         10, // Max 10 schemas cached
-		l1Messages:         make([]Message, 0),
-		promotedContext:    make([]Message, 0),
-		sessionStore:       nil,   // Set via SetSessionStore
-		sessionID:          "",    // Set via SetSessionStore
-		swapEnabled:        false, // Disabled until SetSessionStore is called
-		maxL2Tokens:        5000,  // Default L2 eviction threshold
-		swapEvictionCount:  0,
-		swapRetrievalCount: 0,
-		tokenCounter:       tokenCounter,
-		tokenBudget:        tokenBudget,
-		compressor:         nil,                           // Set via SetCompressor after initialization
-		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
-		maxL1Tokens:        profile.MaxL1Tokens,           // Use profile value (token-based)
-		minL1Messages:      profile.MinL1Messages,         // Use profile value (minimum for recency)
-		maxToolResults:     5,                             // Keep last 5 tool results in kernel for richer context
-		compressionProfile: profile,                       // Store profile for adaptive compression
+		romContent:           romContent,
+		tools:                make([]string, 0),
+		contextMessages:      make([]Message, 0),
+		sessionStore:         nil, // Set via SetSessionStore
+		sessionID:            "",  // Set via SetSessionStore
+		tokenCounter:         tokenCounter,
+		tokenBudget:          tokenBudget,
+		compressor:           nil,                           // Set via SetCompressor after initialization
+		tracer:               observability.NewNoOpTracer(), // Set via SetTracer
+		maxL1Tokens:          profile.MaxL1Tokens,
+		minL1Messages:        profile.MinL1Messages,
+		compressionProfile:   profile,
+		threshold:            int(storage.DefaultSharedMemoryThreshold),
+		protectedRecentTurns: defaultProtectedRecentTurns,
 	}
 
 	// Initialize all per-layer token caches
@@ -207,7 +200,7 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 	return sm
 }
 
-// SetCompressor sets the memory compressor for intelligent history compression.
+// SetCompressor sets the memory compressor for fold (HLD §5.4).
 // Should be called after agent initialization to avoid dependency cycles.
 func (sm *SegmentedMemory) SetCompressor(compressor MemoryCompressor) {
 	sm.mu.Lock()
@@ -215,8 +208,7 @@ func (sm *SegmentedMemory) SetCompressor(compressor MemoryCompressor) {
 	sm.compressor = compressor
 }
 
-// SetSharedMemory sets the shared memory store for large data handling.
-// When set, large tool results can be stored in shared memory to save context tokens.
+// SetSharedMemory sets the shared memory store (backs explicit shared_memory tools).
 func (sm *SegmentedMemory) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -224,31 +216,15 @@ func (sm *SegmentedMemory) SetSharedMemory(sharedMemory *storage.SharedMemorySto
 }
 
 // SetTracer sets the observability tracer for error logging and metrics.
-// Should be called after agent initialization to enable proper error reporting.
 func (sm *SegmentedMemory) SetTracer(tracer observability.Tracer) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if tracer != nil {
 		sm.tracer = tracer
-
-		// Log compression profile configuration for observability.
-		// context.Background() is intentional here: SetTracer is a configuration setter called
-		// during agent initialization, before any user request context exists.
-		sm.tracer.RecordEvent(context.Background(), "memory.profile_configured", map[string]interface{}{
-			"profile":                    sm.compressionProfile.Name,
-			"max_l1_tokens":              sm.compressionProfile.MaxL1Tokens,
-			"min_l1_messages":            sm.compressionProfile.MinL1Messages,
-			"warning_threshold_percent":  sm.compressionProfile.WarningThresholdPercent,
-			"critical_threshold_percent": sm.compressionProfile.CriticalThresholdPercent,
-			"normal_batch_size":          sm.compressionProfile.NormalBatchSize,
-			"warning_batch_size":         sm.compressionProfile.WarningBatchSize,
-			"critical_batch_size":        sm.compressionProfile.CriticalBatchSize,
-		})
 	}
 }
 
-// SetContextDebug injects the per-mutation debug carrier. When its switch is on,
-// each compaction emits a debug log carrying the session id and turn.
+// SetContextDebug injects the per-mutation debug carrier.
 func (sm *SegmentedMemory) SetContextDebug(cd *contextDebug) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -265,216 +241,116 @@ func (sm *SegmentedMemory) SetLLMProvider(llm LLMProvider) {
 	}
 }
 
-// SetSessionStore enables the swap layer with database-backed long-term storage.
-// When set, L2 summaries will be automatically evicted to swap when exceeding maxL2Tokens.
-// This enables "forever conversations" by preventing unbounded L2 growth.
+// SetSessionStore binds the durable store: relief transactions (flags, summary
+// versions) and reload read through it.
 func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.sessionStore = store
 	sm.sessionID = sessionID
-	sm.swapEnabled = (store != nil && sessionID != "")
 }
 
-// SetMaxL2Tokens configures the maximum token count for L2 before eviction to swap.
-// Default is 5000 tokens. When L2 exceeds this limit, the entire L2 summary is
-// moved to swap storage and L2 is cleared to start fresh.
-func (sm *SegmentedMemory) SetMaxL2Tokens(maxTokens int) {
+// SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
+// three roles — compile-time offload bound, persist-time row bound, retrieval
+// page bound). Non-positive values keep the current threshold; positive values
+// below minThreshold clamp to it — the truncation tail alone runs ~150 bytes,
+// so a tinier bound could not hold stored = core + tail ≤ threshold.
+func (sm *SegmentedMemory) SetThreshold(bytes int64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	if maxTokens > 0 {
-		sm.maxL2Tokens = maxTokens
+	if bytes > 0 {
+		if bytes < minThreshold {
+			bytes = minThreshold
+		}
+		sm.threshold = int(bytes)
 	}
 }
 
-// IsSwapEnabled returns true if the swap layer is configured and operational.
-func (sm *SegmentedMemory) IsSwapEnabled() bool {
+// minThreshold is the floor for the §5.1 threshold: enough room for the §4.1
+// truncation tail plus a meaningful core.
+const minThreshold = 256
+
+// Threshold returns the configured threshold in bytes.
+func (sm *SegmentedMemory) Threshold() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.swapEnabled
+	return sm.threshold
 }
 
-// GetSwapStats returns swap layer statistics.
-func (sm *SegmentedMemory) GetSwapStats() (evictions, retrievals int) {
+// CurrentTurn returns T — the session's current turn number: max(Turn) over L1
+// (HLD §5.1). Derived, never counted.
+func (sm *SegmentedMemory) CurrentTurn() int64 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.swapEvictionCount, sm.swapRetrievalCount
+	return sm.currentTurnLocked()
 }
 
-// AddMessage adds a message to L1 cache with adaptive compression.
-// Compression triggers on one criterion: token budget usage above the profile's
-// warning threshold. There is no fixed L1 message or token cap — L1 grows until
-// the budget itself is under pressure.
-//
-// Compression strategy is profile-dependent:
-// - data_intensive: warning=50%, critical=70%, batches=2/4/6
-// - balanced: warning=60%, critical=75%, batches=3/5/7
-// - conversational: warning=70%, critical=85%, batches=4/6/8
-//
-// ctx is threaded through to enable RLS-aware storage operations during L2 compression and swap eviction.
+// currentTurnLocked computes max(Turn) over L1. Must hold lock.
+func (sm *SegmentedMemory) currentTurnLocked() int64 {
+	var t int64
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Turn > t {
+			t = sm.contextMessages[i].Turn
+		}
+	}
+	return t
+}
+
+// DropTurnPayloads is the TURN END drop (HLD §1, §7.3; blueprint A1), run when
+// a new turn starts: every prior-turn tool message's in-memory content is
+// replaced by its persisted-row form (truncated core + tail), so a long-lived
+// loom agent does not grow by one payload set per turn. Cloud gets this for
+// free by being stateless.
+func (sm *SegmentedMemory) DropTurnPayloads() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if sm.threshold <= 0 {
+		return
+	}
+	changed := false
+	for i := range sm.contextMessages {
+		m := &sm.contextMessages[i]
+		if m.Role == "tool" && len(m.Content) > sm.threshold {
+			m.Content = truncateToolRowContent(m.Content, sm.threshold)
+			changed = true
+		}
+	}
+	if changed {
+		sm.l1Dirty = true
+		sm.updateTokenCount()
+		sm.tokenCountDirty = false
+	}
+}
+
+// AddMessage appends a message to L1 (HLD §1: arrival appends — nothing is
+// examined, sized, flagged, or transformed at arrival). The incremental token
+// caches are updated for reporting only; no mechanism here acts on them.
 func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.l1Messages = append(sm.l1Messages, msg)
+	sm.contextMessages = append(sm.contextMessages, msg)
 
-	// Incremental L1 token update: count only the new message's tokens
-	// instead of recounting ALL messages. This avoids O(n) tiktoken calls
-	// on every AddMessage.
-	// Count what is dispatched: the message text (already the rendered form of a
-	// tool result) and the tool-call blocks. Message.ToolResult is the raw record
-	// kept for restore/telemetry and is never sent, so it carries no token weight.
+	// Incremental L1 token update (reporting only).
 	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
 	if len(msg.ToolCalls) > 0 {
 		msgTokens += sm.tokenCounter.CountTokens(fmt.Sprintf("%v", msg.ToolCalls))
 	}
 	sm.cachedL1Tokens += msgTokens
 
-	// If other layers were dirtied (e.g., schema operations between messages),
-	// do a full recount to pick up those changes too.
 	if sm.tokenCountDirty {
 		sm.fullRecount()
 		sm.tokenCountDirty = false
 	} else {
-		// Fast path: just update the total from cached layer values
 		sm.updateTokenCount()
 	}
-
-	// Compress once overall token budget usage exceeds the warning threshold
-	// (profile-dependent) of the real context window.
-	budgetUsage := sm.tokenBudget.UsagePercentage()
-	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
-	shouldCompress := budgetUsage > warningThreshold
-
-	if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
-		// Adaptive compression: compress more aggressively if budget exceeds critical threshold
-		var toCompressCount int
-		criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
-		if budgetUsage > criticalThreshold {
-			// Critical: use critical batch size (aggressive compression)
-			toCompressCount = min(sm.compressionProfile.CriticalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-		} else if budgetUsage > warningThreshold {
-			// Warning: use warning batch size
-			toCompressCount = min(sm.compressionProfile.WarningBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-		} else {
-			// Normal: use normal batch size
-			toCompressCount = min(sm.compressionProfile.NormalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-		}
-
-		if toCompressCount > 0 {
-			// Track token counts before compression
-			tokensBefore := sm.tokenCount
-			l1Before := sm.cachedL1Tokens
-			l2Before := sm.cachedL2Tokens
-
-			// Compress oldest messages to L2, keeping the active user message
-			// pinned (evictL1Prefix also pair-adjusts the boundary).
-			toCompress := sm.evictL1Prefix(toCompressCount)
-			if len(toCompress) > 0 {
-				sm.compressToL2(ctx, toCompress)
-				// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
-				sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-				sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
-				sm.l1Dirty = false
-				sm.updateTokenCount()
-				sm.tokenCountDirty = false
-
-				// Log compression event with token savings
-				tokensSaved := tokensBefore - sm.tokenCount
-				sm.logCompressionEvent(compactionEvent{
-					sessionID:          session.SessionIDFromContext(ctx),
-					messagesCompressed: len(toCompress),
-					tokensSaved:        tokensSaved,
-					l1TokensBefore:     l1Before,
-					l2TokensBefore:     l2Before,
-					boundaryAdjusted:   len(toCompress) != toCompressCount,
-				})
-			}
-		}
-	}
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// evictL1Prefix removes roughly the first toCompressCount messages from L1
-// and returns them for compression — except the most recent user message,
-// which is never evicted. That message is the active objective the agent is
-// still executing; compressing it mid-turn replaces the question with a short
-// summary and the agent loses the tail of its own task (issue #262). If the
-// pinned message falls inside the eviction window, the window widens by one
-// (so pinning never shrinks the batch) and the pinned message is spliced out
-// and kept at the head of L1, preserving the relative order of the remaining
-// messages. Splicing a user message out of the prefix cannot split a
-// tool_use/tool_result group; the boundary is pair-adjusted here via
-// adjustCompressionBoundary, so callers must not pre-adjust.
-// Returns nil when nothing can safely be evicted. Must hold lock.
-func (sm *SegmentedMemory) evictL1Prefix(toCompressCount int) []Message {
-	if toCompressCount <= 0 || len(sm.l1Messages) == 0 {
-		return nil
-	}
-	if toCompressCount > len(sm.l1Messages) {
-		toCompressCount = len(sm.l1Messages)
-	}
-
-	pinnedIdx := -1
-	for i := len(sm.l1Messages) - 1; i >= 0; i-- {
-		if sm.l1Messages[i].Role == "user" {
-			pinnedIdx = i
-			break
-		}
-	}
-
-	// The pinned message doesn't count toward the eviction batch — widen the
-	// window by one so pinning can't shrink the batch to nothing.
-	if pinnedIdx >= 0 && pinnedIdx < toCompressCount && toCompressCount < len(sm.l1Messages) {
-		toCompressCount++
-	}
-
-	// CRITICAL: Ensure tool_use/tool_result pairs stay together.
-	// If the eviction boundary splits a tool pair, adjust to keep them together.
-	toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
-	if toCompressCount <= 0 {
-		return nil
-	}
-
-	if pinnedIdx < 0 || pinnedIdx >= toCompressCount {
-		// No user message, or the most recent one is outside the evicted
-		// prefix (an older user turn may still compress) — plain eviction.
-		toCompress := sm.l1Messages[:toCompressCount]
-		sm.l1Messages = sm.l1Messages[toCompressCount:]
-		return toCompress
-	}
-
-	// Splice the pinned message out of the prefix and keep it at the head of L1.
-	toCompress := make([]Message, 0, toCompressCount-1)
-	toCompress = append(toCompress, sm.l1Messages[:pinnedIdx]...)
-	toCompress = append(toCompress, sm.l1Messages[pinnedIdx+1:toCompressCount]...)
-
-	rest := make([]Message, 0, len(sm.l1Messages)-toCompressCount+1)
-	rest = append(rest, sm.l1Messages[pinnedIdx])
-	rest = append(rest, sm.l1Messages[toCompressCount:]...)
-	sm.l1Messages = rest
-	return toCompress
-}
-
-// adjustCompressionBoundary ensures tool_use/tool_result pairs stay together.
-// Returns adjusted compression count that doesn't split tool pairs.
-// Must hold lock when calling this method.
-//
-// CRITICAL: Tool pairs must NEVER be split because compression converts them to
-// text summaries, losing the tool_use/tool_result block structure that the
-// Bedrock/Anthropic API requires. For parallel tool calls (one assistant message
-// with N tool_use blocks), ALL N tool_result messages must stay with their
-// assistant — compressing even one tool_result orphans it from the API's
-// perspective.
+// adjustCompressionBoundary ensures tool_use/tool_result pairs stay together
+// (pair atomicity — HLD §11): a fold region never splits a call from its
+// result. Returns the adjusted boundary count. Must hold lock.
 func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
-	if toCompressCount >= len(sm.l1Messages) {
+	if toCompressCount >= len(sm.contextMessages) {
 		return toCompressCount
 	}
 
@@ -490,7 +366,7 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	var groups []toolGroup
 	assistantForToolID := make(map[string]int) // tool_use_id → index into groups
 
-	for i, msg := range sm.l1Messages {
+	for i, msg := range sm.contextMessages {
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			g := toolGroup{
 				assistantIdx: i,
@@ -510,7 +386,7 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	// A group is "complete" only when all its tool_results are present.
 	groupLastToolIdx := make(map[int]int, len(groups))
 	groupFoundCount := make(map[int]int, len(groups))
-	for i, msg := range sm.l1Messages {
+	for i, msg := range sm.contextMessages {
 		if msg.Role == "tool" && msg.ToolUseID != "" {
 			if gIdx, ok := assistantForToolID[msg.ToolUseID]; ok {
 				groupFoundCount[gIdx]++
@@ -522,9 +398,6 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	}
 
 	// Walk backward from the proposed boundary to find a safe cut point.
-	// A boundary is safe when it doesn't fall inside any tool group — i.e.,
-	// it's not between an assistant(tool_calls) and any of its tool_results,
-	// and it's not between two tool_results of the same parallel call.
 	changed := true
 	for changed {
 		changed = false
@@ -532,28 +405,34 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 		for gIdx, g := range groups {
 			lastToolIdx, hasResults := groupLastToolIdx[gIdx]
 			isComplete := hasResults && groupFoundCount[gIdx] == len(g.toolCallIDs)
+			// A PRIOR-turn group missing results will never gain them — the
+			// crash window closed and compile synthesizes the missing result
+			// (§5.2 step 7) — so it must not block the boundary forever.
+			staleIncomplete := !isComplete &&
+				sm.contextMessages[g.assistantIdx].Turn < sm.currentTurnLocked()
 
 			if g.assistantIdx < toCompressCount {
-				// Assistant would be compressed.
-				if !isComplete {
-					// Incomplete group: pull boundary back to exclude assistant.
+				// Assistant would fold.
+				if !isComplete && !staleIncomplete {
+					// Incomplete current-turn group: results may still arrive —
+					// pull boundary back to exclude the assistant.
 					toCompressCount = g.assistantIdx
 					changed = true
-				} else if lastToolIdx >= toCompressCount {
-					// Assistant compressed but some tool_results stay in L1 — pull back.
+				} else if hasResults && lastToolIdx >= toCompressCount {
+					// Assistant folds but some tool_results stay in L1 — pull back.
 					toCompressCount = g.assistantIdx
 					changed = true
 				}
-				// If assistant AND all its results are compressed, that's fine.
+				// If assistant AND all its results fold, that's fine.
 			} else {
 				// Assistant stays in L1.
 				if hasResults {
-					// Some tool_results might be on the compressed side of the boundary.
-					for i := g.assistantIdx + 1; i < len(sm.l1Messages) && i <= lastToolIdx; i++ {
-						if sm.l1Messages[i].Role == "tool" && sm.l1Messages[i].ToolUseID != "" {
-							if _, belongs := g.toolCallIDs[sm.l1Messages[i].ToolUseID]; belongs {
+					// Some tool_results might be on the folded side of the boundary.
+					for i := g.assistantIdx + 1; i < len(sm.contextMessages) && i <= lastToolIdx; i++ {
+						if sm.contextMessages[i].Role == "tool" && sm.contextMessages[i].ToolUseID != "" {
+							if _, belongs := g.toolCallIDs[sm.contextMessages[i].ToolUseID]; belongs {
 								if i < toCompressCount {
-									// This tool_result would be compressed but its assistant stays.
+									// This tool_result would fold but its assistant stays.
 									toCompressCount = g.assistantIdx
 									changed = true
 									break
@@ -569,17 +448,10 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	return toCompressCount
 }
 
-// ReplayMessages bulk-loads messages into L1 without per-message compression.
-// This MUST be used instead of calling AddMessage in a loop when restoring a
-// session from the database. Per-message AddMessage triggers compression after
-// each addition, which can fire BETWEEN an assistant tool_use message and its
-// corresponding tool_result — the tool_result hasn't been replayed yet so
-// adjustCompressionBoundary can't protect the pair. The result is an orphaned
-// tool_result in L1 whose tool_use was already compressed to L2 text, causing
-// the Anthropic/Bedrock API to reject the request.
-//
-// ReplayMessages loads all messages first, then runs a single compression pass
-// where the full history is present and tool pairs can be properly preserved.
+// ReplayMessages bulk-loads rows into L1 (reload, HLD §8): a pure append of
+// rows already filtered folded=false by the store read. T = max(Turn) over the
+// read rows — nothing else to restore; live and restored are the same read of
+// the same rows.
 func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -588,173 +460,10 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 		return
 	}
 
-	// Bulk-load all messages into L1 without triggering per-message compression.
-	// The append changes L1 without touching cachedL1Tokens, so mark L1 dirty to
-	// force updateTokenCount to recount it — otherwise tokenBudget (and the
-	// budgetUsage trigger below) would read the stale pre-append L1 count.
-	sm.l1Messages = append(sm.l1Messages, messages...)
+	sm.contextMessages = append(sm.contextMessages, messages...)
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
-
-	// Now run compression with the complete message set so
-	// adjustCompressionBoundary can see all tool_use/tool_result pairs.
-	budgetUsage := sm.tokenBudget.UsagePercentage()
-	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
-	shouldCompress := budgetUsage > warningThreshold
-
-	if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
-		criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
-
-		// Compress in batches (same adaptive logic as AddMessage) until we're
-		// under budget or can't compress further. A single giant batch could
-		// overwhelm the LLM summarizer, so we iterate.
-		for {
-			var toCompressCount int
-			budgetUsage = sm.tokenBudget.UsagePercentage()
-			if budgetUsage <= warningThreshold {
-				break
-			}
-			if len(sm.l1Messages) <= sm.minL1Messages {
-				break
-			}
-
-			if budgetUsage > criticalThreshold {
-				toCompressCount = min(sm.compressionProfile.CriticalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-			} else if budgetUsage > warningThreshold {
-				toCompressCount = min(sm.compressionProfile.WarningBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-			} else {
-				toCompressCount = min(sm.compressionProfile.NormalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
-			}
-
-			if toCompressCount <= 0 {
-				break
-			}
-
-			tokensBefore := sm.tokenCount
-			l1Before := sm.cachedL1Tokens
-			l2Before := sm.cachedL2Tokens
-			toCompress := sm.evictL1Prefix(toCompressCount)
-			if len(toCompress) == 0 {
-				break // nothing safe to compress (pair boundary or pinned user message)
-			}
-			sm.compressToL2(ctx, toCompress)
-			// Recount the layers this iteration changed: L1 (shrunk) and L2 (grew).
-			// updateTokenCount refreshes L1 only when l1Dirty, and never recounts L2,
-			// so budgetUsage would otherwise stay frozen and the budget break below
-			// could never fire — the loop would over-compact to the minL1Messages floor.
-			sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-			sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
-			sm.l1Dirty = false
-			sm.updateTokenCount()
-			sm.tokenCountDirty = false
-
-			tokensSaved := tokensBefore - sm.tokenCount
-			sm.logCompressionEvent(compactionEvent{
-				sessionID:          session.SessionIDFromContext(ctx),
-				messagesCompressed: len(toCompress),
-				tokensSaved:        tokensSaved,
-				l1TokensBefore:     l1Before,
-				l2TokensBefore:     l2Before,
-				boundaryAdjusted:   len(toCompress) != toCompressCount,
-			})
-		}
-	}
-}
-
-// AddToolResult adds a tool execution result to kernel layer.
-// Keeps a sliding window of the most recent results (maxToolResults, 5 by default);
-// full results live in the stores and are retrievable through the recall tools.
-func (sm *SegmentedMemory) AddToolResult(result CachedToolResult) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Database-backed context optimization: Keep only immediate previous result
-	// Historical results are available via recall tools
-	if sm.maxToolResults == 1 {
-		// Simple replace strategy for single-result context
-		sm.toolResults = []CachedToolResult{result}
-	} else {
-		// Legacy sliding window strategy (for backward compatibility)
-		sm.toolResults = append(sm.toolResults, result)
-		if len(sm.toolResults) > sm.maxToolResults {
-			sm.toolResults = sm.toolResults[len(sm.toolResults)-sm.maxToolResults:]
-		}
-	}
-
-	sm.recountKernel()
-	sm.kernelDirty = false
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-}
-
-// GetCachedToolResults returns a copy of all cached tool results.
-func (sm *SegmentedMemory) GetCachedToolResults() []CachedToolResult {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	results := make([]CachedToolResult, len(sm.toolResults))
-	copy(results, sm.toolResults)
-	return results
-}
-
-// CacheSchema stores a discovered schema in kernel layer with LRU eviction.
-// When cache exceeds maxSchemas (default: 10), the least recently used schema is evicted.
-func (sm *SegmentedMemory) CacheSchema(key, schema string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Add or update schema
-	sm.schemaCache[key] = schema
-	sm.schemaAccessLog[key] = time.Now()
-
-	// Check if we need to evict (LRU eviction)
-	if len(sm.schemaCache) > sm.maxSchemas {
-		// Find least recently used schema
-		var lruKey string
-		var lruTime time.Time
-		first := true
-
-		for k, accessTime := range sm.schemaAccessLog {
-			if first || accessTime.Before(lruTime) {
-				lruKey = k
-				lruTime = accessTime
-				first = false
-			}
-		}
-
-		// Evict LRU schema
-		if lruKey != "" {
-			delete(sm.schemaCache, lruKey)
-			delete(sm.schemaAccessLog, lruKey)
-			// Note: In production, log eviction event here
-		}
-	}
-
-	// Mark kernel dirty for lazy recalculation
-	sm.kernelDirty = true
-	sm.tokenCountDirty = true
-}
-
-// GetSchema retrieves a cached schema and updates access time for LRU tracking.
-func (sm *SegmentedMemory) GetSchema(key string) (string, bool) {
-	// Use write lock from the start to avoid lock upgrade deadlock
-	// Lock upgrade pattern (RLock -> unlock -> Lock) is unsafe under concurrent access
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	schema, ok := sm.schemaCache[key]
-	if !ok {
-		return "", false
-	}
-
-	// Update access time for LRU tracking
-	sm.schemaAccessLog[key] = time.Now()
-
-	// Token count not updated here for performance - will be lazily recalculated when needed
-	sm.tokenCountDirty = true
-
-	return schema, ok
 }
 
 // GetMessages returns all L1 messages for building conversation context.
@@ -762,8 +471,8 @@ func (sm *SegmentedMemory) GetMessages() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	messages := make([]Message, len(sm.l1Messages))
-	copy(messages, sm.l1Messages)
+	messages := make([]Message, len(sm.contextMessages))
+	copy(messages, sm.contextMessages)
 	return messages
 }
 
@@ -778,129 +487,35 @@ func (sm *SegmentedMemory) GetRecentConversationTurns(n int) []types.Message {
 		return nil
 	}
 
-	if len(sm.l1Messages) <= n {
-		messages := make([]types.Message, len(sm.l1Messages))
-		copy(messages, sm.l1Messages)
+	if len(sm.contextMessages) <= n {
+		messages := make([]types.Message, len(sm.contextMessages))
+		copy(messages, sm.contextMessages)
 		return messages
 	}
 
-	start := len(sm.l1Messages) - n
+	start := len(sm.contextMessages) - n
 	messages := make([]types.Message, n)
-	copy(messages, sm.l1Messages[start:])
+	copy(messages, sm.contextMessages[start:])
 	return messages
 }
 
-// GetL2Summary returns the L2 summary content for inspection.
-// Returns empty string if no compression has occurred yet.
+// GetL2Summary returns the session summary's newest version text.
+// Returns empty string if no fold has occurred yet.
 func (sm *SegmentedMemory) GetL2Summary() string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.l2Summary
+	return sm.summary.text
 }
 
-// HasL2Content returns true if L2 summary has content (compression occurred).
+// HasL2Content returns true if the session summary has content (a fold occurred).
 func (sm *SegmentedMemory) HasL2Content() bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return len(sm.l2Summary) > 0
+	return len(sm.summary.text) > 0
 }
 
-// compressToL2 summarizes old messages into L2 cache (must hold lock).
-// Uses LLM-powered compression if available, falls back to simple extraction.
-// If L2 exceeds maxL2Tokens and swap is enabled, evicts L2 to swap storage.
-// ctx carries caller context (including RLS user_id) for storage operations.
-func (sm *SegmentedMemory) compressToL2(ctx context.Context, messages []Message) {
-	if len(messages) == 0 {
-		return
-	}
-
-	// Try LLM-powered compression if available (with timeout derived from caller ctx)
-	var summary string
-	if sm.compressor != nil && sm.compressor.IsEnabled() {
-		compressCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		compressed, err := sm.compressor.CompressMessages(compressCtx, messages)
-		if err == nil && compressed != "" {
-			summary = compressed
-		} else {
-			// Fall back to simple compression on error/timeout
-			summary = sm.summarizeMessages(messages)
-		}
-	} else {
-		// No LLM available - use simple compression
-		summary = sm.summarizeMessages(messages)
-	}
-
-	// Append to L2 summary
-	if sm.l2Summary == "" {
-		sm.l2Summary = summary
-	} else {
-		sm.l2Summary += "\n" + summary
-	}
-
-	// Check if L2 exceeds token limit and swap is enabled
-	if sm.swapEnabled {
-		l2Tokens := sm.tokenCounter.CountTokens(sm.l2Summary)
-		if l2Tokens > sm.maxL2Tokens {
-			// Evict L2 to swap storage
-			if err := sm.evictL2ToSwap(ctx); err != nil {
-				// Log error but don't crash - continue in degraded mode
-				// Use tracer to record error for observability
-				if sm.tracer != nil {
-					_, span := sm.tracer.StartSpan(ctx, "memory.swap_eviction_failed")
-					span.RecordError(err)
-					span.SetAttribute("l2_tokens", fmt.Sprintf("%d", l2Tokens))
-					span.SetAttribute("max_l2_tokens", fmt.Sprintf("%d", sm.maxL2Tokens))
-					sm.tracer.EndSpan(span)
-				}
-			}
-		}
-	}
-}
-
-// summarizeMessages creates a brief summary of messages (must hold lock).
-// Simple heuristic-based compression as fallback.
-func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
-	var parts []string
-
-	for _, msg := range messages {
-		// Extract key information
-		switch msg.Role {
-		case "user":
-			// User queries — preserve the question itself. The user's request is
-			// the highest-value, lowest-cost string in the context; reducing it
-			// to a keyword stub destroys the agent's objective (issue #262).
-			parts = append(parts, fmt.Sprintf("User asked about: %s", truncateForSummary(msg.Content, maxSummaryUserQueryChars)))
-		case "assistant":
-			// Assistant actions
-			if sm.containsToolCall(msg) {
-				parts = append(parts, "Agent executed tools and provided results")
-			} else {
-				parts = append(parts, "Agent provided analysis")
-			}
-		case "tool":
-			// Tool results - include summary to preserve tool execution context
-			parts = append(parts, "Tool result received")
-		case "system":
-			// System messages (rare in L1, typically in ROM, but handle defensively)
-			parts = append(parts, "System instruction provided")
-		}
-	}
-
-	if len(parts) == 0 {
-		return ""
-	}
-
-	return strings.Join(parts, "; ")
-}
-
-// maxSummaryUserQueryChars caps user message content preserved in compression
-// summaries. Generous on purpose: user questions are small, and losing their
-// tail loses the objective (issue #262 — a question truncated at 50 chars cut
-// `demo_user.telecocustomer` down to a table named "t"). Assistant/tool
-// content stays aggressively summarized — it is derivable from tool traces,
-// unlike the user's intent.
+// maxSummaryUserQueryChars caps user message content preserved in compressor
+// fallback summaries (memory_compressor.go).
 const maxSummaryUserQueryChars = 500
 
 // truncateForSummary caps text at max bytes without splitting a UTF-8 rune,
@@ -916,181 +531,87 @@ func truncateForSummary(text string, max int) string {
 	return cut + "..."
 }
 
-// containsToolCall checks if message contains tool execution.
-// Adapted for loom's Message type which uses ToolCalls field instead of Metadata.
-func (sm *SegmentedMemory) containsToolCall(msg Message) bool {
-	return len(msg.ToolCalls) > 0
-}
-
-// updateTokenCount calculates actual token usage across all memory layers (must hold lock).
-// Uses per-layer caching to avoid expensive tiktoken calls when layers haven't changed.
-// ROM tokens are computed once at construction. Kernel, L2 and promoted layers are
-// recounted only when their dirty flags are set. L1 is recounted only when l1Dirty
-// is set (e.g., after compression removes messages).
+// updateTokenCount refreshes the reporting caches (must hold lock). Nothing
+// acts on these values; the only actionable measure is releasePressure's
+// estimate.
 func (sm *SegmentedMemory) updateTokenCount() {
-	// ROM layer — cached at construction, never changes
-	// (cachedROMTokens is set in constructor and after full recount)
-
-	// Kernel layer — recount only when dirty
 	if sm.kernelDirty {
 		sm.recountKernel()
 		sm.kernelDirty = false
 	}
 
-	// L1 layer — recount only when dirty (compression removed messages)
 	if sm.l1Dirty {
-		sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+		sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.contextMessages)
 		sm.l1Dirty = false
 	}
 
-	// Sum all cached layer values
 	count := sm.cachedROMTokens +
 		sm.cachedKernelTokens +
 		sm.cachedL1Tokens +
-		sm.cachedL2Tokens +
-		sm.cachedPromotedTokens
+		sm.cachedL2Tokens
 
 	sm.tokenCount = count
-
-	// Record usage as the true total; an over-window count must report >100% so
-	// the compaction trigger fires (Use would reject it and leave usage at 0).
 	sm.tokenBudget.Set(count)
 }
 
 // fullRecount forces a complete recalculation of all layer caches (must hold lock).
-// Used during initialization and when tokenCountDirty is set by operations that
-// change layers without updating their specific cache (backwards compatibility).
 func (sm *SegmentedMemory) fullRecount() {
 	sm.cachedROMTokens = sm.tokenCounter.CountTokens(sm.romContent)
 	sm.recountKernel()
-	sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
-	if len(sm.promotedContext) > 0 {
-		sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
-	} else {
-		sm.cachedPromotedTokens = 0
-	}
+	sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.contextMessages)
+	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.summary.text)
 	sm.kernelDirty = false
 	sm.l1Dirty = false
 
 	sm.tokenCount = sm.cachedROMTokens +
 		sm.cachedKernelTokens +
 		sm.cachedL1Tokens +
-		sm.cachedL2Tokens +
-		sm.cachedPromotedTokens
+		sm.cachedL2Tokens
 
-	// Record usage as the true total (see updateTokenCount): an over-window count
-	// must report >100% rather than be rejected and read as 0.
 	sm.tokenBudget.Set(sm.tokenCount)
 }
 
-// recountKernel recalculates kernel layer tokens (must hold lock).
+// recountKernel derives the kernel token figure from the serialized bytes of
+// the advertised tool schemas (blueprint A6). Feeds the estimate only.
 func (sm *SegmentedMemory) recountKernel() {
-	count := 0
-	if len(sm.tools) > 0 {
-		count += sm.tokenCounter.CountTokens(fmt.Sprintf("Available tools: %s", strings.Join(sm.tools, ", ")))
-	}
-	count += sm.tokenCounter.EstimateToolResultTokens(sm.toolResults)
-	for key, schema := range sm.schemaCache {
-		count += sm.tokenCounter.CountTokens(fmt.Sprintf("%s: %s", key, schema))
-	}
-	sm.cachedKernelTokens = count
+	sm.cachedKernelTokens = tokenFigure(sm.kernelBytes)
 }
 
-// GetMessagesForLLM builds the full message list for the LLM call.
-// Returns: ROM message + L2 summary (if exists) + promoted context (if exists) + L1 messages.
-// This is what gets sent to the LLM in Message format.
+// GetMessagesForLLM builds the compiled context for the LLM call
+// (ContextCompilation, HLD §5.2 steps 1–7).
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-
-	messages := []Message{}
-
-	// Add ROM as system message
-	if sm.romContent != "" {
-		messages = append(messages, Message{
-			Role:    "system",
-			Content: sm.romContent,
-		})
-	}
-
-	// Add L2 summary as system message (if exists)
-	if sm.l2Summary != "" {
-		messages = append(messages, Message{
-			Role:    "system",
-			Content: "Previous conversation summary: " + sm.l2Summary,
-		})
-	}
-
-	// Add promoted context from swap (if exists)
-	// This is old conversation context retrieved from database
-	if len(sm.promotedContext) > 0 {
-		// Add as system message to separate from recent conversation
-		messages = append(messages, Message{
-			Role:    "system",
-			Content: fmt.Sprintf("Retrieved conversation history (%d messages):", len(sm.promotedContext)),
-		})
-		messages = append(messages, sm.promotedContext...)
-	}
-
-	// Add L1 messages (recent conversation)
-	messages = append(messages, sm.l1Messages...)
-
-	return messages
+	return sm.compileLocked()
 }
 
-// GetContextWindow builds the full context for LLM with proper layering.
-// Returns formatted context string with ROM, Kernel, L2, and L1 layers.
+// GetContextWindow renders the compiled context as a formatted string, via the
+// same compile.
 func (sm *SegmentedMemory) GetContextWindow() string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	var parts []string
 
-	// ROM Layer (always included)
 	if sm.romContent != "" {
 		parts = append(parts, "=== DOCUMENTATION (ROM) ===")
 		parts = append(parts, sm.romContent)
 		parts = append(parts, "")
 	}
 
-	// Kernel Layer (tool info + recent results)
-	if len(sm.tools) > 0 || len(sm.toolResults) > 0 || len(sm.schemaCache) > 0 {
-		parts = append(parts, "=== SESSION CONTEXT (KERNEL) ===")
-
-		if len(sm.tools) > 0 {
-			parts = append(parts, fmt.Sprintf("Available tools: %s", strings.Join(sm.tools, ", ")))
-		}
-
-		if len(sm.toolResults) > 0 {
-			parts = append(parts, "\nRecent tool results:")
-			for _, result := range sm.toolResults {
-				argsJSON, _ := json.Marshal(result.Args)
-				parts = append(parts, fmt.Sprintf("- %s(%s): %s", result.ToolName, string(argsJSON), result.Result))
-			}
-		}
-
-		if len(sm.schemaCache) > 0 {
-			parts = append(parts, "\nCached schemas:")
-			for key, schema := range sm.schemaCache {
-				parts = append(parts, fmt.Sprintf("- %s: %s", key, schema))
-			}
-		}
-
+	if sm.summary.text != "" {
+		parts = append(parts, "=== CONVERSATION SUMMARY (L2) ===")
+		parts = append(parts, sm.summary.text)
 		parts = append(parts, "")
 	}
 
-	// L2 Cache (compressed history)
-	if sm.l2Summary != "" {
-		parts = append(parts, "=== CONVERSATION SUMMARY (L2 CACHE) ===")
-		parts = append(parts, sm.l2Summary)
-		parts = append(parts, "")
-	}
-
-	// L1 Cache (recent messages)
-	if len(sm.l1Messages) > 0 {
-		parts = append(parts, "=== RECENT CONVERSATION (L1 CACHE) ===")
-		for _, msg := range sm.l1Messages {
+	compiled := sm.compileLocked()
+	if len(compiled) > 0 {
+		parts = append(parts, "=== CONVERSATION (L1, as compiled) ===")
+		for _, msg := range compiled {
+			if msg.Role == "system" {
+				continue // ROM and summary already rendered above
+			}
 			parts = append(parts, fmt.Sprintf("[%s]: %s", msg.Role, msg.Content))
 		}
 		parts = append(parts, "")
@@ -1099,14 +620,11 @@ func (sm *SegmentedMemory) GetContextWindow() string {
 	return strings.Join(parts, "\n")
 }
 
-// GetTokenCount returns current token count across all memory layers.
+// GetTokenCount returns current token count across all memory layers (reporting).
 func (sm *SegmentedMemory) GetTokenCount() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Recalculate if dirty (lazy evaluation for performance).
-	// tokenCountDirty means a layer changed via an operation that didn't update
-	// its specific cache — do a full recount for correctness.
 	if sm.tokenCountDirty {
 		sm.fullRecount()
 		sm.tokenCountDirty = false
@@ -1130,32 +648,16 @@ func (sm *SegmentedMemory) GetTokenBudgetMax() int {
 	return total
 }
 
-// ResetContext clears the entire context window: L1 messages, L2 summary, promoted context,
-// schema cache, and tool results. ROM and kernel (tools list) are preserved
-// since they are structural, not conversational. The active pattern name is also cleared
-// so the next turn can re-evaluate it fresh.
+// ResetContext clears the conversational state: L1, the summary, and the
+// active pattern name. ROM and kernel are preserved — they are structural.
 func (sm *SegmentedMemory) ResetContext() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Clear conversational layers
-	sm.l1Messages = sm.l1Messages[:0]
-	sm.l2Summary = ""
-	sm.promotedContext = sm.promotedContext[:0]
-
-	// Clear caches (they're per-conversation artifacts)
-	sm.schemaCache = make(map[string]string)
-	sm.schemaAccessLog = make(map[string]time.Time)
-	sm.toolResults = sm.toolResults[:0]
-
-	// Clear active pattern name so next turn re-evaluates
+	sm.contextMessages = sm.contextMessages[:0]
+	sm.summary = summaryState{}
 	sm.patternName = ""
 
-	// Reset swap counters
-	sm.swapEvictionCount = 0
-	sm.swapRetrievalCount = 0
-
-	// Full recount after reset
 	sm.fullRecount()
 	sm.tokenCountDirty = false
 
@@ -1168,193 +670,7 @@ func (sm *SegmentedMemory) ResetContext() {
 func (sm *SegmentedMemory) GetL1MessageCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return len(sm.l1Messages)
-}
-
-// FlushToSwap forces the full compression pipeline: L1 → L2 → swap.
-// Ensures all conversation content is persisted to searchable storage.
-// Call this when a session ends or before cross-session queries.
-func (sm *SegmentedMemory) FlushToSwap(ctx context.Context) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Step 1: Compress any remaining L1 messages into L2.
-	if len(sm.l1Messages) > 0 {
-		sm.compressToL2(ctx, sm.l1Messages)
-		sm.l1Messages = sm.l1Messages[:0]
-	}
-
-	// Step 2: Evict L2 to swap storage so it's searchable.
-	if sm.l2Summary != "" && sm.swapEnabled {
-		if err := sm.evictL2ToSwap(ctx); err != nil {
-			return fmt.Errorf("flush L2 to swap: %w", err)
-		}
-	}
-
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-	return nil
-}
-
-// ClearL2 clears the L2 summary cache.
-func (sm *SegmentedMemory) ClearL2() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.l2Summary = ""
-	sm.cachedL2Tokens = 0
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-}
-
-// CompactMemory forces compression of all L1 to L2.
-// Returns number of messages compressed and tokens saved.
-// ctx carries caller context (including RLS user_id) for storage operations.
-func (sm *SegmentedMemory) CompactMemory(ctx context.Context) (int, int) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if len(sm.l1Messages) > 0 {
-		// Track metrics before compression
-		tokensBefore := sm.tokenCount
-		l1Before := sm.cachedL1Tokens
-		l2Before := sm.cachedL2Tokens
-
-		// Find the last user message — keep it and any subsequent
-		// assistant/tool messages in L1 so downstream consumers
-		// (GetMessagesForLLM, convertMessagesToConverse) always have
-		// at least one user-role message to work with.
-		lastUserIdx := -1
-		for i := len(sm.l1Messages) - 1; i >= 0; i-- {
-			if sm.l1Messages[i].Role == "user" {
-				lastUserIdx = i
-				break
-			}
-		}
-
-		var messageCount int
-		if lastUserIdx >= 0 {
-			// Compress everything before the last user message.
-			messageCount = lastUserIdx
-			sm.compressToL2(ctx, sm.l1Messages[:lastUserIdx])
-			// Keep the last user message and everything after it in L1.
-			remaining := make([]Message, len(sm.l1Messages[lastUserIdx:]))
-			copy(remaining, sm.l1Messages[lastUserIdx:])
-			sm.l1Messages = remaining
-		} else {
-			// No user message found — compress all (original behavior).
-			messageCount = len(sm.l1Messages)
-			sm.compressToL2(ctx, sm.l1Messages)
-			sm.l1Messages = sm.l1Messages[:0]
-		}
-
-		// L1 shrank and L2 grew — do a full recount so per-layer token caches
-		// (cachedL1Tokens, cachedL2Tokens) stay consistent with the incremental
-		// updateTokenCount scheme.
-		sm.fullRecount()
-		sm.tokenCountDirty = false
-
-		// Calculate token savings
-		tokensSaved := tokensBefore - sm.tokenCount
-
-		// Log compression event. lastUserIdx >= 0 means the boundary was moved
-		// off the newest user message (and its trailing turn) to keep it in L1.
-		sm.logCompressionEvent(compactionEvent{
-			sessionID:          session.SessionIDFromContext(ctx),
-			messagesCompressed: messageCount,
-			tokensSaved:        tokensSaved,
-			l1TokensBefore:     l1Before,
-			l2TokensBefore:     l2Before,
-			boundaryAdjusted:   lastUserIdx >= 0,
-		})
-
-		return messageCount, tokensSaved
-	}
-
-	return 0, 0
-}
-
-// compactionEvent captures one compaction's shape for logging: the session
-// whose context was compacted, the batch size and whether the compression
-// boundary was adjusted to preserve message pairing, and the per-layer token
-// counts before compaction. After-values and cumulative swap evictions are read
-// from the memory's current state at log time.
-type compactionEvent struct {
-	sessionID          string
-	messagesCompressed int
-	tokensSaved        int
-	l1TokensBefore     int
-	l2TokensBefore     int
-	boundaryAdjusted   bool
-}
-
-// logCompressionEvent logs a memory compression event.
-// Records metrics to Hawk for observability, and — when the context-dump switch
-// is on — emits a per-mutation debug log carrying the session id and turn.
-func (sm *SegmentedMemory) logCompressionEvent(ev compactionEvent) {
-	messagesCompressed := ev.messagesCompressed
-	tokensSaved := ev.tokensSaved
-	used, available, _ := sm.tokenBudget.GetUsage()
-	budgetPct := sm.tokenBudget.UsagePercentage()
-
-	// Determine which batch size was used based on budget percentage
-	var batchSizeUsed string
-	criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
-	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
-
-	if budgetPct > criticalThreshold {
-		batchSizeUsed = "critical"
-	} else if budgetPct > warningThreshold {
-		batchSizeUsed = "warning"
-	} else {
-		batchSizeUsed = "normal"
-	}
-
-	// Note: In production, replace with structured logging (zap, etc.)
-	_ = fmt.Sprintf("memory_compressed: messages=%d tokens_saved=%d l1=%d l2_size=%d tokens=%d used=%d available=%d budget_pct=%.2f profile=%s batch_size=%s",
-		messagesCompressed, tokensSaved, len(sm.l1Messages), len(sm.l2Summary),
-		sm.tokenCount, used, available, budgetPct, sm.compressionProfile.Name, batchSizeUsed)
-
-	// Record metrics to Hawk for observability
-	if sm.tracer != nil {
-		labels := map[string]string{
-			"profile":           sm.compressionProfile.Name,
-			"batch_size":        batchSizeUsed,
-			"trigger_threshold": fmt.Sprintf("%.0f%%", budgetPct),
-		}
-
-		// Record compression event counter
-		sm.tracer.RecordMetric("memory.compression.events", 1, labels)
-
-		// Record messages compressed
-		sm.tracer.RecordMetric("memory.compression.messages", float64(messagesCompressed), labels)
-
-		// Record tokens saved
-		sm.tracer.RecordMetric("memory.compression.tokens_saved", float64(tokensSaved), labels)
-
-		// Record budget usage at compression time
-		sm.tracer.RecordMetric("memory.compression.budget_pct", budgetPct, labels)
-
-		// Record L1 size after compression
-		sm.tracer.RecordMetric("memory.l1.size", float64(len(sm.l1Messages)), labels)
-	}
-
-	// Mutation-debug: reconstruct this compaction's effect on the context.
-	// No-op unless the context-dump switch is on.
-	if sm.ctxDebug.on() {
-		zap.L().Debug("context mutation: compaction",
-			zap.String("session_id", ev.sessionID),
-			zap.Int("turn", sm.ctxDebug.turn(ev.sessionID)),
-			zap.Int("batch_size", messagesCompressed),
-			zap.String("batch_profile", batchSizeUsed),
-			zap.Bool("boundary_adjusted", ev.boundaryAdjusted),
-			zap.Int("l1_tokens_before", ev.l1TokensBefore),
-			zap.Int("l1_tokens_after", sm.cachedL1Tokens),
-			zap.Int("l2_tokens_before", ev.l2TokensBefore),
-			zap.Int("l2_tokens_after", sm.cachedL2Tokens),
-			zap.Int("tokens_saved", tokensSaved),
-			zap.Int("swap_evictions", sm.swapEvictionCount))
-	}
+	return len(sm.contextMessages)
 }
 
 // GetTokenBudgetUsage returns current token budget usage information.
@@ -1365,7 +681,8 @@ func (sm *SegmentedMemory) GetTokenBudgetUsage() (int, int, int) {
 	return sm.tokenBudget.GetUsage()
 }
 
-// GetMemoryStats returns comprehensive memory statistics.
+// GetMemoryStats returns comprehensive memory statistics (reporting only —
+// no UsagePercentage read gates any action anywhere).
 func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -1379,14 +696,11 @@ func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 		"tokens_available":   available,
 		"token_budget_total": total,
 		"budget_usage_pct":   budgetPct,
-		"l1_message_count":   len(sm.l1Messages),
+		"l1_message_count":   len(sm.contextMessages),
 		"l1_max_tokens":      sm.maxL1Tokens,
 		"l1_min_messages":    sm.minL1Messages,
-		"l2_summary_length":  len(sm.l2Summary),
-		"tool_result_count":  len(sm.toolResults),
-		"tool_result_max":    sm.maxToolResults,
-		"schema_cache_count": len(sm.schemaCache),
-		"schema_cache_max":   sm.maxSchemas,
+		"l2_summary_length":  len(sm.summary.text),
+		"l2_summary_version": sm.summary.n,
 		"rom_token_count":    sm.cachedROMTokens,
 		"kernel_token_count": sm.cachedKernelTokens,
 		"l1_token_count":     sm.cachedL1Tokens,
@@ -1395,223 +709,15 @@ func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 	}
 }
 
-// getKernelTokens calculates tokens used by kernel layer (must hold lock).
-func (sm *SegmentedMemory) getKernelTokens() int {
-	count := 0
-	if len(sm.tools) > 0 {
-		count += sm.tokenCounter.CountTokens(fmt.Sprintf("Available tools: %s", strings.Join(sm.tools, ", ")))
-	}
-	count += sm.tokenCounter.EstimateToolResultTokens(sm.toolResults)
-	for key, schema := range sm.schemaCache {
-		count += sm.tokenCounter.CountTokens(fmt.Sprintf("%s: %s", key, schema))
-	}
-	return count
-}
-
-// getBudgetWarning returns a warning message if budget usage is high (must hold lock).
-// Uses compression profile thresholds to determine warning levels.
+// getBudgetWarning returns a warning message if budget usage is high (must
+// hold lock). A read for reporting — it acts on nothing.
 func (sm *SegmentedMemory) getBudgetWarning() string {
 	usage := sm.tokenBudget.UsagePercentage()
-	criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
 	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
-
-	// Critical: 10% above critical threshold
-	if usage > criticalThreshold+10.0 {
-		return fmt.Sprintf("CRITICAL: Token budget >%.0f%% - aggressive compression active", criticalThreshold+10.0)
-	} else if usage > criticalThreshold {
-		return fmt.Sprintf("WARNING: Token budget >%.0f%% - compression active", criticalThreshold)
-	} else if usage > warningThreshold {
+	if usage > warningThreshold {
 		return fmt.Sprintf("INFO: Token budget >%.0f%% - monitoring", warningThreshold)
 	}
 	return ""
-}
-
-// evictL2ToSwap moves the entire L2 summary to swap storage (must hold lock).
-// Called automatically when L2 exceeds maxL2Tokens.
-// The L2 summary is saved as a snapshot in the database, then L2 is cleared.
-// ctx carries caller context (including RLS user_id) for storage operations.
-func (sm *SegmentedMemory) evictL2ToSwap(ctx context.Context) error {
-	if !sm.swapEnabled || sm.l2Summary == "" {
-		return nil
-	}
-
-	// Calculate token count
-	tokenCount := sm.tokenCounter.CountTokens(sm.l2Summary)
-
-	// Save L2 snapshot to database with timeout derived from caller ctx
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	err := sm.sessionStore.SaveMemorySnapshot(ctx, sm.sessionID, "l2_summary", sm.l2Summary, tokenCount)
-	if err != nil {
-		return fmt.Errorf("failed to evict L2 to swap: %w", err)
-	}
-
-	// Clear L2 to start fresh
-	sm.l2Summary = ""
-	sm.swapEvictionCount++
-
-	return nil
-}
-
-// RetrieveMessagesFromSwap retrieves old messages from database.
-// Returns messages in chronological order (oldest first).
-// Offset and limit control pagination (offset=0, limit=10 gets first 10 messages).
-func (sm *SegmentedMemory) RetrieveMessagesFromSwap(ctx context.Context, offset, limit int) ([]Message, error) {
-	sm.mu.RLock()
-	if !sm.swapEnabled {
-		sm.mu.RUnlock()
-		return nil, fmt.Errorf("swap layer not enabled")
-	}
-	sessionID := sm.sessionID
-	store := sm.sessionStore
-	sm.mu.RUnlock()
-
-	// Load full message history from database
-	// SessionStore.LoadMessages returns messages in chronological order
-	allMessages, err := store.LoadMessages(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve messages from swap: %w", err)
-	}
-
-	// Apply offset and limit
-	if offset >= len(allMessages) {
-		return []Message{}, nil
-	}
-
-	end := offset + limit
-	if end > len(allMessages) {
-		end = len(allMessages)
-	}
-
-	messages := allMessages[offset:end]
-
-	// Update statistics
-	sm.mu.Lock()
-	sm.swapRetrievalCount++
-	sm.mu.Unlock()
-
-	return messages, nil
-}
-
-// RetrieveL2Snapshots retrieves old L2 summary snapshots from swap.
-// Returns snapshots in chronological order (oldest first).
-// Limit controls maximum snapshots to return (0 = all).
-func (sm *SegmentedMemory) RetrieveL2Snapshots(ctx context.Context, limit int) ([]string, error) {
-	sm.mu.RLock()
-	if !sm.swapEnabled {
-		sm.mu.RUnlock()
-		return nil, fmt.Errorf("swap layer not enabled")
-	}
-	sessionID := sm.sessionID
-	store := sm.sessionStore
-	sm.mu.RUnlock()
-
-	// Load snapshots from database
-	snapshots, err := store.LoadMemorySnapshots(ctx, sessionID, "l2_summary", limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve L2 snapshots: %w", err)
-	}
-
-	// Extract content strings
-	contents := make([]string, len(snapshots))
-	for i, snapshot := range snapshots {
-		contents[i] = snapshot.Content
-	}
-
-	// Update statistics
-	sm.mu.Lock()
-	sm.swapRetrievalCount++
-	sm.mu.Unlock()
-
-	return contents, nil
-}
-
-// PromoteMessagesToContext adds retrieved messages from swap to active context.
-// The messages are added as "promoted context" separate from L1 (which is for recent conversation).
-// This allows old context to be available to the LLM without polluting L1.
-// Checks token budget before promotion - returns error if budget would be exceeded.
-func (sm *SegmentedMemory) PromoteMessagesToContext(messages []Message) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if !sm.swapEnabled {
-		return fmt.Errorf("swap layer not enabled")
-	}
-
-	if len(messages) == 0 {
-		return nil
-	}
-
-	// Calculate token cost of promoted messages
-	promotedTokens := sm.tokenCounter.EstimateMessagesTokens(messages)
-
-	// Check token budget
-	used, available, _ := sm.tokenBudget.GetUsage()
-	if used+promotedTokens > available {
-		return fmt.Errorf("token budget exceeded: would need %d tokens but only %d available",
-			promotedTokens, available-used)
-	}
-
-	// Sanitize promoted messages: strip tool_use/tool_result blocks that would
-	// break the Anthropic/Bedrock API's strict tool_use→tool_result pairing rules.
-	// Promoted context comes from prior sessions where tool IDs are meaningless.
-	sanitized := make([]Message, 0, len(messages))
-	for _, m := range messages {
-		if m.Role == "tool" {
-			continue // Drop tool_result messages entirely — results from another session are noise.
-		}
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			// Keep the text content but drop the tool_calls block.
-			summary := m.Content
-			if summary == "" {
-				// If the assistant message was ONLY tool calls with no text, summarize.
-				var names []string
-				for _, tc := range m.ToolCalls {
-					names = append(names, tc.Name)
-				}
-				summary = fmt.Sprintf("[Used tools: %s]", strings.Join(names, ", "))
-			}
-			sanitized = append(sanitized, Message{
-				Role:      "assistant",
-				Content:   summary,
-				Timestamp: m.Timestamp,
-			})
-			continue
-		}
-		sanitized = append(sanitized, m)
-	}
-
-	sm.promotedContext = append(sm.promotedContext, sanitized...)
-
-	// Update promoted cache and totals
-	sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-
-	return nil
-}
-
-// ClearPromotedContext removes all promoted messages from context.
-// This allows reclaiming token budget used by retrieved old messages.
-func (sm *SegmentedMemory) ClearPromotedContext() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	sm.promotedContext = sm.promotedContext[:0]
-	sm.cachedPromotedTokens = 0
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-}
-
-// GetPromotedContext returns a copy of promoted messages.
-func (sm *SegmentedMemory) GetPromotedContext() []Message {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	promoted := make([]Message, len(sm.promotedContext))
-	copy(promoted, sm.promotedContext)
-	return promoted
 }
 
 // SearchMessages performs semantic search over conversation history using BM25 + LLM reranking.
@@ -1629,8 +735,8 @@ func (sm *SegmentedMemory) SearchMessages(
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	if !sm.swapEnabled {
-		return nil, fmt.Errorf("semantic search requires swap layer to be enabled")
+	if sm.sessionStore == nil || sm.sessionID == "" {
+		return nil, fmt.Errorf("semantic search requires a session store")
 	}
 
 	ctx, span := sm.tracer.StartSpan(ctx, "memory.search_messages")
@@ -1669,12 +775,6 @@ func (sm *SegmentedMemory) SearchMessages(
 }
 
 // rerankByRelevance uses LLM to rerank search results by semantic relevance.
-//
-// Algorithm:
-// 1. Format candidates with message previews (200 chars each)
-// 2. Ask LLM to score each message 0-10 for relevance to query
-// 3. Parse JSON response and reorder by score
-// 4. Return top-N most relevant
 //
 // Falls back to BM25 ordering if LLM is not configured or reranking fails.
 func (sm *SegmentedMemory) rerankByRelevance(
@@ -1767,79 +867,4 @@ func (sm *SegmentedMemory) formatCandidatesForReranking(candidates []Message) st
 		fmt.Fprintf(&sb, "[%d] %s: %s\n", i, msg.Role, preview)
 	}
 	return sb.String()
-}
-
-// TrimLastN removes the last N messages from L1, respecting tool_use/tool_result
-// pair boundaries. If removing a message would orphan a tool result (or leave an
-// assistant message without its subsequent tool results), the boundary is expanded
-// to include the full pair. Returns the actual number of messages removed.
-func (sm *SegmentedMemory) TrimLastN(n int) int {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if n <= 0 || len(sm.l1Messages) == 0 {
-		return 0
-	}
-
-	// Clamp to available messages.
-	if n > len(sm.l1Messages) {
-		n = len(sm.l1Messages)
-	}
-
-	// Walk backward to find the cut point, expanding to respect pair boundaries.
-	cutIdx := len(sm.l1Messages) - n
-
-	// If the cut lands on a "tool" message, walk backward to include its
-	// preceding assistant message (which holds the tool_use blocks).
-	for cutIdx > 0 && sm.l1Messages[cutIdx].Role == "tool" {
-		cutIdx--
-	}
-
-	removed := len(sm.l1Messages) - cutIdx
-	sm.l1Messages = sm.l1Messages[:cutIdx]
-
-	sm.fullRecount()
-	sm.tokenCountDirty = false
-
-	return removed
-}
-
-// AggressiveTrim keeps only the last keepLastN messages in L1 and clears L2
-// summaries entirely. Used as a last-resort recovery when token budget is
-// critically exceeded even after normal compression. Returns before and after
-// token counts for observability.
-func (sm *SegmentedMemory) AggressiveTrim(keepLastN int) (beforeTokens, afterTokens int) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	beforeTokens = sm.tokenCount
-
-	if keepLastN < 0 {
-		keepLastN = 0
-	}
-
-	// Trim L1 to last keepLastN messages, respecting pair boundaries.
-	if len(sm.l1Messages) > keepLastN {
-		cutIdx := len(sm.l1Messages) - keepLastN
-		// Expand forward if we'd cut into a tool-result block.
-		for cutIdx < len(sm.l1Messages) && sm.l1Messages[cutIdx].Role == "tool" {
-			cutIdx++
-		}
-		if cutIdx >= len(sm.l1Messages) {
-			// Edge case: all remaining messages are tool results; keep them all.
-			cutIdx = 0
-		}
-		remaining := make([]Message, len(sm.l1Messages[cutIdx:]))
-		copy(remaining, sm.l1Messages[cutIdx:])
-		sm.l1Messages = remaining
-	}
-
-	// Clear L2 entirely.
-	sm.l2Summary = ""
-
-	sm.fullRecount()
-	sm.tokenCountDirty = false
-	afterTokens = sm.tokenCount
-
-	return beforeTokens, afterTokens
 }

@@ -1061,6 +1061,21 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 }
 
 // spawnWorkflowSubAgents spawns background sub-agents for a workflow coordinator
+// agentDisplayName resolves an agent's GUID to the name its peers know it by.
+// send_message stamps the sender's GUID, but the team block names peers by
+// name — so an unresolved GUID would arrive as a sender the recipient has never
+// heard of, and with several workers in flight it could not tell which one
+// answered. Falls back to the raw id when no name is registered.
+func (s *MultiAgentServer) agentDisplayName(agentID string) string {
+	if agentID == "" || s.registry == nil {
+		return agentID
+	}
+	if info, err := s.registry.GetAgentInfo(agentID); err == nil && info.Name != "" {
+		return info.Name
+	}
+	return agentID
+}
+
 func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinatorAgent *agent.Agent, coordinatorID, sessionID string) error {
 	if s.logger != nil {
 		s.logger.Debug("spawnWorkflowSubAgents called",
@@ -1368,7 +1383,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 
 				// Format as a message from the sub-agent
 				// This will be stored in the session and visible via SubscribeToSession
-				injectedPrompt := fmt.Sprintf("[MESSAGE FROM %s]:\n\n%s", queueMsg.FromAgent, messageContent)
+				injectedPrompt := fmt.Sprintf("[MESSAGE FROM %s]:\n\n%s", s.agentDisplayName(queueMsg.FromAgent), messageContent)
 
 				s.logger.Info("Injecting sub-agent response into coordinator session",
 					zap.String("coordinator", coordinatorID),
@@ -1473,17 +1488,17 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			commCtx.SubscribedTopics = []string{workflowTopic}
 		}
 
-		// Add available agents for point-to-point communication
-		// Include all sub-agents except self
-		var availableAgents []string
+		// Peers this worker can reach: the coordinator it answers to, first,
+		// then its fellow workers. The coordinator is the address a worker
+		// actually needs — without it a worker has nowhere to return its
+		// result and the workflow stalls after the first delegation.
+		availableAgents := []string{coordinatorID}
 		for _, otherSubAgentID := range subAgentIDs {
 			if otherSubAgentID != subAgentID {
 				availableAgents = append(availableAgents, otherSubAgentID)
 			}
 		}
-		if len(availableAgents) > 0 {
-			commCtx.AvailableAgents = availableAgents
-		}
+		commCtx.AvailableAgents = availableAgents
 
 		subAgent.SetWorkflowCommunicationContext(commCtx)
 
@@ -2172,10 +2187,12 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 						content = "[Empty message]"
 					}
 
-					// Format with sender info
+					// Format with sender info. The label matches the one the
+					// team block tells the agent to expect, so the cue it was
+					// taught to recognise is the cue it receives.
 					formatted := fmt.Sprintf(
-						"[MESSAGE from %s (type: %s)]:\n\n%s",
-						msg.FromAgent, msg.MessageType, content)
+						"[MESSAGE FROM %s]:\n\n%s",
+						s.agentDisplayName(msg.FromAgent), content)
 					queuedMessages = append(queuedMessages, formatted)
 				}
 

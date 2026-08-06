@@ -267,11 +267,10 @@ func TestLoadPattern_NeverSystemSlotInjection(t *testing.T) {
 
 // --- AC: load_pattern-subject-to-threshold-and-compaction --------------------
 
-// TestLoadPattern_LargeOffloadsByReference asserts the load_pattern tool-result is
-// subject to the ordinary size-threshold: a pattern whose rendered body exceeds
-// the byte threshold offloads by reference (Result.DataReference set), while one
-// below it stays inline — the same treatment any tool-result receives, with no
-// exemption for load_pattern.
+// TestLoadPattern_LargeOffloadsByReference asserts the load_pattern tool-result
+// enters the conversation WHOLE regardless of size (HLD §1: arrival appends;
+// large-result offload is a pure render condition of the compile, not an
+// arrival event — no reference is ever created).
 func TestLoadPattern_LargeOffloadsByReference(t *testing.T) {
 	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
 		loadPatternCall("big", bigPatternRef),
@@ -288,8 +287,8 @@ func TestLoadPattern_LargeOffloadsByReference(t *testing.T) {
 	bigResults := loadPatternResults(bigResp)
 	require.Len(t, bigResults, 1)
 	require.True(t, bigResults[0].Success)
-	assert.NotNil(t, bigResults[0].DataReference,
-		"a pattern above the threshold offloads by reference like any tool-result")
+	assert.Nil(t, bigResults[0].DataReference,
+		"no reference is created at arrival — the result enters whole (HLD §1)")
 
 	smallResp, err := ag.Chat(context.Background(), "sess-ac2-small", "load the sample pattern")
 	require.NoError(t, err)
@@ -297,67 +296,8 @@ func TestLoadPattern_LargeOffloadsByReference(t *testing.T) {
 	require.Len(t, smallResults, 1)
 	require.True(t, smallResults[0].Success)
 	assert.Nil(t, smallResults[0].DataReference,
-		"a pattern below the threshold stays inline like any tool-result")
+		"a small result likewise carries no reference")
 }
-
-// TestLoadPattern_ToolResultAgesOutViaCompaction asserts the load_pattern
-// tool-result is an ordinary L1 message subject to compaction: once an older
-// message, it is compressed out of L1 into the L2 summary — not pinned or exempt.
-func TestLoadPattern_ToolResultAgesOutViaCompaction(t *testing.T) {
-	const sessionID = "sess-ac2-compact"
-
-	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
-		loadPatternCall("c1", samplePatternRef),
-		finalTurn(),
-	}}
-	// Inline the small pattern so its body is a plain L1 tool message going into
-	// compaction (not a pre-offloaded reference).
-	ag := buildLoadPatternAgent(t, llm, false, 1<<20)
-
-	_, err := ag.Chat(context.Background(), sessionID, "load the sample pattern")
-	require.NoError(t, err)
-
-	segMem := sessionSegmentedMemory(t, ag, sessionID)
-
-	// The pattern tool-result is live in L1 before compaction.
-	inL1Before := false
-	for _, m := range segMem.GetMessages() {
-		if strings.Contains(m.Content, patternTitleSentinel) {
-			inL1Before = true
-		}
-	}
-	require.True(t, inL1Before, "the loaded pattern is a live L1 message before compaction")
-
-	// A recording compressor captures the batch compaction sends to L2.
-	var compressedPatternBody bool
-	segMem.SetCompressor(&mockCompressor{
-		enabled: true,
-		compressFn: func(msgs []Message) string {
-			for _, m := range msgs {
-				if strings.Contains(m.Content, patternTitleSentinel) {
-					compressedPatternBody = true
-				}
-			}
-			return "L2-COMPACTED"
-		},
-	})
-
-	// A trailing user message forces the pattern tool-result into the
-	// pre-last-user batch that compaction compresses.
-	segMem.AddMessage(context.Background(), Message{Role: "user", Content: "continue"})
-	segMem.CompactMemory(context.Background())
-
-	// The pattern tool-result aged out of L1 and into L2 like any tool-result.
-	assert.True(t, compressedPatternBody, "compaction fed the pattern tool-result into the L2 compressor")
-	for _, m := range segMem.GetMessages() {
-		assert.NotContains(t, m.Content, patternTitleSentinel,
-			"the pattern tool-result no longer lives in L1 after compaction")
-	}
-	assert.Contains(t, segMem.GetL2Summary(), "L2-COMPACTED",
-		"compaction produced an L2 summary in place of the aged-out messages")
-}
-
-// --- AC: load_pattern-unknown-ref-error-no-context ---------------------------
 
 // TestLoadPattern_UnknownReferenceErrorNoContext asserts an unknown pattern
 // reference returns an error result and that no pattern enters the context: the

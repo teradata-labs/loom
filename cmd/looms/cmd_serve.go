@@ -117,10 +117,8 @@ func toolsNoneActive() bool {
 //	tools.minimal=true → suppress graph_memory, task_board
 //	                    (the two progressive-disclosure tools that previously
 //	                    over-coupled to subsystem wiring)
-//	tools.none=true    → also suppress the progressive-disclosure memory
-//	                    tools (conversation_memory, session_memory), the
-//	                    runtime error/result tools (get_error_details,
-//	                    query_tool_result), and the agent-coupling tools
+//	tools.none=true    → also suppress the retrieval tools
+//	                    (query_tool_result, recall) and the agent-coupling tools
 //	                    wired by MultiAgentServer.prepareAgent /
 //	                    UpdateAgent (send_message, publish,
 //	                    shared_memory_read, shared_memory_write).
@@ -133,12 +131,9 @@ func builtinToolsToSuppress() []string {
 	suppressed := []string{"graph_memory", "task_board"}
 	if toolsNoneActive() {
 		suppressed = append(suppressed,
-			// Progressive-disclosure memory tools.
-			"conversation_memory",
-			"session_memory",
-			// Runtime tools surfaced by the agent on first error / first large result.
-			"get_error_details",
+			// Retrieval tools registered by default at agent construction.
 			"query_tool_result",
+			"recall",
 			// Communication + presentation tools wired by builtin.CommunicationTools,
 			// which MultiAgentServer.prepareAgent / UpdateAgent register on every
 			// agent regardless of how the agent was loaded.
@@ -202,11 +197,6 @@ func registerYAMLBuiltinTools(
 		"tool_search":   true, // Auto-registered when !tools.minimal/none and toolRegistry available
 	}
 	otherMechanismTools := map[string]string{
-		"recall_conversation":             "memory/swap layer",
-		"clear_recalled_context":          "memory/swap layer",
-		"search_conversation":             "memory/swap layer",
-		"get_tool_result":                 "async tool result retrieval",
-		"get_error_details":               "error details retrieval",
 		"delegate_to_agent":               "coordination subsystem",
 		"send_message":                    "communication subsystem (MessageQueue)",
 		"shared_memory_write":             "communication subsystem (SharedMemoryStore)",
@@ -1093,7 +1083,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
-	errorStore := storageBackend.ErrorStore()
 
 	// Extract graph memory store if available (optional interface)
 	var graphMemoryStore memory.GraphMemoryStore
@@ -1597,12 +1586,17 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Set context limits on memory if specified
+				// Set context limits on memory if specified. The reservation
+				// covers the request's real max_tokens (HLD §5.1 "usable") so
+				// the relief marks stay below the provider's refusal line.
 				if cfg.Llm != nil {
 					if cfg.Llm.MaxContextTokens > 0 || cfg.Llm.ReservedOutputTokens > 0 {
 						memory.SetContextLimits(
 							int(cfg.Llm.MaxContextTokens),
-							int(cfg.Llm.ReservedOutputTokens))
+							agent.EffectiveOutputReservation(
+								cfg.Llm.Provider, cfg.Llm.Model,
+								int(cfg.Llm.MaxTokens), int(cfg.Llm.ReservedOutputTokens),
+								int(cfg.Llm.MaxContextTokens)))
 					}
 				}
 
@@ -1614,7 +1608,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					agent.WithName(cfg.Name),
 					agent.WithTracer(tracer),
 					agent.WithMemory(memory),
-					agent.WithErrorStore(errorStore),
 					// Note: SharedMemory added via registry.SetSharedMemory() after it's created
 				}
 
@@ -1655,9 +1648,14 @@ func runServe(cmd *cobra.Command, args []string) {
 					if cfg.Llm.MaxContextTokens > 0 {
 						agentCfg.MaxContextTokens = int(cfg.Llm.MaxContextTokens)
 					}
-					if cfg.Llm.ReservedOutputTokens > 0 {
-						agentCfg.ReservedOutputTokens = int(cfg.Llm.ReservedOutputTokens)
-					}
+					// The EFFECTIVE reservation, not the raw field: NewAgent
+					// re-applies SetContextLimits from this config onto the same
+					// Memory, so a raw (often zero) value here would clobber the
+					// value computed above and drop the reserve to window/10.
+					agentCfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
+						cfg.Llm.Provider, cfg.Llm.Model,
+						int(cfg.Llm.MaxTokens), int(cfg.Llm.ReservedOutputTokens),
+						int(cfg.Llm.MaxContextTokens))
 				}
 
 				// Transfer pattern configuration from proto if present
@@ -2495,16 +2493,6 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("SharedMemoryStore injected into agent", zap.String("agent", name))
 	}
 
-	// SQL Result Store for queryable large SQL results (from storage backend)
-	sqlResultStore := storageBackend.ResultStore()
-	if sqlResultStore != nil {
-		// Inject SQL result store into all agents
-		for name, ag := range agents {
-			ag.SetSQLResultStore(sqlResultStore)
-			logger.Info("SQLResultStore injected into agent", zap.String("agent", name))
-		}
-	}
-
 	// Inject MCP manager into multi-agent server if available
 	if mcpManager != nil {
 		configPath := filepath.Join(loomconfig.GetLoomDataDir(), "looms.yaml")
@@ -2960,9 +2948,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				if agentConfig.Llm.MaxContextTokens > 0 {
 					cfg.MaxContextTokens = int(agentConfig.Llm.MaxContextTokens)
 				}
-				if agentConfig.Llm.ReservedOutputTokens > 0 {
-					cfg.ReservedOutputTokens = int(agentConfig.Llm.ReservedOutputTokens)
-				}
+				// The EFFECTIVE reservation — see the note at the other build site.
+				cfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
+					agentConfig.Llm.Provider, agentConfig.Llm.Model,
+					int(agentConfig.Llm.MaxTokens), int(agentConfig.Llm.ReservedOutputTokens),
+					int(agentConfig.Llm.MaxContextTokens))
 			}
 
 			// Create memory instance for this agent
@@ -2983,12 +2973,17 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Set context limits on memory if specified
+			// Set context limits on memory if specified. The reservation
+			// covers the request's real max_tokens (HLD §5.1 "usable") so the
+			// relief marks stay below the provider's refusal line.
 			if agentConfig.Llm != nil {
 				if agentConfig.Llm.MaxContextTokens > 0 || agentConfig.Llm.ReservedOutputTokens > 0 {
 					memory.SetContextLimits(
 						int(agentConfig.Llm.MaxContextTokens),
-						int(agentConfig.Llm.ReservedOutputTokens))
+						agent.EffectiveOutputReservation(
+							agentConfig.Llm.Provider, agentConfig.Llm.Model,
+							int(agentConfig.Llm.MaxTokens), int(agentConfig.Llm.ReservedOutputTokens),
+							int(agentConfig.Llm.MaxContextTokens)))
 				}
 			}
 
@@ -2999,7 +2994,6 @@ func runServe(cmd *cobra.Command, args []string) {
 			agentOpts := []agent.Option{
 				agent.WithTracer(tracer),
 				agent.WithMemory(memory),
-				agent.WithErrorStore(errorStore),
 				agent.WithSharedMemory(globalSharedMem), // Use global storage SharedMemoryStore, not communication one
 				agent.WithConfig(cfg),
 			}

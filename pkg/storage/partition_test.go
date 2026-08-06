@@ -14,14 +14,10 @@
 package storage
 
 import (
-	"context"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/teradata-labs/loom/pkg/session"
 )
 
 // AC1: a Get of a shared-memory handle owned by another session resolves to
@@ -83,43 +79,4 @@ func TestSharedMemoryStore_OwningSessionResolvesHandle(t *testing.T) {
 	retrieved, err := store.Get(ref, "session-owner")
 	require.NoError(t, err)
 	assert.Equal(t, data, retrieved)
-}
-
-// AC2: a Query of a SQL-result id owned by another session resolves to
-// not-found for the caller.
-func TestSQLResultStore_ForeignSessionQueryIsNotFound(t *testing.T) {
-	store := newTestSQLResultStore(t)
-
-	ownerCtx := session.WithSessionID(context.Background(), "session-owner")
-	id := "result-1"
-	_, err := store.Store(ownerCtx, id, testSQLResultData())
-	require.NoError(t, err)
-
-	// A caller from a different session cannot query the owner's result.
-	intruderCtx := session.WithSessionID(context.Background(), "session-intruder")
-	rows, err := store.Query(intruderCtx, id, "SELECT * FROM tool_result_result_1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-	assert.Nil(t, rows, "foreign caller must receive no rows")
-}
-
-// AC4 (SQL result): the owning session resolves and queries its own result.
-func TestSQLResultStore_OwningSessionResolvesResult(t *testing.T) {
-	store := newTestSQLResultStore(t)
-
-	ownerCtx := session.WithSessionID(context.Background(), "session-owner")
-	id := "result-1"
-	_, err := store.Store(ownerCtx, id, testSQLResultData())
-	require.NoError(t, err)
-
-	meta, err := store.GetMetadata(ownerCtx, id)
-	require.NoError(t, err)
-
-	rows, err := store.Query(ownerCtx, id, fmt.Sprintf("SELECT * FROM %s", meta.TableName))
-	require.NoError(t, err)
-	require.NotNil(t, rows)
-
-	result, ok := rows.(map[string]interface{})
-	require.True(t, ok)
-	assert.Len(t, result["rows"], 2)
 }

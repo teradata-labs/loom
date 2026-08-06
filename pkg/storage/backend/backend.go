@@ -25,7 +25,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
 )
 
@@ -96,14 +95,8 @@ type StorageBackend interface {
 	// SessionStorage returns the session storage implementation.
 	SessionStorage() agent.SessionStorage
 
-	// ErrorStore returns the error store implementation.
-	ErrorStore() agent.ErrorStore
-
 	// ArtifactStore returns the artifact store implementation.
 	ArtifactStore() artifacts.ArtifactStore
-
-	// ResultStore returns the SQL result store implementation.
-	ResultStore() storage.ResultStore
 
 	// HumanRequestStore returns the human request store implementation.
 	HumanRequestStore() shuttle.HumanRequestStore

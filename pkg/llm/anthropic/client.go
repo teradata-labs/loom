@@ -228,19 +228,40 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 }
 
 // convertMessages converts agent messages to Anthropic format.
-// Returns the system prompt blocks (with cache_control on the last block) and the API messages.
-// System messages are extracted and combined, as Anthropic Messages API requires
-// them to be sent as a separate "system" field, not in the messages array.
+// Returns the system prompt blocks and the API messages. System messages are
+// extracted into the separate "system" field the Messages API requires — one
+// block per source message, so ROM and the summary keep their own compile-set
+// cache breakpoints: a fold rewrites the summary block and leaves ROM's cached
+// prefix intact.
+//
+// Cache breakpoints are the compile's decision (HLD §5.2 step 8): a message
+// with CacheBreakpoint=true gets cache_control on its last content block. The
+// client only translates the marker — it derives nothing itself.
 func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam, []Message) {
-	var systemPrompts []string
+	var systemBlocks []TextBlockParam
 	var apiMessages []Message
+
+	markLast := func() {
+		if n := len(apiMessages); n > 0 {
+			blocks := apiMessages[n-1].Content
+			if len(blocks) > 0 {
+				blocks[len(blocks)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+			}
+		}
+	}
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			// Extract system messages - they'll be combined and sent separately
+			// Extract system messages — each becomes its own system block,
+			// carrying the compile's cache breakpoint when marked. Cached
+			// tokens don't count against the ITPM rate limit.
 			if msg.Content != "" {
-				systemPrompts = append(systemPrompts, msg.Content)
+				block := TextBlockParam{Type: "text", Text: msg.Content}
+				if msg.CacheBreakpoint {
+					block.CacheControl = &CacheControl{Type: "ephemeral"}
+				}
+				systemBlocks = append(systemBlocks, block)
 			}
 
 		case "user":
@@ -323,21 +344,18 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 				},
 			})
 		}
+
+		// The message cache breakpoint: compile marks the last stable message
+		// before any current-turn ephemeral content (HLD §5.2 step 8). Marking
+		// anything later — e.g. the tip — buys cache writes that are never
+		// read back, because ephemeral content re-renders next call.
+		if msg.CacheBreakpoint && msg.Role != "system" {
+			markLast()
+		}
 	}
 
-	// Combine all system prompts and wrap in a TextBlockParam with cache_control.
-	// Placing cache_control on the system block caches it for ~5 minutes.
-	// For Anthropic, cached tokens don't count against the ITPM rate limit.
-	if len(systemPrompts) == 0 {
+	if len(systemBlocks) == 0 {
 		return nil, apiMessages
-	}
-	systemText := strings.Join(systemPrompts, "\n\n")
-	systemBlocks := []TextBlockParam{
-		{
-			Type:         "text",
-			Text:         systemText,
-			CacheControl: &CacheControl{Type: "ephemeral"},
-		},
 	}
 	return systemBlocks, apiMessages
 }
@@ -613,6 +631,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
+		// Positive identification of the provider's context-too-long refusal
+		// (HLD §5.2 step 12) — the only relief trigger.
+		if llm.IsAnthropicContextTooLong(httpResp.StatusCode, respBody) {
+			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+		}
 		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 
@@ -841,6 +864,11 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
+		// Positive identification of the provider's context-too-long refusal
+		// (HLD §5.2 step 12) — the only relief trigger.
+		if llm.IsAnthropicContextTooLong(httpResp.StatusCode, respBody) {
+			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+		}
 		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 

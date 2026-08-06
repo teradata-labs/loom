@@ -129,6 +129,26 @@ type Message struct {
 	// Defaults to "default-user" for SQLite backends.
 	UserID string
 
+	// Turn is the session turn this message belongs to. Derived at insert,
+	// exactly like the seq — no counter, no session state (HLD §4.5): the
+	// Chat()-entry persist site is the only turn-incrementing event.
+	Turn int64
+
+	// Evicted marks a tool row whose payload was shed under context pressure.
+	// Write-once true, set only inside releasePressure; no code path clears it.
+	Evicted bool
+
+	// Folded marks a row folded into the session summary. Write-once true, set
+	// only inside releasePressure; folded rows are filtered at the database read.
+	Folded bool
+
+	// CacheBreakpoint marks a compiled message where a provider prompt-cache
+	// breakpoint (cache_control) should be placed. Transient — set only by
+	// compileLocked at render time, never persisted. The compile decides the
+	// "perfect place" (ROM, summary, and the last message before any current-turn
+	// offload stub); each provider client honors it.
+	CacheBreakpoint bool
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 
@@ -331,48 +351,6 @@ func (s *Session) GetMessages() []Message {
 	messages := make([]Message, len(s.Messages))
 	copy(messages, s.Messages)
 	return messages
-}
-
-// TrimLastN removes the last n messages from the flat Messages list.
-// If n is 0, it syncs the flat list to match the segmented memory length
-// (used after AggressiveTrim where segmented memory was already trimmed).
-// Respects tool_use/tool_result pair boundaries.
-func (s *Session) TrimLastN(n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.Messages) == 0 {
-		return
-	}
-
-	if n == 0 {
-		// Sync mode: trim flat list to match segmented memory message count.
-		if s.SegmentedMem != nil {
-			if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
-				targetLen := len(segMem.GetMessagesForLLM())
-				if targetLen < len(s.Messages) {
-					s.Messages = s.Messages[:targetLen]
-				}
-			}
-		}
-		s.UpdatedAt = time.Now()
-		return
-	}
-
-	if n >= len(s.Messages) {
-		s.Messages = s.Messages[:0]
-		s.UpdatedAt = time.Now()
-		return
-	}
-
-	cutIdx := len(s.Messages) - n
-	// Expand backward to not orphan tool results.
-	for cutIdx > 0 && s.Messages[cutIdx].Role == "tool" {
-		cutIdx--
-	}
-
-	s.Messages = s.Messages[:cutIdx]
-	s.UpdatedAt = time.Now()
 }
 
 // MessageCount returns the total number of messages in the session.

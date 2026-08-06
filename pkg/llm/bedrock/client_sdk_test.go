@@ -133,3 +133,32 @@ func TestSDKClient_Chat_RoutesByMaxTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertMessagesToSDK_SystemBlocksCarryTheirOwnMarker pins the §5.2 step 8
+// contract on the Bedrock path: each system message becomes its own block and
+// carries cache_control only when compile marked it. Merging ROM and the
+// summary into one block would put both behind a single breakpoint, so a fold —
+// which rewrites only the summary — would invalidate ROM's cached prefix too.
+func TestConvertMessagesToSDK_SystemBlocksCarryTheirOwnMarker(t *testing.T) {
+	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
+
+	systemBlocks, sdkMessages := c.convertMessagesToSDK([]llmtypes.Message{
+		{Role: "system", Content: "ROM operating guide", CacheBreakpoint: true},
+		{Role: "system", Content: "covers msg:1-5 …summary…", CacheBreakpoint: true},
+		{Role: "system", Content: "transient soft reminder"},
+		{Role: "user", Content: "hi"},
+	})
+
+	require.Len(t, systemBlocks, 3, "one block per system message, never merged")
+	require.Len(t, sdkMessages, 1, "the user turn is the only wire message")
+
+	require.Equal(t, "ROM operating guide", systemBlocks[0].Text)
+	require.Equal(t, "covers msg:1-5 …summary…", systemBlocks[1].Text)
+	require.Equal(t, "transient soft reminder", systemBlocks[2].Text)
+
+	for i, wantMarked := range []bool{true, true, false} {
+		marked := systemBlocks[i].CacheControl.Type != ""
+		require.Equal(t, wantMarked, marked,
+			"system block %d cache_control present=%v, want %v", i, marked, wantMarked)
+	}
+}

@@ -16,8 +16,10 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,10 +94,12 @@ func sampleBlocks() []ContentBlock {
 	}
 }
 
-// findUserMessage returns the first user-role message with the given content.
+// findUserMessage returns the first user-role message whose content ends with
+// the given text — the turn carries its arrival timestamp as a prefix, so the
+// caller's words are the suffix of the stored content.
 func findUserMessage(messages []llmtypes.Message, content string) (llmtypes.Message, bool) {
 	for _, msg := range messages {
-		if msg.Role == "user" && msg.Content == content {
+		if msg.Role == "user" && strings.HasSuffix(msg.Content, content) {
 			return msg, true
 		}
 	}
@@ -151,7 +155,7 @@ func TestAgent_ChatWithContentBlocks_PersistsCanonicalText(t *testing.T) {
 	for i := range messages {
 		switch messages[i].Role {
 		case "user":
-			if messages[i].Content == "canonical text" {
+			if strings.HasSuffix(messages[i].Content, "canonical text") {
 				userMsg = &messages[i]
 			}
 		case "assistant":
@@ -160,7 +164,10 @@ func TestAgent_ChatWithContentBlocks_PersistsCanonicalText(t *testing.T) {
 	}
 
 	require.NotNil(t, userMsg, "stored user turn should keep the canonical text")
-	assert.Equal(t, "canonical text", userMsg.Content)
+	assert.True(t, strings.HasPrefix(userMsg.Content, "["),
+		"the turn carries its arrival timestamp as a prefix")
+	assert.True(t, strings.HasSuffix(userMsg.Content, "] canonical text"),
+		"the caller's words follow the stamp unchanged")
 	assert.Len(t, userMsg.ContentBlocks, 2, "content blocks should be stored on the user turn")
 	assert.True(t, sawAssistant, "assistant response should be appended to history")
 }
@@ -300,4 +307,31 @@ func TestContentBlockAlias(t *testing.T) {
 	var block ContentBlock = types.ContentBlock{Type: "text", Text: "hi"}
 	var back types.ContentBlock = block
 	assert.Equal(t, "hi", back.Text)
+}
+
+// TestChat_UserTurnCarriesArrivalTimestamp pins the write-gate rule: time
+// enters the session written into the user turn at arrival — "[Mon 2006-01-02
+// 15:04 MST] " before the user's words — and nothing renders time dynamically,
+// so the stored turn is byte-stable from the moment it is written.
+func TestChat_UserTurnCarriesArrivalTimestamp(t *testing.T) {
+	llm := &capturingLLM{response: "ok"}
+	ag := contentBlocksTestAgent(llm)
+
+	_, err := ag.Chat(context.Background(), "stamp_session", "what ran today?")
+	require.NoError(t, err)
+
+	session, ok := ag.GetSession("stamp_session")
+	require.True(t, ok)
+	var content string
+	for _, m := range session.GetMessages() {
+		if m.Role == "user" {
+			content = m.Content
+		}
+	}
+	require.NotEmpty(t, content)
+	require.True(t, strings.HasSuffix(content, "] what ran today?"), "user words follow the stamp: %q", content)
+	stamp := strings.TrimPrefix(content[:strings.Index(content, "] ")+1], "[")
+	stamp = strings.Trim(stamp, "[]")
+	_, err = time.Parse("Mon 2006-01-02 15:04 MST", stamp)
+	require.NoError(t, err, "stamp %q parses as the arrival-time format", stamp)
 }

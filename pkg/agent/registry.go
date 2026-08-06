@@ -71,7 +71,6 @@ type Registry struct {
 	onReload     ReloadCallback         // Callback when config changes
 
 	// Agent dependencies (injected by server)
-	errorStore        ErrorStore                 // For error tracking and retrieval
 	permissionChecker *shuttle.PermissionChecker // For permission validation
 	artifactStore     interface{}                // artifacts.Store for workspace tool
 
@@ -145,7 +144,6 @@ type RegistryConfig struct {
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// Agent dependencies (injected by server)
-	ErrorStore        ErrorStore                 // For error tracking and retrieval
 	PermissionChecker *shuttle.PermissionChecker // For permission validation
 	ArtifactStore     interface{}                // artifacts.Store for workspace tool
 
@@ -209,7 +207,6 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		tracer:            config.Tracer,
 		sessionStore:      config.SessionStore,
 		toolRegistry:      config.ToolRegistry,
-		errorStore:        config.ErrorStore,
 		permissionChecker: config.PermissionChecker,
 		artifactStore:     config.ArtifactStore,
 	}
@@ -848,12 +845,18 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			}
 		}
 
-		// Set context limits on memory if specified
+		// Set context limits on memory if specified. The reservation is
+		// resolved against the request's real max_tokens (§5.1 "usable"), not
+		// taken from config alone — the marks must never sit above the
+		// provider's refusal line.
 		if config.Llm != nil {
 			if config.Llm.MaxContextTokens > 0 || config.Llm.ReservedOutputTokens > 0 {
 				memory.SetContextLimits(
 					int(config.Llm.MaxContextTokens),
-					int(config.Llm.ReservedOutputTokens))
+					EffectiveOutputReservation(
+						config.Llm.Provider, config.Llm.Model,
+						int(config.Llm.MaxTokens), int(config.Llm.ReservedOutputTokens),
+						int(config.Llm.MaxContextTokens)))
 			}
 		}
 
@@ -871,10 +874,6 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	}
 
 	// Inject server dependencies if available
-	if r.errorStore != nil {
-		opts = append(opts, WithErrorStore(r.errorStore))
-	}
-
 	if r.permissionChecker != nil {
 		opts = append(opts, WithPermissionChecker(r.permissionChecker))
 	}
@@ -889,11 +888,6 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Configure shared memory threshold from config
 	if config.Memory != nil && config.Memory.SharedMemoryThresholdBytes != 0 {
 		agent.SetSharedMemoryThreshold(config.Memory.SharedMemoryThresholdBytes)
-	}
-
-	// Configure max tool results from config
-	if config.Memory != nil && config.Memory.MaxToolResults > 0 {
-		agent.SetMaxToolResults(int(config.Memory.MaxToolResults))
 	}
 
 	// Register workspace tool if artifactStore is available
