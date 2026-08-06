@@ -31,6 +31,15 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify remote plugins are version-pinned
+        run: |
+          unpinned=$(grep -E '^[[:space:]]*-?[[:space:]]*remote:' buf.gen.yaml | grep -vE 'remote:[[:space:]]*[^:[:space:]]+/[^:[:space:]]+/[^:[:space:]]+:v[0-9]' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::Unpinned remote plugin(s) in buf.gen.yaml — pin each to a version (plugin:vX.Y.Z):"
+            echo "$unpinned"
+            exit 1
+          fi
+
       - name: Buf Lint
         run: buf lint
 

@@ -17,8 +17,23 @@ proto:
     buf generate
 
 # Lint proto files
-proto-lint:
+proto-lint: proto-pin-check
     buf lint
+
+# Verify every remote plugin in buf.gen.yaml is version-pinned. Unpinned
+# plugins float on upstream "latest": a new plugin release changes codegen
+# output and turns every branch's proto-drift check red with no code change
+# (grpc-gateway v2.30.0, 2026-08-06).
+proto-pin-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unpinned=$(grep -E '^[[:space:]]*-?[[:space:]]*remote:' buf.gen.yaml | grep -vE 'remote:[[:space:]]*[^:[:space:]]+/[^:[:space:]]+/[^:[:space:]]+:v[0-9]' || true)
+    if [ -n "$unpinned" ]; then
+        echo "::error::Unpinned remote plugin(s) in buf.gen.yaml — pin each to a version (plugin:vX.Y.Z):"
+        echo "$unpinned"
+        exit 1
+    fi
+    echo "✅ All remote plugins in buf.gen.yaml are version-pinned"
 
 # Breaking change detection
 proto-breaking:
