@@ -1,7 +1,7 @@
 
 # Prompt Registry Integration Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -44,7 +44,7 @@ and watches for file changes via fsnotify.
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Prompts directory: `./prompts/`
 
 ## Quick Start

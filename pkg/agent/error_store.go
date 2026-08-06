@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -187,7 +188,8 @@ func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string,
 	return errorID, nil
 }
 
-// Get retrieves a specific error by ID.
+// Get retrieves a specific error by ID within the caller's session partition
+// (from ctx). An error owned by another session resolves to not-found.
 func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredError, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "error_store.get")
 	defer s.tracer.EndSpan(span)
@@ -199,6 +201,8 @@ func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredErro
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	sessionID := session.SessionIDFromContext(ctx)
+
 	var stored StoredError
 	var timestamp int64
 	var rawError string
@@ -206,8 +210,8 @@ func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredErro
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, timestamp, session_id, tool_name, raw_error, short_summary
 		 FROM agent_errors
-		 WHERE id = ?`,
-		errorID,
+		 WHERE id = ? AND session_id = ?`,
+		errorID, sessionID,
 	).Scan(
 		&stored.ID,
 		&timestamp,

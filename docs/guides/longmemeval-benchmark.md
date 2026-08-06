@@ -1,6 +1,6 @@
 # LongMemEval Benchmark Guide
 
-**Version**: v1.2.0 | **Status**: ✅ Implemented (branch `feat/longmemeval-benchmark`)
+**Version**: v1.3.0 | **Status**: ✅ Implemented (merged to `main` via PR #159)
 
 ## Table of Contents
 

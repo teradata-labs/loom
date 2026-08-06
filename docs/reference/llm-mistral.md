@@ -1,7 +1,7 @@
 
 # Mistral AI Integration Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for integrating Loom with Mistral AI's platform.
 
@@ -59,28 +59,37 @@ client := mistral.NewClient(mistral.Config{
 
 ### Available Models
 
+Source of truth: `pkg/llm/catalog/catalog.go` (`BuildCatalog()`). 13 Mistral models are in the catalog. The default model when none is configured is `mistral-large-latest` (`pkg/llm/factory/factory.go`).
+
 #### General Purpose Models
 
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
 |-------|----|-----------:|------------:|---------|------------|----------|
-| **Mistral Large** | `mistral-large-latest` | $2.00/1M | $6.00/1M | 128K | 8K | Complex tasks, tool use |
-| **Mistral Small** | `mistral-small-latest` | $0.10/1M | $0.30/1M | 32K | 8K | High volume, cost-effective |
+| **Mistral Large (latest)** | `mistral-large-latest` | $0.50/1M | $1.50/1M | 262K | 8K | Complex tasks, tool use |
+| **Mistral Large 3 (Dec 2025)** | `mistral-large-2512` | $0.50/1M | $1.50/1M | 262K | 8K | Dated snapshot of Large |
+| **Mistral Medium (latest)** | `mistral-medium-latest` | $0.40/1M | $2.00/1M | 131K | 8K | Mid-tier general tasks |
+| **Mistral Medium 3.1** | `mistral-medium-3.1` | $0.40/1M | $2.00/1M | 131K | 8K | Dated snapshot of Medium |
+| **Mistral Small (latest)** | `mistral-small-latest` | $0.075/1M | $0.20/1M | 131K | 8K | High volume, cost-effective |
+| **Ministral 3 14B** | `ministral-14b-2512` | $0.20/1M | $0.20/1M | 262K | 8K | Small, vision-capable |
+| **Ministral 3 8B** | `ministral-8b-2512` | $0.15/1M | $0.15/1M | 262K | 8K | Smaller, vision-capable |
+| **Ministral 3 3B** | `ministral-3b-2512` | $0.10/1M | $0.10/1M | 131K | 8K | Smallest, text + tools |
 
 #### Reasoning Models
 
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
 |-------|----|-----------:|------------:|---------|------------|----------|
-| **Magistral Medium** | `magistral-medium-latest` | $2.00/1M | $8.00/1M | 128K | 131K | Complex reasoning + tools |
-| **Magistral Small** | `magistral-small-latest` | $0.50/1M | $1.50/1M | 128K | 131K | Cost-effective reasoning |
+| **Magistral Medium (latest)** | `magistral-medium-latest` | $2.00/1M | $8.00/1M | 128K | 40,960 | Complex reasoning + tools |
+| **Magistral Small (latest)** | `magistral-small-latest` | $0.50/1M | $1.50/1M | 128K | 40,960 | Cost-effective reasoning |
 
 #### Code Models
 
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
 |-------|----|-----------:|------------:|---------|------------|----------|
-| **Codestral** | `codestral-latest` | $0.30/1M | $0.90/1M | 256K | 8K | Code generation, analysis |
-| **Devstral** | `devstral-medium-latest` | $0.50/1M | $1.50/1M | 128K | 8K | Development workflows |
+| **Codestral (latest)** | `codestral-latest` | $0.30/1M | $0.90/1M | 256K | 8K | Code generation, analysis |
+| **Devstral Medium** | `devstral-medium-latest` | $0.40/1M | $2.00/1M | 131K | 8K | Development workflows |
+| **Devstral Small** | `devstral-small-latest` | $0.10/1M | $0.30/1M | 131K | 8K | Lower-cost dev workflows |
 
-*Prices from Loom model catalog (`pkg/llm/factory/model_catalog.go`). Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.*
+*Prices from the catalog (`pkg/llm/catalog/catalog.go`, cross-checked against OpenRouter's mistralai/* listing on 2026-04-22). These differ from the runtime `calculateCost()` rates — see [Known Issue](#known-issue). Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.*
 
 ### Common Commands
 
@@ -111,15 +120,14 @@ go test -tags fts5 -v ./pkg/llm/mistral/
 Mistral AI provides models for text, reasoning, and code. The integration offers:
 - OpenAI-compatible API (easy migration)
 - Native function calling support
-- 6 models: general purpose, reasoning (Magistral), and code (Codestral/Devstral)
-- Context windows from 32K to 256K
-- Competitive pricing ($0.10-$8.00 per 1M tokens)
-- Cost tracking for all models
+- 13 catalog models: general purpose (Large/Medium/Small/Ministral), reasoning (Magistral), and code (Codestral/Devstral)
+- Context windows from 128K to 262K
+- Competitive pricing ($0.075-$8.00 per 1M tokens)
+- Cost tracking (runtime rates differ from catalog; see Known Issue)
 
 **Implementation**: `pkg/llm/mistral/client.go`
-**Test Coverage**: 72.0%
 **API Endpoint**: `https://api.mistral.ai/v1/chat/completions`
-**Interface**: Full `LLMProvider` compliance via OpenAI wrapper
+**Interface**: `LLMProvider` and `StreamingLLMProvider` via the OpenAI-compatible wrapper
 
 
 ## Prerequisites
@@ -157,15 +165,14 @@ curl https://api.mistral.ai/v1/chat/completions \
 - Full LLMProvider interface implementation (`pkg/llm/mistral/client.go`)
 - OpenAI-compatible message format
 - Function calling with JSON schema conversion
-- Cost calculation for legacy models (open and commercial); see Known Issue below for newer models
+- Cost calculation (runtime rates differ from the catalog; see Known Issue below)
 - Custom model selection
 - Temperature and max tokens configuration
 - Tool calling (parallel tool calls supported)
-- 72.0% test coverage (430 lines of tests)
 
 ### Implemented ✅ (Streaming)
 
-- Streaming via `StreamingLLMProvider` interface (`ChatStream` method)
+- Streaming via `StreamingLLMProvider` interface (`ChatStream` method); compile-time assertion `var _ llmtypes.StreamingLLMProvider = (*Client)(nil)`
 - Delegates to the underlying OpenAI-compatible client's `ChatStream`, then recalculates cost using Mistral pricing
 - See `pkg/llm/mistral/client.go`
 
@@ -176,7 +183,13 @@ curl https://api.mistral.ai/v1/chat/completions \
 
 ### Known Issue ⚠️
 
-**Cost calculation drift**: The `calculateCost()` function in `client.go` uses hardcoded prices from 2024-11 that differ from the model catalog (`pkg/llm/factory/model_catalog.go`). For example, `mistral-large-latest` is priced at $4.00/$12.00 in `calculateCost()` but $2.00/$6.00 in the catalog. Additionally, newer models (Magistral, Codestral, Devstral) are not in `calculateCost()` and fall back to the $4.00/$12.00 default. The model catalog prices shown in this document reflect the catalog, not the runtime `calculateCost()` output.
+**Cost calculation drift**: The `calculateCost()` function in `pkg/llm/mistral/client.go` keys off the model ID with its own hardcoded rates that differ from the catalog. Examples (runtime → catalog):
+
+- `mistral-large-latest`: $2.00/$6.00 → catalog $0.50/$1.50
+- `mistral-medium-latest`: $2.70/$8.10 → catalog $0.40/$2.00
+- `mistral-small-latest`: $0.10/$0.30 → catalog $0.075/$0.20
+
+`magistral-medium-latest` ($2/$8), `magistral-small-latest` ($0.50/$1.50), `codestral-latest` ($0.30/$0.90), and `devstral-medium-latest` ($0.50/$1.50) have explicit runtime entries that match (or nearly match) the catalog. The newer catalog IDs without runtime entries — `mistral-large-2512`, `mistral-medium-3.1`, `ministral-14b-2512`, `ministral-8b-2512`, `ministral-3b-2512`, `devstral-small-latest` — fall back to the runtime default, which is **`mistral-large-latest` pricing ($2.00/$6.00)**, not the catalog value. The prices in this document reflect the catalog (source of truth), not the runtime `calculateCost()` output.
 
 
 ## Configuration
@@ -314,18 +327,23 @@ Pricing per million tokens (source: `pkg/llm/factory/model_catalog.go`):
 
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
 |-------|----|-----------:|------------:|---------|------------|--------------|
-| **Mistral Large** | `mistral-large-latest` | $2.00 | $6.00 | 128K | 8K | text, tool-use |
-| **Mistral Small** | `mistral-small-latest` | $0.10 | $0.30 | 32K | 8K | text, tool-use |
+| **Mistral Large (latest)** | `mistral-large-latest` | $0.50 | $1.50 | 262K | 8K | text, vision, tool-use |
+| **Mistral Medium (latest)** | `mistral-medium-latest` | $0.40 | $2.00 | 131K | 8K | text, vision, tool-use |
+| **Mistral Small (latest)** | `mistral-small-latest` | $0.075 | $0.20 | 131K | 8K | text, vision, tool-use |
+| **Ministral 3 14B** | `ministral-14b-2512` | $0.20 | $0.20 | 262K | 8K | text, vision, tool-use |
+| **Ministral 3 8B** | `ministral-8b-2512` | $0.15 | $0.15 | 262K | 8K | text, vision, tool-use |
+| **Ministral 3 3B** | `ministral-3b-2512` | $0.10 | $0.10 | 131K | 8K | text, tool-use |
 
+The catalog also includes dated snapshots `mistral-large-2512` (Mistral Large 3, same specs as `mistral-large-latest`) and `mistral-medium-3.1` (same specs as `mistral-medium-latest`).
 
 ### Reasoning Models (Magistral)
 
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
 |-------|----|-----------:|------------:|---------|------------|--------------|
-| **Magistral Medium** | `magistral-medium-latest` | $2.00 | $8.00 | 128K | 131K | text, tool-use, thinking |
-| **Magistral Small** | `magistral-small-latest` | $0.50 | $1.50 | 128K | 131K | text, tool-use, thinking |
+| **Magistral Medium (latest)** | `magistral-medium-latest` | $2.00 | $8.00 | 128K | 40,960 | text, tool-use, thinking |
+| **Magistral Small (latest)** | `magistral-small-latest` | $0.50 | $1.50 | 128K | 40,960 | text, tool-use, thinking |
 
-Magistral models support extended thinking (reasoning traces) and have a 131K max output window, making them suitable for complex multi-step reasoning tasks.
+Magistral models support extended thinking (reasoning traces) and have a 40,960-token max output window (`MaxOutputTokens` in the catalog), suitable for multi-step reasoning tasks.
 
 
 ### Code Models
@@ -333,35 +351,36 @@ Magistral models support extended thinking (reasoning traces) and have a 131K ma
 | Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
 |-------|----|-----------:|------------:|---------|------------|--------------|
 | **Codestral** | `codestral-latest` | $0.30 | $0.90 | 256K | 8K | text, tool-use |
-| **Devstral** | `devstral-medium-latest` | $0.50 | $1.50 | 128K | 8K | text, tool-use |
+| **Devstral Medium** | `devstral-medium-latest` | $0.40 | $2.00 | 131K | 8K | text, tool-use |
+| **Devstral Small** | `devstral-small-latest` | $0.10 | $0.30 | 131K | 8K | text, tool-use |
 
-Codestral has the largest context window (256K) of any Mistral model, optimized for code generation and analysis. Devstral is tuned for development workflows.
+Codestral (256K context) is optimized for code generation and analysis; the Large and Ministral 14B/8B models have a slightly larger 262K window. Devstral is tuned for development workflows.
 
-**Note**: Prices are approximate and may vary. Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.
+**Note**: Prices reflect the catalog and may vary. Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.
 
 
 ## Model Details
 
 ### mistral-large-latest (Mistral Large)
 
-- **Context**: 128K tokens
+- **Context**: 262K tokens
 - **Max Output**: 8K tokens
-- **Capabilities**: text, tool-use
-- **Cost**: $2.00/1M input, $6.00/1M output
+- **Capabilities**: text, vision, tool-use
+- **Cost (catalog)**: $0.50/1M input, $1.50/1M output
 - **Best For**: Complex tasks requiring strong general reasoning and tool use
 
 **Example Use Cases**:
 - Multi-step tool orchestration
-- Long-context document analysis (up to 128K)
+- Long-context document analysis (up to 262K)
 - High-quality text generation
 
 
 ### mistral-small-latest (Mistral Small)
 
-- **Context**: 32K tokens
+- **Context**: 131K tokens
 - **Max Output**: 8K tokens
-- **Capabilities**: text, tool-use
-- **Cost**: $0.10/1M input, $0.30/1M output
+- **Capabilities**: text, vision, tool-use
+- **Cost (catalog)**: $0.075/1M input, $0.20/1M output
 - **Best For**: High-volume, cost-sensitive workloads
 
 **Example Use Cases**:
@@ -373,23 +392,23 @@ Codestral has the largest context window (256K) of any Mistral model, optimized 
 ### magistral-medium-latest (Magistral Medium)
 
 - **Context**: 128K tokens
-- **Max Output**: 131K tokens
+- **Max Output**: 40,960 tokens
 - **Capabilities**: text, tool-use, thinking (reasoning)
-- **Cost**: $2.00/1M input, $8.00/1M output
+- **Cost (catalog)**: $2.00/1M input, $8.00/1M output
 - **IsReasoning**: true
 
 **Example Use Cases**:
 - Complex multi-step reasoning
-- Long-form generation (131K output window)
+- Long-form generation (40,960-token output window)
 - Tasks requiring chain-of-thought traces
 
 
 ### magistral-small-latest (Magistral Small)
 
 - **Context**: 128K tokens
-- **Max Output**: 131K tokens
+- **Max Output**: 40,960 tokens
 - **Capabilities**: text, tool-use, thinking (reasoning)
-- **Cost**: $0.50/1M input, $1.50/1M output
+- **Cost (catalog)**: $0.50/1M input, $1.50/1M output
 - **IsReasoning**: true
 
 **Example Use Cases**:
@@ -412,12 +431,12 @@ Codestral has the largest context window (256K) of any Mistral model, optimized 
 - Code review and refactoring suggestions
 
 
-### devstral-medium-latest (Devstral)
+### devstral-medium-latest (Devstral Medium)
 
-- **Context**: 128K tokens
+- **Context**: 131K tokens
 - **Max Output**: 8K tokens
 - **Capabilities**: text, tool-use
-- **Cost**: $0.50/1M input, $1.50/1M output
+- **Cost (catalog)**: $0.40/1M input, $2.00/1M output
 - **Best For**: Development workflows and agent-driven coding
 
 **Example Use Cases**:
@@ -924,13 +943,16 @@ Error: Mistral API error (400): This model's maximum context length is 32768 tok
 
 **Retry behavior**: Not retryable until prompt reduced
 
-**Context Limits**:
-- `mistral-small-latest`: 32K tokens
-- `mistral-large-latest`: 128K tokens
+**Context Limits** (catalog):
+- `mistral-small-latest`: 131K tokens
+- `mistral-medium-latest`: 131K tokens
+- `mistral-large-latest`: 262K tokens
+- `ministral-14b-2512` / `ministral-8b-2512`: 262K tokens
+- `ministral-3b-2512`: 131K tokens
 - `magistral-medium-latest`: 128K tokens
 - `magistral-small-latest`: 128K tokens
 - `codestral-latest`: 256K tokens
-- `devstral-medium-latest`: 128K tokens
+- `devstral-medium-latest` / `devstral-small-latest`: 131K tokens
 
 
 ## Rate Limiting
@@ -1298,16 +1320,16 @@ The message format, tool calling, and response structure are identical.
 |---------|---------|--------|-----------|--------|
 | **API Compatibility** | OpenAI-like | Native | Native | OpenAI-like |
 | **Tool Calling** | Via OpenAI wrapper | Native | Native | Limited |
-| **Cost** | $0.10-$8.00/M tokens | $0.10-$40/M tokens | $1-$75/M tokens | Free (local) |
+| **Cost** | $0.075-$8.00/M tokens | $0.10-$180/M tokens | $1-$75/M tokens | Free (local) |
 | **Reasoning Models** | Yes (Magistral) | Yes (o3/o4) | Yes (thinking) | Yes (DeepSeek R1) |
-| **Context Window** | 32K-256K | 200K-1M | 200K-1M | Model-dependent |
+| **Context Window** | 128K-262K | 200K-1M | 200K-1M | Model-dependent |
 | **Privacy** | API call | API call | API call | Full (local) |
 | **European Provider** | Yes (France) | No (US) | No (US) | N/A |
 
 
 ## Limitations
 
-1. **Cost Calculation Drift** ⚠️: The `calculateCost()` function in `client.go` has hardcoded prices from 2024-11 that do not match current model catalog prices. Newer models (Magistral, Codestral, Devstral) are missing from `calculateCost()` and fall back to default ($4.00/$12.00) pricing. Cost values in `response.Usage.CostUSD` may be inaccurate at runtime.
+1. **Cost Calculation Drift** ⚠️: The `calculateCost()` function in `client.go` keys off the model ID with hardcoded rates that differ from the catalog (e.g. `mistral-large-latest` is $2.00/$6.00 at runtime vs $0.50/$1.50 in the catalog; `mistral-medium-latest` is $2.70/$8.10 vs $0.40/$2.00). The newer catalog IDs without runtime entries (`mistral-large-2512`, `mistral-medium-3.1`, the Ministral models, `devstral-small-latest`) fall back to the runtime default of `mistral-large-latest` pricing ($2.00/$6.00). Cost values in `response.Usage.CostUSD` may not match the catalog. See [Known Issue](#known-issue).
 
 2. **Rate Limit Handling**: No built-in automatic retry in the Mistral client itself
    - **Workaround**: Use `RateLimiterConfig` (shared across all providers) or implement exponential backoff manually (see Best Practices)
@@ -1360,8 +1382,8 @@ agent, err := builder.NewAgentBuilder().
 | **API Key Source** | platform.openai.com | console.mistral.ai |
 | **Default Model** | `gpt-4.1` | `mistral-large-latest` |
 | **Reasoning Models** | o3, o4-mini | Magistral Medium/Small |
-| **Pricing** | $0.10-$40/1M | $0.10-$8.00/1M |
-| **Context Window** | 200K-1M | 32K-256K |
+| **Pricing** | $0.10-$180/1M | $0.075-$8.00/1M |
+| **Context Window** | 200K-1M | 128K-262K |
 | **Provider Location** | US | France (EU) |
 
 

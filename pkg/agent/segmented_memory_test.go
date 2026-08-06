@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // mockCompressor implements MemoryCompressor for testing
@@ -66,6 +68,28 @@ func TestNewSegmentedMemory(t *testing.T) {
 	assert.Greater(t, sm.GetTokenCount(), 0)
 }
 
+// TestSegmentedMemory_SmallWindowKeepsPositiveBudget guards against a
+// misconfigured small window silently losing the compaction trigger: a flat 20K
+// reserve against an 8K window drove available tokens negative, so
+// UsagePercentage went negative and compaction never fired. The reserve is now
+// capped below the window.
+func TestSegmentedMemory_SmallWindowKeepsPositiveBudget(t *testing.T) {
+	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
+
+	// maxContext 8000, reserved 0 → resolves to 800 (10%), well below the window.
+	sm := NewSegmentedMemoryWithCompression("ROM", 8000, 0, profile)
+	_, available, total := sm.GetTokenBudgetUsage()
+	assert.Positive(t, available, "available budget stays positive on a small window")
+	assert.Positive(t, total, "total budget is positive")
+	assert.GreaterOrEqual(t, sm.tokenBudget.UsagePercentage(), 0.0,
+		"usage percentage never goes negative, so the compaction trigger can fire")
+
+	// An explicit reserve larger than the window is capped, not honoured verbatim.
+	sm2 := NewSegmentedMemoryWithCompression("ROM", 8000, 100000, profile)
+	_, available2, _ := sm2.GetTokenBudgetUsage()
+	assert.Positive(t, available2, "an over-large reserve is capped to keep budget positive")
+}
+
 func TestSegmentedMemory_AddMessage(t *testing.T) {
 	sm := NewSegmentedMemory("ROM content", 0, 0)
 
@@ -89,24 +113,25 @@ func TestSegmentedMemory_AddMessage(t *testing.T) {
 }
 
 func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
-	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Tokens = 5 // Low limit to trigger compression
+	// A small window so accumulating messages drives total budget usage across the
+	// balanced warning threshold (60%), which is what triggers compression.
+	sm := NewSegmentedMemory("ROM content", 8000, 800)
 
-	// Add messages up to the limit
-	for i := 0; i < 10; i++ {
-		msg := Message{
+	// Add substantial messages until budget usage crosses the warning threshold
+	// and compression fires.
+	content := strings.Repeat("payload token ", 40)
+	for i := 0; i < 200 && !sm.HasL2Content(); i++ {
+		sm.AddMessage(context.Background(), Message{
 			Role:      "user",
-			Content:   fmt.Sprintf("Message %d with some content to take up tokens", i),
+			Content:   content,
 			Timestamp: time.Now(),
-		}
-		sm.AddMessage(context.Background(), msg)
+		})
 	}
 
-	// Should trigger compression and keep L1 messages reasonable
-	// Token-based compression means L1 can have variable message counts
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), 20, "L1 should have reasonable message count after compression")
+	// L1 keeps only the recent tail; the rest was compressed into L2.
+	assert.Less(t, sm.GetL1MessageCount(), 200, "L1 should shrink after compression")
 
-	// L2 summary should have content (compressed old messages)
+	// L2 summary should have content (compressed old messages).
 	sm.mu.RLock()
 	hasL2Content := len(sm.l2Summary) > 0
 	sm.mu.RUnlock()
@@ -114,7 +139,9 @@ func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
 }
 
 func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
-	sm := NewSegmentedMemory("ROM content", 0, 0)
+	// A small window so 40 large messages push budget usage across the balanced
+	// warning threshold, triggering adaptive compression.
+	sm := NewSegmentedMemory("ROM content", 8000, 800)
 
 	// Set up mock compressor
 	compressor := &mockCompressor{
@@ -124,21 +151,21 @@ func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
 		},
 	}
 	sm.SetCompressor(compressor)
-	sm.maxL1Tokens = 20 // Higher limit
 
-	// Add many messages to trigger adaptive compression
-	for i := 0; i < 25; i++ {
+	// Add many large messages to trigger adaptive compression
+	for i := 0; i < 40; i++ {
 		msg := Message{
 			Role:      "user",
-			Content:   strings.Repeat(fmt.Sprintf("Long message %d ", i), 100), // ~500 tokens each
+			Content:   strings.Repeat("Long message payload ", 40),
 			Timestamp: time.Now(),
 		}
 		sm.AddMessage(context.Background(), msg)
 	}
 
-	// Should have compressed some messages (token-based compression)
-	// With 25 messages of ~500 tokens each (12.5K tokens), should compress to stay under 6400 token limit
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), 15, "L1 should have reasonable message count after compression")
+	// Budget usage crossed the warning threshold, so some messages were compressed
+	// and L1 holds fewer than all 40.
+	assert.Less(t, sm.GetL1MessageCount(), 40, "L1 should shrink after adaptive compression")
+	assert.True(t, sm.HasL2Content(), "compressed messages should land in L2")
 }
 
 func TestSegmentedMemory_AddToolResult(t *testing.T) {
@@ -473,8 +500,9 @@ func TestSegmentedMemory_ConcurrentAccess(t *testing.T) {
 }
 
 func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
-	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Tokens = 5
+	// A small window so accumulating messages cross the balanced warning threshold
+	// and trigger compression through the mock compressor.
+	sm := NewSegmentedMemory("ROM content", 8000, 800)
 
 	compressor := &mockCompressor{
 		enabled: true,
@@ -488,11 +516,12 @@ func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
 	}
 	sm.SetCompressor(compressor)
 
-	// Add messages to trigger compression
-	for i := 0; i < 10; i++ {
+	// Add messages until budget usage crosses the warning threshold and compresses.
+	content := strings.Repeat("payload token ", 40)
+	for i := 0; i < 200 && !sm.HasL2Content(); i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
-			Content: fmt.Sprintf("msg%d", i),
+			Content: content,
 		})
 	}
 
@@ -504,8 +533,9 @@ func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
 }
 
 func TestSegmentedMemory_CompressionFallback(t *testing.T) {
-	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Tokens = 5
+	// A small window so accumulating messages cross the balanced warning threshold
+	// and trigger compression.
+	sm := NewSegmentedMemory("ROM content", 8000, 800)
 
 	// Set compressor that errors
 	compressor := &mockCompressor{
@@ -514,11 +544,12 @@ func TestSegmentedMemory_CompressionFallback(t *testing.T) {
 	}
 	sm.SetCompressor(compressor)
 
-	// Add messages to trigger compression
-	for i := 0; i < 10; i++ {
+	// Add messages until budget usage crosses the warning threshold and compresses.
+	content := strings.Repeat("payload token ", 40)
+	for i := 0; i < 200 && !sm.HasL2Content(); i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
-			Content: fmt.Sprintf("Message %d", i),
+			Content: content,
 		})
 	}
 
@@ -615,193 +646,6 @@ func BenchmarkSegmentedMemory_ConcurrentAccess(b *testing.B) {
 	})
 }
 
-// TestRecordFinding tests recording findings in working memory
-func TestRecordFinding(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	// Record a statistic finding
-	sm.RecordFinding("test_table.row_count", 2195, "statistic", "Total rows in test_table", "tool_call_123")
-
-	// Retrieve the finding
-	finding, ok := sm.GetFinding("test_table.row_count")
-	require.True(t, ok, "Finding should exist")
-	assert.Equal(t, "test_table.row_count", finding.Path)
-	assert.Equal(t, 2195, finding.Value)
-	assert.Equal(t, "statistic", finding.Category)
-	assert.Equal(t, "Total rows in test_table", finding.Note)
-	assert.Equal(t, "tool_call_123", finding.Source)
-	assert.False(t, finding.Timestamp.IsZero())
-}
-
-// TestRecordFinding_MultipleCategories tests recording findings of different categories
-func TestRecordFinding_MultipleCategories(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	// Record findings of different categories
-	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
-	sm.RecordFinding("table.columns", []string{"id", "name", "age"}, "schema", "", "")
-	sm.RecordFinding("table.observation", "All IDs are unique", "observation", "", "")
-	sm.RecordFinding("table.region.distribution", map[string]int{"US": 500, "EU": 300, "APAC": 200}, "distribution", "", "")
-
-	// Verify all findings
-	allFindings := sm.GetAllFindings()
-	assert.Equal(t, 4, len(allFindings))
-
-	// Check categories
-	assert.Equal(t, "statistic", allFindings["table.row_count"].Category)
-	assert.Equal(t, "schema", allFindings["table.columns"].Category)
-	assert.Equal(t, "observation", allFindings["table.observation"].Category)
-	assert.Equal(t, "distribution", allFindings["table.region.distribution"].Category)
-}
-
-// TestGetFindingsSummary tests the formatted summary generation
-func TestGetFindingsSummary(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	// Record various findings
-	sm.RecordFinding("vantage_sites.row_count", 2195, "statistic", "", "")
-	sm.RecordFinding("vantage_sites.site_id.null_rate", 0.0, "statistic", "No nulls", "")
-	sm.RecordFinding("vantage_sites.columns", []string{"site_id", "customer_id", "region"}, "schema", "", "")
-	sm.RecordFinding("vantage_sites.site_id.uniqueness", "100% unique - likely primary key", "observation", "", "")
-
-	// Get summary
-	summary := sm.GetFindingsSummary()
-
-	// Verify summary contains expected sections
-	assert.Contains(t, summary, "## Verified Findings (Working Memory)")
-	assert.Contains(t, summary, "### Statistics:")
-	assert.Contains(t, summary, "### Schema Discovered:")
-	assert.Contains(t, summary, "### Key Observations:")
-
-	// Verify specific findings appear
-	assert.Contains(t, summary, "vantage_sites.row_count")
-	assert.Contains(t, summary, "2195")
-	// Observations show the value only, not the path
-	assert.Contains(t, summary, "100% unique - likely primary key")
-}
-
-// TestGetFindingsSummary_Empty tests summary when no findings exist
-func TestGetFindingsSummary_Empty(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	summary := sm.GetFindingsSummary()
-	assert.Empty(t, summary, "Summary should be empty when no findings exist")
-}
-
-// TestClearFindings tests clearing all findings
-func TestClearFindings(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	// Record some findings
-	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
-	sm.RecordFinding("table.columns", []string{"a", "b"}, "schema", "", "")
-
-	// Verify findings exist
-	allFindings := sm.GetAllFindings()
-	assert.Equal(t, 2, len(allFindings))
-
-	// Clear findings
-	sm.ClearFindings()
-
-	// Verify findings are cleared
-	allFindings = sm.GetAllFindings()
-	assert.Equal(t, 0, len(allFindings))
-
-	// Verify summary is empty
-	summary := sm.GetFindingsSummary()
-	assert.Empty(t, summary)
-}
-
-// TestFindingsMaxLimit tests that findings respect maxFindings limit
-func TestFindingsMaxLimit(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-	sm.maxFindings = 5 // Set low limit for testing
-
-	// Try to record more than maxFindings
-	for i := 0; i < 10; i++ {
-		sm.RecordFinding(fmt.Sprintf("finding_%d", i), i, "statistic", "", "")
-	}
-
-	// Should only have maxFindings recorded
-	allFindings := sm.GetAllFindings()
-	assert.LessOrEqual(t, len(allFindings), 5, "Should not exceed maxFindings limit")
-}
-
-// TestFindingsInjectionIntoContext tests that findings are injected into GetMessagesForLLM
-func TestFindingsInjectionIntoContext(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	// Add a user message
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "Analyze data"})
-
-	// Record findings
-	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
-
-	// Get messages for LLM
-	messages := sm.GetMessagesForLLM()
-
-	// Find the findings summary in messages
-	foundSummary := false
-	for _, msg := range messages {
-		if msg.Role == "system" && strings.Contains(msg.Content, "Verified Findings") {
-			foundSummary = true
-			assert.Contains(t, msg.Content, "table.row_count")
-			assert.Contains(t, msg.Content, "1000")
-			break
-		}
-	}
-
-	assert.True(t, foundSummary, "Findings summary should be injected into context")
-}
-
-// TestConcurrentFindingsAccess tests thread-safe access to findings
-func TestConcurrentFindingsAccess(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 100000, 10000)
-
-	var wg sync.WaitGroup
-	numGoroutines := 10
-
-	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			sm.RecordFinding(fmt.Sprintf("finding_%d", id), id*100, "statistic", "", "")
-		}(i)
-	}
-
-	// Concurrent reads
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = sm.GetAllFindings()
-			_ = sm.GetFindingsSummary()
-		}()
-	}
-
-	wg.Wait()
-
-	// Verify findings were recorded
-	allFindings := sm.GetAllFindings()
-	assert.Greater(t, len(allFindings), 0, "Should have recorded some findings")
-}
-
-func TestSegmentedMemory_GetActivePattern(t *testing.T) {
-	sm := NewSegmentedMemory("ROM", 0, 0)
-
-	// No pattern initially
-	assert.Empty(t, sm.GetActivePattern())
-
-	// Inject pattern
-	sm.InjectPattern("SELECT * FROM ...", "sql_basics")
-	assert.Equal(t, "sql_basics", sm.GetActivePattern())
-
-	// Inject a different pattern
-	sm.InjectPattern("EXPLAIN ...", "query_tuning")
-	assert.Equal(t, "query_tuning", sm.GetActivePattern())
-}
-
 func TestSegmentedMemory_GetTokenBudgetMax(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 200000, 0)
 
@@ -813,17 +657,13 @@ func TestSegmentedMemory_ResetContext(t *testing.T) {
 	ctx := context.Background()
 	sm := NewSegmentedMemory("ROM content", 200000, 0)
 
-	// Populate all layers
+	// Populate L1 and the schema cache
 	sm.AddMessage(ctx, Message{Role: "user", Content: "hello"})
 	sm.AddMessage(ctx, Message{Role: "assistant", Content: "hi there"})
-	sm.InjectPattern("pattern content", "test_pattern")
-	sm.InjectSkills("skill content", []string{"skill1"})
 	sm.CacheSchema("table1", "CREATE TABLE ...")
-	sm.RecordFinding("/test", "finding", "observation", "", "")
 
-	// Verify everything is populated
+	// Verify the populated layers are present
 	assert.Equal(t, 2, sm.GetL1MessageCount())
-	assert.Equal(t, "test_pattern", sm.GetActivePattern())
 	stats := sm.GetMemoryStats()
 	assert.Greater(t, stats["schema_cache_count"], 0)
 
@@ -834,7 +674,6 @@ func TestSegmentedMemory_ResetContext(t *testing.T) {
 
 	// Verify all conversational data is cleared
 	assert.Equal(t, 0, sm.GetL1MessageCount(), "L1 messages should be cleared")
-	assert.Empty(t, sm.GetActivePattern(), "Pattern should be cleared")
 
 	tokensAfter := sm.GetTokenCount()
 	assert.Less(t, tokensAfter, tokensBefore, "Token count should decrease after reset")

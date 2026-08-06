@@ -1,6 +1,6 @@
 # Loom
 
-An LLM agent framework for Go. Create agents from natural language, orchestrate them with workflow patterns, and improve them through pattern-guided learning.
+An LLM agent framework for Go. Create agents from natural language, orchestrate them with workflow patterns, and give them domain knowledge as skills and patterns the model loads on demand.
 
 [![CI](https://github.com/teradata-labs/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/teradata-labs/loom/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/teradata-labs/loom.svg)](https://pkg.go.dev/github.com/teradata-labs/loom)
@@ -41,7 +41,7 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 ```
 
 **API endpoints** after `looms serve`:
-- **gRPC**: `localhost:60051` (127 RPCs)
+- **gRPC**: `localhost:60051` (151 RPCs)
 - **HTTP/REST**: `localhost:5006` (with SSE streaming)
 - **Swagger UI**: `localhost:5006/swagger-ui`
 - **MCP Apps**: `localhost:5006/apps/`
@@ -50,15 +50,21 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 
 ## How It Works
 
-Instead of prompt engineering, Loom uses **pattern-guided learning**. Domain knowledge is encoded as reusable YAML patterns that agents select and apply based on user intent:
+Domain knowledge lives outside the system prompt, as YAML skills and patterns the model pulls into the conversation when it decides it needs them. Nothing is injected: the model decides what enters its own context.
 
 ```
-User message → Pattern selection (from 104 patterns) → LLM call with context → Tool execution → Response
-     ↑                                                                                             |
-     └────────────────────── Learning feedback loop (optional) ────────────────────────────────────┘
+User message → LLM call ─┬─ manage_skills(list)      → the skill catalog, each entry marked
+                         │                             active for this session or not
+                         ├─ manage_skills(load NAME) → skill instructions enter the conversation
+                         ├─ load_pattern(REFERENCE)  → pattern content enters as a tool result
+                         └─ any other tool           → result enters the conversation
+                                                                     ↓
+                                                                  Response
 ```
 
-Patterns are plain-English YAML files anyone can write. They turn generic LLMs into domain specialists for SQL optimization, data quality, Teradata analytics, code review, and more.
+The system prompt carries only a menu of the agent's bound skills — name and description — rendered once when the session is created. A skill's body reaches the model only after a `manage_skills` load, and a pattern's body only after a `load_pattern` call.
+
+Patterns and skills are plain-English YAML files anyone can write. They turn generic LLMs into domain specialists for SQL optimization, data quality, Teradata analytics, code review, and more.
 
 ---
 
@@ -68,7 +74,7 @@ Patterns are plain-English YAML files anyone can write. They turn generic LLMs i
 
 Describe what you need; the Weaver builds it:
 - Analyzes requirements to determine domain and capabilities
-- Selects patterns from the library (104 patterns across 16 domains)
+- Selects patterns from the library (158 patterns across 16 domains)
 - Generates YAML configuration and activates the agent
 - Automatically selects workflow patterns for multi-agent tasks
 - **/agent-plan mode** for guided requirement gathering with skills-based recommendations
@@ -103,12 +109,12 @@ See [Learning Agent Guide](docs/guides/learning-agent-guide.md).
 
 ### Pattern Library
 
-104 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
+158 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
 
 | Domain | Count | Examples |
 |--------|-------|----------|
-| `teradata/` | 34 | ML models, analytics, data quality, performance, FastLoad |
-| `libraries/` | 16 | Domain-specific pattern bundles (sql-core, teradata-analytics, etc.) |
+| `teradata/` | 84 | ML models, analytics, data quality, performance, FastLoad |
+| `libraries/` | 20 | Domain-specific pattern bundles (sql-core, teradata-analytics, etc.) |
 | `postgres/` | 12 | Query optimization, index analysis, vacuum tuning |
 | `weaver/` | 9 | Workflow patterns (debate, pipeline, fork-join, swarm, etc.) |
 | `sql/` | 8 | Data validation, profiling, duplicate detection |
@@ -144,6 +150,8 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 
 | Tool | Description |
 |------|-------------|
+| `manage_skills` | Two actions: `list` the skill library annotated with what is active for the session, or `load` a skill by name so its instructions and required tools enter the session |
+| `load_pattern` | Load one pattern's content by reference (references come from a loaded skill's pattern list) |
 | `web_search` | Web search ([Tavily](https://www.tavily.com), [Brave](https://brave.com/search/api/), SerpAPI, or DuckDuckGo) |
 | `file_read` / `file_write` | File system operations |
 | `http_request` / `grpc_call` | External service calls |
@@ -169,7 +177,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session knowl
 - **Salience scoring** with time decay and access boosting ranks memories by importance
 - **Lineage tracking** for corrections (SUPERSEDES) and merges (CONSOLIDATES)
 - **FTS5 search** over memory content, summaries, and tags
-- **Token-budgeted context injection** per turn (default 10% of context window)
+- **Token-budgeted context injection** per turn (default 20% of context window)
 - **Enabled by default** (opt-out) when storage backend supports it
 
 ```yaml
@@ -178,7 +186,7 @@ agent:
   memory:
     graph_memory:
       enabled: true              # default when store available
-      context_budget_percent: 10 # % of context window
+      context_budget_percent: 20 # % of context window
       decay_rate: 0.995          # salience decay per day
 ```
 
@@ -190,7 +198,15 @@ Session-scoped file storage with SQLite FTS5 full-text search, automatic metadat
 
 ### Skills System
 
-LLM-agnostic activatable behaviors combining prompt injection, tool preferences, and trigger conditions. Skills activate via slash commands (`/skill-name`), keyword auto-detection, or always-on mode. Includes hot-reload via fsnotify and token budget control. See `pkg/skills/`.
+LLM-agnostic YAML behaviors the model loads by name through the `manage_skills` tool. Each skill carries instructions, the tools it requires, and optional pattern references.
+
+- The system prompt lists the agent's bound skills as `name — description` only, rendered once at session creation
+- `manage_skills` has two actions, `list` and `load`. There is no unload: a loaded skill stays active, and its required tools stay registered, until the session ends
+- A load returns a short confirmation as the tool result and delivers the skill body as a separate user-role message
+- A `high`- or `restricted`-risk skill returns an `approval_required` error instead of loading, unless YOLO mode is enabled or no permission checker is wired
+- Skill files hot-reload via fsnotify
+
+See `pkg/skills/`.
 
 ### Per-Role LLM Providers
 
@@ -198,17 +214,17 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 
 ### LLM Providers
 
-8 providers, 44 cataloged models with mid-session switching:
+8 providers, 73 cataloged models with mid-session switching:
 
 | Provider | Models |
 |----------|--------|
-| **Anthropic** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
-| **AWS Bedrock** | Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
-| **OpenAI** | GPT-5, GPT-5 Mini, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, o3, o3-mini, o4-mini |
-| **Azure OpenAI** | GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
-| **Google Gemini** | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |
-| **Mistral** | Mistral Large, Mistral Small, Magistral Medium, Magistral Small, Codestral, Devstral |
-| **Ollama** | Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4, Gemma 3 (+ any local model) |
+| **Anthropic** | Claude Opus 4.7, Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
+| **AWS Bedrock** | Claude Opus 4.7 (regional + global), Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
+| **OpenAI** | GPT-5.4 Pro, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex, GPT-5.3 Chat, GPT-5.2, GPT-5.1, GPT-5, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, o3-pro, o3, o3-mini, o4-mini |
+| **Azure OpenAI** | GPT-5.4, GPT-5.4 Mini, GPT-5.3 Chat, GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
+| **Google Gemini** | Gemini 3.1 Pro, Gemini 3.1 Flash-Lite, Gemini 3 Pro, Gemini 3 Flash (Preview), Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |
+| **Mistral** | Mistral Large, Mistral Large 3, Mistral Medium, Mistral Medium 3.1, Mistral Small, Magistral Medium, Magistral Small, Ministral 3 (14B/8B/3B), Codestral, Devstral Medium, Devstral Small |
+| **Ollama** | Llama 4, Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3.5, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4 Mini, Phi 4, Gemma 4, Gemma 3 (+ any local model) |
 | **HuggingFace** | Any model via HuggingFace Inference API (Llama, Mixtral, Gemma, Qwen, etc.) |
 
 ---
@@ -219,7 +235,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 
 - **Guide agent** greets you and helps find the right agent for your task
 - **Slash commands** — `/clear`, `/quit`, `/sessions`, `/model`, `/agents`, `/workflows`, `/patterns`, `/help`, and more
-- **Sidebar** shows Weaver status, MCP servers, loaded patterns, model info, keyboard hints
+- **Sidebar** shows Weaver status, MCP servers, the installed pattern library by category, model info, keyboard hints
 - **Mid-session model switching** with cost transparency
 - **Multi-agent colors** (6 predefined + golden-ratio generation for 50+ agents)
 - **Streaming** with animated progress, tool execution states, cost tracking
@@ -242,7 +258,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 │                      Loom Framework                          │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
 │  │ Agent       │ │ Orchestration│ │ Patterns   │ │ Shuttle│ │
-│  │ Runtime     │ │ (9 patterns) │ │ (104 YAML) │ │ (tools)│ │
+│  │ Runtime     │ │ (9 patterns) │ │ (158 YAML) │ │ (tools)│ │
 │  └─────────────┘ └──────────────┘ └────────────┘ └────────┘ │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
 │  │ Judges      │ │ Skills       │ │ MCP Apps   │ │ Comms  │ │
@@ -262,7 +278,7 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 └──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-**Proto is law**: All APIs defined in `proto/loom/v1/` first. 127 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
+**Proto is law**: All APIs defined in `proto/loom/v1/` first. 151 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
 
 ---
 
@@ -276,7 +292,7 @@ git clone https://github.com/teradata-labs/loom && cd loom
 # .\quickstart.ps1  # Windows
 ```
 
-Installs Go, Buf, builds binaries, installs 104 patterns, and configures your LLM provider interactively. See [QUICKSTART.md](QUICKSTART.md).
+Installs Go, Buf, builds binaries, installs 158 patterns, and configures your LLM provider interactively. See [QUICKSTART.md](QUICKSTART.md).
 
 ### Manual
 
@@ -367,7 +383,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 
 ## Quality
 
-- 3,230 test functions across 342 test files
+- 3,743 test functions across 397 test files
 - All tests run with `-race` detector; 0 race conditions
 - CI: proto lint, golangci-lint, race detection, fuzz tests, gosec, CodeQL, multi-platform build
 

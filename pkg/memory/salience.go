@@ -20,7 +20,11 @@ import (
 	"time"
 )
 
-// Salience engine defaults.
+// Salience engine defaults. These are the engine/spec values — e.g. the 0.995
+// decay rate yields the documented ~138-access half-life (see salience_test.go).
+// The agent layer (pkg/agent.DefaultGraphMemoryConfig) intentionally supplies its
+// own tuned graph-memory defaults (decay 0.95, boost 0.1) rather than these; the
+// two are deliberately distinct, not an accidental shadow.
 const (
 	DefaultDecayRate          = 0.995
 	DefaultBoostAmount        = 0.05

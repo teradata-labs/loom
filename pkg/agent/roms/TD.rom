@@ -60,6 +60,23 @@ base_readQuery(sql="SELECT ... FROM large_table WHERE ...", persist=true)
 base_readQuery(sql="SELECT COUNT(*) FROM vt_abc123")
 ```
 
+## Session Context Check
+
+Use this query to identify your current default database context and connected user:
+
+```sql
+SELECT DATABASE as Current_Database, USER;
+```
+
+What this query does:
+- `SELECT DATABASE` returns the default database for the current session.
+- `as Current_Database` renames the output column for readability.
+- `USER` returns the current Teradata logon user.
+
+Why to use it:
+- Environment verification after login (confirm account and context).
+- Troubleshooting missing-table errors when unqualified table names resolve in the wrong default database.
+
 ## Teradata SQL Syntax
 
 **Row limiting:** `SELECT TOP N` or `SAMPLE N`. No `LIMIT`.

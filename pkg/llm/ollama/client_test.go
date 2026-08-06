@@ -359,7 +359,9 @@ func TestClient_Chat_ErrorHandling(t *testing.T) {
 }
 
 func TestClient_ConvertMessages(t *testing.T) {
-	client := NewClient(Config{})
+	// Pin ToolModeNative so the test does not depend on Ollama being reachable
+	// (auto-mode probes /api/show and can return false for stub servers).
+	client := NewClient(Config{ToolMode: ToolModeNative})
 
 	messages := []llmtypes.Message{
 		{Role: "user", Content: "First message"},
@@ -370,6 +372,9 @@ func TestClient_ConvertMessages(t *testing.T) {
 
 	converted := client.convertMessages(messages)
 
+	// In native tool mode, tool results land in a distinct "tool"-role message,
+	// so a following user turn does not coalesce (roles differ). Four wire
+	// messages preserved in order.
 	assert.Len(t, converted, 4)
 	assert.Equal(t, "user", converted[0].Role)
 	assert.Equal(t, "First message", converted[0].Content)
@@ -379,6 +384,34 @@ func TestClient_ConvertMessages(t *testing.T) {
 	assert.Equal(t, "Tool output", converted[2].Content)
 	assert.Equal(t, "user", converted[3].Role)
 	assert.Equal(t, "Third message", converted[3].Content)
+}
+
+// TestClient_ConvertMessages_ToolFallbackCoalesces verifies that when the
+// non-native tool fallback path is taken (ToolModePrompt), a tool result and
+// an immediately-following user turn are folded into a single user wire
+// message. Prevents the "consecutive user messages" problem when a downstream
+// provider (e.g. Anthropic via a proxy) enforces role alternation, and lets a
+// text_body sidecar (e.g. from manage_skills) share the same wire message.
+func TestClient_ConvertMessages_ToolFallbackCoalesces(t *testing.T) {
+	client := NewClient(Config{ToolMode: ToolModePrompt})
+
+	messages := []llmtypes.Message{
+		{Role: "user", Content: "First message"},
+		{Role: "assistant", Content: "Second message"},
+		{Role: "tool", Content: "Tool output"},
+		{Role: "user", Content: "Third message"},
+	}
+
+	converted := client.convertMessages(messages)
+
+	assert.Len(t, converted, 3, "tool result and following user turn coalesce in fallback mode")
+	assert.Equal(t, "user", converted[0].Role)
+	assert.Equal(t, "First message", converted[0].Content)
+	assert.Equal(t, "assistant", converted[1].Role)
+	assert.Equal(t, "Second message", converted[1].Content)
+	assert.Equal(t, "user", converted[2].Role)
+	assert.Contains(t, converted[2].Content, "Tool result: Tool output")
+	assert.Contains(t, converted[2].Content, "Third message")
 }
 
 func TestClient_ImplementsInterface(t *testing.T) {

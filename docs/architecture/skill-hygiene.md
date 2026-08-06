@@ -7,6 +7,8 @@ weight: 15
 
 End-of-turn task-board hygiene enforcement for skill-emitted tasks. Catches three failure modes — orphan `IN_PROGRESS` tasks, `BLOCKED` tasks the agent never surfaced as a question, and `OPEN` tasks the agent created but never started — before the agent returns control to the user.
 
+The pass is live: when the skill and task subsystems are both wired, it runs at the no-tool-call return path of every turn. What it can see is bounded by the `SkillIdempotencyKey`: it audits only tasks stamped `skill:<name>|sess:<id>|` for a skill active in the session. Activation-time task emission is 📋 not wired (Constraint 1), so nothing stamps that key in normal operation and the audit finds nothing to classify. This document describes the mechanism as built.
+
 **Target Audience**: Architects, academics, advanced developers
 
 ---
@@ -127,7 +129,7 @@ End-of-turn task-board hygiene enforcement for skill-emitted tasks. Catches thre
 **Interface**: `Audit(ctx, sessionID, cfg) → (*Report, error)`. The `cfg` argument is the per-session `HygieneConfig` from `SkillsConfig.Hygiene`. The auditor resolves nil-or-unspecified fields to defaults (enabled, `REQUIRE_FIX`, `max_retries=2`).
 
 **Invariants**:
-- Only inspects tasks emitted by currently-active skills, via `task.Manager.ListBySkillRun(skillName, sessionID)`. This in turn matches the `SkillIdempotencyKey` prefix `skill:<name>|sess:<sessionID>|%`.
+- Only inspects tasks carrying a currently-active skill's key, via `task.Manager.ListBySkillRun(skillName, sessionID)`. This in turn matches the `SkillIdempotencyKey` prefix `skill:<name>|sess:<sessionID>|%`.
 - Never mutates task state.
 - Returns an empty (but non-nil) `Report` when no violations are found.
 
@@ -187,7 +189,7 @@ Agent           runEndOfTurn-       Auditor          Enforcer        Session    
 
 **Properties**:
 - **Synchronous**: every step blocks the turn return. Hygiene runs in the request path because correctness is the goal; latency is a secondary cost.
-- **Bounded**: `maxRetries` (default 2) caps `REQUIRE_FIX` retries. Worst case adds two extra LLM turns per skill that left dirty state.
+- **Bounded**: `maxRetries` (default 2) caps `REQUIRE_FIX` retries. The counter is per turn, not per skill or per violation — one injection message carries every violation found — so the worst case is two extra LLM turns for a turn that ended with dirty state.
 - **Non-fatal errors**: audit or enforce errors log a warning and the agent returns its existing response. The agent never fails a turn because hygiene itself broke.
 
 ---
@@ -245,7 +247,7 @@ classify(task) -> (ViolationKind, ok)
 - `OPEN` distinguishes "never claimed" from "claimed-then-released." The latter is not a violation: the agent at least tried. The former is the failure mode the original requirement describes — tasks created and silently abandoned.
 - `DEFERRED`, `DONE`, `CANCELLED` are healthy terminal states.
 
-**Complexity**: O(active_skills × tasks_per_skill). For typical agent state (1–3 active skills, ~5 tasks each), the audit is a fixed-cost millisecond-range operation dominated by the SQL prefix scan.
+**Complexity**: O(active_skills × tasks_per_skill), dominated by the SQL prefix scan — one per active skill. With emission unwired every scan returns zero rows, so the audit costs one empty prefix scan per skill loaded in the session; the classification pass itself is a status-field check.
 
 ### Fallthrough Logic
 
@@ -289,7 +291,7 @@ This ensures the loop terminates even if the LLM is stuck (returning identical t
 
 ### Decision 3: HITLSpawner is optional, not required
 
-**Chosen Approach**: `Enforcer.WithHITLSpawner(h)` is optional. When unset, `BLOCKED` tasks under `AUTO_FIX` are logged and left in place.
+**Chosen Approach**: `hygiene.WithHITLSpawner(h)` is an optional construction option on `NewEnforcer`. When unset, `BLOCKED` tasks under `AUTO_FIX` are logged and left in place.
 
 **Rationale**: `ContactHumanTool` is wired into the tool registry at server startup, not into the agent struct. Passing it down into the hygiene path would either require a circular import or a large refactor. The optional spawner is a small interface (`SpawnHITL(ctx, sessionID, agentID, question, *task.Task) error`) the agent layer can adapt to whatever HITL surface is wired for that deployment.
 
@@ -297,21 +299,29 @@ This ensures the loop terminates even if the LLM is stuck (returning identical t
 - Require a spawner: forces every embedding to construct a HITL adapter even when HITL is irrelevant (CLI-only deployments, batch runs).
 - Vendor a default spawner: would couple `hygiene` to `shuttle`, breaking layering.
 
-**Consequences**: Embeddings without HITL wiring lose the auto-fix behavior for `BLOCKED` tasks. Under `REQUIRE_FIX` (default) this is still handled — the agent is told to surface the question itself.
+**Consequences**: Embeddings without HITL wiring lose the auto-fix behavior for `BLOCKED` tasks. The agent's own construction path is one of them: it builds the enforcer with a tracer, a logger and the agent ID, and no spawner. Under `REQUIRE_FIX` (default) this is still handled — the agent is told to surface the question itself.
 
 ---
 
 ## Constraints and Limitations
 
-### Constraint 1: No retroactive audit
+### Constraint 1: Activation-time task emission — 📋 not wired
 
-**Description**: Only tasks emitted by *currently-active* skills are audited. If a skill is evicted from the active set during the turn, its tasks become invisible to the hygiene pass.
+**Description**: The auditor can only see tasks stamped with a `SkillIdempotencyKey`. No path in the conversation loop stamps one. `EmitForActivation` (`pkg/skills/tasks/emitter.go`) is implemented and tested, and the agent constructs the emitter whenever both the skill and task subsystems are present, but nothing invokes it. The `manage_skills` load path activates the skill, wires its required tools and returns its body; it creates no tasks. So the audit lists zero tasks per active skill and reports zero violations.
 
-**Rationale**: The skills orchestrator already has a stickiness checker that keeps skills active while they have open tasks. Skills only evict when all their tasks are terminal — so by construction, evicted skills have no dirty state.
+**Rationale**: Skill activation moved to the model-pull model — the model calls `manage_skills` to load a skill — and emission was never re-attached to that path. The emitter's design is unchanged: guard on `AgentTasksEnabled` plus `Skill.EffectiveEmitTasks()`, template first and decomposition otherwise, deduped by idempotency key.
 
-**Impact**: A pathological eviction sequence (sticky check returns false despite open tasks) would leave dirty state unaudited. The stickiness checker is conservative and treats lookup failures as "not sticky," but this remains a possible blind spot.
+**Impact**: The hygiene pass runs but has nothing to act on; all three violation kinds are unreachable unless some other producer stamps a skill idempotency key. The rest of this document describes behaviour that becomes observable once emission is wired to the load path.
 
-### Constraint 2: Conversation-blind classification
+### Constraint 2: No retroactive audit
+
+**Description**: Only skills currently in the session's active set are audited. A skill that leaves the active set takes its tasks out of audit scope with it. Keys are session-scoped, so tasks a previous session left behind are never audited.
+
+**Rationale**: On the load path a skill never leaves. `manage_skills` load calls `Orchestrator.ActivatePinned`, which appends to the session's active set (or replaces the same skill's record in place) and applies neither the `MaxConcurrentSkills` cap nor eviction — every skill loaded during a session stays auditable until the session ends. Eviction lives on the other activation entry point, `Orchestrator.ActivateSkill`, reached from the MCP bridge (`loom_activate_skill`); there the cap applies and the stickiness checker exempts any skill holding non-terminal tasks on the board.
+
+**Impact**: Stickiness is inert for the loop's own loading path — there is no eviction for it to protect against. On the bridge path the checker treats a lookup failure as "not sticky," so a storage error during eviction can drop a skill with dirty state out of audit scope.
+
+### Constraint 3: Conversation-blind classification
 
 **Description**: The auditor cannot read the conversation transcript. It classifies `BLOCKED` as a violation whether or not the agent actually surfaced the question.
 
@@ -319,13 +329,13 @@ This ensures the loop terminates even if the LLM is stuck (returning identical t
 
 **Impact**: An agent that already surfaced a `BLOCKED` question may be told to surface it again. The injected message is structured so the agent can simply re-state the question; the cost is one extra turn.
 
-### Constraint 3: Best-effort error handling
+### Constraint 4: Best-effort error handling
 
 **Description**: Audit and enforcement errors are logged and the agent returns its existing response. Hygiene cannot block the turn even when its own machinery fails.
 
 **Rationale**: The user-facing contract is "the agent always returns." A hygiene bug must not become an availability incident.
 
-**Impact**: Persistent hygiene failures (e.g., a broken `task.Manager.ListBySkillRun`) silently degrade enforcement. Observability events (`hygiene.audit_failed`) surface this in dashboards.
+**Impact**: Persistent hygiene failures (e.g., a broken `task.Manager.ListBySkillRun`) silently degrade enforcement. The only signal is the zap warning the agent hook emits on the audit and enforce failure paths; no span event or metric marks the failure.
 
 ---
 
@@ -333,7 +343,7 @@ This ensures the loop terminates even if the LLM is stuck (returning identical t
 
 ### Latency
 
-**Audit**: dominated by one SQL prefix scan per active skill. With FTS5 + the partial unique index on `skill_idempotency_key`, this is a single B-tree range scan, ~1ms for typical task counts.
+**Audit**: dominated by one SQL prefix scan per active skill (`skill_idempotency_key LIKE 'skill:<name>|sess:<id>|%'`), backed by the partial unique index on `skill_idempotency_key`. Sub-millisecond for typical task counts, and while emission is unwired every scan returns an empty result set.
 
 **Enforcement under REQUIRE_FIX**: O(1) — produces a string, appends a session message. ~0.1ms.
 
@@ -371,7 +381,7 @@ The `*retryCount` pointer is owned by the conversation loop and accessed only on
 
 **Recovery**: None. Hygiene is a quality check, not a correctness check. If it fails, the user still gets a response.
 
-**Observability**: every failure path emits a zap warning with `session`, `skill`, and the underlying error. Span events under `skills.hygiene.audit` record `hygiene.violation_found`, `hygiene.fixup_injected`, `hygiene.fallthrough_to_autofix`, and structured counts per `ViolationKind`.
+**Observability**: both failure paths emit a zap warning carrying the session ID and the underlying error; the auditor wraps the offending skill name into that error. Span events: `hygiene.violation_found` under `skills.hygiene.audit`, `hygiene.fixup_injected` and `hygiene.fallthrough_to_autofix` under `skills.hygiene.enforce`. Counts per `ViolationKind` ride as attributes on those events and in `Response.Metadata` under `hygiene_by_kind`.
 
 ---
 
@@ -398,4 +408,5 @@ The `*retryCount` pointer is owned by the conversation loop and accessed only on
 ## Further Reading
 
 - [Task System Architecture](./task-system.md) — for the underlying task lifecycle and `SkillIdempotencyKey` scheme.
-- [Skills Overhaul](./skills-overhaul.md) — for the active-skill set, stickiness, and eviction model.
+- [Skills System](./skills-system.md) — for the current runtime: model-pull loading via `manage_skills`, the active-skill set, and the task-emission status this document depends on.
+- [Skills Overhaul](./skills-overhaul.md) — for the eviction and stickiness model on the `ActivateSkill` path.

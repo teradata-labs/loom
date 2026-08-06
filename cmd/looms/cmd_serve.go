@@ -45,6 +45,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -497,7 +498,10 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
-		client, err := bedrock.NewClient(bedrock.Config{
+		// NewClientForModel routes Anthropic Claude models to the streaming +
+		// caching SDK client and others to the Converse client (single source of
+		// truth for Bedrock client selection — see bedrock.NewClientForModel).
+		client, err := bedrock.NewClientForModel(bedrock.Config{
 			Region:            cfg.BedrockRegion,
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
@@ -619,6 +623,25 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			RateLimiterConfig: rlCfg,
 		}), nil
 
+	case "litellm":
+		endpoint := cfg.LiteLLMEndpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_BASE_URL")
+		}
+		key := apiKey(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
+		return litellm.NewClient(litellm.Config{
+			Endpoint:          endpoint,
+			APIKey:            key,
+			Model:             cfg.LiteLLMModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
 	}
@@ -683,6 +706,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.HuggingFaceModel
 		}
 		return "meta-llama/Llama-3.1-70B-Instruct"
+	case "litellm":
+		if cfg.LLM.LiteLLMModel != "" {
+			return cfg.LLM.LiteLLMModel
+		}
+		return litellm.DefaultModel
 	default:
 		return ""
 	}
@@ -733,7 +761,10 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if modelID == "" {
 			modelID = serverConfig.LLM.BedrockModelID
 		}
-		return bedrock.NewClient(bedrock.Config{
+		// NewClientForModel routes Anthropic Claude models to the streaming +
+		// caching SDK client and others to the Converse client (single source of
+		// truth for Bedrock client selection — see bedrock.NewClientForModel).
+		return bedrock.NewClientForModel(bedrock.Config{
 			Region:          serverConfig.LLM.BedrockRegion,
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
 			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
@@ -830,8 +861,22 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Timeout:     timeout,
 		}), nil
 
+	case "litellm":
+		model := protoConfig.Model
+		if model == "" {
+			model = serverConfig.LLM.LiteLLMModel
+		}
+		return litellm.NewClient(litellm.Config{
+			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
+			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
+			Model:       model,
+			MaxTokens:   maxTokens,
+			Temperature: temperature,
+			Timeout:     timeout,
+		}), nil
+
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
 	}
 }
 
@@ -850,6 +895,24 @@ func exportConfigToEnv(cfg *Config) {
 	if cfg.Tools.WebSearch.SerpAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
+	}
+}
+
+// buildServerAuthConfig converts the viper auth config into the server package's
+// AuthConfig (decoupled from viper). "optional" mode maps to Required=false.
+func buildServerAuthConfig(config *Config, logger *zap.Logger) server.AuthConfig {
+	sb := config.Server.Auth.Supabase
+	var secret []byte
+	if sb.JWTSecret != "" {
+		secret = []byte(sb.JWTSecret)
+	}
+	return server.AuthConfig{
+		Required:    config.Server.Auth.Mode != "optional",
+		HS256Secret: secret,
+		JWKSURL:     sb.JWKSURL,
+		Audience:    sb.Audience,
+		Issuer:      sb.Issuer,
+		Logger:      logger,
 	}
 }
 
@@ -912,8 +975,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
-			// Default to service mode if endpoint is set, otherwise embedded
-			if config.Observability.HawkEndpoint != "" {
+			// Derive mode from whichever endpoint is configured.
+			// OTel takes priority so that otlp_endpoint alone activates otel mode
+			// without requiring an explicit mode: otel in the config (matches
+			// what Config.Validate() documents).
+			if config.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if config.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"
@@ -965,6 +1033,30 @@ func runServe(cmd *cobra.Command, args []string) {
 				tracer = observability.NewNoOpTracer()
 			} else {
 				tracer = hawkTracer
+			}
+
+		case "otel":
+			logger.Info("Observability enabled with OTLP export",
+				zap.String("endpoint", config.Observability.OTLPEndpoint))
+			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
+				Endpoint:       config.Observability.OTLPEndpoint,
+				Headers:        config.Observability.OTLPHeaders,
+				Insecure:       config.Observability.OTLPInsecure,
+				ServiceName:    "looms",
+				ServiceVersion: rootCmd.Version,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
+				SpanFilter: observability.SpanFilterConfig{
+					IncludePrefixes: config.Observability.OTLPIncludeSpans,
+				},
+			})
+			if err != nil {
+				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = otelTracer
 			}
 
 		case "none":
@@ -1391,6 +1483,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		// HuggingFace
 		HuggingFaceToken: config.LLM.HuggingFaceToken,
 		HuggingFaceModel: config.LLM.HuggingFaceModel,
+
+		// LiteLLM
+		LiteLLMEndpoint:     config.LLM.LiteLLMEndpoint,
+		LiteLLMAPIKey:       config.LLM.LiteLLMAPIKey,
+		LiteLLMModel:        config.LLM.LiteLLMModel,
+		LiteLLMExtraHeaders: config.LLM.LiteLLMExtraHeaders,
 
 		// Common settings
 		MaxTokens:       config.LLM.MaxTokens,
@@ -1830,6 +1928,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Hide tools the permission policy would refuse, so the model
+					// never discovers (then calls) a disabled tool via tool_search.
+					if permissionChecker != nil {
+						searchTool.SetToolFilter(permissionChecker.Advertisable)
+					}
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
 
@@ -1987,11 +2090,33 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Warn("SQLite backend does not support user ID requirement; require_user_id ignored")
 	}
 
-	// Create gRPC server with optional TLS and user ID interceptors
+	// Build the interceptor chain. When Supabase-JWT auth is enabled it runs
+	// first and establishes the user identity from the token's subject; the
+	// legacy user-id interceptor then defers to that identity (see extractUserID).
+	// When auth is disabled, only the legacy interceptor runs (unchanged behavior).
+	unaryInterceptors := make([]grpc.UnaryServerInterceptor, 0, 2)
+	streamInterceptors := make([]grpc.StreamServerInterceptor, 0, 2)
+	if config.Server.Auth.Enabled {
+		authr, err := server.NewAuthenticator(context.Background(), buildServerAuthConfig(config, logger))
+		if err != nil {
+			logger.Fatal("failed to initialize Supabase-JWT authenticator", zap.Error(err))
+		}
+		unaryInterceptors = append(unaryInterceptors, authr.UnaryServerInterceptor())
+		streamInterceptors = append(streamInterceptors, authr.StreamServerInterceptor())
+		logger.Info("Supabase-JWT authentication enabled",
+			zap.String("mode", config.Server.Auth.Mode),
+			zap.Bool("hs256", config.Server.Auth.Supabase.JWTSecret != ""),
+			zap.Bool("jwks", config.Server.Auth.Supabase.JWKSURL != ""),
+		)
+	}
+	unaryInterceptors = append(unaryInterceptors, server.UserIDUnaryInterceptor(userIDCfg))
+	streamInterceptors = append(streamInterceptors, server.UserIDStreamInterceptor(userIDCfg))
+
+	// Create gRPC server with optional TLS and the interceptor chain.
 	var grpcServer *grpc.Server
 	serverOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(server.UserIDUnaryInterceptor(userIDCfg)),
-		grpc.StreamInterceptor(server.UserIDStreamInterceptor(userIDCfg)),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
 	}
 	if tlsManager != nil {
 		creds := credentials.NewTLS(tlsManager.TLSConfig())
@@ -3038,6 +3163,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				if permissionChecker != nil {
+					searchTool.SetToolFilter(permissionChecker.Advertisable)
+				}
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
 
@@ -3380,6 +3508,25 @@ func runServe(cmd *cobra.Command, args []string) {
 			grpcServer.Stop() // Force stop
 		}
 
+		// Flush and drain any buffered OTLP spans before exit.
+		// Must happen after gRPC stop so in-flight requests have landed their spans.
+		type otelShutdownable interface {
+			Flush(context.Context) error
+			Shutdown(context.Context) error
+		}
+		if otel, ok := tracer.(otelShutdownable); ok {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := otel.Flush(flushCtx); err != nil {
+				logger.Warn("Error flushing OTLP tracer", zap.Error(err))
+			}
+			if err := otel.Shutdown(flushCtx); err != nil {
+				logger.Warn("Error shutting down OTLP tracer", zap.Error(err))
+			} else {
+				logger.Info("OTLP tracer flushed and shut down")
+			}
+		}
+
 		logger.Info("Shutdown complete")
 	}()
 
@@ -3478,12 +3625,24 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
+		// Expand ${ENV_VAR} in header values so secrets (e.g. a bearer token for
+		// an authenticated remote MCP server) come from the environment rather
+		// than being committed to the config file.
+		var headers map[string]string
+		if len(serverConfig.Headers) > 0 {
+			headers = make(map[string]string, len(serverConfig.Headers))
+			for k, v := range serverConfig.Headers {
+				headers[k] = os.ExpandEnv(v)
+			}
+		}
+
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
 			Transport:        transport,
 			URL:              serverConfig.URL,
+			Headers:          headers,
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,

@@ -60,7 +60,7 @@ func TestStorageIntegration_MemoryToDiskOverflow(t *testing.T) {
 		id := fmt.Sprintf("chunk-%d", i)
 		data := bytes.Repeat([]byte(fmt.Sprintf("chunk %d ", i)), chunkSize/10)
 
-		ref, err := store.Store(id, data, "application/octet-stream", nil)
+		ref, err := store.Store(id, data, "application/octet-stream", nil, "")
 		require.NoError(t, err)
 		refs[i] = &Reference{id: id, ref: ref, data: data}
 	}
@@ -79,7 +79,7 @@ func TestStorageIntegration_MemoryToDiskOverflow(t *testing.T) {
 
 	// Verify all chunks are retrievable
 	for i, ref := range refs {
-		retrieved, err := store.Get(ref.ref)
+		retrieved, err := store.Get(ref.ref, "")
 		require.NoError(t, err, "Failed to retrieve chunk %d", i)
 		assert.Equal(t, len(ref.data), len(retrieved), "Chunk %d size mismatch", i)
 	}
@@ -117,7 +117,7 @@ func TestStorageIntegration_LargeDataset(t *testing.T) {
 		// Create compressible data
 		data := bytes.Repeat([]byte(fmt.Sprintf("%08d", i)), chunkSize/8)
 
-		ref, err := store.Store(id, data, "application/octet-stream", nil)
+		ref, err := store.Store(id, data, "application/octet-stream", nil, "")
 		require.NoError(t, err)
 		storedRefs[ref.Id] = data
 	}
@@ -143,7 +143,7 @@ func TestStorageIntegration_LargeDataset(t *testing.T) {
 			Location: loomv1.StorageLocation_STORAGE_LOCATION_MEMORY,
 		}
 		// Try to get from store
-		_, err := store.Get(ref)
+		_, err := store.Get(ref, "")
 		// It might be on disk or evicted, that's OK for this test
 		if err != nil {
 			t.Logf("Chunk %s not in memory (likely on disk or evicted)", id)
@@ -188,14 +188,14 @@ func TestStorageIntegration_ConcurrentAccess(t *testing.T) {
 				data := bytes.Repeat([]byte(fmt.Sprintf("w%d-c%d ", workerID, i)), 50*1024) // 500KB
 
 				// Store
-				ref, err := store.Store(id, data, "application/octet-stream", nil)
+				ref, err := store.Store(id, data, "application/octet-stream", nil, "")
 				if err != nil {
 					t.Logf("Worker %d store error: %v", workerID, err)
 					continue
 				}
 
 				// Retrieve immediately
-				retrieved, err := store.Get(ref)
+				retrieved, err := store.Get(ref, "")
 				if err != nil {
 					t.Logf("Worker %d retrieve error: %v", workerID, err)
 					continue
@@ -248,7 +248,7 @@ func TestStorageIntegration_TTLCleanup(t *testing.T) {
 		id := fmt.Sprintf("chunk-%d", i)
 		data := bytes.Repeat([]byte(fmt.Sprintf("%d", i)), 500*1024) // 500KB
 
-		_, err := store.Store(id, data, "application/octet-stream", nil)
+		_, err := store.Store(id, data, "application/octet-stream", nil, "")
 		require.NoError(t, err)
 		store.Release(id)
 	}

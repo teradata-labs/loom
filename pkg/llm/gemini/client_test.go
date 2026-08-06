@@ -274,8 +274,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "gemini-3-flash-preview",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.0, // Free during preview
-			wantMax:      0.0,
+			wantMin:      0.001990, // (1000 * 0.50 + 500 * 3.00) / 1M (catalog)
+			wantMax:      0.002010,
 		},
 		{
 			name:         "gemini-2.5-flash",
@@ -298,16 +298,16 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "gemini-2.5-pro",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.008120, // (1000 * 1.875 + 500 * 12.50) / 1M
-			wantMax:      0.008140,
+			wantMin:      0.006240, // (1000 * 1.25 + 500 * 10.00) / 1M (catalog)
+			wantMax:      0.006260,
 		},
 		{
 			name:         "gemini-3-pro-preview",
 			model:        "gemini-3-pro-preview",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.010490, // (1000 * 3.00 + 500 * 15.00) / 1M
-			wantMax:      0.010510,
+			wantMin:      0.007990, // (1000 * 2.00 + 500 * 12.00) / 1M (catalog)
+			wantMax:      0.008010,
 		},
 	}
 

@@ -17,14 +17,14 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Verify version matches tag
         run: |
@@ -84,7 +84,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           body: |
             ## What's Changed
@@ -209,12 +209,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: Setup Buf
@@ -287,7 +287,7 @@ jobs:
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: |
             ${{ matrix.output }}.tar.gz
@@ -298,7 +298,7 @@ jobs:
 
       - name: Upload release assets (Windows)
         if: matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: |
             ${{ matrix.output }}.zip
@@ -315,7 +315,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Wait for Windows binaries to be available
         shell: bash
@@ -382,7 +382,7 @@ jobs:
           echo "✅ Combined package checksum signed"
 
       - name: Upload combined package
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: |
             loom-windows-x64.zip
@@ -401,7 +401,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Wait for all release assets
         env:
@@ -439,3 +439,89 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: 'artifacts/*.tar.gz,artifacts/*.zip'
+
+  publish-packages:
+    name: Trigger Package Publishers
+    # The release is created with GITHUB_TOKEN, and GitHub suppresses
+    # `release: published` workflow triggers for events created by
+    # GITHUB_TOKEN, so publish-homebrew/publish-winget never fire on their
+    # release triggers. workflow_dispatch is exempt from that suppression,
+    # so dispatch them explicitly once all release assets exist.
+    needs: create-attestations
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch Homebrew publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run publish-homebrew.yml --repo ${{ github.repository }} -f version="$VERSION"
+          echo "Dispatched publish-homebrew.yml for version $VERSION"
+
+      - name: Dispatch winget publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run publish-winget.yml --repo ${{ github.repository }} -f version="$VERSION"
+          echo "Dispatched publish-winget.yml for version $VERSION"
+
+  publish-homepage:
+    name: Publish Homepage
+    # web/ on the tagged commit is the single source of truth for the
+    # GitHub Pages site (https://teradata-labs.github.io/loom/). The version
+    # strings in web/index.html are stamped by the version manager in the
+    # release bump commit, so this job only verifies and publishes — any
+    # hand-edits made directly on gh-pages are overwritten here.
+    needs: create-attestations
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Verify homepage is stamped with release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ ! -f web/index.html ]; then
+            echo "::error::web/index.html missing from tagged tree"
+            exit 1
+          fi
+          if ! grep -Fq "data-loom-version>v$VERSION<" web/index.html; then
+            echo "::error::web/index.html not stamped to v$VERSION — was the version manager run before tagging?"
+            exit 1
+          fi
+          echo "Homepage stamped to v$VERSION"
+
+      - name: Publish web/ to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages:gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          rsync -a --delete --exclude .git web/ /tmp/gh-pages/
+          cd /tmp/gh-pages
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Homepage unchanged; nothing to publish"
+            exit 0
+          fi
+          git commit -m "Publish homepage for ${GITHUB_REF_NAME}"
+          git push origin gh-pages
+          echo "Pushed homepage for ${GITHUB_REF_NAME} to gh-pages"
+
+      - name: Request Pages build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Pushes made with GITHUB_TOKEN can be exempt from triggering the
+          # managed pages-build-deployment workflow (the same suppression
+          # that broke the tap publishers), so request a build explicitly.
+          gh api --method POST /repos/${{ github.repository }}/pages/builds
+          echo "Requested GitHub Pages build"

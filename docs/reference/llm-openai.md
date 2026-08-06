@@ -1,7 +1,7 @@
 
 # OpenAI Integration Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for integrating Loom with OpenAI's API.
 
@@ -60,25 +60,35 @@ client := openai.NewClient(openai.Config{
 
 ### Available Models
 
+Source of truth: `pkg/llm/catalog/catalog.go` (`BuildCatalog()`). 16 OpenAI models are in the catalog.
+
 #### Standard Models
 
 | Model | ID | Input Cost | Output Cost | Context | Output | Features |
 |-------|----|-----------:|------------:|---------|--------|----------|
-| **GPT-5** | `gpt-5` | $2.50/1M | $10.00/1M | 272K | 128K | Reasoning, vision, tools |
-| **GPT-5 Mini** | `gpt-5-mini` | $0.40/1M | $1.60/1M | 272K | 128K | Reasoning, vision, tools |
-| **GPT-4.1** | `gpt-4.1` | $2.00/1M | $8.00/1M | 1M | 32K | Vision, tools (default) |
-| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40/1M | $1.60/1M | 1M | 32K | Vision, tools, cost-effective |
-| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10/1M | $0.40/1M | 1M | 32K | Vision, tools, budget |
+| **GPT-5.4 Pro** | `gpt-5.4-pro` | $30.00/1M | $180.00/1M | 1.05M | 128K | Reasoning, vision, tools |
+| **GPT-5.4** | `gpt-5.4` | $2.50/1M | $15.00/1M | 1.05M | 128K | Reasoning, vision, tools |
+| **GPT-5.4 Mini** | `gpt-5.4-mini` | $0.75/1M | $4.50/1M | 400K | 128K | Vision, tools |
+| **GPT-5.4 Nano** | `gpt-5.4-nano` | $0.20/1M | $1.25/1M | 400K | 128K | Tools |
+| **GPT-5.3 Codex** | `gpt-5.3-codex` | $1.75/1M | $14.00/1M | 400K | 128K | Reasoning, tools |
+| **GPT-5.3 Chat** | `gpt-5.3-chat` | $1.75/1M | $14.00/1M | 128K | 32K | Vision, tools |
+| **GPT-5.2** | `gpt-5.2` | $1.75/1M | $14.00/1M | 400K | 128K | Reasoning, vision, tools |
+| **GPT-5.1** | `gpt-5.1` | $1.25/1M | $10.00/1M | 400K | 128K | Reasoning, vision, tools |
+| **GPT-5** | `gpt-5` | $1.25/1M | $10.00/1M | 400K | 128K | Reasoning, vision, tools |
+| **GPT-4.1** | `gpt-4.1` | $2.00/1M | $8.00/1M | 1.05M | 32K | Vision, tools (Config default) |
+| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40/1M | $1.60/1M | 1.05M | 32K | Vision, tools, cost-effective |
+| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10/1M | $0.40/1M | 1.05M | 32K | Vision, tools, budget |
 
 #### Reasoning Models
 
 | Model | ID | Input Cost | Output Cost | Context | Output | Best For |
 |-------|----|-----------:|------------:|---------|--------|----------|
-| **o3** | `o3` | $10.00/1M | $40.00/1M | 200K | 100K | Complex reasoning, vision, tools |
+| **o3-pro** | `o3-pro` | $20.00/1M | $80.00/1M | 200K | 100K | Highest-effort reasoning, vision, tools |
+| **o3** | `o3` | $2.00/1M | $8.00/1M | 200K | 100K | Complex reasoning, vision, tools |
 | **o3-mini** | `o3-mini` | $1.10/1M | $4.40/1M | 200K | 100K | Reasoning, tools, budget (no vision) |
 | **o4-mini** | `o4-mini` | $1.10/1M | $4.40/1M | 200K | 100K | Reasoning, vision, tools, cost-effective |
 
-*Prices as of March 2026. Check [openai.com/pricing](https://openai.com/pricing) for current rates.*
+*Pricing and context from the catalog (cross-checked against OpenRouter's openai/* listing on 2026-04-22). Check [openai.com/pricing](https://openai.com/pricing) for current rates.*
 
 ### Common Commands
 
@@ -110,16 +120,15 @@ curl https://api.openai.com/v1/chat/completions \
 
 ## Overview
 
-OpenAI provides access to GPT-5, GPT-4.1, and reasoning models through their API. The integration offers:
+OpenAI provides access to the GPT-5.x family, GPT-4.1, and o-series reasoning models through their API. The integration offers:
 - Native tool calling support (function calling)
-- Multiple model options (GPT-5, GPT-5 Mini, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano)
-- Reasoning models (o3, o3-mini, o4-mini)
+- Multiple model options (GPT-5.4 family, GPT-5.3/5.2/5.1, GPT-5, GPT-4.1 family)
+- Reasoning models (o3-pro, o3, o3-mini, o4-mini)
 - Vision support (image input)
-- Cost tracking for all models
+- Cost tracking (see Cost Tracking for which model IDs have explicit pricing)
 
 **Implementation**: `pkg/llm/openai/client.go`
 **Types**: `pkg/llm/openai/types.go`
-**Test Coverage**: 48.2% (801 lines of tests)
 **API Endpoint**: `https://api.openai.com/v1/chat/completions`
 **Interfaces**: `LLMProvider` and `StreamingLLMProvider` compliance
 
@@ -176,20 +185,19 @@ curl https://api.openai.com/v1/chat/completions \
 - Full `LLMProvider` and `StreamingLLMProvider` interface implementation (`pkg/llm/openai/client.go`)
 - Message conversion (system, user, assistant, tool roles)
 - Tool calling with JSON schema conversion (function calling)
-- Cost calculation for legacy models (gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo, o1-preview, o1-mini)
+- Cost calculation with explicit pricing for: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1-preview`, `o1-mini`, `gpt-5`, `gpt-5-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `o3`, `o3-mini`, `o4-mini` (`pkg/llm/openai/client.go`)
 - Custom model selection
 - Temperature and max tokens configuration
 - `max_completion_tokens` for modern models, `max_tokens` for legacy models
 - Vision support (image input via ContentBlocks)
 - Multi-modal content (text + images)
-- 48.2% test coverage (801 lines of tests)
 - Rate limiting (configurable via `llm.RateLimiterConfig`)
 - Streaming support (SSE-based token streaming via `ChatStream`)
 - Tool name sanitization (MCP namespace colon replacement)
 
-### In Progress ⚠️
+### Partial ⚠️
 
-- Cost calculation pricing data for newer models (gpt-4.1, gpt-5, o3, o4-mini) -- currently falls back to gpt-4o pricing
+- Cost calculation does not yet have explicit pricing entries for the GPT-5.x catalog IDs (`gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex`, `gpt-5.3-chat`, `gpt-5.2`, `gpt-5.1`, `o3-pro`). These fall back to `gpt-4o` pricing ($2.50/$10.00) in `calculateCost()`. See Cost Tracking.
 
 ### Planned 📋
 
@@ -310,23 +318,24 @@ agent, err := builder.NewAgentBuilder().
 
 ## Model Support and Pricing
 
-Pricing as of March 2026 (per million tokens):
+Pricing and context from the catalog (per million tokens). See [Available Models](#available-models) for the full 16-model list.
 
 ### Standard Models
 
 | Model | ID | Input Cost | Output Cost | Context | Output | Tool Calling | Vision | Best For |
 |-------|----|-----------:|------------:|---------|--------|--------------|--------|----------|
-| **GPT-5** | `gpt-5` | $2.50 | $10.00 | 272K | 128K | ✅ | ✅ | Reasoning + general tasks |
-| **GPT-5 Mini** | `gpt-5-mini` | $0.40 | $1.60 | 272K | 128K | ✅ | ✅ | Cost-effective reasoning |
-| **GPT-4.1** | `gpt-4.1` | $2.00 | $8.00 | 1M | 32K | ✅ | ✅ | General tasks, large context (default) |
-| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40 | $1.60 | 1M | 32K | ✅ | ✅ | Cost-effective, large context |
-| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10 | $0.40 | 1M | 32K | ✅ | ✅ | Budget, large context |
+| **GPT-5.4** | `gpt-5.4` | $2.50 | $15.00 | 1.05M | 128K | ✅ | ✅ | Reasoning + general tasks |
+| **GPT-5.4 Mini** | `gpt-5.4-mini` | $0.75 | $4.50 | 400K | 128K | ✅ | ✅ | Cost-effective general tasks |
+| **GPT-5** | `gpt-5` | $1.25 | $10.00 | 400K | 128K | ✅ | ✅ | Reasoning + general tasks |
+| **GPT-4.1** | `gpt-4.1` | $2.00 | $8.00 | 1.05M | 32K | ✅ | ✅ | General tasks, large context (Config default) |
+| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40 | $1.60 | 1.05M | 32K | ✅ | ✅ | Cost-effective, large context |
+| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10 | $0.40 | 1.05M | 32K | ✅ | ✅ | Budget, large context |
 
 ### Model Details
 
-#### GPT-5
+#### GPT-5.4
 
-- **Context**: 272K tokens
+- **Context**: 1,048,576 tokens
 - **Max Output**: 128K tokens
 - **Features**: Reasoning, text, vision, tool calling
 - **Best For**: Tasks requiring both reasoning and general capability
@@ -338,12 +347,12 @@ Pricing as of March 2026 (per million tokens):
 - Data analysis with tool calling
 
 
-#### GPT-5 Mini
+#### GPT-5
 
-- **Context**: 272K tokens
+- **Context**: 400K tokens
 - **Max Output**: 128K tokens
 - **Features**: Reasoning, text, vision, tool calling
-- **Best For**: Cost-effective reasoning tasks
+- **Best For**: Reasoning + general tasks
 
 **Use Cases**:
 - Classification and categorization with reasoning
@@ -354,10 +363,10 @@ Pricing as of March 2026 (per million tokens):
 
 #### GPT-4.1
 
-- **Context**: 1M tokens
+- **Context**: 1,048,576 tokens
 - **Max Output**: 32K tokens
 - **Features**: Text, vision, tool calling
-- **Best For**: Large context tasks, balanced cost/quality (default model)
+- **Best For**: Large context tasks, balanced cost/quality (Config default model)
 
 **Use Cases**:
 - Long document analysis (up to 1M context)
@@ -402,7 +411,8 @@ OpenAI's o-series models are optimized for complex reasoning tasks.
 
 | Model | ID | Input Cost | Output Cost | Context | Output | Tool Calling | Vision | Best For |
 |-------|----|-----------:|------------:|---------|--------|--------------|--------|----------|
-| **o3** | `o3` | $10.00 | $40.00 | 200K | 100K | ✅ | ✅ | Complex reasoning, STEM, coding |
+| **o3-pro** | `o3-pro` | $20.00 | $80.00 | 200K | 100K | ✅ | ✅ | Highest-effort reasoning |
+| **o3** | `o3` | $2.00 | $8.00 | 200K | 100K | ✅ | ✅ | Complex reasoning, STEM, coding |
 | **o3-mini** | `o3-mini` | $1.10 | $4.40 | 200K | 100K | ✅ | ❌ | Budget reasoning, tools |
 | **o4-mini** | `o4-mini` | $1.10 | $4.40 | 200K | 100K | ✅ | ✅ | Reasoning with vision, cost-effective |
 
@@ -410,7 +420,7 @@ OpenAI's o-series models are optimized for complex reasoning tasks.
 
 - **Context**: 200K tokens
 - **Max Output**: 100K tokens
-- **Cost**: $10.00/1M input, $40.00/1M output
+- **Cost**: $2.00/1M input, $8.00/1M output (catalog; refreshed from the 2026-04 OpenRouter listing)
 - **Features**: Reasoning, vision, tool calling
 - **Best For**: Complex reasoning, STEM, coding
 
@@ -467,7 +477,7 @@ ctx := context.Background()
 messages := []types.Message{
     {
         Role:    "system",
-        Content: "You are a helpful coding assistant.",
+        Content: "Answer programming questions with clear, concise Go code examples.",
     },
     {
         Role:    "user",
@@ -495,7 +505,7 @@ Content-Type: application/json
 {
   "model": "gpt-4.1",
   "messages": [
-    {"role": "system", "content": "You are a helpful coding assistant."},
+    {"role": "system", "content": "Answer programming questions with clear, concise Go code examples."},
     {"role": "user", "content": "Explain Go interfaces."}
   ],
   "max_tokens": 4096,
@@ -554,7 +564,7 @@ Cost: $0.002954
 
 The OpenAI provider calculates costs based on token usage.
 
-**Note**: The `calculateCost()` function currently has pricing data for: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1-preview`, `o1-mini`. Models not in this list (including `gpt-4.1`, `gpt-5`, `o3`, `o4-mini`) fall back to `gpt-4o` pricing ($2.50/$10.00 per 1M tokens). ⚠️ Pricing data for newer models needs to be added to `pkg/llm/openai/client.go`.
+**Note**: The `calculateCost()` function in `pkg/llm/openai/client.go` has explicit pricing for: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1-preview`, `o1-mini`, `gpt-5`, `gpt-5-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `o3`, `o3-mini`, `o4-mini`. ⚠️ The GPT-5.x catalog IDs (`gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex`, `gpt-5.3-chat`, `gpt-5.2`, `gpt-5.1`) and `o3-pro` are not in `calculateCost()` and fall back to `gpt-4o` pricing ($2.50/$10.00 per 1M tokens). Note `calculateCost()` uses the runtime `gpt-5`/`o3` rates ($2.50/$10.00 and $10.00/$40.00 respectively), which differ from the catalog values shown in the model tables above.
 
 Usage example:
 
@@ -590,7 +600,9 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 
 ### Example Costs by Model
 
-**GPT-5** ($2.50/$10.00 per 1M tokens):
+These examples use the rates in `calculateCost()` (the runtime cost calculator), which for `gpt-5` and `o3` differ from the catalog values shown in the model tables:
+
+**GPT-5** ($2.50/$10.00 per 1M tokens, runtime calculator):
 - Simple query (100 input, 200 output): $0.002250
 - Medium task (1000 input, 2000 output): $0.022500
 - Large task (10000 input, 20000 output): $0.225000
@@ -605,7 +617,7 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 - Medium task (1000 input, 2000 output): $0.000900
 - Large task (10000 input, 20000 output): $0.009000
 
-**o3** ($10.00/$40.00 per 1M tokens):
+**o3** ($10.00/$40.00 per 1M tokens, runtime calculator):
 - Simple query (100 input, 200 output): $0.009000
 - Medium task (1000 input, 2000 output): $0.090000
 - Large task (10000 input, 20000 output): $0.900000
@@ -688,7 +700,7 @@ Arguments: map[expression:2+2]
 
 ## Vision Support
 
-GPT-5, GPT-5 Mini, GPT-4.1 family, o3, and o4-mini support image inputs:
+GPT-5.x (except `gpt-5.4-nano`), GPT-4.1 family, o3-pro, o3, and o4-mini support image inputs:
 
 ```go
 import "github.com/teradata-labs/loom/pkg/types"
@@ -860,9 +872,9 @@ Error: OpenAI API error (404): The model 'invalid-model' does not exist or you d
 
 **Retry behavior**: Not retryable (fix model name or upgrade account)
 
-**Valid Model IDs**:
-- Standard: `gpt-5`, `gpt-5-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`
-- Reasoning: `o3`, `o3-mini`, `o4-mini`
+**Valid Model IDs** (catalog):
+- Standard: `gpt-5.4-pro`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex`, `gpt-5.3-chat`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`
+- Reasoning: `o3-pro`, `o3`, `o3-mini`, `o4-mini`
 
 
 ### ERR_RATE_LIMIT
@@ -1018,9 +1030,10 @@ Error: OpenAI API error (400): This model's maximum context length is 8192 token
 1. Reduce prompt length (truncate conversation history)
 2. Reduce max_tokens parameter
 3. Switch to model with larger context:
-   - o3/o3-mini/o4-mini: 200K
-   - GPT-5/GPT-5 Mini: 272K
-   - GPT-4.1/GPT-4.1 Mini/GPT-4.1 Nano: 1M
+   - o3-pro/o3/o3-mini/o4-mini: 200K
+   - GPT-5/GPT-5.1/GPT-5.2/GPT-5.3 Codex/GPT-5.4 Mini/GPT-5.4 Nano: 400K
+   - GPT-5.4/GPT-5.4 Pro: 1.05M
+   - GPT-4.1/GPT-4.1 Mini/GPT-4.1 Nano: 1.05M
 4. Implement sliding window for long conversations
 
 **Retry behavior**: Not retryable until prompt reduced
@@ -1202,10 +1215,10 @@ agent, err := builder.NewAgentBuilder().
 
 **Decision Tree**:
 1. **Budget**: → `gpt-4.1-nano` ($0.10/$0.40)
-2. **Cost-Effective**: → `gpt-4.1-mini` or `gpt-5-mini` ($0.40/$1.60)
-3. **General Purpose**: → `gpt-4.1` ($2.00/$8.00) (default)
-4. **Reasoning + General**: → `gpt-5` ($2.50/$10.00)
-5. **Advanced Reasoning**: → `o3` ($10.00/$40.00)
+2. **Cost-Effective**: → `gpt-4.1-mini` ($0.40/$1.60) or `gpt-5.4-mini` ($0.75/$4.50)
+3. **General Purpose**: → `gpt-4.1` ($2.00/$8.00) (Config default)
+4. **Reasoning + General**: → `gpt-5` ($1.25/$10.00) or `gpt-5.4` ($2.50/$15.00)
+5. **Advanced Reasoning**: → `o3` ($2.00/$8.00) or `o3-pro` ($20.00/$80.00)
 6. **Cost-Effective Reasoning**: → `o3-mini` or `o4-mini` ($1.10/$4.40)
 
 
@@ -1324,8 +1337,9 @@ config.MaxTokens = 2048
 config.MaxTokens = 8192
 
 // Never exceed model's context window
-// gpt-4.1: 1M context, 32K max output
-// gpt-5: 272K context, 128K max output
+// gpt-4.1: 1.05M context, 32K max output
+// gpt-5: 400K context, 128K max output
+// gpt-5.4: 1.05M context, 128K max output
 // o3: 200K context, 100K max output
 ```
 
@@ -1383,7 +1397,7 @@ logger.Info("OpenAI response",
 |---------|--------|-----------|--------------|---------|--------|-------------|---------|---------|
 | **API Format** | Native | Native | OpenAI-compatible | AWS SDK | Native | Native | OpenAI-compatible | OpenAI-compatible |
 | **Tool Calling** | Native | Native | Native | Native | Native | Limited | Native | Limited |
-| **Models** | GPT-5, GPT-4.1, o3 | Claude Sonnet 4.5 | GPT-5, GPT-4.1 (Azure) | Claude (via AWS) | Gemini 3 | Open models | Mistral, Mixtral | Open models |
+| **Models** | GPT-5.x, GPT-4.1, o3 | Claude 4.x (Opus/Sonnet/Haiku) | GPT-5.x, GPT-4.1 (Azure) | Claude (via AWS) | Gemini 3.x/2.5 | Open models | Mistral, Mixtral | Open models |
 | **Context** | 200K-1M | 200K | 200K-1M | 200K | Model-dependent | Model-dependent | 32K-128K | Model-dependent |
 | **Vision** | ✅ Most models | ✅ Claude | ✅ Most models | ✅ Claude | ✅ | ⚠️ Limited | ⚠️ Limited | ⚠️ Limited |
 | **Privacy** | API call | API call | VPC/Private | VPC/Private | API call | API call | API call | Full (local) |

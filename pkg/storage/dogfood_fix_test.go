@@ -62,7 +62,7 @@ func TestDogfood_MCPTruncationFix(t *testing.T) {
 		Location: loomv1.StorageLocation_STORAGE_LOCATION_MEMORY,
 	}
 
-	_, err := store.Get(fakeRef)
+	_, err := store.Get(fakeRef, "")
 	assert.Error(t, err, "Reference should not exist (agent shouldn't have created it)")
 	assert.Contains(t, err.Error(), "data not found", "Should get 'data not found' error")
 
@@ -93,7 +93,7 @@ func TestDogfood_GlobalStorageCrossAgentRetrieval(t *testing.T) {
 	ref, err := store1.Store("ref_agent1_tool_12345", largeResult, "application/json", map[string]string{
 		"tool_name":  "vantage:query",
 		"session_id": "session-123",
-	})
+	}, "")
 	require.NoError(t, err)
 	require.NotNil(t, ref)
 	t.Logf("Agent 1 created reference: %s", ref.Id)
@@ -106,7 +106,7 @@ func TestDogfood_GlobalStorageCrossAgentRetrieval(t *testing.T) {
 	assert.Same(t, store1, store2, "Global store should be singleton")
 
 	// Agent 2 retrieves data using the reference
-	retrievedData, err := store2.Get(ref)
+	retrievedData, err := store2.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, largeResult, retrievedData, "Retrieved data should match original")
 
@@ -133,7 +133,7 @@ func TestDogfood_DiskPersistence(t *testing.T) {
 		largeData[i] = byte(i % 256)
 	}
 
-	ref, err := store.Store("ref_large_overflow", largeData, "application/octet-stream", nil)
+	ref, err := store.Store("ref_large_overflow", largeData, "application/octet-stream", nil, "")
 	if err != nil {
 		t.Skipf("Disk overflow not available (expected in some environments): %v", err)
 		return
@@ -141,7 +141,7 @@ func TestDogfood_DiskPersistence(t *testing.T) {
 	require.NotNil(t, ref)
 
 	// Retrieve data (should come from disk if overflowed)
-	retrievedData, err := store.Get(ref)
+	retrievedData, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, largeData, retrievedData, "Data should be retrieved correctly from disk")
 

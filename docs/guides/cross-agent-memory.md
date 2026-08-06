@@ -48,13 +48,11 @@ When `td-analyst` calls `Neighbors` on "FastLoad", it traverses the `USES` edge 
 
 1. **Loom server running** with the graph memory store initialized. The `GraphMemoryService` is registered automatically when the storage backend provides a `GraphMemoryStore` (both SQLite and Postgres backends do).
 
-2. **External agent** with either:
-   - A gRPC client targeting Loom's gRPC port (default `:60051`), OR
-   - An HTTP client targeting the HTTP gateway port (default `:5006`)
+2. **External agent** with a gRPC client targeting Loom's gRPC port (default `:60051`).
 
 3. **Agreed-upon agent_id values** -- each participant uses a stable, unique `agent_id` string (e.g., `"td-analyst"`, `"hermes-research"`).
 
-> **Note:** The HTTP gateway currently registers `LoomService` endpoints. `GraphMemoryService` HTTP routes use the gRPC-transcoding pattern (`/loom.v1.GraphMemoryService/<RPC>`) which is accessible via the gateway's catch-all handler. For teams that require explicit REST endpoints, use `grpcurl` against the gRPC port directly.
+> **Note:** `GraphMemoryService` is reachable over gRPC only. The HTTP gateway (`pkg/server/http.go`) registers `LoomService` handlers exclusively, and `proto/loom/v1/graph_memory.proto` defines no `google.api.http` annotations, so there are no REST/JSON routes for `GraphMemoryService`. Use `grpcurl` (or a generated gRPC client) against the gRPC port for all examples below.
 
 ---
 
@@ -368,77 +366,11 @@ Response:
 
 ---
 
-## HTTP Gateway Examples
+## HTTP/REST Access
 
-The HTTP gateway exposes `GraphMemoryService` RPCs via POST to `/loom.v1.GraphMemoryService/<RPC>`. All requests use JSON bodies.
+📋 **Not available.** `GraphMemoryService` has no HTTP/REST surface. The HTTP gateway in `pkg/server/http.go` registers only `LoomService` (`RegisterLoomServiceHandlerFromEndpoint`), and `proto/loom/v1/graph_memory.proto` declares no `google.api.http` annotations. Requests to `http://localhost:5006/loom.v1.GraphMemoryService/<RPC>` are handled by the gRPC-gateway mux, which has no route for them and returns a 404-style error.
 
-### ContextFor via HTTP
-
-```bash
-curl -s -X POST http://localhost:5006/loom.v1.GraphMemoryService/ContextFor \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "td-analyst",
-    "entity_name": "Teradata",
-    "topic": "bulk loading",
-    "max_tokens": 4000
-  }'
-```
-
-### Remember via HTTP
-
-```bash
-curl -s -X POST http://localhost:5006/loom.v1.GraphMemoryService/Remember \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "hermes-research",
-    "content": "Hash joins outperform nested loop joins on large tables when memory allows",
-    "memory_type": "fact",
-    "source": "agent",
-    "tags": ["joins", "performance"],
-    "salience": 0.6
-  }'
-```
-
-### Relate via HTTP
-
-```bash
-curl -s -X POST http://localhost:5006/loom.v1.GraphMemoryService/Relate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "td-analyst",
-    "source_name": "Hash Join",
-    "target_name": "Memory Management",
-    "relation": "DEPENDS_ON"
-  }'
-```
-
-### Neighbors via HTTP
-
-```bash
-curl -s -X POST http://localhost:5006/loom.v1.GraphMemoryService/Neighbors \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "td-analyst",
-    "entity_name": "FastLoad",
-    "direction": "NEIGHBOR_DIRECTION_BOTH",
-    "depth": 2
-  }'
-```
-
-### Recall via HTTP
-
-```bash
-curl -s -X POST http://localhost:5006/loom.v1.GraphMemoryService/Recall \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "hermes-research",
-    "query": "optimization techniques",
-    "min_salience": 0.3,
-    "max_tokens": 2000,
-    "limit": 10
-  }'
-```
+To call these RPCs from a non-Go client, use a gRPC client (e.g., `grpcurl`, or generated stubs in Python/Java/etc.) against the gRPC port. See the [Access Patterns](#access-patterns) and [Implementation Walkthrough](#implementation-walkthrough) sections above for `grpcurl` examples.
 
 ---
 
@@ -547,7 +479,7 @@ If `grpcurl` returns `unknown service loom.v1.GraphMemoryService`:
 
 1. Verify the Loom server log contains `"Graph memory service registered"`.
 2. If missing, check that the storage backend implements `GraphMemoryProvider`. Both SQLite and Postgres backends do this when migrations are up to date.
-3. Ensure database migrations are current (`000004_graph_memory` and later).
+3. Ensure database migrations are current. The graph memory schema is migration `000002_graph_memory` (SQLite) / `000010_graph_memory` (Postgres).
 
 ### Entity not found errors
 

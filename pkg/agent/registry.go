@@ -389,6 +389,13 @@ func (r *Registry) LoadAgents(ctx context.Context) error {
 	return nil
 }
 
+// WorkflowsDir returns the directory holding saved workflow YAML definitions
+// ($LOOM_DATA_DIR/workflows). Used by the server to resolve workflow_ref (run a
+// saved workflow by name) and to list runnable workflows.
+func (r *Registry) WorkflowsDir() string {
+	return filepath.Join(r.configDir, "workflows")
+}
+
 // LoadWorkflows loads workflow files and registers their coordinator agents
 func (r *Registry) LoadWorkflows(ctx context.Context) error {
 	workflowsDir := filepath.Join(r.configDir, "workflows")
@@ -961,7 +968,14 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
-			searchTool := shuttle.Tool(toolregistry.NewSearchTool(r.toolRegistry))
+			st := toolregistry.NewSearchTool(r.toolRegistry)
+			// Hide tools the agent's permission policy would refuse, so the model
+			// never discovers (and then calls) a disabled tool via tool_search.
+			// Read lazily so it reflects the checker regardless of wiring order.
+			st.SetToolFilter(func(name string) bool {
+				return agent.permissionChecker == nil || agent.permissionChecker.Advertisable(name)
+			})
+			searchTool := shuttle.Tool(st)
 			// Wrap with PromptAwareTool for externalized descriptions
 			if agent.prompts != nil {
 				searchTool = shuttle.NewPromptAwareTool(searchTool, agent.prompts, "tools.tool_search")
@@ -1140,7 +1154,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		if profile == "" {
 			profile = "default"
 		}
-		return bedrock.NewClient(bedrock.Config{
+		return bedrock.NewClientForModel(bedrock.Config{
 			Region:            region,
 			Profile:           profile,
 			ModelID:           config.Model,

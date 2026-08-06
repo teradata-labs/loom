@@ -472,20 +472,51 @@ else
   echo ""
   echo "  1) AWS Bedrock (with SSO/Profile) - For users with AWS profiles configured"
   echo "  2) AWS Bedrock (with Access Keys) - For users with AWS access keys"
-  echo "  3) Anthropic API - Direct Anthropic access"
-  echo "  4) OpenAI - GPT-4 models, o1 reasoning models"
-  echo "  5) Azure OpenAI - Enterprise Microsoft integration"
-  echo "  6) Mistral AI - Open & commercial models"
-  echo "  7) Google Gemini - Google's latest AI models"
-  echo "  8) HuggingFace - 1M+ open source models"
-  echo "  9) Ollama - Local/offline models (requires tool calling support)"
-  echo " 10) Skip for now - Configure later manually"
+  echo "  3) AWS Bedrock (with API Key / Bearer Token) - For Bedrock long-term API keys"
+  echo "  4) Anthropic API - Direct Anthropic access"
+  echo "  5) OpenAI - GPT-4 models, o1 reasoning models"
+  echo "  6) Azure OpenAI - Enterprise Microsoft integration"
+  echo "  7) Mistral AI - Open & commercial models"
+  echo "  8) Google Gemini - Google's latest AI models"
+  echo "  9) HuggingFace - 1M+ open source models"
+  echo " 10) Ollama - Local/offline models (requires tool calling support)"
+  echo " 11) Skip for now - Configure later manually"
   echo ""
   read -r -p "Enter choice [1]: " llm_choice
   llm_choice=${llm_choice:-1}
 
   # Initialize configuration tracking variables
   configure_llm="n"
+
+  # select_bedrock_model prompts for a Bedrock inference profile and sets the
+  # global loom_model. The listed models are common starting points, not an
+  # exhaustive list — users can choose option 3 or paste any inference profile
+  # ID they have access to (e.g. a newer Sonnet/Opus). See issue #168.
+  select_bedrock_model() {
+    echo ""
+    echo "Bedrock inference profile configuration:"
+    echo "(Inference profiles use the 'us.' prefix for cross-region availability.)"
+    echo ""
+    echo "Common Claude models on Bedrock:"
+    echo "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5 - balanced, default)"
+    echo "  2) us.anthropic.claude-opus-4-5-20251101-v1:0    (Opus 4.5 - most capable)"
+    echo "  3) Enter a different inference profile ID (any model you have access to)"
+    echo ""
+    echo "This list is not exhaustive: if you have access to a model that isn't"
+    echo "shown, choose 3 or paste its full inference profile ID at the prompt."
+    echo ""
+    read -r -p "Enter choice [1], or paste a full inference profile ID: " model_choice
+    model_choice=${model_choice:-1}
+    case "$model_choice" in
+      1) loom_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0" ;;
+      2) loom_model="us.anthropic.claude-opus-4-5-20251101-v1:0" ;;
+      3) read -r -p "Enter the full Bedrock inference profile ID: " loom_model ;;
+      *) loom_model="$model_choice" ;; # a full ID pasted directly at the prompt
+    esac
+    if [ -z "$loom_model" ]; then
+      loom_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    fi
+  }
 
   if [ "$llm_choice" = "1" ]; then
     configure_llm="y"
@@ -519,23 +550,7 @@ else
     fi
 
     # Prompt for model inference profile
-    echo ""
-    echo "Bedrock inference profile configuration:"
-    echo "(Inference profiles use the 'us.' prefix for cross-region availability)"
-    echo ""
-    echo "Available Claude models on Bedrock:"
-    echo "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5 - balanced)"
-    echo "  2) us.anthropic.claude-opus-4-5-20251101-v1:0   (Opus 4.5 - most capable)"
-    echo "  3) us.anthropic.claude-3-5-sonnet-20241022-v2:0 (Sonnet 3.5 v2)"
-    echo ""
-    read -r -p "Enter Bedrock inference profile [1]: " model_choice
-    model_choice=${model_choice:-1}
-    case "$model_choice" in
-      1) loom_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0" ;;
-      2) loom_model="us.anthropic.claude-opus-4-5-20251101-v1:0" ;;
-      3) loom_model="us.anthropic.claude-3-5-sonnet-20241022-v2:0" ;;
-      *) loom_model="$model_choice" ;; # Allow custom input
-    esac
+    select_bedrock_model
 
     echo ""
     echo "Configuring AWS Bedrock with profile..."
@@ -562,23 +577,7 @@ else
     aws_region=${aws_region:-us-west-2}
 
     # Prompt for model inference profile
-    echo ""
-    echo "Bedrock inference profile configuration:"
-    echo "(Inference profiles use the 'us.' prefix for cross-region availability)"
-    echo ""
-    echo "Available Claude models on Bedrock:"
-    echo "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5 - balanced)"
-    echo "  2) us.anthropic.claude-opus-4-5-20251101-v1:0   (Opus 4.5 - most capable)"
-    echo "  3) us.anthropic.claude-3-5-sonnet-20241022-v2:0 (Sonnet 3.5 v2)"
-    echo ""
-    read -r -p "Enter Bedrock inference profile [1]: " model_choice
-    model_choice=${model_choice:-1}
-    case "$model_choice" in
-      1) loom_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0" ;;
-      2) loom_model="us.anthropic.claude-opus-4-5-20251101-v1:0" ;;
-      3) loom_model="us.anthropic.claude-3-5-sonnet-20241022-v2:0" ;;
-      *) loom_model="$model_choice" ;; # Allow custom input
-    esac
+    select_bedrock_model
 
     echo ""
     echo "Setting AWS credentials (securely stored in keyring)..."
@@ -601,6 +600,37 @@ else
   elif [ "$llm_choice" = "3" ]; then
     configure_llm="y"
     echo ""
+    echo "Configuring AWS Bedrock with an API key / bearer token (stored securely in keyring)..."
+    echo "(Bedrock API keys authenticate directly - no AWS profile or access keys required.)"
+    echo ""
+
+    # Prompt for AWS region
+    read -r -p "Enter your AWS region [us-west-2]: " aws_region
+    aws_region=${aws_region:-us-west-2}
+
+    # Prompt for model inference profile
+    select_bedrock_model
+
+    echo ""
+    echo "Setting Bedrock API key (securely stored in keyring)..."
+    echo ""
+
+    # Configure Bedrock
+    "$BIN_DIR/looms" config set llm.provider bedrock
+    "$BIN_DIR/looms" config set llm.bedrock_region "$aws_region"
+    "$BIN_DIR/looms" config set llm.bedrock_model_id "$loom_model"
+
+    # Store the Bedrock API key / bearer token in the OS keyring
+    "$BIN_DIR/looms" config set-key bedrock_bearer_token
+
+    echo -e "${GREEN}✓ AWS Bedrock configured with API key${NC}"
+    echo -e "${GREEN}  Region: $aws_region${NC}"
+    echo -e "${GREEN}  Model: $loom_model${NC}"
+    echo -e "${GREEN}  API key: Stored securely in keyring${NC}"
+
+  elif [ "$llm_choice" = "4" ]; then
+    configure_llm="y"
+    echo ""
     echo "Configuring Anthropic API..."
     echo ""
 
@@ -609,7 +639,7 @@ else
 
     echo -e "${GREEN}✓ Anthropic configured${NC}"
 
-  elif [ "$llm_choice" = "4" ]; then
+  elif [ "$llm_choice" = "5" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring OpenAI API..."
@@ -620,7 +650,7 @@ else
 
     echo -e "${GREEN}✓ OpenAI configured${NC}"
 
-  elif [ "$llm_choice" = "5" ]; then
+  elif [ "$llm_choice" = "6" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Azure OpenAI..."
@@ -673,7 +703,7 @@ else
 
     echo -e "${GREEN}✓ Azure OpenAI configured${NC}"
 
-  elif [ "$llm_choice" = "6" ]; then
+  elif [ "$llm_choice" = "7" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Mistral AI..."
@@ -684,7 +714,7 @@ else
 
     echo -e "${GREEN}✓ Mistral AI configured${NC}"
 
-  elif [ "$llm_choice" = "7" ]; then
+  elif [ "$llm_choice" = "8" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Google Gemini..."
@@ -695,7 +725,7 @@ else
 
     echo -e "${GREEN}✓ Google Gemini configured${NC}"
 
-  elif [ "$llm_choice" = "8" ]; then
+  elif [ "$llm_choice" = "9" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring HuggingFace..."
@@ -706,7 +736,7 @@ else
 
     echo -e "${GREEN}✓ HuggingFace configured${NC}"
 
-  elif [ "$llm_choice" = "9" ]; then
+  elif [ "$llm_choice" = "10" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Ollama (local/offline inference)..."
@@ -872,7 +902,7 @@ echo ""
 STEP_NUM=1
 
 # If Ollama was configured, remind them to start it first
-if [ "$llm_choice" = "9" ] && [[ "$configure_llm" =~ ^[Yy]$ ]]; then
+if [ "$llm_choice" = "10" ] && [[ "$configure_llm" =~ ^[Yy]$ ]]; then
   echo -e "$STEP_NUM. Start Ollama (required for local inference):"
   echo ""
   echo -e "   In a terminal window:"

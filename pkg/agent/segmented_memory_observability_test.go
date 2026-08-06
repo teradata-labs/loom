@@ -186,14 +186,16 @@ func TestSegmentedMemory_CompressionMetrics_ConversationalProfile(t *testing.T) 
 	assert.Equal(t, "conversational", mockTracer.events[0].attributes["profile"])
 	assert.Equal(t, 9600, mockTracer.events[0].attributes["max_l1_tokens"])
 
-	// Add many large messages to trigger compression (token-based)
-	// Each message ~700 tokens, 20 messages = ~14K tokens > 9600 limit
-	for i := 0; i < 20; i++ {
+	// Add large messages until budget usage crosses the conversational warning
+	// threshold (70%) and compression fires.
+	content := strings.Repeat("Conversational message payload ", 100)
+	for i := 0; i < 200 && !sm.HasL2Content(); i++ {
 		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
-			Content: strings.Repeat(fmt.Sprintf("Conversational message %d ", i), 100), // ~700 tokens
+			Content: content,
 		})
 	}
+	require.True(t, sm.HasL2Content(), "test must drive compression to record its metrics")
 
 	// Verify metrics were recorded
 	var found bool

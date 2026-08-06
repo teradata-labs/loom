@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -308,36 +309,39 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 //
 // Note: Prices may vary. Check https://ai.google.dev/pricing for current rates.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	var inputCostPerM, outputCostPerM float64
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
+	// to the provider-local rates below only for model ids it does not list.
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("gemini", c.model)
+	if !ok {
+		switch c.model {
+		case "gemini-3-pro-preview", "gemini-3-pro":
+			// Use mid-range pricing (average of ≤200k and >200k tiers)
+			inputCostPerM = 3.00
+			outputCostPerM = 15.00
 
-	switch c.model {
-	case "gemini-3-pro-preview", "gemini-3-pro":
-		// Use mid-range pricing (average of ≤200k and >200k tiers)
-		inputCostPerM = 3.00
-		outputCostPerM = 15.00
+		case "gemini-3-flash-preview", "gemini-3-flash":
+			// Free during preview
+			inputCostPerM = 0.0
+			outputCostPerM = 0.0
 
-	case "gemini-3-flash-preview", "gemini-3-flash":
-		// Free during preview
-		inputCostPerM = 0.0
-		outputCostPerM = 0.0
+		case "gemini-2.5-pro":
+			// Use mid-range pricing
+			inputCostPerM = 1.875
+			outputCostPerM = 12.50
 
-	case "gemini-2.5-pro":
-		// Use mid-range pricing
-		inputCostPerM = 1.875
-		outputCostPerM = 12.50
+		case "gemini-2.5-flash":
+			inputCostPerM = 0.30
+			outputCostPerM = 2.50
 
-	case "gemini-2.5-flash":
-		inputCostPerM = 0.30
-		outputCostPerM = 2.50
+		case "gemini-2.5-flash-lite":
+			inputCostPerM = 0.10
+			outputCostPerM = 0.40
 
-	case "gemini-2.5-flash-lite":
-		inputCostPerM = 0.10
-		outputCostPerM = 0.40
-
-	default:
-		// Default to 2.5 Flash pricing for unknown models
-		inputCostPerM = 0.30
-		outputCostPerM = 2.50
+		default:
+			// Default to 2.5 Flash pricing for unknown models
+			inputCostPerM = 0.30
+			outputCostPerM = 2.50
+		}
 	}
 
 	inputCost := float64(inputTokens) * inputCostPerM / 1_000_000

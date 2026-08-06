@@ -87,15 +87,23 @@ func TestWriteAndReadSessionArtifactMetadata_roundTrip(t *testing.T) {
 
 func TestSessionArtifactsRoot_rejectsBadPath(t *testing.T) {
 	t.Parallel()
-	for _, id := range []string{"../x", "a/b", `a\b`, "ok"} {
+	valid := map[string]bool{"ok": true, "sess-abc.1_2": true}
+	for _, id := range []string{"../x", "a/b", `a\b`, "..", ".", "", "a..b", "/etc", "ok", "sess-abc.1_2"} {
 		_, err := SessionArtifactsRoot(id)
-		switch id {
-		case "ok":
-			require.NoError(t, err)
-		default:
-			require.Error(t, err)
+		if valid[id] {
+			require.NoError(t, err, "id %q should be accepted", id)
+		} else {
+			require.Error(t, err, "id %q should be rejected", id)
 		}
 	}
+}
+
+func TestSessionArtifactsRoot_containedUnderSessionsDir(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", dataDir)
+	got, err := SessionArtifactsRoot("sess-abc.1_2")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dataDir, "artifacts", "sessions", "sess-abc.1_2"), got)
 }
 
 func TestSyncSessionArtifactMetadata_preservesCompleted(t *testing.T) {

@@ -127,27 +127,72 @@
   const SLICE_CHART_TYPES = new Set(["pie", "doughnut", "polarArea"]);
 
   // Chart palette — vibrant colors that read well on dark backgrounds.
+  // Ordered so consecutive entries are maximally hue-separated. Slice charts
+  // (pie/doughnut/polarArea) and radar series index this array sequentially, so
+  // interleaving hues keeps neighbouring slices/series easy to tell apart
+  // instead of landing on near-identical shades (e.g. three greens in a row).
   const CHART_PALETTE = [
-    "#688bf1",
-    "#52c07d",
-    "#f7ac4d",
-    "#c84d7b",
-    "#60a9ed",
-    "#e0938e",
-    "#a78bfa",
-    "#34d399",
-    "#fbbf24",
-    "#fb7185",
-    "#38bdf8",
-    "#86efac",
+    "#688bf1", // blue
+    "#f7ac4d", // orange
+    "#52c07d", // green
+    "#c84d7b", // magenta
+    "#a78bfa", // purple
+    "#38bdf8", // cyan
+    "#fbbf24", // yellow
+    "#fb7185", // red-pink
+    "#34d399", // teal-green
+    "#e0938e", // salmon
+    "#60a9ed", // light blue
+    "#86efac", // light green
   ];
+
+  // Returns a chart color for item `i` of `total` items. When the item count
+  // fits within the fixed palette, the hand-tuned palette is used. Beyond that,
+  // colors are generated on the fly with evenly-spaced HSL hues so large slice
+  // counts (many pie slices / polar sectors) stay visually distinct instead of
+  // wrapping around the 12-color palette and repeating shades.
+  function chartColorAt(i, total) {
+    const paletteLen = CHART_PALETTE.length;
+    if (!total || total <= paletteLen) {
+      return CHART_PALETTE[i % paletteLen];
+    }
+    // Golden-angle hue stepping spreads hues evenly and avoids clustering even
+    // when `total` shares factors with 360.
+    const hue = Math.round((i * 137.508) % 360);
+    // Alternate lightness/saturation slightly so adjacent hues that happen to be
+    // close still differ in tone.
+    const sat = i % 2 === 0 ? 65 : 72;
+    const light = i % 2 === 0 ? 62 : 54;
+    return "hsl(" + hue + ", " + sat + "%, " + light + "%)";
+  }
+
+  // Apply an alpha to a chart color. Hex colors take a 2-digit hex alpha suffix;
+  // hsl() colors (from chartColorAt overflow generation) are converted to hsla()
+  // since hex-alpha suffixes are invalid on functional color notations.
+  function withChartAlpha(color, hexAlpha) {
+    if (typeof color !== "string") return color;
+    if (color.charAt(0) === "#") return color + hexAlpha;
+    if (color.indexOf("hsl(") === 0) {
+      const a = (parseInt(hexAlpha, 16) / 255).toFixed(2);
+      return color.replace("hsl(", "hsla(").replace(")", ", " + a + ")");
+    }
+    return color;
+  }
 
   // Map common LLM-generated color names to theme-aware semantic colors.
   const COLOR_NAME_ALIASES = {
-    green: "success", blue: "accent", red: "error",
-    yellow: "warning", orange: "warning", purple: "magenta",
-    pink: "magenta", teal: "cyan", gray: "textMuted", grey: "textMuted",
-    white: "#ffffff", black: "#000000",
+    green: "success",
+    blue: "accent",
+    red: "error",
+    yellow: "warning",
+    orange: "warning",
+    purple: "magenta",
+    pink: "magenta",
+    teal: "cyan",
+    gray: "textMuted",
+    grey: "textMuted",
+    white: "#ffffff",
+    black: "#000000",
   };
 
   function resolveColor(color, fallback) {
@@ -321,9 +366,10 @@
     if (type === "grid-2") {
       container.style.display = "grid";
       container.style.gap = gap;
-      // auto-fit + minmax collapses to 1 column on narrow viewports automatically
+      // auto-fit collapses empty tracks so a lone item expands to full width.
+      // calc(50% - 12px) caps strictly at 2 columns on any viewport width.
       container.style.gridTemplateColumns =
-        "repeat(auto-fit, minmax(min(100%, 320px), 1fr))";
+        "repeat(auto-fit, minmax(min(100%, calc(50% - 12px)), 1fr))";
     } else if (type === "grid-3") {
       container.style.display = "grid";
       container.style.gap = gap;
@@ -378,6 +424,7 @@
 
   // Build a safe Chart.js config from allowlisted fields only
   const CHART_ALLOWED_TYPES = new Set([
+    "area",
     "bar",
     "line",
     "pie",
@@ -413,7 +460,8 @@
   // a series. Returns null when no usable numeric series can be found.
   function inferRecordsMapping(rows) {
     const first = rows[0];
-    if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+    if (!first || typeof first !== "object" || Array.isArray(first))
+      return null;
     const keys = Object.keys(first);
     if (keys.length < 2) return null;
     let xKey = keys.find((k) => !isNumericValue(first[k]));
@@ -454,7 +502,12 @@
   function buildSafeChartConfig(props) {
     // Support snake_case (chart_type), camelCase (chartType), and plain (type).
     const rawType = props.chartType || props.chart_type || props.type;
-    const chartType = CHART_ALLOWED_TYPES.has(rawType) ? rawType : "bar";
+    const isAreaChart = rawType === "area";
+    const chartType = CHART_ALLOWED_TYPES.has(rawType)
+      ? isAreaChart
+        ? "line"
+        : rawType
+      : "bar";
 
     let labels = [];
     let datasets = [];
@@ -462,7 +515,11 @@
     // Records format: data=[{x_key_val, series1_val, ...}] + x_key + series=[{key, label}]
     // Also supports yKeys/labels/colors shorthand instead of series objects.
     const xKey = props.x_key || props.xKey;
-    const yKeys = Array.isArray(props.yKeys) ? props.yKeys : Array.isArray(props.y_keys) ? props.y_keys : null;
+    const yKeys = Array.isArray(props.yKeys)
+      ? props.yKeys
+      : Array.isArray(props.y_keys)
+        ? props.y_keys
+        : null;
     const seriesDef = Array.isArray(props.series)
       ? props.series
       : yKeys
@@ -507,7 +564,10 @@
           label: String(s.label || s.key),
           data: props.data.map((row) => {
             if (isPointChart) {
-              const pt = { x: Number(row[effectiveXKey]), y: Number(row[s.key]) };
+              const pt = {
+                x: Number(row[effectiveXKey]),
+                y: Number(row[s.key]),
+              };
               if (chartType === "bubble") {
                 pt.r = rKey && row[rKey] != null ? Number(row[rKey]) : 5;
               }
@@ -519,21 +579,22 @@
         };
         if (SLICE_CHART_TYPES.has(chartType)) {
           // Pie/doughnut/polarArea need one color per slice, not one per series.
-          safeDS.backgroundColor = labels.map(
-            (_, i) => CHART_PALETTE[i % CHART_PALETTE.length] + "cc",
+          safeDS.backgroundColor = labels.map((_, i) =>
+            withChartAlpha(chartColorAt(i, labels.length), "cc"),
           );
-          safeDS.borderColor = labels.map(
-            (_, i) => CHART_PALETTE[i % CHART_PALETTE.length],
+          safeDS.borderColor = labels.map((_, i) =>
+            chartColorAt(i, labels.length),
           );
         } else {
           // Assign a distinct palette color per series so multi-series charts aren't monochrome.
           const c = s.color
             ? resolveColor(s.color)
-            : CHART_PALETTE[datasets.length % CHART_PALETTE.length];
-          safeDS.backgroundColor = c + "aa";
+            : chartColorAt(datasets.length, effectiveSeriesDef.length);
+          safeDS.backgroundColor = withChartAlpha(c, "aa");
           safeDS.borderColor = c;
         }
         if (props.fill !== undefined) safeDS.fill = Boolean(props.fill);
+        if (isAreaChart && props.fill === undefined) safeDS.fill = true;
 
         // Per-type border-width defaults for a clean modern look.
         if (chartType === "pie" || chartType === "doughnut") {
@@ -580,7 +641,10 @@
             // Scatter/bubble data is [{x,y}] or [{x,y,r}] — preserve objects as-is.
             data: Array.isArray(ds.data)
               ? isPointChart
-                ? ds.data.filter((p) => p !== null && p !== undefined && typeof p === "object")
+                ? ds.data.filter(
+                    (p) =>
+                      p !== null && p !== undefined && typeof p === "object",
+                  )
                 : ds.data.map(Number)
               : [],
           };
@@ -597,22 +661,24 @@
           if (ds.color || !safeDS.backgroundColor) {
             const c = ds.color
               ? resolveColor(ds.color)
-              : CHART_PALETTE[datasets.length % CHART_PALETTE.length];
-            if (!safeDS.backgroundColor) safeDS.backgroundColor = c + "aa";
+              : chartColorAt(datasets.length, rawDatasets.length);
+            if (!safeDS.backgroundColor)
+              safeDS.backgroundColor = withChartAlpha(c, "aa");
             if (!safeDS.borderColor) safeDS.borderColor = c;
           }
           if (props.fill !== undefined) safeDS.fill = Boolean(props.fill);
+          if (isAreaChart && props.fill === undefined) safeDS.fill = true;
 
           // Pie/doughnut/polarArea need one color per slice, not one per dataset.
           if (SLICE_CHART_TYPES.has(chartType)) {
             if (!Array.isArray(safeDS.backgroundColor)) {
-              safeDS.backgroundColor = safeDS.data.map(
-                (_, i) => CHART_PALETTE[i % CHART_PALETTE.length] + "cc",
+              safeDS.backgroundColor = safeDS.data.map((_, i) =>
+                withChartAlpha(chartColorAt(i, safeDS.data.length), "cc"),
               );
             }
             if (!Array.isArray(safeDS.borderColor)) {
-              safeDS.borderColor = safeDS.data.map(
-                (_, i) => CHART_PALETTE[i % CHART_PALETTE.length],
+              safeDS.borderColor = safeDS.data.map((_, i) =>
+                chartColorAt(i, safeDS.data.length),
               );
             }
           }
@@ -637,18 +703,35 @@
       }
     }
 
+    // The on-canvas legend is disabled for every chart type. A custom HTML
+    // legend (buildCustomLegend) is rendered below the canvas instead so it can
+    // scroll horizontally (carousel) and truncate long labels with ellipsis —
+    // things the canvas-drawn legend cannot do. Keeping the label styling here
+    // (color/font) so generateLabels() still produces themed swatch colors.
     const config = {
       type: chartType,
       data: { labels, datasets },
       options: {
         responsive: true,
-        maintainAspectRatio: SLICE_CHART_TYPES.has(chartType),
-        layout: SLICE_CHART_TYPES.has(chartType) ? { padding: 12 } : { padding: 0 },
+        // Fill the fixed-height canvas container for every chart type so the
+        // plot area is deterministic and the HTML legend (stacked below) never
+        // overlaps. Slice charts stay circular because Chart.js sizes the radius
+        // from the smaller canvas dimension.
+        maintainAspectRatio: false,
+        layout: SLICE_CHART_TYPES.has(chartType)
+          ? { padding: 12 }
+          : { padding: 0 },
         plugins: {
           legend: {
+            // Disabled: replaced by the custom HTML carousel legend rendered at
+            // the bottom of every chart (uniform placement across chart types).
+            display: false,
             labels: {
               color: THEME.textSecondary,
-              font: { family: THEME.fontMono, size: 11 },
+              font: {
+                family: THEME.fontMono,
+                size: 11,
+              },
             },
           },
           tooltip: {
@@ -721,6 +804,27 @@
       };
     }
 
+    // Radial scale for radar and polarArea — without explicit theming the
+    // concentric grid circles and angle lines are nearly invisible on dark
+    // backgrounds. Use a semi-transparent textSecondary so they are visible
+    // without being intrusive, and make tick backdrops transparent.
+    if (chartType === "radar" || chartType === "polarArea") {
+      const radialGridColor = THEME.textSecondary + "35";
+      config.options.scales.r = {
+        grid: { color: radialGridColor },
+        angleLines: { color: radialGridColor },
+        pointLabels: {
+          color: THEME.textSecondary,
+          font: { family: THEME.fontMono, size: 10 },
+        },
+        ticks: {
+          color: THEME.textSecondary,
+          font: { family: THEME.fontMono, size: 9 },
+          backdropColor: "transparent",
+        },
+      };
+    }
+
     return config;
   }
 
@@ -753,6 +857,52 @@
     "message-list": renderMessageList,
   });
 
+  // Per-type width tiers for the default top-level layout.
+  //  - "full"  : always 100% width, one component per row.
+  //  - "third" : up to 3 per row on wide panels (1 → 2 → 3 as width grows).
+  //  - "half"  : up to 2 per row max (1 → 2 as width grows).
+  // A lone item in any tier expands to fill its row. Unlisted types default to
+  // "full" (safe). Only *consecutive* same-tier top-level components are tiled
+  // together; component order is always preserved.
+  const COMPONENT_TIER = Object.freeze({
+    "stat-cards": "full",
+    header: "full",
+    dag: "full",
+    section: "full",
+    tabs: "full",
+    badges: "full",
+
+    chart: "third",
+    table: "third",
+    text: "third",
+    "code-block": "third",
+    "progress-bar": "third",
+
+    "key-value": "half",
+    heatmap: "half",
+    "message-list": "half",
+  });
+
+  function tierForType(type) {
+    return Object.hasOwn(COMPONENT_TIER, type) ? COMPONENT_TIER[type] : "full";
+  }
+
+  // grid-template-columns for a tier group. Uses the same auto-fit + minmax
+  // pattern as applyLayout's grid modes so the column count derives from the
+  // panel width (no media queries) and lone/trailing items expand to fill.
+  // Assumes a 24px gap between items.
+  function tierGridColumns(tier) {
+    if (tier === "third") {
+      // caps at 3 columns; collapses to 2/1 as width shrinks.
+      return "repeat(auto-fit, minmax(min(100%, max(300px, calc(33.333% - 16px))), 1fr))";
+    }
+    if (tier === "half") {
+      // caps at 2 columns.
+      return "repeat(auto-fit, minmax(min(100%, calc(50% - 12px)), 1fr))";
+    }
+    return null; // "full" — not gridded.
+  }
+
   // ---------------------------------------------------------------------------
   // 8. Component walker (iterative, max depth 10)
   // ---------------------------------------------------------------------------
@@ -771,7 +921,82 @@
     chartInstances.length = 0;
   }
 
-  async function renderComponents(components, parentEl, depth, gen) {
+  // Render a single component (with error boundary + async handling) into
+  // parentEl. Returns after appending, or without appending if this render
+  // generation has been superseded. Non-object entries are ignored.
+  async function renderOneComponent(comp, parentEl, depth, gen) {
+    if (!comp || typeof comp !== "object") return;
+    const type = comp.type;
+    const props = comp.props || {};
+    const children = comp.children;
+    const compId = comp.id;
+
+    const renderFn = Object.hasOwn(COMPONENT_REGISTRY, type)
+      ? COMPONENT_REGISTRY[type]
+      : null;
+    if (!renderFn) {
+      const unknown = createElement(
+        "div",
+        {
+          style: {
+            color: THEME.warning,
+            fontFamily: THEME.fontMono,
+            fontSize: "12px",
+            padding: "8px",
+          },
+        },
+        "Unknown component type: " + type,
+      );
+      parentEl.appendChild(unknown);
+      return;
+    }
+
+    try {
+      const result = renderFn(props, children, depth, gen);
+      // Handle async (chart)
+      const el = result instanceof Promise ? await result : result;
+      if (renderGen !== gen) return;
+      if (el) {
+        if (compId) setSafeAttribute(el, "data-component-id", String(compId));
+        parentEl.appendChild(el);
+      }
+    } catch (renderErr) {
+      if (renderGen !== gen) return;
+      const errBox = createElement(
+        "div",
+        {
+          style: {
+            color: THEME.error,
+            background: THEME.card,
+            border: "1px solid " + THEME.error,
+            borderRadius: "6px",
+            padding: "12px",
+            fontFamily: THEME.fontMono,
+            fontSize: "12px",
+            marginBottom: "8px",
+          },
+        },
+        "Render error (" +
+          type +
+          "): " +
+          String(renderErr.message || renderErr),
+      );
+      parentEl.appendChild(errBox);
+    }
+  }
+
+  // Render a list of components. When groupByTier is true (used only for the
+  // top-level list), consecutive components sharing a non-full width tier are
+  // batched into a CSS-grid "row group" so they tile side-by-side; "full" tier
+  // components (and every nested list) render as full-width stacked blocks.
+  // Component order is always preserved.
+  async function renderComponents(
+    components,
+    parentEl,
+    depth,
+    gen,
+    groupByTier,
+  ) {
     if (!Array.isArray(components)) return;
     if (depth === undefined) depth = 0;
     if (depth > 10) {
@@ -791,65 +1016,52 @@
       return;
     }
 
-    for (const comp of components) {
-      if (!comp || typeof comp !== "object") continue;
-      const type = comp.type;
-      const props = comp.props || {};
-      const children = comp.children;
-      const compId = comp.id;
+    if (!groupByTier) {
+      for (const comp of components) {
+        await renderOneComponent(comp, parentEl, depth, gen);
+        if (renderGen !== gen) return;
+      }
+      return;
+    }
 
-      const renderFn = Object.hasOwn(COMPONENT_REGISTRY, type)
-        ? COMPONENT_REGISTRY[type]
-        : null;
-      if (!renderFn) {
-        const unknown = createElement(
-          "div",
-          {
-            style: {
-              color: THEME.warning,
-              fontFamily: THEME.fontMono,
-              fontSize: "12px",
-              padding: "8px",
-            },
-          },
-          "Unknown component type: " + type,
-        );
-        parentEl.appendChild(unknown);
+    // Top-level tier-grouping layout.
+    let i = 0;
+    while (i < components.length) {
+      const comp = components[i];
+      if (!comp || typeof comp !== "object") {
+        i++;
+        continue;
+      }
+      const tier = tierForType(comp.type);
+
+      // Full-width components render directly, one per row.
+      if (tier === "full") {
+        await renderOneComponent(comp, parentEl, depth, gen);
+        if (renderGen !== gen) return;
+        i++;
         continue;
       }
 
-      // Error boundary: wrap every component render
-      try {
-        const result = renderFn(props, children, depth, gen);
-        // Handle async (chart)
-        const el = result instanceof Promise ? await result : result;
-        if (renderGen !== gen) return;
-        if (el) {
-          if (compId) setSafeAttribute(el, "data-component-id", String(compId));
-          parentEl.appendChild(el);
+      // Collect a run of consecutive same-tier components into one grid group.
+      const groupEl = createElement("div", {
+        style: {
+          display: "grid",
+          gap: "24px",
+          gridTemplateColumns: tierGridColumns(tier),
+          alignItems: "start",
+        },
+      });
+      parentEl.appendChild(groupEl);
+      while (i < components.length) {
+        const c = components[i];
+        if (!c || typeof c !== "object") {
+          i++;
+          continue;
         }
-      } catch (renderErr) {
+        if (tierForType(c.type) !== tier) break;
+        await renderOneComponent(c, groupEl, depth, gen);
         if (renderGen !== gen) return;
-        const errBox = createElement(
-          "div",
-          {
-            style: {
-              color: THEME.error,
-              background: THEME.card,
-              border: "1px solid " + THEME.error,
-              borderRadius: "6px",
-              padding: "12px",
-              fontFamily: THEME.fontMono,
-              fontSize: "12px",
-              marginBottom: "8px",
-            },
-          },
-          "Render error (" +
-            type +
-            "): " +
-            String(renderErr.message || renderErr),
-        );
-        parentEl.appendChild(errBox);
+        i++;
       }
     }
   }
@@ -861,7 +1073,12 @@
   // --- stat-cards ---
   function renderStatCards(props) {
     const container = createElement("div", {
-      style: { display: "flex", gap: "16px", flexWrap: "wrap" },
+      style: {
+        display: "flex",
+        gap: "16px",
+        flexWrap: "wrap",
+        gridColumn: "1 / -1",
+      },
     });
     const items = Array.isArray(props.items)
       ? props.items
@@ -929,6 +1146,16 @@
     return container;
   }
 
+  // Build a custom HTML legend for a Chart.js instance.
+  //
+  // The implementation lives in html/chart-legend.js and is injected here at
+  // build time by the Go compiler (see the __LOOM_INJECT_CHART_LEGEND__ marker
+  // below). It is spliced into this IIFE so it shares the closure scope
+  // (THEME, createElement, setSafeAttribute, SLICE_CHART_TYPES, …). Splitting it
+  // out keeps this runtime file smaller while preserving a single injected
+  // <script>. Defines: function buildCustomLegend(chart).
+  // __LOOM_INJECT_CHART_LEGEND__
+
   // --- chart ---
   async function renderChart(props, _children, _depth, gen) {
     const wrapper = createElement("div", {
@@ -958,15 +1185,37 @@
 
     const rawChartType = props.chartType || props.chart_type || props.type;
     const isSliceChart = SLICE_CHART_TYPES.has(rawChartType);
+    // Every chart type gets a bounded, screen-relative canvas height so the plot
+    // scales with the viewport but stays within sane limits. Using `vh` (a real
+    // "percent of the screen") rather than `%` because a raw `%` resolves against
+    // the parent's height, and this component's wrapper has no fixed height — a
+    // `%` would collapse to ~0. clamp() keeps it readable on small screens and
+    // capped on large ones. The custom HTML legend is stacked below (flex column)
+    // so it can never overlap the canvas.
     const chartHeight = props.height
-      ? String(props.height).match(/^\d+$/) ? props.height + "px" : String(props.height)
-      : isSliceChart ? null : "260px";
+      ? String(props.height).match(/^\d+$/)
+        ? props.height + "px"
+        : String(props.height)
+      : "clamp(220px, 38vh, 460px)";
     const canvasWrap = createElement("div", {
-      style: chartHeight
-        ? { position: "relative", height: chartHeight, maxHeight: chartHeight }
-        // Slice charts maintain their aspect ratio — cap width so the canvas
-        // doesn't grow to fill the full container and center it.
-        : { position: "relative", maxWidth: "min(320px, 100%)", margin: "0 auto" },
+      style: isSliceChart
+        ? // Slice charts stay centered and capped in width so the circle isn't
+          // stretched, but keep the same fixed height as every other chart.
+          {
+            position: "relative",
+            height: chartHeight,
+            maxHeight: chartHeight,
+            maxWidth: "min(320px, 100%)",
+            width: "100%",
+            margin: "0 auto",
+            flex: "0 0 auto",
+          }
+        : {
+            position: "relative",
+            height: chartHeight,
+            maxHeight: chartHeight,
+            flex: "0 0 auto",
+          },
     });
     const canvas = document.createElement("canvas");
     canvasWrap.appendChild(canvas);
@@ -1000,6 +1249,16 @@
       }
       const instance = new window.Chart(canvas.getContext("2d"), config);
       chartInstances.push(instance);
+      // Render the custom HTML legend below the canvas (uniform bottom
+      // placement for every chart type; scrollable carousel + ellipsis labels).
+      // Isolated in its own try/catch so a legend failure can never blank the
+      // already-rendered chart.
+      try {
+        const legendEl = buildCustomLegend(instance);
+        if (legendEl) wrapper.appendChild(legendEl);
+      } catch (legendErr) {
+        console.warn("runtime.js: custom legend failed:", legendErr);
+      }
     } catch (chartErr) {
       const errMsg = createElement(
         "div",
@@ -1306,11 +1565,26 @@
   // Safe HTML renderer: parses content with DOMParser and copies only allowlisted
   // elements/text nodes into the target container — no innerHTML on live DOM.
   const SAFE_TEXT_TAGS = new Set([
-    "p", "br", "strong", "em", "b", "i",
-    "ul", "ol", "li",
-    "code", "span", "div",
-    "h1", "h2", "h3", "h4", "h5", "h6",
-    "blockquote", "hr",
+    "p",
+    "br",
+    "strong",
+    "em",
+    "b",
+    "i",
+    "ul",
+    "ol",
+    "li",
+    "code",
+    "span",
+    "div",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "hr",
   ]);
 
   // Convert inline markdown spans (**bold**, *italic*, `code`) to HTML.
@@ -1335,14 +1609,24 @@
         if (lines.every((l) => /^\s*[-*]\s/.test(l) || !l.trim())) {
           const items = lines
             .filter((l) => /^\s*[-*]\s/.test(l))
-            .map((l) => "<li>" + inlineMarkdownToHTML(l.replace(/^\s*[-*]\s+/, "")) + "</li>");
+            .map(
+              (l) =>
+                "<li>" +
+                inlineMarkdownToHTML(l.replace(/^\s*[-*]\s+/, "")) +
+                "</li>",
+            );
           return "<ul>" + items.join("") + "</ul>";
         }
         // Ordered list
         if (lines.every((l) => /^\s*\d+[.)]\s/.test(l) || !l.trim())) {
           const items = lines
             .filter((l) => /^\s*\d+[.)]\s/.test(l))
-            .map((l) => "<li>" + inlineMarkdownToHTML(l.replace(/^\s*\d+[.)]\s+/, "")) + "</li>");
+            .map(
+              (l) =>
+                "<li>" +
+                inlineMarkdownToHTML(l.replace(/^\s*\d+[.)]\s+/, "")) +
+                "</li>",
+            );
           return "<ol>" + items.join("") + "</ol>";
         }
         // Plain paragraph — join lines with a space
@@ -1353,7 +1637,8 @@
 
   // Returns true if the string looks like markdown rather than HTML.
   function looksLikeMarkdown(s) {
-    const hasMarkdownSyntax = /\*\*|\*[^*]|`[^`]|^\s*[-*]\s|^\s*\d+[.)]\s/m.test(s);
+    const hasMarkdownSyntax =
+      /\*\*|\*[^*]|`[^`]|^\s*[-*]\s|^\s*\d+[.)]\s/m.test(s);
     const hasHTMLTags = /<[a-zA-Z][^>]*>/.test(s);
     return hasMarkdownSyntax && !hasHTMLTags;
   }
@@ -1441,6 +1726,8 @@
   function renderCodeBlock(props) {
     const wrapper = createElement("div", {
       style: {
+        display: "flex",
+        flexDirection: "column",
         background: THEME.surface,
         border: "1px solid " + THEME.border,
         borderRadius: "8px",
@@ -1636,7 +1923,13 @@
   // --- badges ---
   function renderBadges(props) {
     const container = createElement("div", {
-      style: { display: "flex", gap: "8px", flexWrap: "wrap", alignSelf: "start", height: "fit-content" },
+      style: {
+        display: "flex",
+        gap: "8px",
+        flexWrap: "wrap",
+        alignSelf: "start",
+        height: "fit-content",
+      },
     });
     const items = Array.isArray(props.items) ? props.items : [];
     for (const item of items) {
@@ -1713,16 +2006,24 @@
       );
     }
 
-    const rowLabels =
-      Array.isArray(props.rowLabels) ? props.rowLabels :
-      Array.isArray(props.yLabels)   ? props.yLabels :
-      Array.isArray(props.y_labels)  ? props.y_labels :
-      Array.isArray(props.rows)      ? props.rows : [];
-    const columnLabels =
-      Array.isArray(props.columnLabels) ? props.columnLabels :
-      Array.isArray(props.xLabels)      ? props.xLabels :
-      Array.isArray(props.x_labels)     ? props.x_labels :
-      Array.isArray(props.columns)      ? props.columns : [];
+    const rowLabels = Array.isArray(props.rowLabels)
+      ? props.rowLabels
+      : Array.isArray(props.yLabels)
+        ? props.yLabels
+        : Array.isArray(props.y_labels)
+          ? props.y_labels
+          : Array.isArray(props.rows)
+            ? props.rows
+            : [];
+    const columnLabels = Array.isArray(props.columnLabels)
+      ? props.columnLabels
+      : Array.isArray(props.xLabels)
+        ? props.xLabels
+        : Array.isArray(props.x_labels)
+          ? props.x_labels
+          : Array.isArray(props.columns)
+            ? props.columns
+            : [];
     const values = Array.isArray(props.values)
       ? props.values
       : Array.isArray(props.data)
@@ -1756,6 +2057,7 @@
         createElement(
           "div",
           {
+            title: colLabel,
             style: {
               fontSize: "10px",
               color: THEME.textSecondary,
@@ -1763,9 +2065,11 @@
               alignItems: "center",
               justifyContent: "center",
               height: "32px",
-              minWidth: "80px",
+              width: "80px",
               overflow: "hidden",
+              whiteSpace: "nowrap",
               textOverflow: "ellipsis",
+              cursor: "default",
             },
           },
           colLabel,
@@ -1775,25 +2079,38 @@
 
     // Data rows
     for (let ri = 0; ri < rowLabels.length; ri++) {
-      // Row label
-      grid.appendChild(
-        createElement(
-          "div",
-          {
-            style: {
-              minWidth: "100px",
-              height: "32px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              paddingRight: "8px",
-              fontSize: "12px",
-              color: THEME.textPrimary,
-            },
+      // Row label — flex container for vertical centering; inner span handles
+      // right-aligned ellipsis (text-overflow only works on block elements).
+      const rowLabelCell = createElement("div", {
+        style: {
+          width: "100px",
+          height: "32px",
+          display: "flex",
+          alignItems: "center",
+          paddingRight: "8px",
+          overflow: "hidden",
+        },
+      });
+      const rowLabelText = createElement(
+        "span",
+        {
+          title: rowLabels[ri],
+          style: {
+            display: "block",
+            width: "100%",
+            textAlign: "right",
+            overflow: "hidden",
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+            fontSize: "12px",
+            color: THEME.textPrimary,
+            cursor: "default",
           },
-          rowLabels[ri],
-        ),
+        },
+        rowLabels[ri],
       );
+      rowLabelCell.appendChild(rowLabelText);
+      grid.appendChild(rowLabelCell);
 
       const rowValues = Array.isArray(values[ri]) ? values[ri] : [];
       for (let ci = 0; ci < columnLabels.length; ci++) {
@@ -1863,6 +2180,9 @@
         marginBottom: "8px",
         paddingBottom: "16px",
         borderBottom: "1px solid " + THEME.border,
+        // Span all grid columns so the header always occupies a full row,
+        // regardless of the parent layout (grid-2, grid-3, etc.).
+        gridColumn: "1 / -1",
       },
     });
 
@@ -1890,7 +2210,7 @@
               fontSize: "11px",
               padding: "2px 8px",
               borderRadius: "4px",
-              background: "#3d59a1",
+              background: THEME.accent + "44",
               color: THEME.accent,
               fontFamily: THEME.fontMono,
             },
@@ -1902,7 +2222,7 @@
 
     if (props.description) {
       // Place description below the header line
-      const wrap = createElement("div");
+      const wrap = createElement("div", { style: { gridColumn: "1 / -1" } });
       wrap.appendChild(container);
       wrap.appendChild(
         createElement(
@@ -2017,7 +2337,13 @@
     }
     headerRow.appendChild(titleWrap);
 
-    const contentContainer = createElement("div");
+    const contentContainer = createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: "16px",
+      },
+    });
 
     if (props.collapsible) {
       let collapsed = false;
@@ -2384,7 +2710,7 @@
             x: NODE_W / 2,
             y: node.sublabel ? 24 : 34,
             fill: THEME.textPrimary,
-            "font-family": THEME.fontSans,
+            "font-family": THEME.fontMono,
             "font-size": "13",
             "font-weight": "600",
             "text-anchor": "middle",
@@ -2729,20 +3055,24 @@
       APP_ROOT.removeChild(APP_ROOT.firstChild);
     }
 
-    // Apply layout to root. Auto-upgrade stack → grid-2 when the spec has
-    // multiple chart components so they sit side-by-side without the LLM
-    // needing to explicitly choose a grid layout.
+    // Layout selection:
+    //  - If the spec explicitly sets a layout (grid-2, grid-3, grid, …), honor
+    //    it verbatim and render the flat component list into it.
+    //  - Otherwise (default "stack") use the per-type tier layout: APP_ROOT is a
+    //    vertical stack and consecutive same-tier components tile via grid groups.
     const _specLayout = APP_SPEC.layout || "stack";
-    const _chartCount = Array.isArray(APP_SPEC.components)
-      ? APP_SPEC.components.filter((c) => c && c.type === "chart").length
-      : 0;
-    const _layout =
-      _specLayout === "stack" && _chartCount >= 2 ? "grid-2" : _specLayout;
-    applyLayout(APP_ROOT, _layout);
+    const _useTierLayout = _specLayout === "stack";
+    applyLayout(APP_ROOT, _useTierLayout ? "stack" : _specLayout);
 
     // Render all components — capture generation so stale async renders abort.
     const gen = ++renderGen;
-    renderComponents(APP_SPEC.components, APP_ROOT, 0, gen).catch((err) => {
+    renderComponents(
+      APP_SPEC.components,
+      APP_ROOT,
+      0,
+      gen,
+      _useTierLayout,
+    ).catch((err) => {
       if (renderGen !== gen) return;
       console.error("runtime.js: render error:", err);
       const errBox = createElement(

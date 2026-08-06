@@ -236,6 +236,129 @@ func TestLoomBridge_ListTools(t *testing.T) {
 	}
 }
 
+func TestLoomBridge_Build_PinsWeaver(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	registry := apps.NewUIResourceRegistry()
+
+	var captured *loomv1.WeaveRequest
+	mockClient := &mockLoomClient{
+		weaveFunc: func(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+			captured = in
+			return &loomv1.WeaveResponse{Text: "built it", AgentId: in.GetAgentId()}, nil
+		},
+	}
+
+	// Default: loom_build routes to the weaver and IGNORES any client-supplied
+	// agent_id (the tool doesn't accept one, but even if smuggled in args it must
+	// not override the pinned builder).
+	bridge := NewLoomBridgeFromClient(mockClient, registry, logger)
+	res, err := bridge.CallTool(context.Background(), "loom_build", map[string]interface{}{
+		"intent":     "a workflow that summarizes a CSV",
+		"kind":       "workflow",
+		"agent_id":   "attacker-supplied",
+		"session_id": "sess-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, captured)
+	assert.Equal(t, defaultBuilderAgent, captured.GetAgentId(), "loom_build must pin the builder agent (weaver)")
+	assert.NotEqual(t, "attacker-supplied", captured.GetAgentId(), "client agent_id must not override the pinned builder")
+	assert.Equal(t, "sess-1", captured.GetSessionId(), "session_id should flow through for refinement")
+	assert.Contains(t, captured.GetQuery(), "BUILD REQUEST", "query should be the wrapped build instruction")
+	assert.Contains(t, captured.GetQuery(), "a workflow that summarizes a CSV", "query should carry the caller's intent")
+
+	// Override the builder agent.
+	captured = nil
+	bridge2 := NewLoomBridgeFromClient(mockClient, registry, logger, WithBuilderAgent("custom-builder"))
+	_, err = bridge2.CallTool(context.Background(), "loom_build", map[string]interface{}{"intent": "an agent"})
+	require.NoError(t, err)
+	require.NotNil(t, captured)
+	assert.Equal(t, "custom-builder", captured.GetAgentId())
+
+	// Missing intent is a tool error, not an RPC.
+	captured = nil
+	errRes, err := bridge.CallTool(context.Background(), "loom_build", map[string]interface{}{"kind": "agent"})
+	require.NoError(t, err)
+	require.NotNil(t, errRes)
+	assert.True(t, errRes.IsError, "missing intent should yield an error result")
+	assert.Nil(t, captured, "no Weave RPC should fire when intent is missing")
+
+	// loom_build is advertised + streams.
+	assert.True(t, bridge.SupportsStreaming("loom_build"))
+}
+
+func TestLoomBridge_WorkflowRefSurface(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, apps.NewUIResourceRegistry(), logger)
+
+	tools, err := bridge.ListTools(context.Background())
+	require.NoError(t, err)
+
+	byName := make(map[string]protocol.Tool)
+	for _, tl := range tools {
+		byName[tl.Name] = tl
+	}
+
+	// loom_list_workflows must be advertised (run-by-name discovery).
+	_, ok := byName["loom_list_workflows"]
+	assert.True(t, ok, "loom_list_workflows should be advertised")
+
+	// loom_execute_workflow must accept workflow_ref so existing workflows run by name.
+	exec, ok := byName["loom_execute_workflow"]
+	require.True(t, ok)
+	props, _ := exec.InputSchema["properties"].(map[string]interface{})
+	require.NotNil(t, props, "execute_workflow should have properties")
+	_, hasRef := props["workflow_ref"]
+	assert.True(t, hasRef, "loom_execute_workflow should expose workflow_ref")
+}
+
+func TestLoomBridge_AllowList(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{}
+	registry := apps.NewUIResourceRegistry()
+
+	// Edge allow-list: only weave + list_agents + get_health.
+	bridge := NewLoomBridgeFromClient(mockClient, registry, logger,
+		WithAllowedTools([]string{"loom_weave", "loom_list_agents", "loom_get_health"}))
+
+	tools, err := bridge.ListTools(context.Background())
+	require.NoError(t, err)
+
+	got := make(map[string]bool)
+	for _, tool := range tools {
+		got[tool.Name] = true
+	}
+	assert.Len(t, tools, 3, "only the 3 allow-listed tools should be advertised")
+	for _, want := range []string{"loom_weave", "loom_list_agents", "loom_get_health"} {
+		assert.True(t, got[want], "allow-listed tool %s should be advertised", want)
+	}
+	// Destructive/admin tools must NOT be advertised.
+	for _, banned := range []string{"loom_delete_agent", "loom_create_agent", "loom_register_tool", "loom_list_tools"} {
+		assert.False(t, got[banned], "non-allow-listed tool %s must be hidden", banned)
+	}
+
+	// And calling a non-allow-listed tool must be rejected, not dispatched.
+	_, err = bridge.CallTool(context.Background(), "loom_delete_agent", map[string]interface{}{"agent_id": "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not permitted")
+
+	// The streaming entrypoint (the one actually used by the SSE edge) enforces
+	// the same allow-list before dispatch.
+	_, err = bridge.CallToolStream(context.Background(), "loom_delete_agent", map[string]interface{}{"agent_id": "x"}, "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not permitted")
+
+	// An allow-listed tool still works.
+	_, err = bridge.CallTool(context.Background(), "loom_get_health", nil)
+	require.NoError(t, err)
+
+	// Empty allow-list = no restriction (backwards compatible).
+	full := NewLoomBridgeFromClient(mockClient, registry, logger)
+	fullTools, err := full.ListTools(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, len(fullTools), 40, "no allow-list should expose the full surface")
+}
+
 func TestLoomBridge_ToolsHaveUIMetadata(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}

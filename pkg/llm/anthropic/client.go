@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -268,17 +269,11 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 						}
 					}
 				}
-				apiMessages = append(apiMessages, Message{
-					Role:    "user",
-					Content: content,
-				})
+				apiMessages = appendUserOrCoalesce(apiMessages, content)
 			} else {
 				// Fallback to plain text (backward compatible)
-				apiMessages = append(apiMessages, Message{
-					Role: "user",
-					Content: []ContentBlock{
-						{Type: "text", Text: msg.Content},
-					},
+				apiMessages = appendUserOrCoalesce(apiMessages, []ContentBlock{
+					{Type: "text", Text: msg.Content},
 				})
 			}
 
@@ -315,15 +310,16 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 			}
 
 		case "tool":
-			// Tool results
-			apiMessages = append(apiMessages, Message{
-				Role: "user",
-				Content: []ContentBlock{
-					{
-						Type:      "tool_result",
-						ToolUseID: msg.ToolUseID,
-						Content:   msg.Content,
-					},
+			// Tool results — go under user role; coalesce with any adjacent
+			// user message so we never emit two consecutive user wire messages
+			// (Anthropic 400: "roles must alternate"). This also lets a
+			// tool_result and a following text sidecar (e.g. manage_skills's
+			// skill body) ride in one wire message with mixed content blocks.
+			apiMessages = appendUserOrCoalesce(apiMessages, []ContentBlock{
+				{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolUseID,
+					Content:   msg.Content,
 				},
 			})
 		}
@@ -344,6 +340,26 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		},
 	}
 	return systemBlocks, apiMessages
+}
+
+// appendUserOrCoalesce appends content blocks to the last user message in the
+// list when that last message is user-role; otherwise it appends a new user
+// message. This is the sole path by which user-role wire messages are produced
+// by the converter, so it guarantees the outgoing message list never contains
+// two consecutive user-role messages — which Anthropic rejects with 400
+// "roles must alternate". It also lets a tool_result and an immediately-
+// following user-role text (e.g. the manage_skills skill-body sidecar) share
+// a single wire user message with mixed content blocks — the Anthropic-native
+// shape for a Skill-tool style load event.
+func appendUserOrCoalesce(msgs []Message, blocks []ContentBlock) []Message {
+	if len(blocks) == 0 {
+		return msgs
+	}
+	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
+		msgs[n-1].Content = append(msgs[n-1].Content, blocks...)
+		return msgs
+	}
+	return append(msgs, Message{Role: "user", Content: blocks})
 }
 
 // convertTools converts shuttle tools to Anthropic format.
@@ -475,26 +491,31 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 // Pricing varies by model family. Cache pricing derives from input price:
 // cache_write = 1.25x input, cache_read = 0.10x input.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// Determine per-million-token pricing based on model.
-	// IMPORTANT: check opus-4-1 BEFORE opus-4 since "opus-4-1" contains "opus-4".
-	var inputPricePerM, outputPricePerM float64
-	switch {
-	case strings.Contains(c.model, "opus-4-1"):
-		// Claude Opus 4.1: $15/$75
-		inputPricePerM = 15.0
-		outputPricePerM = 75.0
-	case strings.Contains(c.model, "opus-4"):
-		// Claude Opus 4.5, 4.6: $5/$25
-		inputPricePerM = 5.0
-		outputPricePerM = 25.0
-	case strings.Contains(c.model, "haiku"):
-		// Claude Haiku 4.5: $1/$5
-		inputPricePerM = 1.0
-		outputPricePerM = 5.0
-	default:
-		// Claude Sonnet 4.5, 4.6 and any unrecognized model: $3/$15
-		inputPricePerM = 3.0
-		outputPricePerM = 15.0
+	// The catalog (pkg/llm/catalog) is the source of truth for the base
+	// per-million-token rates. Fall back to substring matching only for model
+	// ids it does not list.
+	// IMPORTANT: in the fallback, check opus-4-1 BEFORE opus-4 since "opus-4-1"
+	// contains "opus-4".
+	inputPricePerM, outputPricePerM, ok := catalog.LookupPricing("anthropic", c.model)
+	if !ok {
+		switch {
+		case strings.Contains(c.model, "opus-4-1"):
+			// Claude Opus 4.1: $15/$75
+			inputPricePerM = 15.0
+			outputPricePerM = 75.0
+		case strings.Contains(c.model, "opus-4"):
+			// Claude Opus 4.5, 4.6, 4.7: $5/$25
+			inputPricePerM = 5.0
+			outputPricePerM = 25.0
+		case strings.Contains(c.model, "haiku"):
+			// Claude Haiku 4.5: $1/$5
+			inputPricePerM = 1.0
+			outputPricePerM = 5.0
+		default:
+			// Claude Sonnet 4.5, 4.6 and any unrecognized model: $3/$15
+			inputPricePerM = 3.0
+			outputPricePerM = 15.0
+		}
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000

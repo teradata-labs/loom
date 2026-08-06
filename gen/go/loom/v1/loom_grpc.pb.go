@@ -82,6 +82,7 @@ const (
 	LoomService_StreamWorkflow_FullMethodName              = "/loom.v1.LoomService/StreamWorkflow"
 	LoomService_GetWorkflowExecution_FullMethodName        = "/loom.v1.LoomService/GetWorkflowExecution"
 	LoomService_ListWorkflowExecutions_FullMethodName      = "/loom.v1.LoomService/ListWorkflowExecutions"
+	LoomService_ListWorkflows_FullMethodName               = "/loom.v1.LoomService/ListWorkflows"
 	LoomService_ScheduleWorkflow_FullMethodName            = "/loom.v1.LoomService/ScheduleWorkflow"
 	LoomService_UpdateScheduledWorkflow_FullMethodName     = "/loom.v1.LoomService/UpdateScheduledWorkflow"
 	LoomService_GetScheduledWorkflow_FullMethodName        = "/loom.v1.LoomService/GetScheduledWorkflow"
@@ -233,6 +234,10 @@ type LoomServiceClient interface {
 	GetWorkflowExecution(ctx context.Context, in *GetWorkflowExecutionRequest, opts ...grpc.CallOption) (*WorkflowExecution, error)
 	// ListWorkflowExecutions lists workflow executions.
 	ListWorkflowExecutions(ctx context.Context, in *ListWorkflowExecutionsRequest, opts ...grpc.CallOption) (*ListWorkflowExecutionsResponse, error)
+	// ListWorkflows lists saved workflow definitions that can be run by name via
+	// ExecuteWorkflow's workflow_ref. Lets a client discover existing workflows
+	// instead of re-supplying a full pattern/YAML.
+	ListWorkflows(ctx context.Context, in *ListWorkflowsRequest, opts ...grpc.CallOption) (*ListWorkflowsResponse, error)
 	// ScheduleWorkflow creates a new scheduled workflow.
 	ScheduleWorkflow(ctx context.Context, in *ScheduleWorkflowRequest, opts ...grpc.CallOption) (*ScheduleWorkflowResponse, error)
 	// UpdateScheduledWorkflow updates an existing scheduled workflow.
@@ -847,6 +852,16 @@ func (c *loomServiceClient) ListWorkflowExecutions(ctx context.Context, in *List
 	return out, nil
 }
 
+func (c *loomServiceClient) ListWorkflows(ctx context.Context, in *ListWorkflowsRequest, opts ...grpc.CallOption) (*ListWorkflowsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWorkflowsResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListWorkflows_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomServiceClient) ScheduleWorkflow(ctx context.Context, in *ScheduleWorkflowRequest, opts ...grpc.CallOption) (*ScheduleWorkflowResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ScheduleWorkflowResponse)
@@ -1356,6 +1371,10 @@ type LoomServiceServer interface {
 	GetWorkflowExecution(context.Context, *GetWorkflowExecutionRequest) (*WorkflowExecution, error)
 	// ListWorkflowExecutions lists workflow executions.
 	ListWorkflowExecutions(context.Context, *ListWorkflowExecutionsRequest) (*ListWorkflowExecutionsResponse, error)
+	// ListWorkflows lists saved workflow definitions that can be run by name via
+	// ExecuteWorkflow's workflow_ref. Lets a client discover existing workflows
+	// instead of re-supplying a full pattern/YAML.
+	ListWorkflows(context.Context, *ListWorkflowsRequest) (*ListWorkflowsResponse, error)
 	// ScheduleWorkflow creates a new scheduled workflow.
 	ScheduleWorkflow(context.Context, *ScheduleWorkflowRequest) (*ScheduleWorkflowResponse, error)
 	// UpdateScheduledWorkflow updates an existing scheduled workflow.
@@ -1588,6 +1607,9 @@ func (UnimplementedLoomServiceServer) GetWorkflowExecution(context.Context, *Get
 }
 func (UnimplementedLoomServiceServer) ListWorkflowExecutions(context.Context, *ListWorkflowExecutionsRequest) (*ListWorkflowExecutionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkflowExecutions not implemented")
+}
+func (UnimplementedLoomServiceServer) ListWorkflows(context.Context, *ListWorkflowsRequest) (*ListWorkflowsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWorkflows not implemented")
 }
 func (UnimplementedLoomServiceServer) ScheduleWorkflow(context.Context, *ScheduleWorkflowRequest) (*ScheduleWorkflowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ScheduleWorkflow not implemented")
@@ -2553,6 +2575,24 @@ func _LoomService_ListWorkflowExecutions_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_ListWorkflows_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWorkflowsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListWorkflows(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListWorkflows_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListWorkflows(ctx, req.(*ListWorkflowsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LoomService_ScheduleWorkflow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ScheduleWorkflowRequest)
 	if err := dec(in); err != nil {
@@ -3401,6 +3441,10 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWorkflowExecutions",
 			Handler:    _LoomService_ListWorkflowExecutions_Handler,
+		},
+		{
+			MethodName: "ListWorkflows",
+			Handler:    _LoomService_ListWorkflows_Handler,
 		},
 		{
 			MethodName: "ScheduleWorkflow",

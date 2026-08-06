@@ -99,7 +99,7 @@ func init() {
 	patternCreateCmd.Flags().StringVar(&patternFile, "file", "", "Path to pattern YAML file")
 	patternCreateCmd.Flags().BoolVar(&patternStdin, "stdin", false, "Read pattern YAML from stdin")
 	patternCreateCmd.Flags().BoolVar(&patternInteractive, "interactive", false, "Open editor to create pattern interactively")
-	patternCreateCmd.Flags().StringVar(&patternServer, "server", "localhost:9090", "Loom server address")
+	patternCreateCmd.Flags().StringVar(&patternServer, "server", "localhost:60051", "Loom server address")
 	patternCreateCmd.Flags().IntVar(&patternTimeout, "timeout", 30, "Request timeout in seconds")
 
 	_ = patternCreateCmd.MarkFlagRequired("thread")
@@ -107,7 +107,7 @@ func init() {
 	// Watch command flags
 	patternWatchCmd.Flags().StringVar(&patternAgentID, "thread", "", "Filter by thread ID (optional)")
 	patternWatchCmd.Flags().StringVar(&patternCategory, "category", "", "Filter by pattern category (optional)")
-	patternWatchCmd.Flags().StringVar(&patternServer, "server", "localhost:9090", "Loom server address")
+	patternWatchCmd.Flags().StringVar(&patternServer, "server", "localhost:60051", "Loom server address")
 }
 
 func runPatternCreate(cmd *cobra.Command, args []string) {

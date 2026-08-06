@@ -1,7 +1,7 @@
 
 # Judge DSPy Integration Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Feature Status:**
 - ✅ BootstrapFewShot (CLI + library)
@@ -34,7 +34,7 @@ Use Loom judges as evaluation metrics for DSPy-style prompt optimization with Bo
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Loom server running: `looms serve`
 - At least one judge registered
 - Training examples in JSONL format

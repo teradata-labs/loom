@@ -394,7 +394,7 @@ if __name__ == "__main__":
 
 Execute with Hawk tracer:
 
-> **Build requirement:** `NewHawkTracer` is behind a build tag. You must compile with `-tags hawk` (e.g., `go build -tags hawk ./...`) for this code to be available. Without the tag, the symbol will not exist.
+> **Build requirement:** Hawk HTTP export is behind a build tag. Compile with `-tags hawk` (e.g., `go build -tags hawk ./...`) to get a working tracer. The `NewHawkTracer` symbol always exists, but without the tag it is the stub in `pkg/observability/hawk_stub.go`, which returns the error `hawk HTTP export not compiled in (rebuild with -tags hawk)`. Embedded tracing (`NewEmbeddedTracer`) and the mock tracer are available without any build tag.
 
 ```go
 // Create Hawk tracer (instead of mock)
@@ -961,7 +961,8 @@ Or integrate with Prometheus via Docker metrics endpoint.
 
 | Loom Version | Docker API | Python Runtime | Node Runtime | Status |
 |--------------|------------|----------------|--------------|--------|
-| v1.2.0        | v1.40+     | 3.11-slim      | 20-slim    | ✅ Current |
+| v1.3.0        | v1.40+     | 3.11-slim      | 20-slim    | ✅ Current |
+| v1.2.0        | v1.40+     | 3.11-slim      | 20-slim    | ⚠️ Superseded |
 | v1.0.0-beta.2 | v1.40+     | 3.11-slim      | 20-slim    | ⚠️ Superseded |
 | v1.0.0-beta.1 | v1.40+     | 3.11-slim      | 20-alpine    | ⚠️ No trace library injection |
 

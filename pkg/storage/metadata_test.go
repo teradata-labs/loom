@@ -41,11 +41,11 @@ func TestGetMetadata_JSONArray(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store data
-	ref, err := store.Store("test1", jsonData, "application/json", nil)
+	ref, err := store.Store("test1", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := store.GetMetadata(ref)
+	meta, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 
 	// Verify metadata
@@ -85,11 +85,11 @@ func TestGetMetadata_JSONObject(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store data
-	ref, err := store.Store("test2", jsonData, "application/json", nil)
+	ref, err := store.Store("test2", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := store.GetMetadata(ref)
+	meta, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 
 	// Verify metadata
@@ -122,11 +122,11 @@ func TestGetMetadata_CSV(t *testing.T) {
 5,Eve,91`
 
 	// Store data
-	ref, err := store.Store("test3", []byte(csvData), "text/csv", nil)
+	ref, err := store.Store("test3", []byte(csvData), "text/csv", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := store.GetMetadata(ref)
+	meta, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 
 	// Verify metadata
@@ -160,11 +160,11 @@ Line 4
 Line 5`
 
 	// Store data
-	ref, err := store.Store("test4", []byte(textData), "text/plain", nil)
+	ref, err := store.Store("test4", []byte(textData), "text/plain", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := store.GetMetadata(ref)
+	meta, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 
 	// Verify metadata
@@ -201,11 +201,11 @@ func TestGetMetadata_LargeArray(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store data
-	ref, err := store.Store("test5", jsonData, "application/json", nil)
+	ref, err := store.Store("test5", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
-	meta, err := store.GetMetadata(ref)
+	meta, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 
 	// Verify preview has both first 5 and last 5
@@ -236,7 +236,7 @@ func TestGetMetadata_InvalidReference(t *testing.T) {
 		Location: loomv1.StorageLocation_STORAGE_LOCATION_MEMORY,
 	}
 
-	_, err := store.GetMetadata(ref)
+	_, err := store.GetMetadata(ref, "")
 	assert.Error(t, err)
 }
 
@@ -247,7 +247,7 @@ func TestGetMetadata_NilReference(t *testing.T) {
 		TTLSeconds:           3600,
 	})
 
-	_, err := store.GetMetadata(nil)
+	_, err := store.GetMetadata(nil, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid reference")
 }
@@ -262,11 +262,11 @@ func TestGetMetadata_Expiration(t *testing.T) {
 	// Store data
 	testData := []map[string]any{{"id": float64(1)}}
 	jsonData, _ := json.Marshal(testData)
-	ref, err := store.Store("test6", jsonData, "application/json", nil)
+	ref, err := store.Store("test6", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata immediately
-	meta1, err := store.GetMetadata(ref)
+	meta1, err := store.GetMetadata(ref, "")
 	require.NoError(t, err)
 	assert.True(t, meta1.ExpiresAt.After(time.Now()))
 
@@ -274,7 +274,7 @@ func TestGetMetadata_Expiration(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Try to get metadata after expiration (should fail)
-	_, err = store.GetMetadata(ref)
+	_, err = store.GetMetadata(ref, "")
 	assert.Error(t, err)
 }
 

@@ -53,12 +53,15 @@ type Config struct {
 	RateLimiterConfig llm.RateLimiterConfig
 }
 
+// DefaultHuggingFaceModel is the model used when Config.Model is empty.
+const DefaultHuggingFaceModel = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+
 // NewClient creates a new HuggingFace client.
 // HuggingFace uses an OpenAI-compatible API at https://router.huggingface.co/v1
 func NewClient(config Config) *Client {
 	// Set defaults
 	if config.Model == "" {
-		config.Model = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+		config.Model = DefaultHuggingFaceModel
 	}
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 4096

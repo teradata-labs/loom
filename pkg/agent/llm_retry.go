@@ -27,6 +27,11 @@ import (
 // If the provider supports streaming and a progress callback is configured,
 // it will use streaming with token buffering to emit real-time progress.
 func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+	// Debug tap: one context dump per provider call, before any dispatch branch.
+	// No-op unless the dump switch is on. Covers streaming, no-retry, and the
+	// retry loop alike since every path fans out from here.
+	a.dumpContext(ctx, messages, tools)
+
 	// Check if provider supports streaming and we have a progress callback
 	supportsStreaming := llmtypes.SupportsStreaming(a.llm)
 	progressCallback := ctx.ProgressCallback()

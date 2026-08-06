@@ -27,10 +27,14 @@ type InitializeParams struct {
 
 // InitializeResult contains the server's response to initialize
 type InitializeResult struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    ServerCapabilities     `json:"capabilities"`
-	ServerInfo      Implementation         `json:"serverInfo"`
-	Extensions      map[string]interface{} `json:"extensions,omitempty"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ServerCapabilities `json:"capabilities"`
+	ServerInfo      Implementation     `json:"serverInfo"`
+	// Instructions is optional guidance the server gives the client/model about
+	// how to use this endpoint (MCP spec field). Used to steer external models —
+	// e.g. "create agents/workflows via loom_build, not by hand".
+	Instructions string                 `json:"instructions,omitempty"`
+	Extensions   map[string]interface{} `json:"extensions,omitempty"`
 }
 
 // Implementation describes client or server implementation details
@@ -237,6 +241,9 @@ type ProgressNotification struct {
 	ProgressToken string  `json:"progressToken"`
 	Progress      float64 `json:"progress"`
 	Total         float64 `json:"total,omitempty"`
+	// Message is an optional human-readable status (MCP 2025-03-26). loom uses
+	// it to stream the agent's cumulative partial response text as it generates.
+	Message string `json:"message,omitempty"`
 }
 
 // LogNotification sends log messages from server to client

@@ -376,7 +376,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"bool":         true,
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -401,7 +401,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"small_param": "small",
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -438,7 +438,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"large3": strings.Repeat("c", 5000),
 		}
 
-		result, err := exec.handleLargeParameters(params)
+		result, err := exec.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -457,7 +457,7 @@ func TestExecutor_HandleLargeParameters(t *testing.T) {
 			"large_param": strings.Repeat("a", 5000),
 		}
 
-		result, err := execNoMem.handleLargeParameters(params)
+		result, err := execNoMem.handleLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("handleLargeParameters() error = %v", err)
 		}
@@ -489,7 +489,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"bool":   true,
 		}
 
-		result, err := exec.dereferenceLargeParameters(params)
+		result, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("dereferenceLargeParameters() error = %v", err)
 		}
@@ -507,7 +507,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 		// First, store data in shared memory
 		largeContent := strings.Repeat("test", 1000) // 4KB
 		id := storage.GenerateID()
-		ref, err := sharedMem.Store(id, []byte("\""+largeContent+"\""), "application/json", nil)
+		ref, err := sharedMem.Store(id, []byte("\""+largeContent+"\""), "application/json", nil, "")
 		if err != nil {
 			t.Fatalf("Failed to store: %v", err)
 		}
@@ -517,7 +517,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"small_param": "small",
 		}
 
-		result, err := exec.dereferenceLargeParameters(params)
+		result, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err != nil {
 			t.Fatalf("dereferenceLargeParameters() error = %v", err)
 		}
@@ -544,7 +544,7 @@ func TestExecutor_DereferenceLargeParameters(t *testing.T) {
 			"invalid": invalidRef,
 		}
 
-		_, err := exec.dereferenceLargeParameters(params)
+		_, err := exec.dereferenceLargeParameters(context.Background(), params)
 		if err == nil {
 			t.Error("Expected error for invalid reference")
 		}
@@ -697,4 +697,19 @@ func TestExecutor_LargeParameterMetrics(t *testing.T) {
 	t.Logf("  Derefs: %d", statsAfter.LargeParamDerefs)
 	t.Logf("  Bytes: %d", statsAfter.LargeParamBytesStored)
 	t.Logf("  Errors: %d", statsAfter.LargeParamDerefErrors)
+}
+
+// TestFormatSharedMemoryResultSummary_JSONObjectSurfacesID is the executor-side
+// guard for the web_search read-back fix: a stored json_object must surface its
+// reference_id with a working query_tool_result call, not a "too large" dead end.
+func TestFormatSharedMemoryResultSummary_JSONObjectSurfacesID(t *testing.T) {
+	meta := &storage.DataMetadata{
+		DataType:        "json_object",
+		SizeBytes:       31865,
+		EstimatedTokens: 5711,
+	}
+	out := formatSharedMemoryResultSummary(meta, "ref_web_search_42")
+	require.Contains(t, out, "ref_web_search_42", "summary must surface the reference_id")
+	require.Contains(t, out, "query_tool_result", "summary must give a working retrieval call")
+	require.NotContains(t, out, "too large", "no dead-end message")
 }

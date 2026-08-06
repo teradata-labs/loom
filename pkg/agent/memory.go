@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,12 +58,24 @@ type Memory struct {
 	maxContextTokens     int                        // Context window size for new sessions (0 = use defaults)
 	reservedOutputTokens int                        // Reserved tokens for output (0 = use defaults)
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
+	compressor           MemoryCompressor           // Optional LLM compressor for L2 compaction (nil = heuristic fallback)
 	maxToolResults       int                        // Max tool results in kernel (0 = use default)
 
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
 	observers   map[string][]MemoryObserver
 	observersMu sync.RWMutex
+
+	// Restore re-fire hooks (set by the agent layer, which owns the skill
+	// orchestrator and the per-session tool ledger). After a restart replay,
+	// the restore walk calls these to reconstruct a session's runtime state
+	// from its durable messages. nil hooks disable the corresponding re-fire.
+	restoreActivateSkill          func(sessionID, skillName string) // re-activate a loaded skill + wire its required tools
+	restoreRegisterDisclosureTool func(sessionID, toolName string)  // re-register a first-need disclosure tool
+
+	// Per-mutation debug carrier, forwarded to each SegmentedMemory this manager
+	// builds and read by the restore re-fire pass. nil or off is a no-op.
+	ctxDebug *contextDebug
 }
 
 // NewMemory creates a new in-memory session manager.
@@ -127,6 +140,28 @@ func (m *Memory) SetCompressionProfile(profile *CompressionProfile) {
 	m.compressionProfile = profile
 }
 
+// SetRestoreReFireHooks wires the callbacks the restore replay uses to rebuild
+// a session's runtime state from its durable messages: activateSkill re-fires a
+// load marker (no-evict activation + required-tool wiring), and
+// registerDisclosureTool re-registers a first-need disclosure tool implied by a
+// durable error/large-result record. The agent layer supplies them because they
+// touch the skill orchestrator and the per-session tool ledger.
+func (m *Memory) SetRestoreReFireHooks(activateSkill func(sessionID, skillName string), registerDisclosureTool func(sessionID, toolName string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restoreActivateSkill = activateSkill
+	m.restoreRegisterDisclosureTool = registerDisclosureTool
+}
+
+// SetContextDebug injects the per-mutation debug carrier. It is forwarded to
+// every SegmentedMemory this manager builds and read by the restore re-fire
+// pass, so compaction and re-fire logs share the agent's context-dump switch.
+func (m *Memory) SetContextDebug(cd *contextDebug) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ctxDebug = cd
+}
+
 // SetMaxToolResults configures how many tool results to keep in the conversation kernel.
 // 0 = use default (5).
 func (m *Memory) SetMaxToolResults(n int) {
@@ -178,8 +213,10 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	maxCtx := m.maxContextTokens
 	reservedOut := m.reservedOutputTokens
 	compProfile := m.compressionProfile
+	compressor := m.compressor
 	maxToolRes := m.maxToolResults
 	logger := m.logger
+	ctxDebug := m.ctxDebug
 	m.mu.RUnlock()
 
 	// Check write-lock path: existing session that needs metadata update
@@ -192,7 +229,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if session, ok := m.sessions[sessionID]; ok {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
-			sharedMem, store, tracer, llmProv, maxToolRes, ctx)
+			sharedMem, store, tracer, llmProv, compressor, maxToolRes, ctx)
 		if session.FailureTracker == nil {
 			session.FailureTracker = newConsecutiveFailureTracker()
 		}
@@ -211,7 +248,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// tracking continue to work across restarts.
 			needsReplay := session.SegmentedMem == nil
 			m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
-				sharedMem, store, tracer, llmProv, maxToolRes, ctx)
+				sharedMem, store, tracer, llmProv, compressor, maxToolRes, ctx)
 			if session.FailureTracker == nil {
 				session.FailureTracker = newConsecutiveFailureTracker()
 			}
@@ -221,13 +258,43 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
 			// compression from firing between an assistant tool_use and its
 			// tool_result — see ReplayMessages doc for details.
+			//
+			// On replay, also snapshot the durable session.Messages and the
+			// restore hooks for the re-fire pass below. The snapshot must be the
+			// durable list, not the compacted L1/L2: L2 compaction replaces
+			// batched messages with an opaque summary, stripping every load
+			// marker. The copy is taken under the lock so a concurrent AddMessage
+			// on this session cannot race the walk that reads it after unlock.
+			var restoreSnapshot []Message
+			var replayInto *SegmentedMemory
+			var activateSkill func(sessionID, skillName string)
+			var registerDisclosureTool func(sessionID, toolName string)
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-					segMem.ReplayMessages(ctx, session.Messages)
+					replayInto = segMem
 				}
+				restoreSnapshot = make([]Message, len(session.Messages))
+				copy(restoreSnapshot, session.Messages)
+				activateSkill = m.restoreActivateSkill
+				registerDisclosureTool = m.restoreRegisterDisclosureTool
 			}
 			m.sessions[sessionID] = session
 			m.mu.Unlock()
+
+			// Replay runs AFTER the lock is released. It compacts, and compaction
+			// calls the LLM compressor — holding the global session lock across
+			// those network calls would block every other session's lookup for the
+			// duration of the restore.
+			if replayInto != nil {
+				replayInto.ReplayMessages(ctx, restoreSnapshot)
+			}
+
+			// Restore re-fire runs after replay and outside the lock,
+			// reconstructing skill activations and disclosure tools from the
+			// durable snapshot.
+			if activateSkill != nil || registerDisclosureTool != nil {
+				m.reFireOnRestore(sessionID, restoreSnapshot, activateSkill, registerDisclosureTool, ctxDebug)
+			}
 			return session
 		}
 	}
@@ -263,9 +330,13 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if llmProv != nil {
 		segMem.SetLLMProvider(llmProv)
 	}
+	if compressor != nil {
+		segMem.SetCompressor(compressor)
+	}
 	if maxToolRes > 0 {
 		segMem.maxToolResults = maxToolRes
 	}
+	segMem.SetContextDebug(ctxDebug)
 
 	session := &Session{
 		ID:              sessionID,
@@ -299,6 +370,73 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	return session
 }
 
+// reFireOnRestore reconstructs a restored session's runtime state from its
+// durable messages. It walks the durable snapshot (never the compacted L1/L2,
+// where load markers are gone) and, via the injected hooks, re-activates each
+// loaded skill with its required tools and re-registers the first-need
+// disclosure tools implied by durable error/large-result records. It performs
+// activation and tool advertisement only — no conversation message, no task —
+// so a replayed session advertises the same tools and reports the same active
+// skills as a live one.
+func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
+	activateSkill func(sessionID, skillName string),
+	registerDisclosureTool func(sessionID, toolName string),
+	ctxDebug *contextDebug,
+) {
+	loadsReactivated := 0
+	toolsReregistered := 0
+	for i := range messages {
+		msg := messages[i]
+		if msg.Role != "tool" {
+			continue
+		}
+
+		// Load marker: a manage_skills load result carries a structured
+		// {skill, ...} marker in ToolResult.Metadata. A blocked (approval-
+		// required) load carries activated=false and never touched the active
+		// set, so it is not re-fired.
+		if activateSkill != nil && msg.ToolResult != nil && msg.ToolResult.Metadata != nil {
+			if name, ok := msg.ToolResult.Metadata["skill"].(string); ok && name != "" {
+				if activated, present := msg.ToolResult.Metadata["activated"].(bool); !present || activated {
+					activateSkill(sessionID, name)
+					loadsReactivated++
+				}
+			}
+		}
+
+		if registerDisclosureTool == nil {
+			continue
+		}
+
+		// Stored-error record ⇒ get_error_details. The error disclosure path
+		// names this tool in the record's rendered content exactly when it
+		// stored the error and advertised the tool live.
+		if strings.Contains(msg.Content, "get_error_details") {
+			registerDisclosureTool(sessionID, "get_error_details")
+			toolsReregistered++
+		}
+
+		// Stored large-result reference ⇒ query_tool_result: either a
+		// pre-stored DataReference, or the offload summary the large-result
+		// path renders when it stores a result in shared memory.
+		if (msg.ToolResult != nil && msg.ToolResult.DataReference != nil) ||
+			strings.Contains(msg.Content, "stored in memory") {
+			registerDisclosureTool(sessionID, "query_tool_result")
+			toolsReregistered++
+		}
+	}
+
+	// Mutation-debug: the runtime state this restore pass reconstructed.
+	// No-op unless the context-dump switch is on.
+	if ctxDebug.on() {
+		zap.L().Debug("context mutation: restore re-fire",
+			zap.String("session_id", sessionID),
+			zap.Int("turn", ctxDebug.turn(sessionID)),
+			zap.Int("loads_reactivated", loadsReactivated),
+			zap.Int("tools_reregistered", toolsReregistered))
+	}
+}
+
 // updateSessionMetadata updates agent/parent metadata if not already set (must hold m.mu write lock or session-specific lock).
 func (m *Memory) updateSessionMetadata(session *Session, agentID, parentSessionID string, store SessionStorage, ctx context.Context, logger *zap.Logger) {
 	updated := false
@@ -324,7 +462,7 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 	sysFn SystemPromptFunc, compProfile *CompressionProfile,
 	maxCtx, reservedOut int,
 	sharedMem *storage.SharedMemoryStore, store SessionStorage,
-	tracer observability.Tracer, llmProv LLMProvider, maxToolRes int,
+	tracer observability.Tracer, llmProv LLMProvider, compressor MemoryCompressor, maxToolRes int,
 	ctx context.Context,
 ) {
 	if session.SegmentedMem != nil {
@@ -355,9 +493,14 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 		if llmProv != nil {
 			segMem.SetLLMProvider(llmProv)
 		}
+		if compressor != nil {
+			segMem.SetCompressor(compressor)
+		}
 		if maxToolRes > 0 {
 			segMem.maxToolResults = maxToolRes
 		}
+		// m.mu is held by the caller, so m.ctxDebug is read safely here.
+		segMem.SetContextDebug(m.ctxDebug)
 	}
 }
 
@@ -474,6 +617,25 @@ func (m *Memory) GetStore() SessionStorage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.store
+}
+
+// SetCompressor sets the LLM-powered compressor for L2 compaction across all
+// sessions (existing and future). With a compressor present, compaction routes
+// through it; sessions without one fall back to the heuristic summariser.
+func (m *Memory) SetCompressor(compressor MemoryCompressor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.compressor = compressor
+
+	// Inject into all existing sessions
+	for _, session := range m.sessions {
+		if session.SegmentedMem != nil {
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+				segMem.SetCompressor(compressor)
+			}
+		}
+	}
 }
 
 // SetLLMProvider sets the LLM provider for semantic search reranking (existing and future sessions).

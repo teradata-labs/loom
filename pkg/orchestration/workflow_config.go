@@ -69,29 +69,35 @@ type WorkflowMetadata struct {
 //   - ErrInvalidWorkflow: If the workflow structure is invalid
 //   - ErrUnsupportedPattern: If the pattern type is not recognized
 func LoadWorkflowFromYAML(path string) (*loomv1.WorkflowPattern, error) {
-	// 1. Read file
 	data, err := readWorkflowFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return LoadWorkflowFromYAMLBytes(data)
+}
 
-	// 2. Parse YAML
+// LoadWorkflowFromYAMLBytes parses, validates, and converts a workflow YAML
+// document already in memory into a WorkflowPattern. It is the path-free core
+// of LoadWorkflowFromYAML, used when the YAML arrives over the wire (e.g. the
+// loom_execute_workflow MCP tool's workflow_yaml argument) rather than from a
+// file on disk.
+func LoadWorkflowFromYAMLBytes(data []byte) (*loomv1.WorkflowPattern, error) {
 	config, err := parseWorkflowYAML(data)
 	if err != nil {
 		return nil, err
 	}
-
-	// 3. Validate structure
 	if err := validateWorkflowStructure(config); err != nil {
 		return nil, err
 	}
-
-	// 4. Convert to proto
 	pattern, err := convertToProto(config)
 	if err != nil {
 		return nil, err
 	}
-
+	// HITL gates are only valid on pipeline/iterative patterns and must have
+	// resolvable, non-forward revise targets.
+	if err := validateGatePlacement(pattern); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
 	return pattern, nil
 }
 
@@ -127,7 +133,7 @@ func parseWorkflowYAML(data []byte) (*WorkflowConfig, error) {
 func validateWorkflowStructure(config *WorkflowConfig) error {
 	// Check apiVersion
 	if config.APIVersion == "" {
-		return fmt.Errorf("%w: missing apiVersion", ErrInvalidWorkflow)
+		return fmt.Errorf("%w: missing apiVersion — a workflow YAML needs 'apiVersion: loom/v1', 'kind: Workflow', and a 'spec:' block with a 'type:'. To run a workflow you already saved, pass workflow_ref (its name; see loom_list_workflows) instead of re-supplying the full YAML", ErrInvalidWorkflow)
 	}
 	if config.APIVersion != "loom/v1" {
 		return fmt.Errorf("%w: unsupported apiVersion '%s', expected 'loom/v1'", ErrInvalidWorkflow, config.APIVersion)
@@ -342,6 +348,10 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 		validationPrompt, _ := stageMap["validation_prompt"].(string)
 		outputSchema, _ := stageMap["output_schema"].(string)
 		retryPolicy := parseOutputRetryPolicy(stageMap)
+		hitlGate, err := parseHITLGate(stageMap)
+		if err != nil {
+			return nil, fmt.Errorf("%w: stage %d: %s", ErrInvalidWorkflow, i, err.Error())
+		}
 
 		stages[i] = &loomv1.PipelineStage{
 			AgentId:          agentID,
@@ -349,6 +359,7 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 			ValidationPrompt: validationPrompt,
 			OutputSchema:     outputSchema,
 			RetryPolicy:      retryPolicy,
+			HitlGate:         hitlGate,
 		}
 	}
 
@@ -748,6 +759,77 @@ func parseOutputRetryPolicy(raw map[string]interface{}) *loomv1.OutputRetryPolic
 	}
 
 	return policy
+}
+
+// parseHITLGate parses an optional hitl_gate block from a pipeline stage.
+// Returns nil when the stage has no gate.
+//
+// YAML shape:
+//
+//	hitl_gate:
+//	  prompt_template: "Review this DDL:\n{{output}}"   # optional
+//	  request_type: approval                             # optional
+//	  timeout_seconds: 1800                              # optional
+//	  revise_target_stage_id: ddl-designer               # optional
+//	  max_revisions: 3                                   # optional
+//	  on_timeout: fail | reject | approve                # optional
+func parseHITLGate(stageMap map[string]interface{}) (*loomv1.HITLGate, error) {
+	gateRaw, ok := stageMap["hitl_gate"]
+	if !ok || gateRaw == nil {
+		return nil, nil
+	}
+	gateMap, ok := gateRaw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("hitl_gate must be an object")
+	}
+
+	gate := &loomv1.HITLGate{}
+	gate.PromptTemplate, _ = gateMap["prompt_template"].(string)
+	gate.RequestType, _ = gateMap["request_type"].(string)
+	gate.ReviseTargetStageId, _ = gateMap["revise_target_stage_id"].(string)
+
+	if raw, ok := gateMap["timeout_seconds"]; ok {
+		switch v := raw.(type) {
+		case int:
+			gate.TimeoutSeconds = types.SafeInt32(v)
+		case int32:
+			gate.TimeoutSeconds = v
+		case int64:
+			gate.TimeoutSeconds = types.SafeInt32FromInt64(v)
+		default:
+			return nil, fmt.Errorf("hitl_gate.timeout_seconds must be an integer, got %T", v)
+		}
+	}
+	if raw, ok := gateMap["max_revisions"]; ok {
+		switch v := raw.(type) {
+		case int:
+			gate.MaxRevisions = types.SafeInt32(v)
+		case int32:
+			gate.MaxRevisions = v
+		case int64:
+			gate.MaxRevisions = types.SafeInt32FromInt64(v)
+		default:
+			return nil, fmt.Errorf("hitl_gate.max_revisions must be an integer, got %T", v)
+		}
+	}
+	if raw, ok := gateMap["on_timeout"]; ok {
+		s, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("hitl_gate.on_timeout must be a string")
+		}
+		switch s {
+		case "", "fail":
+			gate.OnTimeout = loomv1.GateTimeoutAction_GATE_TIMEOUT_ACTION_FAIL
+		case "reject":
+			gate.OnTimeout = loomv1.GateTimeoutAction_GATE_TIMEOUT_ACTION_REJECT
+		case "approve":
+			gate.OnTimeout = loomv1.GateTimeoutAction_GATE_TIMEOUT_ACTION_APPROVE
+		default:
+			return nil, fmt.Errorf("hitl_gate.on_timeout must be one of fail, reject, approve (got %q)", s)
+		}
+	}
+
+	return gate, nil
 }
 
 // parseMergeStrategy converts string to MergeStrategy enum

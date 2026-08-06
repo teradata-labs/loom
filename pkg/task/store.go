@@ -24,6 +24,14 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
+// CreatedBySessionMetadataKey is the task-metadata key recording the
+// conversation session that created a task (agent tool create/decompose and
+// the skill task emitter all stamp it). It is attribution, not a claim:
+// claimed_by_session is only written by ClaimTask when a session starts
+// working the task. Callers can scope "tasks created in this conversation"
+// by matching this key without disturbing the ready → claim workflow.
+const CreatedBySessionMetadataKey = "created_by_session"
+
 // TaskStore defines the storage interface for task management.
 // Implementations exist for SQLite and PostgreSQL.
 type TaskStore interface {

@@ -2,7 +2,7 @@
 
 ## Historical Note
 
-> **This is a historical migration guide** for the beta.5 release. It is preserved for reference. Current version is v1.2.0.
+> **This is a historical migration guide** for the beta.5 release. It is preserved for reference. Current version is v1.3.0.
 
 ## Overview
 

@@ -64,7 +64,7 @@ func TestProgressiveDisclosure_LargeJSONArray(t *testing.T) {
 	jsonData, err := json.Marshal(largeData)
 	require.NoError(t, err)
 
-	ref, err := memoryStore.Store("large_result", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("large_result", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, loomv1.StorageLocation_STORAGE_LOCATION_MEMORY, ref.Location)
 
@@ -160,7 +160,7 @@ func TestProgressiveDisclosure_CSVPagination(t *testing.T) {
 		csvData += string(rune(49+i)) + ",User" + string(rune(65+(i%26))) + ",user" + string(rune(49+i)) + "@example.com\n"
 	}
 
-	ref, err := memoryStore.Store("csv_result", []byte(csvData), "text/csv", nil)
+	ref, err := memoryStore.Store("csv_result", []byte(csvData), "text/csv", nil, "")
 	require.NoError(t, err)
 
 	// Step 2: Get metadata
@@ -246,7 +246,7 @@ func TestProgressiveDisclosure_PreventContextBlowout(t *testing.T) {
 	jsonData, err := json.Marshal(hugeData)
 	require.NoError(t, err)
 
-	ref, err := memoryStore.Store("huge_result", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("huge_result", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Get metadata
@@ -304,7 +304,7 @@ func TestProgressiveDisclosure_SQLFiltering(t *testing.T) {
 		{"category": "B", "value": float64(50), "active": true},
 	}
 	jsonData, _ := json.Marshal(testData)
-	ref, err := memoryStore.Store("filter_test", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("filter_test", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Test 1: Filter by category
@@ -375,7 +375,7 @@ func TestProgressiveDisclosure_MultipleQueries(t *testing.T) {
 		}
 	}
 	jsonData, _ := json.Marshal(testData)
-	ref, err := memoryStore.Store("multi_query_test", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("multi_query_test", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 
 	// Query 1: Get high scores
@@ -455,7 +455,7 @@ func TestProgressiveDisclosure_JSONObject(t *testing.T) {
 	jsonData, err := json.Marshal(discoveryResult)
 	require.NoError(t, err)
 
-	ref, err := memoryStore.Store("discovery_result", jsonData, "application/json", nil)
+	ref, err := memoryStore.Store("discovery_result", jsonData, "application/json", nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, loomv1.StorageLocation_STORAGE_LOCATION_MEMORY, ref.Location)
 
@@ -473,29 +473,22 @@ func TestProgressiveDisclosure_JSONObject(t *testing.T) {
 	assert.Equal(t, "json_object", metadata["data_type"])
 	assert.Equal(t, "application/json", metadata["content_type"])
 
-	// Step 3: Agent calls query_tool_result WITHOUT any parameters
-	// This should FAIL for json_object types - they cannot be retrieved directly (too large)
+	// Step 3: Agent calls query_tool_result WITHOUT any parameters.
+	// A json_object is now retrievable (windowed as text), so a bare reference_id
+	// returns the stored content instead of erroring — this is the web_search
+	// read-back fix.
 	queryResult, err := queryTool.Execute(ctx, map[string]any{
 		"reference_id": ref.Id,
 	})
 	require.NoError(t, err)
+	require.True(t, queryResult.Success, "json_object should be retrievable via a bare reference_id, got: %+v", queryResult.Error)
 
-	// Should fail with helpful error message
-	require.False(t, queryResult.Success, "query_tool_result should fail for json_object without retrieval method")
-	require.NotNil(t, queryResult.Error)
-	assert.Equal(t, "invalid_input", queryResult.Error.Code)
-	assert.Contains(t, queryResult.Error.Message, "json_object")
-	assert.Contains(t, queryResult.Error.Suggestion, "metadata", "error should suggest checking metadata")
-	assert.Contains(t, queryResult.Error.Suggestion, "retrieval hints", "error should mention retrieval hints")
-
-	// Verify metadata provides helpful hints about the structure
-	// Agent should use the preview and schema from get_tool_result instead
+	// Verify metadata hints point at query_tool_result (not a dead end).
 	retrievalHints := metadata["retrieval_hints"]
 	require.NotNil(t, retrievalHints)
-	// Check that hints warn about large object (if hints provided)
 	hintsStr := fmt.Sprintf("%v", retrievalHints)
 	if len(hintsStr) > 2 { // More than just "[]"
-		assert.Contains(t, hintsStr, "cannot be retrieved directly")
+		assert.Contains(t, hintsStr, "query_tool_result")
 	}
 }
 
@@ -512,22 +505,21 @@ func TestProgressiveDisclosure_JSONObjectVsArray(t *testing.T) {
 
 	queryTool := NewQueryToolResultTool(nil, memoryStore)
 
-	// Test 1: JSON object should fail without retrieval method
+	// Test 1: a json_object is retrievable via a bare reference_id (windowed as text).
 	objData := map[string]any{"key": "value", "count": float64(42)}
 	objJSON, _ := json.Marshal(objData)
-	objRef, _ := memoryStore.Store("obj", objJSON, "application/json", nil)
+	objRef, _ := memoryStore.Store("obj", objJSON, "application/json", nil, "")
 
 	objResult, err := queryTool.Execute(ctx, map[string]any{
 		"reference_id": objRef.Id,
 	})
 	require.NoError(t, err)
-	assert.False(t, objResult.Success, "json_object should fail without retrieval method")
-	assert.Contains(t, objResult.Error.Message, "json_object", "error should mention data type")
+	assert.True(t, objResult.Success, "json_object should be retrievable, got: %+v", objResult.Error)
 
 	// Test 2: JSON array also requires offset/limit or SQL
 	arrayData := []map[string]any{{"id": float64(1)}, {"id": float64(2)}}
 	arrayJSON, _ := json.Marshal(arrayData)
-	arrayRef, _ := memoryStore.Store("array", arrayJSON, "application/json", nil)
+	arrayRef, _ := memoryStore.Store("array", arrayJSON, "application/json", nil, "")
 
 	arrayResult, err := queryTool.Execute(ctx, map[string]any{
 		"reference_id": arrayRef.Id,
@@ -569,7 +561,7 @@ func TestProgressiveDisclosure_TextPagination(t *testing.T) {
 	textData := []byte(strings.Join(lines, "\n"))
 
 	// Store text data
-	ref, err := memoryStore.Store("test_text", textData, "text/plain", nil)
+	ref, err := memoryStore.Store("test_text", textData, "text/plain", nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, loomv1.StorageLocation_STORAGE_LOCATION_MEMORY, ref.Location)
 

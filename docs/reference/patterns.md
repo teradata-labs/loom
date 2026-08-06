@@ -3,7 +3,7 @@
 
 Specification for Loom's pattern library system. Patterns encode domain knowledge as YAML templates for LLM-guided tool execution.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -1880,7 +1880,7 @@ func main() {
 
 ### Test Functions
 
-Patterns package includes 95 test functions covering:
+Patterns package includes 98 test functions covering:
 
 - Pattern loading and caching
 - YAML validation

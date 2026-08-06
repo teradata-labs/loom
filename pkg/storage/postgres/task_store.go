@@ -826,7 +826,7 @@ func (s *TaskStore) RecordHistory(ctx context.Context, entry *task.TaskHistoryEn
 			INSERT INTO task_history (id, task_id, action, old_status, new_status, agent_id, session_id, details_json, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			entry.ID, entry.TaskID, entry.Action, entry.OldStatus, entry.NewStatus,
-			entry.AgentID, entry.SessionID, entry.DetailsJSON, entry.Timestamp,
+			entry.AgentID, entry.SessionID, jsonbOrDefault(entry.DetailsJSON, "{}"), entry.Timestamp,
 		)
 		return err
 	})

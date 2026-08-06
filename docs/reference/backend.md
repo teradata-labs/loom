@@ -3,7 +3,7 @@
 
 Technical specification for Loom backend configuration.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **API Version**: loom/v1
 **Configuration Kind**: `Backend`
 

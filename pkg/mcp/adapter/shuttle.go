@@ -325,6 +325,21 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 				goto normalResult
 			}
 
+			// Only divert a SQL result into the reference store when it is large
+			// enough to threaten the context window. A small read result (the
+			// common SELECT ... LIMIT N case) is exactly what the model asked to
+			// SEE, so return it inline and skip the query_tool_result round-trip —
+			// that two-step dance is fragile and pointless when the rows already
+			// fit. The gate matches the inline budget: anything truncateResult
+			// would pass through uncut is returned directly.
+			inlineBudget := a.truncation.MaxResultBytes
+			if inlineBudget <= 0 {
+				inlineBudget = DefaultMaxResultBytes
+			}
+			if len(fmt.Sprintf("%v", data)) <= inlineBudget {
+				goto normalResult
+			}
+
 			// Generate unique ID for this result
 			resultID := fmt.Sprintf("mcp_%s_%d", a.serverName, time.Now().UnixNano())
 
@@ -344,8 +359,15 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 						"columns":       len(columns),
 						"stored_in_sql": true,
 					},
-					Data: fmt.Sprintf("Query returned %d rows (%d columns). Use query_tool_result to filter/paginate.",
-						len(rows), len(columns)),
+					// The reference ID + DATABASE location MUST be surfaced here: the
+					// agent keeps small inline messages verbatim, so this string is the
+					// only place the model learns what to pass to query_tool_result. The
+					// DataRef[id, DATABASE] form is exactly what that tool parses to route
+					// to the SQL store; "FROM results" is rewritten to the backing table.
+					Data: fmt.Sprintf("Query returned %d rows (%d columns), stored as DataRef[%s, DATABASE]. "+
+						"To read the rows call query_tool_result with reference_id=\"DataRef[%s, DATABASE]\" and "+
+						"sql=\"SELECT * FROM results\" (or pass offset/limit to paginate).",
+						len(rows), len(columns), ref.Id, ref.Id),
 				}, nil
 			}
 			// If storage failed, fall through to normal truncation

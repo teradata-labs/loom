@@ -5,7 +5,7 @@ Architecture of Loom's agent runtime system with Error Submission Channel, built
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -118,7 +118,7 @@ flowchart TD
     WithSharedMem --> ReturnAgent
 
     ReturnAgent --> ToolError[Tool Execution Error<br/>3,000+ chars]
-    ToolError -->|Progressive Disclosure| RegErrorTool[Register get_error_details on first error]
+    ToolError -->|Progressive Disclosure| RegErrorTool[Register get_error_details on first error<br/>advertise into that session only]
 
     ToolError --> FormatResult[formatToolResult result, err, toolName]
 
@@ -197,13 +197,21 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
         opt(a)
     }
 
-    // PROGRESSIVE DISCLOSURE: get_error_details is NOT registered here.
-    // It is registered dynamically in formatToolResult() after the first error.
+    // PROGRESSIVE DISCLOSURE: get_error_details and query_tool_result are NOT
+    // registered here. They are registered in formatToolResult() on first need.
     //
-    // get_tool_result is also removed (EXPERIMENT comment in agent.go).
-    // Inline metadata makes it unnecessary; agents use query_tool_result instead.
+    // get_tool_result registration is commented out; inline metadata makes it
+    // unnecessary and agents use query_tool_result instead.
+    //
+    // The findings channel is retired: no record_finding tool, no extractor.
 
     // ... (pattern orchestrator, executor, shared memory, SQL result store init omitted)
+
+    // Base tools registered eagerly, present from the first turn
+    a.checkAndRegisterGraphMemoryTool()
+    a.checkAndRegisterTaskBoardTool()
+    a.checkAndRegisterManageSkillsTool()
+    a.checkAndRegisterLoadPatternTool()
 
     return a
 }
@@ -326,7 +334,10 @@ func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string,
 
     // Generate unique error ID: err_YYYYMMDD_HHMMSS_<6-char-random>
     now := time.Now()
-    randomSuffix := generateRandomString(6) // Cryptographic random
+    randomSuffix, randErr := generateRandomString(6) // Cryptographic random
+    if randErr != nil {
+        return "", fmt.Errorf("failed to generate random ID suffix: %w", randErr)
+    }
     errorID := fmt.Sprintf("err_%s_%s",
         now.Format("20060102_150405"),
         randomSuffix)
@@ -418,6 +429,15 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
             })
 
             if storeErr == nil {
+                // Progressive disclosure: register the definition once,
+                // advertise it into THIS session's ledger
+                if !a.isBuiltinToolSuppressed("get_error_details") {
+                    if !a.tools.IsRegistered("get_error_details") {
+                        a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
+                    }
+                    a.registerSessionTool(sessionID, "get_error_details")
+                }
+
                 // Return summary + reference
                 return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
@@ -458,11 +478,42 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
         return "Tool execution failed"
     }
 
-    // Success: return result data (may store as reference if large)
-    // ... (large result handling, shared memory storage omitted for brevity)
-    return fmt.Sprintf("%v", result.Data)
+    // Success. Render first: a string enters verbatim, a composite is
+    // marshalled to JSON. A Go map is never rendered with %v.
+    var dataStr string
+    switch v := result.Data.(type) {
+    case string:
+        dataStr = v
+    default:
+        b, marshalErr := json.Marshal(v)
+        if marshalErr != nil {
+            return fmt.Sprintf("[unserializable result: %v]", marshalErr)
+        }
+        dataStr = string(b)
+    }
+
+    // One byte threshold, shared with the executor's handleLargeResult:
+    // strictly below it the result stays inline, at or above it the payload
+    // is offloaded and replaced by a reference plus a metadata summary.
+    if int64(len(dataStr)) < byteThreshold {
+        return dataStr
+    }
+
+    // Exempt tools must enter whole regardless of size: the recall tools
+    // would recurse through their own references, and manage_skills delivers
+    // the skill body as its own message.
+    if toolName == "get_tool_result" || toolName == "query_tool_result" || toolName == "manage_skills" {
+        return dataStr
+    }
+
+    // Offload: store the payload, advertise query_tool_result into THIS
+    // session, and return the rich inline summary.
+    // ... (shared memory store, reference pinning omitted for brevity)
+    return richSummary
 }
 ```
+
+**Threshold**: `byteThreshold` defaults to `storage.DefaultSharedMemoryThreshold` (64 KiB) and is overridden per agent by `sharedMemoryThreshold`; 0 means always store by reference. The same value is handed to the executor via `SetSharedMemory`, so both offload sites decide identically.
 
 **Rationale**:
 - **Progressive disclosure**: LLM sees 100-char summary by default, retrieves full error only when needed
@@ -475,13 +526,35 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 
 ### Built-in Tool Registry
 
-**Responsibility**: Progressive disclosure of system tools. Built-in tools are NOT registered at agent creation time. They are registered dynamically when their trigger condition is met:
+**Responsibility**: Registration of auto-injected system tools (added by the agent, not listed in the agent's tools YAML).
 
-- `get_error_details`: registered after the first tool execution error (requires error store)
-- `query_tool_result`: registered after the first large result is stored in shared memory (requires SQL result store)
-- `conversation_memory`: registered after the first L2 swap event (unified recall/search/clear)
-- `get_tool_result`: disabled (EXPERIMENT removed; inline metadata makes it unnecessary)
-- `record_finding`: removed (replaced by automatic finding extraction via LLM)
+Registration and advertisement are two different things. The `shuttle.Registry` is the definition store — what a tool *is*. Advertisement is the per-session projection of that store offered on a provider call. A tool registered by one session's event does not appear in another session's tool list.
+
+Progressive-disclosure tools (definition registered on first trigger, advertised into the triggering session only):
+
+- `get_error_details`: after the first tool execution error in that session (requires error store)
+- `query_tool_result`: after the first large result is stored, or the first time any tool hands back a data reference (requires shared memory or the SQL result store)
+
+Progressive-disclosure tools registered globally (state-driven, not session-scoped):
+
+- `conversation_memory`: after the first L2 swap event (unified recall/search/clear)
+- `session_memory`: once three or more sessions exist for the agent (`checkAndRegisterSessionMemoryTool`)
+- `task_board`: when a task manager and an enabled task-board config are present (`checkAndRegisterTaskBoardTool`)
+
+Eagerly-registered auto-injected tools (base tools, present from the first turn):
+
+- `graph_memory`: when a graph-memory store and config are available; system-prompt instructions auto-appended
+- `manage_skills`: when a skill orchestrator is wired
+- `load_pattern`: when a pattern library is configured
+
+Lazy tool sets (`RegisterLazyTools`, promoted when their trigger matches the user message) and the executor's dynamic MCP/builtin registration also register globally: once promoted, they are advertised to every session.
+
+Any of these can be blocked from surfacing by `WithoutBuiltinTool`; the underlying subsystem keeps running.
+
+Removed/disabled tools:
+
+- `get_tool_result`: registration commented out; the inline metadata summary makes it unnecessary and agents use `query_tool_result` instead. The name is still honoured as an offload-exempt tool and still appears in some retrieval hints.
+- `record_finding`: removed. The findings channel is retired outright — there is no findings cache, no automatic extractor and no tool. `EnableFindingExtraction`, `ExtractionCadence` and `MaxFindings` remain on the config and proto surface but drive nothing.
 
 **GetErrorDetailsTool** (`pkg/agent/builtin_tools.go`):
 ```go
@@ -572,24 +645,31 @@ func (t *GetErrorDetailsTool) Execute(ctx context.Context, input map[string]inte
 
 **Progressive Disclosure Registration** (`pkg/agent/agent.go`):
 
-`get_error_details` is NOT registered in `NewAgent()`. Instead, it is registered dynamically in `formatToolResult()` after the first tool execution error occurs:
+`get_error_details` is NOT registered in `NewAgent()`. It is registered dynamically in `formatToolResult()` after the first tool execution error, and advertised into the session that hit the error:
 
 ```go
 // In formatToolResult(), when an error is stored:
-if !a.tools.IsRegistered("get_error_details") {
-    errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-    if a.prompts != nil {
-        errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+if !a.isBuiltinToolSuppressed("get_error_details") {
+    if !a.tools.IsRegistered("get_error_details") {
+        errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+        if a.prompts != nil {
+            errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+        }
+        a.tools.Register(errorTool)
     }
-    a.tools.Register(errorTool)
+    // Definition is global; the advertisement is scoped to this session
+    a.registerSessionTool(sessionID, "get_error_details")
 }
 ```
 
-Similarly, `get_tool_result` is commented out (marked as EXPERIMENT removed in `agent.go`). Inline metadata now makes it unnecessary; agents use `query_tool_result` for advanced querying.
+The registry holds one definition. `registerSessionTool` records the name in this session's ledger and marks it session-scoped, so `advertisedTools` offers it to this session and withholds it from the others. A name that was already in the base always-advertised set is never marked scoped, so a first-need registration can never hide a base tool.
+
+`get_tool_result` registration is commented out in `agent.go`. The inline metadata summary makes it unnecessary; agents use `query_tool_result` for pagination and SQL filtering.
 
 **Rationale**:
 - **Conditional registration**: Built-in tools only registered when dependencies available
-- **Zero configuration**: LLM automatically has access to get_error_details when error store configured
+- **Session-scoped advertisement**: One session's error or skill load never changes another session's tool list
+- **Zero configuration**: The LLM gains get_error_details on its first error when an error store is configured
 - **Separation of concerns**: Built-in tools separate from user-defined tools
 - **Consistent interface**: Built-in tools use same shuttle.Tool interface as user tools
 
@@ -655,7 +735,9 @@ sequenceDiagram
     NewAgent->>SQL: Create SQL result store
     SQL-->>NewAgent: storage.ResultStore
 
-    Note over NewAgent: Built-in tools NOT registered here.<br/>get_error_details: registered on first error (progressive disclosure)<br/>query_tool_result: registered on first large result (progressive disclosure)<br/>get_tool_result: disabled (EXPERIMENT removed)
+    NewAgent->>NewAgent: Register base tools<br/>(graph_memory, task_board,<br/>manage_skills, load_pattern)
+
+    Note over NewAgent: Disclosure tools NOT registered here.<br/>get_error_details: on first error, advertised to that session<br/>query_tool_result: on first large result or data reference<br/>get_tool_result: registration commented out
 
     NewAgent-->>User: Return agent instance
 ```
@@ -672,8 +754,9 @@ fullAgent := agent.NewAgent(backend, llm,
     agent.WithErrorStore(store),
     agent.WithTracer(tracer),
 )
-// Result: get_error_details registered via progressive disclosure on first error
-// SharedMemory initialized automatically inside NewAgent (global singleton)
+// Result: get_error_details registered on the first error and advertised into
+// the session that hit it. SharedMemory initialized automatically inside
+// NewAgent (global singleton).
 ```
 
 
@@ -767,7 +850,7 @@ type StoredError struct {
 
 **Invariants**:
 ```
-len(ID) = 28 (err_ + 15 digit timestamp + _ + 6 random hex chars)
+len(ID) = 26 (err_ + 15-char timestamp + _ + 6 random hex chars)
 len(ShortSummary) <= 100 chars
 RawError is valid JSON (enforced by Store())
 Timestamp > 0 (set on Store())

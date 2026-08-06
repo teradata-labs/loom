@@ -134,7 +134,7 @@ func TestAgent_SetSharedMemory_Integration(t *testing.T) {
 
 	ref, err := globalStore.Store(refID, largeData, "text/plain", map[string]string{
 		"test": "integration",
-	})
+	}, "")
 	require.NoError(t, err, "Should be able to store data")
 	require.NotNil(t, ref)
 	assert.Equal(t, refID, ref.Id)

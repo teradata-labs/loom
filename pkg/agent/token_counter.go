@@ -192,10 +192,9 @@ func (tc *TokenCounter) EstimateMessagesTokens(messages []Message) int {
 		if len(msg.ToolCalls) > 0 {
 			total += tc.CountTokens(fmt.Sprintf("%v", msg.ToolCalls))
 		}
-		// Tool result tokens (if present)
-		if msg.ToolResult != nil {
-			total += tc.CountTokens(fmt.Sprintf("%v", *msg.ToolResult))
-		}
+		// Message.ToolResult is the raw record kept for restore/telemetry; it is
+		// never dispatched, so it carries no token weight. Content already holds
+		// the rendered form the model receives.
 	}
 	return total
 }
@@ -271,6 +270,20 @@ func (tb *TokenBudget) Use(tokens int) bool {
 
 	tb.UsedTokens += tokens
 	return true
+}
+
+// Set records absolute token usage, overwriting any prior value. Unlike Use it
+// accepts counts above the available budget so usage can report the true load of
+// an over-window context (UsagePercentage then exceeds 100), which is what drives
+// compaction. Negative counts clamp to zero.
+func (tb *TokenBudget) Set(tokens int) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	if tokens < 0 {
+		tokens = 0
+	}
+	tb.UsedTokens = tokens
 }
 
 // Free returns tokens to the budget.

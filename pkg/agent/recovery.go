@@ -149,6 +149,22 @@ func (r *recoveryOrchestrator) recoverToolCB(
 	}
 }
 
+// activeTools returns in with circuit-breaker-disabled tools removed. It keeps a
+// tool disabled across turns even though the advertised set is re-derived each
+// provider call. A nil receiver (self-healing disabled) returns in unchanged.
+func (r *recoveryOrchestrator) activeTools(in []shuttle.Tool) []shuttle.Tool {
+	if r == nil || len(r.disabledTools) == 0 {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, t := range in {
+		if !r.disabledTools[t.Name()] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // recoverTokenBudget attempts aggressive trimming when normal compression
 // (CompactMemory) was already tried and the budget is still critical.
 func (r *recoveryOrchestrator) recoverTokenBudget(

@@ -1,7 +1,7 @@
 
 # Zero-Code Configuration Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - API key: `looms config set-key anthropic_api_key`
 
 ## Quick Start

@@ -63,6 +63,10 @@ type DecomposeRequest struct {
 	MaxDepth   int
 	Strategy   loomv1.DecomposeStrategy
 	AgentID    string
+	// SessionID, when set, is stamped on every created task's metadata under
+	// CreatedBySessionMetadataKey so the decomposed plan is attributable to
+	// the conversation that requested it. Optional: headless callers omit it.
+	SessionID string
 }
 
 // DecomposeResponse contains the decomposition results.
@@ -440,6 +444,10 @@ func (d *Decomposer) materialize(ctx context.Context, req *DecomposeRequest, par
 
 		if req.ParentTask != nil {
 			t.ParentID = req.ParentTask.ID
+		}
+
+		if req.SessionID != "" {
+			t.Metadata = map[string]string{CreatedBySessionMetadataKey: req.SessionID}
 		}
 
 		created, err := d.manager.CreateTask(ctx, t)

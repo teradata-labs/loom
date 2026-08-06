@@ -1,7 +1,7 @@
 
 # Azure OpenAI Integration Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for integrating Loom with Azure OpenAI Service.
 
@@ -62,15 +62,20 @@ client, err := azureopenai.NewClient(azureopenai.Config{
 
 ### Available Models
 
-| Model | Deployment ID | Input Cost | Output Cost | Context | Features |
-|-------|---------------|------------|-------------|---------|----------|
-| GPT-4o | `gpt-4o` | $2.50/1M | $10.00/1M | 128K | Tools, vision, streaming |
-| GPT-4o mini | `gpt-4o-mini` | $0.15/1M | $0.60/1M | 128K | Tools, vision, streaming |
-| GPT-4 Turbo | `gpt-4-turbo` | $10.00/1M | $30.00/1M | 128K | Tools, vision, streaming |
-| GPT-4 | `gpt-4` | $30.00/1M | $60.00/1M | 8K | Tools, streaming |
-| GPT-3.5 Turbo | `gpt-35-turbo` | $0.50/1M | $1.50/1M | 16K | Tools, streaming |
+The catalog (`pkg/llm/catalog/catalog.go`) advertises these 8 model IDs for `azure-openai` (all with `ShowInDropdown: false` — Azure is endpoint/deployment-configured, not user-selected). Pricing below is from the catalog; the runtime cost calculator is separate and only prices the older gpt-4o family (see [Cost Tracking](#cost-tracking)).
 
-*Prices are Pay-As-You-Go rates. Provisioned throughput pricing differs.*
+| Model | Model ID | Input Cost | Output Cost | Context | Output |
+|-------|----------|------------|-------------|---------|--------|
+| GPT-5.4 | `gpt-5.4` | $2.50/1M | $15.00/1M | 1.05M | 128K |
+| GPT-5.4 Mini | `gpt-5.4-mini` | $0.75/1M | $4.50/1M | 400K | 128K |
+| GPT-5.3 Chat | `gpt-5.3-chat` | $1.75/1M | $14.00/1M | 128K | 32K |
+| GPT-5 | `gpt-5` | $1.25/1M | $10.00/1M | 400K | 128K |
+| GPT-4.1 | `gpt-4.1` | $2.00/1M | $8.00/1M | 1.05M | 32K |
+| GPT-4.1 Mini | `gpt-4.1-mini` | $0.40/1M | $1.60/1M | 1.05M | 32K |
+| o3 | `o3` | $2.00/1M | $8.00/1M | 200K | 100K |
+| o4-mini | `o4-mini` | $1.10/1M | $4.40/1M | 200K | 100K |
+
+*Catalog pricing. Azure Pay-As-You-Go rates vary by region; provisioned throughput pricing differs.*
 
 ### Authentication Methods
 
@@ -421,17 +426,20 @@ The Azure OpenAI client can automatically infer the model from your deployment n
 
 ## Supported Models
 
-Azure OpenAI supports these OpenAI models (availability varies by region):
+Loom's catalog advertises 8 model IDs for `azure-openai` (see [Available Models](#available-models)): `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-chat`, `gpt-5`, `gpt-4.1`, `gpt-4.1-mini`, `o3`, `o4-mini`. Because Azure routes by deployment name, you can deploy any model your Azure resource supports; the model ID only affects token-budget defaults and cost inference.
 
-| Model | Deployment Model ID | Input Cost | Output Cost | Context | Tool Calling | Vision | Streaming |
-|-------|-------------------|------------|-------------|---------|--------------|--------|-----------|
-| **GPT-4o** | `gpt-4o` | $2.50/1M | $10.00/1M | 128K | ✅ | ✅ | ✅ |
-| **GPT-4o mini** | `gpt-4o-mini` | $0.15/1M | $0.60/1M | 128K | ✅ | ✅ | ✅ |
-| **GPT-4 Turbo** | `gpt-4-turbo` | $10.00/1M | $30.00/1M | 128K | ✅ | ✅ | ✅ |
-| **GPT-4** | `gpt-4` | $30.00/1M | $60.00/1M | 8K | ✅ | ❌ | ✅ |
-| **GPT-3.5 Turbo** | `gpt-35-turbo` | $0.50/1M | $1.50/1M | 16K | ✅ | ❌ | ✅ |
+**Cost calculator coverage**: The runtime `calculateCost()` in `pkg/llm/azureopenai/client.go` has explicit per-million-token pricing only for the older gpt-4o family. Any other inferred model name (including the GPT-5.x, GPT-4.1, o3, and o4-mini IDs above) falls back to gpt-4o pricing ($2.50/$10.00):
 
-*Prices shown are Pay-As-You-Go rates (as of January 2025). Provisioned throughput pricing differs.*
+| Model name (inferred) | Input Cost | Output Cost | Context | Tool Calling | Vision | Streaming |
+|-----------------------|------------|-------------|---------|--------------|--------|-----------|
+| **gpt-4o** | $2.50/1M | $10.00/1M | 128K | ✅ | ✅ | ✅ |
+| **gpt-4o-mini** | $0.15/1M | $0.60/1M | 128K | ✅ | ✅ | ✅ |
+| **gpt-4-turbo** | $10.00/1M | $30.00/1M | 128K | ✅ | ✅ | ✅ |
+| **gpt-4** | $30.00/1M | $60.00/1M | 8K | ✅ | ❌ | ✅ |
+| **gpt-35-turbo** | $0.50/1M | $1.50/1M | 16K | ✅ | ❌ | ✅ |
+| any other (default) | $2.50/1M | $10.00/1M | model-dependent | ✅ | model-dependent | ✅ |
+
+*gpt-4o-family prices are approximate Pay-As-You-Go rates. Provisioned throughput pricing differs.*
 
 **Regional Availability**:
 

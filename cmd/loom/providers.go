@@ -56,13 +56,7 @@ func init() {
 }
 
 func newClient() (*client.Client, func(), error) {
-	c, err := client.NewClient(client.Config{
-		ServerAddr:    serverAddr,
-		TLSEnabled:    tlsEnabled,
-		TLSInsecure:   tlsInsecure,
-		TLSCAFile:     tlsCAFile,
-		TLSServerName: tlsServerName,
-	})
+	c, err := client.NewClient(loomClientConfig())
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to %s: %w", serverAddr, err)
 	}

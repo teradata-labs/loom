@@ -1,7 +1,7 @@
 
 # Embedded Observability Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -12,7 +12,7 @@
 - [Common Tasks](#common-tasks)
   - [Memory Storage](#memory-storage)
   - [SQLite Storage](#sqlite-storage)
-  - [Auto-Selection Mode](#auto-selection-mode)
+  - [Auto-Selection Mode (Library API only)](#auto-selection-mode-library-api-only)
 - [Examples](#examples)
   - [Example 1: Development Setup](#example-1-development-setup)
   - [Example 2: Production Setup](#example-2-production-setup)
@@ -21,7 +21,7 @@
 
 ## Overview
 
-✅ **Status: Implemented** — Embedded observability is fully working with memory and SQLite storage backends.
+✅ **Status: Implemented** — Embedded observability works with both memory and SQLite storage backends.
 
 Use in-process trace storage instead of an external service. Embedded mode provides zero-setup tracing with no network latency and no external dependencies.
 
@@ -34,7 +34,7 @@ Use in-process trace storage instead of an external service. Embedded mode provi
 
 ## Prerequisites
 
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Build with FTS5 tag for SQLite: `go build -tags fts5`
 - No external dependencies required
 
@@ -77,7 +77,7 @@ looms serve --config looms.yaml
 ```yaml
 observability:
   enabled: true
-  mode: embedded           # embedded, service, auto, or none
+  mode: embedded           # embedded, service, or none
 
   # Storage configuration
   storage_type: sqlite     # "memory" or "sqlite"
@@ -182,22 +182,41 @@ SELECT id, session_id, model, success, execution_time_ms, token_count,
 FROM eval_runs ORDER BY timestamp DESC LIMIT 20;
 ```
 
-### Auto-Selection Mode
+### Auto-Selection Mode (Library API only)
 
-Let Loom choose the best mode based on configuration:
+> **Note:** The `looms serve` config does **not** accept `mode: auto`. Valid
+> `mode` values for the server are `embedded`, `service`, and `none`
+> (see `cmd/looms/config.go`). If you omit `mode` in the server config, it
+> defaults to `service`, and service mode requires `hawk_endpoint` — so an
+> omitted `mode` without a `hawk_endpoint` fails validation. For embedded
+> tracing with `looms serve`, set `mode: embedded` explicitly.
 
-**Configuration**:
-```yaml
-observability:
-  enabled: true
-  # mode not specified - auto-selects based on other settings
-  storage_type: sqlite
-  sqlite_path: ./traces.db
+Auto-selection is available through the Go library API, not the server config.
+`NewAutoSelectTracer` (and `NewAutoSelectTracerFromEnv`) pick a tracer based on
+which sources are configured:
+
+```go
+tracer, err := observability.NewAutoSelectTracer(&observability.AutoSelectConfig{
+    Mode:                observability.TracerModeAuto, // "auto"
+    PreferEmbedded:      true,                         // default in *FromEnv
+    HawkURL:             os.Getenv("HAWK_URL"),
+    EmbeddedStorageType: "sqlite",
+    EmbeddedSQLitePath:  "./traces.db",
+})
 ```
 
-**Selection logic** (when `mode` is omitted or set to `auto`):
-1. If `hawk_endpoint` is set → service mode
-2. Otherwise → embedded mode (uses `storage_type` if set, defaults to memory)
+**Selection logic** (when `Mode` is `auto`, per `pkg/observability/auto_select.go`):
+1. Embedded is "available" when `EmbeddedStorageType` is set (and, for `sqlite`,
+   `EmbeddedSQLitePath` is provided); service is "available" when `HawkURL` is set.
+2. If only one is available, that one is selected.
+3. If both are available, `PreferEmbedded` decides (embedded when `true`,
+   service when `false`).
+4. If neither is available, a no-op tracer is used.
+
+`NewAutoSelectTracerFromEnv` reads these from environment variables
+(`LOOM_TRACER_MODE`, `LOOM_TRACER_PREFER_EMBEDDED`, `HAWK_URL`, `HAWK_API_KEY`,
+`LOOM_EMBEDDED_STORAGE`, `LOOM_EMBEDDED_SQLITE_PATH`) and defaults `Mode` to
+`auto` with `PreferEmbedded=true`.
 
 
 ## Examples

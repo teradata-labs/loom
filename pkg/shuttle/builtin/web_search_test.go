@@ -189,25 +189,74 @@ func TestWebSearchTool_SearchSerpAPI(t *testing.T) {
 	assert.Error(t, err) // Expected due to hardcoded endpoint
 }
 
-func TestWebSearchTool_SearchDuckDuckGo(t *testing.T) {
-	tool := NewWebSearchTool()
+// newMockedDDGTool returns a WebSearchTool whose DuckDuckGo endpoint points
+// at a local httptest server serving a minimal Instant Answer payload.
+// Unit tests must never hit the live DDG API: it throttles hosted CI
+// runners, which flaked these tests at the 30s client timeout.
+func newMockedDDGTool(t *testing.T) *WebSearchTool {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Heading":"Mock","AbstractText":"mock abstract","AbstractURL":"https://example.com/mock"}`))
+	}))
+	t.Cleanup(server.Close)
 
-	// DuckDuckGo doesn't require API key
+	tool := NewWebSearchTool()
+	tool.client = server.Client()
+	tool.duckDuckGoEndpoint = server.URL
+	return tool
+}
+
+func TestWebSearchTool_SearchDuckDuckGo(t *testing.T) {
+	// Serve a canned Instant Answer response instead of hitting the live
+	// DuckDuckGo API: unit CI must not depend on the network, and the live
+	// endpoint throttles hosted runners (flaked at the 30s client timeout).
+	// Unlike the other providers, the DDG endpoint is injectable, so this
+	// test can exercise the full Execute path against the mock.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "test query", r.URL.Query().Get("q"))
+		assert.Equal(t, "json", r.URL.Query().Get("format"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"Heading": "Test Query",
+			"AbstractText": "An abstract about the test query.",
+			"AbstractURL": "https://example.com/abstract",
+			"RelatedTopics": [
+				{"Text": "Related One - first related topic", "FirstURL": "https://example.com/one"},
+				{"Text": "Related Two - second related topic", "FirstURL": "https://example.com/two"}
+			],
+			"Results": []
+		}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool()
+	tool.client = server.Client()
+	tool.duckDuckGoEndpoint = server.URL
+
+	// DuckDuckGo doesn't require an API key
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"query":    "test query",
 		"provider": "duckduckgo",
 	})
 
 	require.NoError(t, err)
-	// Should succeed (even with placeholder implementation)
-	assert.True(t, result.Success)
+	require.True(t, result.Success)
 
-	data := result.Data.(map[string]interface{})
+	// require + comma-ok on the casts: the old unchecked assertions panicked
+	// the whole test binary when a failed request left result.Data nil.
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok, "result.Data should be map[string]interface{}, got %T", result.Data)
 	assert.Equal(t, "test query", data["query"])
 	assert.Equal(t, "duckduckgo", data["provider"])
 
-	results := data["results"].([]SearchResult)
-	assert.Greater(t, len(results), 0)
+	results, ok := data["results"].([]SearchResult)
+	require.True(t, ok, "results should be []SearchResult, got %T", data["results"])
+	require.Len(t, results, 3, "abstract + 2 related topics")
+	assert.Equal(t, "Test Query", results[0].Title)
+	assert.Equal(t, "https://example.com/abstract", results[0].URL)
+	assert.Equal(t, "Related One", results[1].Title)
+	assert.Equal(t, "https://example.com/two", results[2].URL)
 }
 
 func TestWebSearchTool_Backend(t *testing.T) {
@@ -216,7 +265,7 @@ func TestWebSearchTool_Backend(t *testing.T) {
 }
 
 func TestWebSearchTool_Execute_WithParameters(t *testing.T) {
-	tool := NewWebSearchTool()
+	tool := newMockedDDGTool(t)
 
 	// Test DuckDuckGo with various parameters
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
@@ -237,19 +286,21 @@ func TestWebSearchTool_Execute_WithParameters(t *testing.T) {
 
 // TestWebSearchTool_Concurrent tests concurrent execution safety
 func TestWebSearchTool_Concurrent(t *testing.T) {
-	tool := NewWebSearchTool()
+	tool := newMockedDDGTool(t)
 
-	// Run multiple searches concurrently
+	// Run multiple searches concurrently. Use assert (not require) inside
+	// the goroutines: require calls t.FailNow, which must only run on the
+	// test goroutine.
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(query string) {
+			defer func() { done <- true }()
 			result, err := tool.Execute(context.Background(), map[string]interface{}{
 				"query":    query,
 				"provider": "duckduckgo",
 			})
-			require.NoError(t, err)
+			assert.NoError(t, err)
 			assert.NotNil(t, result)
-			done <- true
 		}(string(rune('A' + i)))
 	}
 

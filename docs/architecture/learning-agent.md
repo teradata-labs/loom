@@ -5,7 +5,7 @@ Autonomous self-improvement system that monitors runtime pattern performance acr
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Implementation Status**:
 - ✅ LearningAgentService gRPC (all 7 RPCs defined in proto and implemented)
@@ -99,7 +99,7 @@ The Learning Agent autonomously improves Loom agents by analyzing **runtime patt
 graph TB
     subgraph External["External Environment"]
         Agents[Agents<br/>runtime]
-        PatternLib[Pattern Library<br/>100+ patterns]
+        PatternLib[Pattern Library<br/>158 patterns]
         JudgeSystem[Judge System<br/>evaluation]
         Hawk[Hawk<br/>metrics]
     end
@@ -1802,7 +1802,7 @@ Decision: p-value (0.119) > 0.05 → NOT statistically significant → EXTEND ca
 **Workaround**: Reduce `analysis_interval` to "30m" or "15m" for faster iteration (at cost of more compute).
 
 
-### Constraint 3: US-Centric Confidence Function
+### Constraint 3: Volume-Calibrated Confidence Function
 
 **Description**: Sigmoid confidence function calibrated for typical usage patterns (50 uses → 0.9 confidence).
 

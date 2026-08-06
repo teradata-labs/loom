@@ -16,6 +16,7 @@ package pgxdriver
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -90,6 +91,13 @@ func buildDSN(cfg *loomv1.PostgresStorageConfig) string {
 		return cfg.GetDsn()
 	}
 
+	// Configure-by-Supabase-project: derive a session-mode pooler DSN.
+	if sb := cfg.GetSupabase(); sb.GetEnabled() {
+		if dsn := buildSupabaseDSN(sb); dsn != "" {
+			return dsn
+		}
+	}
+
 	host := cfg.GetHost()
 	if host == "" {
 		return ""
@@ -121,6 +129,43 @@ func buildDSN(cfg *loomv1.PostgresStorageConfig) string {
 	}
 
 	return dsn
+}
+
+// buildSupabaseDSN builds a SESSION-MODE (port 5432) Supabase pooler DSN from a
+// project ref + database password. Storage REQUIRES session mode: the
+// transaction-mode pooler (6543) breaks the SET LOCAL RLS context and prepared
+// statements the storage layer depends on, so the port is fixed at 5432.
+//
+// The format mirrors the Supabase execution backend's connection string
+// (pkg/backends/supabase): postgresql://postgres.<ref>:<password>@<host>:5432/<db>?sslmode=require.
+// Returns "" when required fields are absent so the caller can fall through.
+func buildSupabaseDSN(sb *loomv1.SupabaseConfig) string {
+	if sb.GetProjectRef() == "" || sb.GetDatabasePassword() == "" {
+		return ""
+	}
+
+	database := sb.GetDatabase()
+	if database == "" {
+		database = "postgres"
+	}
+
+	// Use the explicit pooler host when set, otherwise derive from the region.
+	// The aws-N prefix varies per project, so an explicit host wins.
+	host := sb.GetPoolerHost()
+	if host == "" {
+		if sb.GetRegion() == "" {
+			return ""
+		}
+		host = fmt.Sprintf("aws-0-%s.pooler.supabase.com", sb.GetRegion())
+	}
+
+	return fmt.Sprintf(
+		"postgresql://postgres.%s:%s@%s:5432/%s?sslmode=require",
+		sb.GetProjectRef(),
+		url.QueryEscape(sb.GetDatabasePassword()),
+		host,
+		database,
+	)
 }
 
 // dsnQuoteValue quotes a value for use in a libpq keyword/value connection string.

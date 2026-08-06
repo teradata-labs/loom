@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 func TestResolveEncoderPoolSize_EnvOverride(t *testing.T) {
@@ -178,6 +180,28 @@ func TestTokenCounter_EstimateMessagesTokens(t *testing.T) {
 	contentOnly := tc.CountTokens(messages[0].Content) + tc.CountTokens(messages[1].Content)
 	if count <= contentOnly {
 		t.Errorf("Expected message overhead, got %d <= %d", count, contentOnly)
+	}
+}
+
+// TestTokenCounter_ToolResultRecordCarriesNoWeight pins the counting rule: the
+// budget measures what is dispatched. A tool message's Content is the rendered
+// form the model receives; Message.ToolResult is the raw record kept for restore
+// and telemetry and is never sent, so it must add nothing — however large it is
+// (a skill body, an offloaded payload still held in the record).
+func TestTokenCounter_ToolResultRecordCarriesNoWeight(t *testing.T) {
+	tc := GetTokenCounter()
+
+	bare := Message{Role: "tool", Content: "Skill loaded: alpha-skill"}
+	withRecord := bare
+	withRecord.ToolResult = &shuttle.Result{
+		Success:  true,
+		Data:     bare.Content,
+		Metadata: map[string]interface{}{"text_body": strings.Repeat("skill body line. ", 4096)},
+	}
+
+	if got, want := tc.EstimateMessagesTokens([]Message{withRecord}),
+		tc.EstimateMessagesTokens([]Message{bare}); got != want {
+		t.Errorf("the attached record must carry no token weight: %d with record vs %d without", got, want)
 	}
 }
 

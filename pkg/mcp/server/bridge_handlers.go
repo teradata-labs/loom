@@ -18,11 +18,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -64,6 +67,294 @@ func (b *LoomBridge) handleWeave(ctx context.Context, args map[string]interface{
 	return &protocol.CallToolResult{
 		Content: []protocol.Content{{Type: "text", Text: body}},
 	}, nil
+}
+
+// handleWeaveStream runs loom_weave over the StreamWeave RPC, forwarding each
+// progress update (0-100) as an MCP progress notification via emit, then returns
+// the final answer assembled from the terminal completion event. Unlike
+// handleWeave it issues no second unary call: StreamWeave's COMPLETED event
+// already carries the full result (see MultiAgentServer.StreamWeave).
+//
+// The routing preamble that handleWeave prepends is intentionally omitted here:
+// the stream does not expose the resolved agent id, and emitting a preamble with
+// an empty id would be misleading. The result is the agent's answer text.
+func (b *LoomBridge) handleWeaveStream(ctx context.Context, args map[string]interface{}, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	prepared := prepareWeaveMCPArgsForProtoJSON(args)
+	req := &loomv1.WeaveRequest{}
+	if len(prepared) > 0 {
+		argsJSON, err := json.Marshal(prepared)
+		if err != nil {
+			return nil, fmt.Errorf("marshal args: %w", err)
+		}
+		if err := protojson.Unmarshal(argsJSON, req); err != nil {
+			return nil, fmt.Errorf("unmarshal args to proto: %w", err)
+		}
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+
+	stream, err := b.client.StreamWeave(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var finalContent string
+	for {
+		prog, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		if prog.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+			finalContent = prog.GetPartialContent()
+			if finalContent == "" && prog.GetPartialResult() != nil {
+				finalContent = prog.GetPartialResult().GetDataJson()
+			}
+			continue
+		}
+		// Stream the agent's answer to the client as it generates: token-stream
+		// events carry the cumulative partial response, forwarded via the MCP
+		// `message` field so the client renders the text forming rather than a
+		// progress bar. Only token-stream content is forwarded (not stage
+		// descriptions) so every message is unambiguously answer text.
+		if prog.GetIsTokenStream() {
+			if pc := prog.GetPartialContent(); pc != "" {
+				_ = emit.EmitMessage(pc)
+			}
+		}
+	}
+
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: finalContent}},
+	}, nil
+}
+
+// buildPromptForWeaver wraps a loom_build request into an instruction for the
+// builder agent: design + CREATE + SAVE the artifact, then report how to run it.
+// This is the *query* the edge sends to the weaver (not a stored agent prompt),
+// shaped so the weaver's reply gives the MCP client runnable instructions.
+func buildPromptForWeaver(intent, kind, name string, toolsHint []string) string {
+	what := "agent or workflow"
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "agent":
+		what = "agent"
+	case "workflow":
+		what = "workflow"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "BUILD REQUEST (from an external MCP client). Design and CREATE a Loom %s, then SAVE it so it can be run later (persist an agent via agent_management; save a workflow as YAML/pattern). Build it now — do not ask for confirmation; if the request is ambiguous, make reasonable choices and note them.\n\n", what)
+	fmt.Fprintf(&sb, "What to build:\n%s\n", strings.TrimSpace(intent))
+	if n := strings.TrimSpace(name); n != "" {
+		fmt.Fprintf(&sb, "\nPreferred name: %s\n", n)
+	}
+	if len(toolsHint) > 0 {
+		fmt.Fprintf(&sb, "\nCapabilities it should use: %s\n", strings.Join(toolsHint, ", "))
+	}
+	sb.WriteString("\nWhen finished, report concisely:\n- What you created: the agent_id(s) and/or workflow name + saved path.\n- A one-line description of what it does.\n- Exactly how to run it from MCP: e.g. loom_execute_workflow with the workflow_yaml, or loom_weave with agent_id=<id>.")
+	return sb.String()
+}
+
+// buildWeaveRequestFromArgs constructs the WeaveRequest for loom_build. The agent
+// is PINNED to the configured builder (the weaver) — a client cannot override it,
+// which is the whole point: authoring always goes to the expert. session_id flows
+// through so a client can refine a previous build.
+func (b *LoomBridge) buildWeaveRequestFromArgs(args map[string]interface{}) (*loomv1.WeaveRequest, error) {
+	intent, _ := args["intent"].(string)
+	if strings.TrimSpace(intent) == "" {
+		return nil, fmt.Errorf("intent is required")
+	}
+	kind, _ := args["kind"].(string)
+	name, _ := args["name"].(string)
+	var toolsHint []string
+	if raw, ok := args["tools_hint"].([]interface{}); ok {
+		for _, v := range raw {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				toolsHint = append(toolsHint, strings.TrimSpace(s))
+			}
+		}
+	}
+	req := &loomv1.WeaveRequest{
+		Query:   buildPromptForWeaver(intent, kind, name, toolsHint),
+		AgentId: b.builderAgentOrDefault(),
+	}
+	if sid, ok := args["session_id"].(string); ok && strings.TrimSpace(sid) != "" {
+		req.SessionId = strings.TrimSpace(sid)
+	}
+	return req, nil
+}
+
+// handleBuild is the synchronous fallback for loom_build (non-streaming clients).
+// It delegates authoring to the builder agent via the unary Weave RPC.
+func (b *LoomBridge) handleBuild(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	req, err := b.buildWeaveRequestFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+	resp, err := b.client.Weave(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+	respJSON, err := protojson.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal response: %w", err)
+	}
+	body := fmt.Sprintf("built_by: %s\n%s", b.builderAgentOrDefault(), string(respJSON))
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: body}},
+	}, nil
+}
+
+// handleBuildStream is the streaming path for loom_build: same builder-pinned
+// delegation as handleBuild, but over StreamWeave so the client sees the weaver's
+// authoring progress as it forms.
+func (b *LoomBridge) handleBuildStream(ctx context.Context, args map[string]interface{}, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	req, err := b.buildWeaveRequestFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+	stream, err := b.client.StreamWeave(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+	var finalContent string
+	for {
+		prog, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		if prog.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+			finalContent = prog.GetPartialContent()
+			if finalContent == "" && prog.GetPartialResult() != nil {
+				finalContent = prog.GetPartialResult().GetDataJson()
+			}
+			continue
+		}
+		if prog.GetIsTokenStream() {
+			if pc := prog.GetPartialContent(); pc != "" {
+				_ = emit.EmitMessage(pc)
+			}
+		}
+	}
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: finalContent}},
+	}, nil
+}
+
+// handleWorkflowStream runs loom_execute_workflow over the StreamWorkflow RPC,
+// forwarding each WorkflowProgress as a status message (current agent + stage)
+// and returning the agents' final outputs as the result. This is the reliable
+// multi-agent path: the workflow orchestrator wires agents and message queues
+// itself, so it does not depend on an LLM correctly threading ephemeral agent
+// IDs through send_message.
+//
+// The workflow may be supplied as `workflow_yaml` (a YAML workflow spec — far
+// easier for a model to produce than a protojson pattern oneof) or as an inline
+// `pattern` on the request. workflow_yaml wins when both are present.
+func (b *LoomBridge) handleWorkflowStream(ctx context.Context, args map[string]interface{}, emit ProgressEmitter) (*protocol.CallToolResult, error) {
+	// workflow_yaml is a convenience arg, not an ExecuteWorkflowRequest field;
+	// pull it out before protojson so the rest unmarshals cleanly.
+	yamlSpec, _ := args["workflow_yaml"].(string)
+	rest := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		if k == "workflow_yaml" {
+			continue
+		}
+		rest[k] = v
+	}
+
+	req := &loomv1.ExecuteWorkflowRequest{}
+	if len(rest) > 0 {
+		argsJSON, err := json.Marshal(rest)
+		if err != nil {
+			return nil, fmt.Errorf("marshal workflow args: %w", err)
+		}
+		if err := protojson.Unmarshal(argsJSON, req); err != nil {
+			return nil, fmt.Errorf("unmarshal workflow args to proto: %w", err)
+		}
+	}
+
+	if strings.TrimSpace(yamlSpec) != "" {
+		pattern, err := orchestration.LoadWorkflowFromYAMLBytes([]byte(yamlSpec))
+		if err != nil {
+			return errorResult(fmt.Sprintf("invalid workflow_yaml: %v", err)), nil
+		}
+		req.Pattern = pattern
+	}
+	// A pattern, an inline workflow_yaml, OR a workflow_ref (saved workflow name,
+	// resolved server-side) is required. workflow_ref flows through to the server.
+	if req.GetPattern() == nil && strings.TrimSpace(req.GetWorkflowRef()) == "" {
+		return errorResult("a workflow is required: pass workflow_ref (a saved workflow name — see loom_list_workflows), workflow_yaml, or an inline pattern"), nil
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, WeaveRequestTimeout)
+	defer cancel()
+
+	stream, err := b.client.StreamWorkflow(rpcCtx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep the latest output per agent (events may repeat/refine partial results),
+	// preserving first-seen order so the final reads as the pipeline ran.
+	latest := make(map[string]string)
+	var order []string
+	for {
+		prog, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		if line := workflowProgressLine(prog); line != "" {
+			_ = emit.EmitMessage(line)
+		}
+		for _, r := range prog.GetPartialResults() {
+			if _, seen := latest[r.GetAgentId()]; !seen {
+				order = append(order, r.GetAgentId())
+			}
+			latest[r.GetAgentId()] = r.GetOutput()
+		}
+	}
+
+	var sb strings.Builder
+	for _, id := range order {
+		if out := strings.TrimSpace(latest[id]); out != "" {
+			fmt.Fprintf(&sb, "## %s\n%s\n\n", id, out)
+		}
+	}
+	final := strings.TrimSpace(sb.String())
+	if final == "" {
+		final = "Workflow completed (no agent output was captured)."
+	}
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: final}},
+	}, nil
+}
+
+// workflowProgressLine renders a WorkflowProgress as a one-line status for the
+// client: "<current-agent>: <message>" (either part may be empty).
+func workflowProgressLine(p *loomv1.WorkflowProgress) string {
+	agent := p.GetCurrentAgentId()
+	msg := p.GetMessage()
+	switch {
+	case agent != "" && msg != "":
+		return agent + ": " + msg
+	case agent != "":
+		return agent
+	default:
+		return msg
+	}
 }
 
 // ============================================================================
@@ -281,6 +572,13 @@ func (b *LoomBridge) handleListWorkflowExecutions(ctx context.Context, args map[
 	return callGRPC(ctx, b.requestTimeout, args,
 		func() *loomv1.ListWorkflowExecutionsRequest { return &loomv1.ListWorkflowExecutionsRequest{} },
 		b.client.ListWorkflowExecutions,
+	)
+}
+
+func (b *LoomBridge) handleListWorkflows(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	return callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.ListWorkflowsRequest { return &loomv1.ListWorkflowsRequest{} },
+		b.client.ListWorkflows,
 	)
 }
 
