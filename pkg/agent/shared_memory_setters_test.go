@@ -14,8 +14,6 @@
 package agent
 
 import (
-	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,12 +51,6 @@ func TestAgent_SetSharedMemory_UpdatesAllReferences(t *testing.T) {
 	require.NotNil(t, agent.sharedMemory)
 	assert.Same(t, store1, agent.sharedMemory, "Agent should initially use store1")
 
-	// Manually register query_tool_result to simulate state after first large result
-	// (Progressive disclosure: tool is registered after first large result, not at agent init)
-	if agent.sqlResultStore != nil {
-		agent.tools.Register(NewQueryToolResultTool(agent.sqlResultStore, agent.sharedMemory))
-	}
-
 	// Verify QueryToolResultTool is now registered with store1
 	// Note: GetToolResultTool removed - inline metadata makes it unnecessary
 	tool1, exists1 := agent.tools.Get("query_tool_result")
@@ -87,8 +79,6 @@ func TestAgent_SetSharedMemory_UpdatesAllReferences(t *testing.T) {
 	require.True(t, exists2, "QueryToolResultTool should still be registered after SetSharedMemory")
 	require.NotNil(t, tool2, "QueryToolResultTool should not be nil after SetSharedMemory")
 
-	// Verify refTracker was updated
-	assert.NotNil(t, agent.refTracker, "Reference tracker should be initialized after SetSharedMemory")
 }
 
 // TestAgent_SetSharedMemory_NilSafety verifies that SetSharedMemory handles nil gracefully
@@ -102,115 +92,4 @@ func TestAgent_SetSharedMemory_NilSafety(t *testing.T) {
 
 	// sharedMemory should be set to nil
 	assert.Nil(t, agent.sharedMemory)
-}
-
-// TestAgent_SetSharedMemory_Integration verifies the complete flow:
-// 1. Agent created without shared memory
-// 2. SetSharedMemory called (simulating server startup)
-// 3. Agent can store and retrieve data via the global store
-func TestAgent_SetSharedMemory_Integration(t *testing.T) {
-	storage.ResetGlobalSharedMemory()
-
-	globalStore := storage.GetGlobalSharedMemory(&storage.Config{
-		MaxMemoryBytes:       50 * 1024 * 1024,
-		CompressionThreshold: 1024 * 1024,
-		TTLSeconds:           3600,
-	})
-
-	// Create agent (simulating registry.buildAgent without shared memory initially)
-	agent := NewAgent(nil, &mockLLMProvider{})
-
-	// Initially agent has a sharedMemory instance from NewAgent
-	initialStore := agent.sharedMemory
-	require.NotNil(t, initialStore, "NewAgent should initialize sharedMemory")
-	t.Logf("Initial store: %p", initialStore)
-	t.Logf("Global store: %p", globalStore)
-
-	// Store data in the global store BEFORE calling SetSharedMemory
-	// This simulates the issue where data is stored in one store but retrieved from another
-	ctx := context.Background()
-	largeData := []byte(strings.Repeat("X", 15000))
-	refID := "test_ref_integration"
-
-	ref, err := globalStore.Store(refID, largeData, "text/plain", map[string]string{
-		"test": "integration",
-	}, "")
-	require.NoError(t, err, "Should be able to store data")
-	require.NotNil(t, ref)
-	assert.Equal(t, refID, ref.Id)
-	t.Logf("Data stored in global store with ref ID: %s", ref.Id)
-
-	// Manually register query_tool_result to simulate state after first large result
-	// (Progressive disclosure: tool is registered after first large result, not at agent init)
-	if agent.sqlResultStore != nil {
-		agent.tools.Register(NewQueryToolResultTool(agent.sqlResultStore, agent.sharedMemory))
-	}
-
-	// Try to retrieve with tool BEFORE SetSharedMemory (should fail)
-	// Note: get_tool_result removed - using query_tool_result instead with offset/limit for text data
-	getTool1, exists1 := agent.tools.Get("query_tool_result")
-	require.True(t, exists1, "query_tool_result should be registered after manual registration")
-	result1, err1 := getTool1.Execute(ctx, map[string]interface{}{
-		"reference_id": refID,
-		"offset":       0,
-		"limit":        100,
-	})
-	require.NoError(t, err1)
-	// This SHOULD fail because the tool is using initialStore, not globalStore
-	if result1.Success {
-		t.Logf("WARNING: Tool succeeded before SetSharedMemory - stores are the same! (This is actually correct since they're both global)")
-	} else {
-		t.Logf("Expected: Tool failed before SetSharedMemory because using different store: %s", result1.Error.Message)
-	}
-
-	// Now call SetSharedMemory to inject the global store
-	agent.SetSharedMemory(globalStore)
-
-	// Verify agent has the global store
-	require.NotNil(t, agent.sharedMemory)
-	assert.Same(t, globalStore, agent.sharedMemory, "Agent should use global store after SetSharedMemory")
-
-	// Verify QueryToolResultTool is properly registered
-	// Note: get_tool_result removed - using query_tool_result instead
-	getTool, exists := agent.tools.Get("query_tool_result")
-	require.True(t, exists, "query_tool_result should be registered after SetSharedMemory")
-	require.NotNil(t, getTool, "query_tool_result should not be nil")
-
-	// Retrieve via query_tool_result tool (which should use the same global store)
-	result, err := getTool.Execute(ctx, map[string]interface{}{
-		"reference_id": refID,
-		"offset":       0,
-		"limit":        100,
-	})
-	require.NoError(t, err, "query_tool_result should not error")
-	require.NotNil(t, result, "Result should not be nil")
-
-	// Check if tool succeeded, if not print the error
-	if !result.Success {
-		t.Logf("Tool failed with error: %+v", result.Error)
-		if result.Error != nil {
-			t.Logf("Error code: %s, message: %s", result.Error.Code, result.Error.Message)
-		}
-	}
-	require.True(t, result.Success, "Tool should succeed after SetSharedMemory")
-
-	// Note: get_tool_result removed - query_tool_result returns actual data, not metadata
-	// Verify query results were retrieved correctly
-	queryResult, ok := result.Data.(map[string]interface{})
-	require.True(t, ok, "Data should be a map")
-
-	// query_tool_result returns lines, offset, limit, etc. for text data
-	assert.Contains(t, queryResult, "lines", "Query result should contain lines")
-	assert.Contains(t, queryResult, "offset", "Query result should contain offset")
-	assert.Contains(t, queryResult, "limit", "Query result should contain limit")
-
-	// Verify we got the data back
-	lines, ok := queryResult["lines"].([]string)
-	require.True(t, ok, "Lines should be a string array")
-	require.Greater(t, len(lines), 0, "Should have retrieved at least one line")
-	// Verify the data content (should be our XXX string)
-	assert.Contains(t, lines[0], "XXXX", "Retrieved data should match stored data")
-
-	// Test passes - SetSharedMemory successfully updated the agent's store reference
-	// and query_tool_result can now retrieve data from the global store
 }

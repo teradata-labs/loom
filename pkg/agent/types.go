@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -74,9 +75,6 @@ type Agent struct {
 
 	// Memory manager for conversation history
 	memory *Memory
-
-	// Error store for tool execution errors (supports error submission channel pattern)
-	errorStore ErrorStore
 
 	// LLM provider for generating responses
 	llm LLMProvider
@@ -139,21 +137,18 @@ type Agent struct {
 	// Shared memory store for large tool results (prevents context overflow)
 	sharedMemory *storage.SharedMemoryStore
 
-	// Reference tracker for automatic cleanup of shared memory references when sessions end
-	refTracker *storage.SessionReferenceTracker
-
-	// SQL result store for queryable large SQL results
-	sqlResultStore storage.ResultStore
-
 	// Configurable shared memory threshold for large tool results.
 	// -1 = use storage.DefaultSharedMemoryThreshold; 0 = always reference; >0 = byte threshold
 	sharedMemoryThreshold int64
 
-	// Maximum tool results to keep in conversation kernel. 0 = use default (5).
-	maxToolResults int
-
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
+
+	// In-turn SQLite databases backing query_tool_result's sql mode (HLD §7.1):
+	// per (session, message), lazily built, dropped at turn end. Guarded by
+	// inTurnSQLMu.
+	inTurnSQL   map[inTurnSQLKey]*sql.DB
+	inTurnSQLMu sync.Mutex
 
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
@@ -167,11 +162,10 @@ type Agent struct {
 	// Guarded by a.mu.
 	lazyToolSets []lazyToolSet
 
-	// suppressedBuiltinTools blocks agent-internal progressive-disclosure
-	// registrations (graph_memory, task_board, conversation_memory,
-	// session_memory) and runtime registrations (get_error_details,
-	// query_tool_result) from surfacing those tools to the LLM. Subsystems
-	// themselves (extractor, task manager, error store) keep running.
+	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
+	// task_board, manage_skills, load_pattern) and the retrieval tools
+	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
+	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
 	// the single source of truth for which tools should be surfaced —
@@ -289,6 +283,11 @@ type Config struct {
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
+
+	// ProtectedRecentTurns is K (HLD §5.1): the top rung of relief's halving
+	// ladder — the newest turns relief tries hardest to keep, though the ladder
+	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
+	ProtectedRecentTurns int
 
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig

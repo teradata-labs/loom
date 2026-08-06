@@ -77,6 +77,8 @@ type ContentBlock struct {
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
 	Content   string                 `json:"content,omitempty"`
 	Source    *ImageSource           `json:"source,omitempty"` // For image content blocks
+	// CacheControl marks a message-level cache breakpoint (HLD §5.2 step 8).
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for ContentBlock.
@@ -107,6 +109,9 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 	}
 	if cb.ToolUseID != "" {
 		m["tool_use_id"] = cb.ToolUseID
+	}
+	if cb.CacheControl != nil {
+		m["cache_control"] = cb.CacheControl
 	}
 	if cb.Content != "" {
 		m["content"] = cb.Content

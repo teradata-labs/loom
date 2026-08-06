@@ -153,8 +153,8 @@ func TestSessionStore_CrossSession_LoadMessagesForAgent(t *testing.T) {
 		SessionContext: types.SessionContextShared,
 		Timestamp:      time.Now().Add(-2 * time.Second),
 	}
-	require.NoError(t, store.SaveMessage(ctx, "coord-session-1", coordMsg1))
-	require.NoError(t, store.SaveMessage(ctx, "coord-session-1", coordMsg2))
+	require.NoError(t, store.SaveMessage(ctx, "coord-session-1", &coordMsg1, false))
+	require.NoError(t, store.SaveMessage(ctx, "coord-session-1", &coordMsg2, false))
 
 	// Add messages to sub-agent session
 	subMsg1 := Message{
@@ -169,8 +169,8 @@ func TestSessionStore_CrossSession_LoadMessagesForAgent(t *testing.T) {
 		SessionContext: types.SessionContextShared,
 		Timestamp:      time.Now(),
 	}
-	require.NoError(t, store.SaveMessage(ctx, "sub-agent-session-1", subMsg1))
-	require.NoError(t, store.SaveMessage(ctx, "sub-agent-session-1", subMsg2))
+	require.NoError(t, store.SaveMessage(ctx, "sub-agent-session-1", &subMsg1, false))
+	require.NoError(t, store.SaveMessage(ctx, "sub-agent-session-1", &subMsg2, false))
 
 	// Test: Load all messages for analyzer (should include coordinator + own messages)
 	messages, err := store.LoadMessagesForAgent(ctx, "analyzer")
@@ -245,9 +245,9 @@ func TestSessionStore_CrossSession_LoadMessagesFromParent(t *testing.T) {
 		SessionContext: types.SessionContextShared,
 		Timestamp:      time.Now(),
 	}
-	require.NoError(t, store.SaveMessage(ctx, "parent-session", parentMsg1))
-	require.NoError(t, store.SaveMessage(ctx, "parent-session", parentMsg2))
-	require.NoError(t, store.SaveMessage(ctx, "parent-session", parentMsg3))
+	require.NoError(t, store.SaveMessage(ctx, "parent-session", &parentMsg1, false))
+	require.NoError(t, store.SaveMessage(ctx, "parent-session", &parentMsg2, false))
+	require.NoError(t, store.SaveMessage(ctx, "parent-session", &parentMsg3, false))
 
 	// Test: Load parent messages from child session
 	parentMessages, err := store.LoadMessagesFromParentSession(ctx, "child-session")

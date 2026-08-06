@@ -16,7 +16,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -75,80 +74,6 @@ func TestGetEscalationMessage(t *testing.T) {
 	assert.NotEmpty(t, msg2)
 	assert.Contains(t, msg2, "ESCALATION")
 	assert.Contains(t, msg2, "2 times in a row")
-}
-
-func TestCheckTokenBudget(t *testing.T) {
-	sm := NewSegmentedMemory("Small ROM content", 0, 0)
-
-	info := checkTokenBudget(sm)
-
-	// Get actual budget from segmented memory
-	used, available, _ := sm.GetTokenBudgetUsage()
-
-	assert.Greater(t, info.currentTokens, 0)
-	assert.Equal(t, available, info.availableTokens)
-	assert.Equal(t, used, info.currentTokens)
-	assert.Greater(t, info.budgetPct, 0.0)
-	// MaxOutputTokens should be 50% of available budget (no longer capped at 8192)
-	assert.Equal(t, available/2, info.maxOutputTokens)
-	assert.GreaterOrEqual(t, info.maxOutputTokens, 2048)
-}
-
-func TestCheckTokenBudget_LowBudget(t *testing.T) {
-	// Create ROM large enough to consume most of budget
-	largeROM := strings.Repeat("This is test content for token budget testing. ", 10000)
-	sm := NewSegmentedMemory(largeROM, 0, 0)
-
-	info := checkTokenBudget(sm)
-
-	// Should cap at minimum
-	assert.GreaterOrEqual(t, info.maxOutputTokens, 2048)
-}
-
-func TestCheckTokenBudget_HighBudget(t *testing.T) {
-	sm := NewSegmentedMemory("Small ROM", 0, 0)
-
-	info := checkTokenBudget(sm)
-
-	// With high budget, maxOutputTokens = available / 2
-	// For Claude Sonnet 4.5 default (200K context, 20K reserved = 180K available)
-	// After small ROM usage, should have ~179K available, so max output ~89K
-	_, available, _ := sm.GetTokenBudgetUsage()
-	assert.Equal(t, available/2, info.maxOutputTokens)
-	assert.Greater(t, info.maxOutputTokens, 8192) // Should exceed old fixed cap
-}
-
-func TestEnforceTokenBudget_NormalUsage(t *testing.T) {
-	sm := NewSegmentedMemory("Normal ROM content", 0, 0)
-
-	info := checkTokenBudget(sm)
-	compressed, err := enforceTokenBudget(context.Background(), sm, info)
-
-	require.NoError(t, err)
-	assert.False(t, compressed) // Shouldn't compress at low usage
-}
-
-func TestEnforceTokenBudget_CriticalUsage(t *testing.T) {
-	// Create large ROM to push budget over 85%
-	largeROM := strings.Repeat("Large ROM content for testing compression. ", 15000)
-	sm := NewSegmentedMemory(largeROM, 0, 0)
-
-	// Add many messages to L1
-	for i := 0; i < 10; i++ {
-		sm.AddMessage(context.Background(), Message{
-			Role:    "user",
-			Content: strings.Repeat("Test message ", 50),
-		})
-	}
-
-	info := checkTokenBudget(sm)
-	if info.budgetPct > 85 {
-		compressed, err := enforceTokenBudget(context.Background(), sm, info)
-		require.NoError(t, err)
-		assert.True(t, compressed) // Should compress at critical usage
-	} else {
-		t.Skip("ROM not large enough to trigger critical threshold")
-	}
 }
 
 func TestBuildSoftReminderLegacy(t *testing.T) {

@@ -185,10 +185,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 
 		// Load messages within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
-		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
-		ORDER BY timestamp ASC`,
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
+		ORDER BY id ASC`,
 			sessionID, userID,
 		)
 		if err != nil {
@@ -324,7 +324,11 @@ func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([
 }
 
 // SaveMessage persists a message to the messages table and updates the session timestamp atomically.
-func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg agent.Message) error {
+// SaveMessage persists a message row. The row's turn is derived at insert
+// (HLD §4.5): turnStart — passed only by the Chat()-entry persist site — adds 1
+// to the session's MAX(turn); every other site stamps MAX(turn) unchanged. The
+// derived seq (messages.id) and turn are stamped back onto msg.
+func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *agent.Message, turnStart bool) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.save_message")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
@@ -355,9 +359,18 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg ag
 			}
 		}
 
-		_, err := tx.Exec(ctx, `
-		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		// turn is derived at insert — no counter, no session state (HLD §4.5).
+		turnIncrement := 0
+		if turnStart {
+			turnIncrement = 1
+		}
+
+		var seq, turn int64
+		err := tx.QueryRow(ctx, `
+		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+			(SELECT COALESCE(MAX(turn), 0) + $15 FROM messages WHERE session_id = $1))
+		RETURNING id, turn`,
 			sessionID,
 			userID,
 			msg.Role,
@@ -370,7 +383,15 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg ag
 			msg.Timestamp,
 			msg.TokenCount,
 			msg.CostUSD,
-		)
+			msg.Evicted,
+			msg.Folded,
+			turnIncrement,
+		).Scan(&seq, &turn)
+		if err == nil {
+			// RETURNING stamps both onto the in-memory message (HLD §4.5).
+			msg.ID = fmt.Sprintf("%d", seq)
+			msg.Turn = turn
+		}
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -405,15 +426,109 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
-		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
-		ORDER BY timestamp ASC`,
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
+		ORDER BY id ASC`,
 			sessionID, userID,
 		)
 		if err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		defer rows.Close()
+
+		messages, err = scanMessages(rows)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// MarkEvicted sets evicted=TRUE on the given rows in one transaction (relief
+// operation; HLD §5.2). Flags are write-once — no code path clears them.
+func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+	if len(seqs) == 0 {
+		return nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.mark_evicted")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx,
+			"UPDATE messages SET evicted = TRUE WHERE session_id = $1 AND user_id = $2 AND id = ANY($3)",
+			sessionID, userID, seqs,
+		); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to mark evicted: %w", err)
+		}
+		return nil
+	})
+}
+
+// FoldMessages writes summary version n (snapshot_type='fold', content = JSON
+// {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
+// §5.4.6) — never a fold that evaporates on reload.
+func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.fold_messages")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("version", fmt.Sprintf("%d", n))
+
+	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
+	}
+
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO memory_snapshots (session_id, user_id, snapshot_type, content, token_count, created_at)
+			 VALUES ($1, $2, 'fold', $3, $4, $5)`,
+			sessionID, userID, string(content), (len(text)+2)/3, time.Now().UTC(),
+		); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to insert fold snapshot: %w", err)
+		}
+		if len(seqs) > 0 {
+			if _, err := tx.Exec(ctx,
+				"UPDATE messages SET folded = TRUE WHERE session_id = $1 AND user_id = $2 AND id = ANY($3)",
+				sessionID, userID, seqs,
+			); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to set folded flags: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// ListMessagesBySeqRange is the by-seq span read backing recall (HLD §6):
+// rows lo..hi inclusive for one session, seq (messages.id) ascending. Folded
+// rows are included — a summary-cited span is exactly what recall retrieves.
+func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID string, lo, hi int64) ([]agent.Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.list_messages_by_seq_range")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, `
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		FROM messages
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND id BETWEEN $3 AND $4
+		ORDER BY id ASC`,
+			sessionID, userID, lo, hi,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to query message span: %w", err)
 		}
 		defer rows.Close()
 
@@ -436,10 +551,11 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
+		  AND m.folded = FALSE
 		ORDER BY m.timestamp ASC`,
 			agentID, userID,
 		)
@@ -487,9 +603,10 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 
 		// Load messages from parent session within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
+		  AND folded = FALSE
 		ORDER BY timestamp ASC`,
 			*parentID, userID,
 		)
@@ -531,7 +648,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		if sessionID == "" {
 			// Search across all sessions for this user
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 			FROM messages
 			WHERE user_id = $1 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $2)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $2)) DESC
@@ -540,7 +657,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			)
 		} else {
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 			FROM messages
 			WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $3)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $3)) DESC
@@ -578,7 +695,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.content_search @@ websearch_to_tsquery('english', $3)
@@ -847,9 +964,12 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 			timestamp      time.Time
 			tokenCount     int
 			costUSD        float64
+			evicted        bool
+			folded         bool
+			turn           int64
 		)
 
-		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &timestamp, &tokenCount, &costUSD); err != nil {
+		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &timestamp, &tokenCount, &costUSD, &evicted, &folded, &turn); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 
@@ -859,6 +979,9 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 			Timestamp:  timestamp,
 			TokenCount: tokenCount,
 			CostUSD:    costUSD,
+			Evicted:    evicted,
+			Folded:     folded,
+			Turn:       turn,
 		}
 
 		if content != nil {

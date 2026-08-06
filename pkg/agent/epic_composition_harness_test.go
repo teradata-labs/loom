@@ -272,7 +272,6 @@ type epicOpts struct {
 	dump                 bool
 	checker              *shuttle.PermissionChecker
 	store                *SessionStore
-	errStore             ErrorStore
 	maxContextTokens     int
 	reservedOutputTokens int
 	sharedThreshold      int64 // 0 => leave 64 KiB default; nonzero => override
@@ -319,9 +318,6 @@ func epicNewRig(t *testing.T, llm LLMProvider, o epicOpts) *epicRig {
 	}
 	if o.store != nil {
 		opts = append(opts, WithMemory(NewMemoryWithStore(o.store)))
-	}
-	if o.errStore != nil {
-		opts = append(opts, WithErrorStore(o.errStore))
 	}
 
 	sinkDir := ""

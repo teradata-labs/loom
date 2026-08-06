@@ -14,10 +14,12 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -63,6 +65,13 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 				)
 			}
 			return response, nil
+		}
+
+		// A positively-identified context-too-long refusal is returned
+		// immediately, never retried (blueprint A5): relief, not retry, is the
+		// only response to it.
+		if errors.Is(err, llm.ErrContextTooLong) {
+			return nil, err
 		}
 
 		lastErr = err
