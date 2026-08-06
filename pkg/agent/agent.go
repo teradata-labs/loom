@@ -3625,6 +3625,19 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	}
 }
 
+// SetOffloadExemptTools replaces the set of tool names whose current-turn
+// results always render whole regardless of the offload threshold (§5.2
+// step 6 carve-out), for existing and future sessions. Use it for tools
+// whose full output is the product of the call — content the model must
+// read inline in the producing turn — where an offload stub would defeat
+// the call. Prior-turn and evicted rows still render stubs, so relief and
+// turn-end truncation behave identically for every tool.
+func (a *Agent) SetOffloadExemptTools(names []string) {
+	if a.memory != nil {
+		a.memory.SetOffloadExemptTools(names)
+	}
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)

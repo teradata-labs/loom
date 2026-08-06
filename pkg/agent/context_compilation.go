@@ -164,6 +164,10 @@ func hasQueryToolResultCall(m *Message) bool {
 // renderLocked applies §5.2 step 6's five render cases — first matching case
 // wins. Conversation is never stubbed; offload is a pure render condition of
 // the current turn; evicted and legacy-oversize rows render the evicted stub.
+// The offload case carves out the exempt set (SetOffloadExemptTools): an
+// exempt tool's current-turn result renders whole — exemption never reaches
+// the evicted cases, so relief and prior turns behave identically for every
+// tool.
 func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
 	if m.Role != "tool" {
 		return *m
@@ -174,6 +178,9 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 		r.Content = sm.evictedStub(m, callName)
 		return r
 	case len(m.Content) > sm.threshold && m.Turn == t:
+		if sm.offloadExempt[callName[m.ToolUseID]] {
+			return *m
+		}
 		r := *m
 		r.Content = sm.offloadStub(m, callName)
 		return r

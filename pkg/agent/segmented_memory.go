@@ -107,6 +107,15 @@ type SegmentedMemory struct {
 	// bound, persist-time row bound, retrieval page bound. Bytes.
 	threshold int
 
+	// offloadExempt names the tools whose CURRENT-TURN results always render
+	// whole (§5.2 step 6 carve-out) — for tools whose full output is the
+	// product of the call, read inline in the producing turn, where an offload
+	// stub would defeat the call. Exemption is a render condition of the
+	// producing turn only: prior-turn and evicted rows render stubs as usual,
+	// and the persist-time row bound (§4.1) still applies — the re-run door
+	// covers later turns.
+	offloadExempt map[string]bool
+
 	// protectedRecentTurns is K (HLD §5.1): the K newest turns are never
 	// touched by relief.
 	protectedRecentTurns int
@@ -269,6 +278,23 @@ func (sm *SegmentedMemory) SetThreshold(bytes int64) {
 // minThreshold is the floor for the §5.1 threshold: enough room for the §4.1
 // truncation tail plus a meaningful core.
 const minThreshold = 256
+
+// SetOffloadExemptTools replaces the set of tool names whose current-turn
+// results always render whole regardless of the threshold (§5.2 step 6
+// carve-out). Empty names are ignored; an empty slice clears the set.
+// Exemption affects only the producing turn's render: prior-turn and evicted
+// rows still render stubs, and the persist-time row bound (§4.1) is unchanged.
+func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	exempt := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n != "" {
+			exempt[n] = true
+		}
+	}
+	sm.offloadExempt = exempt
+}
 
 // Threshold returns the configured threshold in bytes.
 func (sm *SegmentedMemory) Threshold() int {
