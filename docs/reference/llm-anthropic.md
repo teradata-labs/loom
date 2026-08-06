@@ -5,6 +5,8 @@ This guide explains how to connect Loom to Anthropic's Claude API.
 
 ## Overview
 
+**Version**: v1.3.0
+
 Anthropic is the recommended LLM provider for Loom. The integration provides:
 - ✅ Native tool calling support
 - ✅ Streaming via `ChatStream` method (`StreamingLLMProvider` interface)
@@ -63,10 +65,11 @@ llm:
 
 ### Available Models
 
-Source of truth: `pkg/llm/factory/model_catalog.go`
+Source of truth: `pkg/llm/catalog/catalog.go` (`BuildCatalog()`).
 
 | Model | ID | Context | Max Output | Input $/1M | Output $/1M |
 |-------|----|---------|------------|------------|-------------|
+| Claude Opus 4.7 | `claude-opus-4-7` | 1M | 128K | $5.00 | $25.00 |
 | Claude Opus 4.6 | `claude-opus-4-6` | 1M | 128K | $5.00 | $25.00 |
 | Claude Sonnet 4.6 | `claude-sonnet-4-6` | 1M | 64K | $3.00 | $15.00 |
 | Claude Opus 4.5 | `claude-opus-4-5-20251101` | 200K | 64K | $5.00 | $25.00 |
@@ -74,7 +77,7 @@ Source of truth: `pkg/llm/factory/model_catalog.go`
 | Claude Haiku 4.5 | `claude-haiku-4-5-20251001` | 200K | 64K | $1.00 | $5.00 |
 | Claude Opus 4.1 | `claude-opus-4-1-20250805` | 200K | 32K | $15.00 | $75.00 |
 
-All models support: text, vision, tool-use, thinking (per model catalog capabilities).
+All models support: text, vision, tool-use, thinking (per catalog capabilities). The default model when none is configured is `claude-sonnet-4-5-20250929` (`pkg/llm/factory/factory.go`).
 
 ## Testing Your Setup
 
@@ -108,16 +111,19 @@ Expected output:
 
 ## Cost Estimation
 
-The `calculateCost` function in `pkg/llm/anthropic/client.go` uses hardcoded Sonnet-tier pricing
-for all Anthropic models:
-- **Input**: $3.00 per 1M tokens
-- **Output**: $15.00 per 1M tokens
+The `calculateCost` function in `pkg/llm/anthropic/client.go` selects per-million-token pricing
+by matching the model name to a family (`switch` on `strings.Contains(c.model, ...)`):
 
-**Note**: This means cost estimates for Opus 4.5/4.6 ($5/$25), Haiku 4.5 ($1/$5), and
-Opus 4.1 ($15/$75) will be inaccurate. See the Available Models table above for actual
-per-model pricing from the model catalog.
+| Model family match | Input $/1M | Output $/1M |
+|--------------------|------------|-------------|
+| `opus-4-1` (checked first) | $15.00 | $75.00 |
+| `opus-4` (4.5, 4.6, 4.7) | $5.00 | $25.00 |
+| `haiku` (4.5) | $1.00 | $5.00 |
+| default (Sonnet 4.x and any unrecognized model) | $3.00 | $15.00 |
 
-Example costs (at Sonnet-tier pricing):
+Cache pricing is derived from the input price: cache write = 1.25x input, cache read = 0.10x input.
+
+Example costs for Sonnet-tier models ($3.00/$15.00):
 - Small query (50 input, 100 output tokens): $0.00165
 - Medium task (500 input, 1000 output tokens): $0.0165
 - Large task (5000 input, 10000 output tokens): $0.165

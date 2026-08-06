@@ -3,7 +3,7 @@
 
 Technical specification for real-time streaming in Loom via StreamWeave and SubscribeToSession RPCs.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Protocol**: gRPC server streaming, HTTP/SSE
 **API**: `StreamWeave` RPC, `SubscribeToSession` RPC
 

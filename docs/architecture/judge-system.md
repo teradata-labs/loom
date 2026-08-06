@@ -5,7 +5,7 @@ Multi-judge LLM evaluation system that coordinates multiple judges with differen
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -51,7 +51,7 @@ The Judge System evaluates **agent outputs across multiple dimensions** using a 
 
 **Evaluation Inputs**:
 - Agent response (text, SQL, JSON, etc.)
-- Context (prompt, pattern used, tools invoked)
+- Context (prompt, caller-supplied pattern name, tools invoked)
 - Performance metrics (cost, latency, trace ID)
 
 **Evaluation Outputs**:
@@ -266,7 +266,7 @@ message EvaluationContext {
   string session_id = 2;            // Session ID for tracing
   string prompt = 3;                // User input
   string response = 4;              // Agent response
-  string pattern_used = 5;          // Pattern matched (if any)
+  string pattern_used = 5;          // Pattern used (caller-supplied, if any)
   repeated string tools_used = 6;   // Tools invoked by agent
   double cost_usd = 7;              // LLM cost
   int64 latency_ms = 8;             // Response latency

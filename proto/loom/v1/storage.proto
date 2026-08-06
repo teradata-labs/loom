@@ -125,6 +125,29 @@ message SupabaseConfig {
 
   // Supabase service role key (for server-side access)
   string service_role_key = 4;
+
+  // Connection details for building a session-mode pooler DSN (port 5432) when
+  // configuring storage by project rather than a full `dsn`. Storage REQUIRES
+  // session mode: transaction-mode pooling (6543) breaks the SET LOCAL RLS
+  // context and prepared statements the storage layer relies on.
+
+  // Supabase project reference (e.g. "abcdefghijklmnop").
+  string project_ref = 5;
+
+  // Database password. SENSITIVE: prefer the LOOM_SUPABASE_DB_PASSWORD env var
+  // or the keyring over committing it to YAML.
+  string database_password = 6;
+
+  // Project region (e.g. "us-east-1"), used to construct the default pooler host.
+  string region = 7;
+
+  // Explicit pooler host override (e.g. "aws-0-us-east-1.pooler.supabase.com").
+  // The aws-N prefix varies per project; set this from the dashboard when the
+  // region-derived default does not match.
+  string pooler_host = 8;
+
+  // Database name (default: "postgres").
+  string database = 9;
 }
 
 // MigrationConfig controls database migration behavior.

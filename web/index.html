@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loom — an agent framework for Go</title>
+<meta name="description" content="Loom is a multi-agent LLM harness for Go: one gRPC API, agents built from plain English, and context management — memory, budgets, compression — handled by the harness.">
+<link rel="canonical" href="https://teradata-labs.github.io/loom/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Loom">
+<meta property="og:title" content="Loom — an agent framework for Go">
+<meta property="og:description" content="Loom is a multi-agent LLM harness for Go: one gRPC API, agents built from plain English, and context management — memory, budgets, compression — handled by the harness.">
+<meta property="og:url" content="https://teradata-labs.github.io/loom/">
+<meta property="og:image" content="https://teradata-labs.github.io/loom/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Loom — an agent harness for Go. 152 RPCs, 158 patterns, 9 topologies, 8 providers.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:ital,wght@0,500;0,600;0,700;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:      #F4F2EB;
+    --paper-2:    #ECE9DF;
+    --ink:        #16283C;
+    --ink-70:     rgba(22,40,60,.72);
+    --ink-45:     rgba(22,40,60,.48);
+    --line:       rgba(22,40,60,.16);
+    --line-soft:  rgba(22,40,60,.09);
+    /* the six named dyes — same idea as the TUI's six preset agent colors */
+    --indigo:     #31549B;
+    --madder:     #A93D33;
+    --weld:       #A8891E;
+    --woad:       #5C7899;
+    --cochineal:  #A5476E;
+    --walnut:     #6E5340;
+    --term-bg:    #101D2C;
+    --term-fg:    #E9E4D6;
+    --term-dim:   #8A97A8;
+    --maxw: 1060px;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce){ html{ scroll-behavior:auto; } }
+
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    font-size:17px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  ::selection{ background:var(--madder); color:var(--paper); }
+
+  a{ color:var(--indigo); text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1px; }
+  a:hover{ color:var(--madder); }
+  :focus-visible{ outline:2px dashed var(--madder); outline-offset:3px; border-radius:2px; }
+
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px; }
+  code, pre, .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+
+  /* ---------- nav ---------- */
+  nav{
+    display:flex; align-items:baseline; justify-content:space-between;
+    padding:22px 0 18px;
+  }
+  .wordmark{
+    font-family:'Zilla Slab', serif; font-weight:700; font-size:26px;
+    letter-spacing:.5px; color:var(--ink); text-decoration:none;
+  }
+  .wordmark:hover{ color:var(--ink); }
+  .wordmark .cursor{ color:var(--madder); }
+  nav ul{ list-style:none; display:flex; gap:22px; }
+  nav ul a{
+    font-family:'IBM Plex Mono', monospace; font-size:13.5px;
+    color:var(--ink-70); text-decoration:none;
+  }
+  nav ul a:hover{ color:var(--madder); text-decoration:underline; text-underline-offset:4px; }
+
+  /* ---------- woven header ---------- */
+  .weave-band{ border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #weave{ display:block; width:100%; height:176px; }
+  .weave-caption{
+    font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--ink-45);
+    padding:8px 0 0; max-width:var(--maxw); margin:0 auto; padding-left:24px; padding-right:24px;
+  }
+
+  /* ---------- hero ---------- */
+  .hero{ padding:64px 0 24px; display:grid; grid-template-columns: 1.05fr .95fr; gap:56px; align-items:start; }
+  .eyebrow{
+    font-family:'IBM Plex Mono', monospace; font-size:13px; letter-spacing:.04em;
+    color:var(--ink-70); display:flex; align-items:center; gap:12px; margin-bottom:18px; flex-wrap:wrap;
+  }
+  .swatch{ display:inline-flex; height:12px; }
+  .swatch i{ width:8px; height:12px; display:inline-block; }
+  .swatch i:nth-child(1){ background:var(--indigo); }
+  .swatch i:nth-child(2){ background:var(--madder); }
+  .swatch i:nth-child(3){ background:var(--weld); }
+  .swatch i:nth-child(4){ background:var(--woad); }
+  .swatch i:nth-child(5){ background:var(--cochineal); }
+  .swatch i:nth-child(6){ background:var(--walnut); }
+
+  h1{
+    font-family:'Zilla Slab', serif; font-weight:700;
+    font-size:clamp(38px, 5.2vw, 58px); line-height:1.06; letter-spacing:-.5px;
+    margin-bottom:22px;
+  }
+  .lede{ font-size:18.5px; color:var(--ink-70); max-width:56ch; margin-bottom:28px; }
+  .lede strong{ color:var(--ink); font-weight:600; }
+
+  .cta-row{ display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:26px; }
+  .btn{
+    font-family:'IBM Plex Mono', monospace; font-size:14px; text-decoration:none;
+    padding:11px 18px; border-radius:4px; border:1px solid var(--ink);
+  }
+  .btn-primary{ background:var(--ink); color:var(--paper); }
+  .btn-primary:hover{ background:var(--madder); border-color:var(--madder); color:var(--paper); }
+  .btn-ghost{ color:var(--ink); background:transparent; }
+  .btn-ghost:hover{ border-color:var(--madder); color:var(--madder); }
+
+  .install-line{
+    display:flex; align-items:center; gap:10px;
+    background:var(--paper-2); border:1px solid var(--line);
+    border-radius:4px; padding:10px 14px; max-width:fit-content;
+  }
+  .install-line code{ font-size:14px; }
+  .copy-btn{
+    font-family:'IBM Plex Mono', monospace; font-size:12px;
+    border:1px dashed var(--ink-45); background:transparent; color:var(--ink-70);
+    padding:3px 9px; border-radius:3px; cursor:pointer;
+  }
+  .copy-btn:hover{ color:var(--madder); border-color:var(--madder); }
+
+  /* ---------- terminal ---------- */
+  .term{
+    background:var(--term-bg); color:var(--term-fg); border-radius:6px;
+    border:1px solid rgba(22,40,60,.35);
+    box-shadow: 0 1px 0 rgba(22,40,60,.12), 0 12px 32px -18px rgba(22,40,60,.45);
+    overflow:hidden; font-size:13.5px; line-height:1.7;
+  }
+  .term-bar{
+    font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--term-dim);
+    padding:9px 14px; border-bottom:1px solid rgba(233,228,214,.12);
+    display:flex; justify-content:space-between;
+  }
+  .term pre{ padding:16px 18px 20px; overflow-x:auto; }
+  .t-cmd{ color:#E9E4D6; }
+  .t-dim{ color:var(--term-dim); }
+  .t-you{ color:#D9B44A; }
+  .t-weaver{ color:#7E9CD8; }
+  .t-ok{ color:#8FBF8F; }
+
+  /* ---------- sections ---------- */
+  section{ padding:72px 0 8px; }
+  .sec-head{ margin-bottom:34px; max-width:60ch; }
+  .sec-eyebrow{
+    font-family:'IBM Plex Mono', monospace; font-size:12.5px; letter-spacing:.08em;
+    color:var(--ink-45); text-transform:uppercase; display:flex; align-items:center; gap:12px; margin-bottom:12px;
+  }
+  h2{
+    font-family:'Zilla Slab', serif; font-weight:600; font-size:clamp(26px, 3.4vw, 36px);
+    line-height:1.15; letter-spacing:-.3px;
+  }
+  .sec-body{ color:var(--ink-70); max-width:62ch; margin-top:14px; }
+  .sec-body + .sec-body{ margin-top:12px; }
+  .sec-body code{ font-size:.92em; background:var(--paper-2); padding:1px 5px; border-radius:3px; border:1px solid var(--line-soft); }
+
+  /* harness section */
+  .harness-grid{ display:grid; grid-template-columns:1.05fr .95fr; gap:56px; align-items:start; }
+  .ledger pre{ font-size:13px; }
+  .ledger .t-you{ display:inline-block; min-width:0; }
+
+  /* feature table */
+  .feature-table{ margin-top:30px; width:100%; border-collapse:collapse; }
+  .feature-table td{
+    padding:12px 14px 12px 2px; border-bottom:1px solid var(--line-soft);
+    font-size:15px; color:var(--ink-70); vertical-align:baseline;
+  }
+  .feature-table td:first-child{ font-family:'IBM Plex Mono', monospace; font-size:13.5px; color:var(--ink); width:170px; white-space:nowrap; }
+  .feature-table td:last-child{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; text-align:right; width:190px; color:var(--ink); padding-right:2px; }
+
+  /* scale section */
+  .scale-grid{
+    display:grid; grid-template-columns:repeat(3, 1fr); gap:1px;
+    background:var(--line-soft); border:1px solid var(--line-soft); margin-top:30px;
+  }
+  .scale-stage{ background:var(--paper); padding:24px 22px; }
+  .scale-stage h3{
+    font-family:'IBM Plex Mono', monospace; font-size:14px; font-weight:500;
+    margin-bottom:10px; padding-bottom:10px; border-bottom:1px dashed var(--line);
+  }
+  .scale-stage p{ font-size:15px; color:var(--ink-70); line-height:1.6; }
+  .bench-note{ margin-top:26px; }
+
+  /* patterns table */
+  .domain-table{ margin-top:30px; width:100%; border-collapse:collapse; max-width:640px; }
+  .domain-table td{
+    padding:9px 2px; border-bottom:1px solid var(--line-soft);
+    font-size:15px; color:var(--ink-70); vertical-align:baseline;
+  }
+  .domain-table td:first-child{ font-family:'IBM Plex Mono', monospace; font-size:13.5px; color:var(--ink); width:190px; }
+  .domain-table td:last-child{ font-family:'IBM Plex Mono', monospace; text-align:right; width:60px; color:var(--ink); }
+
+  /* workflow grid */
+  .topo-grid{
+    display:grid; grid-template-columns:repeat(3, 1fr); gap:1px;
+    background:var(--line-soft); border:1px solid var(--line-soft);
+    margin-top:34px;
+  }
+  .topo{
+    background:var(--paper); padding:22px 20px 20px;
+  }
+  .topo svg{ display:block; margin-bottom:14px; height:30px; }
+  .topo h3{ font-family:'IBM Plex Mono', monospace; font-size:14px; font-weight:500; margin-bottom:5px; }
+  .topo p{ font-size:14px; color:var(--ink-70); line-height:1.5; }
+
+  /* production dl */
+  .prod{ margin-top:30px; max-width:760px; }
+  .prod > div{
+    display:grid; grid-template-columns:190px 1fr; gap:22px;
+    padding:16px 0; border-bottom:1px solid var(--line-soft);
+  }
+  .prod dt{ font-family:'IBM Plex Mono', monospace; font-size:13.5px; color:var(--ink); padding-top:2px; }
+  .prod dd{ color:var(--ink-70); font-size:15.5px; }
+  .prod dd em{ font-style:normal; color:var(--ink); font-weight:500; }
+
+  /* numbers strip */
+  .numbers{
+    margin-top:64px; border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+    display:flex; flex-wrap:wrap;
+  }
+  .numbers div{
+    flex:1 1 120px; padding:20px 12px; text-align:center;
+    border-right:1px solid var(--line-soft);
+  }
+  .numbers div:last-child{ border-right:none; }
+  .numbers b{ font-family:'Zilla Slab', serif; font-weight:700; font-size:27px; display:block; line-height:1.1; }
+  .numbers span{ font-family:'IBM Plex Mono', monospace; font-size:11.5px; color:var(--ink-45); letter-spacing:.05em; text-transform:uppercase; }
+
+  /* install */
+  .installs{ margin-top:30px; display:grid; gap:14px; max-width:760px; }
+  .install-row{
+    display:grid; grid-template-columns:130px 1fr auto; gap:16px; align-items:center;
+    background:var(--paper-2); border:1px solid var(--line); border-radius:4px; padding:13px 16px;
+  }
+  .install-row .os{ font-family:'IBM Plex Mono', monospace; font-size:13px; color:var(--ink-70); }
+  .install-row code{ font-size:13.5px; overflow-x:auto; white-space:pre; display:block; }
+  .install-note{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; color:var(--ink-45); margin-top:6px; }
+
+  /* footer */
+  footer{ margin-top:88px; border-top:1px solid var(--line); padding:34px 0 56px; }
+  .foot-grid{ display:flex; justify-content:space-between; gap:40px; flex-wrap:wrap; }
+  .foot-meta{ font-family:'IBM Plex Mono', monospace; font-size:13px; color:var(--ink-70); line-height:2; }
+  .jacquard{
+    font-family:'Zilla Slab', serif; font-style:italic; font-weight:500;
+    font-size:16.5px; color:var(--ink-70); max-width:46ch; line-height:1.55;
+  }
+
+  @media (max-width: 900px){
+    .hero{ grid-template-columns:1fr; gap:40px; }
+    .harness-grid{ grid-template-columns:1fr; gap:36px; }
+    .scale-grid{ grid-template-columns:1fr; }
+    .topo-grid{ grid-template-columns:repeat(2, 1fr); }
+  }
+  @media (max-width: 620px){
+    nav ul{ gap:16px; }
+    nav ul li.hide-sm{ display:none; }
+    .topo-grid{ grid-template-columns:1fr; }
+    .prod > div{ grid-template-columns:1fr; gap:4px; }
+    .install-row{ grid-template-columns:1fr; gap:8px; }
+    .feature-table td:last-child{ display:none; }
+    .feature-table td:first-child{ width:120px; white-space:normal; }
+    #weave{ height:120px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <nav>
+    <a class="wordmark" href="#">loom<span class="cursor">_</span></a>
+    <ul>
+      <li><a href="#weaver">weaver</a></li>
+      <li class="hide-sm"><a href="#harness">harness</a></li>
+      <li class="hide-sm"><a href="#patterns">patterns</a></li>
+      <li class="hide-sm"><a href="#workflows">workflows</a></li>
+      <li class="hide-sm"><a href="#features">features</a></li>
+      <li><a href="#install">install</a></li>
+      <li><a href="https://github.com/teradata-labs/loom">github&nbsp;&#8599;</a></li>
+    </ul>
+  </nav>
+</div>
+
+<div class="weave-band" aria-hidden="true">
+  <canvas id="weave"></canvas>
+</div>
+<p class="weave-caption">weft hues above are assigned the way the TUI colors agents: six named dyes, then golden-angle steps around the wheel.</p>
+
+<div class="wrap">
+  <header class="hero">
+    <div>
+      <p class="eyebrow">
+        <span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        teradata-labs/loom &middot; <span data-loom-version>v1.3.0</span> &middot; Apache-2.0 &middot; Go 1.25+
+      </p>
+      <h1>An agent harness for&nbsp;Go.</h1>
+      <p class="lede">
+        Loom runs multi-agent systems behind a single gRPC API — <strong>152 RPCs, proto-first</strong>.
+        Describe the agent you need in plain English and the <strong>Weaver</strong> assembles it from
+        158 YAML patterns. After that the harness does the hauling: <strong>context assembly, memory,
+        token budgets, compression, tracing</strong>. No prompt archaeology.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/teradata-labs/loom/blob/main/QUICKSTART.md">Read the quickstart</a>
+        <a class="btn btn-ghost" href="https://github.com/teradata-labs/loom">Source on GitHub</a>
+      </div>
+      <div class="install-line">
+        <code id="brew-cmd">brew install teradata-labs/tap/loom</code>
+        <button class="copy-btn" data-copy="brew install teradata-labs/tap/loom">copy</button>
+      </div>
+    </div>
+
+    <div class="term" id="weaver">
+      <div class="term-bar"><span>~/loom</span><span>looms serve &middot; grpc :60051 &middot; http :5006</span></div>
+      <pre><span class="t-dim">$</span> <span class="t-cmd">loom --thread weaver</span>
+
+<span class="t-you">you></span>     Create a Teradata query optimizer that reads
+         EXPLAIN plans and flags product joins.
+
+<span class="t-weaver">weaver></span>  Analyzing requirements...
+         patterns  <span class="t-dim">teradata/explain-analysis, sql-core,
+                   performance</span>
+         workflow  <span class="t-dim">pipeline</span>
+         <span class="t-ok">Agent "explain-optimizer" is live.</span>
+         Attach with:
+
+<span class="t-dim">$</span> <span class="t-cmd">loom --thread explain-optimizer</span></pre>
+    </div>
+  </header>
+
+  <section id="harness">
+    <div class="harness-grid">
+      <div>
+        <div class="sec-head" style="margin-bottom:0">
+          <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>the harness</p>
+          <h2>Context management is the harness's job, not yours.</h2>
+          <p class="sec-body">
+            Most frameworks give you an agent loop and leave the hard part — deciding what the model
+            sees each turn — as an exercise for the reader. Loom treats context as managed
+            infrastructure. Every turn, the harness assembles the window from salience-ranked graph
+            memory, session history, and whichever patterns match the intent, inside a token budget
+            you set once and stop thinking about.
+          </p>
+          <p class="sec-body">
+            Memory is honest about being memory: immutable records with lineage, so a correction
+            <em>supersedes</em> the old fact instead of overwriting it, and salience decays until
+            something is worth recalling again. When the window fills, the compressor role does the
+            summarizing — and per-role providers let you pin that role to a cheaper model.
+          </p>
+        </div>
+      </div>
+      <div class="term ledger">
+        <div class="term-bar"><span>context, assembled per turn</span><span>defaults shown</span></div>
+        <pre><span class="t-you">patterns</span>       <span class="t-dim">matched to intent, drawn from 158</span>
+<span class="t-you">graph memory</span>   <span class="t-dim">salience-ranked entities + records</span>
+<span class="t-you">budget</span>         <span class="t-dim">20% of the context window, configurable</span>
+<span class="t-you">salience</span>       <span class="t-dim">decays 0.95/day &middot; boosted on access</span>
+<span class="t-you">history</span>        <span class="t-dim">FTS5-searchable, restored on attach</span>
+<span class="t-you">corrections</span>    <span class="t-dim">SUPERSEDES lineage, never overwrite</span>
+<span class="t-you">compressor</span>     <span class="t-dim">its own model, via per-role providers</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="patterns">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>pattern-guided learning</p>
+      <h2>Domain knowledge lives in YAML, where you can diff it.</h2>
+      <p class="sec-body">
+        Every agent draws on 158 patterns across 16 domains: Teradata analytics, Postgres tuning,
+        SQL validation, prompt technique, document extraction, and so on. A pattern is plain-English
+        YAML — write one and your agent becomes a specialist; version it and your team's expertise
+        stops living in someone's chat history.
+      </p>
+      <p class="sec-body">
+        Learning agents close the loop. They watch their own successes and failures and propose
+        edits back to the patterns, with three autonomy levels: <code>manual</code>, <code>human-approval</code>,
+        and <code>full</code>. You choose how much rope to hand out.
+      </p>
+    </div>
+    <table class="domain-table">
+      <tr><td>teradata/</td><td>ML models, analytics, data quality, FastLoad, performance</td><td>84</td></tr>
+      <tr><td>libraries/</td><td>domain bundles — sql-core, teradata-analytics, &hellip;</td><td>20</td></tr>
+      <tr><td>postgres/</td><td>query optimization, index analysis, vacuum tuning</td><td>12</td></tr>
+      <tr><td>weaver/</td><td>workflow patterns — debate, pipeline, fork-join, swarm</td><td>9</td></tr>
+      <tr><td>sql/</td><td>validation, profiling, duplicate detection</td><td>8</td></tr>
+      <tr><td>prompt_engineering/</td><td>chain-of-thought, few-shot, structured output</td><td>4</td></tr>
+      <tr><td>documents/</td><td>PDF extraction, Excel analysis, CSV import</td><td>4</td></tr>
+      <tr><td>&hellip;9 more</td><td>vision, code, debugging, REST, evaluation, NASA</td><td>17</td></tr>
+    </table>
+  </section>
+
+  <section id="workflows">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>orchestration</p>
+      <h2>Nine topologies, defined in proto.</h2>
+      <p class="sec-body">
+        Multi-agent coordination is a first-class type, not a for-loop you maintain.
+        The Weaver picks a topology automatically; you can also declare one in YAML.
+      </p>
+    </div>
+    <div class="topo-grid">
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 15 H60" stroke="var(--indigo)" stroke-width="2"/><circle cx="12" cy="15" r="3.5" fill="var(--paper)" stroke="var(--indigo)" stroke-width="2"/><circle cx="32" cy="15" r="3.5" fill="var(--paper)" stroke="var(--indigo)" stroke-width="2"/><circle cx="52" cy="15" r="3.5" fill="var(--paper)" stroke="var(--indigo)" stroke-width="2"/></svg>
+        <h3>pipeline</h3><p>Sequential stages. ETL, multi-step analysis.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 8 H60 M4 15 H60 M4 22 H60" stroke="var(--woad)" stroke-width="2"/></svg>
+        <h3>parallel</h3><p>Independent tasks, all at once.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 15 H16 M16 15 C26 15 24 6 34 6 M16 15 C26 15 24 24 34 24 M34 6 C44 6 42 15 52 15 M34 24 C44 24 42 15 52 15 M52 15 H60" stroke="var(--indigo)" stroke-width="2"/></svg>
+        <h3>fork-join</h3><p>Split the work, merge the results.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 8 C18 8 18 22 32 22 C46 22 46 8 60 8" stroke="var(--madder)" stroke-width="2"/><path d="M4 22 C18 22 18 8 32 8 C46 8 46 22 60 22" stroke="var(--indigo)" stroke-width="2"/></svg>
+        <h3>debate</h3><p>Agents argue perspectives, reach consensus.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 15 H24 M24 15 L48 6 M24 15 L48 24" stroke="var(--weld)" stroke-width="2"/><rect x="20" y="11" width="8" height="8" transform="rotate(45 24 15)" fill="var(--paper)" stroke="var(--weld)" stroke-width="2"/></svg>
+        <h3>conditional</h3><p>Route on an agent's decision.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M6 20 C16 4 28 26 38 10 M12 8 C24 22 40 2 52 18 M22 26 C34 12 46 24 58 8" stroke="var(--cochineal)" stroke-width="2" stroke-linecap="round"/></svg>
+        <h3>swarm</h3><p>Dynamic collaboration, membership decided at runtime.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 12 H52 M52 12 C60 12 60 24 50 24 H22" stroke="var(--indigo)" stroke-width="2"/><path d="M27 20 L21 24 L27 28" stroke="var(--indigo)" stroke-width="2" fill="none"/></svg>
+        <h3>iterative</h3><p>A pipeline that restarts itself on failure.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 10 L14 20 L24 10 L34 20 L44 10 L54 20" stroke="var(--indigo)" stroke-width="2"/><path d="M4 20 L14 10 L24 20 L34 10 L44 20 L54 10" stroke="var(--walnut)" stroke-width="2"/></svg>
+        <h3>pair programming</h3><p>Two agents, one piece of code.</p>
+      </div>
+      <div class="topo">
+        <svg viewBox="0 0 64 30" fill="none"><path d="M4 9 H60" stroke="var(--weld)" stroke-width="3"/><path d="M4 22 H60" stroke="var(--woad)" stroke-width="1.5"/><path d="M16 11 V20 M32 11 V20 M48 11 V20" stroke="var(--ink-45)" stroke-width="1.5" stroke-dasharray="2 3"/></svg>
+        <h3>teacher-student</h3><p>One agent teaches and grades the other.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>the full spread</p>
+      <h2>What ships in the box.</h2>
+      <p class="sec-body">One repo, three binaries. Everything below is in <span data-loom-version>v1.3.0</span> — shipped, not roadmapped.</p>
+    </div>
+    <table class="feature-table">
+      <tr>
+        <td>weaver</td>
+        <td>Builds agents from a sentence; picks a workflow topology when the job needs more than one agent.</td>
+        <td>158 patterns</td>
+      </tr>
+      <tr>
+        <td>context&nbsp;&amp;&nbsp;memory</td>
+        <td>Salience-scored graph memory with correction lineage; token-budgeted injection every turn.</td>
+        <td>20% budget default</td>
+      </tr>
+      <tr>
+        <td>workflows</td>
+        <td>Orchestration as typed proto, not glue code you maintain.</td>
+        <td>9 topologies</td>
+      </tr>
+      <tr>
+        <td>judges</td>
+        <td>Multi-judge scoring with pluggable aggregation and sync, async, or hybrid execution. DSPy-optimizable.</td>
+        <td>6 strategies &middot; 3 modes</td>
+      </tr>
+      <tr>
+        <td>learning agents</td>
+        <td>Watch their own successes and failures, then propose edits back to the patterns.</td>
+        <td>3 autonomy levels</td>
+      </tr>
+      <tr>
+        <td>skills</td>
+        <td>Activatable behaviors — slash command, keyword trigger, or always-on — with hot-reload.</td>
+        <td>&mdash;</td>
+      </tr>
+      <tr>
+        <td>tools</td>
+        <td>Sandboxed shell, files, HTTP and gRPC calls, inter-agent messaging, shared state, human-in-the-loop.</td>
+        <td>18 built-ins</td>
+      </tr>
+      <tr>
+        <td>mcp</td>
+        <td>Any MCP server via config; built-in UI apps; agents can compile dashboards from a JSON spec at runtime.</td>
+        <td>4 apps &middot; 14 components</td>
+      </tr>
+      <tr>
+        <td>providers</td>
+        <td>Mid-session model switching; cheaper models assignable to judge, classifier, and compressor roles.</td>
+        <td>8 providers &middot; 73 models</td>
+      </tr>
+      <tr>
+        <td>artifacts</td>
+        <td>Session-scoped file storage with full-text search and soft delete you can walk back.</td>
+        <td>30-day recovery</td>
+      </tr>
+      <tr>
+        <td>observability</td>
+        <td>Self-contained tracing with OTLP export and per-call cost tracking in the TUI.</td>
+        <td>&mdash;</td>
+      </tr>
+      <tr>
+        <td>storage</td>
+        <td>SQLite with FTS5 or PostgreSQL; versioned migrations; automatic backups before every upgrade.</td>
+        <td>&mdash;</td>
+      </tr>
+    </table>
+  </section>
+
+  <section id="scale">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>scale</p>
+      <h2>Scales down to a laptop. Then up.</h2>
+      <p class="sec-body">
+        Loom is Go all the way down: <code>looms serve</code> is one static binary, agents are
+        goroutines rather than sidecar processes, and every claim about concurrency is enforced
+        by CI — the whole suite runs under <code>-race</code>, and the standing count is zero.
+      </p>
+    </div>
+    <div class="scale-grid">
+      <div class="scale-stage">
+        <h3>one laptop</h3>
+        <p>A single binary and SQLite with FTS5. No daemons, no queue, no docker-compose ritual.
+        The container image, if you want one, is distroless and CGO-free.</p>
+      </div>
+      <div class="scale-stage">
+        <h3>one team</h3>
+        <p>Point the same binary at PostgreSQL. Identical versioned migrations, advisory-locked
+        so concurrent instances can't trample a schema upgrade. Every client speaks gRPC or
+        REST with SSE.</p>
+      </div>
+      <div class="scale-stage">
+        <h3>a fleet</h3>
+        <p>Parallel, fork-join, and swarm topologies fan the work out; per-role providers keep
+        the bill sane by pinning judge, classifier, and compressor traffic to cheaper models.
+        The TUI's color generator never runs out of distinct hues — which tells you what it
+        was built expecting.</p>
+      </div>
+    </div>
+    <p class="sec-body bench-note">
+      We could print a requests-per-second number from our hardware, and you would rightly
+      ignore it. The load-bench harness ships in the repo instead — <code>loom-bench-server</code>
+      and <code>loom-bench-harness</code> under <code>cmd/</code>, with a distroless build in
+      <code>deploy/</code>. Run it on yours.
+    </p>
+  </section>
+
+  <section id="production">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>production</p>
+      <h2>The parts you actually evaluate frameworks on.</h2>
+    </div>
+    <dl class="prod">
+      <div>
+        <dt>proto is law</dt>
+        <dd>Every API starts in <em>proto/loom/v1</em>. 152 RPCs; HTTP/REST and SSE streaming via
+        gRPC-gateway; Swagger served at <em>/swagger-ui</em>. If it isn't in the proto, it isn't an API.</dd>
+      </div>
+      <div>
+        <dt>storage</dt>
+        <dd>SQLite with FTS5 by default, PostgreSQL when you mean it. Versioned migrations with
+        advisory locks, and an automatic <em>VACUUM INTO</em> backup before every schema upgrade —
+        the kind of default you only appreciate once.</dd>
+      </div>
+      <div>
+        <dt>memory</dt>
+        <dd>A salience-scored knowledge graph that survives restarts: entities, typed edges,
+        immutable memory records with lineage for corrections. Context injection is
+        token-budgeted, 20% of the window by default.</dd>
+      </div>
+      <div>
+        <dt>judges</dt>
+        <dd>Multi-judge evaluation with six aggregation strategies and sync, async, and hybrid
+        execution. DSPy integration for optimizing the judges themselves.</dd>
+      </div>
+      <div>
+        <dt>providers</dt>
+        <dd>Anthropic, Bedrock, OpenAI, Azure, Gemini, Mistral, Ollama, HuggingFace — 73 cataloged
+        models, switchable mid-session. Assign cheaper models to judge, classifier, and compressor
+        roles; keep the expensive one for reasoning.</dd>
+      </div>
+      <div>
+        <dt>observability</dt>
+        <dd>Self-contained tracing with OTLP export and per-call cost tracking in the TUI.
+        Sandboxed <em>shell_execute</em> for tools that touch the machine.</dd>
+      </div>
+      <div>
+        <dt>releases</dt>
+        <dd>GPG-signed with SLSA provenance since v1.1.0. Verification steps ship in the repo,
+        not in a blog post.</dd>
+      </div>
+      <div>
+        <dt>tests</dt>
+        <dd>3,851 test functions across 424 files, all run with <em>-race</em>. Standing race
+        conditions: zero. CI runs proto lint, golangci-lint, fuzzing, gosec, CodeQL, and Snyk
+        on every platform we ship.</dd>
+      </div>
+    </dl>
+
+    <div class="numbers" role="list">
+      <div role="listitem"><b>152</b><span>rpcs</span></div>
+      <div role="listitem"><b>158</b><span>patterns</span></div>
+      <div role="listitem"><b>9</b><span>topologies</span></div>
+      <div role="listitem"><b>8</b><span>providers</span></div>
+      <div role="listitem"><b>73</b><span>models</span></div>
+      <div role="listitem"><b>3,851</b><span>test funcs</span></div>
+      <div role="listitem"><b>0</b><span>race conditions</span></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="sec-head">
+      <p class="sec-eyebrow"><span class="swatch"><i></i><i></i><i></i><i></i><i></i><i></i></span>install</p>
+      <h2>Three binaries: <span class="mono" style="font-size:.8em">loom</span>, <span class="mono" style="font-size:.8em">looms</span>, <span class="mono" style="font-size:.8em">loom-mcp</span>.</h2>
+      <p class="sec-body">Packages publish automatically with every tagged release.</p>
+    </div>
+    <div class="installs">
+      <div class="install-row">
+        <span class="os">macOS / Linux</span>
+        <code>brew install teradata-labs/tap/loom</code>
+        <button class="copy-btn" data-copy="brew install teradata-labs/tap/loom">copy</button>
+      </div>
+      <div class="install-row">
+        <span class="os">Windows</span>
+        <code>winget install Teradata.Loom        <span class="t-dim"># or: choco install loom</span></code>
+        <button class="copy-btn" data-copy="winget install Teradata.Loom">copy</button>
+      </div>
+      <div class="install-row">
+        <span class="os">From source</span>
+        <code>git clone https://github.com/teradata-labs/loom && cd loom && ./quickstart.sh</code>
+        <button class="copy-btn" data-copy="git clone https://github.com/teradata-labs/loom && cd loom && ./quickstart.sh">copy</button>
+      </div>
+    </div>
+    <p class="install-note">Releases are GPG-signed with SLSA provenance — verification steps in docs/installation.</p>
+  </section>
+
+  <footer>
+    <div class="foot-grid">
+      <div class="foot-meta">
+        loom &middot; Apache-2.0 &middot; built by Teradata Labs<br>
+        security reports: security@teradata.com — not the issue tracker<br>
+        <a href="https://github.com/teradata-labs/loom">github</a> &middot;
+        <a href="https://pkg.go.dev/github.com/teradata-labs/loom">pkg.go.dev</a> &middot;
+        <a href="https://github.com/teradata-labs/loom/blob/main/QUICKSTART.md">quickstart</a> &middot;
+        <a href="https://github.com/teradata-labs/loom/tree/main/docs/architecture">architecture</a>
+      </div>
+      <p class="jacquard">
+        The Jacquard loom read its patterns off punched cards and, more or less,
+        started computing. This one reads YAML. Progress is debatable.
+      </p>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function(){
+  // ---- woven header --------------------------------------------------
+  // Weft hues follow the TUI's agent-color scheme: six preset dyes,
+  // then golden-angle hue steps. The caption below the canvas says so.
+  var dyes = ['#31549B','#A93D33','#A8891E','#5C7899','#A5476E','#6E5340'];
+  var GOLDEN = 137.50776405003785;
+
+  function weftColor(i){
+    if (i < dyes.length) return dyes[i];
+    var h = (210 + (i - dyes.length) * GOLDEN) % 360;
+    return 'hsl(' + h.toFixed(1) + ', 42%, 44%)';
+  }
+
+  var canvas = document.getElementById('weave');
+  var ctx = canvas.getContext('2d');
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var CELL = 14, WEFT_W = 5, WARP_W = 2;
+  var W, H, dpr, rows, cols, progress = [], raf = null, done = false;
+
+  function size(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rows = Math.floor(H / CELL);
+    cols = Math.ceil(W / CELL) + 1;
+    if (progress.length !== rows){
+      progress = [];
+      for (var r = 0; r < rows; r++) progress.push(done || reduced ? W : 0);
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0, 0, W, H);
+    var r, c, x, y;
+    // warp (vertical, structural, quiet)
+    ctx.strokeStyle = 'rgba(22,40,60,0.13)';
+    ctx.lineWidth = WARP_W;
+    ctx.beginPath();
+    for (c = 0; c < cols; c++){
+      x = c * CELL + CELL / 2;
+      ctx.moveTo(x, 0); ctx.lineTo(x, H);
+    }
+    ctx.stroke();
+    // weft (horizontal, dyed)
+    for (r = 0; r < rows; r++){
+      y = r * CELL + CELL / 2;
+      var px = progress[r];
+      if (px <= 0) continue;
+      ctx.strokeStyle = weftColor(r);
+      ctx.lineWidth = WEFT_W;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, y); ctx.lineTo(px, y);
+      ctx.stroke();
+      // over/under: re-lay warp on alternating cells so the weft dips beneath
+      for (c = 0; c < cols; c++){
+        if ((r + c) % 2 !== 0) continue;
+        x = c * CELL + CELL / 2;
+        if (x - CELL / 2 > px) break;
+        ctx.strokeStyle = '#F4F2EB';
+        ctx.lineWidth = WARP_W + 4;
+        ctx.beginPath();
+        ctx.moveTo(x, y - WEFT_W); ctx.lineTo(x, y + WEFT_W);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(22,40,60,0.30)';
+        ctx.lineWidth = WARP_W;
+        ctx.beginPath();
+        ctx.moveTo(x, y - WEFT_W - 1); ctx.lineTo(x, y + WEFT_W + 1);
+        ctx.stroke();
+      }
+    }
+  }
+
+  var frame = 0;
+  function tick(){
+    frame++;
+    var moving = false;
+    for (var r = 0; r < rows; r++){
+      if (frame <= r * 4){ moving = true; continue; }   // each weft waits its turn
+      if (progress[r] < W){
+        progress[r] = Math.min(W, progress[r] + W / 38);
+        if (progress[r] < W) moving = true;
+      }
+    }
+    draw();
+    if (moving){ raf = requestAnimationFrame(tick); }
+    else { done = true; }
+  }
+
+  size();
+  if (reduced){ done = true; draw(); }
+  else { raf = requestAnimationFrame(tick); }
+
+  var rT;
+  window.addEventListener('resize', function(){
+    clearTimeout(rT);
+    rT = setTimeout(function(){
+      if (raf) cancelAnimationFrame(raf);
+      done = true; progress = []; size();
+      for (var r = 0; r < rows; r++) progress[r] = W;
+      draw();
+    }, 120);
+  });
+
+  // ---- copy buttons ---------------------------------------------------
+  document.querySelectorAll('.copy-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var text = btn.getAttribute('data-copy');
+      function flash(ok){
+        var prev = btn.textContent;
+        btn.textContent = ok ? 'copied' : 'select it';
+        setTimeout(function(){ btn.textContent = prev; }, 1400);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){ flash(true); }, function(){ flash(false); });
+      } else { flash(false); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

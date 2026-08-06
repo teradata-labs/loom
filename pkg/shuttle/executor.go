@@ -23,7 +23,9 @@ import (
 	"unicode"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"go.uber.org/zap"
 )
 
 // ToolRegistry is an interface for dynamic tool discovery.
@@ -60,6 +62,13 @@ type Executor struct {
 	largeParamDerefs      atomic.Int64 // Count of parameters dereferenced
 	largeParamBytesStored atomic.Int64 // Total bytes stored
 	largeParamDerefErrors atomic.Int64 // Count of dereference failures
+
+	// Per-mutation debug hooks, set by the agent layer, which owns the
+	// context-dump switch and the per-session turn counter. contextDebugEnabled
+	// gates the large-result offload debug log; contextDebugTurn tags it with the
+	// in-flight turn. A nil contextDebugEnabled disables the log.
+	contextDebugEnabled func() bool
+	contextDebugTurn    func(sessionID string) int
 }
 
 // NewExecutor creates a new tool executor.
@@ -78,9 +87,43 @@ func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, thre
 	}
 }
 
+// SharedMemoryThreshold reports the byte threshold at or above which a result is
+// stored by reference. Exposed so callers can assert both offload sites agree.
+func (e *Executor) SharedMemoryThreshold() int64 {
+	return e.threshold
+}
+
 // SetSQLResultStore configures SQL result store for queryable large SQL results.
 func (e *Executor) SetSQLResultStore(sqlStore storage.ResultStore) {
 	e.sqlResultStore = sqlStore
+}
+
+// SetContextDebug wires the per-mutation debug hooks the agent layer uses to
+// gate and tag the large-result offload debug log: enabled reads the
+// context-dump switch, and turnOf returns the in-flight turn for a session. A
+// nil enabled disables the log.
+func (e *Executor) SetContextDebug(enabled func() bool, turnOf func(sessionID string) int) {
+	e.contextDebugEnabled = enabled
+	e.contextDebugTurn = turnOf
+}
+
+// logLargeResultOffload emits the per-mutation debug log for a stored large
+// result. No-op unless the context-dump switch is on.
+func (e *Executor) logLargeResultOffload(ctx context.Context, referenceID string, size int64) {
+	if e.contextDebugEnabled == nil || !e.contextDebugEnabled() {
+		return
+	}
+	sessionID := session.SessionIDFromContext(ctx)
+	turn := 0
+	if e.contextDebugTurn != nil {
+		turn = e.contextDebugTurn(sessionID)
+	}
+	zap.L().Debug("context mutation: large-result offload",
+		zap.String("session_id", sessionID),
+		zap.Int("turn", turn),
+		zap.String("reference_id", referenceID),
+		zap.Int64("size_bytes", size),
+		zap.Int64("threshold_bytes", e.threshold))
 }
 
 // SetPermissionChecker configures permission checking for tool execution.
@@ -135,7 +178,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	normalizedParams := normalizeParametersToSchema(tool, params)
 
 	// Handle large parameters: store in shared memory to prevent context bloat
-	referencedParams, err := e.handleLargeParameters(normalizedParams)
+	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
 	if err != nil {
 		return &Result{
 			Success: false,
@@ -148,7 +191,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	}
 
 	// Dereference parameters before tool execution (transparent to tools)
-	finalParams, err := e.dereferenceLargeParameters(referencedParams)
+	finalParams, err := e.dereferenceLargeParameters(ctx, referencedParams)
 	if err != nil {
 		return &Result{
 			Success: false,
@@ -177,10 +220,13 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
 
-		// Handle large results EXCEPT for progressive disclosure tools which retrieve already-stored large data
-		// Wrapping these outputs creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
-		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
-		if toolName != "get_tool_result" && toolName != "query_tool_result" {
+		// Offload large results EXCEPT for the exempt set, whose outputs must enter whole.
+		// Recall tools retrieve already-stored data; re-offloading them creates infinite
+		// recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
+		// manage_skills delivers the skill body as its own message, so its result must
+		// not be stored by reference regardless of size.
+		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
+		if toolName != "get_tool_result" && toolName != "query_tool_result" && toolName != "manage_skills" {
 			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				// The result is still valid, just not optimized
@@ -215,7 +261,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat
-	referencedParams, err := e.handleLargeParameters(params)
+	referencedParams, err := e.handleLargeParameters(ctx, params)
 	if err != nil {
 		return &Result{
 			Success: false,
@@ -228,7 +274,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	}
 
 	// Dereference parameters before tool execution (transparent to tools)
-	finalParams, err := e.dereferenceLargeParameters(referencedParams)
+	finalParams, err := e.dereferenceLargeParameters(ctx, referencedParams)
 	if err != nil {
 		return &Result{
 			Success: false,
@@ -257,9 +303,10 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
 
-		// Handle large results EXCEPT for get_tool_result (deprecated) which retrieves large data
-		// query_tool_result output SHOULD be wrapped to prevent context overflow
-		if tool.Name() != "get_tool_result" {
+		// Same exempt set as Execute: recall tools would recurse if re-offloaded, and
+		// manage_skills delivers the skill body as its own message.
+		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
+		if tool.Name() != "get_tool_result" && tool.Name() != "query_tool_result" && tool.Name() != "manage_skills" {
 			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				if result.Metadata == nil {
@@ -292,9 +339,9 @@ func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error 
 		return fmt.Errorf("failed to serialize result: %w", err)
 	}
 
-	// Check if result exceeds threshold
-	if int64(len(data)) <= e.threshold {
-		return nil // Small result, keep inline
+	// Inline only when strictly below the threshold; store by reference at or above it.
+	if int64(len(data)) < e.threshold {
+		return nil
 	}
 
 	// Check if this is a SQL result (has rows and columns)
@@ -306,6 +353,7 @@ func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error 
 		if err != nil {
 			return fmt.Errorf("failed to store SQL result: %w", err)
 		}
+		e.logLargeResultOffload(ctx, id, int64(len(data)))
 
 		// Get metadata for summary
 		meta, _ := e.sqlResultStore.GetMetadata(ctx, id)
@@ -326,13 +374,14 @@ func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error 
 
 	// Store in shared memory
 	id := storage.GenerateID()
-	ref, err := e.sharedMemory.Store(id, data, "application/json", nil)
+	ref, err := e.sharedMemory.Store(id, data, "application/json", nil, session.SessionIDFromContext(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to store in shared memory: %w", err)
 	}
+	e.logLargeResultOffload(ctx, id, int64(len(data)))
 
 	// Get metadata to create rich inline summary (like we do for SQL results)
-	meta, err := e.sharedMemory.GetMetadata(ref)
+	meta, err := e.sharedMemory.GetMetadata(ref, session.SessionIDFromContext(ctx))
 	if err != nil {
 		// Fallback to simple message if metadata unavailable
 		result.DataReference = ref
@@ -400,10 +449,15 @@ func formatSharedMemoryResultSummary(meta *storage.DataMetadata, id string) stri
 	summary.WriteString("💡 How to retrieve:\n")
 	switch meta.DataType {
 	case "json_object":
-		summary.WriteString(fmt.Sprintf("⚠️ This json_object is too large (%d bytes) for direct retrieval\n", meta.SizeBytes))
-		summary.WriteString("Use the preview and schema above to understand the structure\n")
+		// Surface the reference_id + a working call. This is the path executor-run
+		// tools (e.g. web_search, http_request) hit; previously it told the model
+		// the object was "too large for direct retrieval" with NO id, so it could
+		// see a result existed but had no way to read it. Pagination windows the
+		// object as text, so the full content is retrievable.
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)  # read the object (paginated)\n", id))
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')  # if it wraps a 'results' array\n", id))
 		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			summary.WriteString("Consider which specific fields you need from the object\n")
+			summary.WriteString("Use the schema above to pick the fields you need.\n")
 		}
 
 	case "json_array":
@@ -450,11 +504,15 @@ func estimateValueSize(value interface{}) int64 {
 
 // handleLargeParameters checks if any parameter values exceed threshold
 // and stores them in shared memory, replacing with DataReference objects.
-// This prevents massive parameters from bloating context windows.
-func (e *Executor) handleLargeParameters(params map[string]interface{}) (map[string]interface{}, error) {
+// This prevents massive parameters from bloating context windows. Stored
+// parameters are owned by the caller's session partition (from ctx) so
+// dereferenceLargeParameters resolves them for the same caller.
+func (e *Executor) handleLargeParameters(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
 	if e.sharedMemory == nil {
 		return params, nil // No storage configured, skip optimization
 	}
+
+	sessionID := session.SessionIDFromContext(ctx)
 
 	result := make(map[string]interface{})
 	modified := false
@@ -474,7 +532,7 @@ func (e *Executor) handleLargeParameters(params map[string]interface{}) (map[str
 				"parameter_name": key,
 				"original_size":  fmt.Sprintf("%d", size),
 				"source":         "parameter_optimization",
-			})
+			}, sessionID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to store large parameter %s: %w", key, err)
 			}
@@ -500,10 +558,13 @@ func (e *Executor) handleLargeParameters(params map[string]interface{}) (map[str
 
 // dereferenceLargeParameters replaces DataReference objects with actual data.
 // This happens transparently before tool execution - tools never see references.
-func (e *Executor) dereferenceLargeParameters(params map[string]interface{}) (map[string]interface{}, error) {
+// Resolution is scoped to the caller's session partition (from ctx).
+func (e *Executor) dereferenceLargeParameters(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
 	if e.sharedMemory == nil {
 		return params, nil
 	}
+
+	sessionID := session.SessionIDFromContext(ctx)
 
 	result := make(map[string]interface{})
 	hasRefs := false
@@ -514,7 +575,7 @@ func (e *Executor) dereferenceLargeParameters(params map[string]interface{}) (ma
 			hasRefs = true
 
 			// Retrieve from shared memory
-			data, err := e.sharedMemory.Get(ref)
+			data, err := e.sharedMemory.Get(ref, sessionID)
 			if err != nil {
 				e.largeParamDerefErrors.Add(1) // Metrics: track error
 				return nil, fmt.Errorf("failed to dereference parameter %s: %w", key, err)

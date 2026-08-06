@@ -68,13 +68,13 @@ func NewComponentCatalog() *ComponentCatalog {
 		},
 		{
 			Type:        "chart",
-			Description: "Chart.js chart (bar, line, pie, doughnut, radar, polarArea, scatter, bubble). ALWAYS use the labels+datasets format: labels is the x-axis category array, datasets is an array of series objects each with label, data (numeric array aligned to labels), and color. Never use xKey/yKeys/data object arrays.",
+			Description: "Chart.js chart (bar, line, area, pie, doughnut, radar, polarArea, scatter, bubble). 'area' renders a filled line chart. ALWAYS use the labels+datasets format: labels is the x-axis category array, datasets is an array of series objects each with label, data (numeric array aligned to labels), and color. Never use xKey/yKeys/data object arrays.",
 			Category:    "display",
 			PropsSchema: map[string]interface{}{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]interface{}{
-					"chartType": map[string]interface{}{"type": "string", "enum": []string{"bar", "line", "pie", "doughnut", "radar", "polarArea", "scatter", "bubble"}, "description": "Chart type"},
+					"chartType": map[string]interface{}{"type": "string", "enum": []string{"bar", "line", "area", "pie", "doughnut", "radar", "polarArea", "scatter", "bubble"}, "description": "Chart type"},
 					"title":     map[string]interface{}{"type": "string"},
 					"labels":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "X-axis category labels. One entry per data point."},
 					"datasets": map[string]interface{}{

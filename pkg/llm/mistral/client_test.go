@@ -291,16 +291,16 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "mistral-small-latest",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.000240, // (1000 * 0.10 + 500 * 0.30) / 1M
-			wantMax:      0.000260,
+			wantMin:      0.000170, // (1000 * 0.075 + 500 * 0.20) / 1M (catalog)
+			wantMax:      0.000180,
 		},
 		{
 			name:         "mistral-large-latest",
 			model:        "mistral-large-latest",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.004990, // (1000 * 2.00 + 500 * 6.00) / 1M
-			wantMax:      0.005010,
+			wantMin:      0.001240, // (1000 * 0.50 + 500 * 1.50) / 1M (catalog)
+			wantMax:      0.001260,
 		},
 		{
 			name:         "magistral-medium-latest",
@@ -331,8 +331,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "devstral-medium-latest",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.001240, // (1000 * 0.50 + 500 * 1.50) / 1M
-			wantMax:      0.001260,
+			wantMin:      0.001390, // (1000 * 0.40 + 500 * 2.00) / 1M (catalog)
+			wantMax:      0.001410,
 		},
 	}
 

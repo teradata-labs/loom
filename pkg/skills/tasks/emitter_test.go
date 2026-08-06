@@ -111,6 +111,15 @@ func TestEmit_TemplatePath_MaterializesStepsWithDeps(t *testing.T) {
 		_ = i
 	}
 
+	// Every emitted task is attributed to the conversation that activated the
+	// skill (created_by_session metadata) — session-scoped task filtering
+	// depends on this — without being pre-claimed (which would break the
+	// ready → claim workflow).
+	for _, tk := range res.Tasks {
+		assert.Equal(t, "s1", tk.Metadata[task.CreatedBySessionMetadataKey])
+		assert.Empty(t, tk.ClaimedBySession, "emission must not pre-claim tasks")
+	}
+
 	// Re-emit must not create duplicates.
 	res2, err := e.EmitForActivation(ctx, EmitRequest{
 		Skill:             skill,
@@ -186,6 +195,16 @@ func TestEmit_DecomposerFallback(t *testing.T) {
 	require.Equal(t, "decomposer", res.Source)
 	require.Len(t, res.Tasks, 2)
 	assert.Equal(t, 2, res.CreatedCount)
+
+	// Decomposer-created tasks carry the emitting conversation's session in
+	// created_by_session metadata (stamped via DecomposeRequest.SessionID),
+	// and are not pre-claimed.
+	for _, tk := range res.Tasks {
+		got, err := m.GetTask(ctx, tk.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "s", got.Metadata[task.CreatedBySessionMetadataKey])
+		assert.Empty(t, got.ClaimedBySession, "decomposition must not pre-claim tasks")
+	}
 
 	// Re-emit short-circuits via the marker — same scripted LLM gives the
 	// same payload, but we should not re-run decomposition.

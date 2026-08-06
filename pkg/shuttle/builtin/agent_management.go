@@ -741,6 +741,71 @@ func (t *AgentManagementTool) executeDelete(ctx context.Context, configType stri
 	}, nil
 }
 
+// autoInjectedOrSpecialTools are valid tool names the registry wires outside
+// builtin.ByName (auto-injected, progressively disclosed, or discovery). Listed
+// here so create/update tool validation doesn't false-flag them.
+var autoInjectedOrSpecialTools = map[string]bool{
+	"tool_search": true, "task_board": true, "graph_memory": true, "workspace": true,
+	"query_tool_result": true, "get_error_details": true, "get_tool_result": true,
+	"conversation_memory": true, "session_memory": true, "manage_ephemeral_agents": true,
+}
+
+// declaredBuiltinTools extracts the builtin tool names from an agent spec,
+// handling both shapes: a flat `tools: [a, b]` and `tools: {builtin: [a, b]}`.
+func declaredBuiltinTools(spec map[string]interface{}) []string {
+	raw, ok := spec["tools"]
+	if !ok {
+		return nil
+	}
+	asStrings := func(v interface{}) []string {
+		list, ok := v.([]interface{})
+		if !ok {
+			return nil
+		}
+		var out []string
+		for _, e := range list {
+			if s, ok := e.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	switch tv := raw.(type) {
+	case []interface{}:
+		return asStrings(tv)
+	case map[string]interface{}:
+		return asStrings(tv["builtin"])
+	}
+	return nil
+}
+
+// unknownToolNames returns declared builtin tools that don't resolve to anything
+// real: not a builtin, not an auto-injected/special name, and not an MCP
+// `server:tool` reference. The registry silently drops such names at build time,
+// so an agent declaring them (or, worse, a prompt that assumes them) ends up
+// hallucinating a tool at runtime. Surfacing them at create/update time turns a
+// silent footgun into an actionable error.
+func unknownToolNames(spec map[string]interface{}) []string {
+	valid := map[string]bool{}
+	for _, n := range Names() {
+		valid[n] = true
+	}
+	for _, n := range CommunicationToolNames() {
+		valid[n] = true
+	}
+	for n := range autoInjectedOrSpecialTools {
+		valid[n] = true
+	}
+	var unknown []string
+	for _, t := range declaredBuiltinTools(spec) {
+		if valid[t] || strings.Contains(t, ":") { // colon => MCP server:tool reference
+			continue
+		}
+		unknown = append(unknown, t)
+	}
+	return unknown
+}
+
 // convertStructuredAgentToYAML converts a structured agent config (from JSON) to YAML format.
 // Returns the YAML content and the agent name.
 func (t *AgentManagementTool) convertStructuredAgentToYAML(configObj interface{}) (string, string, error) {
@@ -765,6 +830,15 @@ func (t *AgentManagementTool) convertStructuredAgentToYAML(configObj interface{}
 	spec, ok := k8sConfig.Spec["system_prompt"].(string)
 	if !ok || spec == "" {
 		return "", "", fmt.Errorf("spec.system_prompt is required")
+	}
+
+	// Reject invented tool names before they reach disk. An unknown name is
+	// silently dropped at build time, leaving the agent's prompt asking for a
+	// capability it has no tool for — which makes it hallucinate a tool at
+	// runtime (the exact supabase-query-generator failure mode).
+	if unknown := unknownToolNames(k8sConfig.Spec); len(unknown) > 0 {
+		return "", "", fmt.Errorf("unknown tool(s) %v: not a builtin, not tool_search, and not an MCP \"server:tool\" reference. Run tool_search to find real tool names (or use \"server:tool\" for MCP tools) — do not invent tools. Known builtins: %s",
+			unknown, strings.Join(Names(), ", "))
 	}
 
 	// Set defaults

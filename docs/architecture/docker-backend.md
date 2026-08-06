@@ -1474,7 +1474,7 @@ TraceCollector detects version field, routes to appropriate parser.
 
 ## Implementation Status
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Components**:
 - ✅ DockerExecutor: Implemented (4 e2e tests in `e2e_test.go`)

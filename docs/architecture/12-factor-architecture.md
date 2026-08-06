@@ -4,7 +4,7 @@ Analysis of Loom's adherence to 12-factor app principles for cloud-native LLM ag
 
 **Target Audience**: Architects, academics, platform engineers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ---
 
@@ -461,17 +461,14 @@ type StreamingLLMProvider interface {
 // 8 implementations: Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Gemini, Mistral, HuggingFace
 ```
 
-**Shared Backend Wrapper** (large result storage):
+**Large result storage** (one threshold, two offload sites):
 
 ```go
-// pkg/fabric/shared_backend.go
-type SharedBackendWrapper struct {
-    backend      ExecutionBackend
-    sharedMemory *storage.SharedMemoryStore
-    threshold    int64
-    autoStore    bool
-}
-// Wraps backends to auto-store large results (>100KB) in shared memory
+// pkg/shuttle/executor.go — handleLargeResult
+// pkg/agent/agent.go     — formatToolResult
+// A tool result at or above storage.DefaultSharedMemoryThreshold (64 KiB) is
+// stored in shared memory; a preview and a handle enter the conversation.
+// Exempt: manage_skills, get_tool_result, query_tool_result.
 ```
 
 **Health Checks** (via ExecutionBackend interface):
@@ -771,7 +768,7 @@ func (e *ToolExecutor) ExecuteConcurrent(ctx context.Context, tools []Tool) []Re
 }
 ```
 
-**Multi-Agent Workflow Patterns** (6 orchestration patterns):
+**Multi-Agent Workflow Patterns** (9 orchestration patterns, `proto/loom/v1/orchestration.proto` `WorkflowPattern` oneof):
 
 1. **Pipeline**: Sequential execution, output flows to next stage
 2. **Parallel**: Independent tasks execute concurrently
@@ -779,6 +776,9 @@ func (e *ToolExecutor) ExecuteConcurrent(ctx context.Context, tools []Tool) []Re
 4. **Debate**: Agents argue different perspectives
 5. **Conditional**: Route based on agent decisions
 6. **Swarm**: Dynamic agent collaboration
+7. **Pair Programming**: Two agents collaborate on code
+8. **Teacher-Student**: Knowledge transfer between agents
+9. **Iterative**: Loop-based refinement workflow
 
 **Configuration**:
 
@@ -802,7 +802,7 @@ server:
 go test -tags fts5 -race ./...
 
 # Results:
-# 2462+ test functions across 342 test files
+# 3,676+ test functions across 397 test files
 # 0 race conditions detected
 # Critical packages: patterns 81.7%, communication 77.9%, fabric 79.2%
 ```
@@ -835,7 +835,7 @@ go test -tags fts5 -race ./...
 Startup Breakdown:
   Binary startup:        <100ms
   SQLite init (WAL):     <50ms
-  Pattern loading:       89-143ms (104 patterns, 80KB YAML)
+  Pattern loading:       89-143ms (158 patterns, ~80KB+ YAML)
   Agent initialization:  <50ms
   Total:                 <200ms
 ```
@@ -1023,7 +1023,7 @@ logging:
 - Agent lifecycle: Session created, agent started/stopped
 - LLM API calls: Provider, model, tokens, cost, latency, TTFT
 - Tool executions: Name, success/failure, duration
-- Pattern matching: Selected patterns, confidence scores
+- Pattern loads: Reference requested, hit or miss
 - Error conditions: Stack traces with context
 
 **No Log Aggregation** (stdout/stderr only):
@@ -1440,10 +1440,10 @@ curl http://localhost:5006/v1/agents
 **Rationale**:
 - Predictable token budget (ROM + Kernel + L1 + L2 ≈ 20k tokens)
 - Balances recent context (L1) with long-term memory (L2)
-- Hot-swappable patterns without session restart (ROM layer)
+- ROM is immutable per session, so its token cost is counted once at construction
 
 **Trade-offs**:
-- ✅ Bounded tokens, long-term context, pattern hot-reload
+- ✅ Bounded tokens, long-term context
 - ❌ Complexity (four layers to manage)
 - ❌ Lossy compression (L2 summaries drop detail)
 
@@ -1479,7 +1479,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Breakdown**:
 - Binary startup: <100ms (Go compiled executable)
 - SQLite init (WAL): <50ms
-- Pattern loading: 89-143ms (104 patterns, 80KB YAML)
+- Pattern loading: 89-143ms (158 patterns, ~80KB+ YAML)
 - Agent initialization: <50ms
 
 **Warm Start** (cached patterns): <150ms
@@ -1493,7 +1493,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 **Pattern Hot-Reload**: 89-143ms (p50-p99)
 
 **Measurement Conditions**:
-- Pattern library size: 104 patterns (11 libraries)
+- Pattern library size at time of measurement: ~104 patterns (library has since grown to 158)
 - Total pattern bytes: ~80KB YAML
 - Test hardware: M2 MacBook Pro
 
@@ -1518,7 +1518,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
 - Single agent: ~100 requests/second (LLM latency-bound)
 - Multi-agent: ~1000 requests/second (10 agents, parallel)
 
-**Race Conditions**: 0 detected (2462+ test functions across 342 test files with `-race` flag)
+**Race Conditions**: 0 detected (3,676+ test functions across 397 test files with `-race` flag)
 
 **Critical Packages** (test coverage):
 - patterns: 81.7%
@@ -1562,7 +1562,7 @@ sizeof(ROM) + sizeof(Kernel) + sizeof(L1) + sizeof(L2) ≤ CONTEXT_WINDOW - OUTP
    - Rotate keys via `looms config set-key`
 
 2. **Prompt Injection Defense**:
-   - Pattern validation: Reject patterns with user-controlled system prompts
+   - Pattern bodies enter as tool-result data, never as system-prompt content
    - Input sanitization: Escape special characters in backend queries
    - Tool approval: Human-in-the-loop for destructive operations
 
@@ -1710,7 +1710,7 @@ type PrivacyConfig struct {
 
 ---
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Last Updated**: 2026-01-14
 

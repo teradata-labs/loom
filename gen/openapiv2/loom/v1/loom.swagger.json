@@ -2804,6 +2804,29 @@
         ]
       }
     },
+    "/v1/workflows": {
+      "get": {
+        "summary": "ListWorkflows lists saved workflow definitions that can be run by name via\nExecuteWorkflow's workflow_ref. Lets a client discover existing workflows\ninstead of re-supplying a full pattern/YAML.",
+        "operationId": "LoomService_ListWorkflows",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkflowsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/workflows/executions": {
       "get": {
         "summary": "ListWorkflowExecutions lists workflow executions.",
@@ -5084,6 +5107,10 @@
         "enableTrace": {
           "type": "boolean",
           "title": "Optional: Enable tracing"
+        },
+        "workflowRef": {
+          "type": "string",
+          "description": "Optional: Run a saved workflow by name instead of supplying a pattern.\nThe server loads \u003cworkflow_ref\u003e.yaml from its workflows directory, so a\nclient can run an existing workflow with just variables — no need to\nre-supply the full pattern/YAML. Ignored when pattern is set."
         }
       },
       "description": "ExecuteWorkflowRequest initiates a workflow execution."
@@ -5232,6 +5259,17 @@
         }
       },
       "description": "ForkJoinPattern executes multiple agents in parallel on the same prompt,\nthen merges their results according to the specified strategy."
+    },
+    "v1GateTimeoutAction": {
+      "type": "string",
+      "enum": [
+        "GATE_TIMEOUT_ACTION_UNSPECIFIED",
+        "GATE_TIMEOUT_ACTION_FAIL",
+        "GATE_TIMEOUT_ACTION_REJECT",
+        "GATE_TIMEOUT_ACTION_APPROVE"
+      ],
+      "default": "GATE_TIMEOUT_ACTION_UNSPECIFIED",
+      "description": "GateTimeoutAction defines gate behavior on decision timeout.\n\n - GATE_TIMEOUT_ACTION_UNSPECIFIED: Unset — treated as GATE_TIMEOUT_ACTION_FAIL.\n - GATE_TIMEOUT_ACTION_FAIL: Fail the workflow run (safe default).\n - GATE_TIMEOUT_ACTION_REJECT: Treat as a rejection (workflow ends without executing later stages).\n - GATE_TIMEOUT_ACTION_APPROVE: Auto-approve and continue (use only for advisory gates)."
     },
     "v1GetArtifactContentResponse": {
       "type": "object",
@@ -5450,6 +5488,38 @@
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
+    },
+    "v1HITLGate": {
+      "type": "object",
+      "properties": {
+        "promptTemplate": {
+          "type": "string",
+          "description": "Prompt shown to the human reviewer. Supports the {{output}} placeholder,\nreplaced with the gated stage's (possibly truncated) output.\nEmpty = a default \"review the output of stage N\" prompt."
+        },
+        "requestType": {
+          "type": "string",
+          "description": "Request type shown to the host UI (approval, decision, input, review).\nAligned with HITLRequestInfo.request_type. Default: \"approval\"."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Advisory timeout for the human decision, in seconds. In suspend mode the\nHOST enforces expiry of the persisted checkpoint; in inline-handler mode\nthe handler context is bounded by this timeout. 0 = host default."
+        },
+        "reviseTargetStageId": {
+          "type": "string",
+          "description": "Stage (agent_id) to restart when the decision is REVISE.\nEmpty = restart the gated stage itself. Must be at or before the gated\nstage in pipeline order — forward jumps are invalid."
+        },
+        "maxRevisions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum REVISE round-trips this gate accepts before the workflow fails\n(prevents endless review loops). Default: 3."
+        },
+        "onTimeout": {
+          "$ref": "#/definitions/v1GateTimeoutAction",
+          "description": "What to do when the decision times out (enforced by the host in suspend\nmode). Default (UNSPECIFIED) is treated as FAIL."
+        }
+      },
+      "description": "HITLGate declares a human approval gate on a pipeline stage boundary.\nGates are deterministic control flow — they always fire when configured,\nunlike agent-initiated contact_human tool calls."
     },
     "v1HITLRequestInfo": {
       "type": "object",
@@ -6122,6 +6192,19 @@
         }
       },
       "description": "ListWorkflowTemplatesResponse returns every registered template."
+    },
+    "v1ListWorkflowsResponse": {
+      "type": "object",
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowSummary"
+          }
+        }
+      },
+      "description": "ListWorkflowsResponse returns the saved workflows."
     },
     "v1LoadPatternsRequest": {
       "type": "object",
@@ -7004,6 +7087,10 @@
         "outputPolicy": {
           "$ref": "#/definitions/v1OutputPolicy",
           "description": "Optional: Unified output validation policy. When set, takes precedence\nover the legacy validation_prompt + output_schema + retry_policy fields."
+        },
+        "hitlGate": {
+          "$ref": "#/definitions/v1HITLGate",
+          "description": "Optional: Human-in-the-loop approval gate evaluated AFTER this stage's\noutput passes validation and BEFORE the next stage starts. When the gate\nfires, the executor either asks a configured HITLHandler for an inline\ndecision or suspends the workflow with a WorkflowCheckpoint the host can\npersist and later resume. Gates are supported on pipeline and iterative\npatterns only."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
@@ -8779,6 +8866,26 @@
         "serviceRoleKey": {
           "type": "string",
           "title": "Supabase service role key (for server-side access)"
+        },
+        "projectRef": {
+          "type": "string",
+          "description": "Supabase project reference (e.g. \"abcdefghijklmnop\")."
+        },
+        "databasePassword": {
+          "type": "string",
+          "description": "Database password. SENSITIVE: prefer the LOOM_SUPABASE_DB_PASSWORD env var\nor the keyring over committing it to YAML."
+        },
+        "region": {
+          "type": "string",
+          "description": "Project region (e.g. \"us-east-1\"), used to construct the default pooler host."
+        },
+        "poolerHost": {
+          "type": "string",
+          "description": "Explicit pooler host override (e.g. \"aws-0-us-east-1.pooler.supabase.com\").\nThe aws-N prefix varies per project; set this from the dashboard when the\nregion-derived default does not match."
+        },
+        "database": {
+          "type": "string",
+          "description": "Database name (default: \"postgres\")."
         }
       },
       "description": "SupabaseConfig configures Supabase-specific features.\nSTATUS: Planned. Proto scaffold only — no implementation exists yet.\nThis message is reserved for a future PR that adds Supabase-hosted PostgreSQL support."
@@ -10259,6 +10366,24 @@
         }
       },
       "description": "WorkflowResult contains the execution results from a workflow pattern."
+    },
+    "v1WorkflowSummary": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name (the workflow_ref to pass to ExecuteWorkflow)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description (from the workflow's metadata, if any)."
+        },
+        "type": {
+          "type": "string",
+          "description": "Pattern type (pipeline, debate, fork-join, ...)."
+        }
+      },
+      "description": "WorkflowSummary describes a saved workflow available to run by name."
     },
     "v1WorkflowTemplate": {
       "type": "string",

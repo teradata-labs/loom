@@ -63,6 +63,19 @@ spec:
     - NEVER list auto-injected tools (workspace, query_tool_result,
       conversation_memory, session_memory, get_error_details, publish,
       shared_memory_*, send_message) in tool lists.
+    - MATCH TOOLS TO THE PROMPT. If an agent's instructions tell it to DO
+      something — query a database, run SQL, search the web, read/write files,
+      call an API — it MUST have a tool that provides that capability. First run
+      tool_search to find the REAL tool name (e.g. an MCP "server:tool" such as
+      "dbwrite:query"); never invent names like "sql_tool" or "all_table_names".
+    - DEFAULT TO tool_search FOR ANY AGENT THAT ACTS. If an agent is meant to do
+      more than transform text it is handed, give it tool_search so it can
+      discover and call real tools at runtime. An action-oriented prompt with an
+      empty tools list WILL make the agent hallucinate a tool and fail — do not
+      ship that. (Pure text-transform agents may legitimately have no tools.)
+    - AFTER create_agent / update_agent, run agent_management validate to confirm
+      the agent's tools resolve. Unknown tool names are rejected with an error —
+      fix them, do not work around them.
 
   tools:
     - agent_management

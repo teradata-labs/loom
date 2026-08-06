@@ -360,6 +360,13 @@ service LoomService {
     option (google.api.http) = {get: "/v1/workflows/executions"};
   }
 
+  // ListWorkflows lists saved workflow definitions that can be run by name via
+  // ExecuteWorkflow's workflow_ref. Lets a client discover existing workflows
+  // instead of re-supplying a full pattern/YAML.
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse) {
+    option (google.api.http) = {get: "/v1/workflows"};
+  }
+
   // Workflow Scheduling RPCs
 
   // ScheduleWorkflow creates a new scheduled workflow.

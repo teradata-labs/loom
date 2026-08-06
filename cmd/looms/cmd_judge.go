@@ -105,7 +105,7 @@ Examples:
 
   # Register and verify
   looms judge register config/judges/safety-judge.yaml
-  looms judge history --judge=safety-judge`,
+  looms judge history --judges=safety-judge`,
 	Args: cobra.ExactArgs(1),
 	Run:  runJudgeRegister,
 }
@@ -160,7 +160,7 @@ Examples:
   looms judge history --agent=sql-agent
 
   # Filter by judge
-  looms judge history --judge=quality-judge
+  looms judge history --judges=quality-judge
 
   # Filter by pattern
   looms judge history --pattern=query_optimization

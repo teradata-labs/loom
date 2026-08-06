@@ -1,6 +1,6 @@
 # Supabase Integration Guide
 
-**Status:** ✅ Implemented (v1.2.0)
+**Status:** ✅ Implemented (v1.3.0)
 
 Loom integrates with Supabase in two ways:
 
@@ -172,7 +172,7 @@ Only user-created schemas (typically `public`) are shown.
 
 ## Part 2: Supabase as Storage Backend
 
-**Status:** ✅ Implemented (v1.2.0)
+**Status:** ✅ Implemented (v1.3.0)
 **Verified:** PostgreSQL 17.6 on Supabase
 
 Use Supabase PostgreSQL for Loom's internal storage instead of SQLite. This stores sessions, agents, conversation history, and state in your Supabase database.
@@ -211,6 +211,44 @@ storage:
   migration:
     auto_migrate: true
 ```
+
+#### Option 3: Configure by Supabase Project
+
+> **Note:** Added after v1.3.0.
+
+Instead of a full DSN, point storage at a Supabase project by reference. Loom
+derives the session-mode (port 5432) pooler DSN for you:
+
+```yaml
+storage:
+  backend: postgres
+  postgres:
+    supabase:
+      enabled: true
+      project_ref: abcdefghijklmnop
+      region: us-east-1
+      # pooler_host: aws-1-us-east-1.pooler.supabase.com  # set if the region default doesn't match
+      # database: postgres
+      # database_password: ...  # prefer the env var below over committing it
+  migration:
+    auto_migrate: true
+```
+
+Provide the database password out-of-band (kept out of YAML):
+
+```bash
+export LOOM_SUPABASE_DB_PASSWORD="your-db-password"
+```
+
+Precedence: an explicit `postgres.dsn` wins; otherwise the `supabase` block is
+used when `enabled: true`; otherwise the individual host fields apply. Storage
+always uses **session mode (5432)** — transaction-mode pooling (6543) is not
+supported because it breaks the transaction-scoped RLS context and prepared
+statements the storage layer relies on.
+
+> 📋 **Planned:** a `loom supabase connect` command that uses Supabase
+> Management OAuth to list your projects and emit this config block
+> automatically.
 
 ### DSN Format
 

@@ -16,6 +16,7 @@ This document describes all environment variables used in the Loom project.
   - [HuggingFace](#huggingface)
 - [AWS Credentials](#aws-credentials)
 - [Observability (Hawk)](#observability-hawk)
+- [Observability (OTLP)](#observability-otlp)
 - [Web Search Tools](#web-search-tools)
 - [Docker Configuration](#docker-configuration)
 - [TLS/ACME Configuration](#tlsacme-configuration)
@@ -554,13 +555,14 @@ looms config set-key hawk_api_key
 
 ### LOOM_TRACER_MODE
 **Default:** `auto`
-**Values:** `auto`, `service`, `embedded`, `none`
-**Used in:** `pkg/builder/builder.go`
+**Values:** `auto`, `service`, `embedded`, `otel`, `none`
+**Used in:** `pkg/builder/builder.go`, `pkg/observability/auto_select.go`
 
 Controls which tracer implementation to use:
-- `auto`: Automatically select based on environment
+- `auto`: Automatically select based on environment (OTLP endpoint takes priority, then Hawk service, then embedded)
 - `service`: Use Hawk service (gRPC)
 - `embedded`: Use embedded storage (memory or SQLite)
+- `otel`: Export spans via OTLP HTTP to any compatible backend (Jaeger, Grafana Tempo, Opik, Honeycomb, Datadog, etc.)
 - `none`: Disable tracing
 
 ```bash
@@ -597,6 +599,118 @@ Path to SQLite database for embedded tracer.
 
 ```bash
 export LOOM_EMBEDDED_SQLITE_PATH=/path/to/traces.db
+```
+
+---
+
+## Observability (OTLP)
+
+Loom supports exporting traces to any **OpenTelemetry Protocol (OTLP) HTTP**-compatible backend (Jaeger, Grafana Tempo, Opik, Honeycomb, Datadog, OTLP Collector, etc.).
+
+Set `LOOM_TRACER_MODE=otel` (or leave `auto` and set the endpoint — OTLP takes priority in `auto` mode).
+
+### OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+Full OTLP HTTP URL including path. Standard OTel env var — checked first before `LOOM_OTLP_ENDPOINT`.
+
+```bash
+# Jaeger
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+# Grafana Tempo
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://tempo.example.com/otlp/v1/traces
+# Opik (local)
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:5173/api/v1/private/otel/v1/traces
+```
+
+### LOOM_OTLP_ENDPOINT
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+Loom-specific fallback for the OTLP HTTP endpoint. Used when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set.
+
+```bash
+export LOOM_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+### OTEL_EXPORTER_OTLP_TRACES_HEADERS
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+HTTP headers sent with every OTLP export request. Standard OTel env var — checked first before `LOOM_OTLP_HEADERS`.
+
+**Format:** Comma-separated `key=value` pairs.
+
+```bash
+# Bearer token auth (Honeycomb, Grafana Cloud, etc.)
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer my-api-key"
+# Multiple headers
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer my-key,x-project-id=my-project"
+```
+
+### LOOM_OTLP_HEADERS
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+Loom-specific fallback for OTLP headers. Used when `OTEL_EXPORTER_OTLP_TRACES_HEADERS` is not set. Same `key=value,key2=value2` format.
+
+```bash
+export LOOM_OTLP_HEADERS="Authorization=Bearer my-api-key"
+```
+
+### LOOM_OTLP_INSECURE
+**Default:** `false`
+**Values:** `true`, `false`
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+Forces plain HTTP transport for the OTLP exporter (uses `http://` even if the endpoint URL specifies `https://`). This is implemented via `otlptracehttp.WithInsecure()` which **forces plaintext** — it does **not** disable TLS certificate verification for existing `https://` connections. Use only for local development against collectors that listen on plain HTTP (e.g. Jaeger or Opik on localhost).
+
+For `https://` endpoints with self-signed certificates, configure the collector to use a trusted certificate instead.
+
+```bash
+export LOOM_OTLP_INSECURE=true
+```
+
+⚠️ **Warning:** Never set this in production — spans are transmitted without encryption.
+
+### OTEL_SERVICE_NAME
+**Used in:** `pkg/observability/otel_config.go`, `pkg/observability/auto_select.go`
+
+Sets the `service.name` resource attribute on all exported spans. Standard OTel env var.
+
+```bash
+export OTEL_SERVICE_NAME=my-loom-agent
+```
+
+### OTEL_SERVICE_VERSION
+**Used in:** `pkg/observability/otel_config.go`
+
+Sets the `service.version` resource attribute on all exported spans. Standard OTel env var.
+
+```bash
+export OTEL_SERVICE_VERSION=1.3.0
+```
+
+### Quick-Start Examples
+
+**Jaeger (local, no auth):**
+```bash
+export LOOM_TRACER_MODE=otel
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+export LOOM_OTLP_INSECURE=true
+export OTEL_SERVICE_NAME=my-agent
+```
+
+**Grafana Cloud (with bearer token):**
+```bash
+export LOOM_TRACER_MODE=otel
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otlp-gateway-prod-us-central-0.grafana.net/otlp/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer <instance-id>:<api-key>"
+export OTEL_SERVICE_NAME=my-agent
+```
+
+**Auto-select OTLP (no explicit mode needed):**
+```bash
+# Setting the endpoint is enough — auto mode selects OTLP first
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+export OTEL_SERVICE_NAME=my-agent
 ```
 
 ---

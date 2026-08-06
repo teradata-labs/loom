@@ -2,7 +2,7 @@
 
 Technical reference for connecting Loom to Google Gemini via the Google AI Studio API.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 **Status**: ✅ Implemented. Supports text, vision, tool calling, and streaming.
 
@@ -188,28 +188,21 @@ HTTP client timeout in seconds for API requests.
 
 ## Available Models
 
-### Gemini 3 Preview Models
-
-These models are in preview (as of 2026-03) and are used as defaults. They are supported in the client and cost calculator but are not yet in the GA model catalog dropdown.
+Source of truth: `pkg/llm/catalog/catalog.go` (`BuildCatalog()`). All 7 Gemini entries below have `ShowInDropdown: true`. The 2.5 family is GA; the 3.x entries are preview endpoints that the catalog includes (verified against OpenRouter traffic on 2026-04-22). The default model when none is configured is `gemini-3-flash-preview` (`pkg/llm/factory/factory.go`).
 
 | Model ID | Name | Context Window | Max Output | Input Cost (per 1M) | Output Cost (per 1M) | Capabilities |
 |----------|------|----------------|------------|---------------------|----------------------|--------------|
-| `gemini-3-pro-preview` | Gemini 3 Pro | 1,048,576 | 65,536 | $2.00-$4.00 (tiered) | $12.00-$18.00 (tiered) | text, vision, tool-use, thinking, image-gen |
-| `gemini-3-flash-preview` | Gemini 3 Flash | 1,048,576 | 65,536 | Free during preview | Free during preview | text, vision, tool-use, thinking |
-
-### GA Model Catalog (registered in model registry)
-
-These GA models appear in Loom's model picker dropdown:
-
-| Model ID | Name | Context Window | Max Output | Input Cost (per 1M) | Output Cost (per 1M) | Capabilities |
-|----------|------|----------------|------------|---------------------|----------------------|--------------|
-| `gemini-2.5-pro` | Gemini 2.5 Pro | 1,048,576 | 65,536 | $1.25 (low tier) | $10.00 (low tier) | text, vision, tool-use, thinking |
+| `gemini-3.1-pro-preview` | Gemini 3.1 Pro (Preview) | 1,048,576 | 65,536 | $2.00 | $12.00 | text, vision, tool-use, thinking |
+| `gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash-Lite (Preview) | 1,048,576 | 32,768 | $0.25 | $1.50 | text, vision, tool-use, thinking |
+| `gemini-3-pro-preview` | Gemini 3 Pro (Preview) | 1,048,576 | 65,536 | $2.00 | $12.00 | text, vision, tool-use, thinking |
+| `gemini-3-flash-preview` | Gemini 3 Flash (Preview) | 1,048,576 | 32,768 | $0.50 | $3.00 | text, vision, tool-use, thinking |
+| `gemini-2.5-pro` | Gemini 2.5 Pro | 1,048,576 | 65,536 | $1.25 | $10.00 | text, vision, tool-use, thinking |
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1,048,576 | 65,536 | $0.30 | $2.50 | text, vision, tool-use, thinking |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1,048,576 | 32,768 | $0.10 | $0.40 | text, vision, tool-use |
 
-**Note on tiered pricing**: Gemini 2.5 Pro and Gemini 3 Pro have tiered pricing based on prompt length (above/below 200k tokens). The `calculateCost()` function in `client.go` uses mid-range averages: $1.875/$12.50 for 2.5 Pro, $3.00/$15.00 for 3 Pro.
+**Catalog vs. runtime cost calculator**: The table above shows catalog pricing. The `calculateCost()` function in `pkg/llm/gemini/client.go` is a separate code path with its own (in some cases tiered/averaged) rates — see [Cost Estimation](#cost-estimation). Notably, `calculateCost()` does not have entries for the `gemini-3.1-*` IDs and falls back to `gemini-2.5-flash` pricing ($0.30/$2.50) for them.
 
-**Pricing source**: Comments in `pkg/llm/gemini/client.go`. Check [ai.google.dev/pricing](https://ai.google.dev/pricing) for current rates.
+**Pricing source**: Catalog (`pkg/llm/catalog/catalog.go`) and runtime comments in `pkg/llm/gemini/client.go`. Check [ai.google.dev/pricing](https://ai.google.dev/pricing) for current rates.
 
 
 ## Features
@@ -470,7 +463,7 @@ Cost is calculated per-request in `calculateCost()` using per-million-token rate
 | `gemini-2.5-flash` | $0.30 | $2.50 | ~$0.00155 |
 | `gemini-2.5-flash-lite` | $0.10 | $0.40 | ~$0.00030 |
 
-Unknown models default to `gemini-2.5-flash` pricing ($0.30/$2.50).
+The `gemini-3.1-pro-preview` and `gemini-3.1-flash-lite-preview` catalog IDs are not in `calculateCost()` and fall through to the default. Unknown models default to `gemini-2.5-flash` pricing ($0.30/$2.50).
 
 **Note**: The mid-range averages differ from the model catalog's low-tier prices. The catalog shows $1.25/$10.00 for 2.5 Pro (low tier, prompts up to 200k tokens). The cost calculator uses the mid-range average ($1.875/$12.50) to better reflect mixed workloads.
 

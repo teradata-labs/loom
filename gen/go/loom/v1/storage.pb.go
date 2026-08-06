@@ -474,8 +474,21 @@ type SupabaseConfig struct {
 	AnonKey string `protobuf:"bytes,3,opt,name=anon_key,json=anonKey,proto3" json:"anon_key,omitempty"`
 	// Supabase service role key (for server-side access)
 	ServiceRoleKey string `protobuf:"bytes,4,opt,name=service_role_key,json=serviceRoleKey,proto3" json:"service_role_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Supabase project reference (e.g. "abcdefghijklmnop").
+	ProjectRef string `protobuf:"bytes,5,opt,name=project_ref,json=projectRef,proto3" json:"project_ref,omitempty"`
+	// Database password. SENSITIVE: prefer the LOOM_SUPABASE_DB_PASSWORD env var
+	// or the keyring over committing it to YAML.
+	DatabasePassword string `protobuf:"bytes,6,opt,name=database_password,json=databasePassword,proto3" json:"database_password,omitempty"`
+	// Project region (e.g. "us-east-1"), used to construct the default pooler host.
+	Region string `protobuf:"bytes,7,opt,name=region,proto3" json:"region,omitempty"`
+	// Explicit pooler host override (e.g. "aws-0-us-east-1.pooler.supabase.com").
+	// The aws-N prefix varies per project; set this from the dashboard when the
+	// region-derived default does not match.
+	PoolerHost string `protobuf:"bytes,8,opt,name=pooler_host,json=poolerHost,proto3" json:"pooler_host,omitempty"`
+	// Database name (default: "postgres").
+	Database      string `protobuf:"bytes,9,opt,name=database,proto3" json:"database,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SupabaseConfig) Reset() {
@@ -532,6 +545,41 @@ func (x *SupabaseConfig) GetAnonKey() string {
 func (x *SupabaseConfig) GetServiceRoleKey() string {
 	if x != nil {
 		return x.ServiceRoleKey
+	}
+	return ""
+}
+
+func (x *SupabaseConfig) GetProjectRef() string {
+	if x != nil {
+		return x.ProjectRef
+	}
+	return ""
+}
+
+func (x *SupabaseConfig) GetDatabasePassword() string {
+	if x != nil {
+		return x.DatabasePassword
+	}
+	return ""
+}
+
+func (x *SupabaseConfig) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *SupabaseConfig) GetPoolerHost() string {
+	if x != nil {
+		return x.PoolerHost
+	}
+	return ""
+}
+
+func (x *SupabaseConfig) GetDatabase() string {
+	if x != nil {
+		return x.Database
 	}
 	return ""
 }
@@ -1139,13 +1187,20 @@ const file_loom_v1_storage_proto_rawDesc = "" +
 	"\x0fmin_connections\x18\x02 \x01(\x05R\x0eminConnections\x121\n" +
 	"\x15max_idle_time_seconds\x18\x03 \x01(\x05R\x12maxIdleTimeSeconds\x120\n" +
 	"\x14max_lifetime_seconds\x18\x04 \x01(\x05R\x12maxLifetimeSeconds\x12A\n" +
-	"\x1dhealth_check_interval_seconds\x18\x05 \x01(\x05R\x1ahealthCheckIntervalSeconds\"\x90\x01\n" +
+	"\x1dhealth_check_interval_seconds\x18\x05 \x01(\x05R\x1ahealthCheckIntervalSeconds\"\xb3\x02\n" +
 	"\x0eSupabaseConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vproject_url\x18\x02 \x01(\tR\n" +
 	"projectUrl\x12\x19\n" +
 	"\banon_key\x18\x03 \x01(\tR\aanonKey\x12(\n" +
-	"\x10service_role_key\x18\x04 \x01(\tR\x0eserviceRoleKey\"\x80\x01\n" +
+	"\x10service_role_key\x18\x04 \x01(\tR\x0eserviceRoleKey\x12\x1f\n" +
+	"\vproject_ref\x18\x05 \x01(\tR\n" +
+	"projectRef\x12+\n" +
+	"\x11database_password\x18\x06 \x01(\tR\x10databasePassword\x12\x16\n" +
+	"\x06region\x18\a \x01(\tR\x06region\x12\x1f\n" +
+	"\vpooler_host\x18\b \x01(\tR\n" +
+	"poolerHost\x12\x1a\n" +
+	"\bdatabase\x18\t \x01(\tR\bdatabase\"\x80\x01\n" +
 	"\x0fMigrationConfig\x12!\n" +
 	"\fauto_migrate\x18\x01 \x01(\bR\vautoMigrate\x12#\n" +
 	"\rmigration_dir\x18\x02 \x01(\tR\fmigrationDir\x12%\n" +

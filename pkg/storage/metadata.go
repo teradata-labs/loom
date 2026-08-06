@@ -69,14 +69,17 @@ type PreviewData struct {
 
 // GetMetadata returns metadata about stored data without loading full content.
 // This enables progressive disclosure - agents can inspect data before retrieving.
-func (s *SharedMemoryStore) GetMetadata(ref *loomv1.DataReference) (*DataMetadata, error) {
+// callerSession scopes the lookup to the caller's partition, same rule as Get.
+func (s *SharedMemoryStore) GetMetadata(ref *loomv1.DataReference, callerSession string) (*DataMetadata, error) {
 	if ref == nil || ref.Id == "" {
 		return nil, fmt.Errorf("invalid reference: reference is nil or has empty ID")
 	}
 
-	// Fetch raw data to analyze
+	// Fetch raw data to analyze, scoped to the caller's partition exactly like
+	// Get: the metadata carries schema, a sample item and a content preview, so
+	// an unscoped describe would answer for a handle the caller does not own.
 	// TODO: Optimize by caching metadata separately in SharedData struct
-	data, err := s.Get(ref)
+	data, err := s.get(ref, callerSession, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve data for metadata analysis: %w", err)
 	}

@@ -3,7 +3,7 @@
 
 Technical reference for connecting Loom to AWS Bedrock for Claude models.
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents
@@ -43,8 +43,10 @@ llm:
 
 | Model | Bedrock Model ID | Context | Max Output | Best For |
 |-------|------------------|---------|------------|----------|
-| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Latest, maximum intelligence |
-| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Latest, best balance |
+| **Claude Opus 4.7** | `us.anthropic.claude-opus-4-7-v1:0` | 1M | 128k | Latest, maximum intelligence |
+| **Claude Opus 4.7 (global)** | `global.anthropic.claude-opus-4-7-v1:0` | 1M | 128k | Opus 4.7 via dynamic global routing |
+| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Maximum intelligence |
+| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Best balance |
 | **Claude Opus 4.5** | `us.anthropic.claude-opus-4-5-20251101-v1:0` | 200k | 64k | Maximum intelligence |
 | **Claude Sonnet 4.5** | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | 64k | Best performance (recommended) |
 | **Claude Haiku 4.5** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | 64k | Fast, cost-effective |
@@ -74,6 +76,7 @@ llm:
 
 | Model | Input (per 1M tokens) | Output (per 1M tokens) | Typical Task* |
 |-------|----------------------|------------------------|---------------|
+| **Opus 4.7** | $5.00 | $25.00 | $0.0275 |
 | **Opus 4.6** | $5.00 | $25.00 | $0.0275 |
 | **Sonnet 4.6** | $3.00 | $15.00 | $0.0165 |
 | **Opus 4.5** | $5.00 | $25.00 | $0.0275 |
@@ -387,6 +390,8 @@ Bedrock model identifier for Claude.
 **Environment variables** (checked in order): `AWS_BEDROCK_MODEL_ID`, `LOOM_LLM_BEDROCK_MODEL_ID`
 
 **Examples**:
+- `us.anthropic.claude-opus-4-7-v1:0` - Claude Opus 4.7 (1M context, 128k output)
+- `global.anthropic.claude-opus-4-7-v1:0` - Claude Opus 4.7 via global dynamic routing
 - `us.anthropic.claude-opus-4-6-v1` - Claude Opus 4.6 (1M context, 128k output)
 - `us.anthropic.claude-sonnet-4-6-v1:0` - Claude Sonnet 4.6 (1M context, 64k output)
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - Claude Sonnet 4.5 (recommended)
@@ -394,7 +399,7 @@ Bedrock model identifier for Claude.
 - `us.anthropic.claude-opus-4-5-20251101-v1:0` - Claude Opus 4.5
 - `us.anthropic.claude-opus-4-1-20250805-v1:0` - Claude Opus 4.1
 
-**Note**: All Bedrock model IDs use the `us.` prefix for cross-region inference.
+**Note**: Most Bedrock model IDs use the `us.` regional prefix for cross-region inference; a `global.` prefix is also available for some models (e.g. Opus 4.7) for dynamic global routing. The factory routes any model ID containing `anthropic` or `claude` through the Anthropic SDK client (`pkg/llm/factory/factory.go`).
 
 **See**: [Available Models](#available-models)
 
@@ -510,8 +515,10 @@ timeout_seconds: 60
 
 | Model | Bedrock Model ID | Context | Max Output | Best For |
 |-------|------------------|---------|------------|----------|
-| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Latest, maximum intelligence |
-| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Latest, best balance |
+| **Claude Opus 4.7** | `us.anthropic.claude-opus-4-7-v1:0` | 1M | 128k | Latest, maximum intelligence |
+| **Claude Opus 4.7 (global)** | `global.anthropic.claude-opus-4-7-v1:0` | 1M | 128k | Opus 4.7 via dynamic global routing |
+| **Claude Opus 4.6** | `us.anthropic.claude-opus-4-6-v1` | 1M | 128k | Maximum intelligence |
+| **Claude Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6-v1:0` | 1M | 64k | Best balance |
 | **Claude Opus 4.5** | `us.anthropic.claude-opus-4-5-20251101-v1:0` | 200k | 64k | Maximum intelligence |
 | **Claude Sonnet 4.5** | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | 64k | Best performance (recommended) |
 | **Claude Haiku 4.5** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | 64k | Fast, cost-effective |
@@ -632,6 +639,10 @@ grpcurl -plaintext -d '{"query": "Hello from Bedrock!"}' \
 
 Bedrock pricing varies by region. US East (us-east-1) pricing:
 
+### Claude Opus 4.7
+- **Input**: $5.00 per 1M tokens
+- **Output**: $25.00 per 1M tokens
+
 ### Claude Opus 4.6
 - **Input**: $5.00 per 1M tokens
 - **Output**: $25.00 per 1M tokens
@@ -667,7 +678,7 @@ Bedrock pricing varies by region. US East (us-east-1) pricing:
 
 **Note**: Prices vary by region. Check [AWS Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/) for your region.
 
-> **Known issue**: The `cost_usd` field returned in `WeaveResponse` uses approximate pricing from the `calculateCost` function in the Bedrock client. Currently, all Opus 4.x models are billed at the Opus 4.1 rate ($15/$75) and Haiku is billed at $0.80/$4.00 instead of $1.00/$5.00. The prices listed in this document reflect the model catalog (source of truth for Bedrock pricing tiers). The in-response cost estimate may differ.
+**Cost calculation**: The `cost_usd` field in `WeaveResponse` comes from `calculateCost` in the Bedrock client, which matches the model ID to a Claude family (`pkg/llm/bedrock/client.go`): `claude-opus-4-1` → $15/$75 (checked first), `claude-opus-4` (4.5/4.6/4.7) → $5/$25, `claude-haiku-4` → $1/$5, `claude-sonnet-4` and any unrecognized model → $3/$15. These rates match the catalog tiers shown above.
 
 
 ## Security Best Practices
@@ -1116,7 +1127,7 @@ time aws bedrock list-foundation-models --region us-west-2
 | **Setup Complexity** | Moderate (IAM, model access) | Simple (API key only) |
 | **Multi-region** | AWS regions | Single global endpoint |
 | **Tool Calling** | Native support | Native support |
-| **Streaming** | Non-streaming (falls back due to AWS SDK bug) | Supported |
+| **Streaming** | Supported for Claude models (Anthropic SDK client, `ChatStream`). Non-Anthropic Bedrock models (DeepSeek, Qwen) use the Converse client, whose streaming is disabled pending an AWS SDK fix | Supported |
 
 **Choose Bedrock for**:
 - Enterprise AWS integration

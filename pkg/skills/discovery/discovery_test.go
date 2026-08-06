@@ -113,20 +113,50 @@ func TestDiscovery_SlashCommand_NewlineSeparated(t *testing.T) {
 		Bindings: []skills.SkillBinding{{Name: "a", Mode: skills.BindingLazy}},
 	}
 
-	for _, msg := range []string{
-		"/a\ncheck this for me",
-		"/a\tcheck this with tab",
-		"/a\r\ncheck this with CRLF",
+	for _, tc := range []struct{ msg, wantTrigger string }{
+		{"/a\ncheck this for me", "/a check this for me"},
+		{"/a\tcheck this with tab", "/a check this with tab"},
+		{"/a\r\ncheck this with CRLF", "/a check this with CRLF"},
 	} {
-		got, err := d.Discover(context.Background(), "s", msg, cfg)
+		got, err := d.Discover(context.Background(), "s", tc.msg, cfg)
 		require.NoError(t, err)
-		require.Len(t, got, 1, "msg: %q", msg)
+		require.Len(t, got, 1, "msg: %q", tc.msg)
 		assert.Equal(t, "a", got[0].Skill.Name)
 		assert.Equal(t, "slash_command", got[0].TriggerType)
 		assert.Equal(t, 1.0, got[0].Confidence)
-		// discovery.go sets TriggerValue: cmd (without rest)
-		assert.Equal(t, "/a", got[0].TriggerValue)
+		// TriggerValue carries cmd + rest, matching MatchSkills (#196).
+		assert.Equal(t, tc.wantTrigger, got[0].TriggerValue, "msg: %q", tc.msg)
 	}
+}
+
+// TestDiscovery_SlashTriggerValue_MatchesOrchestrator pins the fix for #196:
+// the discovery pipeline and the legacy MatchSkills path must emit an identical
+// TriggerValue for the same slash-command input while both paths coexist.
+func TestDiscovery_SlashTriggerValue_MatchesOrchestrator(t *testing.T) {
+	a := mkSkill("a", "", []string{"/a"}, nil)
+	lib := libraryWith(t, a)
+
+	orch := skills.NewOrchestrator(lib)
+	disc := New(lib, binding.NewResolver(lib))
+
+	const msg = "/a please review foo"
+
+	mr, err := orch.MatchSkills("s", msg, &skills.SkillsConfig{Enabled: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, mr)
+
+	got, err := disc.Discover(context.Background(), "s", msg, &skills.SkillsConfig{
+		Enabled:  true,
+		Bindings: []skills.SkillBinding{{Name: "a", Mode: skills.BindingLazy}},
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	assert.Equal(t, "slash_command", mr[0].TriggerType)
+	assert.Equal(t, "slash_command", got[0].TriggerType)
+	assert.Equal(t, mr[0].TriggerValue, got[0].TriggerValue,
+		"discovery and MatchSkills must agree on TriggerValue")
+	assert.Equal(t, "/a please review foo", got[0].TriggerValue)
 }
 
 func TestDiscovery_FTSFallback_WhenNoRouter(t *testing.T) {

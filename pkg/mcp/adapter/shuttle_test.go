@@ -27,6 +27,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/storage"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -1007,6 +1008,84 @@ func TestDetectAndExtractSQLResult_RowContents(t *testing.T) {
 	assert.Equal(t, float64(2), row1[0])
 	assert.Equal(t, "Bob", row1[1])
 	assert.Equal(t, "bob@example.com", row1[2])
+}
+
+// TestExecute_SQLResult_SizeGate verifies the inline-vs-reference decision for
+// detected SQL results: a small result the model asked to SEE comes back inline
+// (no DataReference, no query_tool_result dance), while a result that would
+// threaten the context window is diverted into the SQL store as a reference.
+func TestExecute_SQLResult_SizeGate(t *testing.T) {
+	tool := protocol.Tool{
+		Name:        "query",
+		Description: "Run a read-only SQL query",
+		InputSchema: map[string]interface{}{"type": "object"},
+	}
+
+	// Build a SQL-result payload as a single text block; sizeRows controls how
+	// big the serialized JSON gets so we can straddle DefaultMaxResultBytes.
+	makeSQL := func(sizeRows int) string {
+		var b strings.Builder
+		b.WriteString(`{"columns":["country_code","gdp"],"rows":[`)
+		for i := 0; i < sizeRows; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `["C%05d","%d"]`, i, 1000000000+i)
+		}
+		b.WriteString("]}")
+		return b.String()
+	}
+
+	run := func(t *testing.T, payload string) *shuttle.Result {
+		handler := func(method string, _ json.RawMessage) (interface{}, *protocol.Error) {
+			switch method {
+			case "tools/list":
+				return protocol.ToolListResult{Tools: []protocol.Tool{tool}}, nil
+			case "tools/call":
+				return protocol.CallToolResult{
+					Content: []protocol.Content{{Type: "text", Text: payload}},
+				}, nil
+			default:
+				return nil, protocol.NewError(protocol.MethodNotFound, "unknown", nil)
+			}
+		}
+		mcpClient, _ := newMockClientWithHandler(t, handler)
+		adapter := NewMCPToolAdapter(mcpClient, tool, "dbwrite")
+		sqlStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
+			DBPath: ":memory:", TTLSeconds: 3600,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sqlStore.Close() })
+		adapter.SetSQLResultStore(sqlStore)
+
+		res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		require.True(t, res.Success)
+		return res
+	}
+
+	t.Run("small result returns inline", func(t *testing.T) {
+		small := makeSQL(5)
+		require.LessOrEqual(t, len(small), DefaultMaxResultBytes, "test fixture must be under the inline budget")
+		res := run(t, small)
+		assert.Nil(t, res.DataReference, "small SQL result must NOT be stored as a reference")
+		dataStr, ok := res.Data.(string)
+		require.True(t, ok)
+		assert.Contains(t, dataStr, "country_code", "rows should be returned inline for the model to read")
+		assert.Contains(t, dataStr, "C00000")
+	})
+
+	t.Run("large result stored as reference", func(t *testing.T) {
+		large := makeSQL(4000)
+		require.Greater(t, len(large), DefaultMaxResultBytes, "test fixture must exceed the inline budget")
+		res := run(t, large)
+		require.NotNil(t, res.DataReference, "large SQL result must be diverted into the SQL store")
+		assert.Equal(t, true, res.Metadata["stored_in_sql"])
+		dataStr, ok := res.Data.(string)
+		require.True(t, ok)
+		assert.Contains(t, dataStr, "DATABASE", "reference message must surface the DataRef + DATABASE location")
+	})
 }
 
 // =============================================================================

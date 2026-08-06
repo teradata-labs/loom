@@ -76,6 +76,14 @@ func extractUserID(ctx context.Context, cfg UserIDConfig) (context.Context, erro
 		logger = zap.NewNop()
 	}
 
+	// If an upstream interceptor (e.g. the Supabase-JWT Authenticator) already
+	// established the user identity, defer to it and do not require/override the
+	// legacy x-user-id header. When auth is disabled this is never set, so the
+	// legacy behavior below is unchanged.
+	if existing := postgres.UserIDFromContext(ctx); existing != "" {
+		return ctx, nil
+	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		vals := md.Get(UserIDHeader)

@@ -63,6 +63,12 @@ func GetAllTargets(repoRoot string) []FileTarget {
 			ExtractFunc: extractHomebrewFormula,
 		},
 		{
+			Path:        filepath.Join(repoRoot, "web/index.html"),
+			Description: "Project homepage (published to gh-pages on release)",
+			UpdateFunc:  updateHomepageHTML,
+			ExtractFunc: extractHomepageHTML,
+		},
+		{
 			Path:        filepath.Join(repoRoot, "packaging/windows/chocolatey/loom.nuspec"),
 			Description: "Chocolatey package spec",
 			UpdateFunc:  updateChocolateySpec,
@@ -186,6 +192,10 @@ func updateHomebrewFormula(path string, version Version) error {
 	re2 := regexp.MustCompile(`/v[0-9]+\.[0-9]+\.[0-9]+/`)
 	text = re2.ReplaceAllString(text, fmt.Sprintf("/%s/", version.WithV()))
 
+	// Replace source tag archive URLs: refs/tags/vX.Y.Z.tar.gz
+	re3 := regexp.MustCompile(`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz`)
+	text = re3.ReplaceAllString(text, fmt.Sprintf("refs/tags/%s.tar.gz", version.WithV()))
+
 	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
@@ -207,6 +217,14 @@ func extractHomebrewFormula(path string) ([]string, error) {
 	// Extract versions from URLs
 	re2 := regexp.MustCompile(`/v([0-9]+\.[0-9]+\.[0-9]+)/`)
 	for _, match := range re2.FindAllStringSubmatch(string(content), -1) {
+		if len(match) >= 2 {
+			versions[match[1]] = true
+		}
+	}
+
+	// Extract versions from source tag archive URLs: refs/tags/vX.Y.Z.tar.gz
+	re3 := regexp.MustCompile(`refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz`)
+	for _, match := range re3.FindAllStringSubmatch(string(content), -1) {
 		if len(match) >= 2 {
 			versions[match[1]] = true
 		}
@@ -573,4 +591,46 @@ func extractWingetVersion(path string) ([]string, error) {
 	}
 
 	return []string{matches[1]}, nil
+}
+
+// updateHomepageHTML updates version strings in web/index.html. Only spans
+// marked with data-loom-version are touched; historical mentions (e.g.
+// "since v1.1.0") must stay as-is.
+func updateHomepageHTML(path string, version Version) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	re := regexp.MustCompile(`(data-loom-version>)v[0-9]+\.[0-9]+\.[0-9]+(<)`)
+	text := re.ReplaceAllString(string(content), fmt.Sprintf("${1}%s${2}", version.WithV()))
+
+	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
+}
+
+// extractHomepageHTML extracts versions from data-loom-version spans in web/index.html
+func extractHomepageHTML(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	versions := make(map[string]bool)
+
+	re := regexp.MustCompile(`data-loom-version>v([0-9]+\.[0-9]+\.[0-9]+)<`)
+	for _, match := range re.FindAllStringSubmatch(string(content), -1) {
+		if len(match) >= 2 {
+			versions[match[1]] = true
+		}
+	}
+
+	if len(versions) == 0 {
+		return nil, fmt.Errorf("no data-loom-version spans found")
+	}
+
+	result := make([]string, 0, len(versions))
+	for v := range versions {
+		result = append(result, v)
+	}
+	return result, nil
 }

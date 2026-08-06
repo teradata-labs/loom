@@ -13,11 +13,9 @@ The task system provides persistent, dependency-aware work decomposition and kan
 
 ## Design Goals
 
-- **Persistence beyond context window**: Tasks are stored in the database and rebuilt into agent context each turn, so the agent never forgets its work even after aggressive memory compaction.
+- **Persistence beyond context window**: Tasks live in the database, and the agent's view of them is rendered into the system prompt at session creation. Work state does not depend on conversation history, so compaction cannot lose it.
 - **Dependency-aware scheduling**: A directed acyclic graph (DAG) of BLOCKS edges determines task ordering. The ready-front algorithm surfaces only tasks whose blockers are all satisfied.
 - **LLM-driven decomposition**: Complex goals are broken into task DAGs via an LLM call, using backward (prerequisites-first), forward (sequential), or parallel decomposition strategies.
-- **Skill integration**: The skills overhaul (Phase D) emits tasks automatically when skills activate, with idempotency guarantees preventing duplicate boards on re-activation.
-- **Two-axis independence**: Task emission (creating tasks on the board) and task surfacing (showing the `task_board` tool to the agent) are controlled by separate flags, enabling background task tracking without UI clutter.
 
 **Non-goals**:
 - The task system is not a general-purpose project management tool. It is scoped to cognitive work within agent conversations.
@@ -54,14 +52,12 @@ The task system provides persistent, dependency-aware work decomposition and kan
 │                                                                    │
 │  [Agent Runtime]                                                   │
 │       │                                                            │
-│       ├──── task_board tool ───▶ Manager                           │
-│       │                                                            │
-│       └──── skill task emitter ───▶ Manager                        │
+│       └──── task_board tool ───▶ Manager                           │
 │                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Description**: The task system is consumed by three paths: (1) external clients via gRPC TaskService, (2) agents via the `task_board` tool, and (3) the skill orchestrator via the task emitter during Phase D activation.
+**Description**: The task system is consumed by two paths: (1) external clients via gRPC TaskService, and (2) agents via the `task_board` tool.
 
 ---
 
@@ -103,20 +99,20 @@ The task system provides persistent, dependency-aware work decomposition and kan
 │  ┌───────────────────────────────────────────────────────────────────┐   │
 │  │                    Agent Integration Layer                         │   │
 │  │                                                                   │   │
-│  │  ┌────────────────┐    ┌─────────────────┐    ┌──────────────┐   │   │
-│  │  │ TaskBoardTool  │    │ skills/tasks/   │    │ buildTask    │   │   │
-│  │  │ (shuttle.Tool) │    │ Emitter         │    │ Context()    │   │   │
-│  │  └────────┬───────┘    └────────┬────────┘    └──────┬───────┘   │   │
-│  │           │                     │                    │            │   │
-│  │           └─────────────────────┴────────────────────┘            │   │
-│  │                            │                                      │   │
-│  │                            ▼                                      │   │
-│  │                    task.Manager                                    │   │
+│  │  ┌────────────────┐                        ┌──────────────┐       │   │
+│  │  │ TaskBoardTool  │                        │ buildTask    │       │   │
+│  │  │ (shuttle.Tool) │                        │ Context()    │       │   │
+│  │  └────────┬───────┘                        └──────┬───────┘       │   │
+│  │           │                                      │                │   │
+│  │           └───────────────────┬──────────────────┘                │   │
+│  │                               │                                   │   │
+│  │                               ▼                                   │   │
+│  │                  task.Manager                                     │   │
 │  └───────────────────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Description**: The Manager is the central coordination point. It wraps TaskStore with business logic (cycle detection, auto-status propagation, WIP limits, compaction, event publishing). The Decomposer uses an LLM to break goals into task DAGs. The agent layer integrates via three surfaces: the `task_board` tool (direct agent interaction), the skill task Emitter (Phase D automatic emission), and `buildTaskContext()` (system prompt injection each turn).
+**Description**: The Manager is the central coordination point. It wraps TaskStore with business logic (cycle detection, auto-status propagation, WIP limits, compaction, event publishing). The Decomposer uses an LLM to break goals into task DAGs. The agent layer integrates via two surfaces: the `task_board` tool (direct agent interaction) and `buildTaskContext()` (system prompt rendering at session creation).
 
 ---
 
@@ -192,14 +188,14 @@ The task system provides persistent, dependency-aware work decomposition and kan
 
 ### Skill Task Emitter (`pkg/skills/tasks/emitter.go`)
 
-**Responsibility**: Converts skill activations into task records on the agent's kanban board. Called during Phase D of the skills overhaul pipeline.
+**Responsibility**: Materializes a skill's declared task template as task records on a board. It is a library entry point (`EmitForActivation`) invoked by a caller that already holds the skill and session; the conversation loop does not call it.
 
 **Decision Tree**:
 1. If `AgentTasksEnabled=false` OR `Skill.EffectiveEmitTasks()=false` → no-op.
 2. If skill has `TaskTemplate` with steps → materialize each step directly.
 3. Otherwise → call Decomposer with skill prompt as goal (forward strategy, max depth 2).
 
-**Idempotency**: All emitted tasks carry a `SkillIdempotencyKey` of the form `skill:<name>|sess:<sessionID>|step:<index>`. On re-activation, existing tasks are returned instead of duplicates being created. The decomposer fallback additionally plants a "marker" task that gates re-decomposition (since LLM output is non-deterministic across runs).
+**Idempotency**: All emitted tasks carry a `SkillIdempotencyKey` of the form `skill:<name>|sess:<sessionID>|step:<index>`. A repeat call for the same (skill, session) returns existing tasks instead of creating duplicates. The decomposer fallback additionally plants a "marker" task that gates re-decomposition (since LLM output is non-deterministic across runs).
 
 **ensureBoard**: Before emitting tasks, the emitter guarantees the referenced board exists. A concurrent-safe probe-then-create pattern handles races between multiple goroutines.
 
@@ -261,35 +257,7 @@ Full design — three violation kinds, bounded retry, fallthrough semantics — 
 - Auto-unblock is cascading: closing one task checks all its dependents.
 - Auto-complete is recursive: closing the last child completes the parent, which may cascade up.
 
-### Skill Phase D Emission
-
-```
-Agent.runConversationLoop()        SkillOrchestrator        Emitter           Manager
-       │                                │                      │                 │
-       ├─── MatchSkills ───────────────▶│                      │                 │
-       │◀── candidates ─────────────────┤                      │                 │
-       │                                │                      │                 │
-       ├─── ActivateSkill ─────────────▶│                      │                 │
-       │                                │                      │                 │
-       ├─── EmitForActivation ─────────────────────────────────▶│                 │
-       │                                │                      │                 │
-       │                                │          ensureBoard ─┼────────────────▶│
-       │                                │                      │                 │
-       │                                │        (template path)│                 │
-       │                                │   CreateTaskIdempotent┼────────────────▶│
-       │                                │          AddDependency┼────────────────▶│
-       │                                │                      │                 │
-       │◀──────────────────── EmitResult ──────────────────────┤                 │
-       │                                │                      │                 │
-```
-
-**Properties**:
-- Phase D fires for NEWLY-activated skills only (not skills already in the active set).
-- Emission is unconditional when `taskManager != nil` (regardless of `taskBoardConfig.Enabled`).
-- Idempotent: re-activation of the same (skill, session) returns existing tasks.
-- Default cap: 8 tasks per activation (`DefaultMaxTasks`).
-
-### Context Injection Each Turn
+### Context Rendering at Session Creation
 
 ```
 Agent.buildTaskContext()          Manager.ListTasks()          Store
@@ -304,12 +272,12 @@ Agent.buildTaskContext()          Manager.ListTasks()          Store
        │◀── recent completions ─────────┤◀─────────────────────┤
        │                                │                      │
        │── format "--- TASK CONTEXT ---" block                 │
-       │── inject into system prompt                           │
+       │── render into system prompt                           │
        │                                                       │
 ```
 
 **Properties**:
-- Rebuilt from DB each turn (survives context compaction).
+- Built once, when the session's system prompt is assembled. Because it sits in the system prompt rather than the conversation, compaction cannot drop it; equally, it does not track board changes made during the session.
 - Rough token budget enforcement: `context_budget_tokens * 4` characters.
 - Shows current tasks with objective/approach/notes, ready front with priority/effort, recent completions, and board stats.
 
@@ -324,7 +292,7 @@ Agent.buildTaskContext()          Manager.ListTasks()          Store
 **Key Fields**:
 - `ID`: SHA256 content-hash (merge-safe across agents/sessions)
 - `Title`, `Description`, `Objective`, `Approach`, `AcceptanceCriteria`: Work definition
-- `Notes`: Running progress log appended at milestones; survives compaction via DB rebuild
+- `Notes`: Running progress log appended at milestones; persisted in the store, never carried in conversation history
 - `Status`: enum {OPEN, IN_PROGRESS, BLOCKED, DONE, DEFERRED, CANCELLED}
 - `Priority`: enum {CRITICAL(P0), HIGH(P1), MEDIUM(P2), LOW(P3), BACKLOG(P4)}
 - `Category`: enum {RESEARCH, ANALYSIS, IMPLEMENTATION, REVIEW, WRITING, DECISION, INVESTIGATION, PLANNING, OTHER}
@@ -431,26 +399,26 @@ Agent.buildTaskContext()          Manager.ListTasks()          Store
 
 **Chosen Approach**: A partial unique index on a freeform string key composed as `skill:<name>|sess:<sessionID>|step:<index>`.
 
-**Rationale**: Skill activations may fire multiple times per session (re-triggers, conversation loop retries). Without idempotency, duplicate task boards accumulate. The key format is human-readable for debugging.
+**Rationale**: Emission for the same skill and session may be requested more than once (caller retries, agent restart mid-session). Without idempotency, duplicate task boards accumulate. The key format is human-readable for debugging.
 
 **Alternatives Considered**:
 - Content-hash dedup: Rejected because LLM-generated tasks are non-deterministic. Same skill prompt produces different descriptions each time.
 - Session-level lock: Rejected because it would serialize all skill emissions per session unnecessarily.
 - Upsert on (board_id, title): Rejected because titles are not guaranteed unique within a board.
 
-**Consequences**: First-activation-wins semantics for the decomposer fallback. The marker task pattern is needed because decomposer output is non-deterministic but we cannot per-step key it before it exists.
+**Consequences**: First-call-wins semantics for the decomposer fallback. The marker task pattern is needed because decomposer output is non-deterministic but we cannot per-step key it before it exists.
 
-### Decision 3: Two-axis split (emission vs. surfacing)
+### Decision 3: Wiring is server-scoped, surfacing is agent-scoped
 
-**Chosen Approach**: Task emission (Phase D) fires whenever `taskManager != nil`, regardless of `taskBoardConfig.Enabled`. Tool surfacing, prompt supplement, and context injection are gated by `taskBoardConfig.Enabled`.
+**Chosen Approach**: The task subsystem is wired into every agent the registry builds whenever the server has a `taskManager`. The per-agent `memory.task_board.enabled` flag gates only what the agent sees: `task_board` tool registration, the prompt supplement, and the task context block.
 
-**Rationale**: Skills that emit tasks need the data to exist in the store even if the agent's UI doesn't show the kanban tool. Background task tracking enables stickiness checking (a skill stays active while it has open tasks) without requiring the agent to interact with the board directly.
+**Rationale**: Boards and tasks are server-level state that gRPC clients and other agents read. Making an agent's YAML flag decide whether the store is reachable at all would couple a presentation choice to data availability.
 
 **Alternatives Considered**:
-- Single flag gates both: Rejected because it would force agents that need stickiness to also surface the kanban UI, which is noisy for simple agents.
-- Per-skill emission flag only: Rejected because the agent layer needs a master switch to disable emission globally during testing or for lightweight agents.
+- One flag gates both: Rejected because an agent that should not show a kanban tool may still be the owner of tasks another client is tracking.
+- Server-level flag only: Rejected because agents differ in whether board management belongs in their tool set — a simple Q&A agent gains nothing from ten extra actions.
 
-**Consequences**: Two configuration points that operators must understand. Mitigated by documentation and the default (emission on, surfacing off).
+**Consequences**: Two configuration points that operators must understand. Mitigated by documentation and the default (wired at the server, not surfaced per agent).
 
 ### Decision 4: Compaction levels for long-running tasks
 
@@ -565,5 +533,5 @@ Agent.buildTaskContext()          Manager.ListTasks()          Store
 
 - [Task Service API Reference](../reference/task-service.md): Complete RPC specifications
 - [Task Board User Guide](../guides/task-board.md): Practical usage instructions
-- [Skills Overhaul Architecture](skills-overhaul.md): Phase D integration context
+- [Skills Overhaul Architecture](skills-overhaul.md): the skills subsystem
 - [Graph Memory Architecture](graph-memory.md): Memory entities created on task completion

@@ -1,7 +1,7 @@
 
 # Security Model Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Security model for Loom's multi-tenancy, user identity, and data isolation features.
 This document covers the trust model for `x-user-id`, PostgreSQL Row-Level Security (RLS),

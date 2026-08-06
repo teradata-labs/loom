@@ -15,11 +15,40 @@ package transport
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestStreamableHTTPTransport_SendsCustomHeaders verifies that custom headers
+// (e.g. an Authorization bearer token for an authenticated remote MCP server
+// like OpenData) are actually applied to outgoing requests. Regression test:
+// the Headers config field previously existed but was dropped, causing 401s.
+func TestStreamableHTTPTransport_SendsCustomHeaders(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{
+		Endpoint: srv.URL,
+		Headers:  map[string]string{"Authorization": "Bearer od_live_test"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)))
+	assert.Equal(t, "Bearer od_live_test", gotAuth,
+		"custom Authorization header must be applied to the outgoing request")
+}
 
 func TestNewStreamableHTTPTransport(t *testing.T) {
 	tests := []struct {

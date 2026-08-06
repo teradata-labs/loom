@@ -79,7 +79,7 @@ func TestDogfood_SimulateSQLBackend10KRows(t *testing.T) {
 		"query":     "SELECT * FROM employees",
 		"row_count": "10000",
 		"backend":   "postgres",
-	})
+	}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 
@@ -93,7 +93,7 @@ func TestDogfood_SimulateSQLBackend10KRows(t *testing.T) {
 	}
 
 	// Simulate agent retrieving data
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 
 	// Verify data integrity
@@ -158,7 +158,7 @@ func TestDogfood_SimulateMCPServer5MBResponse(t *testing.T) {
 		"mcp_server": "filesystem",
 		"operation":  "list_recursive",
 		"file_count": "1000",
-	})
+	}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 
@@ -170,7 +170,7 @@ func TestDogfood_SimulateMCPServer5MBResponse(t *testing.T) {
 		float64(ref.SizeBytes)/(1024*1024))
 
 	// Retrieve and verify
-	retrieved, err := store.Get(ref)
+	retrieved, err := store.Get(ref, "")
 	require.NoError(t, err)
 	assert.Equal(t, len(data), len(retrieved))
 
@@ -229,11 +229,11 @@ func TestDogfood_MultiAgent10MBWorkflow(t *testing.T) {
 		"agent":       "agent1-collector",
 		"data_points": "100000",
 		"stage":       "collection",
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Agent2 retrieves data (by reference only in context)
-	retrieved, err := store.Get(ref1)
+	retrieved, err := store.Get(ref1, "")
 	require.NoError(t, err)
 
 	// Agent2 processes and creates analysis (smaller output)
@@ -263,11 +263,11 @@ func TestDogfood_MultiAgent10MBWorkflow(t *testing.T) {
 	ref2, err := store.Store("agent2-analysis", analysisData, "application/json", map[string]string{
 		"agent": "agent2-analyzer",
 		"stage": "analysis",
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Agent3 retrieves analysis and generates report
-	analysisRetrieved, err := store.Get(ref2)
+	analysisRetrieved, err := store.Get(ref2, "")
 	require.NoError(t, err)
 
 	var finalAnalysis Analysis
@@ -349,6 +349,7 @@ func TestDogfood_LoadTest_10Agents_100MBEach(t *testing.T) {
 					"agent_id": fmt.Sprintf("agent-%d", agentID),
 					"size":     fmt.Sprintf("%d", dataPerAgent),
 				},
+				"",
 			)
 
 			if err != nil {
@@ -389,7 +390,7 @@ func TestDogfood_LoadTest_10Agents_100MBEach(t *testing.T) {
 		go func(agentID int) {
 			defer wg.Done()
 
-			data, err := store.Get(refs[agentID])
+			data, err := store.Get(refs[agentID], "")
 			if err != nil {
 				t.Errorf("Agent %d failed to retrieve: %v", agentID, err)
 				return

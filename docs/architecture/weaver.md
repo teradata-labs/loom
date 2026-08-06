@@ -1,6 +1,6 @@
 # Weaver Architecture
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Status**: ✅ Implemented (standard agent with structured JSON API)
 **Last Updated**: 2026-03-28
 
@@ -250,6 +250,14 @@ if agentID != "weaver" && agentID != "guide" {
 - `list`: List all agents, workflows, or skills
 - `validate`: Validate YAML content
 - `delete`: Remove configuration
+
+**Scaffolding Actions** (presets and templates):
+- `presets`: List available configuration presets
+- `apply_preset`: Scaffold a configuration from a named preset
+- `templates`: List available configuration templates
+- `apply_template`: Scaffold a configuration from a named template
+
+The full action enum is defined in the tool's input schema in `pkg/shuttle/builtin/agent_management.go`.
 
 **Unsupported Actions** (return `INVALID_ACTION`):
 - `create` (with type/name/content) -- use `create_agent`, `create_workflow`, or `create_skill`
@@ -677,7 +685,7 @@ VALIDATION RULES ENFORCED:
 3. **Quality Control**: Ensure generated agents follow best practices
 4. **Audit Trail**: Limited set of agents for monitoring (weaver for write, guide for read-only)
 
-**Implementation**: Session-based agent ID check (not bypassable by LLM). The guide agent can list and read configurations but cannot create, update, or delete.
+**Implementation**: Session-based agent ID check (not bypassable by LLM). The guide agent is read-only -- it can use `list`, `read`, `presets`, and `templates` but cannot create, update, or delete (`agent_management.go:213`).
 
 
 ## Performance Characteristics

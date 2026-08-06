@@ -93,7 +93,7 @@ func downloadCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "download",
-		Short: "Download LongMemEval dataset files from GitHub",
+		Short: "Download LongMemEval dataset files from Hugging Face",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(datasets) == 0 {
 				datasets = []string{"oracle"}
@@ -142,14 +142,14 @@ graph memory, context window, LLM provider, etc.
 
 Three benchmark modes:
 
-  multi-session (default):
+  multi-session:
     Creates a separate agent session per haystack conversation, ending
     each one before starting the next. Messages are persisted to the DB
     and become FTS5-searchable. The question is asked in a fresh session —
     the agent must use graph_memory + conversation_memory to recall across
     prior sessions. Most faithful simulation of real-world Loom usage.
 
-  ingest:
+  ingest (default):
     Feeds all conversation sessions through the agent in a single session
     via Weave so it builds up memory (graph memory, conversation history,
     etc.), then asks the question in the same session.

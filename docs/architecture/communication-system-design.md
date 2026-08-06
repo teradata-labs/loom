@@ -7,7 +7,7 @@ Architecture of Loom's quad-modal communication system for agent-to-agent messag
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 
 ## Table of Contents

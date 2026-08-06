@@ -33,11 +33,11 @@ import (
 const (
 	// DefaultMaxMemoryBytes is 1GB
 	DefaultMaxMemoryBytes = 1 * 1024 * 1024 * 1024
-	// DefaultSharedMemoryThreshold is -1 (never reference, inline everything).
-	// Tool results are kept inline in conversation history rather than stored as references.
+	// DefaultSharedMemoryThreshold is 64 KiB: tool results larger than this are stored
+	// by reference (inline preview + handle); smaller results stay inline in history.
 	// Per-agent override via MemoryConfig.SharedMemoryThresholdBytes:
-	//   -1 = inline everything, 0 = always reference, >0 = reference if exceeds N bytes.
-	DefaultSharedMemoryThreshold = -1 // Inline everything by default
+	//   -1 = use this default, 0 = always reference, >0 = reference if exceeds N bytes.
+	DefaultSharedMemoryThreshold = 64 * 1024
 	// DefaultCompressionThreshold is 1MB
 	DefaultCompressionThreshold = 1 * 1024 * 1024
 	// DefaultTTLSeconds is 1 hour
@@ -57,6 +57,10 @@ type SharedData struct {
 	AccessedAt  time.Time
 	RefCount    int32
 	lruElement  *list.Element
+
+	// sessionID is the partition that owns this record. Get enforces that only
+	// the owning session resolves the handle; a foreign session gets not-found.
+	sessionID string
 }
 
 // SharedMemoryStore manages shared memory with LRU eviction.
@@ -136,8 +140,9 @@ func NewSharedMemoryStore(config *Config) *SharedMemoryStore {
 	return store
 }
 
-// Store stores data in shared memory.
-func (s *SharedMemoryStore) Store(id string, data []byte, contentType string, metadata map[string]string) (*loomv1.DataReference, error) {
+// Store stores data in shared memory owned by sessionID. The owning session is
+// the partition key: only a Get carrying the same sessionID resolves the handle.
+func (s *SharedMemoryStore) Store(id string, data []byte, contentType string, metadata map[string]string, sessionID string) (*loomv1.DataReference, error) {
 	// Calculate checksum
 	hash := sha256.Sum256(data)
 	checksum := hex.EncodeToString(hash[:])
@@ -196,6 +201,7 @@ func (s *SharedMemoryStore) Store(id string, data []byte, contentType string, me
 		StoredAt:    now,
 		AccessedAt:  now,
 		RefCount:    0, // Initialize to 0 - will be incremented by PinForSession() to prevent eviction
+		sessionID:   sessionID,
 	}
 
 	// Add to LRU
@@ -215,8 +221,17 @@ func (s *SharedMemoryStore) Store(id string, data []byte, contentType string, me
 	}, nil
 }
 
-// Get retrieves data from shared memory.
-func (s *SharedMemoryStore) Get(ref *loomv1.DataReference) ([]byte, error) {
+// Get retrieves data from shared memory for the caller's partition. A handle
+// owned by another session resolves to not-found (fail-closed): callerSession
+// must equal the sessionID the record was stored under.
+func (s *SharedMemoryStore) Get(ref *loomv1.DataReference, callerSession string) ([]byte, error) {
+	return s.get(ref, callerSession, true)
+}
+
+// get retrieves data from shared memory. When enforceSession is true, an
+// in-memory record owned by a different session resolves to not-found;
+// callerSession is ignored when enforceSession is false.
+func (s *SharedMemoryStore) get(ref *loomv1.DataReference, callerSession string, enforceSession bool) ([]byte, error) {
 	if ref.Location == loomv1.StorageLocation_STORAGE_LOCATION_DISK {
 		if s.overflowHandler == nil {
 			s.misses.Add(1)
@@ -241,6 +256,14 @@ func (s *SharedMemoryStore) Get(ref *loomv1.DataReference) ([]byte, error) {
 
 	sharedData, exists := s.data[ref.Id]
 	if !exists {
+		s.misses.Add(1)
+		return nil, fmt.Errorf("data not found: %s", ref.Id)
+	}
+
+	// Partition scope: a handle owned by another session is not-found for this
+	// caller. The error is identical to a genuine miss so ownership cannot be
+	// probed by distinguishing the two.
+	if enforceSession && sharedData.sessionID != callerSession {
 		s.misses.Add(1)
 		return nil, fmt.Errorf("data not found: %s", ref.Id)
 	}

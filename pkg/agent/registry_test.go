@@ -1141,8 +1141,10 @@ func TestToolFiltering(t *testing.T) {
 	}
 }
 
-// TestToolFiltering_NoToolsSection verifies behavior when no Tools section is specified
-// With backward compatibility removed, agents with no tools section get ONLY workspace (no builtin tools)
+// TestToolFiltering_NoToolsSection verifies behavior when no Tools section is specified:
+// an agent with no tools section registers only load_pattern, the base pattern-pull
+// verb present whenever a pattern library is configured. No configured or other
+// builtin tools register.
 func TestToolFiltering_NoToolsSection(t *testing.T) {
 	ctx := context.Background()
 	registry, tmpDir := createTestRegistry(t)
@@ -1153,7 +1155,7 @@ func TestToolFiltering_NoToolsSection(t *testing.T) {
 	require.NoError(t, err)
 
 	config := createTestAgentConfig("no_tools_test")
-	// Don't set config.Tools - should get ONLY workspace (no shell_execute, no builtins)
+	// Don't set config.Tools - should get ONLY load_pattern (no shell_execute, no other builtins)
 
 	err = SaveAgentConfig(config, filepath.Join(agentsDir, "no_tools_test.yaml"))
 	require.NoError(t, err)
@@ -1169,10 +1171,12 @@ func TestToolFiltering_NoToolsSection(t *testing.T) {
 	registeredTools := agent.ListTools()
 	t.Logf("Registered tools (no tools section): %v", registeredTools)
 
-	// With backward compatibility removed, agents with NO tools section get ZERO tools
-	// (workspace would be registered only if artifactStore is available, which it isn't in tests)
-	// No shell_execute, no builtin tools (http_request, file_write, etc.)
-	assert.Empty(t, registeredTools, "Expected zero tools with no tools section and no artifact store")
+	// An agent with NO tools section registers exactly load_pattern — the base
+	// pattern-pull verb advertised whenever a pattern library is configured. No
+	// shell_execute, no other builtins (http_request, file_write, etc.), and
+	// workspace registers only with an artifact store, which the test lacks.
+	assert.Equal(t, []string{"load_pattern"}, registeredTools,
+		"Expected only load_pattern with no tools section and no artifact store")
 
 	// Verify no unexpected tools
 	unexpectedTools := []string{

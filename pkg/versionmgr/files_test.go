@@ -213,6 +213,22 @@ end
 			expectedURL:   "https://example.com/v3.0.0/mac.tar.gz",
 			expectExtract: []string{"1.0.0"},
 		},
+		{
+			name: "source tag archive resource",
+			inputContent: `class Loom < Formula
+  version "1.2.3"
+  resource "loom-patterns" do
+    url "https://github.com/teradata-labs/loom/archive/refs/tags/v1.2.3.tar.gz"
+    sha256 "abc123"
+  end
+  url "https://github.com/teradata-labs/loom/releases/download/v1.2.3/loom-darwin-arm64.tar.gz"
+  sha256 "def456"
+end
+`,
+			updateVersion: Version{Major: 2, Minor: 0, Patch: 0},
+			expectedURL:   "https://github.com/teradata-labs/loom/archive/refs/tags/v2.0.0.tar.gz",
+			expectExtract: []string{"1.2.3"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -236,6 +252,72 @@ end
 
 			assert.Contains(t, result, `version "`+tt.updateVersion.String()+`"`)
 			assert.Contains(t, result, tt.expectedURL)
+		})
+	}
+}
+
+// TestHomepageHTML tests web/index.html update/extract via data-loom-version spans
+func TestHomepageHTML(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputContent  string
+		updateVersion Version
+		expectContain []string
+		expectAbsent  []string
+		expectExtract []string
+		expectErr     bool
+	}{
+		{
+			name: "bumps marked spans, leaves historical mentions",
+			inputContent: `<html><body>
+  <p>teradata-labs/loom &middot; <span data-loom-version>v1.3.0</span> &middot; Apache-2.0</p>
+  <p>Everything below is in <span data-loom-version>v1.3.0</span> — shipped.</p>
+  <p>GPG-signed with SLSA provenance since v1.1.0.</p>
+</body></html>
+`,
+			updateVersion: Version{Major: 2, Minor: 0, Patch: 0},
+			expectContain: []string{
+				"<span data-loom-version>v2.0.0</span> &middot; Apache-2.0",
+				"in <span data-loom-version>v2.0.0</span> — shipped.",
+				"since v1.1.0.",
+			},
+			expectAbsent:  []string{"data-loom-version>v1.3.0<", "since v2.0.0"},
+			expectExtract: []string{"1.3.0"},
+		},
+		{
+			name:          "errors when no marked spans exist",
+			inputContent:  "<html><body><p>no version markers, only v1.3.0 plain text</p></body></html>\n",
+			updateVersion: Version{Major: 2, Minor: 0, Patch: 0},
+			expectErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			testFile := filepath.Join(tmpDir, "index.html")
+			require.NoError(t, os.WriteFile(testFile, []byte(tt.inputContent), 0644))
+
+			extracted, err := extractHomepageHTML(testFile)
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectExtract, extracted)
+
+			require.NoError(t, updateHomepageHTML(testFile, tt.updateVersion))
+
+			content, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			result := string(content)
+
+			for _, want := range tt.expectContain {
+				assert.Contains(t, result, want)
+			}
+			for _, absent := range tt.expectAbsent {
+				assert.NotContains(t, result, absent)
+			}
 		})
 	}
 }

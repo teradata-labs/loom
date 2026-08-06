@@ -3,9 +3,9 @@
 
 Specification for presentation strategy tools that enable SQL-like data querying on shared memory datasets. These tools achieve 99%+ data reduction through in-memory aggregation, preventing context window overflow in multi-agent workflows.
 
-**Version**: v1.2.0 (v0.6.0+ implementation)
+**Version**: v1.3.0 (v0.6.0+ implementation)
 **Package**: `pkg/shuttle/builtin`, `pkg/visualization`
-**Status**: ✅ Implemented (36 test functions across 3 test files, 0 race conditions)
+**Status**: ✅ Implemented (41 test functions across 3 test files, 0 race conditions)
 
 
 ## Table of Contents
@@ -1074,7 +1074,7 @@ func main() {
 ### Test Coverage
 
 **Presentation Tools**: 12 test functions in `presentation_tools_test.go`, 100% pass rate
-**Visualization**: 21 test functions in `visualization_test.go`, 100% pass rate
+**Visualization**: 26 test functions in `visualization_test.go`, 100% pass rate (the table below lists a representative subset)
 **Visualization Tool**: 3 test functions in `tool_test.go`, 100% pass rate
 **Race Detector**: 0 race conditions detected
 

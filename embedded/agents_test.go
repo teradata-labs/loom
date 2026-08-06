@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestGetWeaver(t *testing.T) {
@@ -32,4 +33,31 @@ func TestWeaverYAMLVariable(t *testing.T) {
 
 	// Verify it matches GetWeaver() output
 	assert.Equal(t, WeaverYAML, GetWeaver(), "GetWeaver() should return the same data as WeaverYAML")
+}
+
+// TestWeaverCreationSkill_ChatCommandGuidance is a regression test for #172:
+// the weaver used to tell users to run a created agent with a positional
+// `loom chat <name>`, which fails because chat requires the --thread flag.
+// The always-on weaver-creation skill's output_format must document the exact,
+// correct invocations so the model stops inventing the broken form.
+func TestWeaverCreationSkill_ChatCommandGuidance(t *testing.T) {
+	data := GetWeaverCreationSkill()
+	require.NotEmpty(t, data, "weaver-creation skill should be embedded")
+
+	var parsed struct {
+		Prompt struct {
+			OutputFormat string `yaml:"output_format"`
+		} `yaml:"prompt"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &parsed), "weaver-creation.yaml must be valid YAML")
+
+	of := parsed.Prompt.OutputFormat
+	require.NotEmpty(t, of, "output_format must be present")
+
+	assert.Contains(t, of, "loom chat --thread <thread-id>",
+		"must document the correct one-shot CLI invocation")
+	assert.Contains(t, of, "loom --thread <thread-id>",
+		"must document the correct interactive TUI invocation")
+	assert.Contains(t, of, "--thread flag is required",
+		"must call out that --thread is required, not a positional agent argument")
 }

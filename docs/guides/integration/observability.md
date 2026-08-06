@@ -1,7 +1,7 @@
 
 # Observability Guide
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 ## Table of Contents
 
@@ -68,7 +68,7 @@ Loom provides built-in observability with tracing and metrics collection. Choose
 ## Prerequisites
 
 **For all modes**:
-- Loom v1.2.0+
+- Loom v1.3.0+
 - Build with FTS5 tag: `go build -tags fts5`
 
 **For service mode only**:
@@ -109,7 +109,9 @@ observability:
   enabled: true
   mode: service
   hawk_endpoint: http://localhost:8080/v1/traces
-  hawk_api_key: ${HAWK_API_KEY}
+  # hawk_api_key is NOT read from the config file. Set it via the keyring or
+  # the --hawk-key flag:
+  #   looms config set-key hawk_api_key
 ```
 
 Start server (requires `-tags hawk` build):
@@ -217,7 +219,8 @@ observability:
   enabled: true
   mode: service
   hawk_endpoint: http://localhost:8080/v1/traces
-  hawk_api_key: ${HAWK_API_KEY}
+  # hawk_api_key is set via keyring or --hawk-key, not the config file:
+  #   looms config set-key hawk_api_key
 ```
 
 **Build requirement**: Requires `-tags fts5,hawk`:

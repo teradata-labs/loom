@@ -1,7 +1,7 @@
 
 # Self-Correction and Error Recovery Reference
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 
 Technical reference for Loom's self-correction system - error analysis, retry strategies, circuit breakers, and automatic recovery patterns.
 
@@ -67,13 +67,9 @@ Technical reference for Loom's self-correction system - error analysis, retry st
 
 ### Configuration Defaults
 
-```yaml
-# Agent YAML configuration (self-correction enabled by default)
-# Circuit breaker and guardrails sub-fields are configured via Go API only
-agent:
-  config:
-    enable_self_correction: true  # Default: true (boolean toggle)
-```
+Self-correction (guardrails + circuit breakers) is **enabled by default** and is **not configurable via agent YAML**. It can only be disabled through the Go API (`WithoutSelfCorrection()`). There is no `enable_self_correction` YAML key in the config loader.
+
+> **Note**: A separate, distinct feature — `enable_self_healing` (a `*bool` under `agent.behavior`/`spec.config`) — controls the Tier 1 `recoveryOrchestrator`, not the guardrails/circuit-breaker self-correction described in this document. See `pkg/agent/config_loader.go:250` and `pkg/agent/agent.go:2005`.
 
 **Go-level defaults** (not configurable via YAML):
 - Circuit breaker failure threshold: 5
@@ -114,7 +110,7 @@ Loom's self-correction system provides **automatic error recovery** through thre
 - ✅ **Exponential backoff** - prevent overwhelming failing systems
 - ✅ **Error history tracking** - tracks repeated failures per session
 - ✅ **Confidence scoring** - prioritize high-confidence corrections
-- ⚠️ **YAML configuration** - boolean toggle only (`enable_self_correction`); detailed sub-config requires Go API
+- ⚠️ **No YAML configuration** - self-correction is enabled by default and can only be disabled via the Go API (`WithoutSelfCorrection()`); there is no `enable_self_correction` YAML key. (The separate `enable_self_healing` YAML key controls a different feature -- the recovery orchestrator.)
 
 **Implementation**: `pkg/fabric/` (guardrails.go, circuit_breaker.go)
 **Available Since**: v0.7.0
@@ -1018,19 +1014,13 @@ ag := agent.NewAgent(backend, llmProvider,
 
 ### YAML Configuration
 
-✅ **Basic toggle implemented** via `enable_self_correction` boolean in agent YAML configs.
+⚠️ **Self-correction (guardrails + circuit breakers) is not configurable via agent YAML at all.** It is enabled by default and can only be disabled via the Go API (`WithoutSelfCorrection()`). There is no `enable_self_correction` field in the config loader (`pkg/agent/config_loader.go`).
 
-⚠️ **Detailed sub-configuration** (circuit breaker thresholds, guardrail validators, retry policies) is **not configurable via YAML** -- these require Go API options (`WithGuardrails`, `WithCircuitBreakers`).
+⚠️ **Detailed sub-configuration** (circuit breaker thresholds, guardrail validators, retry policies) also requires Go API options (`WithGuardrails`, `WithCircuitBreakers`).
 
-**Current YAML** (as of v1.2.0):
-```yaml
-agents:
-  - id: sql-agent
-    config:
-      enable_self_correction: true  # Boolean toggle (default: true)
-```
+> The agent YAML does expose a related-but-different field, `enable_self_healing` (`*bool`), which toggles the Tier 1 `recoveryOrchestrator` -- not the guardrails/circuit-breaker self-correction system documented here. Setting `enable_self_healing: false` does **not** disable guardrails or circuit breakers.
 
-📋 **Planned YAML structure** (not yet implemented):
+📋 **Planned YAML structure** for self-correction (not yet implemented):
 ```yaml
 agents:
   - id: sql-agent

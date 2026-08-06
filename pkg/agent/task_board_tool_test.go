@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/task"
 )
 
@@ -107,4 +108,66 @@ func TestTaskBoardTool_ResolveBoardForWrite_NoBoardWhenUnconfigured(t *testing.T
 	require.NoError(t, err)
 	assert.Empty(t, id,
 		"no board_id, no default config: return empty so the task is board-less")
+}
+
+// TestTaskBoardTool_ClaimUsesContextSessionID: claims made inside a real
+// conversation (ctx carries the session id, as agent.Chat sets it) must record
+// that id — not the legacy synthetic "<agentID>-session" — so session-scoped
+// task filtering (ListTasks sessionId, board UIs) works.
+func TestTaskBoardTool_ClaimUsesContextSessionID(t *testing.T) {
+	ctx := context.Background()
+	tool, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	created, err := mgr.CreateTask(ctx, &task.Task{Title: "claim me", Status: loomv1.TaskStatus_TASK_STATUS_OPEN})
+	require.NoError(t, err)
+
+	sessionCtx := session.WithSessionID(ctx, "real-session-uuid")
+	res, err := tool.Execute(sessionCtx, map[string]interface{}{"action": "claim", "task_id": created.ID})
+	require.NoError(t, err)
+	require.True(t, res.Success, "claim failed: %+v", res.Error)
+
+	got, err := mgr.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "real-session-uuid", got.ClaimedBySession)
+}
+
+// TestTaskBoardTool_ClaimFallsBackToSyntheticSessionID: headless usage (no
+// session in ctx) keeps the pre-existing "<agentID>-session" behavior.
+func TestTaskBoardTool_ClaimFallsBackToSyntheticSessionID(t *testing.T) {
+	ctx := context.Background()
+	tool, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	created, err := mgr.CreateTask(ctx, &task.Task{Title: "claim me", Status: loomv1.TaskStatus_TASK_STATUS_OPEN})
+	require.NoError(t, err)
+
+	res, err := tool.Execute(ctx, map[string]interface{}{"action": "claim", "task_id": created.ID})
+	require.NoError(t, err)
+	require.True(t, res.Success, "claim failed: %+v", res.Error)
+
+	got, err := mgr.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "agent-under-test-session", got.ClaimedBySession)
+}
+
+// TestTaskBoardTool_CreateStampsCreatedBySession: tasks created inside a
+// conversation carry created_by_session metadata (attribution, NOT a claim —
+// the task must remain claimable afterwards).
+func TestTaskBoardTool_CreateStampsCreatedBySession(t *testing.T) {
+	ctx := session.WithSessionID(context.Background(), "real-session-uuid")
+	tool, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	res, err := tool.Execute(ctx, map[string]interface{}{"action": "create", "title": "made in conversation"})
+	require.NoError(t, err)
+	require.True(t, res.Success, "create failed: %+v", res.Error)
+
+	tasks, _, err := mgr.ListTasks(ctx, task.ListTasksOpts{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "real-session-uuid", tasks[0].Metadata[task.CreatedBySessionMetadataKey])
+	assert.Empty(t, tasks[0].ClaimedBySession, "creation must not pre-claim the task")
+
+	// The created task must still be claimable (pre-claiming would break ready → claim).
+	claimRes, err := tool.Execute(ctx, map[string]interface{}{"action": "claim", "task_id": tasks[0].ID})
+	require.NoError(t, err)
+	require.True(t, claimRes.Success, "task created with session metadata must remain claimable: %+v", claimRes.Error)
 }

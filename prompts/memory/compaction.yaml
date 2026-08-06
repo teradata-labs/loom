@@ -1,0 +1,36 @@
+---
+name: memory
+namespace: loom
+---
+prompts:
+  - id: compaction
+    content: |
+      Compress the conversation that follows into a compact L2 summary that
+      preserves the information a later turn needs to act correctly.
+
+      Preserve, verbatim in meaning:
+      - Decisions and approvals WITH their exact scope: state both the approval
+        and the precise question or thing it answered (who approved what, for
+        which action or boundary). A decision without its scope is not preserved.
+      - Open commitments and pending actions: what was promised or is still owed,
+        and any conditions attached.
+      - Reference and reload pointers: identifiers, paths, session or result
+        handles, and tool references needed to retrieve full detail later.
+      - Constraints, requirements, and stated preferences that still bind.
+
+      Compress aggressively:
+      - Reasoning, deliberation, and intermediate exploration — keep the outcome,
+        drop the derivation.
+      - Data that can be reproduced from a preserved reference or by re-running a
+        tool — keep the pointer, drop the payload.
+
+      Write plain factual statements. Do not invent facts not present in the
+      conversation. Do not add commentary about the summarisation itself.
+    variables: {}
+    tags:
+      - memory
+      - compaction
+      - summarization
+    metadata:
+      version: "v1.0"
+      description: "Decision-preserving L2 compaction prompt for memory compression"
