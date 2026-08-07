@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -470,6 +471,38 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	// Fast path: the tool may already be registered locally under its
+	// server-qualified name (e.g., "teradata-aiop-mcp-server:base_readQuery")
+	// while the LLM called it using either:
+	//   - the plain unprefixed name ("base_readQuery"), because the ROM or
+	//     tool_search result returned the unprefixed form, or
+	//   - the LLM-sanitized qualified name ("teradata-aiop-mcp-server_base_readQuery"),
+	//     since some providers reject ':' in tool names (see llm.SanitizeToolName)
+	//     and the caller re-derived the sanitized form from an earlier turn
+	//     instead of using the provider's reverse-mapped original name.
+	// Scan the local registry first before hitting the external tool registry.
+	suffix := ":" + toolName
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		name := t.Name()
+		if strings.HasSuffix(name, suffix) || strings.ReplaceAll(name, ":", "_") == toolName {
+			matches = append(matches, t)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
+	if len(matches) == 1 {
+		// Register an alias so subsequent calls skip this scan.
+		e.registry.RegisterAlias(toolName, matches[0])
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, len(matches))
+		for i, match := range matches {
+			names[i] = match.Name()
+		}
+		return nil, fmt.Errorf("ambiguous tool name %q matches %s", toolName, strings.Join(names, ", "))
+	}
+
 	// Check if tool registry is configured
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")

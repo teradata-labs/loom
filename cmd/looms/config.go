@@ -102,6 +102,11 @@ type Config struct {
 
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
+
+	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
+	// skills into the agents/skills directories on startup. Set to true for runtime
+	// pods that should only serve the explicitly configured agent(s).
+	SkipEmbeddedAgents bool `mapstructure:"skip_embedded_agents"`
 }
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
@@ -592,7 +597,7 @@ type ObservabilityConfig struct {
 	// OTel mode — exports to any OTLP HTTP backend (Opik, Jaeger, Tempo, etc.)
 	OTLPEndpoint     string            `mapstructure:"otlp_endpoint"`      // Full OTLP HTTP URL
 	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
-	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Skip TLS (local dev only)
+	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Use plaintext HTTP (local dev only)
 	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
 }
 
@@ -1088,6 +1093,7 @@ func setDefaults() {
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.enable_reflection", true)
 	viper.SetDefault("server.insecure_admin", false)
+	viper.SetDefault("skip_embedded_agents", false)
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1714,8 +1720,10 @@ func (c *Config) Validate() error {
 			}
 			// Note: HawkAPIKey is optional - not required for local Hawk installations
 		case "otel":
-			// OTel mode: validate endpoint
-			if c.Observability.OTLPEndpoint == "" {
+			// OTel mode: validate endpoint — also accept the platform env var
+			// injected by AgentOpsCore at deploy time (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).
+			// cmd_serve.go will apply this override before building the tracer.
+			if c.Observability.OTLPEndpoint == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
 				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel")
 			}
 		case "none":

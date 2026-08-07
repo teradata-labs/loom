@@ -445,3 +445,59 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 	assert.True(t, health["fs1"])
 	assert.True(t, health["fs2"])
 }
+
+func TestExpandEnvHeaders(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "secret-value")
+
+	tests := []struct {
+		name   string
+		input  map[string]string
+		expect map[string]string
+	}{
+		{
+			name:   "nil map",
+			input:  nil,
+			expect: nil,
+		},
+		{
+			name:   "empty map",
+			input:  map[string]string{},
+			expect: map[string]string{},
+		},
+		{
+			name:   "no placeholders",
+			input:  map[string]string{"Content-Type": "application/json"},
+			expect: map[string]string{"Content-Type": "application/json"},
+		},
+		{
+			name:   "placeholder expanded",
+			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
+			expect: map[string]string{"Authorization": "Bearer secret-value"},
+		},
+		{
+			name:   "unset placeholder becomes empty",
+			input:  map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+			expect: map[string]string{"X-Key": ""},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := expandEnvHeaders(tc.input)
+			assert.Equal(t, tc.expect, result)
+		})
+	}
+}
+
+func TestUnresolvedEnvVariables(t *testing.T) {
+	t.Setenv("MCP_SET", "configured")
+	missing := unresolvedEnvVariables(
+		"${MCP_ENDPOINT_MISSING}",
+		map[string]string{
+			"Authorization": "Bearer ${MCP_TOKEN_MISSING}",
+			"X-Configured":  "${MCP_SET}",
+			"X-Duplicate":   "${MCP_ENDPOINT_MISSING}",
+		},
+	)
+	assert.Equal(t, []string{"MCP_ENDPOINT_MISSING", "MCP_TOKEN_MISSING"}, missing)
+}

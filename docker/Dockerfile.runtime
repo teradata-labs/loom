@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+# BUILDPLATFORM = host platform (avoids emulating the compiler itself)
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG GIT_COMMIT=unknown
+ARG VERSION=1.3.0
+# TARGETARCH / TARGETOS are set automatically by `docker buildx build --platform`
+ARG TARGETARCH
+ARG TARGETOS=linux
+
+WORKDIR /src
+
+# Cache dependency downloads separately from source
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy full source tree
+COPY . .
+
+# Build the looms server binary
+# -tags fts5 is REQUIRED (modernc.org/sqlite FTS5 support)
+# CGO_ENABLED=0 — pure-Go SQLite via modernc.org/sqlite
+# GOOS/GOARCH cross-compile to the target platform (supports linux/amd64 + linux/arm64)
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -tags fts5 \
+    -ldflags="-s -w -X github.com/teradata-labs/loom/internal/version.Version=${VERSION} -X github.com/teradata-labs/loom/internal/version.GitCommit=${GIT_COMMIT}" \
+    -trimpath \
+    -o /looms \
+    ./cmd/looms
+
+# =============================================================================
+# Stage 2: Runtime image — minimal, distroless, no shell
+# =============================================================================
+FROM gcr.io/distroless/static-debian12
+
+# Binary
+COPY --from=builder /looms /looms
+
+# Built-in skills library — Teradata runtime skills only
+COPY --from=builder /src/skills/ /opt/loom/skills/
+
+# Runtime patterns — domain execution patterns only (excludes weaver, fun, nasa, prompt_engineering, evaluation)
+COPY --from=builder /src/patterns/sql/ /opt/loom/patterns/sql/
+COPY --from=builder /src/patterns/postgres/ /opt/loom/patterns/postgres/
+COPY --from=builder /src/patterns/teradata/ /opt/loom/patterns/teradata/
+COPY --from=builder /src/patterns/libraries/ /opt/loom/patterns/libraries/
+COPY --from=builder /src/patterns/code/ /opt/loom/patterns/code/
+COPY --from=builder /src/patterns/debugging/ /opt/loom/patterns/debugging/
+COPY --from=builder /src/patterns/document/ /opt/loom/patterns/document/
+COPY --from=builder /src/patterns/documents/ /opt/loom/patterns/documents/
+COPY --from=builder /src/patterns/rest_api/ /opt/loom/patterns/rest_api/
+COPY --from=builder /src/patterns/text/ /opt/loom/patterns/text/
+COPY --from=builder /src/patterns/vision/ /opt/loom/patterns/vision/
+
+# Working directory for agent data / SQLite DB
+WORKDIR /workdir
+
+# LOOM_DATA_DIR: agent config and SQLite are mounted here via ConfigMap/subPath
+ENV LOOM_DATA_DIR=/workdir
+# LOOM_SKILLS_DIR: built-in skills fallback (agent skills_dir takes precedence)
+ENV LOOM_SKILLS_DIR=/opt/loom/skills
+# Disable embedded agent/skill installation (weaver, guide) — runtime pods only serve the deployed agent
+ENV LOOM_SKIP_EMBEDDED_AGENTS=true
+
+# ─── AgentOps Observability (agentopso11y / Opik OTLP) ───────────────────────
+# When AgentOpsCore enables in-house observability for a deployment it injects:
+#   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — Opik OTLP ingest URL
+#   OTEL_EXPORTER_OTLP_TRACES_HEADERS  — "Opik-Project-Name=<deployment-id>"
+#   LOOM_OTLP_INSECURE                 — "true" for self-hosted (no TLS)
+# loom auto-selects OTel mode when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set
+# (see pkg/observability/auto_select.go — OTel takes priority over embedded/service).
+# No values are baked in here; they are injected at deploy time by AgentOpsCore.
+ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=""
+ENV OTEL_EXPORTER_OTLP_TRACES_HEADERS=""
+ENV LOOM_OTLP_INSECURE=""
+
+# gRPC port (must match AgentOpsCore grpc_port default: 60051)
+EXPOSE 60051
+# HTTP/REST+SSE gateway port
+EXPOSE 5006
+
+ENTRYPOINT ["/looms", "serve"]

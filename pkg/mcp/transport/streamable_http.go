@@ -17,6 +17,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -87,8 +88,10 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
 	t := &StreamableHTTPTransport{
-		endpoint:         config.Endpoint,
-		client:           &http.Client{},
+		endpoint: config.Endpoint,
+		client: &http.Client{Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}},
 		sessionMgr:       NewSessionManager(),
 		resumption:       NewStreamResumption(100),
 		messages:         make(chan []byte, 100),
@@ -154,8 +157,18 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Extract session ID from response (on first request)
-	if !started && t.enableSessions {
+	// Extract session ID from the response (on the first request).
+	//
+	// Capture the server-issued Mcp-Session-Id whenever one is present,
+	// regardless of the enable_sessions config flag. Per the MCP streamable-http
+	// spec, if the server returns a session ID on initialize, the client MUST
+	// echo it on every subsequent request (including the initialized
+	// notification). Session-based servers such as Atlassian's remote MCP
+	// otherwise reject the follow-up notification with HTTP 400
+	// ("Request must be an initialize request if no session ID is provided").
+	// The enable_sessions flag still controls proactive session termination on
+	// Close (see below).
+	if !started {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -171,6 +184,17 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		zap.String("content-type", contentType),
 		zap.Int("status", resp.StatusCode),
 		zap.Bool("started", started))
+
+	// A POST carrying a notification or response may be acknowledged with 202
+	// and no JSON-RPC body. A request with an id must receive a JSON/SSE result.
+	if resp.StatusCode == http.StatusAccepted {
+		if isJSONRPCRequest(message) {
+			return fmt.Errorf("unexpected 202 Accepted for JSON-RPC request")
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		t.logger.Debug("Request acknowledged (202 Accepted), no body to read")
+		return nil
+	}
 
 	switch contentType {
 	case "text/event-stream":
@@ -215,6 +239,14 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	default:
 		return fmt.Errorf("unexpected Content-Type: %s", contentType)
 	}
+}
+
+func isJSONRPCRequest(message []byte) bool {
+	var envelope struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(message, &envelope) == nil && envelope.Method != "" && len(envelope.ID) > 0
 }
 
 // Receive implements Transport by receiving the next message.
@@ -372,6 +404,11 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
+
+	// Add custom headers
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {

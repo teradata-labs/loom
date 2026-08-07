@@ -730,6 +730,20 @@ server:
 		"LOOM_LOGGING_LEVEL should override logging.level")
 }
 
+func TestEnvVar_SkipEmbeddedAgentsWithoutYAMLKey(t *testing.T) {
+	viper.Reset()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	err := os.WriteFile(cfgPath, []byte("server:\n  port: 60051\n"), 0o644)
+	require.NoError(t, err)
+	t.Setenv("LOOM_SKIP_EMBEDDED_AGENTS", "true")
+
+	cfg, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.SkipEmbeddedAgents)
+}
+
 func TestGenerateExampleConfig_ContainsInsecureAdmin(t *testing.T) {
 	exampleConfig := GenerateExampleConfig()
 	assert.Contains(t, exampleConfig, "insecure_admin",

@@ -17,6 +17,8 @@ package manager
 import (
 	"context"
 	"fmt"
+	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -100,6 +102,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // startServer initializes a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, name string, config ServerConfig) error {
+	for _, variable := range unresolvedEnvVariables(config.URL, config.Headers) {
+		m.logger.Warn("MCP configuration references an unset environment variable",
+			zap.String("server", name),
+			zap.String("variable", variable))
+	}
+
 	// Add timeout for the entire server startup
 	// This prevents hanging on unreachable servers
 	var cancel context.CancelFunc
@@ -132,18 +140,22 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Logger:  m.logger.With(zap.String("server", name)),
 		})
 	case "streamable-http":
-		// Streamable HTTP transport (MCP 2025-03-26 spec)
+		// Streamable HTTP transport (MCP 2025-03-26 spec).
+		// Expand ${VAR} references in URL and header values so tokens and endpoints
+		// stored as env vars at deploy time resolve at pod startup.
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
-			Endpoint:         config.URL,
-			Headers:          config.Headers,
+			Endpoint:         os.ExpandEnv(config.URL),
+			Headers:          expandEnvHeaders(config.Headers),
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
 			Logger:           m.logger.With(zap.String("server", name)),
 		})
 	case "http", "sse":
-		// Legacy HTTP/SSE transport (deprecated, backwards compatibility)
+		// Legacy HTTP/SSE transport (deprecated, backwards compatibility).
+		// Expand ${VAR} references in URL and headers.
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
-			Endpoint: config.URL,
+			Endpoint: os.ExpandEnv(config.URL),
+			Headers:  expandEnvHeaders(config.Headers),
 			Logger:   m.logger.With(zap.String("server", name)),
 		})
 	default:
@@ -311,6 +323,46 @@ func (m *Manager) ServerNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// expandEnvHeaders returns a copy of the header map with every value run through
+// os.ExpandEnv so that ${VAR} and $VAR references resolve to the actual pod
+// environment variable values at startup time. This enables tera-cloud to write
+// env var references (e.g. ${MCP_MYSERVER_AUTHORIZATION}) into looms.yaml instead
+// of baking literal bearer tokens into the artifact, which would become stale when
+// tokens rotate. Returns nil unchanged.
+func expandEnvHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	expanded := make(map[string]string, len(headers))
+	for k, v := range headers {
+		expanded[k] = os.ExpandEnv(v)
+	}
+	return expanded
+}
+
+func unresolvedEnvVariables(endpoint string, headers map[string]string) []string {
+	missing := make(map[string]struct{})
+	check := func(value string) {
+		_ = os.Expand(value, func(variable string) string {
+			resolved, ok := os.LookupEnv(variable)
+			if !ok {
+				missing[variable] = struct{}{}
+			}
+			return resolved
+		})
+	}
+	check(endpoint)
+	for _, value := range headers {
+		check(value)
+	}
+	variables := make([]string, 0, len(missing))
+	for variable := range missing {
+		variables = append(variables, variable)
+	}
+	sort.Strings(variables)
+	return variables
 }
 
 // IsHealthy checks if a server is healthy by pinging it.

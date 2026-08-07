@@ -464,17 +464,20 @@ func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logg
 func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMProvider, error) {
 	rlCfg := buildRateLimiterConfig(cfg.RateLimit, logger)
 
-	// Resolve API keys: prefer explicit config, fall back to environment variables.
-	apiKey := func(explicit, envKey string) string {
-		if explicit != "" {
-			return explicit
+	// Resolve API keys/endpoints: expand ${VAR} placeholders first (used by
+	// avmo-tera-cloud runtime pods that write looms.yaml with placeholders and
+	// supply real values via pod env vars), then fall back to direct env lookups.
+	resolve := func(explicit, envKey string) string {
+		v := os.ExpandEnv(explicit)
+		if v != "" {
+			return v
 		}
 		return os.Getenv(envKey)
 	}
 
 	switch cfg.Provider {
 	case "anthropic":
-		key := apiKey(cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
+		key := resolve(cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 		if key == "" {
 			return nil, fmt.Errorf("anthropic API key not configured (set llm.anthropic_api_key or ANTHROPIC_API_KEY)")
 		}
@@ -492,11 +495,11 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		client, err := bedrock.NewClientForModel(bedrock.Config{
-			Region:            cfg.BedrockRegion,
-			AccessKeyID:       cfg.BedrockAccessKeyID,
-			SecretAccessKey:   cfg.BedrockSecretAccessKey,
-			SessionToken:      cfg.BedrockSessionToken,
-			BearerToken:       cfg.BedrockBearerToken,
+			Region:            resolve(cfg.BedrockRegion, "AWS_DEFAULT_REGION"),
+			AccessKeyID:       resolve(cfg.BedrockAccessKeyID, "AWS_ACCESS_KEY_ID"),
+			SecretAccessKey:   resolve(cfg.BedrockSecretAccessKey, "AWS_SECRET_ACCESS_KEY"),
+			SessionToken:      resolve(cfg.BedrockSessionToken, "AWS_SESSION_TOKEN"),
+			BearerToken:       os.ExpandEnv(cfg.BedrockBearerToken),
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
 			MaxTokens:         cfg.MaxTokens,
@@ -509,7 +512,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return client, nil
 
 	case "ollama":
-		endpoint := cfg.OllamaEndpoint
+		endpoint := os.ExpandEnv(cfg.OllamaEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("OLLAMA_ENDPOINT")
 		}
@@ -526,7 +529,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "openai":
-		key := apiKey(cfg.OpenAIAPIKey, "OPENAI_API_KEY")
+		key := resolve(cfg.OpenAIAPIKey, "OPENAI_API_KEY")
 		if key == "" {
 			return nil, fmt.Errorf("openai API key not configured (set llm.openai_api_key or OPENAI_API_KEY)")
 		}
@@ -540,19 +543,13 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "azure-openai", "azureopenai":
-		key := apiKey(cfg.AzureOpenAIAPIKey, "AZURE_OPENAI_API_KEY")
-		entraToken := apiKey(cfg.AzureOpenAIEntraToken, "AZURE_OPENAI_ENTRA_TOKEN")
-		endpoint := cfg.AzureOpenAIEndpoint
-		if endpoint == "" {
-			endpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
-		}
+		key := resolve(cfg.AzureOpenAIAPIKey, "AZURE_OPENAI_API_KEY")
+		entraToken := resolve(cfg.AzureOpenAIEntraToken, "AZURE_OPENAI_ENTRA_TOKEN")
+		endpoint := resolve(cfg.AzureOpenAIEndpoint, "AZURE_OPENAI_ENDPOINT")
 		if endpoint == "" {
 			return nil, fmt.Errorf("azure openai endpoint not configured")
 		}
-		deploymentID := cfg.AzureOpenAIDeploymentID
-		if deploymentID == "" {
-			deploymentID = os.Getenv("AZURE_OPENAI_DEPLOYMENT_ID")
-		}
+		deploymentID := resolve(cfg.AzureOpenAIDeploymentID, "AZURE_OPENAI_DEPLOYMENT_ID")
 		client, err := azureopenai.NewClient(azureopenai.Config{
 			Endpoint:          endpoint,
 			DeploymentID:      deploymentID,
@@ -569,7 +566,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return client, nil
 
 	case "mistral":
-		key := apiKey(cfg.MistralAPIKey, "MISTRAL_API_KEY")
+		key := resolve(cfg.MistralAPIKey, "MISTRAL_API_KEY")
 		if key == "" {
 			return nil, fmt.Errorf("mistral API key not configured (set llm.mistral_api_key or MISTRAL_API_KEY)")
 		}
@@ -583,7 +580,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "gemini":
-		key := apiKey(cfg.GeminiAPIKey, "GEMINI_API_KEY")
+		key := resolve(cfg.GeminiAPIKey, "GEMINI_API_KEY")
 		if key == "" {
 			return nil, fmt.Errorf("gemini API key not configured (set llm.gemini_api_key or GEMINI_API_KEY)")
 		}
@@ -597,7 +594,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "huggingface":
-		key := apiKey(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
+		key := resolve(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
 		if key == "" {
 			key = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
 		}
@@ -614,18 +611,16 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "litellm":
-		endpoint := cfg.LiteLLMEndpoint
+		endpoint := resolve(cfg.LiteLLMEndpoint, "LITELLM_ENDPOINT")
 		if endpoint == "" {
-			endpoint = os.Getenv("LITELLM_ENDPOINT")
+			endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 		}
-		if endpoint == "" {
-			endpoint = os.Getenv("LITELLM_BASE_URL")
-		}
-		key := apiKey(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
+		key := resolve(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            key,
 			Model:             cfg.LiteLLMModel,
+			ExtraHeaders:      expandEnvMap(cfg.LiteLLMExtraHeaders),
 			MaxTokens:         cfg.MaxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
@@ -733,8 +728,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.AnthropicModel
 		}
-		// Use server config API key, or fall back to environment variable
-		apiKey := serverConfig.LLM.AnthropicAPIKey
+		apiKey := os.ExpandEnv(serverConfig.LLM.AnthropicAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
@@ -755,11 +749,11 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		return bedrock.NewClientForModel(bedrock.Config{
-			Region:          serverConfig.LLM.BedrockRegion,
-			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
-			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
-			SessionToken:    serverConfig.LLM.BedrockSessionToken,
-			BearerToken:     serverConfig.LLM.BedrockBearerToken,
+			Region:          os.ExpandEnv(serverConfig.LLM.BedrockRegion),
+			AccessKeyID:     os.ExpandEnv(serverConfig.LLM.BedrockAccessKeyID),
+			SecretAccessKey: os.ExpandEnv(serverConfig.LLM.BedrockSecretAccessKey),
+			SessionToken:    os.ExpandEnv(serverConfig.LLM.BedrockSessionToken),
+			BearerToken:     os.ExpandEnv(serverConfig.LLM.BedrockBearerToken),
 			Profile:         serverConfig.LLM.BedrockProfile,
 			ModelID:         modelID,
 			MaxTokens:       maxTokens,
@@ -771,8 +765,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.OllamaModel
 		}
+		endpoint := os.ExpandEnv(serverConfig.LLM.OllamaEndpoint)
+		if endpoint == "" {
+			endpoint = os.Getenv("OLLAMA_ENDPOINT")
+		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:    serverConfig.LLM.OllamaEndpoint,
+			Endpoint:    endpoint,
 			Model:       model,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -784,8 +782,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.OpenAIModel
 		}
-		// Use server config API key, or fall back to environment variable
-		apiKey := serverConfig.LLM.OpenAIAPIKey
+		apiKey := os.ExpandEnv(serverConfig.LLM.OpenAIAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
@@ -800,25 +797,38 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 	case "azure-openai", "azureopenai":
 		deploymentID := protoConfig.Model
 		if deploymentID == "" {
-			deploymentID = serverConfig.LLM.AzureOpenAIDeploymentID
+			deploymentID = os.ExpandEnv(serverConfig.LLM.AzureOpenAIDeploymentID)
 		}
-		return azureopenai.NewClient(azureopenai.Config{
-			Endpoint:     serverConfig.LLM.AzureOpenAIEndpoint,
+		endpoint := os.ExpandEnv(serverConfig.LLM.AzureOpenAIEndpoint)
+		if endpoint == "" {
+			endpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
+		}
+		apiKey := os.ExpandEnv(serverConfig.LLM.AzureOpenAIAPIKey)
+		if apiKey == "" {
+			apiKey = os.Getenv("AZURE_OPENAI_API_KEY")
+		}
+		client, err := azureopenai.NewClient(azureopenai.Config{
+			Endpoint:     endpoint,
 			DeploymentID: deploymentID,
-			APIKey:       serverConfig.LLM.AzureOpenAIAPIKey,
-			EntraToken:   serverConfig.LLM.AzureOpenAIEntraToken,
+			APIKey:       apiKey,
+			EntraToken:   os.ExpandEnv(serverConfig.LLM.AzureOpenAIEntraToken),
 			MaxTokens:    maxTokens,
 			Temperature:  temperature,
 			Timeout:      timeout,
 		})
+		return client, err
 
 	case "mistral":
 		model := protoConfig.Model
 		if model == "" {
 			model = serverConfig.LLM.MistralModel
 		}
+		apiKey := os.ExpandEnv(serverConfig.LLM.MistralAPIKey)
+		if apiKey == "" {
+			apiKey = os.Getenv("MISTRAL_API_KEY")
+		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:      serverConfig.LLM.MistralAPIKey,
+			APIKey:      apiKey,
 			Model:       model,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -830,8 +840,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.GeminiModel
 		}
+		apiKey := os.ExpandEnv(serverConfig.LLM.GeminiAPIKey)
+		if apiKey == "" {
+			apiKey = os.Getenv("GEMINI_API_KEY")
+		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:      serverConfig.LLM.GeminiAPIKey,
+			APIKey:      apiKey,
 			Model:       model,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -843,8 +857,15 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.HuggingFaceModel
 		}
+		token := os.ExpandEnv(serverConfig.LLM.HuggingFaceToken)
+		if token == "" {
+			token = os.Getenv("HUGGINGFACE_API_KEY")
+		}
+		if token == "" {
+			token = os.Getenv("HUGGINGFACE_TOKEN")
+		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:       serverConfig.LLM.HuggingFaceToken,
+			Token:       token,
 			Model:       model,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -856,13 +877,31 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.LiteLLMModel
 		}
+		// Endpoint and API key are frequently injected via environment
+		// variables (e.g. avmo-tera-cloud runtime pods set LITELLM_BASE_URL /
+		// LITELLM_API_KEY) rather than the config file, and Viper's
+		// AutomaticEnv does not bind nested secret keys that are absent from
+		// the config. Expand ${VAR} references first (consistent with MCP/o11y
+		// pattern), then fall back to direct env lookups for backwards compat.
+		endpoint := os.ExpandEnv(serverConfig.LLM.LiteLLMEndpoint)
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_BASE_URL")
+		}
+		apiKey := os.ExpandEnv(serverConfig.LLM.LiteLLMAPIKey)
+		if apiKey == "" {
+			apiKey = os.Getenv("LITELLM_API_KEY")
+		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
-			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:     endpoint,
+			APIKey:       apiKey,
+			Model:        model,
+			ExtraHeaders: expandEnvMap(serverConfig.LLM.LiteLLMExtraHeaders),
+			MaxTokens:    maxTokens,
+			Temperature:  temperature,
+			Timeout:      timeout,
 		}), nil
 
 	default:
@@ -870,21 +909,35 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 	}
 }
 
+func expandEnvMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	expanded := make(map[string]string, len(values))
+	for key, value := range values {
+		expanded[key] = os.ExpandEnv(value)
+	}
+	return expanded
+}
+
 // exportConfigToEnv exports certain config values as environment variables
 // so that builtin tools can access them without requiring explicit parameters.
+// Values are run through os.ExpandEnv so that ${VAR} placeholders written by
+// the config translator (e.g. "${BRAVE_API_KEY}") resolve to the real pod
+// env var injected at deploy time.
 func exportConfigToEnv(cfg *Config) {
 	// Export web search API keys if configured
-	if cfg.Tools.WebSearch.BraveAPIKey != "" {
+	if v := os.ExpandEnv(cfg.Tools.WebSearch.BraveAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		_ = os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
+		_ = os.Setenv("BRAVE_API_KEY", v)
 	}
-	if cfg.Tools.WebSearch.TavilyAPIKey != "" {
+	if v := os.ExpandEnv(cfg.Tools.WebSearch.TavilyAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		_ = os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
+		_ = os.Setenv("TAVILY_API_KEY", v)
 	}
-	if cfg.Tools.WebSearch.SerpAPIKey != "" {
+	if v := os.ExpandEnv(cfg.Tools.WebSearch.SerpAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
+		_ = os.Setenv("SERPAPI_KEY", v)
 	}
 }
 
@@ -931,6 +984,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Configure log output file if specified
 	if config.Logging.File != "" {
+
 		zapConfig.OutputPaths = []string{config.Logging.File}
 		zapConfig.ErrorOutputPaths = []string{config.Logging.File}
 	}
@@ -962,6 +1016,18 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Create tracer based on mode
 	var tracer observability.Tracer
+
+	// Platform env-var override: when the orchestrator (AgentOpsCore) injects
+	// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, force observability on regardless of
+	// the config-file setting. This lets the platform enable observability at
+	// deploy-time without patching the user's config artifact.
+	if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+		if !config.Observability.Enabled {
+			logger.Info("Enabling observability (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)")
+			config.Observability.Enabled = true
+		}
+	}
+
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
@@ -976,6 +1042,37 @@ func runServe(cmd *cobra.Command, args []string) {
 			} else {
 				mode = "embedded"
 			}
+		}
+
+		// Platform env-var override: when the orchestrator injects
+		// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, force otel mode and override
+		// config-file values. Env vars take precedence over looms.yaml so
+		// the platform can redirect traces at deploy-time without patching
+		// the user's config artifact.
+		if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+			if mode != "otel" {
+				logger.Info("Overriding observability mode to otel (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)",
+					zap.String("original_mode", mode),
+					zap.String("otlp_endpoint", otlpEnv))
+				mode = "otel"
+			}
+			// Env var always wins over config — platform can relocate the
+			// collector without rebuilding the agent artifact.
+			config.Observability.OTLPEndpoint = otlpEnv
+			if raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"); raw != "" {
+				config.Observability.OTLPHeaders = observability.ParseHeadersEnv(raw)
+			}
+			if os.Getenv("LOOM_OTLP_INSECURE") == "true" {
+				config.Observability.OTLPInsecure = true
+			}
+		}
+
+		// Expand ${VAR} references in observability config values so that
+		// the platform can write placeholders in looms.yaml and supply the
+		// real values via pod env vars (same pattern as MCP auth headers).
+		config.Observability.OTLPEndpoint = os.ExpandEnv(config.Observability.OTLPEndpoint)
+		for k, v := range config.Observability.OTLPHeaders {
+			config.Observability.OTLPHeaders[k] = os.ExpandEnv(v)
 		}
 
 		switch mode {
@@ -1228,101 +1325,106 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Warn("Examples source not found, skipping copy")
 	}
 
-	// Copy default weaver agent to loom data directory (if not exists)
-	agentsDir := filepath.Join(loomDataDir, "agents")
-	weaverDestPath := filepath.Join(agentsDir, "weaver.yaml")
-	if _, err := os.Stat(weaverDestPath); os.IsNotExist(err) {
-		// Ensure agents directory exists
-		if err := os.MkdirAll(agentsDir, 0750); err != nil {
-			logger.Warn("Failed to create agents directory", zap.Error(err))
-		}
-
-		// Get weaver from embedded files
-		weaverData := embedded.GetWeaver()
-		logger.Info("Using embedded weaver.yaml")
-
-		// Write to destination
-		if err := os.WriteFile(weaverDestPath, weaverData, 0600); err != nil {
-			logger.Warn("Failed to copy weaver.yaml to agents directory", zap.Error(err))
-		} else {
-			logger.Info("Weaver agent installed",
-				zap.String("source", "embedded"),
-				zap.String("dest", weaverDestPath),
-				zap.Int("size", len(weaverData)))
-		}
-	} else {
-		logger.Debug("Weaver agent already exists", zap.String("path", weaverDestPath))
-	}
-
-	// Copy default guide agent to loom data directory (if not exists)
-	guideDestPath := filepath.Join(agentsDir, "guide.yaml")
-	if _, err := os.Stat(guideDestPath); os.IsNotExist(err) {
-		// Ensure agents directory exists
-		if err := os.MkdirAll(agentsDir, 0750); err != nil {
-			logger.Warn("Failed to create agents directory", zap.Error(err))
-		}
-
-		// Get guide from embedded files
-		guideData := embedded.GetGuide()
-		logger.Info("Using embedded guide.yaml")
-
-		// Write to destination
-		if err := os.WriteFile(guideDestPath, guideData, 0600); err != nil {
-			logger.Warn("Failed to copy guide.yaml to agents directory", zap.Error(err))
-		} else {
-			logger.Info("Guide agent installed",
-				zap.String("source", "embedded"),
-				zap.String("dest", guideDestPath),
-				zap.Int("size", len(guideData)))
-		}
-	} else {
-		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
-	}
-
-	// Deploy bundled weaver skills (if not exists). One block per skill so
-	// users can delete an individual file to opt out without losing the
-	// others.
 	skillsDir := filepath.Join(loomDataDir, "skills")
-	weaverBundledSkills := []struct {
-		name string
-		data []byte
-	}{
-		{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
-		{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
-		{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
-		{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
-	}
-	for _, s := range weaverBundledSkills {
-		path := filepath.Join(skillsDir, s.name)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := os.MkdirAll(skillsDir, 0750); err != nil {
-				logger.Warn("Failed to create skills directory", zap.Error(err))
+	if config.SkipEmbeddedAgents {
+		logger.Info("Skipping embedded agent/skill installation (skip_embedded_agents=true)")
+	} else {
+		// Copy default weaver and guide agents + bundled skills to loom data directory
+		// (skipped when skip_embedded_agents is set — e.g. runtime pods that serve only the deployed agent)
+		agentsDir := filepath.Join(loomDataDir, "agents")
+		weaverDestPath := filepath.Join(agentsDir, "weaver.yaml")
+		if _, err := os.Stat(weaverDestPath); os.IsNotExist(err) {
+			// Ensure agents directory exists
+			if err := os.MkdirAll(agentsDir, 0750); err != nil {
+				logger.Warn("Failed to create agents directory", zap.Error(err))
 			}
-			if err := os.WriteFile(path, s.data, 0600); err != nil {
-				logger.Warn("Failed to deploy weaver skill",
-					zap.String("name", s.name), zap.Error(err))
-			} else {
-				logger.Info("Weaver skill installed",
-					zap.String("name", s.name),
-					zap.String("dest", path),
-					zap.Int("size", len(s.data)))
-			}
-		} else {
-			logger.Debug("Weaver skill already exists",
-				zap.String("name", s.name), zap.String("path", path))
-		}
-	}
 
-	// Create agent guide in loom data directory (visible to agents)
-	agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
-	if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {
-		agentGuide := embedded.GetStartHere()
-		if err := os.WriteFile(agentGuidePath, agentGuide, 0600); err != nil {
-			logger.Warn("Failed to create agent guide", zap.Error(err))
+			// Get weaver from embedded files
+			weaverData := embedded.GetWeaver()
+			logger.Info("Using embedded weaver.yaml")
+
+			// Write to destination
+			if err := os.WriteFile(weaverDestPath, weaverData, 0600); err != nil {
+				logger.Warn("Failed to copy weaver.yaml to agents directory", zap.Error(err))
+			} else {
+				logger.Info("Weaver agent installed",
+					zap.String("source", "embedded"),
+					zap.String("dest", weaverDestPath),
+					zap.Int("size", len(weaverData)))
+			}
 		} else {
-			logger.Info("Agent guide created", zap.String("path", agentGuidePath))
+			logger.Debug("Weaver agent already exists", zap.String("path", weaverDestPath))
 		}
-	}
+
+		// Copy default guide agent to loom data directory (if not exists)
+		guideDestPath := filepath.Join(agentsDir, "guide.yaml")
+		if _, err := os.Stat(guideDestPath); os.IsNotExist(err) {
+			// Ensure agents directory exists
+			if err := os.MkdirAll(agentsDir, 0750); err != nil {
+				logger.Warn("Failed to create agents directory", zap.Error(err))
+			}
+
+			// Get guide from embedded files
+			guideData := embedded.GetGuide()
+			logger.Info("Using embedded guide.yaml")
+
+			// Write to destination
+			if err := os.WriteFile(guideDestPath, guideData, 0600); err != nil {
+				logger.Warn("Failed to copy guide.yaml to agents directory", zap.Error(err))
+			} else {
+				logger.Info("Guide agent installed",
+					zap.String("source", "embedded"),
+					zap.String("dest", guideDestPath),
+					zap.Int("size", len(guideData)))
+			}
+		} else {
+			logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
+		}
+
+		// Deploy bundled weaver skills (if not exists). One block per skill so
+		// users can delete an individual file to opt out without losing the
+		// others.
+		weaverBundledSkills := []struct {
+			name string
+			data []byte
+		}{
+			{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
+			{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
+			{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
+			{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
+		}
+		for _, s := range weaverBundledSkills {
+			path := filepath.Join(skillsDir, s.name)
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if err := os.MkdirAll(skillsDir, 0750); err != nil {
+					logger.Warn("Failed to create skills directory", zap.Error(err))
+				}
+				if err := os.WriteFile(path, s.data, 0600); err != nil {
+					logger.Warn("Failed to deploy weaver skill",
+						zap.String("name", s.name), zap.Error(err))
+				} else {
+					logger.Info("Weaver skill installed",
+						zap.String("name", s.name),
+						zap.String("dest", path),
+						zap.Int("size", len(s.data)))
+				}
+			} else {
+				logger.Debug("Weaver skill already exists",
+					zap.String("name", s.name), zap.String("path", path))
+			}
+		}
+
+		// Create agent guide in loom data directory (visible to agents)
+		agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
+		if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {
+			agentGuide := embedded.GetStartHere()
+			if err := os.WriteFile(agentGuidePath, agentGuide, 0600); err != nil {
+				logger.Warn("Failed to create agent guide", zap.Error(err))
+			} else {
+				logger.Info("Agent guide created", zap.String("path", agentGuidePath))
+			}
+		}
+	} // end skip_embedded_agents else block
 
 	// Get artifact store from storage backend
 	artifactStore := storageBackend.ArtifactStore()

@@ -549,6 +549,15 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 
 	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
+
+	// Platform env-var override: force observability on when OTLP endpoint is injected.
+	if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+		if !config.Observability.Enabled {
+			logger.Info("Enabling observability (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)")
+			config.Observability.Enabled = true
+		}
+	}
+
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
@@ -556,6 +565,26 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 				mode = "service"
 			} else {
 				mode = "embedded"
+			}
+		}
+
+		// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
+		// set, force otel mode and override config-file values. Env vars take
+		// precedence so the platform can redirect traces at deploy-time.
+		if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+			if mode != "otel" {
+				logger.Info("Overriding observability mode to otel (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)",
+					zap.String("original_mode", mode),
+					zap.String("otlp_endpoint", otlpEnv))
+				mode = "otel"
+			}
+			// Env var always wins over config.
+			config.Observability.OTLPEndpoint = otlpEnv
+			if raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"); raw != "" {
+				config.Observability.OTLPHeaders = observability.ParseHeadersEnv(raw)
+			}
+			if os.Getenv("LOOM_OTLP_INSECURE") == "true" {
+				config.Observability.OTLPInsecure = true
 			}
 		}
 
@@ -606,6 +635,34 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 			} else {
 				tracer = hawkTracer
 				logger.Info("Observability enabled for workflow", zap.String("endpoint", config.Observability.HawkEndpoint))
+			}
+
+		case "otel":
+			logger.Info("Observability enabled with OTLP export",
+				zap.String("endpoint", config.Observability.OTLPEndpoint))
+			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
+				Endpoint:       config.Observability.OTLPEndpoint,
+				Headers:        config.Observability.OTLPHeaders,
+				Insecure:       config.Observability.OTLPInsecure,
+				ServiceName:    "looms-workflow",
+				ServiceVersion: rootCmd.Version,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
+			})
+			if err != nil {
+				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = otelTracer
+				rt.closers = append(rt.closers, func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := otelTracer.Shutdown(ctx); err != nil {
+						logger.Warn("Failed to shut down OTLP tracer", zap.Error(err))
+					}
+				})
 			}
 
 		default:
