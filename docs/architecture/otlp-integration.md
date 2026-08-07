@@ -4,7 +4,7 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.3.0 (planned — see status indicators below)
+**Version**: v1.3.0
 
 ---
 
@@ -91,17 +91,19 @@ cmd/looms/config.go   ✅  ObservabilityConfig.Provider = "hawk, otlp" (comment 
                       ✅  mode switch in cmd_serve.go (service / embedded / none)
 ```
 
-### What Is Missing
+### Implemented OTLP Components
 
 ```
-pkg/observability/otel.go         📋  OTelTracer implementation
-pkg/observability/otel_attrs.go   📋  Loom AttrLLM* → gen_ai.* translation map
-pkg/observability/otel_config.go  📋  OTelConfig struct + env var loading
-pkg/observability/otel_test.go    📋  Unit tests (in-memory OTel exporter)
+pkg/observability/otel.go         ✅  OTelTracer implementation
+pkg/observability/otel_attrs.go   ✅  Loom AttrLLM* → gen_ai.* translation map
+pkg/observability/otel_config.go  ✅  OTelConfig struct + env var loading
+pkg/observability/otel_test.go    ✅  Unit tests, including exported parent linkage
 
-cmd/looms/config.go               📋  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
-cmd/looms/cmd_serve.go            📋  case "otel": branch in tracer switch
-pkg/observability/auto_select.go  📋  TracerModeOTel constant + selection logic
+cmd/looms/config.go               ✅  OTLPEndpoint / OTLPHeaders fields on ObservabilityConfig
+cmd/looms/cmd_serve.go            ✅  case "otel": branch in tracer switch
+pkg/observability/auto_select.go  ✅  TracerModeOTel constant + env-aware selection
+pkg/agent/agent.go                ✅  prompt and completion previews bounded to 200 runes
+pkg/llm/instrumented_provider.go  ✅  prompt and completion previews bounded to 200 runes
 ```
 
 ### Key Insight: SpanExporter Already Exists
@@ -200,7 +202,7 @@ The `OTelTracer` owns an OTel `TracerProvider` internally. On `StartSpan`, it cr
 
 **Responsibility**: Implement the `Tracer` interface, bridging Loom's span lifecycle to the OTel SDK while preserving Loom's context propagation model.
 
-**File**: `pkg/observability/otel.go` (📋 to be created)
+**File**: `pkg/observability/otel.go`
 
 **Core Structure**:
 ```
@@ -252,8 +254,8 @@ NewOTelTracer(cfg OTelConfig):
 ```
 ∀ span s: s.SpanID ∈ activeSpans during [StartSpan, EndSpan]
 ∀ span s: activeSpans[s.SpanID] deleted after EndSpan
-OTel span.TraceID = Loom span.TraceID (W3C hex format)
-OTel span.ParentSpanID = Loom span.ParentID (when non-empty)
+In-process child spans use the active parent OTel SpanContext
+Cross-process children derive a remote parent from Loom IDs when no active parent exists
 ```
 
 
@@ -261,7 +263,7 @@ OTel span.ParentSpanID = Loom span.ParentID (when non-empty)
 
 **Responsibility**: Map Loom's internal attribute constants (`AttrLLM*`, `AttrTool*`, etc.) to OTel's GenAI semantic conventions (`gen_ai.*`). This layer is what makes traces render correctly in Opik, Grafana, and other backends without custom configuration.
 
-**File**: `pkg/observability/otel_attrs.go` (📋 to be created)
+**File**: `pkg/observability/otel_attrs.go`
 
 **Translation is applied at `EndSpan` time**, not `StartSpan` — attributes are often set by calling code between the two, so translation must happen on completion.
 
@@ -286,13 +288,13 @@ default        → SpanKindInternal
 
 **Responsibility**: Carry all configuration required to construct an `OTelTracer` and resolve from environment variables.
 
-**File**: `pkg/observability/otel_config.go` (📋 to be created)
+**File**: `pkg/observability/otel_config.go`
 
 ```
 OTelConfig
   Endpoint       string            // OTLP HTTP endpoint URL
   Headers        map[string]string // Request headers (API keys, workspace IDs)
-  Insecure       bool              // Skip TLS verification (local dev only)
+  Insecure       bool              // Use plaintext HTTP transport (local dev only)
   ServiceName    string            // resource: service.name
   ServiceVersion string            // resource: service.version
   Timeout        time.Duration     // Per-request timeout (default: 10s)
@@ -323,24 +325,20 @@ LOOM_OTLP_INSECURE      ← Insecure (default: false)
 
 ### Auto-Select Extension
 
-**Responsibility**: Extend the existing tracer factory to recognise `mode: otel` and construct an `OTelTracer`.
+**Responsibility**: Recognise `mode: otel` and construct an `OTelTracer`.
 
-**File**: `pkg/observability/auto_select.go` (📋 to modify)
+**File**: `pkg/observability/auto_select.go`
 
-Current `TracerMode` constants:
+`TracerMode` constants:
 ```go
 TracerModeAuto     TracerMode = "auto"
 TracerModeService  TracerMode = "service"
 TracerModeEmbedded TracerMode = "embedded"
 TracerModeNone     TracerMode = "none"
+TracerModeOTel     TracerMode = "otel"
 ```
 
-Addition:
-```go
-TracerModeOTel TracerMode = "otel"   // 📋 add
-```
-
-The `autoSelectTracer` switch gains a `case TracerModeOTel:` branch. The auto-selection heuristic for `TracerModeAuto` extends to: if `OTLPEndpoint` is set, `otel` mode is preferred over `embedded`.
+The auto-selection heuristic for `TracerModeAuto` prefers `otel` mode when `OTLPEndpoint` is set.
 
 **`cmd/looms/config.go` changes**:
 
@@ -355,9 +353,9 @@ ObservabilityConfig (existing fields unchanged):
   SQLitePath    string
   FlushInterval string
 
-  OTLPEndpoint  string            // 📋 add — OTLP HTTP endpoint
-  OTLPHeaders   map[string]string // 📋 add — auth headers
-  OTLPInsecure  bool              // 📋 add — skip TLS (dev only)
+  OTLPEndpoint  string            // OTLP HTTP endpoint
+  OTLPHeaders   map[string]string // auth headers
+  OTLPInsecure  bool              // use plaintext HTTP transport (dev only)
 ```
 
 **`cmd/looms/cmd_serve.go` change** — add one case to the tracer switch:
@@ -443,7 +441,7 @@ Loom Span.Attributes        translateAttrs()        OTel Span
 OTelConfig
   Endpoint       string            Required. Full OTLP HTTP URL including path.
   Headers        map[string]string Optional. Authorization, workspace, project headers.
-  Insecure       bool              Optional. Disables TLS verification. Dev only.
+  Insecure       bool              Optional. Selects plaintext HTTP transport. Dev only.
   ServiceName    string            Populates resource attribute service.name.
   ServiceVersion string            Populates resource attribute service.version.
   Timeout        time.Duration     Per-export request timeout. Default: 10s.
@@ -741,20 +739,20 @@ The `OTelTracer` follows the same best-effort strategy as `HawkTracer`:
 
 ### PII Redaction
 
-The same `PrivacyConfig` and `redact()` function used by `HawkTracer` is applied in `OTelTracer.EndSpan` before any attribute is passed to the OTel SDK. Sensitive data never reaches the OTLP backend.
+`PrivacyConfig` is applied by `redactOTelSpan` in `OTelTracer.EndSpan` before attributes are passed to the OTel SDK. Credential and PII redaction default to enabled when no privacy configuration is supplied.
 
-**Scope**: The `redact()` function is defined in `pkg/observability/hawk.go` today. For `OTelTracer`, it will be extracted to a shared `pkg/observability/privacy.go` to avoid importing the Hawk build tag from OTel code.
+The redaction function operates on a copy so exporting a span does not mutate the caller-owned span or event attributes.
 
 ### Transport Security
 
 - HTTPS is strongly recommended for the `otlp_endpoint` in any non-local deployment
-- `OTelConfig.Insecure = true` disables TLS verification and must only be used for local development
+- `OTelConfig.Insecure = true` selects plaintext HTTP and must only be used for local development
 - API keys are passed in HTTP headers (not query parameters), consistent with industry practice
-- `looms.yaml` field `otlp_headers` is marked as sensitive in the config loader (same treatment as `hawk_api_key`)
+- `otlp_headers` may contain credentials and must be supplied through environment-backed configuration
 
 ### Header Exposure
 
-`otlp_headers` may contain bearer tokens. The config validator will warn if `otlp_headers` is specified without HTTPS and `insecure = false`.
+`otlp_headers` may contain bearer tokens. Use HTTPS for every non-local deployment and avoid literal secrets in checked-in YAML.
 
 
 ## Backend Compatibility

@@ -43,7 +43,7 @@ type OTelConfig struct {
 	// Env: OTEL_EXPORTER_OTLP_TRACES_HEADERS (format: "key=val,key2=val2")
 	Headers map[string]string
 
-	// Insecure disables TLS certificate verification. Use for local dev only.
+	// Insecure selects plaintext HTTP transport. Use for local dev only.
 	// Env: LOOM_OTLP_INSECURE
 	Insecure bool
 

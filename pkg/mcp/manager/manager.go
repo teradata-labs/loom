@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -125,6 +126,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // startServer initializes a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, name string, config ServerConfig) error {
+	for _, variable := range unresolvedEnvVariables(config.URL, config.Headers) {
+		m.logger.Warn("MCP configuration references an unset environment variable",
+			zap.String("server", name),
+			zap.String("variable", variable))
+	}
+
 	// Add timeout for the entire server startup
 	// This prevents hanging on unreachable servers
 	var cancel context.CancelFunc
@@ -404,6 +411,29 @@ func expandEnvHeaders(headers map[string]string) map[string]string {
 		expanded[k] = os.ExpandEnv(v)
 	}
 	return expanded
+}
+
+func unresolvedEnvVariables(endpoint string, headers map[string]string) []string {
+	missing := make(map[string]struct{})
+	check := func(value string) {
+		_ = os.Expand(value, func(variable string) string {
+			resolved, ok := os.LookupEnv(variable)
+			if !ok {
+				missing[variable] = struct{}{}
+			}
+			return resolved
+		})
+	}
+	check(endpoint)
+	for _, value := range headers {
+		check(value)
+	}
+	variables := make([]string, 0, len(missing))
+	for variable := range missing {
+		variables = append(variables, variable)
+	}
+	sort.Strings(variables)
+	return variables
 }
 
 // IsHealthy checks if a server is healthy. Legacy-revision connections use

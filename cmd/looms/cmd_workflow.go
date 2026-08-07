@@ -656,6 +656,13 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 				tracer = observability.NewNoOpTracer()
 			} else {
 				tracer = otelTracer
+				rt.closers = append(rt.closers, func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := otelTracer.Shutdown(ctx); err != nil {
+						logger.Warn("Failed to shut down OTLP tracer", zap.Error(err))
+					}
+				})
 			}
 
 		default:

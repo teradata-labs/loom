@@ -124,8 +124,13 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 				loomSpan.ResourceAttributes[k] = v
 			}
 		}
-		// Inject parent span context so OTel SDK establishes the parent-child link.
-		if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
+		// Prefer the live SDK span. Synthetic context is only valid when the
+		// parent originated outside this tracer and is not active locally.
+		if raw, ok := t.activeSpans.Load(parent.SpanID); ok {
+			if activeParent, ok := raw.(oteltrace.Span); ok {
+				otelCtx = oteltrace.ContextWithSpan(ctx, activeParent)
+			}
+		} else if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
 			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
 		}
 	}
@@ -247,6 +252,21 @@ func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span
 	}
+
+	redacted := *span
+	redacted.Attributes = make(map[string]interface{}, len(span.Attributes))
+	for k, v := range span.Attributes {
+		redacted.Attributes[k] = v
+	}
+	redacted.Events = make([]Event, len(span.Events))
+	for i, event := range span.Events {
+		redacted.Events[i] = event
+		redacted.Events[i].Attributes = make(map[string]interface{}, len(event.Attributes))
+		for k, v := range event.Attributes {
+			redacted.Events[i].Attributes[k] = v
+		}
+	}
+	span = &redacted
 
 	allowed := make(map[string]bool, len(cfg.AllowedAttributes))
 	for _, k := range cfg.AllowedAttributes {

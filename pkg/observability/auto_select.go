@@ -67,7 +67,7 @@ type AutoSelectConfig struct {
 	// OTLPHeaders are HTTP headers sent with OTLP requests (e.g. auth tokens).
 	OTLPHeaders map[string]string
 
-	// OTLPInsecure disables TLS verification (local dev only).
+	// OTLPInsecure selects plaintext HTTP transport (local dev only).
 	OTLPInsecure bool
 
 	// ServiceName populates resource attribute service.name in otel mode.
@@ -198,10 +198,10 @@ func isServiceAvailable(config *AutoSelectConfig) bool {
 	return config.HawkURL != ""
 }
 
-// safePrivacy dereferences a *PrivacyConfig, returning zero value if nil.
+// safePrivacy preserves secure export defaults unless explicitly overridden.
 func safePrivacy(p *PrivacyConfig) PrivacyConfig {
 	if p == nil {
-		return PrivacyConfig{}
+		return PrivacyConfig{RedactCredentials: true, RedactPII: true}
 	}
 	return *p
 }
@@ -301,6 +301,10 @@ func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
 		HawkAPIKey:          os.Getenv("HAWK_API_KEY"),
 		EmbeddedStorageType: getEnv("LOOM_EMBEDDED_STORAGE", "memory"),
 		EmbeddedSQLitePath:  os.Getenv("LOOM_EMBEDDED_SQLITE_PATH"),
+		OTLPEndpoint:        firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT"),
+		OTLPHeaders:         ParseHeadersEnv(firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS")),
+		OTLPInsecure:        getEnv("LOOM_OTLP_INSECURE", "false") == "true",
+		ServiceName:         os.Getenv("OTEL_SERVICE_NAME"),
 		Logger:              logger,
 	}
 

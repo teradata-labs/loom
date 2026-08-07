@@ -614,7 +614,7 @@ type ObservabilityConfig struct {
 	// OTel mode — exports to any OTLP HTTP backend (Opik, Jaeger, Tempo, etc.)
 	OTLPEndpoint     string            `mapstructure:"otlp_endpoint"`      // Full OTLP HTTP URL
 	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
-	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Skip TLS (local dev only)
+	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Use plaintext HTTP (local dev only)
 	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
 }
 
@@ -1116,6 +1116,7 @@ func setDefaults() {
 	viper.SetDefault("server.enable_reflection", true)
 	viper.SetDefault("server.insecure_admin", false)
 	viper.SetDefault("server.allow_time_override", false)
+	viper.SetDefault("skip_embedded_agents", false)
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)

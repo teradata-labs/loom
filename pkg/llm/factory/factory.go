@@ -135,6 +135,9 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.HuggingFaceToken = os.ExpandEnv(config.HuggingFaceToken)
 	config.LiteLLMEndpoint = os.ExpandEnv(config.LiteLLMEndpoint)
 	config.LiteLLMAPIKey = os.ExpandEnv(config.LiteLLMAPIKey)
+	for key, value := range config.LiteLLMExtraHeaders {
+		config.LiteLLMExtraHeaders[key] = os.ExpandEnv(value)
+	}
 
 	return &ProviderFactory{
 		config: config,

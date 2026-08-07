@@ -125,6 +125,20 @@ func TestStreamableHTTPTransport_Accepts202PlainTextAck(t *testing.T) {
 		"a 202 Accepted with text/plain body must be treated as a successful acknowledgment")
 }
 
+func TestStreamableHTTPTransport_Rejects202ForRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.EqualError(t, err, "unexpected 202 Accepted for JSON-RPC request")
+}
+
 func TestNewStreamableHTTPTransport(t *testing.T) {
 	tests := []struct {
 		name      string
