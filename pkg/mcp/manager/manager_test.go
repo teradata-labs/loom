@@ -488,3 +488,16 @@ func TestExpandEnvHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestUnresolvedEnvVariables(t *testing.T) {
+	t.Setenv("MCP_SET", "configured")
+	missing := unresolvedEnvVariables(
+		"${MCP_ENDPOINT_MISSING}",
+		map[string]string{
+			"Authorization": "Bearer ${MCP_TOKEN_MISSING}",
+			"X-Configured":  "${MCP_SET}",
+			"X-Duplicate":   "${MCP_ENDPOINT_MISSING}",
+		},
+	)
+	assert.Equal(t, []string{"MCP_ENDPOINT_MISSING", "MCP_TOKEN_MISSING"}, missing)
+}

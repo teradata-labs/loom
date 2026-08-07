@@ -1984,7 +1984,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", response.Content)
+	span.SetAttribute("response.preview", truncatePreview(response.Content))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {

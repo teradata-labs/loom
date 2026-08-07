@@ -140,6 +140,16 @@ func TestExecutor_Execute_ResolvesSanitizedQualifiedName(t *testing.T) {
 	require.Equal(t, 1, tool.ExecuteCount)
 }
 
+func TestExecutor_Execute_RejectsAmbiguousServerPrefixedSuffix(t *testing.T) {
+	reg := NewRegistry()
+	exec := NewExecutor(reg)
+	reg.Register(&MockTool{MockName: "server-b:search"})
+	reg.Register(&MockTool{MockName: "server-a:search"})
+
+	_, err := exec.Execute(context.Background(), "search", nil)
+	require.EqualError(t, err, "tool not found: search (dynamic registration failed: ambiguous tool name \"search\" matches server-a:search, server-b:search)")
+}
+
 func TestExecutor_Execute_ToolError(t *testing.T) {
 	reg := NewRegistry()
 	tool := &errorTool{name: "error"}

@@ -630,6 +630,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			Endpoint:          endpoint,
 			APIKey:            key,
 			Model:             cfg.LiteLLMModel,
+			ExtraHeaders:      expandEnvMap(cfg.LiteLLMExtraHeaders),
 			MaxTokens:         cfg.MaxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
@@ -904,17 +905,29 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("LITELLM_API_KEY")
 		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:    endpoint,
-			APIKey:      apiKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:     endpoint,
+			APIKey:       apiKey,
+			Model:        model,
+			ExtraHeaders: expandEnvMap(serverConfig.LLM.LiteLLMExtraHeaders),
+			MaxTokens:    maxTokens,
+			Temperature:  temperature,
+			Timeout:      timeout,
 		}), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
 	}
+}
+
+func expandEnvMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	expanded := make(map[string]string, len(values))
+	for key, value := range values {
+		expanded[key] = os.ExpandEnv(value)
+	}
+	return expanded
 }
 
 // exportConfigToEnv exports certain config values as environment variables

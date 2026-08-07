@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -704,13 +705,25 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	//     instead of using the provider's reverse-mapped original name.
 	// Scan the local registry first before hitting the external tool registry.
 	suffix := ":" + toolName
+	var matches []Tool
 	for _, t := range e.registry.ListTools() {
 		name := t.Name()
 		if strings.HasSuffix(name, suffix) || strings.ReplaceAll(name, ":", "_") == toolName {
-			// Register an alias so subsequent calls skip this scan.
-			e.registry.RegisterAlias(toolName, t)
-			return t, nil
+			matches = append(matches, t)
 		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
+	if len(matches) == 1 {
+		// Register an alias so subsequent calls skip this scan.
+		e.registry.RegisterAlias(toolName, matches[0])
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, len(matches))
+		for i, match := range matches {
+			names[i] = match.Name()
+		}
+		return nil, fmt.Errorf("ambiguous tool name %q matches %s", toolName, strings.Join(names, ", "))
 	}
 
 	// Check if tool registry is configured

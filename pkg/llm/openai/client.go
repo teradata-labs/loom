@@ -133,6 +133,7 @@ func NewClient(config Config) *Client {
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
 				// Use a short idle-connection timeout so the pool doesn't
 				// hand out stale connections that the LLM proxy has already
 				// closed on its side (which causes EOF errors).

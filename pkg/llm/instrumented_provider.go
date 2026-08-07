@@ -171,9 +171,9 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 		span.SetAttribute("llm.tool_calls.names", toolCallNames)
 	}
 
-	// Response content — maps to gen_ai.completion → Opik output column.
-	if resp.Content != "" {
-		span.SetAttribute("response.preview", resp.Content)
+	// Bounded response preview — maps to gen_ai.completion → Opik output column.
+	if preview := truncatePreview(resp.Content); preview != "" {
+		span.SetAttribute("response.preview", preview)
 	}
 
 	// Capture content length (for analysis)
@@ -405,9 +405,9 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 		span.SetAttribute("llm.tool_calls.names", toolCallNames)
 	}
 
-	// Response content — maps to gen_ai.completion → Opik output column.
-	if resp.Content != "" {
-		span.SetAttribute("response.preview", resp.Content)
+	// Bounded response preview — maps to gen_ai.completion → Opik output column.
+	if preview := truncatePreview(resp.Content); preview != "" {
+		span.SetAttribute("response.preview", preview)
 	}
 
 	// Capture content length (for analysis)
@@ -490,7 +490,18 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	return resp, nil
 }
 
-// lastUserMessagePreview returns the full content of the last user message.
+const maxPreviewRunes = 200
+
+// truncatePreview bounds content exported to observability backends.
+func truncatePreview(content string) string {
+	runes := []rune(content)
+	if len(runes) <= maxPreviewRunes {
+		return content
+	}
+	return string(runes[:maxPreviewRunes]) + "…"
+}
+
+// lastUserMessagePreview returns a bounded preview of the last user message.
 // For multi-modal messages it concatenates text blocks, skipping image blocks.
 func lastUserMessagePreview(messages []llmtypes.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -499,7 +510,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 			continue
 		}
 		if m.Content != "" {
-			return m.Content
+			return truncatePreview(m.Content)
 		}
 		var parts []string
 		for _, b := range m.ContentBlocks {
@@ -507,7 +518,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 				parts = append(parts, b.Text)
 			}
 		}
-		return strings.Join(parts, " ")
+		return truncatePreview(strings.Join(parts, " "))
 	}
 	return ""
 }

@@ -17,6 +17,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -87,8 +88,10 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
 	t := &StreamableHTTPTransport{
-		endpoint:         config.Endpoint,
-		client:           &http.Client{},
+		endpoint: config.Endpoint,
+		client: &http.Client{Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}},
 		sessionMgr:       NewSessionManager(),
 		resumption:       NewStreamResumption(100),
 		messages:         make(chan []byte, 100),
@@ -137,11 +140,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 
-	// Add custom headers (e.g., Authorization)
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
-	}
-
 	t.logger.Debug("Sending POST request",
 		zap.String("endpoint", t.endpoint),
 		zap.Int("message_size", len(message)),
@@ -187,14 +185,12 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		zap.Int("status", resp.StatusCode),
 		zap.Bool("started", started))
 
-	// A POST that carries only notifications/responses (e.g. the
-	// notifications/initialized message) is acknowledged by the server with
-	// 202 Accepted and no JSON-RPC body, per the MCP streamable-http spec.
-	// Such acknowledgments carry no Content-Type guarantee — some servers
-	// (e.g. Atlassian's remote MCP) return "text/plain" — so treat any 202 as
-	// a successful acknowledgment with nothing to read, before the
-	// Content-Type switch rejects it as unexpected.
+	// A POST carrying a notification or response may be acknowledged with 202
+	// and no JSON-RPC body. A request with an id must receive a JSON/SSE result.
 	if resp.StatusCode == http.StatusAccepted {
+		if isJSONRPCRequest(message) {
+			return fmt.Errorf("unexpected 202 Accepted for JSON-RPC request")
+		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		t.logger.Debug("Request acknowledged (202 Accepted), no body to read")
 		return nil
@@ -243,6 +239,14 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	default:
 		return fmt.Errorf("unexpected Content-Type: %s", contentType)
 	}
+}
+
+func isJSONRPCRequest(message []byte) bool {
+	var envelope struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(message, &envelope) == nil && envelope.Method != "" && len(envelope.ID) > 0
 }
 
 // Receive implements Transport by receiving the next message.
