@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -273,6 +275,24 @@ func TestRedactOTelSpan(t *testing.T) {
 			t.Error("email in event attribute should be redacted")
 		}
 	})
+
+	t.Run("redaction does not mutate the caller span", func(t *testing.T) {
+		span := &Span{
+			Attributes: map[string]interface{}{"password": "s3cr3t"},
+			Events:     []Event{{Attributes: map[string]interface{}{"content": "user@test.org"}}},
+		}
+		out := redactOTelSpan(span, PrivacyConfig{RedactCredentials: true, RedactPII: true})
+
+		if _, exists := out.Attributes["password"]; exists {
+			t.Error("redacted copy should remove credentials")
+		}
+		if span.Attributes["password"] != "s3cr3t" {
+			t.Error("caller attributes were mutated")
+		}
+		if span.Events[0].Attributes["content"] != "user@test.org" {
+			t.Error("caller event attributes were mutated")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +422,42 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 			t.Errorf("Flush returned error: %v", err)
 		}
 	})
+}
+
+func TestOTelTracerExportsParentChildLinkage(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tr := &OTelTracer{
+		provider: provider,
+		tracer:   provider.Tracer("loom-test"),
+		privacy:  PrivacyConfig{RedactCredentials: true, RedactPII: true},
+	}
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.chat")
+	_, child := tr.StartSpan(parentCtx, "llm.completion")
+	tr.EndSpan(child)
+	tr.EndSpan(parent)
+
+	spans := exporter.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("exported spans = %d, want 2", len(spans))
+	}
+	var parentSpan, childSpan tracetest.SpanStub
+	for _, span := range spans {
+		switch span.Name {
+		case "agent.chat":
+			parentSpan = span
+		case "llm.completion":
+			childSpan = span
+		}
+	}
+	if childSpan.SpanContext.TraceID() != parentSpan.SpanContext.TraceID() {
+		t.Fatalf("child trace ID %s does not match parent %s", childSpan.SpanContext.TraceID(), parentSpan.SpanContext.TraceID())
+	}
+	if childSpan.Parent.SpanID() != parentSpan.SpanContext.SpanID() {
+		t.Fatalf("child parent ID %s does not match parent span ID %s", childSpan.Parent.SpanID(), parentSpan.SpanContext.SpanID())
+	}
 }
 
 // ---------------------------------------------------------------------------

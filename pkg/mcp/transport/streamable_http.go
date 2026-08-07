@@ -92,8 +92,10 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	t := &StreamableHTTPTransport{
-		endpoint:       config.Endpoint,
-		client:         &http.Client{},
+		endpoint: config.Endpoint,
+		client: &http.Client{Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}},
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -152,11 +154,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	// Add session ID if we have one
 	if sessionID := t.sessionMgr.GetSessionID(); sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
-	}
-
-	// Add custom headers (e.g., Authorization)
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
 	}
 
 	t.logger.Debug("Sending POST request",

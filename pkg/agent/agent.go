@@ -1566,18 +1566,6 @@ func (a *Agent) writeTaskDeps(b *strings.Builder, ctx context.Context, taskID st
 	}
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // truncateID returns the first 8 chars of an ID for compact display.
 func truncateID(id string) string {
 	if len(id) <= 8 {
@@ -1987,7 +1975,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", response.Content)
+	span.SetAttribute("response.preview", truncatePreview(response.Content))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
