@@ -181,7 +181,10 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 		usage.InputTokens = int(aws.ToInt32(output.Usage.InputTokens))
 		usage.OutputTokens = int(aws.ToInt32(output.Usage.OutputTokens))
 		usage.TotalTokens = int(aws.ToInt32(output.Usage.TotalTokens))
-		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+		usage.CacheReadInputTokens = int(aws.ToInt32(output.Usage.CacheReadInputTokens))
+		usage.CacheCreationInputTokens = int(aws.ToInt32(output.Usage.CacheWriteInputTokens))
+		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 	}
 
 	// Build response
