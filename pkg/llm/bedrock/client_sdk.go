@@ -183,9 +183,9 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 	}, nil
 }
 
-// Name returns the provider name.
+// Name returns the canonical provider name used in configuration.
 func (c *SDKClient) Name() string {
-	return "bedrock-sdk"
+	return "bedrock"
 }
 
 // Model returns the model identifier.
