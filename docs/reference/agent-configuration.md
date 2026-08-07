@@ -409,12 +409,23 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `65536` (64 KiB) | Byte threshold for offloading a tool result: `>0` offloads results of at least N bytes, `-1` selects the 64 KiB default. Only a non-zero value is applied, so `0` in YAML is indistinguishable from unset and leaves the agent on the 64 KiB default; the always-offload mode (threshold 0) is reachable only through the Go API `SetSharedMemoryThreshold`. |
+| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: compile-time offload bound (a current-turn tool result strictly over it renders as an offload stub), persist-time row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the compile/persist roles floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the compile-time bound at its default. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
 
-**Large tool results**: the same byte threshold governs both offload sites (the tool executor and the agent's result formatter). A result at or above it is stored by reference and replaced in the conversation with a preview plus a handle; the model recalls the full data with `query_tool_result`. Three tools are exempt and always enter whole regardless of size: `manage_skills` (its load body is delivered as its own message), `get_tool_result` and `query_tool_result` (re-offloading a recall tool would recurse).
+**Large tool results**: a result always enters the conversation whole — offload is a render condition of context compilation, not an arrival event. When a tool row's content is strictly over the threshold, the copy compiled for the LLM is replaced by a stub. In the producing turn this is the offload stub — tool name, estimated token figure, a 160-byte preview, and a `query_tool_result(message_id=…)` door (`sql=` for tabular payloads); `query_tool_result` resolves only within that turn, and every return is bounded at the same threshold. In later turns, and for rows evicted by memory-pressure relief, it is the evicted stub, whose only door is re-running the call. Rows are persisted truncated to a bounded core plus tail at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize results render the evicted stub.
+
+**Offload-exempt tools** (Go API only; no YAML field): `Agent.SetOffloadExemptTools(names []string)` names the tools whose current-turn results always render whole regardless of the threshold. Use it for tools whose full output is the product of the call — reference or lookup content the model must read inline in the turn it asked for it — where an offload stub would defeat the call.
+
+```go
+ag.SetOffloadExemptTools([]string{"reference_lookup", "get_syntax_help"})
+```
+
+- Each call replaces the whole set; `nil` or an empty slice clears it; empty-string names are skipped. No tools are exempt by default.
+- Applies to existing and future sessions. Also available on `Memory` and per-session `SegmentedMemory`. Safe for concurrent use.
+- Exemption is a render condition of the producing turn only: prior-turn oversize rows and relief-evicted rows still render the evicted stub, and the persist-time row bound is unchanged.
+- An exempt result counts at full size toward memory-pressure estimates; a very large exempt result spends a correspondingly large share of the producing turn's context window.
 
 ---
 
