@@ -506,6 +506,72 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	}
 }
 
+// ResolveAndRegister resolves a tool by EXACT name from the dynamic registry
+// and registers it, returning the registered tool. It is the on-demand form of
+// the Execute-time fallback (tryDynamicRegistration), but differs in two ways
+// that make it safe to drive from skill manifests:
+//
+//   - Exact-name match. tryDynamicRegistration takes the top fuzzy FTS hit;
+//     here a required-tool name that isn't indexed fails cleanly instead of
+//     silently mounting the nearest tool.
+//   - Server binding. When servers is non-empty, MCP resolution is restricted
+//     to those servers, so a bare name (execute_sql) is bound to the server the
+//     skill declared rather than resolved non-deterministically across servers.
+func (e *Executor) ResolveAndRegister(ctx context.Context, name string, servers []string) (Tool, error) {
+	if e.toolRegistry == nil {
+		return nil, fmt.Errorf("tool registry not configured")
+	}
+	resp, err := e.toolRegistry.Search(ctx, &loomv1.SearchToolsRequest{
+		Query:         name,
+		Mode:          loomv1.SearchMode_SEARCH_MODE_FAST,
+		MaxResults:    10,
+		IncludeSchema: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to search tool registry: %w", err)
+	}
+	match := exactToolMatch(resp.Results, name, servers)
+	if match == nil {
+		return nil, fmt.Errorf("no exact-name match for %q in declared servers %v", name, servers)
+	}
+	switch match.Source {
+	case loomv1.ToolSource_TOOL_SOURCE_MCP:
+		return e.registerMCPTool(ctx, match)
+	case loomv1.ToolSource_TOOL_SOURCE_BUILTIN:
+		return e.registerBuiltinTool(ctx, match)
+	case loomv1.ToolSource_TOOL_SOURCE_CUSTOM:
+		return nil, fmt.Errorf("custom tools not supported for dynamic registration")
+	default:
+		return nil, fmt.Errorf("unknown tool source: %v", match.Source)
+	}
+}
+
+// exactToolMatch returns the first indexed tool whose Name equals name exactly.
+// When servers is non-empty, an MCP result must also belong to one of those
+// servers; non-MCP results ignore the server filter.
+func exactToolMatch(results []*loomv1.ToolSearchResult, name string, servers []string) *loomv1.IndexedTool {
+	for _, r := range results {
+		ti := r.GetTool()
+		if ti == nil || ti.GetName() != name {
+			continue
+		}
+		if len(servers) > 0 && ti.GetSource() == loomv1.ToolSource_TOOL_SOURCE_MCP {
+			matched := false
+			for _, s := range servers {
+				if s == ti.GetMcpServer() {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		return ti
+	}
+	return nil
+}
+
 // registerMCPTool dynamically registers an MCP tool from the tool registry.
 func (e *Executor) registerMCPTool(ctx context.Context, toolInfo *loomv1.IndexedTool) (Tool, error) {
 	if e.mcpManager == nil {

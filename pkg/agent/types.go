@@ -108,6 +108,12 @@ type Agent struct {
 	// callers that drive it directly — the conversation loop does not.
 	skillOrchestrator *skills.Orchestrator
 	skillDiscovery    *discovery.Discovery
+	// skillMCPResolver, when set, resolves a skill-declared required tool by
+	// name (bounded to the skill's declared mcp_servers) and mounts it onto the
+	// agent. It lets a host runtime own MCP resolution — per-user auth, endpoint
+	// routing — that loom cannot perform itself. When nil, enforcement falls
+	// back to the executor's own dynamic resolver (ResolveAndRegister).
+	skillMCPResolver func(ctx context.Context, name string, servers []string) error
 	// skillTaskEmitter materializes tasks for newly-activated skills onto
 	// the agent's task board. nil means skill activations do not emit tasks
 	// (legacy behavior).

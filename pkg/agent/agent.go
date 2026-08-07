@@ -756,30 +756,27 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 		}
 		for _, name := range as.Skill.Tools.RequiredTools {
 			if !a.tools.IsRegistered(name) {
-				tool := builtin.ByName(name)
-				if tool == nil {
-					zap.L().Warn("skill required tool not available; skipping",
+				if tool := builtin.ByName(name); tool != nil {
+					a.tools.Register(tool)
+					zap.L().Debug("skill required tool auto-registered (builtin)",
 						zap.String("skill", as.Skill.Name),
 						zap.String("tool", name))
+				} else if err := a.resolveSkillTool(name, as.Skill.Tools.MCPServers); err != nil {
+					// Non-builtin (MCP/registry) tool that could not be
+					// resolved: warn and skip, matching the pre-existing
+					// degrade-not-fail contract — the turn continues without it.
+					zap.L().Warn("skill required tool not resolvable; skipping",
+						zap.String("skill", as.Skill.Name),
+						zap.String("tool", name),
+						zap.Strings("mcp_servers", as.Skill.Tools.MCPServers),
+						zap.Error(err))
 					continue
 				}
-				a.tools.Register(tool)
-				zap.L().Debug("skill required tool auto-registered",
-					zap.String("skill", as.Skill.Name),
-					zap.String("tool", name))
 			}
 			// Advertise the required tool into THIS session even when another
 			// session registered the definition first. Base tools are ignored
 			// by registerSessionTool, so requiring one never hides it elsewhere.
 			a.registerSessionTool(sessionID, name)
-		}
-		// Surface MCP-server requests so operators see when a skill has
-		// declared servers that aren't yet honored. Logged once per turn
-		// per skill rather than per server to avoid log spam.
-		if len(as.Skill.Tools.MCPServers) > 0 {
-			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
-				zap.String("skill", as.Skill.Name),
-				zap.Int("count", len(as.Skill.Tools.MCPServers)))
 		}
 	}
 }
@@ -1005,6 +1002,31 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 // GetDescription returns the agent description from configuration.
 func (a *Agent) GetDescription() string {
 	return a.config.Description
+}
+
+// SetSkillMCPResolver installs a host resolver for skill-declared MCP tools.
+// The host (e.g. the cloud runtime) owns MCP resolution — per-user auth,
+// endpoint routing — which loom cannot perform itself. Safe to call after
+// construction, once the host's accessible-server map is built. When unset,
+// enforceRequiredSkillTools falls back to the executor's own resolver.
+func (a *Agent) SetSkillMCPResolver(fn func(ctx context.Context, name string, servers []string) error) {
+	a.skillMCPResolver = fn
+}
+
+// resolveSkillTool mounts a non-builtin skill-required tool by name, bounded to
+// the skill's declared mcp_servers. A host resolver, if installed, owns
+// resolution; otherwise loom's executor resolves the tool from the dynamic tool
+// registry. Uses a background context: resolution is an index lookup plus a
+// cached MCP client, with no request-scoped cancellation to honor.
+func (a *Agent) resolveSkillTool(name string, servers []string) error {
+	if a.skillMCPResolver != nil {
+		return a.skillMCPResolver(context.Background(), name, servers)
+	}
+	if a.executor == nil {
+		return fmt.Errorf("no skill tool resolver available")
+	}
+	_, err := a.executor.ResolveAndRegister(context.Background(), name, servers)
+	return err
 }
 
 // GetConfig returns a copy of the agent configuration.
