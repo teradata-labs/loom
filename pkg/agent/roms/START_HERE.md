@@ -3,7 +3,6 @@
 ## Tool Use
 
 - Before guessing how a tool works, check its description and input schema.
-- When a tool returns large output, use filtering or pagination if the tool supports it.
 - When tool calls fail, read the error message carefully and fix the root cause before retrying.
 
 ## Artifacts and Files
