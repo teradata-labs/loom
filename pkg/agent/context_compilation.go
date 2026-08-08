@@ -100,7 +100,11 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 			(m.Role == "assistant" && hasQueryToolResultCall(m))) {
 			frozen = true
 		}
-		if !frozen {
+		// Advance only onto messages that can carry a wire cache marker: a
+		// text-empty message (an assistant tool-call shell) gets no
+		// cache_control from the provider clients, so parking the breakpoint
+		// there silently uncaches the entire prefix for the rest of the turn.
+		if !frozen && out[len(out)-1].Content != "" {
 			lastStable = len(out) - 1
 		}
 	}
