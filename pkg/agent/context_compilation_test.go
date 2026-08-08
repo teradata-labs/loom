@@ -92,7 +92,12 @@ func TestCompile_OffloadStubForCurrentTurnOversizeResult(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(offloadStubFormat, "web_search", tokenFigure(len(big)), int64(42), "", previewOf(big))
+	meta, tabular := previewMeta(big)
+	format := offloadStubOpaqueFormat
+	if tabular {
+		format = offloadStubFormat
+	}
+	want := fmt.Sprintf(format, "web_search", tokenFigure(len(big)), int64(42), "", meta)
 	assert.Equal(t, want, rendered, "the §5.5 offload stub, byte-exact")
 }
 
@@ -127,7 +132,8 @@ func TestCompile_LegacyOversizePriorTurnRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "execute_sql", tokenFigure(len(big)), "", previewOf(big))
+	evMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "execute_sql", tokenFigure(len(big)), "", evMeta)
 	assert.Equal(t, want, rendered, "a legacy unbounded prior-turn row renders the evicted stub")
 }
 
@@ -597,4 +603,54 @@ func TestPressureMarks_PenaltyNeverGoesNegative(t *testing.T) {
 		"the recovery start mark must stay positive")
 	assert.LessOrEqual(t, sm.releaseMarkLocked(pressureRecoveryPenalty), sm.startMarkLocked(pressureRecoveryPenalty),
 		"the band must not invert under the penalty")
+}
+
+// --- §5.5: previewMeta — metadata-shaped stub previews -----------------------
+
+func TestPreviewMeta_TabularEnvelope(t *testing.T) {
+	content := `{"ok":true,"columns":["DataBaseName","TableName"],"rows":[["agentic_demo","t1"],["agentic_demo","t2"]],"row_count":2,"total_row_count":1004}`
+	meta, tabular := previewMeta(content)
+	assert.True(t, tabular, "the drain envelope is tabular — the sql door applies")
+	assert.Contains(t, meta, "columns: [DataBaseName, TableName]")
+	assert.Contains(t, meta, "rows: 2 of 1004", "partial payloads state N of M — the you-have-not-seen-this signal")
+	assert.Contains(t, meta, `sample: ["agentic_demo","t1"]`)
+}
+
+func TestPreviewMeta_UniformObjects(t *testing.T) {
+	content := `[{"b":1,"a":"x"},{"b":2,"a":"y"}]`
+	meta, tabular := previewMeta(content)
+	assert.True(t, tabular)
+	assert.Contains(t, meta, "columns: [a, b]", "object-array columns are sorted — byte-stable")
+	assert.Contains(t, meta, "rows: 2")
+}
+
+func TestPreviewMeta_JSONShape(t *testing.T) {
+	content := `{"jobs":[1,2,3],"status":"ok","meta":{"a":1,"b":2}}`
+	meta, tabular := previewMeta(content)
+	assert.False(t, tabular, "non-tabular JSON gets no sql door")
+	assert.Contains(t, meta, "shape: {jobs: [3 items], meta: {2 keys}, status: str}",
+		"sorted keys, kinds not values")
+}
+
+func TestPreviewMeta_OpaqueTextHeadAndTail(t *testing.T) {
+	content := strings.Repeat("log line about nothing\n", 100) + "FATAL: the actual conclusion"
+	meta, tabular := previewMeta(content)
+	assert.False(t, tabular)
+	assert.Contains(t, meta, "preview: log line")
+	assert.Contains(t, meta, "tail:", "conclusions live at the end of opaque text")
+	assert.Contains(t, meta, "the actual conclusion")
+}
+
+func TestPreviewMeta_Deterministic(t *testing.T) {
+	contents := []string{
+		`{"ok":true,"columns":["c"],"rows":[[1]],"total_row_count":50}`,
+		`{"z":1,"a":{"n":true},"list":[1,2]}`,
+		strings.Repeat("opaque ", 200),
+	}
+	for _, c := range contents {
+		m1, t1 := previewMeta(c)
+		m2, t2 := previewMeta(c)
+		assert.Equal(t, m1, m2, "previewMeta must be byte-stable across compiles (cache safety)")
+		assert.Equal(t, t1, t2)
+	}
 }

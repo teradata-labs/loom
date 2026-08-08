@@ -45,12 +45,20 @@ type summaryState struct {
 const syntheticFailedResult = "[no result recorded — the call did not complete. Re-run it if needed.]"
 
 // offloadStubFormat is the normative offload stub of HLD §5.5 — a turn=T result
-// strictly over the threshold; the payload is in memory and queryable.
-const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n preview: %s]"
+// strictly over the threshold; the payload is in memory and queryable. The sql
+// door is advertised only for tabular payloads (offloadStubOpaqueFormat
+// otherwise) — the stub must never invite a door that errors. The final %s is
+// previewMeta's line: schema/shape metadata, not a data slice — a data preview
+// invites answering from the fragment instead of opening the door.
+const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n %s]"
+
+// offloadStubOpaqueFormat is the offload stub for non-tabular payloads: same
+// doors minus sql=, which tabularPayload would refuse.
+const offloadStubOpaqueFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it.%s\n %s]"
 
 // evictedStubFormat is the normative evicted stub of HLD §5.5 — evicted=true or
 // legacy oversize; the only door is re-run.
-const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n preview: %s]"
+const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n %s]"
 
 // compileLocked is ContextCompilation §5.2 steps 1–7: KERNEL rides the provider
 // tools parameter (its bytes are counted via kernelBytes); ROM; the summary's
@@ -199,21 +207,27 @@ func (sm *SegmentedMemory) offloadStub(m *Message, callName map[string]string) s
 	if id <= 0 {
 		return sm.evictedStub(m, callName)
 	}
-	return fmt.Sprintf(offloadStubFormat,
+	meta, tabular := previewMeta(m.Content)
+	format := offloadStubOpaqueFormat
+	if tabular {
+		format = offloadStubFormat
+	}
+	return fmt.Sprintf(format,
 		stubToolName(m, callName),
 		tokenFigure(len(m.Content)),
 		id,
 		harvestTails(m.Content),
-		previewOf(m.Content))
+		meta)
 }
 
 // evictedStub renders the §5.5 evicted stub.
 func (sm *SegmentedMemory) evictedStub(m *Message, callName map[string]string) string {
+	meta, _ := previewMeta(m.Content)
 	return fmt.Sprintf(evictedStubFormat,
 		stubToolName(m, callName),
 		tokenFigure(len(m.Content)),
 		harvestTails(m.Content),
-		previewOf(m.Content))
+		meta)
 }
 
 // stubToolName resolves the producing call's tool name via the paired
@@ -249,6 +263,12 @@ func harvestTails(content string) string {
 // every whitespace run collapsed to a single space, cut backward to a rune
 // boundary (whole runes are appended, so no rune is ever split).
 func previewOf(content string) string {
+	return collapseTo(content, 160)
+}
+
+// collapseTo is previewOf's engine at an arbitrary byte cap: whitespace runs
+// collapse to one space, whole runes only.
+func collapseTo(content string, max int) string {
 	var b strings.Builder
 	lastSpace := false
 	for _, r := range content {
@@ -263,12 +283,101 @@ func previewOf(content string) string {
 			lastSpace = false
 			s = string(r)
 		}
-		if b.Len()+len(s) > 160 {
+		if b.Len()+len(s) > max {
 			break
 		}
 		b.WriteString(s)
 	}
 	return b.String()
+}
+
+// previewMeta renders the stub's preview line as METADATA, not data: schema for
+// tabular payloads, a shape sketch for other JSON, head+tail for opaque text.
+// The preview's job is to let the model decide whether and how to open the
+// door (query_tool_result), not to feel like the data — a data slice invites
+// answering from the fragment, recreating the truncated-but-looks-whole state
+// this design exists to eliminate. Pure function of content: byte-stable
+// across compiles, so it can never disturb the provider prompt cache.
+// The bool reports whether the payload is tabular (the sql= door applies).
+func previewMeta(content string) (string, bool) {
+	if columns, rows, err := tabularPayload(content); err == nil {
+		count := fmt.Sprintf("%d", len(rows))
+		var envelope struct {
+			TotalRowCount int `json:"total_row_count"`
+		}
+		if json.Unmarshal([]byte(content), &envelope) == nil && envelope.TotalRowCount > len(rows) {
+			count = fmt.Sprintf("%d of %d", len(rows), envelope.TotalRowCount)
+		}
+		sample := ""
+		if len(rows) > 0 {
+			if b, err := json.Marshal(rows[0]); err == nil {
+				sample = " · sample: " + collapseTo(string(b), 200)
+			}
+		}
+		return fmt.Sprintf("columns: [%s] · rows: %s%s",
+			collapseTo(strings.Join(columns, ", "), 300), count, sample), true
+	}
+	var v interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &v); err == nil {
+		return "shape: " + jsonSketch(v), false
+	}
+	line := "preview: " + collapseTo(content, 300)
+	if len(content) > 600 {
+		// collapseTo keeps the head of its input, so slice exactly the tail;
+		// collapsing only shrinks, so the whole slice always fits the cap.
+		line += " … tail: " + collapseTo(content[len(content)-200:], 200)
+	}
+	return line, false
+}
+
+// jsonSketch renders a one-level shape sketch of a parsed JSON value — sorted
+// keys with value kinds, array lengths, nested sizes; never values. Sorted
+// iteration keeps the sketch byte-stable (cache safety).
+func jsonSketch(v interface{}) string {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for i, k := range keys {
+			if i == 8 {
+				parts = append(parts, "…")
+				break
+			}
+			parts = append(parts, k+": "+jsonKind(t[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	case []interface{}:
+		if len(t) == 0 {
+			return "[0 items]"
+		}
+		return fmt.Sprintf("[%d items of %s]", len(t), jsonKind(t[0]))
+	default:
+		return jsonKind(v)
+	}
+}
+
+// jsonKind names a JSON value's kind for the sketch.
+func jsonKind(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return "str"
+	case float64:
+		return "num"
+	case bool:
+		return "bool"
+	case nil:
+		return "null"
+	case []interface{}:
+		return fmt.Sprintf("[%d items]", len(t))
+	case map[string]interface{}:
+		return fmt.Sprintf("{%d keys}", len(t))
+	default:
+		return "value"
+	}
 }
 
 // --- estimate & target (HLD §5.1) -------------------------------------------
