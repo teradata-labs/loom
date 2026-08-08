@@ -26,6 +26,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// AC1: RespondToRequest is a member of the HumanRequestStore interface, and the
+// in-memory store satisfies that interface at build time. This assignment fails
+// to compile if the method is dropped from the interface or from the store.
+var _ HumanRequestStore = (*InMemoryHumanRequestStore)(nil)
+
 func TestContactHumanTool_Metadata(t *testing.T) {
 	tool := NewContactHumanTool(ContactHumanConfig{})
 
@@ -287,9 +292,10 @@ func TestInMemoryHumanRequestStore(t *testing.T) {
 
 	t.Run("Update", func(t *testing.T) {
 		req := &HumanRequest{
-			ID:       "test-update",
-			Status:   "pending",
-			Question: "Original question",
+			ID:        "test-update",
+			Status:    "pending",
+			ExpiresAt: time.Now().Add(time.Hour),
+			Question:  "Original question",
 		}
 
 		err := store.Store(ctx, req)
@@ -313,8 +319,8 @@ func TestInMemoryHumanRequestStore(t *testing.T) {
 		store = NewInMemoryHumanRequestStore()
 
 		// Add pending and non-pending requests
-		require.NoError(t, store.Store(ctx, &HumanRequest{ID: "pending-1", Status: "pending"}))
-		require.NoError(t, store.Store(ctx, &HumanRequest{ID: "pending-2", Status: "pending"}))
+		require.NoError(t, store.Store(ctx, &HumanRequest{ID: "pending-1", Status: "pending", ExpiresAt: time.Now().Add(time.Hour)}))
+		require.NoError(t, store.Store(ctx, &HumanRequest{ID: "pending-2", Status: "pending", ExpiresAt: time.Now().Add(time.Hour)}))
 		require.NoError(t, store.Store(ctx, &HumanRequest{ID: "approved-1", Status: "approved"}))
 
 		pending, err := store.ListPending(ctx)
@@ -345,12 +351,16 @@ func TestInMemoryHumanRequestStore(t *testing.T) {
 		assert.Len(t, session2Reqs, 1)
 	})
 
+	// AC2: resolving a pending, non-expired request stamps
+	// status/responded_by/responded_at/response exactly once.
 	t.Run("RespondToRequest", func(t *testing.T) {
 		store = NewInMemoryHumanRequestStore()
 
+		now := time.Now()
 		req := &HumanRequest{
-			ID:     "respond-test",
-			Status: "pending",
+			ID:        "respond-test",
+			Status:    "pending",
+			ExpiresAt: now.Add(5 * time.Minute),
 		}
 		err := store.Store(ctx, req)
 		require.NoError(t, err)
@@ -377,20 +387,56 @@ func TestInMemoryHumanRequestStore(t *testing.T) {
 		assert.Contains(t, err.Error(), "not found")
 	})
 
-	t.Run("RespondToRequest_AlreadyResponded", func(t *testing.T) {
+	// AC3: a second respond on an already-decided row is a no-op that returns nil
+	// (not an error) and does not mutate the row — the original outcome stands.
+	t.Run("RespondToRequest_AlreadyDecidedIsNoOp", func(t *testing.T) {
 		store = NewInMemoryHumanRequestStore()
 
+		now := time.Now()
 		req := &HumanRequest{
-			ID:     "already-responded",
-			Status: "approved",
+			ID:        "already-responded",
+			Status:    "pending",
+			ExpiresAt: now.Add(5 * time.Minute),
 		}
 		err := store.Store(ctx, req)
 		require.NoError(t, err)
 
-		// Try to respond again
-		err = store.RespondToRequest(ctx, "already-responded", "rejected", "No", "test@example.com", nil)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "already responded")
+		// Resolve once.
+		err = store.RespondToRequest(ctx, "already-responded", "approved", "Yes", "alice@example.com", nil)
+		require.NoError(t, err)
+
+		// A conflicting second response is a no-op: nil, first outcome preserved.
+		err = store.RespondToRequest(ctx, "already-responded", "rejected", "No", "bob@example.com", nil)
+		require.NoError(t, err)
+
+		unchanged, err := store.Get(ctx, "already-responded")
+		require.NoError(t, err)
+		assert.Equal(t, "approved", unchanged.Status)
+		assert.Equal(t, "Yes", unchanged.Response)
+		assert.Equal(t, "alice@example.com", unchanged.RespondedBy)
+	})
+
+	// AC4: respond on a request whose ExpiresAt is already past does not resolve
+	// it and returns nil (not an error); the row stays pending.
+	t.Run("RespondToRequest_ExpiredIsNoOp", func(t *testing.T) {
+		store = NewInMemoryHumanRequestStore()
+
+		now := time.Now()
+		req := &HumanRequest{
+			ID:        "expired",
+			Status:    "pending",
+			ExpiresAt: now.Add(-1 * time.Minute),
+		}
+		err := store.Store(ctx, req)
+		require.NoError(t, err)
+
+		err = store.RespondToRequest(ctx, "expired", "approved", "Yes", "alice@example.com", nil)
+		require.NoError(t, err)
+
+		unresolved, err := store.Get(ctx, "expired")
+		require.NoError(t, err)
+		assert.Equal(t, "pending", unresolved.Status)
+		assert.Empty(t, unresolved.RespondedBy)
 	})
 }
 
@@ -409,9 +455,10 @@ func TestInMemoryHumanRequestStore_Concurrent(t *testing.T) {
 				defer func() { done <- true }()
 
 				req := &HumanRequest{
-					ID:       fmt.Sprintf("concurrent-%d", id),
-					Status:   "pending",
-					Question: fmt.Sprintf("Question %d", id),
+					ID:        fmt.Sprintf("concurrent-%d", id),
+					Status:    "pending",
+					ExpiresAt: time.Now().Add(time.Hour),
+					Question:  fmt.Sprintf("Question %d", id),
 				}
 
 				err := store.Store(ctx, req)
@@ -436,8 +483,9 @@ func TestInMemoryHumanRequestStore_Concurrent(t *testing.T) {
 
 		// Store a request
 		req := &HumanRequest{
-			ID:     "read-test",
-			Status: "pending",
+			ID:        "read-test",
+			Status:    "pending",
+			ExpiresAt: time.Now().Add(time.Hour),
 		}
 		err := store.Store(ctx, req)
 		require.NoError(t, err)
@@ -468,8 +516,9 @@ func TestInMemoryHumanRequestStore_Concurrent(t *testing.T) {
 
 		// Initial request
 		req := &HumanRequest{
-			ID:     "rw-test",
-			Status: "pending",
+			ID:        "rw-test",
+			Status:    "pending",
+			ExpiresAt: time.Now().Add(time.Hour),
 		}
 		err := store.Store(ctx, req)
 		require.NoError(t, err)
@@ -482,8 +531,9 @@ func TestInMemoryHumanRequestStore_Concurrent(t *testing.T) {
 				defer func() { done <- true }()
 
 				newReq := &HumanRequest{
-					ID:     fmt.Sprintf("rw-test-%d", id),
-					Status: "pending",
+					ID:        fmt.Sprintf("rw-test-%d", id),
+					Status:    "pending",
+					ExpiresAt: time.Now().Add(time.Hour),
 				}
 				_ = store.Store(ctx, newReq)
 			}(i)
@@ -555,4 +605,132 @@ func TestJSONNotifier(t *testing.T) {
 	err := notifier.Notify(ctx, req)
 	assert.NoError(t, err)
 	assert.True(t, received, "Webhook should have been called")
+}
+
+// Findings 16/17 — store law: a zero expiry means "no expiry" (the row stays
+// resolvable), and a terminal "timeout" write closes an already-expired row.
+// Round-3 finding 9 — the resolve-once + expiry guarantee is the STORE's own,
+// not a function of the caller's payload: no status value can lift the expiry
+// guard, a pending row cannot be stored without an expiry, and terminal closes
+// past expiry go through the dedicated ExpireRequest path only.
+func TestRespondToRequest_StoreOwnedExpiryGuard_InMemory(t *testing.T) {
+	store := NewInMemoryHumanRequestStore()
+
+	noExpiry := &HumanRequest{ID: "r1", SessionID: "s", Status: "pending"}
+	require.Error(t, store.Store(context.Background(), noExpiry),
+		"a pending row with no expiry would be permanently approvable — the store must refuse it")
+
+	expired := &HumanRequest{ID: "r2", SessionID: "s", Status: "pending",
+		ExpiresAt: time.Now().Add(-time.Minute)}
+	require.NoError(t, store.Store(context.Background(), expired))
+	require.NoError(t, store.RespondToRequest(context.Background(), "r2", "approved", "", "human", nil))
+	got, err := store.Get(context.Background(), "r2")
+	require.NoError(t, err)
+	require.Equal(t, "pending", got.Status, "an expired row cannot be resolved")
+	require.NoError(t, store.RespondToRequest(context.Background(), "r2", "timeout", "", "attacker", nil))
+	got, err = store.Get(context.Background(), "r2")
+	require.NoError(t, err)
+	require.Equal(t, "pending", got.Status,
+		"the caller-supplied status must not decide whether the expiry guard applies")
+	require.NoError(t, store.ExpireRequest(context.Background(), "r2", "system:expiry"))
+	got, err = store.Get(context.Background(), "r2")
+	require.NoError(t, err)
+	require.Equal(t, "timeout", got.Status, "ExpireRequest is the one path that closes an expired row")
+	require.Equal(t, "system:expiry", got.RespondedBy)
+
+	// Closing is not resolving: ExpireRequest must never overwrite a decision.
+	live := &HumanRequest{ID: "r3", SessionID: "s", Status: "pending",
+		ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, store.Store(context.Background(), live))
+	require.NoError(t, store.RespondToRequest(context.Background(), "r3", "approved", "yes", "human", nil))
+	require.NoError(t, store.ExpireRequest(context.Background(), "r3", "system:expiry"))
+	got, err = store.Get(context.Background(), "r3")
+	require.NoError(t, err)
+	require.Equal(t, "approved", got.Status)
+	require.Equal(t, "human", got.RespondedBy)
+}
+
+// The contact_human window obeys the same ceiling: a model-chosen
+// timeout_seconds cannot stretch a question's row past the turn deadline.
+func TestContactHuman_TimeoutCeilingAtTurnDeadline(t *testing.T) {
+	store := NewInMemoryHumanRequestStore()
+	tool := NewContactHumanTool(ContactHumanConfig{
+		Store:        store,
+		Notifier:     &NoOpNotifier{},
+		PollInterval: 5 * time.Millisecond,
+	})
+
+	deadline := time.Now().Add(6 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	go func() {
+		_, _ = tool.Execute(ctx, map[string]interface{}{
+			"question":        "proceed?",
+			"timeout_seconds": float64(86400), // a day, model-chosen
+		})
+	}()
+
+	var hr *HumanRequest
+	require.Eventually(t, func() bool {
+		pending, err := store.ListPending(context.Background())
+		if err != nil || len(pending) == 0 {
+			return false
+		}
+		hr = pending[0]
+		return true
+	}, 5*time.Second, 5*time.Millisecond)
+	cancel()
+
+	require.False(t, hr.ExpiresAt.After(deadline.Add(time.Second)),
+		"a model-chosen window must be ceilinged at the turn deadline")
+}
+
+// questionAbsentStore reports every row absent, postgres-style.
+type questionAbsentStore struct{ *InMemoryHumanRequestStore }
+
+func (s *questionAbsentStore) Get(ctx context.Context, id string) (*HumanRequest, error) {
+	return nil, nil
+}
+
+func TestContactHuman_WaitSurvivesAbsentRow(t *testing.T) {
+	store := &questionAbsentStore{NewInMemoryHumanRequestStore()}
+	tool := NewContactHumanTool(ContactHumanConfig{
+		Store:        store,
+		Notifier:     &NoOpNotifier{},
+		Timeout:      200 * time.Millisecond,
+		PollInterval: 5 * time.Millisecond,
+	})
+
+	// Must not panic; times out and reports failure.
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"question": "still there?",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.Error, "an absent row is a timeout, not a panic")
+}
+
+func TestContactHuman_KindStampOverridesModelValue(t *testing.T) {
+	store := NewInMemoryHumanRequestStore()
+	tool := NewContactHumanTool(ContactHumanConfig{
+		Store:        store,
+		Notifier:     &NoOpNotifier{},
+		Timeout:      100 * time.Millisecond,
+		PollInterval: 5 * time.Millisecond,
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]interface{}{
+		"question": "may I?",
+		"context":  map[string]interface{}{"kind": "approval", "note": "model-authored"},
+	})
+	require.NoError(t, err)
+
+	pending, err := store.ListPending(context.Background())
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, "question", pending[0].Context["kind"],
+		"the harness stamps the origin discriminator over any model-supplied value")
+	assert.Equal(t, "model-authored", pending[0].Context["note"],
+		"the rest of the model's context payload survives")
 }

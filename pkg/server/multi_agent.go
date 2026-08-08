@@ -600,9 +600,15 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 	defer s.mu.Unlock()
 
 	// Check if agent exists using GUID
-	if _, ok := s.agents[agentGUID]; !ok {
+	old, ok := s.agents[agentGUID]
+	if !ok {
 		return fmt.Errorf("agent not found: %s (GUID: %s)", id, agentGUID)
 	}
+
+	// Carry the outgoing agent's approved set onto its replacement: the set is
+	// session-keyed authorization state and sessions survive a reload, so a
+	// swap that discarded it would deny statements a human already approved.
+	ag.AdoptApprovedSet(old.ApprovedSet())
 
 	// Atomic swap using GUID key
 	s.agents[agentGUID] = ag
@@ -1076,6 +1082,18 @@ func (s *MultiAgentServer) agentDisplayName(agentID string) string {
 	return agentID
 }
 
+// turnIdentityContext returns a context detached from the caller's
+// cancellation and deadline that carries ONLY its tenant identity. Background
+// worker goroutines must outlive the request context that spawned them, but
+// the agent turns they drive still reach tenant-scoped stores — the postgres
+// HITL store refuses any operation with no user id in context, which would
+// instantly deny every held tool call on a background-driven turn. On a
+// SQLite deployment the identity is empty and the context behaves exactly like
+// context.Background().
+func turnIdentityContext(ctx context.Context) context.Context {
+	return postgres.ContextWithUserID(context.Background(), postgres.UserIDFromContext(ctx))
+}
+
 func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinatorAgent *agent.Agent, coordinatorID, sessionID string) error {
 	if s.logger != nil {
 		s.logger.Debug("spawnWorkflowSubAgents called",
@@ -1313,8 +1331,15 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	// Register coordinator for event-driven message notifications
 	coordinatorNotifyChan := make(chan struct{}, 10)
 
+	// Worker goroutines must outlive the request context, but the turns they
+	// drive still reach tenant-scoped stores — the postgres HITL store refuses
+	// any operation with no user id in context, which would deny every held
+	// tool call in microseconds. So every detached worker context derives from
+	// the spawning request's identity, never from a bare context.Background().
+	turnIdentityCtx := turnIdentityContext(ctx)
+
 	// Create context for coordinator notification handler lifecycle
-	coordinatorCtx, coordinatorCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+	coordinatorCtx, coordinatorCancel := context.WithCancel(turnIdentityCtx) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	// Use composite key: sessionID:agentID to allow multiple concurrent workflow sessions
 	coordinatorKey := fmt.Sprintf("%s:%s", sessionID, coordinatorID)
@@ -1353,7 +1378,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				// This makes sub-agent responses visible in the session and triggers coordinator to process them
 
 				// Dequeue message to get actual content
-				queueMsg, err := s.messageQueue.Dequeue(context.Background(), coordinatorID) // #nosec -- intentional: background worker goroutine that must outlive request context
+				queueMsg, err := s.messageQueue.Dequeue(turnIdentityCtx, coordinatorID) // #nosec -- intentional: background worker goroutine that must outlive request context
 				if err != nil {
 					s.logger.Warn("Failed to dequeue message for coordinator",
 						zap.String("coordinator", coordinatorID),
@@ -1402,7 +1427,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				// This triggers the coordinator to process the sub-agent's response and generate a synthesis
 				s.logger.Info("Coordinator calling Chat() for sub-agent response",
 					zap.String("coordinator", coordinatorID))
-				_, err = coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt) // #nosec -- intentional: background worker goroutine that must outlive request context
+				_, err = coordinatorAgent.Chat(turnIdentityCtx, sessionID, injectedPrompt) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 				s.logger.Info("Coordinator Chat() completed",
 					zap.String("coordinator", coordinatorID),
 					zap.Bool("has_error", err != nil))
@@ -1420,7 +1445,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				}
 
 				// Acknowledge the message
-				if ackErr := s.messageQueue.Acknowledge(context.Background(), queueMsg.ID); ackErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
+				if ackErr := s.messageQueue.Acknowledge(turnIdentityCtx, queueMsg.ID); ackErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
 					s.logger.Warn("Failed to acknowledge message",
 						zap.String("message_id", queueMsg.ID),
 						zap.Error(ackErr))
@@ -1443,7 +1468,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgentSessionID := GenerateSessionID()
 
 		// Create context for sub-agent lifecycle
-		subAgentCtx, cancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+		subAgentCtx, cancel := context.WithCancel(turnIdentityCtx) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 
 		// Create notification channel for event-driven message handling
 		notifyChan := make(chan struct{}, 10) // Buffered to avoid blocking monitor
@@ -1567,7 +1592,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				ctx.notifyChannels = notifyChannels
 
 				var broadcastCancel context.CancelFunc
-				broadcastCtx, broadcastCancel = context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+				broadcastCtx, broadcastCancel = context.WithCancel(turnIdentityCtx) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 				ctx.broadcastCancelFunc = broadcastCancel
 				ctx.broadcastNotifyChan = make(chan struct{}, 10)
 			}
@@ -1756,8 +1781,10 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 			return
 		}
 
-		// Inject message
-		_, err := coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt)
+		// Inject message on a context carrying the worker's tenant identity but
+		// not its cancellation, so a worker shutdown cannot kill a turn mid-flight
+		// while tenant-scoped stores (the postgres HITL store) stay reachable.
+		_, err := coordinatorAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
 
 		// Release semaphore
 		<-s.llmSemaphore
@@ -1890,8 +1917,9 @@ done:
 			return
 		}
 
-		// Inject message
-		_, err := subAgent.Chat(context.Background(), sessionID, injectedPrompt)
+		// Inject message on a context carrying the worker's tenant identity but
+		// not its cancellation (see processCoordinatorBroadcastMessages).
+		_, err := subAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
 
 		// Release semaphore
 		<-s.llmSemaphore
@@ -2079,7 +2107,7 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	notifyChan := make(chan struct{}, 10)
 
 	// Create context for sub-agent lifecycle
-	subAgentCtx, cancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+	subAgentCtx, cancel := context.WithCancel(turnIdentityContext(ctx)) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 
 	// Use special composite key for auto-spawned agents: "auto:agentID"
 	// This allows us to track them separately from coordinator-spawned agents

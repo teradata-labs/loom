@@ -27,6 +27,8 @@ import (
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/storage/postgres"
 )
 
 var hitlCmd = &cobra.Command{
@@ -120,7 +122,8 @@ var (
 	hitlMessage     string
 	hitlData        string
 	hitlRespondedBy string
-	hitlDBPath      string
+	hitlCLIDBPath   string
+	hitlUser        string
 )
 
 func init() {
@@ -131,22 +134,56 @@ func init() {
 
 	defaultHITLDB := filepath.Join(loomconfig.GetLoomDataDir(), "hitl.db")
 
+	// Every subcommand opens the SAME store the server writes: the configured
+	// storage backend on postgres, the node-local hitl.db on SQLite. --db is a
+	// SQLite-only override; --user selects the tenant on postgres.
+	for _, c := range []*cobra.Command{hitlListCmd, hitlShowCmd, hitlRespondCmd} {
+		c.Flags().StringVar(&hitlCLIDBPath, "db", defaultHITLDB, "Path to HITL SQLite database (SQLite backend only)")
+		c.Flags().StringVar(&hitlUser, "user", "", "Tenant user ID whose requests to operate on (required on the postgres backend)")
+	}
+
 	// List command flags
 	hitlListCmd.Flags().StringVar(&hitlSessionID, "session", "", "Filter by session ID")
 	hitlListCmd.Flags().StringVar(&hitlAgentID, "agent", "", "Filter by agent ID")
-	hitlListCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
-
-	// Show command flags
-	hitlShowCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
 
 	// Respond command flags
 	hitlRespondCmd.Flags().StringVar(&hitlStatus, "status", "approved", "Response status (approved, rejected, responded)")
 	hitlRespondCmd.Flags().StringVar(&hitlMessage, "message", "", "Response message (required)")
 	hitlRespondCmd.Flags().StringVar(&hitlData, "data", "", "Response data as JSON (optional)")
 	hitlRespondCmd.Flags().StringVar(&hitlRespondedBy, "by", "", "Who is responding (default: current user)")
-	hitlRespondCmd.Flags().StringVar(&hitlDBPath, "db", defaultHITLDB, "Path to HITL SQLite database")
 
 	_ = hitlRespondCmd.MarkFlagRequired("message")
+}
+
+// openHITLStore opens the store `looms serve` raises holds in, switching on
+// the SAME config the server switches on: the configured storage backend when
+// it is postgres, the node-local SQLite hitl.db otherwise. Postgres operations
+// are tenant-scoped, so that branch requires --user and returns a context
+// carrying it; the operator explicitly names whose holds they admit. The
+// returned close func releases the store.
+func openHITLStore(ctx context.Context, tracer observability.Tracer) (shuttle.HumanRequestStore, func(), context.Context, error) {
+	if config != nil && config.Storage.Backend == "postgres" {
+		if hitlUser == "" {
+			return nil, nil, ctx, fmt.Errorf("the storage backend is postgres: --user is required (it selects the tenant whose requests you operate on)")
+		}
+		storageBackend, err := backend.NewStorageBackend(ctx, config.BuildProtoStorageConfig(), tracer)
+		if err != nil {
+			return nil, nil, ctx, fmt.Errorf("failed to open storage backend: %w", err)
+		}
+		return storageBackend.HumanRequestStore(),
+			func() { _ = storageBackend.Close() },
+			postgres.ContextWithUserID(ctx, hitlUser),
+			nil
+	}
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+		Path:   hitlCLIDBPath,
+		Tracer: tracer,
+	})
+	if err != nil {
+		return nil, nil, ctx, fmt.Errorf("failed to open database: %w", err)
+	}
+	return store, func() { _ = store.Close() }, ctx, nil
 }
 
 // createTracerFromConfig creates a tracer based on the global config.
@@ -186,18 +223,14 @@ func runHitlList(cmd *cobra.Command, args []string) {
 		span.SetAttribute("agent_id", hitlAgentID)
 	}
 
-	// Open SQLite store
-	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
-		Path:   hitlDBPath,
-		Tracer: tracer,
-	})
+	store, closeStore, ctx, err := openHITLStore(ctx, tracer)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = store.Close() }()
+	defer closeStore()
 
 	var requests []*shuttle.HumanRequest
 	if hitlSessionID != "" {
@@ -276,23 +309,23 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 
 	span.SetAttribute("request_id", requestID)
 
-	// Open SQLite store
-	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
-		Path:   hitlDBPath,
-		Tracer: tracer,
-	})
+	store, closeStore, ctx, err := openHITLStore(ctx, tracer)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = store.Close() }()
+	defer closeStore()
 
 	req, err := store.Get(ctx, requestID)
-	if err != nil {
-		span.RecordError(err)
+	if err != nil || req == nil {
 		span.SetAttribute("success", false)
+		if err == nil {
+			// The postgres store reports an absent row as (nil, nil).
+			err = fmt.Errorf("request not found: %s", requestID)
+		}
+		span.RecordError(err)
 		fmt.Fprintf(os.Stderr, "Error retrieving request: %v\n", err)
 		os.Exit(1)
 	}
@@ -362,18 +395,26 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	span.SetAttribute("request_id", requestID)
 	span.SetAttribute("status", hitlStatus)
 
-	// Open SQLite store
-	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
-		Path:   hitlDBPath,
-		Tracer: tracer,
-	})
+	// Validate --status before touching the store: the store writes the literal
+	// verbatim and the resolver admits only the exact literal "approved", so a
+	// mistyped status (e.g. "Approved") would be durably recorded yet DENY the
+	// held call with the operator's approval message as the deny reason.
+	switch hitlStatus {
+	case "approved", "rejected", "responded":
+	default:
+		span.SetAttribute("success", false)
+		fmt.Fprintf(os.Stderr, "Error: invalid --status %q (must be approved, rejected, or responded)\n", hitlStatus)
+		os.Exit(1)
+	}
+
+	store, closeStore, ctx, err := openHITLStore(ctx, tracer)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = store.Close() }()
+	defer closeStore()
 
 	// Parse response data if provided
 	var responseData map[string]interface{}
@@ -395,7 +436,9 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 
 	span.SetAttribute("responded_by", respondedBy)
 
-	// Respond to request
+	// Respond to request. The store's conditional write is a deliberate no-op
+	// for an already-decided or expired request, so success is judged by
+	// reading the row back — never by the write returning nil.
 	err = store.RespondToRequest(ctx, requestID, hitlStatus, hitlMessage, respondedBy, responseData)
 	if err != nil {
 		span.RecordError(err)
@@ -404,11 +447,35 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	after, err := store.Get(ctx, requestID)
+	if err != nil || after == nil {
+		span.SetAttribute("success", false)
+		fmt.Fprintf(os.Stderr, "Response submitted but the request could not be read back: %v\n", err)
+		os.Exit(1)
+	}
+	// Success is judged by WHOSE write the row holds, not by status alone: a
+	// lost race against a same-status write by another operator leaves the row
+	// decided with the winner's message, and printing this invocation's flags
+	// over it would certify a write that never landed.
+	if after.Status != hitlStatus || after.RespondedBy != respondedBy || after.Response != hitlMessage {
+		span.SetAttribute("success", false)
+		fmt.Fprintf(os.Stderr, "✗ Response NOT recorded — request is %q", after.Status)
+		if after.RespondedBy != "" {
+			fmt.Fprintf(os.Stderr, " (responded by %s: %q)", after.RespondedBy, after.Response)
+		}
+		if after.Status == "pending" && !after.ExpiresAt.IsZero() && time.Now().After(after.ExpiresAt) {
+			fmt.Fprintf(os.Stderr, " — expired at %s", after.ExpiresAt.Format(time.RFC3339))
+		}
+		fmt.Fprintln(os.Stderr)
+		os.Exit(1)
+	}
+
 	span.SetAttribute("success", true)
 
+	// Print the ROW's values, never the flags': the row is what the agent reads.
 	fmt.Printf("✓ Response recorded\n")
-	fmt.Printf("  Request ID: %s\n", requestID)
-	fmt.Printf("  Status:     %s\n", hitlStatus)
-	fmt.Printf("  Message:    %s\n", hitlMessage)
-	fmt.Printf("  By:         %s\n", respondedBy)
+	fmt.Printf("  Request ID: %s\n", after.ID)
+	fmt.Printf("  Status:     %s\n", after.Status)
+	fmt.Printf("  Message:    %s\n", after.Response)
+	fmt.Printf("  By:         %s\n", after.RespondedBy)
 }

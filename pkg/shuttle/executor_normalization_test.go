@@ -196,3 +196,32 @@ func TestExecutor_ParameterNormalization_UnknownParameter(t *testing.T) {
 	assert.Equal(t, "unknown", tool.receivedParams["unknown_param"])
 	assert.Equal(t, "also_unknown", tool.receivedParams["anotherUnknown"])
 }
+
+// admission judges the same normalized map the tool receives: a
+// model cannot pick a key casing that evades the matcher.
+func TestAdmission_NormalizedParams_CasingCannotEvade(t *testing.T) {
+	const fixture = `
+hooks:
+  - kind: denylist
+    scope: sql_execute
+    matcher:
+      param_path: stmt
+      op: regex
+      value: "(?i)^\\s*drop"
+`
+	chain, err := BuildChainFromConfig(hooksFromYAML(t, fixture), ChainDeps{})
+	require.NoError(t, err)
+
+	tool := &MockTool{MockName: "sql_execute", MockSchema: NewObjectSchema("", map[string]*JSONSchema{
+		"stmt": NewStringSchema("statement"),
+	}, nil)}
+	exec := execFor(chain, tool)
+
+	// The evasion shape: the schema says "stmt", the model sends "Stmt".
+	res, err := exec.Execute(context.Background(), "sql_execute",
+		map[string]interface{}{"Stmt": "DROP TABLE customers"})
+	require.NoError(t, err)
+	require.False(t, res.Success, "a re-cased key must not evade the matcher")
+	require.Equal(t, "permission_denied", res.Error.Code)
+	require.Equal(t, 0, tool.ExecuteCount, "the denied tool body must not run")
+}
