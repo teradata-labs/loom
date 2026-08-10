@@ -751,9 +751,16 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 			errMsg = &exec.Result.Error.Message
 		}
 
+		// Audit decision — NULL unless an audit binding matched this call
+		// (SC-004: only non-empty rows count as audit records).
+		var admissionDecision *string
+		if exec.AdmissionDecision != "" {
+			admissionDecision = &exec.AdmissionDecision
+		}
+
 		_, err = tx.Exec(ctx, `
-		INSERT INTO tool_executions (session_id, user_id, tool_name, input_json, result_json, error, execution_time_ms, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		INSERT INTO tool_executions (session_id, user_id, tool_name, input_json, result_json, error, execution_time_ms, admission_decision, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			sessionID,
 			userID,
 			exec.ToolName,
@@ -761,6 +768,7 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 			nullableBytes(resultJSON),
 			errMsg,
 			0, // execution_time_ms not tracked in ToolExecution struct
+			admissionDecision,
 			time.Now().UTC(),
 		)
 		if err != nil {

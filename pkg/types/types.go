@@ -397,8 +397,27 @@ type HITLRequestInfo struct {
 	// Priority is the request priority (low, normal, high, critical)
 	Priority string
 
+	// Kind classifies the request at origin: "approval" (hook-held) or
+	// "question" (contact_human). Empty is treated as "question" by consumers.
+	Kind string
+
+	// Summary is the display digest of the stored request: tool+args for an
+	// approval, the question text for a question.
+	Summary string
+
+	// Params mirrors the stored request's parameter map: the held call's full
+	// parameters for an approval, empty for a question.
+	Params map[string]interface{}
+
+	// ParamsTruncated mirrors the stored request's flag: true when the size
+	// bound cut whole pairs out of Params.
+	ParamsTruncated bool
+
 	// Timeout is how long to wait for human response
 	Timeout time.Duration
+
+	// ExpiresAt is when the request expires, mirroring the stored request.
+	ExpiresAt time.Time
 
 	// Context provides additional context for the request
 	Context map[string]interface{}
