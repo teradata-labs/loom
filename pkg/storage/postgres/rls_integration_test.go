@@ -112,7 +112,7 @@ func createTestMessage(t *testing.T, store *SessionStore, userID, sessionID, con
 		Timestamp: time.Now().UTC(),
 	}
 
-	err := store.SaveMessage(ctx, sessionID, msg)
+	err := store.SaveMessage(ctx, sessionID, &msg, false)
 	require.NoError(t, err, "failed to create test message for user %s in session %s", userID, sessionID)
 }
 
@@ -472,11 +472,11 @@ func TestRLS_MissingUserContext(t *testing.T) {
 		{
 			name: "SaveMessage",
 			fn: func() error {
-				return store.SaveMessage(ctx, "nonexistent", agent.Message{
+				return store.SaveMessage(ctx, "nonexistent", &agent.Message{
 					Role:      "user",
 					Content:   "test",
 					Timestamp: time.Now().UTC(),
-				})
+				}, false)
 			},
 		},
 		{

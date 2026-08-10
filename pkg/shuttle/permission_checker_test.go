@@ -126,3 +126,46 @@ func TestPermissionChecker_BareWildcardAndYOLO(t *testing.T) {
 	})
 	assert.NoError(t, yolo.CheckPermission(context.Background(), "shell_execute", nil))
 }
+
+// with no admission chain, a configured PermissionChecker still
+// enforces at the seam.
+func TestPermissionChecker_EnforcesWithoutChain(t *testing.T) {
+	tool := countingTool("dangerous_tool")
+	registry := NewRegistry()
+	registry.Register(tool)
+	exec := NewExecutor(registry)
+	exec.SetPermissionChecker(NewPermissionChecker(PermissionConfig{
+		DisabledTools: []string{"dangerous_tool"},
+	}))
+
+	res, err := exec.Execute(context.Background(), "dangerous_tool", nil)
+	require.NoError(t, err)
+	require.False(t, res.Success)
+	require.Equal(t, "permission_denied", res.Error.Code)
+	require.Equal(t, 0, tool.ExecuteCount)
+}
+
+func TestPermissionChecker_EnforcesWithChainAttached(t *testing.T) {
+	tool := countingTool("dangerous_tool")
+	registry := NewRegistry()
+	registry.Register(tool)
+	exec := NewExecutor(registry)
+	exec.SetPermissionChecker(NewPermissionChecker(PermissionConfig{
+		DisabledTools: []string{"dangerous_tool"},
+	}))
+
+	// A chain built WITHOUT Perm — the shape the finding names: a host that
+	// attaches a chain and separately sets a checker.
+	chain, err := BuildChainFromConfig(HooksConfig{Bindings: []HookBinding{
+		{Kind: "audit", Scope: "other_tool"},
+	}}, ChainDeps{})
+	require.NoError(t, err)
+	exec.SetAdmissionChain(chain)
+
+	res, err := exec.Execute(context.Background(), "dangerous_tool", nil)
+	require.NoError(t, err)
+	require.False(t, res.Success)
+	require.Equal(t, "permission_denied", res.Error.Code)
+	require.Equal(t, 0, tool.ExecuteCount,
+		"the checker must enforce with a chain attached, not only without one")
+}

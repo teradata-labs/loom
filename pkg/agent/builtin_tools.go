@@ -17,425 +17,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
-	"time"
+	"unicode/utf8"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-	"github.com/teradata-labs/loom/pkg/storage"
 )
 
-// GetErrorDetailsTool is a built-in tool that fetches complete error information
-// for a previously failed tool execution.
-//
-// This tool is automatically registered on all agents to support the error
-// submission channel pattern where error summaries are sent to the LLM by default,
-// and full details are fetched on demand.
-type GetErrorDetailsTool struct {
-	store ErrorStore
-}
+// queryToolResultDescription is the normative tool description of HLD §7.1.
+const queryToolResultDescription = `Read the full data of a large tool result FROM THIS TURN, by the message_id shown
+on the result. Data is held in memory only within the turn that produced it —
+never use a message_id from conversation history; re-run the producing tool
+instead. (message_id, offset, limit) returns bounded pages; (message_id, sql)
+queries tabular data as table ` + "`results`" + `.`
 
-// NewGetErrorDetailsTool creates a new GetErrorDetailsTool.
-func NewGetErrorDetailsTool(store ErrorStore) *GetErrorDetailsTool {
-	return &GetErrorDetailsTool{
-		store: store,
-	}
-}
+// sqlTruncationTailFormat is the normative truncate-and-advise tail of HLD §7.1.
+const sqlTruncationTailFormat = "[result truncated at %d bytes — narrow with LIMIT / aggregation and re-query]"
 
-// Name returns the tool name.
-func (t *GetErrorDetailsTool) Name() string {
-	return "get_error_details"
-}
-
-// Description returns the tool description for the LLM.
-func (t *GetErrorDetailsTool) Description() string {
-	return `Fetches complete error information for a previously failed tool execution.
-
-Use this when you need the full error message, stack trace, or detailed debugging information
-that was omitted from the error summary. Most errors can be handled with just the summary -
-only use this for complex debugging scenarios.
-
-Input:
-- error_id: The error ID from a tool failure message (e.g., "err_20241121_230334_abc123")
-
-Output:
-- error_id: The error ID
-- timestamp: When the error occurred (RFC3339 format)
-- tool_name: Name of the tool that failed
-- short_summary: Brief summary of the error
-- raw_error: Complete original error message including stack traces
-
-Example usage:
-When you see: "Tool 'teradata_sample_table' failed: Code 3523: Permission denied [Error ID: err_20241121_abc123]"
-You can call: get_error_details(error_id="err_20241121_abc123") to get the full stack trace.`
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *GetErrorDetailsTool) InputSchema() *shuttle.JSONSchema {
-	return &shuttle.JSONSchema{
-		Type: "object",
-		Properties: map[string]*shuttle.JSONSchema{
-			"error_id": {
-				Type:        "string",
-				Description: "The error ID from a failed tool execution (e.g., 'err_20241121_abc123')",
-			},
-		},
-		Required: []string{"error_id"},
-	}
-}
-
-// Execute fetches the error details from the error store.
-func (t *GetErrorDetailsTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	// Validate input
-	errorID, ok := input["error_id"].(string)
-	if !ok {
-		// Debug: Show what was actually passed
-		actualType := "nil"
-		actualValue := "nil"
-		if val, exists := input["error_id"]; exists {
-			actualType = fmt.Sprintf("%T", val)
-			actualValue = fmt.Sprintf("%v", val)
-		}
-
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: fmt.Sprintf("error_id must be a string, got type=%s value=%s", actualType, actualValue),
-			},
-		}, nil
-	}
-
-	if errorID == "" {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "error_id cannot be empty",
-			},
-		}, nil
-	}
-
-	// Fetch error from store
-	stored, err := t.store.Get(ctx, errorID)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_found",
-				Message: fmt.Sprintf("Error %s not found. It may have been deleted or the ID is incorrect.", errorID),
-			},
-		}, nil
-	}
-
-	// Return full error details
-	return &shuttle.Result{
-		Success: true,
-		Data: map[string]interface{}{
-			"error_id":      stored.ID,
-			"timestamp":     stored.Timestamp.Format("2006-01-02T15:04:05Z07:00"), // RFC3339
-			"tool_name":     stored.ToolName,
-			"short_summary": stored.ShortSummary,
-			"raw_error":     string(stored.RawError),
-		},
-	}, nil
-}
-
-// Backend returns the backend type this tool requires.
-// Empty string means backend-agnostic (works with any agent).
-func (t *GetErrorDetailsTool) Backend() string {
-	return "" // Backend-agnostic built-in tool
-}
-
-// Ensure GetErrorDetailsTool implements shuttle.Tool interface.
-var _ shuttle.Tool = (*GetErrorDetailsTool)(nil)
-
-// GetToolResultTool retrieves METADATA about large tool results.
-// BREAKING CHANGE in v1.0.1: Now returns ONLY metadata, never full data.
-// Use query_tool_result to retrieve filtered/paginated data.
-//
-// This implements progressive disclosure - agents inspect metadata before retrieving data,
-// preventing context blowout from accidentally loading 50MB results.
-type GetToolResultTool struct {
-	memoryStore *storage.SharedMemoryStore
-	sqlStore    storage.ResultStore
-}
-
-// NewGetToolResultTool creates a new GetToolResultTool.
-func NewGetToolResultTool(memoryStore *storage.SharedMemoryStore, sqlStore storage.ResultStore) *GetToolResultTool {
-	return &GetToolResultTool{
-		memoryStore: memoryStore,
-		sqlStore:    sqlStore,
-	}
-}
-
-// Name returns the tool name.
-func (t *GetToolResultTool) Name() string {
-	return "get_tool_result"
-}
-
-// Description returns the tool description for the LLM.
-func (t *GetToolResultTool) Description() string {
-	return `Retrieves METADATA about large tool results stored in shared memory.
-
-IMPORTANT: This tool returns ONLY metadata (size, schema, preview), never full data.
-Use query_tool_result to retrieve filtered/paginated data based on this metadata.
-
-Input:
-- reference_id: The reference ID from a tool result message (e.g., "ref_abc123...")
-
-Output:
-- reference_id: The reference ID
-- content_type: MIME type (e.g., "application/json", "text/csv")
-- data_type: Structure type (e.g., "json_array", "sql_result")
-- size_bytes: Total size in bytes
-- estimated_tokens: Rough token estimate
-- schema: Data structure (columns, fields, item count)
-- preview: Sample data (first 5 + last 5 items)
-- retrieval_hints: Suggestions for querying the data
-
-Example workflow:
-1. get_tool_result(reference_id="ref_abc123") → Returns metadata + preview
-2. Analyze preview to understand data structure
-3. query_tool_result(reference_id="ref_abc123", sql="SELECT * WHERE score > 90") → Get filtered data`
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *GetToolResultTool) InputSchema() *shuttle.JSONSchema {
-	return &shuttle.JSONSchema{
-		Type: "object",
-		Properties: map[string]*shuttle.JSONSchema{
-			"reference_id": {
-				Type:        "string",
-				Description: "The reference ID from a large tool result (e.g., 'ref_abc123...')",
-			},
-		},
-		Required: []string{"reference_id"},
-	}
-}
-
-// Execute retrieves metadata from either shared memory or SQL store.
-func (t *GetToolResultTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	// Validate input
-	refID, ok := input["reference_id"].(string)
-	if !ok || refID == "" {
-		actualType := "nil"
-		if val, exists := input["reference_id"]; exists {
-			actualType = fmt.Sprintf("%T", val)
-		}
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: fmt.Sprintf("reference_id must be a non-empty string, got type=%s", actualType),
-			},
-		}, nil
-	}
-
-	// Parse DataRef format: "DataRef[ID, LOCATION, SIZE]"
-	location := loomv1.StorageLocation_STORAGE_LOCATION_MEMORY
-	if strings.HasPrefix(refID, "DataRef[") {
-		parts := strings.SplitN(strings.TrimPrefix(refID, "DataRef["), ",", 3)
-		if len(parts) >= 2 {
-			refID = strings.TrimSpace(parts[0])
-			locStr := strings.TrimSpace(parts[1])
-			if strings.Contains(locStr, "DATABASE") {
-				location = loomv1.StorageLocation_STORAGE_LOCATION_DATABASE
-			}
-		}
-	}
-
-	// Route to appropriate store based on location
-	var metadata interface{}
-	var err error
-
-	switch location {
-	case loomv1.StorageLocation_STORAGE_LOCATION_DATABASE:
-		if t.sqlStore == nil {
-			return &shuttle.Result{
-				Success: false,
-				Error: &shuttle.Error{
-					Code:    "store_not_available",
-					Message: "SQL result store not configured",
-				},
-			}, nil
-		}
-		metadata, err = t.sqlStore.GetMetadata(ctx, refID)
-
-	default: // MEMORY or DISK
-		if t.memoryStore == nil {
-			return &shuttle.Result{
-				Success: false,
-				Error: &shuttle.Error{
-					Code:    "store_not_available",
-					Message: "Shared memory store not configured",
-				},
-			}, nil
-		}
-		ref := &loomv1.DataReference{
-			Id:       refID,
-			Location: location,
-		}
-		metadata, err = t.memoryStore.GetMetadata(ref, session.SessionIDFromContext(ctx))
-	}
-
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_found",
-				Message: fmt.Sprintf("Reference %s not found: %v", refID, err),
-			},
-		}, nil
-	}
-
-	// Format metadata response with retrieval hints
-	response := formatMetadataResponse(metadata, refID)
-
-	return &shuttle.Result{
-		Success: true,
-		Data:    response,
-	}, nil
-}
-
-// Backend returns the backend type this tool requires.
-// Empty string means backend-agnostic (works with any agent).
-func (t *GetToolResultTool) Backend() string {
-	return "" // Backend-agnostic built-in tool
-}
-
-// formatMetadataResponse converts metadata to LLM-friendly format with hints.
-func formatMetadataResponse(metadata interface{}, refID string) map[string]interface{} {
-	switch meta := metadata.(type) {
-	case *storage.DataMetadata:
-		return map[string]interface{}{
-			"reference_id":     refID,
-			"content_type":     meta.ContentType,
-			"data_type":        meta.DataType,
-			"size_bytes":       meta.SizeBytes,
-			"estimated_tokens": meta.EstimatedTokens,
-			"schema":           meta.Schema,
-			"preview":          meta.Preview,
-			"created_at":       meta.CreatedAt.Format(time.RFC3339),
-			"retrieval_hints":  generateRetrievalHints(meta),
-		}
-
-	case *storage.SQLResultMetadata:
-		return map[string]interface{}{
-			"reference_id":     refID,
-			"content_type":     "application/sql",
-			"data_type":        "sql_result",
-			"size_bytes":       meta.SizeBytes,
-			"estimated_tokens": meta.SizeBytes / 4,
-			"schema": map[string]interface{}{
-				"type":         "table",
-				"row_count":    meta.RowCount,
-				"column_count": meta.ColumnCount,
-				"columns":      meta.Columns,
-			},
-			"preview":         meta.Preview,
-			"created_at":      meta.StoredAt.Format(time.RFC3339),
-			"retrieval_hints": generateSQLRetrievalHints(meta),
-		}
-
-	default:
-		return map[string]interface{}{
-			"reference_id": refID,
-			"error":        "Unknown metadata type",
-		}
-	}
-}
-
-// generateRetrievalHints creates actionable hints for retrieving data.
-func generateRetrievalHints(meta *storage.DataMetadata) []string {
-	hints := []string{}
-
-	switch meta.DataType {
-	case "json_object":
-		// A json_object is retrievable by paginating it as text (windowed), so an
-		// agent can read back stored content (e.g. a web_search/http_request
-		// envelope) instead of hitting a dead end.
-		hints = append(hints,
-			"💡 query_tool_result(reference_id=..., offset=0, limit=100) — read the object (paginated)",
-			"💡 query_tool_result(reference_id=..., sql='SELECT * FROM results ...') — if it wraps a 'results' array",
-		)
-		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			fieldNames := make([]string, 0, len(meta.Schema.Fields))
-			for _, field := range meta.Schema.Fields {
-				fieldNames = append(fieldNames, field.Name)
-			}
-			hints = append(hints, fmt.Sprintf("📋 Available fields: %s", strings.Join(fieldNames, ", ")))
-		}
-		// Add warning about size
-		if meta.SizeBytes > 100000 { // >100KB
-			hints = append(hints, fmt.Sprintf("⚠️ Large object (%d bytes) — paginate with offset/limit to avoid loading all at once", meta.SizeBytes))
-		}
-
-	case "json_array":
-		hints = append(hints,
-			fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', offset=0, limit=100) for pagination", meta.ID),
-			fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...') for SQL filtering", meta.ID),
-		)
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			hints = append(hints, "⚠️ Large dataset - use filtering to avoid context blowout")
-		}
-
-	case "csv":
-		hints = append(hints,
-			fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...') for SQL queries", meta.ID),
-			"💡 Auto-converts CSV to queryable SQLite table",
-		)
-
-	case "text":
-		hints = append(hints,
-			fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', offset=0, limit=100) for line-based pagination", meta.ID),
-			fmt.Sprintf("💡 Total lines: %d - paginate to avoid loading all at once", meta.Schema.ItemCount),
-		)
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			hints = append(hints, "⚠️ Large text file - use pagination to avoid context blowout")
-		}
-	}
-
-	return hints
-}
-
-// generateSQLRetrievalHints creates hints for SQL results.
-func generateSQLRetrievalHints(meta *storage.SQLResultMetadata) []string {
-	hints := []string{
-		fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...') to filter", meta.ID),
-		fmt.Sprintf("💡 Use query_tool_result(reference_id='%s', sql='SELECT * FROM results LIMIT 100') for first 100 rows", meta.ID),
-	}
-
-	if meta.RowCount > 1000 {
-		hints = append(hints, "⚠️ Large result set - use WHERE clause to filter or LIMIT to paginate")
-	}
-
-	hints = append(hints, fmt.Sprintf("📊 Columns: %s", strings.Join(meta.Columns, ", ")))
-
-	return hints
-}
-
-// Ensure GetToolResultTool implements shuttle.Tool interface.
-var _ shuttle.Tool = (*GetToolResultTool)(nil)
-
-// QueryToolResultTool queries large results with filtering/pagination.
-// Enhanced in v1.0.1: Now supports non-SQL data (JSON arrays) via pagination.
-//
-// For SQL results: Use SQL queries to filter/aggregate
-// For JSON arrays: Use offset/limit for pagination (SQL support coming in Phase 4.5)
-// For CSV data: SQL queries coming in Phase 4.5
+// QueryToolResultTool serves this turn's memory, nothing else (HLD §7.1): pages
+// (offset, limit) or SQL over one L1 message's full in-memory payload, addressed
+// by message_id — the id printed on the offload stub. Every return is bounded at
+// the threshold — pages and SQL alike. Valid only within the producing turn:
+// memory is per turn, large data is not persisted, and there is no cross-turn
+// data door except re-run.
 type QueryToolResultTool struct {
-	sqlStore    storage.ResultStore
-	memoryStore *storage.SharedMemoryStore
+	agent *Agent
 }
 
-// NewQueryToolResultTool creates a new QueryToolResultTool.
-func NewQueryToolResultTool(sqlStore storage.ResultStore, memoryStore *storage.SharedMemoryStore) *QueryToolResultTool {
-	return &QueryToolResultTool{
-		sqlStore:    sqlStore,
-		memoryStore: memoryStore,
-	}
+// NewQueryToolResultTool creates the message_id-addressed query tool (HLD §7.1).
+func NewQueryToolResultTool(a *Agent) *QueryToolResultTool {
+	return &QueryToolResultTool{agent: a}
 }
 
 // Name returns the tool name.
@@ -443,45 +55,9 @@ func (t *QueryToolResultTool) Name() string {
 	return "query_tool_result"
 }
 
-// Description returns the tool description for the LLM.
+// Description returns the normative §7.1 tool description.
 func (t *QueryToolResultTool) Description() string {
-	return `Query large results with SQL filtering and pagination.
-
-For SQL results (DATABASE location):
-- Use SQL queries to filter/aggregate: sql="SELECT * FROM results WHERE score > 90"
-- Table name is always "results"
-
-For JSON objects (MEMORY/DISK location):
-- No parameters needed: query_tool_result(reference_id="ref_123")
-- Returns the complete object structure
-- Use for discovery results, metadata, and structured configuration
-
-For JSON arrays (MEMORY/DISK location):
-- Simple pagination: offset=0, limit=100
-- SQL queries: sql="SELECT * FROM results WHERE field > value" (auto-converts to SQLite table)
-- Nested objects stored as JSON strings
-
-For plain text (MEMORY/DISK location):
-- Line-based pagination: offset=0, limit=100
-- Returns array of lines with line numbers
-- Use for log files, large text documents, configuration files
-
-For CSV data:
-- SQL queries: sql="SELECT * FROM results WHERE column = 'value'" (auto-converts to SQLite table)
-- First row treated as headers
-
-Auto-conversion to SQLite:
-- JSON arrays and CSV are automatically converted to queryable tables
-- Conversion is temporary and cleaned up after use
-- Use standard SQL syntax for filtering/aggregation
-
-Examples:
-- JSON object: query_tool_result(reference_id="ref_123")
-- SQL on JSON: query_tool_result(reference_id="ref_123", sql="SELECT * FROM results WHERE score > 90")
-- SQL on CSV: query_tool_result(reference_id="ref_123", sql="SELECT COUNT(*) FROM results GROUP BY category")
-- JSON array pagination: query_tool_result(reference_id="ref_123", offset=0, limit=100)
-- Text pagination: query_tool_result(reference_id="ref_123", offset=0, limit=50)
-- Aggregate: query_tool_result(reference_id="ref_123", sql="SELECT AVG(score) FROM results")`
+	return queryToolResultDescription
 }
 
 // InputSchema returns the JSON schema for the tool input.
@@ -489,540 +65,291 @@ func (t *QueryToolResultTool) InputSchema() *shuttle.JSONSchema {
 	return &shuttle.JSONSchema{
 		Type: "object",
 		Properties: map[string]*shuttle.JSONSchema{
-			"reference_id": {
-				Type:        "string",
-				Description: "The reference ID from the large result",
+			"message_id": {
+				Type:        "integer",
+				Description: "The message_id printed on the offload stub of a result from THIS turn.",
 			},
 			"sql": {
 				Type:        "string",
-				Description: "SQL query to execute (table name is 'results'). For SQL results or queryable data.",
+				Description: "SQL over the payload as table 'results' (tabular payloads only).",
 			},
 			"offset": {
 				Type:        "integer",
-				Description: "Skip first N items (for pagination). Use with limit.",
+				Description: "Skip first N items/lines (for pagination). Use with limit.",
 			},
 			"limit": {
 				Type:        "integer",
-				Description: "Return at most N items (for pagination). Use with offset.",
+				Description: "Return at most N items/lines (for pagination). Use with offset.",
 			},
 		},
-		Required: []string{"reference_id"},
+		Required: []string{"message_id"},
 	}
 }
 
-// Execute queries stored data with routing based on storage location.
+// Execute serves pages or SQL over the addressed message's in-memory payload.
 func (t *QueryToolResultTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	// Validate reference_id
-	refID, ok := input["reference_id"].(string)
-	if !ok || refID == "" {
+	messageID, ok := parseMessageID(input["message_id"])
+	if !ok {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:    "invalid_input",
-				Message: "reference_id must be a non-empty string",
+				Message: "message_id must be an integer — the id printed on the offload stub of a result from this turn",
 			},
 		}, nil
 	}
 
-	// Parse DataRef format to determine location
-	location := loomv1.StorageLocation_STORAGE_LOCATION_MEMORY
-	if strings.HasPrefix(refID, "DataRef[") {
-		parts := strings.SplitN(strings.TrimPrefix(refID, "DataRef["), ",", 3)
-		if len(parts) >= 2 {
-			refID = strings.TrimSpace(parts[0])
-			locStr := strings.TrimSpace(parts[1])
-			if strings.Contains(locStr, "DATABASE") {
-				location = loomv1.StorageLocation_STORAGE_LOCATION_DATABASE
-			}
-		}
+	sessionID := session.SessionIDFromContext(ctx)
+	payload, err := t.agent.InTurnPayload(sessionID, messageID)
+	if err != nil {
+		// The only honest door for anything not in this turn's memory is re-run.
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "not_this_turn",
+				Message: fmt.Sprintf("message_id %d does not resolve to a current-turn in-memory payload — data is held in memory only within the turn that produced it. Re-run the producing call for fresh data.", messageID),
+			},
+		}, nil
 	}
 
-	// Route based on location
-	switch location {
-	case loomv1.StorageLocation_STORAGE_LOCATION_DATABASE:
-		return t.querySQLResult(ctx, refID, input)
-	default: // MEMORY or DISK
-		return t.queryMemoryData(ctx, refID, input)
+	threshold := t.agent.contextThreshold()
+
+	if sqlQuery, ok := input["sql"].(string); ok && sqlQuery != "" {
+		return t.querySQL(sessionID, messageID, payload, sqlQuery, threshold)
 	}
+
+	return t.paginate(payload, input, threshold)
 }
 
-// querySQLResult handles SQL results (existing logic).
-func (t *QueryToolResultTool) querySQLResult(ctx context.Context, refID string, input map[string]interface{}) (*shuttle.Result, error) {
-	if t.sqlStore == nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "store_not_available",
-				Message: "SQL result store not configured",
-			},
-		}, nil
-	}
-
-	// Get metadata
-	meta, err := t.sqlStore.GetMetadata(ctx, refID)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_found",
-				Message: fmt.Sprintf("Result %s not found", refID),
-			},
-		}, nil
-	}
-
-	// Get SQL query or build pagination query
-	var query string
-	if sqlQuery, ok := input["sql"].(string); ok {
-		// Replace "results" with actual table name
-		query = strings.ReplaceAll(sqlQuery, "FROM results", fmt.Sprintf("FROM %s", meta.TableName))
-		query = strings.ReplaceAll(query, "from results", fmt.Sprintf("FROM %s", meta.TableName))
-	} else if offset, hasOffset := input["offset"]; hasOffset {
-		// Simple pagination
-		limit := 100 // default
-		if l, ok := input["limit"].(float64); ok {
-			limit = int(l)
-		}
-		offsetInt := 0
-		if o, ok := offset.(float64); ok {
-			offsetInt = int(o)
-		}
-		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", meta.TableName, limit, offsetInt)
-	} else {
-		// Neither 'sql' nor 'offset' given: return the first page rather than
-		// erroring. A bare reference_id is the common call (the model just wants
-		// to see the stored rows), so default to a capped page and let the model
-		// paginate or run SQL if it needs more.
-		limit := 100
-		if l, ok := input["limit"].(float64); ok && l > 0 {
-			limit = int(l)
-		}
-		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d", meta.TableName, limit)
-	}
-
-	// Execute query
-	result, err := t.sqlStore.Query(ctx, refID, query)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "query_failed",
-				Message:    fmt.Sprintf("Query failed: %v", err),
-				Suggestion: "Check your SQL syntax. Columns: " + strings.Join(meta.Columns, ", "),
-			},
-		}, nil
-	}
-
-	return &shuttle.Result{
-		Success: true,
-		Data:    result,
-	}, nil
-}
-
-// queryMemoryData handles non-SQL data (JSON, CSV, text).
-func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string, input map[string]interface{}) (*shuttle.Result, error) {
-	if t.memoryStore == nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "store_not_available",
-				Message: "Shared memory store not configured",
-			},
-		}, nil
-	}
-
-	// Get metadata to determine data type
-	ref := &loomv1.DataReference{
-		Id:       refID,
-		Location: loomv1.StorageLocation_STORAGE_LOCATION_MEMORY,
-	}
-	meta, err := t.memoryStore.GetMetadata(ref, session.SessionIDFromContext(ctx))
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_found",
-				Message: fmt.Sprintf("Reference %s not found", refID),
-			},
-		}, nil
-	}
-
-	// Check query type
-	if sqlQuery, ok := input["sql"].(string); ok {
-		// SQL query on non-SQL data - convert to temp table
-		return t.convertAndQuery(ctx, ref, meta, sqlQuery)
-	}
-
-	if _, hasOffset := input["offset"]; hasOffset {
-		// Simple pagination for JSON arrays and text
-		return t.paginateData(ref, meta, input, session.SessionIDFromContext(ctx))
-	}
-
-	// No explicit method given. For a plain text result, default to pagination
-	// from offset 0 — returning the first page (bounded to a line window) is what
-	// an agent calling query_tool_result(ref) with no other args expects, and is
-	// far more useful than a hard error. A single-line result, e.g. an OpenData
-	// query's JSON blob, comes back whole. json_object is paginated like text
-	// (below); only json_array still requires an explicit method, so a large
-	// array is never auto-dumped.
-	if meta.DataType == "text" || meta.DataType == "json_object" {
-		return t.paginateData(ref, meta, input, session.SessionIDFromContext(ctx))
-	}
-
-	return &shuttle.Result{
-		Success: false,
-		Error: &shuttle.Error{
-			Code:       "invalid_input",
-			Message:    fmt.Sprintf("Data type '%s' requires a specific query method", meta.DataType),
-			Suggestion: "Check the tool result metadata and retrieval hints for supported query methods (e.g., offset/limit for text, sql for SQL results)",
-		},
-	}, nil
-}
-
-// convertAndQuery converts JSON/CSV to temporary SQLite table and executes query.
-func (t *QueryToolResultTool) convertAndQuery(ctx context.Context, ref *loomv1.DataReference, meta *storage.DataMetadata, sqlQuery string) (*shuttle.Result, error) {
-	// Check if SQL store is available for conversion
-	if t.sqlStore == nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "store_not_available",
-				Message:    "SQL store required for SQL queries on non-SQL data",
-				Suggestion: "Use offset/limit pagination instead",
-			},
-		}, nil
-	}
-
-	// Get raw data, scoped to the caller's session partition.
-	data, err := t.memoryStore.Get(ref, session.SessionIDFromContext(ctx))
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "retrieval_failed",
-				Message: fmt.Sprintf("Failed to retrieve data: %v", err),
-			},
-		}, nil
-	}
-
-	// Convert based on data type
-	var columns []string
-	var rows [][]interface{}
-
-	switch meta.DataType {
-	case "json_array":
-		columns, rows, err = t.convertJSONArrayToRows(data)
-	case "csv":
-		columns, rows, err = t.convertCSVToRows(data)
+// parseMessageID accepts the JSON number (float64) and integer-string forms.
+func parseMessageID(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case string:
+		id, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+		return id, err == nil
 	default:
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "unsupported_type",
-				Message:    fmt.Sprintf("SQL queries not supported for data type: %s", meta.DataType),
-				Suggestion: "Only json_array and csv support SQL queries",
-			},
-		}, nil
+		return 0, false
 	}
+}
 
+// querySQL lazily parses the payload into the in-turn SQLite (dropped at turn
+// end) and runs the query against table `results`. The serialized result is
+// bounded at the threshold, cut at a result-row boundary, ending with the
+// normative truncate-and-advise tail (§7.1).
+func (t *QueryToolResultTool) querySQL(sessionID string, messageID int64, payload, sqlQuery string, threshold int) (*shuttle.Result, error) {
+	db, err := t.agent.inTurnSQLite(sessionID, messageID, payload)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
-				Code:    "conversion_failed",
-				Message: fmt.Sprintf("Failed to convert data: %v", err),
+				Code:       "not_tabular",
+				Message:    fmt.Sprintf("payload of message %d is not tabular (%v)", messageID, err),
+				Suggestion: "Use (message_id, offset, limit) paging for non-rectangular payloads.",
 			},
 		}, nil
 	}
 
-	// Store in SQL store (creates temporary table)
-	// Generate unique ID for temporary conversion
-	tempID := fmt.Sprintf("temp_%s_%d", ref.Id, time.Now().UnixNano())
-
-	// Convert []string columns to []interface{} for Store
-	columnsInterface := make([]interface{}, len(columns))
-	for i, col := range columns {
-		columnsInterface[i] = col
-	}
-
-	// Convert [][]interface{} rows to []interface{} for Store
-	rowsInterface := make([]interface{}, len(rows))
-	for i, row := range rows {
-		rowsInterface[i] = row
-	}
-
-	dataMap := map[string]interface{}{
-		"columns": columnsInterface,
-		"rows":    rowsInterface,
-	}
-	dataRef, err := t.sqlStore.Store(ctx, tempID, dataMap)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "storage_failed",
-				Message: fmt.Sprintf("Failed to create temporary table: %v", err),
-			},
-		}, nil
-	}
-
-	// Get metadata for table name
-	tableMeta, err := t.sqlStore.GetMetadata(ctx, dataRef.Id)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "metadata_failed",
-				Message: fmt.Sprintf("Failed to get table metadata: %v", err),
-			},
-		}, nil
-	}
-
-	// Replace "results" with actual table name
-	actualQuery := strings.ReplaceAll(sqlQuery, "FROM results", fmt.Sprintf("FROM %s", tableMeta.TableName))
-	actualQuery = strings.ReplaceAll(actualQuery, "from results", fmt.Sprintf("FROM %s", tableMeta.TableName))
-
-	// Execute query
-	result, err := t.sqlStore.Query(ctx, dataRef.Id, actualQuery)
+	rows, err := db.Query(sqlQuery)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "query_failed",
 				Message:    fmt.Sprintf("Query failed: %v", err),
-				Suggestion: "Check SQL syntax. Columns: " + strings.Join(columns, ", "),
+				Suggestion: "Table name is 'results'. Check your SQL syntax.",
 			},
 		}, nil
 	}
+	defer func() { _ = rows.Close() }()
 
-	// Clean up temporary table after a short delay (via TTL)
-	// The SQLResultStore will auto-cleanup based on TTL
-
-	return &shuttle.Result{
-		Success: true,
-		Data:    result,
-		Metadata: map[string]interface{}{
-			"converted_from": meta.DataType,
-			"temp_table":     tableMeta.TableName,
-		},
-	}, nil
-}
-
-// convertJSONArrayToRows converts JSON array to SQL table format.
-func (t *QueryToolResultTool) convertJSONArrayToRows(data []byte) ([]string, [][]interface{}, error) {
-	var items []map[string]interface{}
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse JSON array: %w", err)
+	cols, err := rows.Columns()
+	if err != nil {
+		return &shuttle.Result{
+			Success: false,
+			Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
+		}, nil
 	}
 
-	if len(items) == 0 {
-		return []string{}, [][]interface{}{}, nil
-	}
-
-	// Infer columns from first item
-	firstItem := items[0]
-	columns := make([]string, 0, len(firstItem))
-	for key := range firstItem {
-		columns = append(columns, key)
-	}
-
-	// Sort columns for consistency
-	sortStringSlice(columns)
-
-	// Convert each item to a row
-	rows := make([][]interface{}, 0, len(items))
-	for _, item := range items {
-		row := make([]interface{}, len(columns))
-		for i, col := range columns {
-			val := item[col]
-			// Convert complex types to JSON strings
-			if val != nil {
-				switch v := val.(type) {
-				case map[string]interface{}, []interface{}:
-					jsonBytes, _ := json.Marshal(v)
-					row[i] = string(jsonBytes)
-				default:
-					row[i] = v
-				}
+	var sb strings.Builder
+	sb.WriteString("[")
+	truncated := false
+	first := true
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
+			}, nil
+		}
+		rowObj := make(map[string]interface{}, len(cols))
+		for i, c := range cols {
+			if b, ok := vals[i].([]byte); ok {
+				rowObj[c] = string(b)
+			} else {
+				rowObj[c] = vals[i]
 			}
 		}
-		rows = append(rows, row)
-	}
-
-	return columns, rows, nil
-}
-
-// convertCSVToRows converts CSV data to SQL table format.
-func (t *QueryToolResultTool) convertCSVToRows(data []byte) ([]string, [][]interface{}, error) {
-	lines := strings.Split(string(data), "\n")
-	if len(lines) < 2 {
-		return nil, nil, fmt.Errorf("CSV must have at least header and one data row")
-	}
-
-	// Parse header
-	headerLine := lines[0]
-	columns := strings.Split(headerLine, ",")
-	for i := range columns {
-		columns[i] = strings.TrimSpace(columns[i])
-	}
-
-	// Parse rows
-	rows := make([][]interface{}, 0, len(lines)-1)
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
+		rowJSON, err := json.Marshal(rowObj)
+		if err != nil {
 			continue
 		}
-
-		values := strings.Split(line, ",")
-		row := make([]interface{}, len(columns))
-		for j, val := range values {
-			if j < len(row) {
-				row[j] = strings.TrimSpace(val)
-			}
+		sep := 0
+		if !first {
+			sep = 1
 		}
-		rows = append(rows, row)
-	}
-
-	return columns, rows, nil
-}
-
-// sortStringSlice sorts a string slice in place.
-func sortStringSlice(s []string) {
-	for i := 0; i < len(s)-1; i++ {
-		for j := i + 1; j < len(s); j++ {
-			if s[i] > s[j] {
-				s[i], s[j] = s[j], s[i]
-			}
+		// Cut at a result-row boundary: stop before the row that would push the
+		// serialized return past the threshold (leaving room for the tail).
+		tail := "\n" + fmt.Sprintf(sqlTruncationTailFormat, threshold)
+		if sb.Len()+sep+len(rowJSON)+1+len(tail) > threshold {
+			truncated = true
+			break
 		}
+		if !first {
+			sb.WriteString(",")
+		}
+		sb.Write(rowJSON)
+		first = false
 	}
-}
-
-// paginateData implements simple pagination for JSON arrays and plain text.
-// callerSession scopes retrieval to the owning partition.
-func (t *QueryToolResultTool) paginateData(ref *loomv1.DataReference, meta *storage.DataMetadata, input map[string]interface{}, callerSession string) (*shuttle.Result, error) {
-	// Get full data
-	data, err := t.memoryStore.Get(ref, callerSession)
-	if err != nil {
+	if err := rows.Err(); err != nil {
 		return &shuttle.Result{
 			Success: false,
-			Error: &shuttle.Error{
-				Code:    "retrieval_failed",
-				Message: fmt.Sprintf("Failed to retrieve data: %v", err),
-			},
+			Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
 		}, nil
 	}
+	sb.WriteString("]")
+	out := sb.String()
+	if truncated {
+		out += "\n" + fmt.Sprintf(sqlTruncationTailFormat, threshold)
+	}
 
-	// Extract pagination parameters
+	return &shuttle.Result{Success: true, Data: out}, nil
+}
+
+// paginate serves bounded pages over the payload: items for a JSON array,
+// lines otherwise. The serialized return is bounded at the threshold — a page
+// must never stub itself (§5.2 renders at-threshold results full).
+func (t *QueryToolResultTool) paginate(payload string, input map[string]interface{}, threshold int) (*shuttle.Result, error) {
 	offset := 0
 	if o, ok := input["offset"].(float64); ok {
 		offset = int(o)
 	}
-	limit := 100 // default
-	if l, ok := input["limit"].(float64); ok {
+	limit := 100
+	if l, ok := input["limit"].(float64); ok && l > 0 {
 		limit = int(l)
 	}
-
-	// Handle based on data type
-	switch meta.DataType {
-	case "json_array":
-		return t.paginateJSONArray(data, offset, limit)
-	case "text", "json_object":
-		// A json_object (e.g. a web_search/http_request result envelope) is a
-		// single blob with no item index, so window it as text — that lets an
-		// agent read back the stored content instead of hitting a dead end.
-		return t.paginateText(data, offset, limit)
-	default:
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "invalid_data_type",
-				Message:    fmt.Sprintf("Pagination only supports json_array, json_object and text, got %s", meta.DataType),
-				Suggestion: "Check the tool result metadata and retrieval hints for supported query methods",
-			},
-		}, nil
-	}
-}
-
-// paginateJSONArray paginates JSON array data by items.
-func (t *QueryToolResultTool) paginateJSONArray(data []byte, offset, limit int) (*shuttle.Result, error) {
-	var items []interface{}
-	if err := json.Unmarshal(data, &items); err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "parse_failed",
-				Message: fmt.Sprintf("Failed to parse JSON: %v", err),
-			},
-		}, nil
+	if offset < 0 {
+		offset = 0
 	}
 
-	// Apply pagination
-	if offset < 0 || offset >= len(items) {
+	var units []string
+	kind := "lines"
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &items); err == nil {
+		kind = "items"
+		units = make([]string, len(items))
+		for i, it := range items {
+			units[i] = string(it)
+		}
+	} else {
+		units = strings.Split(payload, "\n")
+	}
+
+	budget := threshold - 512 // envelope headroom for the wrapper fields
+	if budget < 1024 {
+		budget = 1024
+	}
+
+	// A unit larger than the whole page budget is SPLIT into budget-sized
+	// pieces, not truncated: the page bound is the same §5.1 threshold as every
+	// other bound, but cutting a unit and dropping the remainder would make it
+	// unreachable — offset addresses units, so nothing could ask for the rest,
+	// and re-running the producing call regenerates the same oversized unit.
+	// Splitting keeps every byte reachable by paging on.
+	units = splitOversizedUnits(units, budget)
+
+	if offset >= len(units) {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:    "invalid_offset",
-				Message: fmt.Sprintf("Offset %d out of range (0-%d)", offset, len(items)-1),
+				Message: fmt.Sprintf("Offset %d out of range (0-%d)", offset, len(units)-1),
 			},
 		}, nil
 	}
 
 	end := offset + limit
-	if end > len(items) {
-		end = len(items)
+	if end > len(units) {
+		end = len(units)
 	}
 
-	paginatedItems := items[offset:end]
+	// Bound the serialized page at the threshold, cut at a unit boundary.
+	page := make([]string, 0, end-offset)
+	used := 0
+	for i := offset; i < end; i++ {
+		u := units[i]
+		if used > 0 && used+len(u) > budget {
+			end = i
+			break
+		}
+		page = append(page, u)
+		used += len(u) + 1
+	}
 
 	return &shuttle.Result{
 		Success: true,
 		Data: map[string]interface{}{
-			"items":          paginatedItems,
+			kind:             page,
 			"offset":         offset,
 			"limit":          limit,
-			"returned_count": len(paginatedItems),
-			"total_count":    len(items),
-			"has_more":       end < len(items),
+			"returned_count": len(page),
+			"total_count":    len(units),
+			"has_more":       offset+len(page) < len(units),
 		},
 	}, nil
 }
 
-// paginateText paginates plain text data by lines.
-func (t *QueryToolResultTool) paginateText(data []byte, offset, limit int) (*shuttle.Result, error) {
-	// Split into lines
-	text := string(data)
-	lines := strings.Split(text, "\n")
-
-	// Apply pagination
-	if offset < 0 || offset >= len(lines) {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_offset",
-				Message: fmt.Sprintf("Offset %d out of range (0-%d)", offset, len(lines)-1),
-			},
-		}, nil
+// splitOversizedUnits replaces any unit longer than budget with consecutive
+// budget-sized pieces, cut on UTF-8 rune boundaries. Paging then walks the
+// pieces like any other units, so an oversized unit stays fully reachable and
+// total_count / has_more describe what is actually retrievable.
+func splitOversizedUnits(units []string, budget int) []string {
+	oversized := false
+	for _, u := range units {
+		if len(u) > budget {
+			oversized = true
+			break
+		}
 	}
-
-	end := offset + limit
-	if end > len(lines) {
-		end = len(lines)
+	if !oversized {
+		return units
 	}
-
-	paginatedLines := lines[offset:end]
-
-	// Return as array of lines for easier processing
-	return &shuttle.Result{
-		Success: true,
-		Data: map[string]interface{}{
-			"lines":          paginatedLines,
-			"offset":         offset,
-			"limit":          limit,
-			"returned_count": len(paginatedLines),
-			"total_lines":    len(lines),
-			"has_more":       end < len(lines),
-		},
-	}, nil
+	out := make([]string, 0, len(units))
+	for _, u := range units {
+		for len(u) > budget {
+			cut := budget
+			for cut > 0 && !utf8.RuneStart(u[cut]) {
+				cut--
+			}
+			if cut == 0 {
+				cut = budget // pathological: no rune boundary in range
+			}
+			out = append(out, u[:cut])
+			u = u[cut:]
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // Backend returns the backend type this tool requires.

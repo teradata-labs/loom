@@ -157,7 +157,7 @@ result, err := tool.Execute(ctx, map[string]interface{}{
         "query":          "DELETE FROM orders WHERE created_at < '2023-01-01'",
         "estimated_rows": 10000,
     },
-    "timeout_seconds": float64(1800),  // 30 minutes for review
+    "timeout_seconds": float64(1800),  // 30 minutes for review — also raise ContactHumanConfig.Timeout: the per-request value is capped at the configured maximum
 })
 ```
 
@@ -235,7 +235,7 @@ func selectDatabaseWithHuman(ctx context.Context, workload string) (string, erro
             "options":        []string{"PostgreSQL", "Teradata", "BigQuery"},
             "recommendation": "Teradata for OLAP workloads",
         },
-        "timeout_seconds": float64(3600),
+        "timeout_seconds": float64(3600), // capped at ContactHumanConfig.Timeout — raise both together
     })
     if err != nil {
         return "", err

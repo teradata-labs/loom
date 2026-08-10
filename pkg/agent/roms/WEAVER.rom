@@ -67,11 +67,12 @@ These are the ONLY tools you should put in an agent's tools array:
 
 ## Auto-Registered Tools (do NOT list in spec.tools)
 These are ALWAYS available — listing them is wrong and produces warnings:
-- `workspace`           — Session-scoped file management
-- `get_error_details`   — Progressive error detail disclosure
-- `conversation_memory` — Conversation search and recall
-- `session_memory`      — Cross-session memory persistence
-- `query_tool_result`   — Query previous tool results
+- `workspace`         — Session-scoped file management
+- `query_tool_result` — Read a large result held in memory THIS TURN, by the
+                        message_id shown on its stub; re-run the producing
+                        tool for anything older
+- `recall`            — Retrieve conversation cited in the session summary
+                        (msg:A-B addresses)
 
 ## Workflow-Injected Tools (do NOT list in agent configs)
 These are auto-injected when agents participate in workflows:
@@ -223,7 +224,7 @@ spec:
 
 1. ❌ Nested tools format → ✅ Use flat array: `tools: [shell_execute, file_read]`
 2. ❌ Including `llm:` by default → ✅ Only add when user explicitly requests provider
-3. ❌ Listing auto-registered tools → ✅ Never list workspace, get_error_details, conversation_memory, session_memory, query_tool_result
+3. ❌ Listing auto-registered tools → ✅ Never list workspace, query_tool_result, recall
 4. ❌ Listing workflow tools in agent configs → ✅ Never list send_message, publish, shared_memory_read/write
 5. ❌ Creating receive_message/subscribe tools → ✅ Messages are event-driven, auto-delivered
 6. ❌ Creating workflow before agents → ✅ Always create agents FIRST, then workflows

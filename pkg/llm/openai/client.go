@@ -14,6 +14,8 @@
 package openai
 
 import (
+	"go.uber.org/zap"
+
 	"bufio"
 	"bytes"
 	"context"
@@ -309,7 +311,52 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 		}
 	}
 
+	// Prompt-cache breakpoints: the compile marks the "perfect place" (ROM,
+	// summary, last message before any current-turn offload stub). Each maps 1:1
+	// to an apiMessage; convert its content to the block form litellm forwards to
+	// Anthropic as cache_control. Anthropic allows at most 4 breakpoints; the
+	// compile marks at most three (+ the tool list), so we stay within budget.
+	// Emitted only for Anthropic-backed models: cache_control is Anthropic's
+	// field, and a strict OpenAI-native endpoint may reject the foreign key or
+	// the string→block content reshaping that carries it.
+	if c.emitsCacheControl() {
+		for i := range messages {
+			if i < len(apiMessages) && messages[i].CacheBreakpoint {
+				apiMessages[i].Content = withCacheControl(apiMessages[i].Content)
+			}
+		}
+	}
+
 	return apiMessages
+}
+
+// emitsCacheControl reports whether the configured model is Anthropic-backed —
+// the only upstream that consumes cache_control. The OpenAI-shaped client
+// fronts many gateways (LiteLLM, Mistral, HuggingFace); only requests routed
+// to a claude model benefit from the marker, and only those get it.
+func (c *Client) emitsCacheControl() bool {
+	return strings.Contains(strings.ToLower(c.model), "claude")
+}
+
+// withCacheControl rewrites a message's content into the block form carrying a
+// cache_control marker on its last block. A plain string becomes a single text
+// block; an existing block list gets the marker appended to its last block.
+func withCacheControl(content interface{}) interface{} {
+	cc := map[string]interface{}{"type": "ephemeral"}
+	switch v := content.(type) {
+	case string:
+		if v == "" {
+			return content
+		}
+		return []map[string]interface{}{{"type": "text", "text": v, "cache_control": cc}}
+	case []map[string]interface{}:
+		if len(v) > 0 {
+			v[len(v)-1]["cache_control"] = cc
+		}
+		return v
+	default:
+		return content
+	}
 }
 
 // convertTools converts shuttle tools to OpenAI format.
@@ -414,16 +461,25 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-			TotalTokens:  resp.Usage.TotalTokens,
-			CostUSD:      c.calculateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
+			InputTokens:              resp.Usage.PromptTokens,
+			OutputTokens:             resp.Usage.CompletionTokens,
+			TotalTokens:              resp.Usage.TotalTokens,
+			CacheReadInputTokens:     resp.Usage.CacheRead(),
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CostUSD:                  c.calculateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
 		},
 		Metadata: map[string]interface{}{
 			"model":         resp.Model,
 			"finish_reason": resp.Choices[0].FinishReason,
 		},
 	}
+
+	// Prompt-cache measurement: one line per call so a run's hit rate is legible
+	// in the logs (cache_read>0 means the provider served a cached prefix).
+	zap.L().Info("prompt cache usage",
+		zap.Int("input_tokens", resp.Usage.PromptTokens),
+		zap.Int("cache_read", resp.Usage.CacheRead()),
+		zap.Int("cache_creation", resp.Usage.CacheCreationInputTokens))
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
@@ -569,10 +625,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	apiTools := c.convertTools(tools)
 
 	req := &ChatCompletionRequest{
-		Model:       c.model,
-		Messages:    apiMessages,
-		Temperature: c.temperature,
-		Stream:      true, // Enable streaming
+		Model:         c.model,
+		Messages:      apiMessages,
+		Temperature:   c.temperature,
+		Stream:        true,                               // Enable streaming
+		StreamOptions: &StreamOptions{IncludeUsage: true}, // final usage chunk (tokens + cache)
 	}
 	if c.usesMaxCompletionTokens() {
 		req.MaxCompletionTokens = c.maxTokens
@@ -626,6 +683,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
+		// Positive identification of the provider's context-too-long refusal
+		// (HLD §5.2 step 12) — the only relief trigger.
+		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
+			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+		}
 		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 
@@ -715,6 +777,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.InputTokens = chunk.Usage.PromptTokens
 			usage.OutputTokens = chunk.Usage.CompletionTokens
 			usage.TotalTokens = chunk.Usage.TotalTokens
+			usage.CacheReadInputTokens = chunk.Usage.CacheRead()
+			usage.CacheCreationInputTokens = chunk.Usage.CacheCreationInputTokens
 		}
 
 		// Check context cancellation
@@ -750,6 +814,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		usage.TotalTokens = tokenCount // Input tokens not available in stream
 	}
 	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	zap.L().Info("prompt cache usage (stream)",
+		zap.Int("input_tokens", usage.InputTokens),
+		zap.Int("cache_read", usage.CacheReadInputTokens),
+		zap.Int("cache_creation", usage.CacheCreationInputTokens))
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -835,6 +903,12 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 	var resp ChatCompletionResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Positive identification of the provider's context-too-long refusal
+	// (HLD §5.2 step 12) — the only relief trigger.
+	if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
+		return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
 	}
 
 	// Check for API errors

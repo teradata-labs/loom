@@ -216,7 +216,7 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	}
 
 	// Convert messages to Anthropic SDK format
-	systemPrompt, sdkMessages := c.convertMessagesToSDK(messages)
+	systemBlocks, sdkMessages := c.convertMessagesToSDK(messages)
 
 	// Validate that we have at least one message
 	if len(sdkMessages) == 0 {
@@ -231,14 +231,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 		Temperature: anthropic.Float(c.temperature),
 	}
 
-	// Add system prompt if present, with cache_control for prompt caching
-	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{
-				Text:         systemPrompt,
-				CacheControl: anthropic.NewCacheControlEphemeralParam(),
-			},
-		}
+	// System blocks carry the compile's cache breakpoints, one per block.
+	if len(systemBlocks) > 0 {
+		params.System = systemBlocks
 	}
 
 	// Add tools if provided; mark the last tool with cache_control
@@ -269,6 +264,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 			return c.client.Messages.New(ctx, params)
 		})
 		if err != nil {
+			if llm.IsBedrockContextTooLong(err) {
+				return nil, fmt.Errorf("bedrock SDK invocation failed: %s: %w", err, llm.ErrContextTooLong)
+			}
 			return nil, fmt.Errorf("bedrock SDK invocation failed: %w", err)
 		}
 		message = result.(*anthropic.Message)
@@ -276,6 +274,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 		// Direct call without rate limiting
 		message, err = c.client.Messages.New(ctx, params)
 		if err != nil {
+			if llm.IsBedrockContextTooLong(err) {
+				return nil, fmt.Errorf("bedrock SDK invocation failed: %s: %w", err, llm.ErrContextTooLong)
+			}
 			return nil, fmt.Errorf("bedrock SDK invocation failed: %w", err)
 		}
 	}
@@ -293,17 +294,26 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 }
 
 // convertMessagesToSDK converts agent messages to Anthropic SDK format.
-// Returns the system prompt and the API messages.
-func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, []anthropic.MessageParam) {
-	var systemPrompts []string
+// Returns the system blocks and the API messages.
+//
+// One block per source system message, each carrying its own cache_control
+// when compile marked it (HLD §5.2 step 8). Merging them into a single block
+// would put ROM and the summary behind one breakpoint, so a fold — which
+// rewrites only the summary — would invalidate ROM's cached prefix too.
+func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
+	var systemBlocks []anthropic.TextBlockParam
 	var sdkMessages []anthropic.MessageParam
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			// Extract system messages - they'll be combined and sent separately
+			// Each system message is its own block; the marker rides with it.
 			if msg.Content != "" {
-				systemPrompts = append(systemPrompts, msg.Content)
+				block := anthropic.TextBlockParam{Text: msg.Content}
+				if msg.CacheBreakpoint {
+					block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				}
+				systemBlocks = append(systemBlocks, block)
 			}
 
 		case "user":
@@ -369,12 +379,36 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, [
 				anthropic.NewToolResultBlock(msg.ToolUseID, msg.Content, false),
 			})
 		}
+		// Prompt-cache breakpoint the compile flagged (§ prompt caching). ROM and
+		// the summary are system messages, already cached via the System block
+		// above; here we mark the message breakpoint (the last stable message
+		// before any current-turn offload stub) on the block just appended.
+		if msg.CacheBreakpoint && msg.Role != "system" {
+			markLastBlockCacheControl(sdkMessages)
+		}
 	}
 
-	// Combine all system prompts
-	systemPrompt := strings.Join(systemPrompts, "\n\n")
+	return systemBlocks, sdkMessages
+}
 
-	return systemPrompt, sdkMessages
+// markLastBlockCacheControl sets an ephemeral cache_control marker on the last
+// content block of the last SDK message — the wire form of a prompt-cache
+// breakpoint on the conversation prefix.
+func markLastBlockCacheControl(msgs []anthropic.MessageParam) {
+	if len(msgs) == 0 {
+		return
+	}
+	blocks := msgs[len(msgs)-1].Content
+	if len(blocks) == 0 {
+		return
+	}
+	b := &blocks[len(blocks)-1]
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
 }
 
 // appendUserOrCoalesceSDK appends content blocks to the last user message in
@@ -522,7 +556,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	tokenCallback llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
 
 	// Convert messages to SDK format
-	systemPrompt, sdkMessages := c.convertMessagesToSDK(messages)
+	systemBlocks, sdkMessages := c.convertMessagesToSDK(messages)
 
 	// Validate that we have at least one message
 	if len(sdkMessages) == 0 {
@@ -537,14 +571,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Temperature: anthropic.Float(c.temperature),
 	}
 
-	// Add system prompt if present, with cache_control for prompt caching
-	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{
-				Text:         systemPrompt,
-				CacheControl: anthropic.NewCacheControlEphemeralParam(),
-			},
-		}
+	// System blocks carry the compile's cache breakpoints, one per block.
+	if len(systemBlocks) > 0 {
+		params.System = systemBlocks
 	}
 
 	// Add tools if provided; mark the last tool with cache_control
@@ -666,6 +695,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Check for stream errors (EOF is normal at end of stream)
 	if err := stream.Err(); err != nil && err != io.EOF {
+		if llm.IsBedrockContextTooLong(err) {
+			return nil, fmt.Errorf("stream error: %s: %w", err, llm.ErrContextTooLong)
+		}
 		return nil, fmt.Errorf("stream error: %w", err)
 	}
 

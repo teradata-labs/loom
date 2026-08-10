@@ -1,0 +1,4 @@
+ALTER TABLE messages
+    DROP COLUMN IF EXISTS evicted,
+    DROP COLUMN IF EXISTS folded,
+    DROP COLUMN IF EXISTS turn;

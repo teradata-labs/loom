@@ -376,9 +376,9 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
 
 **Token Budget**: Controlled by config. Default: 20% of context window (200K * 20% = 40K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
 
-**System Prompt Supplement**: When graph memory is enabled, `graphMemoryPromptSupplement()` appends usage instructions to the agent's system prompt. This teaches the agent when and how to use the `graph_memory` tool (store, retrieve, update, remove, graph, context actions) without requiring manual prompt engineering.
+**Tool Guidance**: The `graph_memory` tool's own description carries its usage guidance. The system prompt gets no graph-memory supplement — the ROM slot is byte-stable for the life of a session (ContextCompilation HLD §3), so per-feature prompt injection is not a channel.
 
-**Implementation**: `pkg/agent/agent.go:injectGraphMemoryContext()` (per-turn context), `pkg/agent/agent.go:graphMemoryPromptSupplement()` (system prompt)
+**Implementation**: `pkg/agent/agent.go:injectGraphMemoryContext()` (per-turn context)
 
 
 ## Key Interactions
@@ -799,7 +799,7 @@ agent:
 - `pkg/memory/salience.go` -- Salience engine (`ComputeSalience`, `BoostSalience`, `RankBySalience`, `CombineScores`)
 - `pkg/memory/budget.go` -- Token budget phased allocation (`BudgetConfig`, `AllocateMemoryBudget`)
 - `pkg/agent/graph_memory_tool.go` -- Agent tool (8 actions)
-- `pkg/agent/agent.go` -- `injectGraphMemoryContext()`, `graphMemoryPromptSupplement()`, `checkAndRegisterGraphMemoryTool()`
+- `pkg/agent/agent.go` -- `injectGraphMemoryContext()`, `checkAndRegisterGraphMemoryTool()`
 - `pkg/storage/backend/backend.go` -- `GraphMemoryProvider` interface
 - `pkg/storage/sqlite/graph_memory_store.go` -- SQLite implementation
 - `pkg/storage/sqlite/migrations/000002_graph_memory.up.sql` -- SQLite schema

@@ -129,7 +129,7 @@ func TestSessionStore_SaveMessage(t *testing.T) {
 		CostUSD:    0.001,
 	}
 
-	err = store.SaveMessage(ctx, "test-session", msg)
+	err = store.SaveMessage(ctx, "test-session", &msg, false)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -421,7 +421,7 @@ func TestSessionStore_GetStats(t *testing.T) {
 		Content:   "test",
 		Timestamp: time.Now(),
 	}
-	_ = store.SaveMessage(ctx, "test-session", msg)
+	_ = store.SaveMessage(ctx, "test-session", &msg, false)
 
 	exec := ToolExecution{
 		ToolName: "test_tool",
@@ -489,7 +489,7 @@ func TestSessionStore_ConcurrentWrites(t *testing.T) {
 				Content:   "concurrent message",
 				Timestamp: time.Now(),
 			}
-			_ = store.SaveMessage(ctx, "concurrent-session", msg)
+			_ = store.SaveMessage(ctx, "concurrent-session", &msg, false)
 		}(i)
 	}
 
@@ -525,7 +525,7 @@ func TestMemory_WithStore_Integration(t *testing.T) {
 	session.AddMessage(ctx, Message{Role: "user", Content: "test"})
 
 	// Persist message
-	err = mem.PersistMessage(ctx, "persistent-session", session.Messages[0])
+	err = mem.PersistMessage(ctx, "persistent-session", &session.Messages[0], false)
 	if err != nil {
 		t.Fatalf("Expected no error persisting message, got %v", err)
 	}
@@ -582,7 +582,7 @@ func TestSessionStore_ConcurrentLoadSession(t *testing.T) {
 			Content:   fmt.Sprintf("seed message %d", i),
 			Timestamp: time.Now(),
 		}
-		if err := store.SaveMessage(ctx, "deadlock-test-session", msg); err != nil {
+		if err := store.SaveMessage(ctx, "deadlock-test-session", &msg, false); err != nil {
 			t.Fatalf("Failed to seed message: %v", err)
 		}
 	}
@@ -620,7 +620,7 @@ func TestSessionStore_ConcurrentLoadSession(t *testing.T) {
 				Content:   fmt.Sprintf("concurrent write %d", id),
 				Timestamp: time.Now(),
 			}
-			if err := store.SaveMessage(ctx, "deadlock-test-session", msg); err != nil {
+			if err := store.SaveMessage(ctx, "deadlock-test-session", &msg, false); err != nil {
 				errs <- fmt.Errorf("SaveMessage failed: %w", err)
 			}
 		}(i)

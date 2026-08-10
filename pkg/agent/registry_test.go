@@ -1171,12 +1171,12 @@ func TestToolFiltering_NoToolsSection(t *testing.T) {
 	registeredTools := agent.ListTools()
 	t.Logf("Registered tools (no tools section): %v", registeredTools)
 
-	// An agent with NO tools section registers exactly load_pattern — the base
-	// pattern-pull verb advertised whenever a pattern library is configured. No
-	// shell_execute, no other builtins (http_request, file_write, etc.), and
-	// workspace registers only with an artifact store, which the test lacks.
-	assert.Equal(t, []string{"load_pattern"}, registeredTools,
-		"Expected only load_pattern with no tools section and no artifact store")
+	// An agent with NO tools section registers exactly the base verbs:
+	// load_pattern (pattern library always configured) plus query_tool_result
+	// and recall (registered always — HLD §6/§7.1). No shell_execute, no other
+	// builtins, and workspace registers only with an artifact store.
+	assert.ElementsMatch(t, []string{"load_pattern", "query_tool_result", "recall"}, registeredTools,
+		"Expected only the base verbs with no tools section and no artifact store")
 
 	// Verify no unexpected tools
 	unexpectedTools := []string{

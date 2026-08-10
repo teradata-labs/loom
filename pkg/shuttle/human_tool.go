@@ -48,9 +48,19 @@ type HumanRequest struct {
 	Context     map[string]interface{} `json:"context"`
 	RequestType string                 `json:"request_type"` // "approval", "decision", "input", "review"
 	Priority    string                 `json:"priority"`     // "low", "normal", "high", "critical"
+	Kind        string                 `json:"kind"`         // "approval" (hook-held) | "question" (contact_human); absent → question
+	Summary     string                 `json:"summary"`      // display digest: tool+args (approval) | question text (question)
 	Timeout     time.Duration          `json:"timeout"`
 	CreatedAt   time.Time              `json:"created_at"`
 	ExpiresAt   time.Time              `json:"expires_at"`
+
+	// Params carries the held call's full parameter map for an approval; a
+	// question has no held call and leaves it empty. Stamped at origin, never
+	// re-derived downstream.
+	Params map[string]interface{} `json:"params"`
+	// ParamsTruncated reports that the paramsMaxBytes bound cut whole pairs out
+	// of Params.
+	ParamsTruncated bool `json:"params_truncated"`
 
 	// Response fields (populated when human responds)
 	Status       string                 `json:"status"` // "pending", "approved", "rejected", "timeout", "responded"
@@ -65,7 +75,11 @@ type HumanRequestStore interface {
 	// Store saves a new human request
 	Store(ctx context.Context, req *HumanRequest) error
 
-	// Get retrieves a human request by ID
+	// Get retrieves a human request by ID. Absence contract: the postgres
+	// store returns (nil, nil) for a missing row so callers can distinguish
+	// absence from a store failure; the sqlite and in-memory stores return an
+	// error. Callers must treat BOTH a nil request and an error as
+	// possibly-absent (the ask waiter does), never dereference unchecked.
 	Get(ctx context.Context, id string) (*HumanRequest, error)
 
 	// Update updates an existing human request
@@ -76,6 +90,20 @@ type HumanRequestStore interface {
 
 	// ListBySession returns all requests for a session
 	ListBySession(ctx context.Context, sessionID string) ([]*HumanRequest, error)
+
+	// RespondToRequest resolves a pending, non-expired request exactly once.
+	// The expiry guard is the store's own — no caller payload can lift it. On
+	// an already-decided or expired request it is a no-op returning nil (the
+	// caller reads current state via Get). Errors only on a missing row / store failure.
+	RespondToRequest(ctx context.Context, requestID, status, response, respondedBy string, responseData map[string]interface{}) error
+
+	// ExpireRequest terminally closes a pending request as "timeout" on behalf
+	// of the harness — the waiter's give-up path, a canceled turn's abandon
+	// write, an expiry sweep. It is the ONLY path that may close a row past its
+	// expiry; a row already resolved is left untouched (closing is not
+	// resolving). A missing row is a no-op. respondedBy records the closing
+	// actor (e.g. "system:expiry", "system:cancel").
+	ExpireRequest(ctx context.Context, requestID, respondedBy string) error
 
 	// Close releases any resources held by the store.
 	Close() error
@@ -207,18 +235,48 @@ func (t *ContactHumanTool) Execute(ctx context.Context, params map[string]interf
 	span.SetAttribute("hitl.priority", priority)
 	span.SetAttribute("hitl.question", question)
 
-	// Extract context (if provided)
+	// Extract context (if provided). The model's map is copied, and the origin
+	// discriminator is stamped by the harness OVER whatever the model supplied:
+	// "kind" is the one field chosen to be free of model control, and store
+	// backstops read it out of this map when the kind column is absent — so it
+	// must be harness-written in both origins.
 	contextData := make(map[string]interface{})
 	if c, ok := params["context"].(map[string]interface{}); ok {
-		contextData = c
+		for k, v := range c {
+			contextData[k] = v
+		}
 	}
+	contextData["kind"] = "question"
 
-	// Extract timeout
+	// Extract timeout. The model-supplied value is clamped both ways: a
+	// positive floor (a zero or negative timeout would store an already-expired
+	// pending request no response can resolve) and a ceiling at the turn's own
+	// deadline — the model chooses how long it is willing to wait, never a
+	// window outliving the turn, which would leave a row answerable for a call
+	// that already returned.
 	timeoutSeconds := float64(t.timeout.Seconds())
 	if ts, ok := params["timeout_seconds"].(float64); ok {
 		timeoutSeconds = ts
 	}
+	const minTimeoutSeconds = 5
+	if timeoutSeconds < minTimeoutSeconds {
+		timeoutSeconds = minTimeoutSeconds
+	}
 	timeout := time.Duration(timeoutSeconds) * time.Second
+	// Two ceilings, both the harness's, neither the model's: the CONFIGURED
+	// timeout is the maximum window the host allows (so a worker-driven turn
+	// with no deadline still cannot hold a row for a model-chosen day), and
+	// the turn deadline caps it further when one exists. No re-floor after
+	// the deadline ceiling — a floor pushing past the deadline would store a
+	// row outliving its waiter.
+	if timeout > t.timeout {
+		timeout = t.timeout
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining < timeout {
+			timeout = remaining
+		}
+	}
 	span.SetAttribute("hitl.timeout_seconds", int32(timeout.Seconds()))
 
 	// Extract session ID and agent ID from context (if available)
@@ -232,8 +290,15 @@ func (t *ContactHumanTool) Execute(ctx context.Context, params map[string]interf
 		span.SetAttribute("agent_id", agentID)
 	}
 
-	// Create human request
+	// Create human request. The stored expiry is clamped AT the deadline
+	// itself: the duration was ceilinged an instant earlier, and stamping
+	// now+duration from a later clock would overshoot the deadline by the gap
+	// — the exact row-outlives-its-turn sliver the ceiling exists to remove.
 	now := t.now()
+	expiresAt := now.Add(timeout)
+	if dl, ok := ctx.Deadline(); ok && expiresAt.After(dl) {
+		expiresAt = dl
+	}
 	req := &HumanRequest{
 		ID:          uuid.New().String(),
 		AgentID:     agentID,
@@ -242,9 +307,11 @@ func (t *ContactHumanTool) Execute(ctx context.Context, params map[string]interf
 		Context:     contextData,
 		RequestType: requestType,
 		Priority:    priority,
+		Kind:        "question",
+		Summary:     question,
 		Timeout:     timeout,
 		CreatedAt:   now,
-		ExpiresAt:   now.Add(timeout),
+		ExpiresAt:   expiresAt,
 		Status:      "pending",
 	}
 
@@ -365,7 +432,12 @@ func (t *ContactHumanTool) Backend() string {
 	return "" // Backend-agnostic
 }
 
-// waitForResponse polls the store until a response is received or timeout occurs.
+// waitForResponse polls the store until a response is received or timeout
+// occurs. BOTH give-up exits terminally close the row they abandon — the same
+// law the ask waiter follows — so an unanswered or canceled question can
+// never sit answerable for a call that already returned; a response that won
+// the race against the close is returned as a response, never misreported as
+// a timeout the row contradicts.
 func (t *ContactHumanTool) waitForResponse(ctx context.Context, requestID string, timeout time.Duration) (*HumanRequest, bool) {
 	deadline := t.now().Add(timeout)
 	ticker := time.NewTicker(t.pollInterval)
@@ -374,17 +446,33 @@ func (t *ContactHumanTool) waitForResponse(ctx context.Context, requestID string
 	for {
 		select {
 		case <-ctx.Done():
+			// A deadline-clamped wait dies at the same instant as its context,
+			// and this arm usually wins that race — label the close by which
+			// clock actually ran out so the recorded actor is truthful.
+			by := "system:cancel"
+			if t.now().After(deadline) {
+				by = "system:expiry"
+			}
+			if won := t.closeAbandoned(ctx, requestID, by); won != nil {
+				return won, false
+			}
 			return nil, true // Context canceled
 		case <-ticker.C:
 			// Check if we've exceeded the deadline
 			if t.now().After(deadline) {
+				if won := t.closeAbandoned(ctx, requestID, "system:expiry"); won != nil {
+					return won, false
+				}
 				return nil, true // Timed out
 			}
 
-			// Poll for response
+			// Poll for response. The postgres store reports an absent row as
+			// (nil, nil) — its documented contract — so a nil row must be
+			// tolerated exactly like a transient error, never dereferenced: a
+			// sweep may legitimately retire the row under a live waiter.
 			req, err := t.store.Get(ctx, requestID)
-			if err != nil {
-				continue // Retry on error
+			if err != nil || req == nil {
+				continue // Retry on error or absent row until the deadline
 			}
 
 			// Check if human has responded
@@ -393,6 +481,23 @@ func (t *ContactHumanTool) waitForResponse(ctx context.Context, requestID string
 			}
 		}
 	}
+}
+
+// closeAbandoned terminally closes a question row the waiter is giving up on,
+// then re-reads it: a resolution that won the race is returned so the caller
+// reports the response instead of a timeout the durable row contradicts. The
+// write runs detached from the (possibly canceled) caller context while
+// keeping its values, so the tenant identity the postgres store requires
+// travels with it.
+func (t *ContactHumanTool) closeAbandoned(ctx context.Context, requestID, by string) *HumanRequest {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = t.store.ExpireRequest(wctx, requestID, by)
+	if req, err := t.store.Get(wctx, requestID); err == nil && req != nil &&
+		req.Status != "pending" && req.Status != "timeout" {
+		return req
+	}
+	return nil
 }
 
 // extractFromContext extracts a value from the context (if it exists).
@@ -420,26 +525,40 @@ func NewInMemoryHumanRequestStore() *InMemoryHumanRequestStore {
 	}
 }
 
+// cloneHumanRequest copies req with its maps duplicated, so stored state and
+// caller-visible state never share a map. Nil maps stay nil.
+func cloneHumanRequest(req *HumanRequest) *HumanRequest {
+	reqCopy := *req
+	reqCopy.Context = cloneStringMap(req.Context)
+	reqCopy.ResponseData = cloneStringMap(req.ResponseData)
+	reqCopy.Params = cloneStringMap(req.Params)
+	return &reqCopy
+}
+
+// cloneStringMap returns a copy of m one level deep; nil in, nil out.
+func cloneStringMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
 func (s *InMemoryHumanRequestStore) Store(ctx context.Context, req *HumanRequest) error {
+	// A pending request must carry an expiry: a zero ExpiresAt would make the
+	// row permanently approvable, and the resolve CAS's expiry guard is keyed
+	// on the stored value. Both in-repo producers always stamp one; this guards
+	// exported-API callers.
+	if req.Status == "pending" && req.ExpiresAt.IsZero() {
+		return fmt.Errorf("pending human request %s has no expiry", req.ID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Deep copy to prevent external modification
-	reqCopy := *req
-	if req.Context != nil {
-		reqCopy.Context = make(map[string]interface{})
-		for k, v := range req.Context {
-			reqCopy.Context[k] = v
-		}
-	}
-	if req.ResponseData != nil {
-		reqCopy.ResponseData = make(map[string]interface{})
-		for k, v := range req.ResponseData {
-			reqCopy.ResponseData[k] = v
-		}
-	}
-
-	s.requests[req.ID] = &reqCopy
+	s.requests[req.ID] = cloneHumanRequest(req)
 	return nil
 }
 
@@ -452,22 +571,7 @@ func (s *InMemoryHumanRequestStore) Get(ctx context.Context, id string) (*HumanR
 		return nil, fmt.Errorf("request not found: %s", id)
 	}
 
-	// Deep copy to prevent external modification
-	reqCopy := *req
-	if req.Context != nil {
-		reqCopy.Context = make(map[string]interface{})
-		for k, v := range req.Context {
-			reqCopy.Context[k] = v
-		}
-	}
-	if req.ResponseData != nil {
-		reqCopy.ResponseData = make(map[string]interface{})
-		for k, v := range req.ResponseData {
-			reqCopy.ResponseData[k] = v
-		}
-	}
-
-	return &reqCopy, nil
+	return cloneHumanRequest(req), nil
 }
 
 func (s *InMemoryHumanRequestStore) Update(ctx context.Context, req *HumanRequest) error {
@@ -478,22 +582,7 @@ func (s *InMemoryHumanRequestStore) Update(ctx context.Context, req *HumanReques
 		return fmt.Errorf("request not found: %s", req.ID)
 	}
 
-	// Deep copy
-	reqCopy := *req
-	if req.Context != nil {
-		reqCopy.Context = make(map[string]interface{})
-		for k, v := range req.Context {
-			reqCopy.Context[k] = v
-		}
-	}
-	if req.ResponseData != nil {
-		reqCopy.ResponseData = make(map[string]interface{})
-		for k, v := range req.ResponseData {
-			reqCopy.ResponseData[k] = v
-		}
-	}
-
-	s.requests[req.ID] = &reqCopy
+	s.requests[req.ID] = cloneHumanRequest(req)
 	return nil
 }
 
@@ -504,15 +593,7 @@ func (s *InMemoryHumanRequestStore) ListPending(ctx context.Context) ([]*HumanRe
 	var pending []*HumanRequest
 	for _, req := range s.requests {
 		if req.Status == "pending" {
-			// Deep copy
-			reqCopy := *req
-			if req.Context != nil {
-				reqCopy.Context = make(map[string]interface{})
-				for k, v := range req.Context {
-					reqCopy.Context[k] = v
-				}
-			}
-			pending = append(pending, &reqCopy)
+			pending = append(pending, cloneHumanRequest(req))
 		}
 	}
 	return pending, nil
@@ -525,22 +606,17 @@ func (s *InMemoryHumanRequestStore) ListBySession(ctx context.Context, sessionID
 	var sessionRequests []*HumanRequest
 	for _, req := range s.requests {
 		if req.SessionID == sessionID {
-			// Deep copy
-			reqCopy := *req
-			if req.Context != nil {
-				reqCopy.Context = make(map[string]interface{})
-				for k, v := range req.Context {
-					reqCopy.Context[k] = v
-				}
-			}
-			sessionRequests = append(sessionRequests, &reqCopy)
+			sessionRequests = append(sessionRequests, cloneHumanRequest(req))
 		}
 	}
 	return sessionRequests, nil
 }
 
-// RespondToRequest updates a human request with a response.
-// This is called by the human review interface (CLI, Web UI, API).
+// RespondToRequest resolves a pending, non-expired request exactly once.
+// On an already-decided or expired request it is a no-op returning nil, so the
+// caller reads current state via Get. Errors only on a missing request. The
+// expiry guard is the store's own: no status value in the caller's payload can
+// lift it — terminal closes past expiry go through ExpireRequest.
 func (s *InMemoryHumanRequestStore) RespondToRequest(ctx context.Context, requestID, status, response, respondedBy string, responseData map[string]interface{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -550,18 +626,52 @@ func (s *InMemoryHumanRequestStore) RespondToRequest(ctx context.Context, reques
 		return fmt.Errorf("request not found: %s", requestID)
 	}
 
-	if req.Status != "pending" {
-		return fmt.Errorf("request already responded to (status: %s)", req.Status)
+	now := time.Now()
+	if req.Status != "pending" || now.After(req.ExpiresAt) {
+		return nil
 	}
 
-	now := time.Now()
 	req.Status = status
 	req.Response = response
-	req.ResponseData = responseData
+	req.ResponseData = cloneResponseData(responseData)
 	req.RespondedAt = &now
 	req.RespondedBy = respondedBy
 
 	return nil
+}
+
+// ExpireRequest terminally closes a pending request as "timeout" regardless of
+// its expiry — the harness's close for abandoned or swept rows. A resolved row
+// is left untouched (closing is not resolving); a missing row is a no-op.
+func (s *InMemoryHumanRequestStore) ExpireRequest(ctx context.Context, requestID, respondedBy string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	req, exists := s.requests[requestID]
+	if !exists || req.Status != "pending" {
+		return nil
+	}
+
+	now := time.Now()
+	req.Status = "timeout"
+	req.Response = ""
+	req.ResponseData = nil
+	req.RespondedAt = &now
+	req.RespondedBy = respondedBy
+	return nil
+}
+
+// cloneResponseData copies the caller's map so later caller mutation cannot
+// corrupt stored state (every other method in this store clones likewise).
+func cloneResponseData(data map[string]interface{}) map[string]interface{} {
+	if data == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		out[k] = v
+	}
+	return out
 }
 
 // Close is a no-op; in-memory store has no resources to release.

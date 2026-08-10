@@ -329,17 +329,21 @@ func TestServer_ListTools_OnlyLoadPatternBaseTool(t *testing.T) {
 		t.Fatalf("ListTools failed: %v", err)
 	}
 
-	// The sole always-present tool is load_pattern, the on-demand pattern pull
-	// verb an agent with a pattern library advertises from construction. No other
-	// builtin auto-registers: shell_execute is not auto-registered, other tools
-	// must be explicitly configured, and query_tool_result / get_error_details are
-	// disclosed progressively (after the first large result / first error).
+	// The always-present base tools: load_pattern (pattern library configured
+	// from construction), plus query_tool_result and recall — registered
+	// always (HLD §6/§7.1). No other builtin auto-registers.
+	expected := map[string]bool{"load_pattern": true, "query_tool_result": true, "recall": true}
 	names := make([]string, len(resp.Tools))
 	for i, tl := range resp.Tools {
 		names[i] = tl.Name
 	}
-	if len(names) != 1 || names[0] != "load_pattern" {
-		t.Errorf("Expected only the load_pattern base tool, got: %v", names)
+	if len(names) != len(expected) {
+		t.Errorf("Expected the three base tools, got: %v", names)
+	}
+	for _, n := range names {
+		if !expected[n] {
+			t.Errorf("Unexpected base tool %q, got: %v", n, names)
+		}
 	}
 }
 

@@ -101,10 +101,9 @@ prompt:
     - Do NOT set `llm.provider` unless the user EXPLICITLY requested a
       provider. Agents inherit the server's default LLM.
     - Do NOT list auto-injected tools (workspace, query_tool_result,
-      conversation_memory, session_memory, get_error_details, publish,
-      shared_memory_*, send_message) in the tool list — they are
-      always-on for workflow agents and double-listing makes validation
-      noisier.
+      recall, publish, shared_memory_*, send_message) in the tool
+      list — they are always-on for workflow agents and double-listing
+      makes validation noisier.
     - Do NOT create workflows before their agents exist on disk. The
       validator will fail.
   constraints:

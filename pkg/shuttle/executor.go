@@ -25,7 +25,6 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/storage"
-	"go.uber.org/zap"
 )
 
 // ToolRegistry is an interface for dynamic tool discovery.
@@ -50,12 +49,14 @@ type BuiltinToolProvider interface {
 type Executor struct {
 	registry            *Registry
 	sharedMemory        *storage.SharedMemoryStore
-	sqlResultStore      storage.ResultStore // SQL result store for queryable large results
-	threshold           int64               // Threshold for using shared memory (bytes)
+	threshold           int64 // Threshold for using shared memory (bytes)
 	permissionChecker   *PermissionChecker
-	toolRegistry        ToolRegistry        // Tool registry for dynamic tool discovery
-	mcpManager          MCPManager          // MCP manager for dynamic MCP tool registration
-	builtinToolProvider BuiltinToolProvider // Builtin tool provider for dynamic builtin tool registration
+	admissionChain      *Chain                       // Admission hook chain; nil is a pure pass-through
+	approvedSet         ApprovedSetAccessor          // Approved-set accessor threaded to hooks as req.State; nil until an approved-set store is wired
+	identityResolver    func(context.Context) string // Resolves AdmissionRequest.UserID from ctx; nil yields ""
+	toolRegistry        ToolRegistry                 // Tool registry for dynamic tool discovery
+	mcpManager          MCPManager                   // MCP manager for dynamic MCP tool registration
+	builtinToolProvider BuiltinToolProvider          // Builtin tool provider for dynamic builtin tool registration
 
 	// Metrics for large parameter optimization
 	largeParamStores      atomic.Int64 // Count of parameters stored
@@ -63,12 +64,6 @@ type Executor struct {
 	largeParamBytesStored atomic.Int64 // Total bytes stored
 	largeParamDerefErrors atomic.Int64 // Count of dereference failures
 
-	// Per-mutation debug hooks, set by the agent layer, which owns the
-	// context-dump switch and the per-session turn counter. contextDebugEnabled
-	// gates the large-result offload debug log; contextDebugTurn tags it with the
-	// in-flight turn. A nil contextDebugEnabled disables the log.
-	contextDebugEnabled func() bool
-	contextDebugTurn    func(sessionID string) int
 }
 
 // NewExecutor creates a new tool executor.
@@ -93,42 +88,37 @@ func (e *Executor) SharedMemoryThreshold() int64 {
 	return e.threshold
 }
 
-// SetSQLResultStore configures SQL result store for queryable large SQL results.
-func (e *Executor) SetSQLResultStore(sqlStore storage.ResultStore) {
-	e.sqlResultStore = sqlStore
-}
-
-// SetContextDebug wires the per-mutation debug hooks the agent layer uses to
-// gate and tag the large-result offload debug log: enabled reads the
-// context-dump switch, and turnOf returns the in-flight turn for a session. A
-// nil enabled disables the log.
-func (e *Executor) SetContextDebug(enabled func() bool, turnOf func(sessionID string) int) {
-	e.contextDebugEnabled = enabled
-	e.contextDebugTurn = turnOf
-}
-
-// logLargeResultOffload emits the per-mutation debug log for a stored large
-// result. No-op unless the context-dump switch is on.
-func (e *Executor) logLargeResultOffload(ctx context.Context, referenceID string, size int64) {
-	if e.contextDebugEnabled == nil || !e.contextDebugEnabled() {
-		return
-	}
-	sessionID := session.SessionIDFromContext(ctx)
-	turn := 0
-	if e.contextDebugTurn != nil {
-		turn = e.contextDebugTurn(sessionID)
-	}
-	zap.L().Debug("context mutation: large-result offload",
-		zap.String("session_id", sessionID),
-		zap.Int("turn", turn),
-		zap.String("reference_id", referenceID),
-		zap.Int64("size_bytes", size),
-		zap.Int64("threshold_bytes", e.threshold))
-}
-
 // SetPermissionChecker configures permission checking for tool execution.
 func (e *Executor) SetPermissionChecker(checker *PermissionChecker) {
 	e.permissionChecker = checker
+}
+
+// SetAdmissionChain configures the admission hook chain consulted before every
+// tool body runs. A nil chain leaves execution as a pure pass-through.
+func (e *Executor) SetAdmissionChain(chain *Chain) {
+	e.admissionChain = chain
+}
+
+// SetApprovedSet configures the approved-set accessor threaded to admission
+// hooks as AdmissionRequest.State. A nil accessor leaves a gated-allowlist with
+// no store to read, so it fails closed.
+func (e *Executor) SetApprovedSet(accessor ApprovedSetAccessor) {
+	e.approvedSet = accessor
+}
+
+// ApprovedSet returns the wired approved-set accessor (nil when none). The set
+// is per-accessor state, so introspection must go through the same instance the
+// executor threads to hooks.
+func (e *Executor) ApprovedSet() ApprovedSetAccessor {
+	return e.approvedSet
+}
+
+// SetIdentityResolver configures how AdmissionRequest.UserID is read from the
+// call context. pkg/shuttle cannot import the storage layer that owns the
+// user-id context key without an import cycle, so the composition layer injects
+// the resolver here. A nil resolver yields an empty UserID.
+func (e *Executor) SetIdentityResolver(resolver func(context.Context) string) {
+	e.identityResolver = resolver
 }
 
 // SetToolRegistry configures the tool registry for dynamic tool discovery.
@@ -148,8 +138,75 @@ func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 	e.builtinToolProvider = provider
 }
 
+// admit runs the admission gates for a tool call. It returns the request handed
+// to the hooks, the admission result, and — when the decision is Deny — a ready
+// permission_denied Result to return in place of running the tool. The
+// name-level PermissionChecker enforces UNCONDITIONALLY when set — with or
+// without a chain attached — so SetPermissionChecker is never silently inert:
+// a host that sets both gets the checker first, then the chain. With neither
+// configured the call is a pure pass-through.
+func (e *Executor) admit(ctx context.Context, toolName string, params map[string]interface{}) (AdmissionRequest, AdmissionResult, *Result) {
+	if e.permissionChecker != nil {
+		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
+			denied := &Result{
+				Success: false,
+				Error:   &Error{Code: "permission_denied", Message: err.Error(), Retryable: false},
+			}
+			return AdmissionRequest{}, AdmissionResult{Decision: Decision{Kind: Deny, Reason: err.Error()}}, denied
+		}
+	}
+	if e.admissionChain == nil {
+		return AdmissionRequest{}, AdmissionResult{Decision: Decision{Kind: NoDecision}}, nil
+	}
+
+	userID := ""
+	if e.identityResolver != nil {
+		userID = e.identityResolver(ctx)
+	}
+
+	req := AdmissionRequest{
+		Ctx:       ctx,
+		ToolName:  toolName,
+		Params:    params,
+		UserID:    userID,
+		SessionID: session.SessionIDFromContext(ctx),
+		State:     e.approvedSet,
+	}
+
+	res := e.admissionChain.Admit(req)
+	if res.Decision.Kind == Deny {
+		denied := &Result{
+			Success: false,
+			Error:   &Error{Code: "permission_denied", Message: res.Decision.Reason, Retryable: false},
+		}
+		return req, res, denied
+	}
+
+	return req, res, nil
+}
+
+// stampAdmissionDecision makes "admission.decision" a RESERVED metadata key
+// sourced solely from the chain: a matched AuditHook's decision is written, and
+// with no audit decision any value a tool body put under the key is deleted, so
+// the persisted trail can never carry a tool-forged verdict. Both executor entry
+// points stamp exactly once, via a deferred call over the named return, so every
+// exit — success, deny, and each error path — carries the correct value.
+func stampAdmissionDecision(result *Result, auditDecision string) {
+	if result == nil {
+		return
+	}
+	if auditDecision == "" {
+		delete(result.Metadata, "admission.decision")
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]interface{})
+	}
+	result.Metadata["admission.decision"] = auditDecision
+}
+
 // Execute executes a tool by name with the given parameters.
-func (e *Executor) Execute(ctx context.Context, toolName string, params map[string]interface{}) (*Result, error) {
+func (e *Executor) Execute(ctx context.Context, toolName string, params map[string]interface{}) (result *Result, err error) {
 	tool, ok := e.registry.Get(toolName)
 	if !ok {
 		// Tool not found locally, try dynamic registration
@@ -163,19 +220,26 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		tool = dynamicTool
 	}
 
-	// Check permissions before execution
-	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
-			return &Result{
-				Success: false,
-				Error:   &Error{Code: "permission_denied", Message: err.Error(), Retryable: false},
-			}, nil
-		}
-	}
-
-	// Normalize parameters to match schema expectations
-	// LLMs naturally use snake_case, but some tools expect camelCase
+	// Normalize parameters BEFORE admission so the chain and the tool body see
+	// one map: the matcher must judge the exact params the tool would receive,
+	// or the caller's key spelling would decide whether a binding matches.
 	normalizedParams := normalizeParametersToSchema(tool, params)
+
+	// Stamp the audit verdict at every exit — success, deny, and each error
+	// return — through the one deferred call (the key is reserved: with no
+	// audit decision a tool-written value is removed).
+	var adm AdmissionResult
+	defer func() { stampAdmissionDecision(result, adm.PersistedDecision()) }()
+
+	// Admit before execution. The tool is already acquired (locally or via
+	// dynamic registration) so an externally-resolved tool is governed at the
+	// same seam as a local one. A Deny returns the permission_denied Result
+	// without running the tool body.
+	req, admRes, denied := e.admit(ctx, toolName, normalizedParams)
+	adm = admRes
+	if denied != nil {
+		return denied, nil
+	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat
 	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
@@ -204,7 +268,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	}
 
 	start := time.Now()
-	result, err := tool.Execute(ctx, finalParams)
+	result, err = tool.Execute(ctx, finalParams)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -219,23 +283,8 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		// Always set execution time, even if tool already set it
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
-
-		// Offload large results EXCEPT for the exempt set, whose outputs must enter whole.
-		// Recall tools retrieve already-stored data; re-offloading them creates infinite
-		// recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
-		// manage_skills delivers the skill body as its own message, so its result must
-		// not be stored by reference regardless of size.
-		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
-		if toolName != "get_tool_result" && toolName != "query_tool_result" && toolName != "manage_skills" {
-			if err := e.handleLargeResult(ctx, result); err != nil {
-				// Log error but don't fail execution
-				// The result is still valid, just not optimized
-				if result.Metadata == nil {
-					result.Metadata = make(map[string]interface{})
-				}
-				result.Metadata["shared_memory_error"] = err.Error()
-			}
-		}
+		// Arrival appends (HLD §1): the result passes through WHOLE. Large-result
+		// offload is a pure render condition of ContextCompilation (§5.2).
 	} else {
 		// Tool returned nil result, create one
 		result = &Result{
@@ -244,24 +293,31 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		}
 	}
 
+	e.admissionChain.Observe(req, result)
+
 	return result, nil
 }
 
 // ExecuteWithTool executes a specific tool instance (not from registry).
-func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[string]interface{}) (*Result, error) {
-	// Check permissions before execution
-	if e.permissionChecker != nil {
-		toolName := tool.Name()
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
-			return &Result{
-				Success: false,
-				Error:   &Error{Code: "permission_denied", Message: err.Error(), Retryable: false},
-			}, nil
-		}
+func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[string]interface{}) (result *Result, err error) {
+	// Normalize parameters BEFORE admission so the chain and the tool body see
+	// one map (same invariant as Execute).
+	normalizedParams := normalizeParametersToSchema(tool, params)
+
+	// Stamp the audit verdict at every exit through the one deferred call.
+	var adm AdmissionResult
+	defer func() { stampAdmissionDecision(result, adm.PersistedDecision()) }()
+
+	// Admit before execution. A Deny returns the permission_denied Result
+	// without running the tool body.
+	req, admRes, denied := e.admit(ctx, tool.Name(), normalizedParams)
+	adm = admRes
+	if denied != nil {
+		return denied, nil
 	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat
-	referencedParams, err := e.handleLargeParameters(ctx, params)
+	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
 	if err != nil {
 		return &Result{
 			Success: false,
@@ -287,7 +343,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	}
 
 	start := time.Now()
-	result, err := tool.Execute(ctx, finalParams)
+	result, err = tool.Execute(ctx, finalParams)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -302,19 +358,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		// Always set execution time, even if tool already set it
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
-
-		// Same exempt set as Execute: recall tools would recurse if re-offloaded, and
-		// manage_skills delivers the skill body as its own message.
-		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
-		if tool.Name() != "get_tool_result" && tool.Name() != "query_tool_result" && tool.Name() != "manage_skills" {
-			if err := e.handleLargeResult(ctx, result); err != nil {
-				// Log error but don't fail execution
-				if result.Metadata == nil {
-					result.Metadata = make(map[string]interface{})
-				}
-				result.Metadata["shared_memory_error"] = err.Error()
-			}
-		}
+		// Arrival appends (HLD §1): the result passes through WHOLE.
 	} else {
 		// Tool returned nil result, create one
 		result = &Result{
@@ -323,162 +367,9 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		}
 	}
 
+	e.admissionChain.Observe(req, result)
+
 	return result, nil
-}
-
-// handleLargeResult checks if result data is large and stores it appropriately.
-// SQL results go to SQLResultStore (queryable), other data goes to SharedMemoryStore (blob).
-func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error {
-	if result.Data == nil {
-		return nil
-	}
-
-	// Serialize data to check size
-	data, err := json.Marshal(result.Data)
-	if err != nil {
-		return fmt.Errorf("failed to serialize result: %w", err)
-	}
-
-	// Inline only when strictly below the threshold; store by reference at or above it.
-	if int64(len(data)) < e.threshold {
-		return nil
-	}
-
-	// Check if this is a SQL result (has rows and columns)
-	isSQLResult := storage.IsSQLResult(result.Data)
-	if e.sqlResultStore != nil && isSQLResult {
-		// Store in queryable SQL table
-		id := storage.GenerateID()
-		ref, err := e.sqlResultStore.Store(ctx, id, result.Data)
-		if err != nil {
-			return fmt.Errorf("failed to store SQL result: %w", err)
-		}
-		e.logLargeResultOffload(ctx, id, int64(len(data)))
-
-		// Get metadata for summary
-		meta, _ := e.sqlResultStore.GetMetadata(ctx, id)
-
-		// Replace data with reference and summary
-		result.DataReference = ref
-		summary := fmt.Sprintf("✓ SQL result stored in queryable table: %d rows, %d columns\n\nColumns: %v\n\n💡 To analyze this data, use: query_tool_result(\"%s\", \"SELECT * FROM results LIMIT 20\")\nExamples:\n- Count: query_tool_result(\"%s\", \"SELECT COUNT(*) as count FROM results\")\n- Filter: query_tool_result(\"%s\", \"SELECT * FROM results WHERE column_name LIKE '%%pattern%%'\")\n- Sample: query_tool_result(\"%s\", \"SELECT * FROM results LIMIT 10\")",
-			meta.RowCount, meta.ColumnCount, meta.Columns, id, id, id, id)
-		result.Data = summary
-
-		return nil
-	}
-
-	// Not SQL or no SQL store configured, use shared memory
-	if e.sharedMemory == nil {
-		return nil // No storage configured
-	}
-
-	// Store in shared memory
-	id := storage.GenerateID()
-	ref, err := e.sharedMemory.Store(id, data, "application/json", nil, session.SessionIDFromContext(ctx))
-	if err != nil {
-		return fmt.Errorf("failed to store in shared memory: %w", err)
-	}
-	e.logLargeResultOffload(ctx, id, int64(len(data)))
-
-	// Get metadata to create rich inline summary (like we do for SQL results)
-	meta, err := e.sharedMemory.GetMetadata(ref, session.SessionIDFromContext(ctx))
-	if err != nil {
-		// Fallback to simple message if metadata unavailable
-		result.DataReference = ref
-		result.Data = fmt.Sprintf("[Large data stored in shared memory: %s]", storage.RefToString(ref))
-		return nil
-	}
-
-	// Replace data with reference and rich metadata summary
-	result.DataReference = ref
-	result.Data = formatSharedMemoryResultSummary(meta, id)
-
-	return nil
-}
-
-// formatSharedMemoryResultSummary creates a rich inline summary with metadata.
-// This eliminates the need for a separate get_tool_result call - agents get all context immediately.
-func formatSharedMemoryResultSummary(meta *storage.DataMetadata, id string) string {
-	var summary strings.Builder
-
-	// Header with data type and size
-	summary.WriteString(fmt.Sprintf("✓ Large %s stored in memory: %d bytes (~%d tokens)\n\n",
-		meta.DataType, meta.SizeBytes, meta.EstimatedTokens))
-
-	// Preview section
-	if meta.Preview != nil && (len(meta.Preview.First5) > 0 || len(meta.Preview.Last5) > 0) {
-		summary.WriteString("📋 Preview:\n")
-		if len(meta.Preview.First5) > 0 {
-			previewJSON, _ := json.MarshalIndent(meta.Preview.First5, "", "  ")
-			summary.WriteString(fmt.Sprintf("First 5 items:\n%s\n", string(previewJSON)))
-		}
-		if len(meta.Preview.Last5) > 0 && meta.DataType == "json_array" {
-			previewJSON, _ := json.MarshalIndent(meta.Preview.Last5, "", "  ")
-			summary.WriteString(fmt.Sprintf("\nLast 5 items:\n%s\n", string(previewJSON)))
-		}
-		summary.WriteString("\n")
-	}
-
-	// Schema section (if available)
-	if meta.Schema != nil {
-		switch meta.DataType {
-		case "json_object":
-			if len(meta.Schema.Fields) > 0 {
-				fieldNames := make([]string, 0, len(meta.Schema.Fields))
-				for _, field := range meta.Schema.Fields {
-					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
-				}
-				summary.WriteString(fmt.Sprintf("📊 Schema: %d fields\n%s\n\n",
-					len(meta.Schema.Fields), strings.Join(fieldNames, ", ")))
-			}
-		case "json_array":
-			summary.WriteString(fmt.Sprintf("📊 Array: %d items\n", meta.Schema.ItemCount))
-			if len(meta.Schema.Fields) > 0 {
-				fieldNames := make([]string, 0, len(meta.Schema.Fields))
-				for _, field := range meta.Schema.Fields {
-					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
-				}
-				summary.WriteString(fmt.Sprintf("Item schema: %s\n\n", strings.Join(fieldNames, ", ")))
-			}
-		case "text":
-			summary.WriteString(fmt.Sprintf("📊 Text: %d lines\n\n", meta.Schema.ItemCount))
-		}
-	}
-
-	// Retrieval hints - how to access this data
-	summary.WriteString("💡 How to retrieve:\n")
-	switch meta.DataType {
-	case "json_object":
-		// Surface the reference_id + a working call. This is the path executor-run
-		// tools (e.g. web_search, http_request) hit; previously it told the model
-		// the object was "too large for direct retrieval" with NO id, so it could
-		// see a result existed but had no way to read it. Pagination windows the
-		// object as text, so the full content is retrievable.
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)  # read the object (paginated)\n", id))
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')  # if it wraps a 'results' array\n", id))
-		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			summary.WriteString("Use the schema above to pick the fields you need.\n")
-		}
-
-	case "json_array":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			summary.WriteString("⚠️ Large dataset - use filtering to avoid context overload\n")
-		}
-
-	case "text":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			summary.WriteString(fmt.Sprintf("⚠️ Large file (%d lines) - paginate to avoid loading all at once\n", meta.Schema.ItemCount))
-		}
-
-	case "csv":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
-		summary.WriteString("💡 CSV auto-converts to queryable SQLite table\n")
-	}
-
-	return summary.String()
 }
 
 // estimateValueSize calculates approximate byte size of a parameter value.

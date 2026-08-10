@@ -154,41 +154,6 @@ func TestAgent_Send_ValueSemantics(t *testing.T) {
 	assert.Equal(t, float64(42), result["num"]) // JSON numbers are float64
 }
 
-func TestAgent_Send_ReferenceSemantics(t *testing.T) {
-	ctx := context.Background()
-
-	// Create agent with always-reference policy
-	refStore := NewMockReferenceStore()
-	policy := newTestPolicyManager(true, 0)
-
-	agent := &Agent{
-		config: &Config{
-			Name: "agent1",
-		},
-		refStore:   refStore,
-		commPolicy: policy,
-	}
-
-	// Send message (should use reference)
-	data := map[string]interface{}{
-		"large_data": "some data that should be stored as reference",
-	}
-
-	msg, err := agent.Send(ctx, "agent2", "session_state", data)
-	require.NoError(t, err)
-	assert.NotNil(t, msg)
-
-	// Verify payload uses reference
-	assert.Nil(t, msg.Payload.GetValue())
-	assert.NotNil(t, msg.Payload.GetReference())
-
-	// Verify reference is valid
-	ref := msg.Payload.GetReference()
-	assert.NotEmpty(t, ref.Id)
-	assert.Equal(t, loomv1.ReferenceType_REFERENCE_TYPE_SESSION_STATE, ref.Type)
-	assert.Equal(t, loomv1.ReferenceStore_REFERENCE_STORE_MEMORY, ref.Store)
-}
-
 func TestAgent_Receive_ValueSemantics(t *testing.T) {
 	ctx := context.Background()
 
@@ -234,55 +199,6 @@ func TestAgent_Receive_ValueSemantics(t *testing.T) {
 	assert.Equal(t, float64(42), resultMap["num"])
 }
 
-func TestAgent_Receive_ReferenceSemantics(t *testing.T) {
-	ctx := context.Background()
-
-	// Create agent
-	refStore := NewMockReferenceStore()
-	policy := newTestPolicyManager(true, 0)
-
-	agent := &Agent{
-		config: &Config{
-			Name: "agent2",
-		},
-		refStore:   refStore,
-		commPolicy: policy,
-	}
-
-	// Store data in reference store
-	data := map[string]interface{}{
-		"large_data": "some data stored as reference",
-	}
-	dataBytes, err := json.Marshal(data)
-	require.NoError(t, err)
-
-	ref, err := refStore.Store(ctx, dataBytes, communication.StoreOptions{
-		Type: loomv1.ReferenceType_REFERENCE_TYPE_WORKFLOW_CONTEXT,
-	})
-	require.NoError(t, err)
-
-	// Create message with reference payload
-	msg := &loomv1.CommunicationMessage{
-		Id:        "test-msg-2",
-		FromAgent: "agent1",
-		ToAgent:   "agent2",
-		Payload: &loomv1.MessagePayload{
-			Data: &loomv1.MessagePayload_Reference{
-				Reference: ref,
-			},
-		},
-		Timestamp: time.Now().Unix(),
-	}
-
-	// Receive and verify
-	result, err := agent.Receive(ctx, msg)
-	require.NoError(t, err)
-
-	resultMap, ok := result.(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "some data stored as reference", resultMap["large_data"])
-}
-
 func TestAgent_SendReceive_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
@@ -324,25 +240,6 @@ func TestAgent_SendReceive_RoundTrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "processing", resultMap["workflow_step"])
 	assert.Equal(t, float64(75), resultMap["progress"])
-}
-
-func TestAgent_Send_MissingReferenceStore(t *testing.T) {
-	ctx := context.Background()
-
-	// Create agent without reference store
-	agent := &Agent{
-		config: &Config{
-			Name: "agent1",
-		},
-		commPolicy: newTestPolicyManager(false, 1024*1024),
-	}
-
-	data := map[string]interface{}{"key": "value"}
-	msg, err := agent.Send(ctx, "agent2", "control", data)
-
-	assert.Error(t, err)
-	assert.Nil(t, msg)
-	assert.Contains(t, err.Error(), "reference store not configured")
 }
 
 func TestAgent_Send_MissingPolicy(t *testing.T) {
@@ -406,37 +303,16 @@ func TestAgent_Send_AutoPromote(t *testing.T) {
 	assert.NotNil(t, msg1.Payload.GetValue())
 	assert.Nil(t, msg1.Payload.GetReference())
 
-	// Send large message (> 100 bytes, should use reference)
+	// A large message also rides inline — the ref path is deleted (D3):
+	// inter-agent messages carry content inline, bounded by the write rule.
 	largeData := map[string]interface{}{
-		"large": "this is a much larger payload that exceeds the 100 byte threshold and should trigger auto-promotion to reference-based communication",
+		"large": "this is a much larger payload that exceeds the 100 byte threshold and would have triggered auto-promotion to reference-based communication",
 	}
 
 	msg2, err := agent.Send(ctx, "agent2", "tool_result", largeData)
 	require.NoError(t, err)
-	assert.Nil(t, msg2.Payload.GetValue())
-	assert.NotNil(t, msg2.Payload.GetReference())
-}
-
-func TestAgent_InferReferenceType(t *testing.T) {
-	tests := []struct {
-		messageType  string
-		expectedType loomv1.ReferenceType
-	}{
-		{"session_state", loomv1.ReferenceType_REFERENCE_TYPE_SESSION_STATE},
-		{"workflow_context", loomv1.ReferenceType_REFERENCE_TYPE_WORKFLOW_CONTEXT},
-		{"collaboration_state", loomv1.ReferenceType_REFERENCE_TYPE_COLLABORATION_STATE},
-		{"tool_result", loomv1.ReferenceType_REFERENCE_TYPE_TOOL_RESULT},
-		{"pattern_data", loomv1.ReferenceType_REFERENCE_TYPE_PATTERN_DATA},
-		{"trace", loomv1.ReferenceType_REFERENCE_TYPE_OBSERVABILITY_TRACE},
-		{"unknown", loomv1.ReferenceType_REFERENCE_TYPE_LARGE_PAYLOAD},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.messageType, func(t *testing.T) {
-			result := inferReferenceType(tt.messageType)
-			assert.Equal(t, tt.expectedType, result)
-		})
-	}
+	assert.NotNil(t, msg2.Payload.GetValue())
+	assert.Nil(t, msg2.Payload.GetReference())
 }
 
 // Tests for Message Queue Integration

@@ -16,8 +16,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,8 +24,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
@@ -178,55 +174,6 @@ func forceEnvDumpOff(t *testing.T) {
 	resetCtxDumpEnvOnce()
 }
 
-// --- AC1: compaction emits a debug log with the switch on --------------------
-
-// TestContextDebug_AC1_CompactionEmitsDebugLogOn drives a real compaction on a
-// session's SegmentedMemory with the switch on and asserts the debug log carries
-// the session id + turn, the compressed batch size, the boundary-adjustment flag,
-// the L1/L2 token counts before→after, and the cumulative L2→Swap eviction count.
-func TestContextDebug_AC1_CompactionEmitsDebugLogOn(t *testing.T) {
-	const sessionID = "sess-di-ac1"
-	ag, _ := newDebugRenderAgent(t, true)
-
-	ctx := session.WithSessionID(context.Background(), sessionID)
-	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, sessionID, ag.config.Name, "")
-	require.NotNil(t, sess)
-	segMem, ok := sess.SegmentedMem.(*SegmentedMemory)
-	require.True(t, ok, "the session carries a *SegmentedMemory")
-
-	// A user/assistant/user run so CompactMemory keeps the newest user message in
-	// L1 and compresses the two before it — a non-zero batch with the boundary
-	// moved off the newest user message.
-	segMem.AddMessage(ctx, Message{Role: "user", Content: "first question that fills the kernel"})
-	segMem.AddMessage(ctx, Message{Role: "assistant", Content: "first answer that fills the kernel"})
-	segMem.AddMessage(ctx, Message{Role: "user", Content: "second question kept pinned in L1"})
-
-	logs, restore := captureZap(t)
-	defer restore()
-
-	compressed, _ := segMem.CompactMemory(ctx)
-	require.Equal(t, 2, compressed, "the two pre-boundary messages were compacted")
-
-	rec := onlyMutationRecord(t, logs, msgCompaction)
-
-	assert.Equal(t, sessionID, strField(t, rec, "session_id"), "log carries the session id")
-	assert.GreaterOrEqual(t, intField(t, rec, "turn"), int64(0), "log carries the turn")
-	assert.Equal(t, int64(2), intField(t, rec, "batch_size"), "log carries the compressed batch size")
-	assert.True(t, boolField(t, rec, "boundary_adjusted"),
-		"log reports the boundary was adjusted to keep the newest user message in L1")
-
-	// L1/L2 token counts before→after: L1 shrank as its messages folded into L2.
-	l1Before := intField(t, rec, "l1_tokens_before")
-	l1After := intField(t, rec, "l1_tokens_after")
-	assert.Less(t, l1After, l1Before, "L1 token count fell across the compaction")
-	assert.GreaterOrEqual(t, intField(t, rec, "l2_tokens_after"), intField(t, rec, "l2_tokens_before"),
-		"L2 token count did not fall across the compaction")
-
-	// The L2→Swap eviction count is carried (zero here — nothing was evicted).
-	assert.GreaterOrEqual(t, intField(t, rec, "swap_evictions"), int64(0),
-		"log carries the cumulative L2→Swap eviction count")
-}
-
 // --- AC2: skill load emits a debug log with the switch on --------------------
 
 // TestContextDebug_AC2_SkillLoadEmitsDebugLogOn drives a manage_skills(load)
@@ -261,48 +208,6 @@ func TestContextDebug_AC2_SkillLoadEmitsDebugLogOn(t *testing.T) {
 		"log carries the count of tools the skill registered")
 	assert.Equal(t, int64(1), intField(t, rec, "active_set_delta"),
 		"log carries the active-set delta of the load")
-}
-
-// --- AC3: large-result storage emits a debug log with the switch on ----------
-
-// TestContextDebug_AC3_LargeResultOffloadEmitsDebugLogOn drives the agent offload
-// site (formatToolResult) with a payload above the 64 KiB threshold and the switch
-// on, and asserts the debug log carries the session id + turn, the reference id the
-// result was stored under, and the payload size against the offload threshold. A
-// warm-up provider call advances the per-session turn so the log carries a live
-// turn number rather than the pre-conversation zero.
-func TestContextDebug_AC3_LargeResultOffloadEmitsDebugLogOn(t *testing.T) {
-	const sessionID = "sess-di-ac3"
-	redirectCtxDumpSink(t)
-
-	ag, _ := newDebugRenderAgent(t, true)
-
-	// Warm up the per-session turn counter with one provider call.
-	_, err := ag.Chat(context.Background(), sessionID, "warm up the turn counter")
-	require.NoError(t, err)
-
-	payload := "DI_AC3_START\n" + strings.Repeat("large-result filler line\n", 4000) + "DI_AC3_END"
-	require.Greater(t, len(payload), agentKiB64, "payload is above the 64 KiB threshold")
-
-	logs, restore := captureZap(t)
-	defer restore()
-
-	ctx := newCtxDumpContext(sessionID, observability.NewNoOpTracer(), nil)
-	rendered := ag.formatToolResult(ctx, sessionID, "web_search",
-		&shuttle.Result{Success: true, Data: payload}, nil)
-	require.Contains(t, rendered, "stored in memory", "the large result was stored by reference")
-
-	rec := onlyMutationRecord(t, logs, msgLargeResult)
-
-	assert.Equal(t, sessionID, strField(t, rec, "session_id"), "log carries the session id")
-	assert.GreaterOrEqual(t, intField(t, rec, "turn"), int64(1),
-		"log carries the in-flight turn (>=1 after the warm-up provider call)")
-	assert.NotEmpty(t, strField(t, rec, "reference_id"), "log carries the stored reference id")
-
-	threshold := intField(t, rec, "threshold_bytes")
-	assert.Equal(t, int64(agentKiB64), threshold, "log carries the 64 KiB offload threshold")
-	assert.GreaterOrEqual(t, intField(t, rec, "size_bytes"), threshold,
-		"log carries the payload size, at or above the threshold that triggered offload")
 }
 
 // --- AC4: per-session tool assembly emits a debug log with the switch on ------
@@ -341,57 +246,12 @@ func TestContextDebug_AC4_ToolAssemblyEmitsDebugLogOn(t *testing.T) {
 		"the advertised count matches the advertised-names field")
 }
 
-// --- AC5: restore re-fire emits a debug log with the switch on ----------------
-
-// TestContextDebug_AC5_RestoreReFireEmitsDebugLogOn runs the durable-store restart
-// scenario (a live agent builds durable records, then a fresh switch-on agent
-// replays and re-fires) and asserts the restore re-fire debug log carries the
-// session id + turn, the count of loads re-activated (alpha-skill + tooled-skill),
-// and the count of disclosure tools re-registered (get_error_details +
-// query_tool_result). Only the restored agent has the switch on, so the pass emits
-// exactly one record.
-func TestContextDebug_AC5_RestoreReFireEmitsDebugLogOn(t *testing.T) {
-	logs, restore := captureZap(t)
-	defer restore()
-
-	sc := runRestoreScenario(t)
-
-	rec := onlyMutationRecord(t, logs, msgRestoreRefire)
-
-	assert.Equal(t, sc.sessionID, strField(t, rec, "session_id"), "log carries the session id")
-	assert.GreaterOrEqual(t, intField(t, rec, "turn"), int64(0), "log carries the turn")
-	assert.Equal(t, int64(2), intField(t, rec, "loads_reactivated"),
-		"log carries the two durable skill loads the re-fire re-activated")
-	assert.Equal(t, int64(2), intField(t, rec, "tools_reregistered"),
-		"log carries the two disclosure tools (error + large-result) the re-fire re-registered")
-}
-
 // --- AC6: with the switch off, none of the debug logs are emitted -------------
 
 // TestContextDebug_AC6_SwitchOffEmitsNoDebugLogs asserts that at every mutation
 // site, with the switch off, the mutation still happens but its debug log is not
 // emitted. The env switch is forced off so only the config flag decides emission.
 func TestContextDebug_AC6_SwitchOffEmitsNoDebugLogs(t *testing.T) {
-	t.Run("compaction", func(t *testing.T) {
-		forceEnvDumpOff(t)
-		const sessionID = "sess-di-ac6-compaction"
-		ag, _ := newDebugRenderAgent(t, false)
-
-		ctx := session.WithSessionID(context.Background(), sessionID)
-		sess := ag.memory.GetOrCreateSessionWithAgent(ctx, sessionID, ag.config.Name, "")
-		segMem := sess.SegmentedMem.(*SegmentedMemory)
-		segMem.AddMessage(ctx, Message{Role: "user", Content: "first question"})
-		segMem.AddMessage(ctx, Message{Role: "assistant", Content: "first answer"})
-		segMem.AddMessage(ctx, Message{Role: "user", Content: "second question"})
-
-		logs, restore := captureZap(t)
-		defer restore()
-
-		compressed, _ := segMem.CompactMemory(ctx)
-		require.Equal(t, 2, compressed, "the compaction still happened")
-		assert.Zero(t, logs.FilterMessage(msgCompaction).Len(), "no compaction log with the switch off")
-	})
-
 	t.Run("skill_load", func(t *testing.T) {
 		forceEnvDumpOff(t)
 		const sessionID = "sess-di-ac6-skill"
@@ -410,24 +270,6 @@ func TestContextDebug_AC6_SwitchOffEmitsNoDebugLogs(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, activeSkillNames(rig.orch, sessionID), "the skill load still happened")
 		assert.Zero(t, logs.FilterMessage(msgSkillLoad).Len(), "no skill-load log with the switch off")
-	})
-
-	t.Run("large_result", func(t *testing.T) {
-		forceEnvDumpOff(t)
-		const sessionID = "sess-di-ac6-large"
-		ag, _ := newDebugRenderAgent(t, false)
-
-		payload := "AC6_LARGE_START\n" + strings.Repeat("large-result filler line\n", 4000) + "AC6_LARGE_END"
-		require.Greater(t, len(payload), agentKiB64, "payload is above the 64 KiB threshold")
-
-		logs, restore := captureZap(t)
-		defer restore()
-
-		ctx := newCtxDumpContext(sessionID, observability.NewNoOpTracer(), nil)
-		rendered := ag.formatToolResult(ctx, sessionID, "web_search",
-			&shuttle.Result{Success: true, Data: payload}, nil)
-		require.Contains(t, rendered, "stored in memory", "the offload still happened")
-		assert.Zero(t, logs.FilterMessage(msgLargeResult).Len(), "no large-result log with the switch off")
 	})
 
 	t.Run("tool_assembly", func(t *testing.T) {
@@ -454,41 +296,4 @@ func TestContextDebug_AC6_SwitchOffEmitsNoDebugLogs(t *testing.T) {
 		assert.Zero(t, logs.FilterMessage(msgToolAssembly).Len(), "no tool-assembly log with the switch off")
 	})
 
-	t.Run("restore_refire", func(t *testing.T) {
-		forceEnvDumpOff(t)
-		ctx := context.Background()
-		redirectCtxDumpSink(t)
-		skillsDir := writeSkillFixtures(t)
-
-		store, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.db"), observability.NewNoOpTracer())
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = store.Close() })
-
-		const sessionID = "sess-di-ac6-restore"
-
-		// Live agent (switch off) writes the durable records the re-fire keys on.
-		liveLLM := &mockToolCallingLLM{responses: []mockLLMResponse{
-			loadCall("c-alpha", "alpha-skill"),
-			loadCall("c-tooled", "tooled-skill"),
-			rawToolCall("c-err", flakyProbeName, map[string]interface{}{}),
-			rawToolCall("c-big", bulkScanName, map[string]interface{}{}),
-		}}
-		liveAgent, _ := buildRestoreAgent(t, liveLLM, store, skillsDir, newTestErrorStore(t), false)
-		_, err = liveAgent.Chat(ctx, sessionID, "load the skills and run both probes")
-		require.NoError(t, err)
-
-		// Restart with a fresh agent, switch still off: the re-fire runs during
-		// replay but emits nothing.
-		logs, restore := captureZap(t)
-		defer restore()
-
-		restoredLLM := &mockToolCallingLLM{}
-		restoredAgent, restoredOrch := buildRestoreAgent(t, restoredLLM, store, skillsDir, newTestErrorStore(t), false)
-		restoredSession := restoredAgent.memory.GetOrCreateSessionWithAgent(ctx, sessionID, restoredAgent.config.Name, "")
-		require.NotNil(t, restoredSession)
-
-		require.NotEmpty(t, activeSkillNames(restoredOrch, sessionID),
-			"the re-fire still re-activated the durable loads")
-		assert.Zero(t, logs.FilterMessage(msgRestoreRefire).Len(), "no restore re-fire log with the switch off")
-	})
 }

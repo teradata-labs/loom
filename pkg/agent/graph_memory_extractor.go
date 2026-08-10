@@ -279,12 +279,10 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		maxEntities = int(a.graphMemoryConfig.MaxEntitiesPerExtraction)
 	}
 
-	// Gather L2 summaries for narrative context.
+	// Gather the session summary for narrative context (the one cumulative
+	// text — HLD §2; swap-era snapshot retrieval is deleted).
 	var l2Summaries []string
 	if currentL2 := segmentedMem.GetL2Summary(); currentL2 != "" {
-		if snapshots, err := segmentedMem.RetrieveL2Snapshots(extractCtx, 3); err == nil && len(snapshots) > 0 {
-			l2Summaries = append(l2Summaries, snapshots...)
-		}
 		l2Summaries = append(l2Summaries, currentL2)
 	}
 

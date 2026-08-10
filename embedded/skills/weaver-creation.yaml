@@ -13,8 +13,8 @@ prompt:
     When creating agent/workflow YAML, follow these rules strictly:
     1. Use FLAT tool arrays (never nested builtin:/mcp:/custom: subsections)
     2. Never include llm: section unless user explicitly requests a provider
-    3. Never list auto-registered tools (workspace, get_error_details,
-       conversation_memory, session_memory, query_tool_result)
+    3. Never list auto-registered tools (workspace, query_tool_result,
+       recall)
     4. Never list workflow-injected tools (send_message, publish,
        shared_memory_read, shared_memory_write) in agent configs
     5. Always create agents BEFORE workflows that reference them

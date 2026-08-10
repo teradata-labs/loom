@@ -119,6 +119,9 @@ func (s *SessionStore) initSchema() error {
 		timestamp INTEGER NOT NULL,
 		token_count INTEGER DEFAULT 0,
 		cost_usd REAL DEFAULT 0,
+		evicted INTEGER NOT NULL DEFAULT 0,
+		folded INTEGER NOT NULL DEFAULT 0,
+		turn INTEGER NOT NULL DEFAULT 0,
 		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
 
@@ -130,6 +133,7 @@ func (s *SessionStore) initSchema() error {
 		result_json TEXT,
 		error TEXT,
 		execution_time_ms INTEGER,
+		admission_decision TEXT,
 		timestamp INTEGER NOT NULL,
 		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
@@ -269,14 +273,28 @@ func (s *SessionStore) initSchema() error {
 		"parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
 		"session_context":   "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
 		"message_agent_id":  "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
+		// Context-compilation columns (HLD §4.5): seq is the existing
+		// messages.id; evicted/folded are the write-once relief flags; turn is
+		// derived at insert. Legacy rows keep turn = 0 (uniformly old).
+		"evicted": "ALTER TABLE messages ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0",
+		"folded":  "ALTER TABLE messages ADD COLUMN folded INTEGER NOT NULL DEFAULT 0",
+		"turn":    "ALTER TABLE messages ADD COLUMN turn INTEGER NOT NULL DEFAULT 0",
+		// Admission audit decision (TER-710): stamped on every persisted tool
+		// execution; without this guard an upgraded DB fails every
+		// tool_executions INSERT (the error is swallowed) and persistence
+		// silently stops.
+		"admission_decision": "ALTER TABLE tool_executions ADD COLUMN admission_decision TEXT",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
 		// Check if column exists
 		var table string
-		if columnName == "session_context" || columnName == "message_agent_id" {
+		switch columnName {
+		case "session_context", "message_agent_id", "evicted", "folded", "turn":
 			table = "messages"
-		} else {
+		case "admission_decision":
+			table = "tool_executions"
+		default:
 			table = "sessions"
 		}
 
@@ -536,7 +554,11 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 }
 
 // SaveMessage persists a message to the database.
-func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Message) error {
+// The row's turn is derived at insert (HLD §4.5): turnStart — passed only by
+// the Chat()-entry persist site, the only turn-incrementing event — adds 1 to
+// the session's MAX(turn); every other site stamps MAX(turn) unchanged. The
+// derived seq (messages.id) and turn are stamped back onto msg.
+func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.save_message")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
@@ -587,12 +609,27 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		agentID = &msg.AgentID
 	}
 
+	// turn is derived at insert — no counter, no session state (HLD §4.5).
+	turnIncrement := 0
+	if turnStart {
+		turnIncrement = 1
+	}
+	evicted := 0
+	if msg.Evicted {
+		evicted = 1
+	}
+	folded := 0
+	if msg.Folded {
+		folded = 1
+	}
+
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
-	_, err := s.db.ExecContext(ctx, query,
+	res, err := s.db.ExecContext(ctx, query,
 		sessionID,
 		msg.Role,
 		msg.Content,
@@ -604,12 +641,33 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		msg.Timestamp.Unix(),
 		msg.TokenCount,
 		msg.CostUSD,
+		evicted,
+		folded,
+		turnIncrement,
+		sessionID,
 	)
 
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to save message: %w", err)
 	}
+
+	// Stamp the derived seq and turn onto the in-memory message — wiring needed
+	// anyway so the offload stub can print its message_id (HLD §4.5). The
+	// read-back runs under the store lock; a session is single-writer and
+	// messages persist sequentially (the bundled SQLite predates RETURNING).
+	seq, err := res.LastInsertId()
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to read message seq: %w", err)
+	}
+	var turn int64
+	if err := s.db.QueryRowContext(ctx, "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to read message turn: %w", err)
+	}
+	msg.ID = fmt.Sprintf("%d", seq)
+	msg.Turn = turn
 
 	span.SetAttribute("tokens", fmt.Sprintf("%d", msg.TokenCount))
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", msg.CostUSD))
@@ -640,11 +698,15 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 // This avoids re-entrant RLock deadlocks when called from methods that already hold the lock
 // (e.g., LoadSession).
 func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string) ([]Message, error) {
+	// Folded rows are filtered at the database read (HLD §5.2 step 4) — they
+	// are never loaded into memory at all; the summary stands in for them.
+	// Replay order is the seq (messages.id), which also removes the old
+	// equal-timestamp nondeterminism of timestamp ordering.
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
-		WHERE session_id = ?
-		ORDER BY timestamp ASC
+		WHERE session_id = ? AND folded = 0
+		ORDER BY id ASC
 	`
 
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
@@ -660,6 +722,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		var toolCallsJSON, toolUseID, toolResultJSON *string
 		var sessionContext, agentID sql.NullString
 		var timestamp int64
+		var evicted, folded int
 
 		err := rows.Scan(
 			&msgID,
@@ -673,7 +736,12 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&evicted,
+			&folded,
+			&msg.Turn,
 		)
+		msg.Evicted = evicted != 0
+		msg.Folded = folded != 0
 
 		// Populate session_context from nullable database value
 		if sessionContext.Valid {
@@ -722,6 +790,96 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		return nil, fmt.Errorf("error iterating messages: %w", err)
 	}
 
+	return messages, nil
+}
+
+// ListMessagesBySeqRange is the by-seq span read backing recall (HLD §6):
+// rows lo..hi inclusive for one session, seq (messages.id) ascending. Folded
+// rows are included — a summary-cited span is exactly what recall retrieves.
+func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID string, lo, hi int64) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.list_messages_by_seq_range")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		FROM messages
+		WHERE session_id = ? AND id BETWEEN ? AND ?
+		ORDER BY id ASC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, sessionID, lo, hi)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to query message span: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var msgID int64
+		var toolCallsJSON, toolUseID, toolResultJSON *string
+		var sessionContext, agentID sql.NullString
+		var timestamp int64
+		var evicted, folded int
+
+		if err := rows.Scan(
+			&msgID,
+			&msg.Role,
+			&msg.Content,
+			&toolCallsJSON,
+			&toolUseID,
+			&toolResultJSON,
+			&sessionContext,
+			&agentID,
+			&timestamp,
+			&msg.TokenCount,
+			&msg.CostUSD,
+			&evicted,
+			&folded,
+			&msg.Turn,
+		); err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		msg.Evicted = evicted != 0
+		msg.Folded = folded != 0
+		msg.ID = fmt.Sprintf("%d", msgID)
+		msg.Timestamp = time.Unix(timestamp, 0)
+		if sessionContext.Valid {
+			msg.SessionContext = types.SessionContext(sessionContext.String)
+		} else {
+			msg.SessionContext = types.SessionContextDirect
+		}
+		if agentID.Valid {
+			msg.AgentID = agentID.String
+		}
+		if toolCallsJSON != nil {
+			if err := json.Unmarshal([]byte(*toolCallsJSON), &msg.ToolCalls); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal tool calls: %w", err)
+			}
+		}
+		if toolUseID != nil {
+			msg.ToolUseID = *toolUseID
+		}
+		if toolResultJSON != nil {
+			if err := json.Unmarshal([]byte(*toolResultJSON), &msg.ToolResult); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal tool result: %w", err)
+			}
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("error iterating message span: %w", err)
+	}
+
+	span.SetAttribute("message_count", fmt.Sprintf("%d", len(messages)))
 	return messages, nil
 }
 
@@ -787,9 +945,9 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	query := `
 		SELECT DISTINCT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id,
 		       m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd,
-		       m.session_id
+		       m.evicted, m.turn, m.session_id
 		FROM messages m
-		WHERE (
+		WHERE m.folded = 0 AND ((
 			-- Messages from sessions owned by this agent (all contexts)
 			m.session_id IN (SELECT id FROM sessions WHERE agent_id = ?)
 		) OR (
@@ -799,7 +957,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 				WHERE agent_id = ? AND parent_session_id IS NOT NULL
 			)
 			AND m.session_context IN ('coordinator', 'shared')
-		)
+		))
 		ORDER BY m.timestamp ASC
 	`
 
@@ -818,6 +976,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		var toolCallsJSON, toolUseID, toolResultJSON *string
 		var sessionContext, agentID sql.NullString
 		var timestamp int64
+		var evicted int
 
 		err := rows.Scan(
 			&msgID,
@@ -831,6 +990,8 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&evicted,
+			&msg.Turn,
 			&sessionID,
 		)
 		if err != nil {
@@ -841,6 +1002,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
 		msg.Timestamp = time.Unix(timestamp, 0)
+		msg.Evicted = evicted != 0
 
 		if sessionContext.Valid {
 			msg.SessionContext = types.SessionContext(sessionContext.String)
@@ -921,9 +1083,9 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	// Load messages from parent session that are relevant to sub-agents
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json,
-		       session_context, agent_id, timestamp, token_count, cost_usd
+		       session_context, agent_id, timestamp, token_count, cost_usd, evicted, turn
 		FROM messages
-		WHERE session_id = ?
+		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
 		ORDER BY timestamp ASC
 	`
@@ -942,6 +1104,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		var toolCallsJSON, toolUseID, toolResultJSON *string
 		var sessionContext, agentID sql.NullString
 		var timestamp int64
+		var evicted int
 
 		err := rows.Scan(
 			&msgID,
@@ -955,6 +1118,8 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&evicted,
+			&msg.Turn,
 		)
 		if err != nil {
 			span.RecordError(err)
@@ -964,6 +1129,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
 		msg.Timestamp = time.Unix(timestamp, 0)
+		msg.Evicted = evicted != 0
 
 		if sessionContext.Valid {
 			msg.SessionContext = types.SessionContext(sessionContext.String)
@@ -1055,9 +1221,16 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 		execTimeMs = &exec.Result.ExecutionTimeMs
 	}
 
+	// Audit decision — NULL unless an audit binding matched this call (SC-004:
+	// only non-empty rows count as audit records).
+	var admissionDecision *string
+	if exec.AdmissionDecision != "" {
+		admissionDecision = &exec.AdmissionDecision
+	}
+
 	query := `
-		INSERT INTO tool_executions (session_id, tool_name, input_json, result_json, error, execution_time_ms, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tool_executions (session_id, tool_name, input_json, result_json, error, execution_time_ms, admission_decision, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -1067,6 +1240,7 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 		resultJSON,
 		errMsg,
 		execTimeMs,
+		admissionDecision,
 		time.Now().Unix(),
 	)
 
@@ -1158,6 +1332,101 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 
 	span.SetAttribute("session_count", fmt.Sprintf("%d", len(sessionIDs)))
 	return sessionIDs, nil
+}
+
+// MarkEvicted sets evicted=1 on the given rows in one transaction (relief
+// operation; HLD §5.2). Flags are write-once — no code path clears them.
+func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+	if len(seqs) == 0 {
+		return nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.mark_evicted")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to begin evict transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query, args := seqUpdateQuery("UPDATE messages SET evicted = 1 WHERE session_id = ? AND id IN", sessionID, seqs)
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to mark evicted: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to commit evict transaction: %w", err)
+	}
+	span.SetAttribute("rows", fmt.Sprintf("%d", len(seqs)))
+	return nil
+}
+
+// FoldMessages writes summary version n (snapshot_type='fold', content = JSON
+// {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
+// §5.4.6) — never a fold that evaporates on reload.
+func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.fold_messages")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("version", fmt.Sprintf("%d", n))
+
+	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to begin fold transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memory_snapshots (session_id, snapshot_type, content, token_count, created_at)
+		 VALUES (?, 'fold', ?, ?, ?)`,
+		sessionID, string(content), tokenFigure(len(text)), time.Now().Unix(),
+	); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to insert fold snapshot: %w", err)
+	}
+
+	if len(seqs) > 0 {
+		query, args := seqUpdateQuery("UPDATE messages SET folded = 1 WHERE session_id = ? AND id IN", sessionID, seqs)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to set folded flags: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to commit fold transaction: %w", err)
+	}
+	span.SetAttribute("rows", fmt.Sprintf("%d", len(seqs)))
+	return nil
+}
+
+// seqUpdateQuery builds "prefix (?, ?, …)" with sessionID + seqs as args.
+func seqUpdateQuery(prefix, sessionID string, seqs []int64) (string, []interface{}) {
+	placeholders := make([]string, len(seqs))
+	args := make([]interface{}, 0, len(seqs)+1)
+	args = append(args, sessionID)
+	for i, seq := range seqs {
+		placeholders[i] = "?"
+		args = append(args, seq)
+	}
+	return prefix + " (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // SaveMemorySnapshot persists a memory snapshot (L2 summary) to the database.

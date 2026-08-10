@@ -771,3 +771,28 @@ func TestConvertStructuredAgentToYAML_RejectsPhantomTool(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "q-gen", name)
 }
+
+// TestUnknownToolNames_DeletedToolsAreFlagged pins the create/update validation
+// gate against the ContextCompilation tool-surface deletions: an agent spec
+// naming a deleted tool must be reported as unknown, not silently accepted.
+// Before the sweep, autoInjectedOrSpecialTools still whitelisted these four, so
+// a config teaching a ghost tool passed validation.
+func TestUnknownToolNames_DeletedToolsAreFlagged(t *testing.T) {
+	deleted := []string{"session_memory", "conversation_memory", "get_error_details", "get_tool_result"}
+	spec := map[string]interface{}{"tools": []interface{}{}}
+	for _, name := range deleted {
+		spec["tools"] = []interface{}{name}
+		unknown := unknownToolNames(spec)
+		if len(unknown) != 1 || unknown[0] != name {
+			t.Errorf("deleted tool %q should be flagged unknown, got %v", name, unknown)
+		}
+	}
+
+	// The surviving retrieval tools stay valid.
+	for _, name := range []string{"query_tool_result", "recall"} {
+		spec["tools"] = []interface{}{name}
+		if unknown := unknownToolNames(spec); len(unknown) != 0 {
+			t.Errorf("%q must remain a valid tool name, got unknown=%v", name, unknown)
+		}
+	}
+}

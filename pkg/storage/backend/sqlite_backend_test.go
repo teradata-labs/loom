@@ -38,9 +38,7 @@ func TestNewSQLiteBackend_Default(t *testing.T) {
 
 	// Verify all stores are non-nil
 	assert.NotNil(t, backend.SessionStorage(), "SessionStorage should not be nil")
-	assert.NotNil(t, backend.ErrorStore(), "ErrorStore should not be nil")
 	assert.NotNil(t, backend.ArtifactStore(), "ArtifactStore should not be nil")
-	assert.NotNil(t, backend.ResultStore(), "ResultStore should not be nil")
 	assert.NotNil(t, backend.HumanRequestStore(), "HumanRequestStore should not be nil")
 }
 
