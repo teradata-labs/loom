@@ -341,4 +341,3 @@ func TestSystemPrompt_CarriesCurrentDate(t *testing.T) {
 	require.Contains(t, prompt, "CURRENT DATE AND TIME:", "system prompt anchors the model in wall-clock time")
 	require.Contains(t, prompt, time.Now().Format("2006-01-02"), "the anchor carries today's date")
 }
-
