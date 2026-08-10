@@ -161,7 +161,8 @@ func TestCompile_OffloadExemptToolRendersWholeCurrentTurn(t *testing.T) {
 	}
 	assert.Equal(t, exemptBig, rendered["c1"],
 		"an exempt tool's current-turn oversize result renders whole")
-	want := fmt.Sprintf(offloadStubFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", previewOf(plainBig))
+	plainMeta, _ := previewMeta(plainBig)
+	want := fmt.Sprintf(offloadStubOpaqueFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", plainMeta)
 	assert.Equal(t, want, rendered["c2"],
 		"a non-exempt tool in the same compile still renders the offload stub")
 }
@@ -181,7 +182,8 @@ func TestCompile_OffloadExemptPriorTurnStillRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	bigMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
 	assert.Equal(t, want, rendered,
 		"exemption is a render condition of the producing turn only — prior turns evict as usual")
 }
@@ -201,7 +203,8 @@ func TestCompile_OffloadExemptEvictedFlagStillRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	bigMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
 	assert.Equal(t, want, rendered,
 		"relief's evicted flag wins over exemption — the exempt set never blocks pressure release")
 }
