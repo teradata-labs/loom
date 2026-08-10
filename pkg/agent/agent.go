@@ -1194,6 +1194,16 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
 	}
 
+	// Anchor the model in wall-clock time so relative phrases ("today",
+	// "this month", "yesterday") resolve to real dates. This lives in the
+	// system prompt — NOT prepended to user message Content — so it never
+	// leaks into the user-visible, persisted message body (clients render
+	// Content verbatim). Like the rest of the ROM slot, this is rendered once
+	// at session creation and is byte-stable for the session, so it carries
+	// date granularity (sufficient for temporal grounding); a session that
+	// spans midnight keeps its creation-time anchor rather than a live clock.
+	basePrompt = "CURRENT DATE AND TIME: " + time.Now().Format("Monday, 2006-01-02 15:04 MST") + "\n\n" + basePrompt
+
 	// Inject task context (current tasks, ready front, board stats).
 	// Rendered once into ROM at session creation — the ROM slot is
 	// byte-stable for the session, so this is a snapshot, not a live view.
@@ -1822,13 +1832,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// This is the Chat()-entry persist site — the only turn-incrementing event
 	// (HLD §4.5) — hence turnStart=true.
 	//
-	// Time enters the session here, written into the turn at arrival: temporal
-	// words ("today", "this month") resolve at utterance time, and a value
-	// written once is durable content like any other row — the whole session
-	// stays byte-stable. Nothing renders time dynamically anywhere.
+	// Content is the canonical, user-visible message body: it is persisted and
+	// returned verbatim to clients.
+	// Do NOT prepend a timestamp here — that leaks a "[Mon 2006-01-02 15:04 MST]"
+	// prefix into every displayed user message. Arrival time is already captured
+	// durably in the Timestamp field; per-turn temporal grounding ("today",
+	// "this month") belongs in the system prompt / ROM, not baked into the body.
 	userMsg := a.appendMessage(ctx, session, Message{
 		Role:          "user",
-		Content:       time.Now().Format("[Mon 2006-01-02 15:04 MST] ") + userMessage,
+		Content:       userMessage,
 		ContentBlocks: p.contentBlocks,
 		AgentID:       a.id, // Track which agent received this message
 		Timestamp:     time.Now(),

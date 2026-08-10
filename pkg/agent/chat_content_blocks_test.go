@@ -95,8 +95,7 @@ func sampleBlocks() []ContentBlock {
 }
 
 // findUserMessage returns the first user-role message whose content ends with
-// the given text — the turn carries its arrival timestamp as a prefix, so the
-// caller's words are the suffix of the stored content.
+// the given text.
 func findUserMessage(messages []llmtypes.Message, content string) (llmtypes.Message, bool) {
 	for _, msg := range messages {
 		if msg.Role == "user" && strings.HasSuffix(msg.Content, content) {
@@ -155,7 +154,7 @@ func TestAgent_ChatWithContentBlocks_PersistsCanonicalText(t *testing.T) {
 	for i := range messages {
 		switch messages[i].Role {
 		case "user":
-			if strings.HasSuffix(messages[i].Content, "canonical text") {
+			if messages[i].Content == "canonical text" {
 				userMsg = &messages[i]
 			}
 		case "assistant":
@@ -164,10 +163,8 @@ func TestAgent_ChatWithContentBlocks_PersistsCanonicalText(t *testing.T) {
 	}
 
 	require.NotNil(t, userMsg, "stored user turn should keep the canonical text")
-	assert.True(t, strings.HasPrefix(userMsg.Content, "["),
-		"the turn carries its arrival timestamp as a prefix")
-	assert.True(t, strings.HasSuffix(userMsg.Content, "] canonical text"),
-		"the caller's words follow the stamp unchanged")
+	assert.Equal(t, "canonical text", userMsg.Content,
+		"the caller's words are stored verbatim, no timestamp prefix")
 	assert.Len(t, userMsg.ContentBlocks, 2, "content blocks should be stored on the user turn")
 	assert.True(t, sawAssistant, "assistant response should be appended to history")
 }
@@ -309,11 +306,11 @@ func TestContentBlockAlias(t *testing.T) {
 	assert.Equal(t, "hi", back.Text)
 }
 
-// TestChat_UserTurnCarriesArrivalTimestamp pins the write-gate rule: time
-// enters the session written into the user turn at arrival — "[Mon 2006-01-02
-// 15:04 MST] " before the user's words — and nothing renders time dynamically,
-// so the stored turn is byte-stable from the moment it is written.
-func TestChat_UserTurnCarriesArrivalTimestamp(t *testing.T) {
+// TestChat_UserTurnContentIsVerbatim pins the write-gate rule: the stored
+// user-turn Content is the user's words verbatim, with NO timestamp prefix.
+// Content is user-visible (clients render it directly), so arrival time lives
+// in the Timestamp field, not baked into the body.
+func TestChat_UserTurnContentIsVerbatim(t *testing.T) {
 	llm := &capturingLLM{response: "ok"}
 	ag := contentBlocksTestAgent(llm)
 
@@ -322,16 +319,26 @@ func TestChat_UserTurnCarriesArrivalTimestamp(t *testing.T) {
 
 	session, ok := ag.GetSession("stamp_session")
 	require.True(t, ok)
-	var content string
+	var msg Message
 	for _, m := range session.GetMessages() {
 		if m.Role == "user" {
-			content = m.Content
+			msg = m
 		}
 	}
-	require.NotEmpty(t, content)
-	require.True(t, strings.HasSuffix(content, "] what ran today?"), "user words follow the stamp: %q", content)
-	stamp := strings.TrimPrefix(content[:strings.Index(content, "] ")+1], "[")
-	stamp = strings.Trim(stamp, "[]")
-	_, err = time.Parse("Mon 2006-01-02 15:04 MST", stamp)
-	require.NoError(t, err, "stamp %q parses as the arrival-time format", stamp)
+	require.Equal(t, "what ran today?", msg.Content, "user Content is stored verbatim, no timestamp prefix")
+	require.False(t, msg.Timestamp.IsZero(), "arrival time is captured in the Timestamp field")
 }
+
+// TestSystemPrompt_CarriesCurrentDate pins the temporal-grounding rule: the
+// current date/time reaches the model through the system prompt (not the user
+// message body), so relative phrases like "today" resolve without leaking a
+// timestamp into user-visible Content.
+func TestSystemPrompt_CarriesCurrentDate(t *testing.T) {
+	llm := &capturingLLM{response: "ok"}
+	ag := contentBlocksTestAgent(llm)
+
+	prompt := ag.getSystemPrompt(context.Background())
+	require.Contains(t, prompt, "CURRENT DATE AND TIME:", "system prompt anchors the model in wall-clock time")
+	require.Contains(t, prompt, time.Now().Format("2006-01-02"), "the anchor carries today's date")
+}
+
