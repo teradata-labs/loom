@@ -64,6 +64,7 @@ import (
 	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/storage/postgres"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
@@ -280,6 +281,42 @@ func createPermissionChecker(config *Config, logger *zap.Logger) *shuttle.Permis
 		})
 	}
 	return nil
+}
+
+// createAdmissionChain builds the admission chain from the permission checker
+// and the tools.hooks bindings. It returns nil (a pure pass-through) when there
+// is neither a permission checker nor any binding. Each built binding is logged
+// once (kind, scope, matcher) so a governed write/dispatch path is visible in
+// the serve log and an uncovered one is detectable (L-Cfg-2). A malformed
+// binding is an error, aborting serve (fail-closed, L-Cfg-1).
+func createAdmissionChain(config *Config, deps shuttle.ChainDeps, logger *zap.Logger) (*shuttle.Chain, error) {
+	bindings := config.Tools.Hooks.Bindings
+	if deps.Perm == nil && len(bindings) == 0 {
+		return nil, nil
+	}
+
+	for i, b := range bindings {
+		logger.Info("Admission hook binding",
+			zap.Int("index", i),
+			zap.String("kind", b.Kind),
+			zap.String("scope", b.Scope),
+			zap.String("matcher", describeMatcher(b.Matcher)))
+	}
+
+	chain, err := shuttle.BuildChainFromConfig(config.Tools.Hooks, deps)
+	if err != nil {
+		return nil, err
+	}
+	return chain, nil
+}
+
+// describeMatcher renders a binding's matcher for the coverage log. An empty
+// matcher governs every call to the scoped tool and is shown as "*".
+func describeMatcher(m shuttle.MatcherSpec) string {
+	if m.ParamPath == "" && m.Op == "" && m.Value == "" {
+		return "*"
+	}
+	return fmt.Sprintf("%s %s %q", m.ParamPath, m.Op, m.Value)
 }
 
 // createPromptRegistry creates a PromptRegistry based on configuration.
@@ -1158,18 +1195,35 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Scratchpad directory initialized", zap.String("path", scratchpadDir))
 
-	// Initialize shared HITL (Human-in-the-Loop) request store
-	// This SQLite store is shared between the server (contact_human tool) and the CLI (hitl list/respond)
-	hitlDBPath := filepath.Join(loomDataDir, "hitl.db")
-	hitlStore, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
-		Path:   hitlDBPath,
-		Tracer: tracer,
-	})
-	if err != nil {
-		logger.Fatal("Failed to create HITL request store", zap.Error(err))
+	// Initialize the HITL (Human-in-the-Loop) request store. This row is
+	// AUTHORIZATION state — it decides whether a held tool call executes — so it
+	// must live in the configured storage backend: under Postgres that store is
+	// tenant-scoped (user_id RLS), replicated with the rest of the data, and
+	// inside the transactional/backup boundary. Only the SQLite backend keeps
+	// the standalone node-local hitl.db (shared with the CLI's hitl list/respond).
+	// hitlStoreDesc travels to every log line that names where holds live, so
+	// the operator's evidence always points at the store the server writes.
+	var hitlStore shuttle.HumanRequestStore
+	var hitlStoreDesc string
+	if config.Storage.Backend == "postgres" {
+		hitlStore = storageBackend.HumanRequestStore()
+		hitlStoreDesc = "postgres (storage backend)"
+		logger.Info("HITL request store initialized on the storage backend",
+			zap.String("backend", config.Storage.Backend))
+	} else {
+		hitlDBPath := filepath.Join(loomDataDir, "hitl.db")
+		sqliteHITL, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+			Path:   hitlDBPath,
+			Tracer: tracer,
+		})
+		if err != nil {
+			logger.Fatal("Failed to create HITL request store", zap.Error(err))
+		}
+		defer func() { _ = sqliteHITL.Close() }()
+		hitlStore = sqliteHITL
+		hitlStoreDesc = hitlDBPath
+		logger.Info("HITL request store initialized", zap.String("path", hitlDBPath))
 	}
-	defer func() { _ = hitlStore.Close() }()
-	logger.Info("HITL request store initialized", zap.String("path", hitlDBPath))
 
 	// Copy documentation from docs to loom data directory
 	docsDestDir := filepath.Join(loomDataDir, "documentation")
@@ -1499,6 +1553,27 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Create PermissionChecker (if configured)
 	permissionChecker := createPermissionChecker(config, logger)
 
+	// Build the admission chain: the name-level permission check folded in as the
+	// first hook, then the library policies from tools.hooks. A malformed binding
+	// aborts startup so a path is never left silently ungoverned (fail-closed).
+	// An `ask` decision defers to the HITL store — the same SQLite store
+	// contact_human uses — so a human resolves the approval out of band. Timeout
+	// mirrors tools.permissions; the poll interval matches ContactHumanConfig (1s).
+	// The ask hold window falls back to the resolver's default (300s) when no
+	// tools.permissions block sets a timeout — a zero here would otherwise make
+	// every ask binding deny instantly with "approval timed out".
+	askTimeout := time.Duration(config.Tools.Permissions.TimeoutSeconds) * time.Second
+	askResolver := shuttle.NewHITLAskResolver(
+		hitlStore,
+		askTimeout,
+		time.Second,
+		nil,
+	)
+	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
+	if err != nil {
+		logger.Fatal("Failed to build admission chain", zap.Error(err))
+	}
+
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
@@ -1527,6 +1602,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		Tracer:       tracer,
 		ToolRegistry: toolRegistry,
 		SessionStore: store,
+		// Governance travels to EVERY agent build path: the registry builds
+		// agents at runtime-create and hot-reload, and an agent rebuilt without
+		// the chain would silently become ungoverned (C-007).
+		PermissionChecker: permissionChecker,
+		AdmissionChain:    admissionChain,
+		IdentityResolver:  postgres.UserIDFromContext,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -1745,6 +1826,12 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
 				}
 
+				// Attach the admission chain and, unconditionally, the identity
+				// resolver so AdmissionRequest.UserID is populated for every
+				// deployment. A nil chain leaves tool execution a pass-through.
+				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
+				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
 				agentLLMProvider := llmProvider
@@ -1865,7 +1952,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// paths cannot drift.
 				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
 
-				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+				// Register contact_human tool with the shared HITL store (if listed in builtin tools)
 				if cfg.Tools != nil {
 					for _, toolName := range cfg.Tools.Builtin {
 						if toolName == "contact_human" {
@@ -1875,8 +1962,8 @@ func runServe(cmd *cobra.Command, args []string) {
 								Logger: logger,
 							})
 							ag.RegisterTool(humanTool)
-							logger.Info("    Auto-registered contact_human tool (shared SQLite store)",
-								zap.String("db_path", hitlDBPath))
+							logger.Info("    Auto-registered contact_human tool (shared HITL store)",
+								zap.String("store", hitlStoreDesc))
 							break
 						}
 					}
@@ -3047,6 +3134,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
 			}
 
+			// Attach the admission chain and, unconditionally, the identity
+			// resolver so AdmissionRequest.UserID is populated for every
+			// deployment. A nil chain leaves tool execution a pass-through.
+			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
+			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
 				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
@@ -3096,7 +3189,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// shell_execute on hot reload under tools.minimal/none.
 			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
 
-			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+			// Register contact_human tool with shared HITL store (if listed in builtin tools)
 			if agentConfig.Tools != nil {
 				for _, toolName := range agentConfig.Tools.Builtin {
 					if toolName == "contact_human" {
@@ -3106,8 +3199,8 @@ func runServe(cmd *cobra.Command, args []string) {
 							Logger: logger,
 						})
 						newAgent.RegisterTool(humanTool)
-						logger.Info("  Auto-registered contact_human tool (shared SQLite store)",
-							zap.String("db_path", hitlDBPath))
+						logger.Info("  Auto-registered contact_human tool (shared HITL store)",
+							zap.String("store", hitlStoreDesc))
 						break
 					}
 				}
