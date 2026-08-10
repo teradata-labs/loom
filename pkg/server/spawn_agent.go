@@ -170,9 +170,13 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.Strings("subscribed_topics", spawnCommCtx.SubscribedTopics),
 		zap.String("workflow_name", spawnCommCtx.WorkflowName))
 
-	// Create contexts for lifecycle management
-	subCtx, cancel := context.WithCancel(context.Background())      // #nosec -- intentional: background worker goroutine that must outlive request context
-	loopCtx, loopCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+	// Create contexts for lifecycle management. Rooted in the spawning
+	// request's tenant identity (not a bare Background): the turns these
+	// contexts drive reach tenant-scoped stores, and the postgres HITL store
+	// refuses any operation with no user id in context — which would deny
+	// every held tool call on a spawned agent in microseconds with no card.
+	subCtx, cancel := context.WithCancel(turnIdentityContext(ctx))      // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
+	loopCtx, loopCancel := context.WithCancel(turnIdentityContext(ctx)) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 
 	// Determine auto-despawn timeout (default: 15 minutes of inactivity)
 	autoDespawnTimeout := 15 * time.Minute
@@ -198,6 +202,7 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		cancelFunc:         cancel,
 		loopCancelFunc:     loopCancel,
 		autoDespawnTimeout: autoDespawnTimeout,
+		runCtx:             loopCtx,
 	}
 
 	s.spawnedAgentsMu.Lock()

@@ -133,6 +133,7 @@ func (s *SessionStore) initSchema() error {
 		result_json TEXT,
 		error TEXT,
 		execution_time_ms INTEGER,
+		admission_decision TEXT,
 		timestamp INTEGER NOT NULL,
 		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
@@ -278,15 +279,22 @@ func (s *SessionStore) initSchema() error {
 		"evicted": "ALTER TABLE messages ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0",
 		"folded":  "ALTER TABLE messages ADD COLUMN folded INTEGER NOT NULL DEFAULT 0",
 		"turn":    "ALTER TABLE messages ADD COLUMN turn INTEGER NOT NULL DEFAULT 0",
+		// Admission audit decision (TER-710): stamped on every persisted tool
+		// execution; without this guard an upgraded DB fails every
+		// tool_executions INSERT (the error is swallowed) and persistence
+		// silently stops.
+		"admission_decision": "ALTER TABLE tool_executions ADD COLUMN admission_decision TEXT",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
 		// Check if column exists
 		var table string
-		if columnName == "session_context" || columnName == "message_agent_id" ||
-			columnName == "evicted" || columnName == "folded" || columnName == "turn" {
+		switch columnName {
+		case "session_context", "message_agent_id", "evicted", "folded", "turn":
 			table = "messages"
-		} else {
+		case "admission_decision":
+			table = "tool_executions"
+		default:
 			table = "sessions"
 		}
 
@@ -1213,9 +1221,16 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 		execTimeMs = &exec.Result.ExecutionTimeMs
 	}
 
+	// Audit decision — NULL unless an audit binding matched this call (SC-004:
+	// only non-empty rows count as audit records).
+	var admissionDecision *string
+	if exec.AdmissionDecision != "" {
+		admissionDecision = &exec.AdmissionDecision
+	}
+
 	query := `
-		INSERT INTO tool_executions (session_id, tool_name, input_json, result_json, error, execution_time_ms, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tool_executions (session_id, tool_name, input_json, result_json, error, execution_time_ms, admission_decision, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -1225,6 +1240,7 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 		resultJSON,
 		errMsg,
 		execTimeMs,
+		admissionDecision,
 		time.Now().Unix(),
 	)
 
