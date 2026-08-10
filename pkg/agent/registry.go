@@ -71,8 +71,10 @@ type Registry struct {
 	onReload     ReloadCallback         // Callback when config changes
 
 	// Agent dependencies (injected by server)
-	permissionChecker *shuttle.PermissionChecker // For permission validation
-	artifactStore     interface{}                // artifacts.Store for workspace tool
+	permissionChecker *shuttle.PermissionChecker   // For permission validation
+	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
+	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
+	artifactStore     interface{}                  // artifacts.Store for workspace tool
 
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
@@ -144,8 +146,10 @@ type RegistryConfig struct {
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// Agent dependencies (injected by server)
-	PermissionChecker *shuttle.PermissionChecker // For permission validation
-	ArtifactStore     interface{}                // artifacts.Store for workspace tool
+	PermissionChecker *shuttle.PermissionChecker   // For permission validation
+	AdmissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
+	IdentityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
+	ArtifactStore     interface{}                  // artifacts.Store for workspace tool
 
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
@@ -208,6 +212,8 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		sessionStore:      config.SessionStore,
 		toolRegistry:      config.ToolRegistry,
 		permissionChecker: config.PermissionChecker,
+		admissionChain:    config.AdmissionChain,
+		identityResolver:  config.IdentityResolver,
 		artifactStore:     config.ArtifactStore,
 	}
 
@@ -876,6 +882,12 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Inject server dependencies if available
 	if r.permissionChecker != nil {
 		opts = append(opts, WithPermissionChecker(r.permissionChecker))
+	}
+	if r.admissionChain != nil {
+		opts = append(opts, WithAdmissionHooks(r.admissionChain))
+	}
+	if r.identityResolver != nil {
+		opts = append(opts, WithIdentityResolver(r.identityResolver))
 	}
 
 	// Create agent with configuration

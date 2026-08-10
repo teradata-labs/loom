@@ -735,3 +735,33 @@ func TestGenerateExampleConfig_ContainsInsecureAdmin(t *testing.T) {
 	assert.Contains(t, exampleConfig, "insecure_admin",
 		"example config should document the insecure_admin option")
 }
+
+// TestLoadConfig_ToolsHooks_DocumentedShape loads the HLD §5.2 config shape —
+// the binding list directly at tools.hooks — and asserts it decodes to one
+// fully-populated binding (loom#300 review finding 14: the squashed field must
+// not require a tools.hooks.hooks nesting).
+func TestLoadConfig_ToolsHooks_DocumentedShape(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	yaml := `
+tools:
+  hooks:
+    - kind: gated-allowlist
+      scope: execute_sql
+      state_key: approved_grants
+      source_tool: render_grant_read_sql
+      stmt_param: stmt
+      read_pattern: "(?i)\\s*select"
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(yaml), 0o600))
+
+	config, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	require.Len(t, config.Tools.Hooks.Bindings, 1, "the documented tools.hooks list must decode")
+	b := config.Tools.Hooks.Bindings[0]
+	assert.Equal(t, "gated-allowlist", b.Kind)
+	assert.Equal(t, "execute_sql", b.Scope)
+	assert.Equal(t, "approved_grants", b.StateKey)
+	assert.Equal(t, "render_grant_read_sql", b.SourceTool)
+	assert.Equal(t, "stmt", b.StmtParam)
+}

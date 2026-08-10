@@ -691,7 +691,7 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 				}
 
 				// Max retries exceeded - show warning
-				return p, util.ReportWarn(fmt.Sprintf("Agent '%s' created but not yet loaded. Try switching manually with ctrl+e", msg.AgentID))
+				return p, util.ReportWarn(fmt.Sprintf("Agent '%s' created but not yet loaded. Try switching manually with alt+a", msg.AgentID))
 			}
 		}
 		return p, nil
@@ -1624,14 +1624,14 @@ func (p *chatPage) Help() help.KeyMap {
 		)
 		globalBindings = append(globalBindings,
 			key.NewBinding(
-				key.WithKeys("ctrl+e"),
-				key.WithHelp("ctrl+e", "agents"),
+				key.WithKeys("alt+a"),
+				key.WithHelp("alt+a", "agents"),
 			),
 		)
 		globalBindings = append(globalBindings,
 			key.NewBinding(
-				key.WithKeys("ctrl+w"),
-				key.WithHelp("ctrl+w", "workflows"),
+				key.WithKeys("alt+w"),
+				key.WithHelp("alt+w", "workflows"),
 			),
 		)
 		if p.session.ID != "" {

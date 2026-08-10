@@ -156,6 +156,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.executor.SetPermissionChecker(a.permissionChecker)
 	}
 
+	// Attach the admission hook chain if provided. A nil chain leaves the
+	// executor as a pure pass-through.
+	if a.admissionChain != nil {
+		a.executor.SetAdmissionChain(a.admissionChain)
+	}
+
+	// Wire the caller-identity resolver so admission requests carry UserID.
+	if a.identityResolver != nil {
+		a.executor.SetIdentityResolver(a.identityResolver)
+	}
+
 	// Set up system prompt function for memory
 	// This allows dynamic prompt loading from PromptRegistry
 	// Context is threaded through for proper RLS user_id propagation in PostgreSQL.
@@ -226,6 +237,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			threshold = a.sharedMemoryThreshold
 		}
 		a.executor.SetSharedMemory(a.sharedMemory, threshold)
+
+		// The approved-set accessor is a dedicated session-keyed membership
+		// store (not the shared-memory cache): authorization state must not be
+		// evictable and renders union rather than replace.
+		a.executor.SetApprovedSet(shuttle.NewApprovedSet())
 	}
 
 	// The findings channel is retired: neither the record_finding tool nor automatic
@@ -492,6 +508,25 @@ func WithCompressionProfile(profile *CompressionProfile) Option {
 func WithPermissionChecker(checker *shuttle.PermissionChecker) Option {
 	return func(a *Agent) {
 		a.permissionChecker = checker
+	}
+}
+
+// WithAdmissionHooks sets the admission hook chain consulted before every tool
+// body runs. The chain carries the name-level permission check as its first
+// hook; a nil chain leaves tool execution as a pure pass-through.
+func WithAdmissionHooks(chain *shuttle.Chain) Option {
+	return func(a *Agent) {
+		a.admissionChain = chain
+	}
+}
+
+// WithIdentityResolver sets the resolver that reads the caller identity
+// (AdmissionRequest.UserID) from the call context. The value lookup is injected
+// by the composition root because pkg/agent cannot import the storage layer
+// that owns the user-id context key without an import cycle.
+func WithIdentityResolver(resolver func(context.Context) string) Option {
+	return func(a *Agent) {
+		a.identityResolver = resolver
 	}
 }
 
@@ -1997,6 +2032,25 @@ type ToolExecution struct {
 	Input    map[string]interface{}
 	Result   *shuttle.Result
 	Error    error
+
+	// AdmissionDecision is the audit verdict ("allow"|"deny"|"ask") for a call
+	// matched by an audit binding, stamped by the executor onto
+	// Result.Metadata["admission.decision"]. Empty means the call was not
+	// audited; empty rows are not counted as audit records (SC-004).
+	AdmissionDecision string
+}
+
+// admissionDecisionOf reads the audit verdict the executor stamps onto a
+// governed call's Result.Metadata["admission.decision"]. An ungoverned or
+// unaudited call carries no such key, yielding "".
+func admissionDecisionOf(result *shuttle.Result) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	if v, ok := result.Metadata["admission.decision"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // emitProgress sends a progress event if a callback is configured.
@@ -2686,10 +2740,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			// Record execution
 			execution := ToolExecution{
-				ToolName: toolCall.Name,
-				Input:    toolCall.Input,
-				Result:   result,
-				Error:    err,
+				ToolName:          toolCall.Name,
+				Input:             toolCall.Input,
+				Result:            result,
+				Error:             err,
+				AdmissionDecision: admissionDecisionOf(result),
 			}
 			allToolExecutions = append(allToolExecutions, execution)
 
@@ -3387,6 +3442,12 @@ func (a *Agent) ListSessions() []*Session {
 // DeleteSession removes a session.
 func (a *Agent) DeleteSession(sessionID string) {
 	a.memory.DeleteSession(sessionID)
+	// Drop the session's recorded approvals alongside its other per-session
+	// state: the approved set is bounded by live sessions only because every
+	// retirement path frees its buckets.
+	if as := a.executor.ApprovedSet(); as != nil {
+		as.ForgetSession(sessionID)
+	}
 	// Drop the session's advertised-tool ledger too, or it grows unbounded on a
 	// long-running multi-session server. scopedToolNames is process-global (a
 	// name is scoped once any session scopes it) and is intentionally not pruned.
@@ -3398,9 +3459,34 @@ func (a *Agent) DeleteSession(sessionID string) {
 	a.dropInTurnSQLite(sessionID)
 }
 
+// ApprovedSet returns the executor's approved-set accessor; nil until one is
+// wired.
+func (a *Agent) ApprovedSet() shuttle.ApprovedSetAccessor {
+	return a.executor.ApprovedSet()
+}
+
+// AdoptApprovedSet hands this agent an existing approved-set accessor. The
+// hot-reload path carries the outgoing agent's set onto its replacement so
+// live sessions' recorded approvals survive the swap — an agent rebuild is an
+// operator action on the agent, not on its sessions, and must not falsify an
+// approval a human already gave. A nil accessor is ignored.
+func (a *Agent) AdoptApprovedSet(s shuttle.ApprovedSetAccessor) {
+	if s != nil {
+		a.executor.SetApprovedSet(s)
+	}
+}
+
 // ClearAllSessions removes all sessions from memory.
 // Used by the benchmark server to free memory between scenarios.
 func (a *Agent) ClearAllSessions() {
+	// Every retirement path frees the sessions' approved-set buckets — the
+	// set's growth is bounded by live sessions only if this sibling of
+	// DeleteSession retires them too.
+	if as := a.executor.ApprovedSet(); as != nil {
+		for _, s := range a.memory.ListSessions() {
+			as.ForgetSession(s.ID)
+		}
+	}
 	a.memory.ClearAll()
 	a.mu.Lock()
 	a.sessionToolLedger = make(map[string]map[string]bool)
@@ -3625,6 +3711,19 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	}
 }
 
+// SetOffloadExemptTools replaces the set of tool names whose current-turn
+// results always render whole regardless of the offload threshold (§5.2
+// step 6 carve-out), for existing and future sessions. Use it for tools
+// whose full output is the product of the call — content the model must
+// read inline in the producing turn — where an offload stub would defeat
+// the call. Prior-turn and evicted rows still render stubs, so relief and
+// turn-end truncation behave identically for every tool.
+func (a *Agent) SetOffloadExemptTools(names []string) {
+	if a.memory != nil {
+		a.memory.SetOffloadExemptTools(names)
+	}
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)
@@ -3643,6 +3742,15 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 			threshold = a.sharedMemoryThreshold
 		}
 		a.executor.SetSharedMemory(sharedMemory, threshold)
+
+		// The approved-set accessor is a dedicated session-keyed membership
+		// store (not the shared-memory cache): authorization state must not be
+		// evictable and renders union rather than replace. Create it only when
+		// absent — replacing an existing set would silently discard live
+		// sessions' recorded approvals.
+		if a.executor.ApprovedSet() == nil {
+			a.executor.SetApprovedSet(shuttle.NewApprovedSet())
+		}
 	}
 
 	// Inject into memory manager (which handles all sessions)

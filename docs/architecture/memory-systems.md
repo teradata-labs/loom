@@ -757,21 +757,30 @@ Cross-agent access (blocked):
 - Internal context that shouldn't be shared (private notes, internal state)
 - Temporary computation results (agent-local caching)
 
-**Large Tool Result Offload**:
+**Large Tool Result Offload** (render-time):
 
-One threshold governs both offload sites: `storage.DefaultSharedMemoryThreshold`, **64 KiB**. A serialized tool result strictly below it stays inline in the conversation; a result at or above it is stored by reference. Per-agent override via `MemoryConfig.SharedMemoryThresholdBytes` (`-1` = use the default, `0` = always reference, `>0` = reference at or above N bytes).
+*Arrival appends*: a tool result enters the in-memory conversation whole — nothing is examined, sized, or transformed at arrival. Bounding happens at exactly two later points: persist (a stored row is truncated to a bounded core plus tail) and compile (the copy rendered for the LLM). One threshold value — `storage.DefaultSharedMemoryThreshold`, **16 KiB**, per-agent override via `MemoryConfig.SharedMemoryThresholdBytes` — plays three roles: compile-time offload bound, persist-time row bound, retrieval page bound.
 
-The two sites:
-- **Tool Executor** (`pkg/shuttle/executor.go`, `handleLargeResult`): intercepts the result as it leaves the tool. SQL-shaped results go to the queryable `SQLResultStore`; everything else goes to the `SharedMemoryStore` as a blob.
-- **Agent result formatting** (`pkg/agent/agent.go`): applies the same byte threshold when rendering a tool result into the conversation.
+At compile time, each tool row renders by the first matching case:
 
-**Exempt set** — `manage_skills`, `get_tool_result`, `query_tool_result` — enters the conversation whole regardless of size. `manage_skills` delivers a skill body that must arrive intact; the two recall tools already return stored data, so re-wrapping them would recurse (`query_tool_result` → ref A → `query_tool_result(A)` → …).
+1. **Relief-evicted row** → the evicted stub (tool name, estimated token figure, 160-byte preview). Its only door is re-running the call.
+2. **Current-turn row strictly over the threshold** → the offload stub (tool name, estimated token figure, 160-byte preview, and a `query_tool_result(message_id=…)` door; `sql=` for tabular payloads) — unless the producing tool is in the offload-exempt set, in which case the row renders whole.
+3. **Prior-turn row strictly over the threshold** → the evicted stub.
+4. **Otherwise** → the row renders whole.
 
-**What lands in context**: a preview plus a handle — a rendered summary carrying the data type, byte size, estimated tokens, a first/last-items preview, schema when derivable, and the reference id.
+**Recall is turn-scoped**: `query_tool_result` resolves a `message_id` only within the turn that produced it — the whole payload is held in memory for one turn and persisted truncated, so the only cross-turn door is re-running the call. Every `query_tool_result` return, page or SQL result, is bounded at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize rows render the evicted stub.
 
-**Recall**: `query_tool_result(reference_id, …)` returns the stored data — a page of rows by default, or the result of a SQL query against a stored SQL result. `get_tool_result` exists as a type and stays in the exempt set, but its registration is commented out in `NewAgent`, so agents do not see it; the inline preview plus `query_tool_result` cover retrieval.
+**Offload-exempt carve-out** (configurable, none by default): for some tools the full output *is* the product of the call — reference or lookup content the model must read inline in the turn it asked for it — and a 160-byte preview plus a recall door defeats the call. The embedding application registers its own exempt set via `SetOffloadExemptTools` (available at the `Agent`, `Memory`, and per-session `SegmentedMemory` levels); the framework bakes in no tool names. Three constraints keep the carve-out from weakening the memory model:
 
-**Session partitioning**: every store is keyed by session. `SharedMemoryStore.Store` records the owning session and `Get`/`GetMetadata` resolve a handle only for a caller carrying that same session; `SQLResultStore.Store` partitions by the session id on the context, and `Query`/`GetMetadata` resolve an id only within that partition. The metadata/describe path is scoped like the read path — there is no unscoped way to learn about another session's stored result.
+- Exemption is a render condition of the producing turn only: later turns render the evicted stub, so the carve-out suits cheap, idempotent lookups for which the re-run door is adequate.
+- Relief's `Evicted` flag wins over exemption — the exempt set can never block pressure release.
+- Exempt results count at full size toward the pressure estimate.
+
+**Trade-off**: an oversize exempt result spends its full size in the producing turn's prompt. Accepted: the spend is bounded to that one turn, and the alternative — a stub — makes the exempted tool useless for its purpose.
+
+**Large parameters**: the tool executor's shared-memory site applies to tool *inputs* (`handleLargeParameters`, `pkg/shuttle/executor.go`): a parameter strictly over the threshold is stored in the `SharedMemoryStore` as a `DataReference` and dereferenced transparently before the tool executes.
+
+**Session partitioning**: `SharedMemoryStore.Store` records the owning session, and `Get`/`GetMetadata` resolve a handle only for a caller carrying that same session. The metadata/describe path is scoped like the read path — there is no unscoped way to learn about another session's stored data.
 
 **Concurrency**:
 - **RWMutex**: Protects memory tier map
