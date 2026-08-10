@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -94,7 +95,11 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 		response TEXT,
 		response_data_json TEXT,
 		responded_at INTEGER,
-		responded_by TEXT
+		responded_by TEXT,
+		kind TEXT,
+		summary TEXT,
+		params_json TEXT,
+		params_truncated BOOLEAN DEFAULT 0
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_human_requests_status ON human_requests(status);
@@ -111,6 +116,32 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 		return err
 	}
 
+	// Columns added after the initial shape shipped: CREATE TABLE IF NOT EXISTS
+	// is a no-op against an existing hitl.db, so each is applied with a
+	// pragma_table_info guard (this store is opened standalone — no migration
+	// runner ever reaches it).
+	added := map[string]string{
+		"kind":             "ALTER TABLE human_requests ADD COLUMN kind TEXT",
+		"summary":          "ALTER TABLE human_requests ADD COLUMN summary TEXT",
+		"params_json":      "ALTER TABLE human_requests ADD COLUMN params_json TEXT",
+		"params_truncated": "ALTER TABLE human_requests ADD COLUMN params_truncated BOOLEAN DEFAULT 0",
+	}
+	for col, ddl := range added {
+		var n int
+		row := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('human_requests') WHERE name = ?`, col)
+		if err := row.Scan(&n); err != nil {
+			span.RecordError(err)
+			return err
+		}
+		if n == 0 {
+			if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("add column %s: %w", col, err)
+			}
+		}
+	}
+
 	span.SetAttribute("success", true)
 	return nil
 }
@@ -123,6 +154,14 @@ func (s *SQLiteHumanRequestStore) Store(ctx context.Context, req *HumanRequest) 
 	span.SetAttribute("request_id", req.ID)
 	span.SetAttribute("request_type", req.RequestType)
 	span.SetAttribute("priority", req.Priority)
+
+	// A pending request must carry an expiry: a zero ExpiresAt would make the
+	// row permanently approvable, and the resolve CAS's expiry guard is keyed
+	// on the stored value. Both in-repo producers always stamp one; this guards
+	// exported-API callers.
+	if req.Status == "pending" && req.ExpiresAt.IsZero() {
+		return fmt.Errorf("pending human request %s has no expiry", req.ID)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -154,18 +193,33 @@ func (s *SQLiteHumanRequestStore) Store(ctx context.Context, req *HumanRequest) 
 		respondedAtMs = &ms
 	}
 
+	// An empty parameter map is stored as NULL, matching how a row written
+	// before params existed reads back.
+	var paramsJSON *string
+	if len(req.Params) > 0 {
+		encoded, err := json.Marshal(req.Params)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to marshal params: %w", err)
+		}
+		encodedStr := string(encoded)
+		paramsJSON = &encodedStr
+	}
+
 	query := `
 		INSERT INTO human_requests (
 			id, agent_id, session_id, question, context_json,
 			request_type, priority, timeout_ms, created_at, expires_at,
-			status, response, response_data_json, responded_at, responded_by
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			status, response, response_data_json, responded_at, responded_by,
+			kind, summary, params_json, params_truncated
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
 		req.ID, req.AgentID, req.SessionID, req.Question, string(contextJSON),
 		req.RequestType, req.Priority, timeoutMs, createdAtMs, expiresAtMs,
 		req.Status, req.Response, string(responseDataJSON), respondedAtMs, req.RespondedBy,
+		req.Kind, req.Summary, paramsJSON, req.ParamsTruncated,
 	)
 
 	if err != nil {
@@ -191,24 +245,14 @@ func (s *SQLiteHumanRequestStore) Get(ctx context.Context, id string) (*HumanReq
 	query := `
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
-			   status, response, response_data_json, responded_at, responded_by
+			   status, response, response_data_json, responded_at, responded_by,
+			   kind, summary, params_json, params_truncated
 		FROM human_requests
 		WHERE id = ?
 	`
 
-	var req HumanRequest
-	var contextJSON, responseDataJSON string
-	var timeoutMs int64
-	var createdAtMs, expiresAtMs int64
-	var respondedAtMs sql.NullInt64
-
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
-		&req.ID, &req.AgentID, &req.SessionID, &req.Question, &contextJSON,
-		&req.RequestType, &req.Priority, &timeoutMs, &createdAtMs, &expiresAtMs,
-		&req.Status, &req.Response, &responseDataJSON, &respondedAtMs, &req.RespondedBy,
-	)
-
-	if err == sql.ErrNoRows {
+	req, err := s.scanRequest(s.db.QueryRowContext(ctx, query, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		span.SetAttribute("success", false)
 		span.SetAttribute("error", "not_found")
 		return nil, fmt.Errorf("request not found: %s", id)
@@ -216,37 +260,12 @@ func (s *SQLiteHumanRequestStore) Get(ctx context.Context, id string) (*HumanReq
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
-		return nil, fmt.Errorf("failed to query request: %w", err)
-	}
-
-	// Unmarshal JSON fields
-	if contextJSON != "" {
-		if err := json.Unmarshal([]byte(contextJSON), &req.Context); err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("failed to unmarshal context: %w", err)
-		}
-	}
-
-	if responseDataJSON != "" {
-		if err := json.Unmarshal([]byte(responseDataJSON), &req.ResponseData); err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("failed to unmarshal response data: %w", err)
-		}
-	}
-
-	// Convert Unix milliseconds to time
-	req.CreatedAt = time.UnixMilli(createdAtMs)
-	req.ExpiresAt = time.UnixMilli(expiresAtMs)
-	req.Timeout = time.Duration(timeoutMs) * time.Millisecond
-
-	if respondedAtMs.Valid {
-		t := time.UnixMilli(respondedAtMs.Int64)
-		req.RespondedAt = &t
+		return nil, err
 	}
 
 	span.SetAttribute("success", true)
 	span.SetAttribute("status", req.Status)
-	return &req, nil
+	return req, nil
 }
 
 // Update updates an existing human request.
@@ -322,7 +341,8 @@ func (s *SQLiteHumanRequestStore) ListPending(ctx context.Context) ([]*HumanRequ
 	query := `
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
-			   status, response, response_data_json, responded_at, responded_by
+			   status, response, response_data_json, responded_at, responded_by,
+			   kind, summary, params_json, params_truncated
 		FROM human_requests
 		WHERE status = 'pending'
 		ORDER BY created_at ASC
@@ -369,7 +389,8 @@ func (s *SQLiteHumanRequestStore) ListBySession(ctx context.Context, sessionID s
 	query := `
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
-			   status, response, response_data_json, responded_at, responded_by
+			   status, response, response_data_json, responded_at, responded_by,
+			   kind, summary, params_json, params_truncated
 		FROM human_requests
 		WHERE session_id = ?
 		ORDER BY created_at DESC
@@ -403,7 +424,9 @@ func (s *SQLiteHumanRequestStore) ListBySession(ctx context.Context, sessionID s
 	return requests, nil
 }
 
-// RespondToRequest updates a human request with a response.
+// RespondToRequest resolves a pending, non-expired request exactly once.
+// On an already-decided or expired request it is a no-op returning nil, so the
+// caller reads current state via Get. Errors only on a missing request.
 func (s *SQLiteHumanRequestStore) RespondToRequest(ctx context.Context, requestID, status, response, respondedBy string, responseData map[string]interface{}) error {
 	ctx, span := s.tracer.StartSpan(ctx, "hitl_store.respond")
 	defer s.tracer.EndSpan(span)
@@ -414,9 +437,55 @@ func (s *SQLiteHumanRequestStore) RespondToRequest(ctx context.Context, requestI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if request exists and is pending
-	var currentStatus string
-	err := s.db.QueryRowContext(ctx, "SELECT status FROM human_requests WHERE id = ?", requestID).Scan(&currentStatus)
+	// Marshal response data
+	var responseDataJSON []byte
+	if responseData != nil {
+		var err error
+		responseDataJSON, err = json.Marshal(responseData)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to marshal response data: %w", err)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+
+	// Atomic conditional update: resolve only a pending, non-expired row. A
+	// decided or expired row matches zero rows and is left untouched, and under
+	// concurrency exactly one writer affects the row. The expiry guard is the
+	// store's own — nothing in the caller's payload can lift it; terminal
+	// closes past expiry go through ExpireRequest.
+	query := `
+		UPDATE human_requests
+		SET status = ?, response = ?, response_data_json = ?,
+		    responded_at = ?, responded_by = ?
+		WHERE id = ? AND status = 'pending' AND expires_at > ?
+	`
+
+	result, err := s.db.ExecContext(ctx, query,
+		status, response, string(responseDataJSON),
+		now, respondedBy, requestID, now,
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetAttribute("success", false)
+		return fmt.Errorf("failed to respond to request: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		span.RecordError(err)
+		return err
+	}
+	if rowsAffected == 1 {
+		span.SetAttribute("success", true)
+		return nil
+	}
+
+	// No row resolved: the request is missing, already-decided, or expired.
+	// Existence makes this a no-op; absence is the only error.
+	var exists int
+	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM human_requests WHERE id = ?", requestID).Scan(&exists)
 	if err == sql.ErrNoRows {
 		span.SetAttribute("success", false)
 		span.SetAttribute("error", "not_found")
@@ -428,42 +497,34 @@ func (s *SQLiteHumanRequestStore) RespondToRequest(ctx context.Context, requestI
 		return fmt.Errorf("failed to check request status: %w", err)
 	}
 
-	if currentStatus != "pending" {
-		span.SetAttribute("success", false)
-		span.SetAttribute("error", "already_responded")
-		return fmt.Errorf("request already responded to (status: %s)", currentStatus)
-	}
+	span.SetAttribute("success", true)
+	return nil
+}
 
-	// Marshal response data
-	var responseDataJSON []byte
-	if responseData != nil {
-		responseDataJSON, err = json.Marshal(responseData)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to marshal response data: %w", err)
-		}
-	}
+// ExpireRequest terminally closes a pending row as "timeout" regardless of its
+// expiry — the harness's close for abandoned or swept rows. A resolved row
+// matches zero rows and is left untouched (closing is not resolving); a
+// missing row is a no-op.
+func (s *SQLiteHumanRequestStore) ExpireRequest(ctx context.Context, requestID, respondedBy string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "hitl_store.expire")
+	defer s.tracer.EndSpan(span)
 
-	now := time.Now().UnixMilli()
+	span.SetAttribute("request_id", requestID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	query := `
 		UPDATE human_requests
-		SET status = ?, response = ?, response_data_json = ?,
+		SET status = 'timeout', response = '', response_data_json = '',
 		    responded_at = ?, responded_by = ?
-		WHERE id = ?
+		WHERE id = ? AND status = 'pending'
 	`
-
-	_, err = s.db.ExecContext(ctx, query,
-		status, response, string(responseDataJSON),
-		now, respondedBy, requestID,
-	)
-
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, query, time.Now().UnixMilli(), respondedBy, requestID); err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
-		return fmt.Errorf("failed to respond to request: %w", err)
+		return fmt.Errorf("failed to expire request: %w", err)
 	}
-
 	span.SetAttribute("success", true)
 	return nil
 }
@@ -473,7 +534,9 @@ func (s *SQLiteHumanRequestStore) Close() error {
 	return s.db.Close()
 }
 
-// scanRequest scans a row into a HumanRequest.
+// scanRequest scans a row into a HumanRequest, expecting the column order
+// shared by every SELECT in this store. A missing row yields sql.ErrNoRows
+// wrapped, so callers can tell absence from a decode failure.
 func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 	Scan(dest ...interface{}) error
 }) (*HumanRequest, error) {
@@ -482,11 +545,14 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 	var timeoutMs int64
 	var createdAtMs, expiresAtMs int64
 	var respondedAtMs sql.NullInt64
+	var kind, summary, paramsJSON sql.NullString
+	var paramsTruncated sql.NullBool
 
 	err := row.Scan(
 		&req.ID, &req.AgentID, &req.SessionID, &req.Question, &contextJSON,
 		&req.RequestType, &req.Priority, &timeoutMs, &createdAtMs, &expiresAtMs,
 		&req.Status, &req.Response, &responseDataJSON, &respondedAtMs, &req.RespondedBy,
+		&kind, &summary, &paramsJSON, &paramsTruncated,
 	)
 
 	if err != nil {
@@ -514,6 +580,33 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 	if respondedAtMs.Valid {
 		t := time.UnixMilli(respondedAtMs.Int64)
 		req.RespondedAt = &t
+	}
+
+	// NULL kind/summary leaves the zero value ""; consumers treat "" as
+	// "question". The context_json origin discriminator backstops a dropped
+	// kind column so an approval row never re-reads as a question.
+	if kind.Valid {
+		req.Kind = kind.String
+	}
+	if req.Kind == "" {
+		if k, ok := req.Context["kind"].(string); ok {
+			req.Kind = k
+		}
+	}
+	if summary.Valid {
+		req.Summary = summary.String
+	}
+
+	// A NULL params_json — a question, or a row written before the column
+	// existed — leaves Params nil. params_truncated carries a false default, so
+	// a pre-params row reads false rather than NULL; NULL is still tolerated.
+	if paramsJSON.Valid && paramsJSON.String != "" {
+		if err := json.Unmarshal([]byte(paramsJSON.String), &req.Params); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal params: %w", err)
+		}
+	}
+	if paramsTruncated.Valid {
+		req.ParamsTruncated = paramsTruncated.Bool
 	}
 
 	return &req, nil

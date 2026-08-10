@@ -131,6 +131,156 @@ func TestCompile_LegacyOversizePriorTurnRendersEvictedStub(t *testing.T) {
 	assert.Equal(t, want, rendered, "a legacy unbounded prior-turn row renders the evicted stub")
 }
 
+// --- §5.2 step 6: offload-exempt carve-out -----------------------------------
+
+func TestCompile_OffloadExemptToolRendersWholeCurrentTurn(t *testing.T) {
+	sm := newCompileMemory(t)
+	sm.SetOffloadExemptTools([]string{"reference_lookup"})
+	exemptBig := strings.Repeat("e", 5000)
+	plainBig := strings.Repeat("p", 5000)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+		ToolCalls: []ToolCall{
+			{ID: "c1", Name: "reference_lookup"},
+			{ID: "c2", Name: "web_search"},
+		}})
+	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "41", ToolUseID: "c1", Content: exemptBig, Turn: 1})
+	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "42", ToolUseID: "c2", Content: plainBig, Turn: 1})
+
+	rendered := map[string]string{}
+	for _, m := range sm.GetMessagesForLLM() {
+		if m.Role == "tool" {
+			rendered[m.ToolUseID] = m.Content
+		}
+	}
+	assert.Equal(t, exemptBig, rendered["c1"],
+		"an exempt tool's current-turn oversize result renders whole")
+	want := fmt.Sprintf(offloadStubFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", previewOf(plainBig))
+	assert.Equal(t, want, rendered["c2"],
+		"a non-exempt tool in the same compile still renders the offload stub")
+}
+
+func TestCompile_OffloadExemptPriorTurnStillRendersEvictedStub(t *testing.T) {
+	sm := newCompileMemory(t)
+	sm.SetOffloadExemptTools([]string{"reference_lookup"})
+	big := strings.Repeat("e", 5000)
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
+	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "3", ToolUseID: "c1", Content: big, Turn: 1})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "next", Turn: 2})
+
+	var rendered string
+	for _, m := range sm.GetMessagesForLLM() {
+		if m.Role == "tool" {
+			rendered = m.Content
+		}
+	}
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	assert.Equal(t, want, rendered,
+		"exemption is a render condition of the producing turn only — prior turns evict as usual")
+}
+
+func TestCompile_OffloadExemptEvictedFlagStillRendersEvictedStub(t *testing.T) {
+	sm := newCompileMemory(t)
+	sm.SetOffloadExemptTools([]string{"reference_lookup"})
+	big := strings.Repeat("e", 5000)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
+	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "5", ToolUseID: "c1", Content: big, Turn: 1, Evicted: true})
+
+	var rendered string
+	for _, m := range sm.GetMessagesForLLM() {
+		if m.Role == "tool" {
+			rendered = m.Content
+		}
+	}
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	assert.Equal(t, want, rendered,
+		"relief's evicted flag wins over exemption — the exempt set never blocks pressure release")
+}
+
+func TestSetOffloadExemptTools_ReplaceClearsAndSkipsEmptyNames(t *testing.T) {
+	sm := newCompileMemory(t)
+	big := strings.Repeat("e", 5000)
+	addBig := func() {
+		sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
+		sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+			ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
+		sm.AddMessage(context.Background(), Message{Role: "tool", ID: "9", ToolUseID: "c1", Content: big, Turn: 1})
+	}
+	toolContent := func() string {
+		var s string
+		for _, m := range sm.GetMessagesForLLM() {
+			if m.Role == "tool" {
+				s = m.Content
+			}
+		}
+		return s
+	}
+
+	addBig()
+	sm.SetOffloadExemptTools([]string{"", "reference_lookup"})
+	assert.Equal(t, big, toolContent(), "empty names are skipped, real names apply")
+
+	sm.SetOffloadExemptTools([]string{"other_tool"})
+	assert.NotEqual(t, big, toolContent(), "SetOffloadExemptTools replaces the set — the old name no longer exempts")
+
+	sm.SetOffloadExemptTools(nil)
+	assert.NotEqual(t, big, toolContent(), "a nil slice clears the set")
+}
+
+func TestMemory_SetOffloadExemptTools_PropagatesToExistingAndFutureSessions(t *testing.T) {
+	m := NewMemory()
+	m.SetThresholdBytes(1024)
+	big := strings.Repeat("e", 5000)
+
+	existing := m.GetOrCreateSession(context.Background(), "sess-existing")
+	m.SetOffloadExemptTools([]string{"reference_lookup"})
+	future := m.GetOrCreateSession(context.Background(), "sess-future")
+
+	for name, session := range map[string]*Session{"existing": existing, "future": future} {
+		segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+		require.True(t, ok, "%s session carries a SegmentedMemory", name)
+		segMem.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
+		segMem.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+			ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
+		segMem.AddMessage(context.Background(), Message{Role: "tool", ID: "11", ToolUseID: "c1", Content: big, Turn: 1})
+		var rendered string
+		for _, msg := range segMem.GetMessagesForLLM() {
+			if msg.Role == "tool" {
+				rendered = msg.Content
+			}
+		}
+		assert.Equal(t, big, rendered, "%s session honors the exempt set", name)
+	}
+}
+
+func TestAgent_SetOffloadExemptTools_ForwardsToMemory(t *testing.T) {
+	a := &Agent{memory: NewMemory()}
+	a.memory.SetThresholdBytes(1024)
+	a.SetOffloadExemptTools([]string{"reference_lookup"})
+
+	session := a.memory.GetOrCreateSession(context.Background(), "sess-agent")
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	require.True(t, ok)
+	big := strings.Repeat("e", 5000)
+	segMem.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
+	segMem.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
+		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
+	segMem.AddMessage(context.Background(), Message{Role: "tool", ID: "12", ToolUseID: "c1", Content: big, Turn: 1})
+	var rendered string
+	for _, msg := range segMem.GetMessagesForLLM() {
+		if msg.Role == "tool" {
+			rendered = msg.Content
+		}
+	}
+	assert.Equal(t, big, rendered, "the agent-level setter reaches sessions through Memory")
+
+	// nil memory must not panic.
+	(&Agent{}).SetOffloadExemptTools([]string{"reference_lookup"})
+}
+
 // TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the cache
 // breakpoint freezes BEFORE a current-turn query_tool_result call/result pair.
 // That pair is ephemeral (§4.3) and pruned when the turn settles; if it sat
