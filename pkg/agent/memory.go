@@ -62,6 +62,7 @@ type Memory struct {
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
 	compressor           MemoryCompressor           // Optional LLM compressor for L2 compaction (nil = heuristic fallback)
 	thresholdBytes       int64                      // Offload / row / page bound in bytes (0 = default; HLD §5.1)
+	offloadExemptTools   []string                   // Tool names whose current-turn results render whole (§5.2 step 6 carve-out)
 
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
@@ -196,6 +197,20 @@ func (m *Memory) SetThresholdBytes(bytes int64) {
 	}
 }
 
+// SetOffloadExemptTools replaces the set of tool names whose current-turn
+// results always render whole regardless of the threshold (§5.2 step 6
+// carve-out), for existing and future sessions. An empty slice clears the set.
+func (m *Memory) SetOffloadExemptTools(names []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.offloadExemptTools = append([]string(nil), names...)
+	for _, session := range m.sessions {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.SetOffloadExemptTools(m.offloadExemptTools)
+		}
+	}
+}
+
 // thresholdOrDefault returns the configured threshold, else the default bound.
 // Never below minThreshold: this value is the persist-time row bound, and a
 // smaller one cannot hold stored = core + tail ≤ threshold (§4.1).
@@ -272,6 +287,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	compProfile := m.compressionProfile
 	compressor := m.compressor
 	thresholdBytes := m.thresholdBytes
+	offloadExemptTools := append([]string(nil), m.offloadExemptTools...)
 	logger := m.logger
 	ctxDebug := m.ctxDebug
 	skillDeactivation := m.skillDeactivation
@@ -380,6 +396,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	}
 	if thresholdBytes > 0 {
 		segMem.SetThreshold(thresholdBytes)
+	}
+	if len(offloadExemptTools) > 0 {
+		segMem.SetOffloadExemptTools(offloadExemptTools)
 	}
 	segMem.SetContextDebug(ctxDebug)
 	segMem.SetSkillDeactivationHook(skillDeactivation)
@@ -604,6 +623,9 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 		// m.mu is held by the caller, so m.thresholdBytes is read safely here.
 		if m.thresholdBytes > 0 {
 			segMem.SetThreshold(m.thresholdBytes)
+		}
+		if len(m.offloadExemptTools) > 0 {
+			segMem.SetOffloadExemptTools(m.offloadExemptTools)
 		}
 		segMem.SetContextDebug(m.ctxDebug)
 		segMem.SetSkillDeactivationHook(m.skillDeactivation)
