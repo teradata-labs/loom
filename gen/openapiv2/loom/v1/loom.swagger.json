@@ -10110,6 +10110,11 @@
         "resetContext": {
           "type": "boolean",
           "description": "Clear context window before processing this message.\nWhen true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)\nbefore the query is processed, giving a fresh context window."
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Historical arrival time for replayed or imported conversations (optional).\nWhen set, every message persisted during this call — the user turn, the\nassistant reply, and tool rows — carries this timestamp instead of the\nserver wall clock, so temporal grounding (compiled-view arrival stamps,\ngraph-memory extraction anchoring) reflects when the conversation\nactually happened rather than when it was ingested.\n\nServers reject this field unless server.allow_time_override is enabled\n(FAILED_PRECONDITION), and reject values in the future beyond a small\nclock-skew allowance (INVALID_ARGUMENT). Live conversations should leave\nit unset."
         }
       },
       "description": "WeaveRequest initiates a query execution."

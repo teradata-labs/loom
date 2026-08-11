@@ -53,6 +53,12 @@ type MultiAgentServer struct {
 	sessionStore agent.SessionStorage
 	mu           sync.RWMutex
 
+	// allowTimeOverride accepts WeaveRequest.occurred_at (replay/import arrival
+	// times). Default false: client-supplied timestamps can poison temporal
+	// grounding, so honoring them is an explicit operator decision
+	// (server.allow_time_override). Set via SetAllowTimeOverride.
+	allowTimeOverride bool
+
 	defaultAgentID     string                           // Agent to use when no agent_id specified
 	patternBroadcaster *PatternEventBroadcaster         // Broadcasts pattern update events
 	hotReloaders       map[string]*patterns.HotReloader // Hot-reloaders for each agent's patterns
@@ -284,6 +290,15 @@ func (s *MultiAgentServer) SetMCPManager(mgr *manager.Manager, configPath string
 		logger = zap.NewNop()
 	}
 	s.logger = logger
+}
+
+// SetAllowTimeOverride configures whether WeaveRequest.occurred_at is honored
+// (server.allow_time_override). See applyOccurredAt for the gate semantics.
+// This should be called after NewMultiAgentServer(), before serving.
+func (s *MultiAgentServer) SetAllowTimeOverride(allow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowTimeOverride = allow
 }
 
 // SetLogger injects the logger for server operations.
@@ -700,12 +715,18 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
 
+	// Replay/import support: validate occurred_at and thread it through the
+	// context so persisted rows anchor at the conversation's historical time.
+	ctx, err := applyOccurredAt(ctx, req, s.allowTimeOverride)
+	if err != nil {
+		return nil, err
+	}
+
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	// This fixes the bug where Weave(session_id=X) without agent_id falls through to the
 	// default agent instead of the agent that created/owns the session.
 	var ag *agent.Agent
 	var agentID string
-	var err error
 
 	if req.AgentId == "" && req.SessionId != "" {
 		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
@@ -850,10 +871,16 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
 	}
 
+	// Replay/import support: validate occurred_at and thread it through the
+	// context used for the agent call (see applyOccurredAt).
+	ctx, err := applyOccurredAt(stream.Context(), req, s.allowTimeOverride)
+	if err != nil {
+		return err
+	}
+
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
 	var resolvedAgentID string
-	var err error
 
 	if req.AgentId == "" && req.SessionId != "" {
 		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
@@ -947,7 +974,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 	// Execute agent with progress callback
 	go func() {
-		resp, err := ag.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
+		resp, err := ag.ChatWithProgress(ctx, sessionID, req.Query, progressCallback)
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan)
 	}()

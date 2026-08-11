@@ -80,13 +80,13 @@ func buildFixtureZip(t *testing.T, name, body string) []byte {
 	return buf.Bytes()
 }
 
-// buildHostileZip produces a zip that tries to escape the temp dir
-// via a path-traversal entry. Used to verify zip-slip rejection.
-func buildHostileZip(t *testing.T) []byte {
+// buildHostileZip produces a zip whose single entry has the given
+// name, used to verify zip-slip rejection of escaping entry names.
+func buildHostileZip(t *testing.T, entryName string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create("../etc/escape.txt")
+	w, err := zw.Create(entryName)
 	require.NoError(t, err)
 	_, err = w.Write([]byte("hostile"))
 	require.NoError(t, err)
@@ -246,15 +246,28 @@ func TestAddSkill_FromInline(t *testing.T) {
 }
 
 func TestAddSkill_RejectsHostileZip(t *testing.T) {
-	srv := makeServer(t)
-	zipBytes := buildHostileZip(t)
+	tests := []struct {
+		name      string
+		entryName string
+	}{
+		{name: "parent traversal", entryName: "../etc/escape.txt"},
+		{name: "absolute path", entryName: "/etc/escape.txt"},
+		{name: "nested traversal", entryName: "skill/../../etc/escape.txt"},
+		{name: "bare dot dot", entryName: ".."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := makeServer(t)
+			zipBytes := buildHostileZip(t, tt.entryName)
 
-	_, err := srv.AddSkill(context.Background(), &loomv1.AddSkillRequest{
-		Source: &loomv1.AddSkillRequest_ZipArchive{ZipArchive: zipBytes},
-	})
-	require.Error(t, err)
-	assert.Equal(t, codes.InvalidArgument, status.Code(err))
-	assert.Contains(t, err.Error(), "escapes archive root")
+			_, err := srv.AddSkill(context.Background(), &loomv1.AddSkillRequest{
+				Source: &loomv1.AddSkillRequest_ZipArchive{ZipArchive: zipBytes},
+			})
+			require.Error(t, err)
+			assert.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, err.Error(), "escapes archive root")
+		})
+	}
 }
 
 func TestAddSkill_RejectsEmptyZip(t *testing.T) {

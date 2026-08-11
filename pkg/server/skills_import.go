@@ -533,9 +533,10 @@ func (s *SkillsImportServer) materializeSingleSource(
 // directory plus a cleanup function that removes it.
 //
 // Security:
-//   - Rejects entries with absolute paths or "..", which would let a
-//     hostile zip escape the temp dir. (zip slip — CVE-2018-1002200
-//     class.)
+//   - Rejects non-local entry names via filepath.IsLocal (absolute
+//     paths, ".." escapes, Windows drive-relative/reserved names),
+//     which would let a hostile zip escape the temp dir. (zip slip —
+//     CVE-2018-1002200 class.)
 //   - Rejects entries whose decompressed name is empty.
 //   - Caps total decompressed size at 64MB so a zip-bomb can't OOM
 //     the server.
@@ -561,19 +562,18 @@ func (s *SkillsImportServer) extractZipToTempDir(data []byte, prefix string) (st
 		if name == "." || name == "" {
 			continue
 		}
-		// Reject absolute archive paths.
-		if filepath.IsAbs(name) {
+		// IsLocal rejects absolute paths, ".." escapes, and Windows
+		// drive-relative/reserved names. It must guard name itself (the
+		// value joined into dest below) — CodeQL credits the barrier only
+		// on the exact guarded expression, which is why an earlier
+		// filepath.Rel-based containment check left the go/zipslip alert
+		// (#670) open.
+		if !filepath.IsLocal(name) {
 			cleanup()
 			return "", noopCleanup, fmt.Errorf("zip entry %q escapes archive root", f.Name)
 		}
 
 		dest := filepath.Join(tempDir, name)
-		// Resolve destination relative to tempDir and ensure it does not escape.
-		rel, err := filepath.Rel(tempDir, dest)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			cleanup()
-			return "", noopCleanup, fmt.Errorf("zip entry %q escapes archive root", f.Name)
-		}
 
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(dest, 0o750); err != nil {

@@ -353,21 +353,35 @@ rpc Weave(WeaveRequest) returns (WeaveResponse)
 
 **Description**: Single-turn agent interaction.
 
-**Request**:
+**Request** (see `proto/loom/v1/loom.proto` for the authoritative definition):
 ```proto
 message WeaveRequest {
-  string session_id = 1;   // Required: Session identifier
-  string message = 2;      // Required: User message
-  repeated string tools = 3; // Optional: Tool whitelist
+  string query = 1;                    // Required: user's natural language query
+  string session_id = 2;               // Optional: session identifier (auto-generated if empty)
+  map<string, string> backend_config = 3; // Optional: backend configuration overrides
+  int32 max_rounds = 4;                // Optional: maximum execution rounds (default: 3)
+  int32 timeout_seconds = 5;           // Optional: timeout in seconds (default: 300)
+  map<string, string> context = 6;     // Optional: context variables for prompt interpolation
+  string force_pattern = 7;            // Optional: force specific pattern (bypass selection)
+  bool enable_trace = 8;               // Optional: enable tracing for this request
+  string agent_id = 9;                 // Optional: agent to route to (default agent if empty)
+  bool reset_context = 10;             // Optional: clear context window before processing
+  google.protobuf.Timestamp occurred_at = 11; // Optional: historical arrival time (replay/import; requires server.allow_time_override)
 }
 ```
 
 **Response**:
 ```proto
 message WeaveResponse {
-  string message = 1;       // Agent response
-  int64 tokens_used = 2;    // Total tokens consumed
-  repeated ToolCall tools = 3; // Tools executed
+  string text = 1;                     // Generated response text
+  ExecutionResult result = 2;          // Execution result (domain-specific)
+  string session_id = 3;               // Session ID used
+  string trace_id = 4;                 // Trace ID for observability
+  CostInfo cost = 5;                   // Cost attribution
+  ExecutionMetadata metadata = 6;      // Execution metadata
+  repeated SelfCorrectionAttempt corrections = 7; // Self-correction attempts (if any)
+  string agent_id = 8;                 // Agent that handled this request
+  ContextState context_state = 9;      // Context window state after this response
 }
 ```
 
@@ -389,13 +403,13 @@ client := loomv1.NewLoomServiceClient(conn)
 
 resp, err := client.Weave(ctx, &loomv1.WeaveRequest{
     SessionId: "sess_abc123",
-    Message:   "Show sales by region",
+    Query:     "Show sales by region",
 })
 if err != nil {
     log.Fatalf("RPC failed: %v", err)
 }
 
-fmt.Printf("Response: %s\n", resp.Message)
+fmt.Printf("Response: %s\n", resp.Text)
 ```
 
 **Example (HTTP gateway)**:
