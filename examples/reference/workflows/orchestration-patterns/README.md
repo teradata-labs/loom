@@ -103,21 +103,30 @@ spec:
 ### 5. **conditional** - Dynamic Routing
 **File:** `complexity-routing.yaml`
 
-Routes tasks based on classification or conditions.
+Routes tasks based on classification or conditions. The condition agent's
+answer selects a branch by key; each branch is a full nested workflow pattern.
 
 ```yaml
 spec:
   type: conditional
-  agent_ids: [complexity-classifier]
-  # Classification result determines next steps
+  condition_agent_id: complexity-classifier
+  condition_prompt: 'Respond "simple" or "complex": {{input}}'
+  branches:
+    simple:
+      type: pipeline
+      # ... nested pipeline spec
+    complex:
+      type: pipeline
+      # ... nested pipeline spec
+  default_branch:
+    type: fork-join
+    # ... used when no branch key matches
 ```
 
 **Use Cases:**
 - Task routing based on complexity
 - Dynamic workflow selection
 - Classification-based decisions
-
-**Note:** Nested workflows (branches with sub-workflows) are planned for future releases.
 
 ---
 

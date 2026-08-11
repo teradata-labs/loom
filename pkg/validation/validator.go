@@ -311,6 +311,14 @@ func validateWorkflowStructure(content string) []ValidationError {
 	return errors
 }
 
+// CanonicalWorkflowPatternTypes returns the canonical spec.type vocabulary
+// for orchestration workflows. This is the single source of truth: the
+// validator, pkg/orchestration's converter guard, and the agent registry
+// loader (pinned by its contract test) all accept exactly this set.
+func CanonicalWorkflowPatternTypes() []string {
+	return []string{"debate", "fork-join", "pipeline", "parallel", "conditional", "iterative", "swarm"}
+}
+
 // validateOrchestrationWorkflowStructure validates structure for orchestration workflows.
 func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []ValidationError {
 	var errors []ValidationError
@@ -382,7 +390,7 @@ func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []Valid
 	}
 
 	// Validate pattern/type value
-	validPatterns := []string{"debate", "fork-join", "pipeline", "parallel", "conditional", "iterative", "swarm"}
+	validPatterns := CanonicalWorkflowPatternTypes()
 	isValidPattern := false
 	for _, valid := range validPatterns {
 		if patternValue == valid {
@@ -436,6 +444,7 @@ func validateOrchestrationSchema(spec map[string]interface{}, patternType string
 		"conditional": {
 			"pattern", "type", // Pattern identifier
 			"condition_agent_id", "condition_prompt", "branches", "default_branch", // Conditional specific
+			"retry_policy", // Optional output retry (parsed by convertConditionalPattern)
 		},
 		"iterative": {
 			"pattern", "type", // Pattern identifier
@@ -444,6 +453,7 @@ func validateOrchestrationSchema(spec map[string]interface{}, patternType string
 		"swarm": {
 			"pattern", "type", // Pattern identifier
 			"question", "agent_ids", "strategy", "confidence_threshold", "share_votes", "judge_agent_id", // Swarm specific
+			"retry_policy", // Optional output retry (parsed by convertSwarmPattern)
 		},
 	}
 

@@ -10,41 +10,40 @@ metadata:
 
 spec:
   type: pipeline
-  pipeline:
-    initial_prompt: "Execute weekly full backup of all production systems"
-    stages:
-      - agent_id: backup-coordinator
-        prompt: |
-          Initialize backup process for all registered systems.
-          Verify all systems are in backup-ready state.
+  initial_prompt: "Execute weekly full backup of all production systems"
+  stages:
+    - agent_id: backup-coordinator
+      prompt_template: |
+        Initialize backup process for all registered systems.
+        Verify all systems are in backup-ready state.
 
-      - agent_id: database-backup
-        prompt: |
-          Execute full database backups:
-          - PostgreSQL production database
-          - MongoDB customer data
-          - Redis cache state
-          Create backup manifests with checksums.
+    - agent_id: database-backup
+      prompt_template: |
+        Execute full database backups:
+        - PostgreSQL production database
+        - MongoDB customer data
+        - Redis cache state
+        Create backup manifests with checksums.
 
-      - agent_id: storage-backup
-        prompt: |
-          Backup file storage systems:
-          - Document storage (S3)
-          - Image assets
-          - Configuration files
-          Verify integrity of all backups.
+    - agent_id: storage-backup
+      prompt_template: |
+        Backup file storage systems:
+        - Document storage (S3)
+        - Image assets
+        - Configuration files
+        Verify integrity of all backups.
 
-      - agent_id: backup-validator
-        prompt: |
-          Validate all backups:
-          - Verify checksums
-          - Test restore capability (sample)
-          - Generate backup report
+    - agent_id: backup-validator
+      prompt_template: |
+        Validate all backups:
+        - Verify checksums
+        - Test restore capability (sample)
+        - Generate backup report
 
-      - agent_id: notification
-        prompt: |
-          Send backup completion report to operations team.
-          Include backup size, duration, and validation results.
+    - agent_id: notification
+      prompt_template: |
+        Send backup completion report to operations team.
+        Include backup size, duration, and validation results.
 
 # Schedule Configuration
 schedule:

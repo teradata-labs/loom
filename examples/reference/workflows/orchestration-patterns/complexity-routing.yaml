@@ -1,9 +1,8 @@
 # Complexity-Based Routing Workflow
-# Uses conditional pattern to route tasks based on complexity assessment
-#
-# NOTE: This example shows the conditional pattern structure.
-# Full nested workflow support (branches with sub-workflows) is planned for future releases.
-# For now, conditional patterns work best for simple routing decisions.
+# Uses the conditional pattern to route tasks based on complexity assessment.
+# The condition agent's answer selects a branch by key; each branch is a full
+# nested workflow pattern (pipeline, fork-join, ...) executed by the
+# orchestrator. See workflow-all-fields-reference.yaml for every field.
 
 apiVersion: loom/v1
 kind: Workflow
@@ -15,24 +14,53 @@ metadata:
     complexity: high
 
 spec:
-  type: conditional  # Changed from pattern: conditional
+  type: conditional
 
-  agent_ids:
-    - complexity-classifier
+  # The classifier's output is matched against the branch keys below.
+  condition_agent_id: complexity-classifier
+  condition_prompt: |
+    Classify the complexity of this feature request. Respond with exactly one
+    word, either "simple" or "complex": {{input}}
+
+  branches:
+    simple:
+      type: pipeline
+      initial_prompt: '{{input}}'
+      stages:
+        - agent_id: rapid-implementer
+          prompt_template: 'Implement this small, well-scoped feature: {{input}}'
+    complex:
+      type: pipeline
+      initial_prompt: '{{input}}'
+      stages:
+        - agent_id: solution-architect
+          prompt_template: 'Design the architecture for: {{input}}'
+        - agent_id: rapid-implementer
+          prompt_template: 'Implement according to this design: {{previous_output}}'
+
+  # Used when the classifier's answer matches no branch key after retries.
+  default_branch:
+    type: fork-join
+    prompt: 'Assess complexity yourself, then implement: {{input}}'
+    agent_ids:
+      - solution-architect
+      - rapid-implementer
+    merge_strategy: concatenate
+
+  # Retry when the classifier's output matches no branch key; the retry
+  # prompt lists the valid branch keys.
+  retry_policy:
+    max_retries: 2
 
 # Agent configs used (from $LOOM_DATA_DIR/agents/):
 # - complexity-classifier.yaml: Technical complexity classifier for routing-based decisions
+# - rapid-implementer.yaml: Implementation agent for well-scoped features
+# - solution-architect.yaml: Architecture design agent for complex features
 
 # Example usage:
 #
 # Input: "Add user notification system with email, SMS, and push notifications.
 # Support delivery scheduling, retry logic, template management, and analytics."
 #
-# The classifier will evaluate this and return "complex", which can then be used
-# to route to the appropriate implementation workflow.
-#
-# LIMITATION: Nested workflows (branches with sub-workflows) are not yet supported.
-# For complex routing scenarios, consider:
-# 1. Using separate workflow files for each complexity level
-# 2. Implementing routing logic in the application layer
-# 3. Using the conditional pattern for simple binary decisions
+# The classifier returns "complex", which selects the complex branch:
+# solution-architect designs the system, then rapid-implementer builds it.

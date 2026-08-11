@@ -10,27 +10,26 @@ metadata:
 
 spec:
   type: pipeline
-  pipeline:
-    initial_prompt: "Generate comprehensive daily sales report for yesterday"
-    stages:
-      - agent_id: data-analyst
-        prompt: |
-          Query the sales database for yesterday's data and generate a summary report.
-          Include:
-          - Total sales revenue
-          - Top performing products
-          - Regional breakdown
-          - Year-over-year comparison
+  initial_prompt: "Generate comprehensive daily sales report for yesterday"
+  stages:
+    - agent_id: data-analyst
+      prompt_template: |
+        Query the sales database for yesterday's data and generate a summary report.
+        Include:
+        - Total sales revenue
+        - Top performing products
+        - Regional breakdown
+        - Year-over-year comparison
 
-      - agent_id: report-formatter
-        prompt: |
-          Format the sales data into a professional HTML report with charts and tables.
-          Ensure the report is visually appealing and easy to read.
+    - agent_id: report-formatter
+      prompt_template: |
+        Format the sales data into a professional HTML report with charts and tables.
+        Ensure the report is visually appealing and easy to read.
 
-      - agent_id: email-sender
-        prompt: |
-          Send the formatted report to the stakeholders distribution list.
-          Subject: Daily Sales Report - {{date}}
+    - agent_id: email-sender
+      prompt_template: |
+        Send the formatted report to the stakeholders distribution list.
+        Subject: Daily Sales Report - {{date}}
 
 # Schedule Configuration
 schedule:
