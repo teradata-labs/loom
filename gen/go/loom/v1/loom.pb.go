@@ -26,6 +26,7 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -298,7 +299,19 @@ type WeaveRequest struct {
 	// Clear context window before processing this message.
 	// When true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)
 	// before the query is processed, giving a fresh context window.
-	ResetContext  bool `protobuf:"varint,10,opt,name=reset_context,json=resetContext,proto3" json:"reset_context,omitempty"`
+	ResetContext bool `protobuf:"varint,10,opt,name=reset_context,json=resetContext,proto3" json:"reset_context,omitempty"`
+	// Historical arrival time for replayed or imported conversations (optional).
+	// When set, every message persisted during this call — the user turn, the
+	// assistant reply, and tool rows — carries this timestamp instead of the
+	// server wall clock, so temporal grounding (compiled-view arrival stamps,
+	// graph-memory extraction anchoring) reflects when the conversation
+	// actually happened rather than when it was ingested.
+	//
+	// Servers reject this field unless server.allow_time_override is enabled
+	// (FAILED_PRECONDITION), and reject values in the future beyond a small
+	// clock-skew allowance (INVALID_ARGUMENT). Live conversations should leave
+	// it unset.
+	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -401,6 +414,13 @@ func (x *WeaveRequest) GetResetContext() bool {
 		return x.ResetContext
 	}
 	return false
+}
+
+func (x *WeaveRequest) GetOccurredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return nil
 }
 
 // WeaveResponse contains the execution result.
@@ -10700,7 +10720,7 @@ var File_loom_v1_loom_proto protoreflect.FileDescriptor
 
 const file_loom_v1_loom_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\xa0\x04\n" +
+	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\xdd\x04\n" +
 	"\fWeaveRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1d\n" +
 	"\n" +
@@ -10714,7 +10734,9 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\fenable_trace\x18\b \x01(\bR\venableTrace\x12\x19\n" +
 	"\bagent_id\x18\t \x01(\tR\aagentId\x12#\n" +
 	"\rreset_context\x18\n" +
-	" \x01(\bR\fresetContext\x1a@\n" +
+	" \x01(\bR\fresetContext\x12;\n" +
+	"\voccurred_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"occurredAt\x1a@\n" +
 	"\x12BackendConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -11914,359 +11936,361 @@ var file_loom_v1_loom_proto_goTypes = []any{
 	nil,                                        // 165: loom.v1.TestMCPServerConnectionRequest.EnvEntry
 	nil,                                        // 166: loom.v1.Artifact.MetadataEntry
 	nil,                                        // 167: loom.v1.CountSessionsByUserResponse.UserCountsEntry
-	(*structpb.Struct)(nil),                    // 168: google.protobuf.Struct
-	(*structpb.Value)(nil),                     // 169: google.protobuf.Value
-	(*ToolExample)(nil),                        // 170: loom.v1.ToolExample
-	(*RateLimitInfo)(nil),                      // 171: loom.v1.RateLimitInfo
-	(*AgentConfig)(nil),                        // 172: loom.v1.AgentConfig
-	(*WorkflowExecution)(nil),                  // 173: loom.v1.WorkflowExecution
-	(*AgentResult)(nil),                        // 174: loom.v1.AgentResult
-	(*WorkflowPattern)(nil),                    // 175: loom.v1.WorkflowPattern
-	(*ScheduleConfig)(nil),                     // 176: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),                  // 177: loom.v1.ScheduledWorkflow
-	(*CertificateInfo)(nil),                    // 178: loom.v1.CertificateInfo
-	(LLMRole)(0),                               // 179: loom.v1.LLMRole
-	(*ProviderEntry)(nil),                      // 180: loom.v1.ProviderEntry
-	(*GetStorageStatusRequest)(nil),            // 181: loom.v1.GetStorageStatusRequest
-	(*RunMigrationRequest)(nil),                // 182: loom.v1.RunMigrationRequest
-	(*ExecuteWorkflowRequest)(nil),             // 183: loom.v1.ExecuteWorkflowRequest
-	(*ListWorkflowsRequest)(nil),               // 184: loom.v1.ListWorkflowsRequest
-	(*PublishRequest)(nil),                     // 185: loom.v1.PublishRequest
-	(*SubscribeRequest)(nil),                   // 186: loom.v1.SubscribeRequest
-	(*UnsubscribeRequest)(nil),                 // 187: loom.v1.UnsubscribeRequest
-	(*ListTopicsRequest)(nil),                  // 188: loom.v1.ListTopicsRequest
-	(*GetTopicStatsRequest)(nil),               // 189: loom.v1.GetTopicStatsRequest
-	(*SendAsyncRequest)(nil),                   // 190: loom.v1.SendAsyncRequest
-	(*SendAndReceiveRequest)(nil),              // 191: loom.v1.SendAndReceiveRequest
-	(*PutSharedMemoryRequest)(nil),             // 192: loom.v1.PutSharedMemoryRequest
-	(*GetSharedMemoryRequest)(nil),             // 193: loom.v1.GetSharedMemoryRequest
-	(*DeleteSharedMemoryRequest)(nil),          // 194: loom.v1.DeleteSharedMemoryRequest
-	(*WatchSharedMemoryRequest)(nil),           // 195: loom.v1.WatchSharedMemoryRequest
-	(*ListSharedMemoryKeysRequest)(nil),        // 196: loom.v1.ListSharedMemoryKeysRequest
-	(*GetSharedMemoryStatsRequest)(nil),        // 197: loom.v1.GetSharedMemoryStatsRequest
-	(*ListUIAppsRequest)(nil),                  // 198: loom.v1.ListUIAppsRequest
-	(*GetUIAppRequest)(nil),                    // 199: loom.v1.GetUIAppRequest
-	(*CreateUIAppRequest)(nil),                 // 200: loom.v1.CreateUIAppRequest
-	(*UpdateUIAppRequest)(nil),                 // 201: loom.v1.UpdateUIAppRequest
-	(*DeleteUIAppRequest)(nil),                 // 202: loom.v1.DeleteUIAppRequest
-	(*ListComponentTypesRequest)(nil),          // 203: loom.v1.ListComponentTypesRequest
-	(*ListAgentPresetsRequest)(nil),            // 204: loom.v1.ListAgentPresetsRequest
-	(*ListWorkflowTemplatesRequest)(nil),       // 205: loom.v1.ListWorkflowTemplatesRequest
-	(*CreateWorkflowFromTemplateRequest)(nil),  // 206: loom.v1.CreateWorkflowFromTemplateRequest
-	(*ServerConfig)(nil),                       // 207: loom.v1.ServerConfig
-	(*TLSStatus)(nil),                          // 208: loom.v1.TLSStatus
-	(*GetStorageStatusResponse)(nil),           // 209: loom.v1.GetStorageStatusResponse
-	(*RunMigrationResponse)(nil),               // 210: loom.v1.RunMigrationResponse
-	(*ExecuteWorkflowResponse)(nil),            // 211: loom.v1.ExecuteWorkflowResponse
-	(*ListWorkflowsResponse)(nil),              // 212: loom.v1.ListWorkflowsResponse
-	(*emptypb.Empty)(nil),                      // 213: google.protobuf.Empty
-	(*PublishResponse)(nil),                    // 214: loom.v1.PublishResponse
-	(*BusMessage)(nil),                         // 215: loom.v1.BusMessage
-	(*UnsubscribeResponse)(nil),                // 216: loom.v1.UnsubscribeResponse
-	(*ListTopicsResponse)(nil),                 // 217: loom.v1.ListTopicsResponse
-	(*TopicStats)(nil),                         // 218: loom.v1.TopicStats
-	(*SendAsyncResponse)(nil),                  // 219: loom.v1.SendAsyncResponse
-	(*SendAndReceiveResponse)(nil),             // 220: loom.v1.SendAndReceiveResponse
-	(*PutSharedMemoryResponse)(nil),            // 221: loom.v1.PutSharedMemoryResponse
-	(*GetSharedMemoryResponse)(nil),            // 222: loom.v1.GetSharedMemoryResponse
-	(*DeleteSharedMemoryResponse)(nil),         // 223: loom.v1.DeleteSharedMemoryResponse
-	(*SharedMemoryValue)(nil),                  // 224: loom.v1.SharedMemoryValue
-	(*ListSharedMemoryKeysResponse)(nil),       // 225: loom.v1.ListSharedMemoryKeysResponse
-	(*SharedMemoryStats)(nil),                  // 226: loom.v1.SharedMemoryStats
-	(*ListUIAppsResponse)(nil),                 // 227: loom.v1.ListUIAppsResponse
-	(*GetUIAppResponse)(nil),                   // 228: loom.v1.GetUIAppResponse
-	(*CreateUIAppResponse)(nil),                // 229: loom.v1.CreateUIAppResponse
-	(*UpdateUIAppResponse)(nil),                // 230: loom.v1.UpdateUIAppResponse
-	(*DeleteUIAppResponse)(nil),                // 231: loom.v1.DeleteUIAppResponse
-	(*ListComponentTypesResponse)(nil),         // 232: loom.v1.ListComponentTypesResponse
-	(*ListAgentPresetsResponse)(nil),           // 233: loom.v1.ListAgentPresetsResponse
-	(*ListWorkflowTemplatesResponse)(nil),      // 234: loom.v1.ListWorkflowTemplatesResponse
-	(*CreateWorkflowFromTemplateResponse)(nil), // 235: loom.v1.CreateWorkflowFromTemplateResponse
+	(*timestamppb.Timestamp)(nil),              // 168: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                    // 169: google.protobuf.Struct
+	(*structpb.Value)(nil),                     // 170: google.protobuf.Value
+	(*ToolExample)(nil),                        // 171: loom.v1.ToolExample
+	(*RateLimitInfo)(nil),                      // 172: loom.v1.RateLimitInfo
+	(*AgentConfig)(nil),                        // 173: loom.v1.AgentConfig
+	(*WorkflowExecution)(nil),                  // 174: loom.v1.WorkflowExecution
+	(*AgentResult)(nil),                        // 175: loom.v1.AgentResult
+	(*WorkflowPattern)(nil),                    // 176: loom.v1.WorkflowPattern
+	(*ScheduleConfig)(nil),                     // 177: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),                  // 178: loom.v1.ScheduledWorkflow
+	(*CertificateInfo)(nil),                    // 179: loom.v1.CertificateInfo
+	(LLMRole)(0),                               // 180: loom.v1.LLMRole
+	(*ProviderEntry)(nil),                      // 181: loom.v1.ProviderEntry
+	(*GetStorageStatusRequest)(nil),            // 182: loom.v1.GetStorageStatusRequest
+	(*RunMigrationRequest)(nil),                // 183: loom.v1.RunMigrationRequest
+	(*ExecuteWorkflowRequest)(nil),             // 184: loom.v1.ExecuteWorkflowRequest
+	(*ListWorkflowsRequest)(nil),               // 185: loom.v1.ListWorkflowsRequest
+	(*PublishRequest)(nil),                     // 186: loom.v1.PublishRequest
+	(*SubscribeRequest)(nil),                   // 187: loom.v1.SubscribeRequest
+	(*UnsubscribeRequest)(nil),                 // 188: loom.v1.UnsubscribeRequest
+	(*ListTopicsRequest)(nil),                  // 189: loom.v1.ListTopicsRequest
+	(*GetTopicStatsRequest)(nil),               // 190: loom.v1.GetTopicStatsRequest
+	(*SendAsyncRequest)(nil),                   // 191: loom.v1.SendAsyncRequest
+	(*SendAndReceiveRequest)(nil),              // 192: loom.v1.SendAndReceiveRequest
+	(*PutSharedMemoryRequest)(nil),             // 193: loom.v1.PutSharedMemoryRequest
+	(*GetSharedMemoryRequest)(nil),             // 194: loom.v1.GetSharedMemoryRequest
+	(*DeleteSharedMemoryRequest)(nil),          // 195: loom.v1.DeleteSharedMemoryRequest
+	(*WatchSharedMemoryRequest)(nil),           // 196: loom.v1.WatchSharedMemoryRequest
+	(*ListSharedMemoryKeysRequest)(nil),        // 197: loom.v1.ListSharedMemoryKeysRequest
+	(*GetSharedMemoryStatsRequest)(nil),        // 198: loom.v1.GetSharedMemoryStatsRequest
+	(*ListUIAppsRequest)(nil),                  // 199: loom.v1.ListUIAppsRequest
+	(*GetUIAppRequest)(nil),                    // 200: loom.v1.GetUIAppRequest
+	(*CreateUIAppRequest)(nil),                 // 201: loom.v1.CreateUIAppRequest
+	(*UpdateUIAppRequest)(nil),                 // 202: loom.v1.UpdateUIAppRequest
+	(*DeleteUIAppRequest)(nil),                 // 203: loom.v1.DeleteUIAppRequest
+	(*ListComponentTypesRequest)(nil),          // 204: loom.v1.ListComponentTypesRequest
+	(*ListAgentPresetsRequest)(nil),            // 205: loom.v1.ListAgentPresetsRequest
+	(*ListWorkflowTemplatesRequest)(nil),       // 206: loom.v1.ListWorkflowTemplatesRequest
+	(*CreateWorkflowFromTemplateRequest)(nil),  // 207: loom.v1.CreateWorkflowFromTemplateRequest
+	(*ServerConfig)(nil),                       // 208: loom.v1.ServerConfig
+	(*TLSStatus)(nil),                          // 209: loom.v1.TLSStatus
+	(*GetStorageStatusResponse)(nil),           // 210: loom.v1.GetStorageStatusResponse
+	(*RunMigrationResponse)(nil),               // 211: loom.v1.RunMigrationResponse
+	(*ExecuteWorkflowResponse)(nil),            // 212: loom.v1.ExecuteWorkflowResponse
+	(*ListWorkflowsResponse)(nil),              // 213: loom.v1.ListWorkflowsResponse
+	(*emptypb.Empty)(nil),                      // 214: google.protobuf.Empty
+	(*PublishResponse)(nil),                    // 215: loom.v1.PublishResponse
+	(*BusMessage)(nil),                         // 216: loom.v1.BusMessage
+	(*UnsubscribeResponse)(nil),                // 217: loom.v1.UnsubscribeResponse
+	(*ListTopicsResponse)(nil),                 // 218: loom.v1.ListTopicsResponse
+	(*TopicStats)(nil),                         // 219: loom.v1.TopicStats
+	(*SendAsyncResponse)(nil),                  // 220: loom.v1.SendAsyncResponse
+	(*SendAndReceiveResponse)(nil),             // 221: loom.v1.SendAndReceiveResponse
+	(*PutSharedMemoryResponse)(nil),            // 222: loom.v1.PutSharedMemoryResponse
+	(*GetSharedMemoryResponse)(nil),            // 223: loom.v1.GetSharedMemoryResponse
+	(*DeleteSharedMemoryResponse)(nil),         // 224: loom.v1.DeleteSharedMemoryResponse
+	(*SharedMemoryValue)(nil),                  // 225: loom.v1.SharedMemoryValue
+	(*ListSharedMemoryKeysResponse)(nil),       // 226: loom.v1.ListSharedMemoryKeysResponse
+	(*SharedMemoryStats)(nil),                  // 227: loom.v1.SharedMemoryStats
+	(*ListUIAppsResponse)(nil),                 // 228: loom.v1.ListUIAppsResponse
+	(*GetUIAppResponse)(nil),                   // 229: loom.v1.GetUIAppResponse
+	(*CreateUIAppResponse)(nil),                // 230: loom.v1.CreateUIAppResponse
+	(*UpdateUIAppResponse)(nil),                // 231: loom.v1.UpdateUIAppResponse
+	(*DeleteUIAppResponse)(nil),                // 232: loom.v1.DeleteUIAppResponse
+	(*ListComponentTypesResponse)(nil),         // 233: loom.v1.ListComponentTypesResponse
+	(*ListAgentPresetsResponse)(nil),           // 234: loom.v1.ListAgentPresetsResponse
+	(*ListWorkflowTemplatesResponse)(nil),      // 235: loom.v1.ListWorkflowTemplatesResponse
+	(*CreateWorkflowFromTemplateResponse)(nil), // 236: loom.v1.CreateWorkflowFromTemplateResponse
 }
 var file_loom_v1_loom_proto_depIdxs = []int32{
 	147, // 0: loom.v1.WeaveRequest.backend_config:type_name -> loom.v1.WeaveRequest.BackendConfigEntry
 	148, // 1: loom.v1.WeaveRequest.context:type_name -> loom.v1.WeaveRequest.ContextEntry
-	8,   // 2: loom.v1.WeaveResponse.result:type_name -> loom.v1.ExecutionResult
-	14,  // 3: loom.v1.WeaveResponse.cost:type_name -> loom.v1.CostInfo
-	17,  // 4: loom.v1.WeaveResponse.metadata:type_name -> loom.v1.ExecutionMetadata
-	18,  // 5: loom.v1.WeaveResponse.corrections:type_name -> loom.v1.SelfCorrectionAttempt
-	16,  // 6: loom.v1.WeaveResponse.context_state:type_name -> loom.v1.ContextState
-	0,   // 7: loom.v1.WeaveProgress.stage:type_name -> loom.v1.ExecutionStage
-	8,   // 8: loom.v1.WeaveProgress.partial_result:type_name -> loom.v1.ExecutionResult
-	7,   // 9: loom.v1.WeaveProgress.hitl_request:type_name -> loom.v1.HITLRequestInfo
-	14,  // 10: loom.v1.WeaveProgress.cost:type_name -> loom.v1.CostInfo
-	168, // 11: loom.v1.WeaveProgress.tool_input:type_name -> google.protobuf.Struct
-	169, // 12: loom.v1.WeaveProgress.tool_result:type_name -> google.protobuf.Value
-	16,  // 13: loom.v1.WeaveProgress.context_state:type_name -> loom.v1.ContextState
-	149, // 14: loom.v1.ExecutionResult.backend_metadata:type_name -> loom.v1.ExecutionResult.BackendMetadataEntry
-	9,   // 15: loom.v1.ExecutionResult.data_reference:type_name -> loom.v1.DataReference
-	1,   // 16: loom.v1.DataReference.location:type_name -> loom.v1.StorageLocation
-	150, // 17: loom.v1.DataReference.metadata:type_name -> loom.v1.DataReference.MetadataEntry
-	11,  // 18: loom.v1.SharedMemoryConfig.disk_overflow:type_name -> loom.v1.DiskOverflowConfig
-	12,  // 19: loom.v1.SharedMemoryConfig.compression:type_name -> loom.v1.CompressionConfig
-	13,  // 20: loom.v1.SharedMemoryConfig.cleanup:type_name -> loom.v1.CleanupConfig
-	15,  // 21: loom.v1.CostInfo.llm_cost:type_name -> loom.v1.LLMCost
-	15,  // 22: loom.v1.SelfCorrectionAttempt.cost:type_name -> loom.v1.LLMCost
-	30,  // 23: loom.v1.ListPatternsResponse.patterns:type_name -> loom.v1.Pattern
-	2,   // 24: loom.v1.PatternUpdateEvent.type:type_name -> loom.v1.PatternUpdateType
-	31,  // 25: loom.v1.Pattern.parameters:type_name -> loom.v1.PatternParameter
-	32,  // 26: loom.v1.Pattern.examples:type_name -> loom.v1.PatternExample
-	151, // 27: loom.v1.Pattern.backend_hints:type_name -> loom.v1.Pattern.BackendHintsEntry
-	152, // 28: loom.v1.CreateSessionRequest.config:type_name -> loom.v1.CreateSessionRequest.ConfigEntry
-	153, // 29: loom.v1.CreateSessionRequest.metadata:type_name -> loom.v1.CreateSessionRequest.MetadataEntry
-	154, // 30: loom.v1.Session.metadata:type_name -> loom.v1.Session.MetadataEntry
-	34,  // 31: loom.v1.ListSessionsResponse.sessions:type_name -> loom.v1.Session
-	42,  // 32: loom.v1.SessionUpdate.new_message:type_name -> loom.v1.NewMessageUpdate
-	43,  // 33: loom.v1.SessionUpdate.status_change:type_name -> loom.v1.SessionStatusUpdate
-	14,  // 34: loom.v1.NewMessageUpdate.cost:type_name -> loom.v1.CostInfo
-	46,  // 35: loom.v1.ConversationHistory.messages:type_name -> loom.v1.Message
-	47,  // 36: loom.v1.Message.tool_calls:type_name -> loom.v1.ToolCall
-	14,  // 37: loom.v1.Message.cost:type_name -> loom.v1.CostInfo
-	52,  // 38: loom.v1.RegisterToolRequest.tool:type_name -> loom.v1.ToolDefinition
-	52,  // 39: loom.v1.ListToolsResponse.tools:type_name -> loom.v1.ToolDefinition
-	53,  // 40: loom.v1.ToolDefinition.use_cases:type_name -> loom.v1.ToolUseCase
-	54,  // 41: loom.v1.ToolDefinition.conflicts:type_name -> loom.v1.ToolConflict
-	55,  // 42: loom.v1.ToolDefinition.alternatives:type_name -> loom.v1.ToolAlternative
-	170, // 43: loom.v1.ToolDefinition.examples:type_name -> loom.v1.ToolExample
-	57,  // 44: loom.v1.ToolDefinition.prerequisites:type_name -> loom.v1.ToolPrerequisite
-	171, // 45: loom.v1.ToolDefinition.rate_limit:type_name -> loom.v1.RateLimitInfo
-	58,  // 46: loom.v1.ToolDefinition.common_errors:type_name -> loom.v1.ToolCommonError
-	56,  // 47: loom.v1.ToolDefinition.complements:type_name -> loom.v1.ToolComplement
-	61,  // 48: loom.v1.Trace.root_span:type_name -> loom.v1.Span
-	61,  // 49: loom.v1.Trace.spans:type_name -> loom.v1.Span
-	14,  // 50: loom.v1.Trace.total_cost:type_name -> loom.v1.CostInfo
-	155, // 51: loom.v1.Span.attributes:type_name -> loom.v1.Span.AttributesEntry
-	62,  // 52: loom.v1.Span.events:type_name -> loom.v1.SpanEvent
-	156, // 53: loom.v1.SpanEvent.attributes:type_name -> loom.v1.SpanEvent.AttributesEntry
-	157, // 54: loom.v1.HealthStatus.components:type_name -> loom.v1.HealthStatus.ComponentsEntry
-	172, // 55: loom.v1.CreateAgentRequest.config:type_name -> loom.v1.AgentConfig
-	158, // 56: loom.v1.AgentInfo.metadata:type_name -> loom.v1.AgentInfo.MetadataEntry
-	172, // 57: loom.v1.AgentInfo.config:type_name -> loom.v1.AgentConfig
-	67,  // 58: loom.v1.ListAgentsResponse.agents:type_name -> loom.v1.AgentInfo
-	172, // 59: loom.v1.ReloadAgentRequest.config:type_name -> loom.v1.AgentConfig
-	173, // 60: loom.v1.ListWorkflowExecutionsResponse.executions:type_name -> loom.v1.WorkflowExecution
-	174, // 61: loom.v1.WorkflowProgress.partial_results:type_name -> loom.v1.AgentResult
-	175, // 62: loom.v1.ScheduleWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	176, // 63: loom.v1.ScheduleWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
-	159, // 64: loom.v1.ScheduleWorkflowRequest.metadata:type_name -> loom.v1.ScheduleWorkflowRequest.MetadataEntry
-	177, // 65: loom.v1.ScheduleWorkflowResponse.schedule:type_name -> loom.v1.ScheduledWorkflow
-	175, // 66: loom.v1.UpdateScheduledWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	176, // 67: loom.v1.UpdateScheduledWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
-	177, // 68: loom.v1.ListScheduledWorkflowsResponse.schedules:type_name -> loom.v1.ScheduledWorkflow
-	160, // 69: loom.v1.TriggerScheduledWorkflowRequest.variables:type_name -> loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
-	92,  // 70: loom.v1.GetScheduleHistoryResponse.executions:type_name -> loom.v1.ScheduleExecution
-	178, // 71: loom.v1.RenewCertificateResponse.certificate:type_name -> loom.v1.CertificateInfo
-	179, // 72: loom.v1.SwitchModelRequest.role:type_name -> loom.v1.LLMRole
-	105, // 73: loom.v1.SwitchModelResponse.previous_model:type_name -> loom.v1.ModelInfo
-	105, // 74: loom.v1.SwitchModelResponse.new_model:type_name -> loom.v1.ModelInfo
-	105, // 75: loom.v1.ListAvailableModelsResponse.models:type_name -> loom.v1.ModelInfo
-	180, // 76: loom.v1.ListProvidersResponse.providers:type_name -> loom.v1.ProviderEntry
-	3,   // 77: loom.v1.ABTestRequest.mode:type_name -> loom.v1.ABTestMode
-	111, // 78: loom.v1.ListMCPServersResponse.servers:type_name -> loom.v1.MCPServerInfo
-	161, // 79: loom.v1.MCPServerInfo.env:type_name -> loom.v1.MCPServerInfo.EnvEntry
-	162, // 80: loom.v1.AddMCPServerRequest.env:type_name -> loom.v1.AddMCPServerRequest.EnvEntry
-	112, // 81: loom.v1.AddMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
-	111, // 82: loom.v1.AddMCPServerResponse.server:type_name -> loom.v1.MCPServerInfo
-	163, // 83: loom.v1.UpdateMCPServerRequest.env:type_name -> loom.v1.UpdateMCPServerRequest.EnvEntry
-	112, // 84: loom.v1.UpdateMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
-	164, // 85: loom.v1.HealthCheckMCPServersResponse.servers:type_name -> loom.v1.HealthCheckMCPServersResponse.ServersEntry
-	165, // 86: loom.v1.TestMCPServerConnectionRequest.env:type_name -> loom.v1.TestMCPServerConnectionRequest.EnvEntry
-	112, // 87: loom.v1.TestMCPServerConnectionRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
-	52,  // 88: loom.v1.ListMCPServerToolsResponse.tools:type_name -> loom.v1.ToolDefinition
-	166, // 89: loom.v1.Artifact.metadata:type_name -> loom.v1.Artifact.MetadataEntry
-	126, // 90: loom.v1.ListArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
-	126, // 91: loom.v1.GetArtifactResponse.artifact:type_name -> loom.v1.Artifact
-	126, // 92: loom.v1.UploadArtifactResponse.artifact:type_name -> loom.v1.Artifact
-	126, // 93: loom.v1.SearchArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
-	34,  // 94: loom.v1.ListAllSessionsResponse.sessions:type_name -> loom.v1.Session
-	167, // 95: loom.v1.CountSessionsByUserResponse.user_counts:type_name -> loom.v1.CountSessionsByUserResponse.UserCountsEntry
-	65,  // 96: loom.v1.HealthStatus.ComponentsEntry.value:type_name -> loom.v1.ComponentHealth
-	121, // 97: loom.v1.HealthCheckMCPServersResponse.ServersEntry.value:type_name -> loom.v1.MCPServerHealth
-	4,   // 98: loom.v1.LoomService.Weave:input_type -> loom.v1.WeaveRequest
-	4,   // 99: loom.v1.LoomService.StreamWeave:input_type -> loom.v1.WeaveRequest
-	19,  // 100: loom.v1.LoomService.LoadPatterns:input_type -> loom.v1.LoadPatternsRequest
-	21,  // 101: loom.v1.LoomService.ListPatterns:input_type -> loom.v1.ListPatternsRequest
-	23,  // 102: loom.v1.LoomService.GetPattern:input_type -> loom.v1.GetPatternRequest
-	24,  // 103: loom.v1.LoomService.CreatePattern:input_type -> loom.v1.CreatePatternRequest
-	26,  // 104: loom.v1.LoomService.StreamPatternUpdates:input_type -> loom.v1.StreamPatternUpdatesRequest
-	28,  // 105: loom.v1.LoomService.AnswerClarificationQuestion:input_type -> loom.v1.AnswerClarificationRequest
-	33,  // 106: loom.v1.LoomService.CreateSession:input_type -> loom.v1.CreateSessionRequest
-	35,  // 107: loom.v1.LoomService.GetSession:input_type -> loom.v1.GetSessionRequest
-	36,  // 108: loom.v1.LoomService.ListSessions:input_type -> loom.v1.ListSessionsRequest
-	38,  // 109: loom.v1.LoomService.DeleteSession:input_type -> loom.v1.DeleteSessionRequest
-	40,  // 110: loom.v1.LoomService.SubscribeToSession:input_type -> loom.v1.SubscribeToSessionRequest
-	44,  // 111: loom.v1.LoomService.GetConversationHistory:input_type -> loom.v1.GetConversationHistoryRequest
-	48,  // 112: loom.v1.LoomService.RegisterTool:input_type -> loom.v1.RegisterToolRequest
-	50,  // 113: loom.v1.LoomService.ListTools:input_type -> loom.v1.ListToolsRequest
-	59,  // 114: loom.v1.LoomService.GetTrace:input_type -> loom.v1.GetTraceRequest
-	63,  // 115: loom.v1.LoomService.GetHealth:input_type -> loom.v1.GetHealthRequest
-	93,  // 116: loom.v1.LoomService.GetServerConfig:input_type -> loom.v1.GetServerConfigRequest
-	94,  // 117: loom.v1.LoomService.GetTLSStatus:input_type -> loom.v1.GetTLSStatusRequest
-	95,  // 118: loom.v1.LoomService.RenewCertificate:input_type -> loom.v1.RenewCertificateRequest
-	181, // 119: loom.v1.LoomService.GetStorageStatus:input_type -> loom.v1.GetStorageStatusRequest
-	182, // 120: loom.v1.LoomService.RunMigration:input_type -> loom.v1.RunMigrationRequest
-	66,  // 121: loom.v1.LoomService.CreateAgentFromConfig:input_type -> loom.v1.CreateAgentRequest
-	68,  // 122: loom.v1.LoomService.ListAgents:input_type -> loom.v1.ListAgentsRequest
-	70,  // 123: loom.v1.LoomService.GetAgent:input_type -> loom.v1.GetAgentRequest
-	71,  // 124: loom.v1.LoomService.StartAgent:input_type -> loom.v1.StartAgentRequest
-	72,  // 125: loom.v1.LoomService.StopAgent:input_type -> loom.v1.StopAgentRequest
-	73,  // 126: loom.v1.LoomService.DeleteAgent:input_type -> loom.v1.DeleteAgentRequest
-	75,  // 127: loom.v1.LoomService.ReloadAgent:input_type -> loom.v1.ReloadAgentRequest
-	97,  // 128: loom.v1.LoomService.SwitchModel:input_type -> loom.v1.SwitchModelRequest
-	99,  // 129: loom.v1.LoomService.ListAvailableModels:input_type -> loom.v1.ListAvailableModelsRequest
-	101, // 130: loom.v1.LoomService.ListProviders:input_type -> loom.v1.ListProvidersRequest
-	103, // 131: loom.v1.LoomService.ABTest:input_type -> loom.v1.ABTestRequest
-	106, // 132: loom.v1.LoomService.RequestToolPermission:input_type -> loom.v1.ToolPermissionRequest
-	108, // 133: loom.v1.LoomService.ListMCPServers:input_type -> loom.v1.ListMCPServersRequest
-	110, // 134: loom.v1.LoomService.GetMCPServer:input_type -> loom.v1.GetMCPServerRequest
-	113, // 135: loom.v1.LoomService.AddMCPServer:input_type -> loom.v1.AddMCPServerRequest
-	115, // 136: loom.v1.LoomService.UpdateMCPServer:input_type -> loom.v1.UpdateMCPServerRequest
-	116, // 137: loom.v1.LoomService.DeleteMCPServer:input_type -> loom.v1.DeleteMCPServerRequest
-	118, // 138: loom.v1.LoomService.RestartMCPServer:input_type -> loom.v1.RestartMCPServerRequest
-	119, // 139: loom.v1.LoomService.HealthCheckMCPServers:input_type -> loom.v1.HealthCheckMCPServersRequest
-	122, // 140: loom.v1.LoomService.TestMCPServerConnection:input_type -> loom.v1.TestMCPServerConnectionRequest
-	124, // 141: loom.v1.LoomService.ListMCPServerTools:input_type -> loom.v1.ListMCPServerToolsRequest
-	183, // 142: loom.v1.LoomService.ExecuteWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
-	183, // 143: loom.v1.LoomService.StreamWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
-	76,  // 144: loom.v1.LoomService.GetWorkflowExecution:input_type -> loom.v1.GetWorkflowExecutionRequest
-	77,  // 145: loom.v1.LoomService.ListWorkflowExecutions:input_type -> loom.v1.ListWorkflowExecutionsRequest
-	184, // 146: loom.v1.LoomService.ListWorkflows:input_type -> loom.v1.ListWorkflowsRequest
-	80,  // 147: loom.v1.LoomService.ScheduleWorkflow:input_type -> loom.v1.ScheduleWorkflowRequest
-	82,  // 148: loom.v1.LoomService.UpdateScheduledWorkflow:input_type -> loom.v1.UpdateScheduledWorkflowRequest
-	83,  // 149: loom.v1.LoomService.GetScheduledWorkflow:input_type -> loom.v1.GetScheduledWorkflowRequest
-	84,  // 150: loom.v1.LoomService.ListScheduledWorkflows:input_type -> loom.v1.ListScheduledWorkflowsRequest
-	86,  // 151: loom.v1.LoomService.DeleteScheduledWorkflow:input_type -> loom.v1.DeleteScheduledWorkflowRequest
-	87,  // 152: loom.v1.LoomService.TriggerScheduledWorkflow:input_type -> loom.v1.TriggerScheduledWorkflowRequest
-	88,  // 153: loom.v1.LoomService.PauseSchedule:input_type -> loom.v1.PauseScheduleRequest
-	89,  // 154: loom.v1.LoomService.ResumeSchedule:input_type -> loom.v1.ResumeScheduleRequest
-	90,  // 155: loom.v1.LoomService.GetScheduleHistory:input_type -> loom.v1.GetScheduleHistoryRequest
-	185, // 156: loom.v1.LoomService.Publish:input_type -> loom.v1.PublishRequest
-	186, // 157: loom.v1.LoomService.Subscribe:input_type -> loom.v1.SubscribeRequest
-	187, // 158: loom.v1.LoomService.Unsubscribe:input_type -> loom.v1.UnsubscribeRequest
-	188, // 159: loom.v1.LoomService.ListTopics:input_type -> loom.v1.ListTopicsRequest
-	189, // 160: loom.v1.LoomService.GetTopicStats:input_type -> loom.v1.GetTopicStatsRequest
-	190, // 161: loom.v1.LoomService.SendAsync:input_type -> loom.v1.SendAsyncRequest
-	191, // 162: loom.v1.LoomService.SendAndReceive:input_type -> loom.v1.SendAndReceiveRequest
-	192, // 163: loom.v1.LoomService.PutSharedMemory:input_type -> loom.v1.PutSharedMemoryRequest
-	193, // 164: loom.v1.LoomService.GetSharedMemory:input_type -> loom.v1.GetSharedMemoryRequest
-	194, // 165: loom.v1.LoomService.DeleteSharedMemory:input_type -> loom.v1.DeleteSharedMemoryRequest
-	195, // 166: loom.v1.LoomService.WatchSharedMemory:input_type -> loom.v1.WatchSharedMemoryRequest
-	196, // 167: loom.v1.LoomService.ListSharedMemoryKeys:input_type -> loom.v1.ListSharedMemoryKeysRequest
-	197, // 168: loom.v1.LoomService.GetSharedMemoryStats:input_type -> loom.v1.GetSharedMemoryStatsRequest
-	127, // 169: loom.v1.LoomService.ListArtifacts:input_type -> loom.v1.ListArtifactsRequest
-	129, // 170: loom.v1.LoomService.GetArtifact:input_type -> loom.v1.GetArtifactRequest
-	131, // 171: loom.v1.LoomService.UploadArtifact:input_type -> loom.v1.UploadArtifactRequest
-	133, // 172: loom.v1.LoomService.DeleteArtifact:input_type -> loom.v1.DeleteArtifactRequest
-	135, // 173: loom.v1.LoomService.SearchArtifacts:input_type -> loom.v1.SearchArtifactsRequest
-	137, // 174: loom.v1.LoomService.GetArtifactContent:input_type -> loom.v1.GetArtifactContentRequest
-	139, // 175: loom.v1.LoomService.GetArtifactStats:input_type -> loom.v1.GetArtifactStatsRequest
-	198, // 176: loom.v1.LoomService.ListUIApps:input_type -> loom.v1.ListUIAppsRequest
-	199, // 177: loom.v1.LoomService.GetUIApp:input_type -> loom.v1.GetUIAppRequest
-	200, // 178: loom.v1.LoomService.CreateUIApp:input_type -> loom.v1.CreateUIAppRequest
-	201, // 179: loom.v1.LoomService.UpdateUIApp:input_type -> loom.v1.UpdateUIAppRequest
-	202, // 180: loom.v1.LoomService.DeleteUIApp:input_type -> loom.v1.DeleteUIAppRequest
-	203, // 181: loom.v1.LoomService.ListComponentTypes:input_type -> loom.v1.ListComponentTypesRequest
-	204, // 182: loom.v1.LoomService.ListAgentPresets:input_type -> loom.v1.ListAgentPresetsRequest
-	205, // 183: loom.v1.LoomService.ListWorkflowTemplates:input_type -> loom.v1.ListWorkflowTemplatesRequest
-	206, // 184: loom.v1.LoomService.CreateWorkflowFromTemplate:input_type -> loom.v1.CreateWorkflowFromTemplateRequest
-	141, // 185: loom.v1.AdminService.ListAllSessions:input_type -> loom.v1.ListAllSessionsRequest
-	143, // 186: loom.v1.AdminService.CountSessionsByUser:input_type -> loom.v1.CountSessionsByUserRequest
-	145, // 187: loom.v1.AdminService.GetSystemStats:input_type -> loom.v1.GetSystemStatsRequest
-	5,   // 188: loom.v1.LoomService.Weave:output_type -> loom.v1.WeaveResponse
-	6,   // 189: loom.v1.LoomService.StreamWeave:output_type -> loom.v1.WeaveProgress
-	20,  // 190: loom.v1.LoomService.LoadPatterns:output_type -> loom.v1.LoadPatternsResponse
-	22,  // 191: loom.v1.LoomService.ListPatterns:output_type -> loom.v1.ListPatternsResponse
-	30,  // 192: loom.v1.LoomService.GetPattern:output_type -> loom.v1.Pattern
-	25,  // 193: loom.v1.LoomService.CreatePattern:output_type -> loom.v1.CreatePatternResponse
-	27,  // 194: loom.v1.LoomService.StreamPatternUpdates:output_type -> loom.v1.PatternUpdateEvent
-	29,  // 195: loom.v1.LoomService.AnswerClarificationQuestion:output_type -> loom.v1.AnswerClarificationResponse
-	34,  // 196: loom.v1.LoomService.CreateSession:output_type -> loom.v1.Session
-	34,  // 197: loom.v1.LoomService.GetSession:output_type -> loom.v1.Session
-	37,  // 198: loom.v1.LoomService.ListSessions:output_type -> loom.v1.ListSessionsResponse
-	39,  // 199: loom.v1.LoomService.DeleteSession:output_type -> loom.v1.DeleteSessionResponse
-	41,  // 200: loom.v1.LoomService.SubscribeToSession:output_type -> loom.v1.SessionUpdate
-	45,  // 201: loom.v1.LoomService.GetConversationHistory:output_type -> loom.v1.ConversationHistory
-	49,  // 202: loom.v1.LoomService.RegisterTool:output_type -> loom.v1.RegisterToolResponse
-	51,  // 203: loom.v1.LoomService.ListTools:output_type -> loom.v1.ListToolsResponse
-	60,  // 204: loom.v1.LoomService.GetTrace:output_type -> loom.v1.Trace
-	64,  // 205: loom.v1.LoomService.GetHealth:output_type -> loom.v1.HealthStatus
-	207, // 206: loom.v1.LoomService.GetServerConfig:output_type -> loom.v1.ServerConfig
-	208, // 207: loom.v1.LoomService.GetTLSStatus:output_type -> loom.v1.TLSStatus
-	96,  // 208: loom.v1.LoomService.RenewCertificate:output_type -> loom.v1.RenewCertificateResponse
-	209, // 209: loom.v1.LoomService.GetStorageStatus:output_type -> loom.v1.GetStorageStatusResponse
-	210, // 210: loom.v1.LoomService.RunMigration:output_type -> loom.v1.RunMigrationResponse
-	67,  // 211: loom.v1.LoomService.CreateAgentFromConfig:output_type -> loom.v1.AgentInfo
-	69,  // 212: loom.v1.LoomService.ListAgents:output_type -> loom.v1.ListAgentsResponse
-	67,  // 213: loom.v1.LoomService.GetAgent:output_type -> loom.v1.AgentInfo
-	67,  // 214: loom.v1.LoomService.StartAgent:output_type -> loom.v1.AgentInfo
-	67,  // 215: loom.v1.LoomService.StopAgent:output_type -> loom.v1.AgentInfo
-	74,  // 216: loom.v1.LoomService.DeleteAgent:output_type -> loom.v1.DeleteAgentResponse
-	67,  // 217: loom.v1.LoomService.ReloadAgent:output_type -> loom.v1.AgentInfo
-	98,  // 218: loom.v1.LoomService.SwitchModel:output_type -> loom.v1.SwitchModelResponse
-	100, // 219: loom.v1.LoomService.ListAvailableModels:output_type -> loom.v1.ListAvailableModelsResponse
-	102, // 220: loom.v1.LoomService.ListProviders:output_type -> loom.v1.ListProvidersResponse
-	104, // 221: loom.v1.LoomService.ABTest:output_type -> loom.v1.ABTestEvent
-	107, // 222: loom.v1.LoomService.RequestToolPermission:output_type -> loom.v1.ToolPermissionResponse
-	109, // 223: loom.v1.LoomService.ListMCPServers:output_type -> loom.v1.ListMCPServersResponse
-	111, // 224: loom.v1.LoomService.GetMCPServer:output_type -> loom.v1.MCPServerInfo
-	114, // 225: loom.v1.LoomService.AddMCPServer:output_type -> loom.v1.AddMCPServerResponse
-	111, // 226: loom.v1.LoomService.UpdateMCPServer:output_type -> loom.v1.MCPServerInfo
-	117, // 227: loom.v1.LoomService.DeleteMCPServer:output_type -> loom.v1.DeleteMCPServerResponse
-	111, // 228: loom.v1.LoomService.RestartMCPServer:output_type -> loom.v1.MCPServerInfo
-	120, // 229: loom.v1.LoomService.HealthCheckMCPServers:output_type -> loom.v1.HealthCheckMCPServersResponse
-	123, // 230: loom.v1.LoomService.TestMCPServerConnection:output_type -> loom.v1.TestMCPServerConnectionResponse
-	125, // 231: loom.v1.LoomService.ListMCPServerTools:output_type -> loom.v1.ListMCPServerToolsResponse
-	211, // 232: loom.v1.LoomService.ExecuteWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
-	79,  // 233: loom.v1.LoomService.StreamWorkflow:output_type -> loom.v1.WorkflowProgress
-	173, // 234: loom.v1.LoomService.GetWorkflowExecution:output_type -> loom.v1.WorkflowExecution
-	78,  // 235: loom.v1.LoomService.ListWorkflowExecutions:output_type -> loom.v1.ListWorkflowExecutionsResponse
-	212, // 236: loom.v1.LoomService.ListWorkflows:output_type -> loom.v1.ListWorkflowsResponse
-	81,  // 237: loom.v1.LoomService.ScheduleWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
-	81,  // 238: loom.v1.LoomService.UpdateScheduledWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
-	177, // 239: loom.v1.LoomService.GetScheduledWorkflow:output_type -> loom.v1.ScheduledWorkflow
-	85,  // 240: loom.v1.LoomService.ListScheduledWorkflows:output_type -> loom.v1.ListScheduledWorkflowsResponse
-	213, // 241: loom.v1.LoomService.DeleteScheduledWorkflow:output_type -> google.protobuf.Empty
-	211, // 242: loom.v1.LoomService.TriggerScheduledWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
-	213, // 243: loom.v1.LoomService.PauseSchedule:output_type -> google.protobuf.Empty
-	213, // 244: loom.v1.LoomService.ResumeSchedule:output_type -> google.protobuf.Empty
-	91,  // 245: loom.v1.LoomService.GetScheduleHistory:output_type -> loom.v1.GetScheduleHistoryResponse
-	214, // 246: loom.v1.LoomService.Publish:output_type -> loom.v1.PublishResponse
-	215, // 247: loom.v1.LoomService.Subscribe:output_type -> loom.v1.BusMessage
-	216, // 248: loom.v1.LoomService.Unsubscribe:output_type -> loom.v1.UnsubscribeResponse
-	217, // 249: loom.v1.LoomService.ListTopics:output_type -> loom.v1.ListTopicsResponse
-	218, // 250: loom.v1.LoomService.GetTopicStats:output_type -> loom.v1.TopicStats
-	219, // 251: loom.v1.LoomService.SendAsync:output_type -> loom.v1.SendAsyncResponse
-	220, // 252: loom.v1.LoomService.SendAndReceive:output_type -> loom.v1.SendAndReceiveResponse
-	221, // 253: loom.v1.LoomService.PutSharedMemory:output_type -> loom.v1.PutSharedMemoryResponse
-	222, // 254: loom.v1.LoomService.GetSharedMemory:output_type -> loom.v1.GetSharedMemoryResponse
-	223, // 255: loom.v1.LoomService.DeleteSharedMemory:output_type -> loom.v1.DeleteSharedMemoryResponse
-	224, // 256: loom.v1.LoomService.WatchSharedMemory:output_type -> loom.v1.SharedMemoryValue
-	225, // 257: loom.v1.LoomService.ListSharedMemoryKeys:output_type -> loom.v1.ListSharedMemoryKeysResponse
-	226, // 258: loom.v1.LoomService.GetSharedMemoryStats:output_type -> loom.v1.SharedMemoryStats
-	128, // 259: loom.v1.LoomService.ListArtifacts:output_type -> loom.v1.ListArtifactsResponse
-	130, // 260: loom.v1.LoomService.GetArtifact:output_type -> loom.v1.GetArtifactResponse
-	132, // 261: loom.v1.LoomService.UploadArtifact:output_type -> loom.v1.UploadArtifactResponse
-	134, // 262: loom.v1.LoomService.DeleteArtifact:output_type -> loom.v1.DeleteArtifactResponse
-	136, // 263: loom.v1.LoomService.SearchArtifacts:output_type -> loom.v1.SearchArtifactsResponse
-	138, // 264: loom.v1.LoomService.GetArtifactContent:output_type -> loom.v1.GetArtifactContentResponse
-	140, // 265: loom.v1.LoomService.GetArtifactStats:output_type -> loom.v1.GetArtifactStatsResponse
-	227, // 266: loom.v1.LoomService.ListUIApps:output_type -> loom.v1.ListUIAppsResponse
-	228, // 267: loom.v1.LoomService.GetUIApp:output_type -> loom.v1.GetUIAppResponse
-	229, // 268: loom.v1.LoomService.CreateUIApp:output_type -> loom.v1.CreateUIAppResponse
-	230, // 269: loom.v1.LoomService.UpdateUIApp:output_type -> loom.v1.UpdateUIAppResponse
-	231, // 270: loom.v1.LoomService.DeleteUIApp:output_type -> loom.v1.DeleteUIAppResponse
-	232, // 271: loom.v1.LoomService.ListComponentTypes:output_type -> loom.v1.ListComponentTypesResponse
-	233, // 272: loom.v1.LoomService.ListAgentPresets:output_type -> loom.v1.ListAgentPresetsResponse
-	234, // 273: loom.v1.LoomService.ListWorkflowTemplates:output_type -> loom.v1.ListWorkflowTemplatesResponse
-	235, // 274: loom.v1.LoomService.CreateWorkflowFromTemplate:output_type -> loom.v1.CreateWorkflowFromTemplateResponse
-	142, // 275: loom.v1.AdminService.ListAllSessions:output_type -> loom.v1.ListAllSessionsResponse
-	144, // 276: loom.v1.AdminService.CountSessionsByUser:output_type -> loom.v1.CountSessionsByUserResponse
-	146, // 277: loom.v1.AdminService.GetSystemStats:output_type -> loom.v1.GetSystemStatsResponse
-	188, // [188:278] is the sub-list for method output_type
-	98,  // [98:188] is the sub-list for method input_type
-	98,  // [98:98] is the sub-list for extension type_name
-	98,  // [98:98] is the sub-list for extension extendee
-	0,   // [0:98] is the sub-list for field type_name
+	168, // 2: loom.v1.WeaveRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	8,   // 3: loom.v1.WeaveResponse.result:type_name -> loom.v1.ExecutionResult
+	14,  // 4: loom.v1.WeaveResponse.cost:type_name -> loom.v1.CostInfo
+	17,  // 5: loom.v1.WeaveResponse.metadata:type_name -> loom.v1.ExecutionMetadata
+	18,  // 6: loom.v1.WeaveResponse.corrections:type_name -> loom.v1.SelfCorrectionAttempt
+	16,  // 7: loom.v1.WeaveResponse.context_state:type_name -> loom.v1.ContextState
+	0,   // 8: loom.v1.WeaveProgress.stage:type_name -> loom.v1.ExecutionStage
+	8,   // 9: loom.v1.WeaveProgress.partial_result:type_name -> loom.v1.ExecutionResult
+	7,   // 10: loom.v1.WeaveProgress.hitl_request:type_name -> loom.v1.HITLRequestInfo
+	14,  // 11: loom.v1.WeaveProgress.cost:type_name -> loom.v1.CostInfo
+	169, // 12: loom.v1.WeaveProgress.tool_input:type_name -> google.protobuf.Struct
+	170, // 13: loom.v1.WeaveProgress.tool_result:type_name -> google.protobuf.Value
+	16,  // 14: loom.v1.WeaveProgress.context_state:type_name -> loom.v1.ContextState
+	149, // 15: loom.v1.ExecutionResult.backend_metadata:type_name -> loom.v1.ExecutionResult.BackendMetadataEntry
+	9,   // 16: loom.v1.ExecutionResult.data_reference:type_name -> loom.v1.DataReference
+	1,   // 17: loom.v1.DataReference.location:type_name -> loom.v1.StorageLocation
+	150, // 18: loom.v1.DataReference.metadata:type_name -> loom.v1.DataReference.MetadataEntry
+	11,  // 19: loom.v1.SharedMemoryConfig.disk_overflow:type_name -> loom.v1.DiskOverflowConfig
+	12,  // 20: loom.v1.SharedMemoryConfig.compression:type_name -> loom.v1.CompressionConfig
+	13,  // 21: loom.v1.SharedMemoryConfig.cleanup:type_name -> loom.v1.CleanupConfig
+	15,  // 22: loom.v1.CostInfo.llm_cost:type_name -> loom.v1.LLMCost
+	15,  // 23: loom.v1.SelfCorrectionAttempt.cost:type_name -> loom.v1.LLMCost
+	30,  // 24: loom.v1.ListPatternsResponse.patterns:type_name -> loom.v1.Pattern
+	2,   // 25: loom.v1.PatternUpdateEvent.type:type_name -> loom.v1.PatternUpdateType
+	31,  // 26: loom.v1.Pattern.parameters:type_name -> loom.v1.PatternParameter
+	32,  // 27: loom.v1.Pattern.examples:type_name -> loom.v1.PatternExample
+	151, // 28: loom.v1.Pattern.backend_hints:type_name -> loom.v1.Pattern.BackendHintsEntry
+	152, // 29: loom.v1.CreateSessionRequest.config:type_name -> loom.v1.CreateSessionRequest.ConfigEntry
+	153, // 30: loom.v1.CreateSessionRequest.metadata:type_name -> loom.v1.CreateSessionRequest.MetadataEntry
+	154, // 31: loom.v1.Session.metadata:type_name -> loom.v1.Session.MetadataEntry
+	34,  // 32: loom.v1.ListSessionsResponse.sessions:type_name -> loom.v1.Session
+	42,  // 33: loom.v1.SessionUpdate.new_message:type_name -> loom.v1.NewMessageUpdate
+	43,  // 34: loom.v1.SessionUpdate.status_change:type_name -> loom.v1.SessionStatusUpdate
+	14,  // 35: loom.v1.NewMessageUpdate.cost:type_name -> loom.v1.CostInfo
+	46,  // 36: loom.v1.ConversationHistory.messages:type_name -> loom.v1.Message
+	47,  // 37: loom.v1.Message.tool_calls:type_name -> loom.v1.ToolCall
+	14,  // 38: loom.v1.Message.cost:type_name -> loom.v1.CostInfo
+	52,  // 39: loom.v1.RegisterToolRequest.tool:type_name -> loom.v1.ToolDefinition
+	52,  // 40: loom.v1.ListToolsResponse.tools:type_name -> loom.v1.ToolDefinition
+	53,  // 41: loom.v1.ToolDefinition.use_cases:type_name -> loom.v1.ToolUseCase
+	54,  // 42: loom.v1.ToolDefinition.conflicts:type_name -> loom.v1.ToolConflict
+	55,  // 43: loom.v1.ToolDefinition.alternatives:type_name -> loom.v1.ToolAlternative
+	171, // 44: loom.v1.ToolDefinition.examples:type_name -> loom.v1.ToolExample
+	57,  // 45: loom.v1.ToolDefinition.prerequisites:type_name -> loom.v1.ToolPrerequisite
+	172, // 46: loom.v1.ToolDefinition.rate_limit:type_name -> loom.v1.RateLimitInfo
+	58,  // 47: loom.v1.ToolDefinition.common_errors:type_name -> loom.v1.ToolCommonError
+	56,  // 48: loom.v1.ToolDefinition.complements:type_name -> loom.v1.ToolComplement
+	61,  // 49: loom.v1.Trace.root_span:type_name -> loom.v1.Span
+	61,  // 50: loom.v1.Trace.spans:type_name -> loom.v1.Span
+	14,  // 51: loom.v1.Trace.total_cost:type_name -> loom.v1.CostInfo
+	155, // 52: loom.v1.Span.attributes:type_name -> loom.v1.Span.AttributesEntry
+	62,  // 53: loom.v1.Span.events:type_name -> loom.v1.SpanEvent
+	156, // 54: loom.v1.SpanEvent.attributes:type_name -> loom.v1.SpanEvent.AttributesEntry
+	157, // 55: loom.v1.HealthStatus.components:type_name -> loom.v1.HealthStatus.ComponentsEntry
+	173, // 56: loom.v1.CreateAgentRequest.config:type_name -> loom.v1.AgentConfig
+	158, // 57: loom.v1.AgentInfo.metadata:type_name -> loom.v1.AgentInfo.MetadataEntry
+	173, // 58: loom.v1.AgentInfo.config:type_name -> loom.v1.AgentConfig
+	67,  // 59: loom.v1.ListAgentsResponse.agents:type_name -> loom.v1.AgentInfo
+	173, // 60: loom.v1.ReloadAgentRequest.config:type_name -> loom.v1.AgentConfig
+	174, // 61: loom.v1.ListWorkflowExecutionsResponse.executions:type_name -> loom.v1.WorkflowExecution
+	175, // 62: loom.v1.WorkflowProgress.partial_results:type_name -> loom.v1.AgentResult
+	176, // 63: loom.v1.ScheduleWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	177, // 64: loom.v1.ScheduleWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
+	159, // 65: loom.v1.ScheduleWorkflowRequest.metadata:type_name -> loom.v1.ScheduleWorkflowRequest.MetadataEntry
+	178, // 66: loom.v1.ScheduleWorkflowResponse.schedule:type_name -> loom.v1.ScheduledWorkflow
+	176, // 67: loom.v1.UpdateScheduledWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	177, // 68: loom.v1.UpdateScheduledWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
+	178, // 69: loom.v1.ListScheduledWorkflowsResponse.schedules:type_name -> loom.v1.ScheduledWorkflow
+	160, // 70: loom.v1.TriggerScheduledWorkflowRequest.variables:type_name -> loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
+	92,  // 71: loom.v1.GetScheduleHistoryResponse.executions:type_name -> loom.v1.ScheduleExecution
+	179, // 72: loom.v1.RenewCertificateResponse.certificate:type_name -> loom.v1.CertificateInfo
+	180, // 73: loom.v1.SwitchModelRequest.role:type_name -> loom.v1.LLMRole
+	105, // 74: loom.v1.SwitchModelResponse.previous_model:type_name -> loom.v1.ModelInfo
+	105, // 75: loom.v1.SwitchModelResponse.new_model:type_name -> loom.v1.ModelInfo
+	105, // 76: loom.v1.ListAvailableModelsResponse.models:type_name -> loom.v1.ModelInfo
+	181, // 77: loom.v1.ListProvidersResponse.providers:type_name -> loom.v1.ProviderEntry
+	3,   // 78: loom.v1.ABTestRequest.mode:type_name -> loom.v1.ABTestMode
+	111, // 79: loom.v1.ListMCPServersResponse.servers:type_name -> loom.v1.MCPServerInfo
+	161, // 80: loom.v1.MCPServerInfo.env:type_name -> loom.v1.MCPServerInfo.EnvEntry
+	162, // 81: loom.v1.AddMCPServerRequest.env:type_name -> loom.v1.AddMCPServerRequest.EnvEntry
+	112, // 82: loom.v1.AddMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	111, // 83: loom.v1.AddMCPServerResponse.server:type_name -> loom.v1.MCPServerInfo
+	163, // 84: loom.v1.UpdateMCPServerRequest.env:type_name -> loom.v1.UpdateMCPServerRequest.EnvEntry
+	112, // 85: loom.v1.UpdateMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	164, // 86: loom.v1.HealthCheckMCPServersResponse.servers:type_name -> loom.v1.HealthCheckMCPServersResponse.ServersEntry
+	165, // 87: loom.v1.TestMCPServerConnectionRequest.env:type_name -> loom.v1.TestMCPServerConnectionRequest.EnvEntry
+	112, // 88: loom.v1.TestMCPServerConnectionRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	52,  // 89: loom.v1.ListMCPServerToolsResponse.tools:type_name -> loom.v1.ToolDefinition
+	166, // 90: loom.v1.Artifact.metadata:type_name -> loom.v1.Artifact.MetadataEntry
+	126, // 91: loom.v1.ListArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
+	126, // 92: loom.v1.GetArtifactResponse.artifact:type_name -> loom.v1.Artifact
+	126, // 93: loom.v1.UploadArtifactResponse.artifact:type_name -> loom.v1.Artifact
+	126, // 94: loom.v1.SearchArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
+	34,  // 95: loom.v1.ListAllSessionsResponse.sessions:type_name -> loom.v1.Session
+	167, // 96: loom.v1.CountSessionsByUserResponse.user_counts:type_name -> loom.v1.CountSessionsByUserResponse.UserCountsEntry
+	65,  // 97: loom.v1.HealthStatus.ComponentsEntry.value:type_name -> loom.v1.ComponentHealth
+	121, // 98: loom.v1.HealthCheckMCPServersResponse.ServersEntry.value:type_name -> loom.v1.MCPServerHealth
+	4,   // 99: loom.v1.LoomService.Weave:input_type -> loom.v1.WeaveRequest
+	4,   // 100: loom.v1.LoomService.StreamWeave:input_type -> loom.v1.WeaveRequest
+	19,  // 101: loom.v1.LoomService.LoadPatterns:input_type -> loom.v1.LoadPatternsRequest
+	21,  // 102: loom.v1.LoomService.ListPatterns:input_type -> loom.v1.ListPatternsRequest
+	23,  // 103: loom.v1.LoomService.GetPattern:input_type -> loom.v1.GetPatternRequest
+	24,  // 104: loom.v1.LoomService.CreatePattern:input_type -> loom.v1.CreatePatternRequest
+	26,  // 105: loom.v1.LoomService.StreamPatternUpdates:input_type -> loom.v1.StreamPatternUpdatesRequest
+	28,  // 106: loom.v1.LoomService.AnswerClarificationQuestion:input_type -> loom.v1.AnswerClarificationRequest
+	33,  // 107: loom.v1.LoomService.CreateSession:input_type -> loom.v1.CreateSessionRequest
+	35,  // 108: loom.v1.LoomService.GetSession:input_type -> loom.v1.GetSessionRequest
+	36,  // 109: loom.v1.LoomService.ListSessions:input_type -> loom.v1.ListSessionsRequest
+	38,  // 110: loom.v1.LoomService.DeleteSession:input_type -> loom.v1.DeleteSessionRequest
+	40,  // 111: loom.v1.LoomService.SubscribeToSession:input_type -> loom.v1.SubscribeToSessionRequest
+	44,  // 112: loom.v1.LoomService.GetConversationHistory:input_type -> loom.v1.GetConversationHistoryRequest
+	48,  // 113: loom.v1.LoomService.RegisterTool:input_type -> loom.v1.RegisterToolRequest
+	50,  // 114: loom.v1.LoomService.ListTools:input_type -> loom.v1.ListToolsRequest
+	59,  // 115: loom.v1.LoomService.GetTrace:input_type -> loom.v1.GetTraceRequest
+	63,  // 116: loom.v1.LoomService.GetHealth:input_type -> loom.v1.GetHealthRequest
+	93,  // 117: loom.v1.LoomService.GetServerConfig:input_type -> loom.v1.GetServerConfigRequest
+	94,  // 118: loom.v1.LoomService.GetTLSStatus:input_type -> loom.v1.GetTLSStatusRequest
+	95,  // 119: loom.v1.LoomService.RenewCertificate:input_type -> loom.v1.RenewCertificateRequest
+	182, // 120: loom.v1.LoomService.GetStorageStatus:input_type -> loom.v1.GetStorageStatusRequest
+	183, // 121: loom.v1.LoomService.RunMigration:input_type -> loom.v1.RunMigrationRequest
+	66,  // 122: loom.v1.LoomService.CreateAgentFromConfig:input_type -> loom.v1.CreateAgentRequest
+	68,  // 123: loom.v1.LoomService.ListAgents:input_type -> loom.v1.ListAgentsRequest
+	70,  // 124: loom.v1.LoomService.GetAgent:input_type -> loom.v1.GetAgentRequest
+	71,  // 125: loom.v1.LoomService.StartAgent:input_type -> loom.v1.StartAgentRequest
+	72,  // 126: loom.v1.LoomService.StopAgent:input_type -> loom.v1.StopAgentRequest
+	73,  // 127: loom.v1.LoomService.DeleteAgent:input_type -> loom.v1.DeleteAgentRequest
+	75,  // 128: loom.v1.LoomService.ReloadAgent:input_type -> loom.v1.ReloadAgentRequest
+	97,  // 129: loom.v1.LoomService.SwitchModel:input_type -> loom.v1.SwitchModelRequest
+	99,  // 130: loom.v1.LoomService.ListAvailableModels:input_type -> loom.v1.ListAvailableModelsRequest
+	101, // 131: loom.v1.LoomService.ListProviders:input_type -> loom.v1.ListProvidersRequest
+	103, // 132: loom.v1.LoomService.ABTest:input_type -> loom.v1.ABTestRequest
+	106, // 133: loom.v1.LoomService.RequestToolPermission:input_type -> loom.v1.ToolPermissionRequest
+	108, // 134: loom.v1.LoomService.ListMCPServers:input_type -> loom.v1.ListMCPServersRequest
+	110, // 135: loom.v1.LoomService.GetMCPServer:input_type -> loom.v1.GetMCPServerRequest
+	113, // 136: loom.v1.LoomService.AddMCPServer:input_type -> loom.v1.AddMCPServerRequest
+	115, // 137: loom.v1.LoomService.UpdateMCPServer:input_type -> loom.v1.UpdateMCPServerRequest
+	116, // 138: loom.v1.LoomService.DeleteMCPServer:input_type -> loom.v1.DeleteMCPServerRequest
+	118, // 139: loom.v1.LoomService.RestartMCPServer:input_type -> loom.v1.RestartMCPServerRequest
+	119, // 140: loom.v1.LoomService.HealthCheckMCPServers:input_type -> loom.v1.HealthCheckMCPServersRequest
+	122, // 141: loom.v1.LoomService.TestMCPServerConnection:input_type -> loom.v1.TestMCPServerConnectionRequest
+	124, // 142: loom.v1.LoomService.ListMCPServerTools:input_type -> loom.v1.ListMCPServerToolsRequest
+	184, // 143: loom.v1.LoomService.ExecuteWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
+	184, // 144: loom.v1.LoomService.StreamWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
+	76,  // 145: loom.v1.LoomService.GetWorkflowExecution:input_type -> loom.v1.GetWorkflowExecutionRequest
+	77,  // 146: loom.v1.LoomService.ListWorkflowExecutions:input_type -> loom.v1.ListWorkflowExecutionsRequest
+	185, // 147: loom.v1.LoomService.ListWorkflows:input_type -> loom.v1.ListWorkflowsRequest
+	80,  // 148: loom.v1.LoomService.ScheduleWorkflow:input_type -> loom.v1.ScheduleWorkflowRequest
+	82,  // 149: loom.v1.LoomService.UpdateScheduledWorkflow:input_type -> loom.v1.UpdateScheduledWorkflowRequest
+	83,  // 150: loom.v1.LoomService.GetScheduledWorkflow:input_type -> loom.v1.GetScheduledWorkflowRequest
+	84,  // 151: loom.v1.LoomService.ListScheduledWorkflows:input_type -> loom.v1.ListScheduledWorkflowsRequest
+	86,  // 152: loom.v1.LoomService.DeleteScheduledWorkflow:input_type -> loom.v1.DeleteScheduledWorkflowRequest
+	87,  // 153: loom.v1.LoomService.TriggerScheduledWorkflow:input_type -> loom.v1.TriggerScheduledWorkflowRequest
+	88,  // 154: loom.v1.LoomService.PauseSchedule:input_type -> loom.v1.PauseScheduleRequest
+	89,  // 155: loom.v1.LoomService.ResumeSchedule:input_type -> loom.v1.ResumeScheduleRequest
+	90,  // 156: loom.v1.LoomService.GetScheduleHistory:input_type -> loom.v1.GetScheduleHistoryRequest
+	186, // 157: loom.v1.LoomService.Publish:input_type -> loom.v1.PublishRequest
+	187, // 158: loom.v1.LoomService.Subscribe:input_type -> loom.v1.SubscribeRequest
+	188, // 159: loom.v1.LoomService.Unsubscribe:input_type -> loom.v1.UnsubscribeRequest
+	189, // 160: loom.v1.LoomService.ListTopics:input_type -> loom.v1.ListTopicsRequest
+	190, // 161: loom.v1.LoomService.GetTopicStats:input_type -> loom.v1.GetTopicStatsRequest
+	191, // 162: loom.v1.LoomService.SendAsync:input_type -> loom.v1.SendAsyncRequest
+	192, // 163: loom.v1.LoomService.SendAndReceive:input_type -> loom.v1.SendAndReceiveRequest
+	193, // 164: loom.v1.LoomService.PutSharedMemory:input_type -> loom.v1.PutSharedMemoryRequest
+	194, // 165: loom.v1.LoomService.GetSharedMemory:input_type -> loom.v1.GetSharedMemoryRequest
+	195, // 166: loom.v1.LoomService.DeleteSharedMemory:input_type -> loom.v1.DeleteSharedMemoryRequest
+	196, // 167: loom.v1.LoomService.WatchSharedMemory:input_type -> loom.v1.WatchSharedMemoryRequest
+	197, // 168: loom.v1.LoomService.ListSharedMemoryKeys:input_type -> loom.v1.ListSharedMemoryKeysRequest
+	198, // 169: loom.v1.LoomService.GetSharedMemoryStats:input_type -> loom.v1.GetSharedMemoryStatsRequest
+	127, // 170: loom.v1.LoomService.ListArtifacts:input_type -> loom.v1.ListArtifactsRequest
+	129, // 171: loom.v1.LoomService.GetArtifact:input_type -> loom.v1.GetArtifactRequest
+	131, // 172: loom.v1.LoomService.UploadArtifact:input_type -> loom.v1.UploadArtifactRequest
+	133, // 173: loom.v1.LoomService.DeleteArtifact:input_type -> loom.v1.DeleteArtifactRequest
+	135, // 174: loom.v1.LoomService.SearchArtifacts:input_type -> loom.v1.SearchArtifactsRequest
+	137, // 175: loom.v1.LoomService.GetArtifactContent:input_type -> loom.v1.GetArtifactContentRequest
+	139, // 176: loom.v1.LoomService.GetArtifactStats:input_type -> loom.v1.GetArtifactStatsRequest
+	199, // 177: loom.v1.LoomService.ListUIApps:input_type -> loom.v1.ListUIAppsRequest
+	200, // 178: loom.v1.LoomService.GetUIApp:input_type -> loom.v1.GetUIAppRequest
+	201, // 179: loom.v1.LoomService.CreateUIApp:input_type -> loom.v1.CreateUIAppRequest
+	202, // 180: loom.v1.LoomService.UpdateUIApp:input_type -> loom.v1.UpdateUIAppRequest
+	203, // 181: loom.v1.LoomService.DeleteUIApp:input_type -> loom.v1.DeleteUIAppRequest
+	204, // 182: loom.v1.LoomService.ListComponentTypes:input_type -> loom.v1.ListComponentTypesRequest
+	205, // 183: loom.v1.LoomService.ListAgentPresets:input_type -> loom.v1.ListAgentPresetsRequest
+	206, // 184: loom.v1.LoomService.ListWorkflowTemplates:input_type -> loom.v1.ListWorkflowTemplatesRequest
+	207, // 185: loom.v1.LoomService.CreateWorkflowFromTemplate:input_type -> loom.v1.CreateWorkflowFromTemplateRequest
+	141, // 186: loom.v1.AdminService.ListAllSessions:input_type -> loom.v1.ListAllSessionsRequest
+	143, // 187: loom.v1.AdminService.CountSessionsByUser:input_type -> loom.v1.CountSessionsByUserRequest
+	145, // 188: loom.v1.AdminService.GetSystemStats:input_type -> loom.v1.GetSystemStatsRequest
+	5,   // 189: loom.v1.LoomService.Weave:output_type -> loom.v1.WeaveResponse
+	6,   // 190: loom.v1.LoomService.StreamWeave:output_type -> loom.v1.WeaveProgress
+	20,  // 191: loom.v1.LoomService.LoadPatterns:output_type -> loom.v1.LoadPatternsResponse
+	22,  // 192: loom.v1.LoomService.ListPatterns:output_type -> loom.v1.ListPatternsResponse
+	30,  // 193: loom.v1.LoomService.GetPattern:output_type -> loom.v1.Pattern
+	25,  // 194: loom.v1.LoomService.CreatePattern:output_type -> loom.v1.CreatePatternResponse
+	27,  // 195: loom.v1.LoomService.StreamPatternUpdates:output_type -> loom.v1.PatternUpdateEvent
+	29,  // 196: loom.v1.LoomService.AnswerClarificationQuestion:output_type -> loom.v1.AnswerClarificationResponse
+	34,  // 197: loom.v1.LoomService.CreateSession:output_type -> loom.v1.Session
+	34,  // 198: loom.v1.LoomService.GetSession:output_type -> loom.v1.Session
+	37,  // 199: loom.v1.LoomService.ListSessions:output_type -> loom.v1.ListSessionsResponse
+	39,  // 200: loom.v1.LoomService.DeleteSession:output_type -> loom.v1.DeleteSessionResponse
+	41,  // 201: loom.v1.LoomService.SubscribeToSession:output_type -> loom.v1.SessionUpdate
+	45,  // 202: loom.v1.LoomService.GetConversationHistory:output_type -> loom.v1.ConversationHistory
+	49,  // 203: loom.v1.LoomService.RegisterTool:output_type -> loom.v1.RegisterToolResponse
+	51,  // 204: loom.v1.LoomService.ListTools:output_type -> loom.v1.ListToolsResponse
+	60,  // 205: loom.v1.LoomService.GetTrace:output_type -> loom.v1.Trace
+	64,  // 206: loom.v1.LoomService.GetHealth:output_type -> loom.v1.HealthStatus
+	208, // 207: loom.v1.LoomService.GetServerConfig:output_type -> loom.v1.ServerConfig
+	209, // 208: loom.v1.LoomService.GetTLSStatus:output_type -> loom.v1.TLSStatus
+	96,  // 209: loom.v1.LoomService.RenewCertificate:output_type -> loom.v1.RenewCertificateResponse
+	210, // 210: loom.v1.LoomService.GetStorageStatus:output_type -> loom.v1.GetStorageStatusResponse
+	211, // 211: loom.v1.LoomService.RunMigration:output_type -> loom.v1.RunMigrationResponse
+	67,  // 212: loom.v1.LoomService.CreateAgentFromConfig:output_type -> loom.v1.AgentInfo
+	69,  // 213: loom.v1.LoomService.ListAgents:output_type -> loom.v1.ListAgentsResponse
+	67,  // 214: loom.v1.LoomService.GetAgent:output_type -> loom.v1.AgentInfo
+	67,  // 215: loom.v1.LoomService.StartAgent:output_type -> loom.v1.AgentInfo
+	67,  // 216: loom.v1.LoomService.StopAgent:output_type -> loom.v1.AgentInfo
+	74,  // 217: loom.v1.LoomService.DeleteAgent:output_type -> loom.v1.DeleteAgentResponse
+	67,  // 218: loom.v1.LoomService.ReloadAgent:output_type -> loom.v1.AgentInfo
+	98,  // 219: loom.v1.LoomService.SwitchModel:output_type -> loom.v1.SwitchModelResponse
+	100, // 220: loom.v1.LoomService.ListAvailableModels:output_type -> loom.v1.ListAvailableModelsResponse
+	102, // 221: loom.v1.LoomService.ListProviders:output_type -> loom.v1.ListProvidersResponse
+	104, // 222: loom.v1.LoomService.ABTest:output_type -> loom.v1.ABTestEvent
+	107, // 223: loom.v1.LoomService.RequestToolPermission:output_type -> loom.v1.ToolPermissionResponse
+	109, // 224: loom.v1.LoomService.ListMCPServers:output_type -> loom.v1.ListMCPServersResponse
+	111, // 225: loom.v1.LoomService.GetMCPServer:output_type -> loom.v1.MCPServerInfo
+	114, // 226: loom.v1.LoomService.AddMCPServer:output_type -> loom.v1.AddMCPServerResponse
+	111, // 227: loom.v1.LoomService.UpdateMCPServer:output_type -> loom.v1.MCPServerInfo
+	117, // 228: loom.v1.LoomService.DeleteMCPServer:output_type -> loom.v1.DeleteMCPServerResponse
+	111, // 229: loom.v1.LoomService.RestartMCPServer:output_type -> loom.v1.MCPServerInfo
+	120, // 230: loom.v1.LoomService.HealthCheckMCPServers:output_type -> loom.v1.HealthCheckMCPServersResponse
+	123, // 231: loom.v1.LoomService.TestMCPServerConnection:output_type -> loom.v1.TestMCPServerConnectionResponse
+	125, // 232: loom.v1.LoomService.ListMCPServerTools:output_type -> loom.v1.ListMCPServerToolsResponse
+	212, // 233: loom.v1.LoomService.ExecuteWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
+	79,  // 234: loom.v1.LoomService.StreamWorkflow:output_type -> loom.v1.WorkflowProgress
+	174, // 235: loom.v1.LoomService.GetWorkflowExecution:output_type -> loom.v1.WorkflowExecution
+	78,  // 236: loom.v1.LoomService.ListWorkflowExecutions:output_type -> loom.v1.ListWorkflowExecutionsResponse
+	213, // 237: loom.v1.LoomService.ListWorkflows:output_type -> loom.v1.ListWorkflowsResponse
+	81,  // 238: loom.v1.LoomService.ScheduleWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
+	81,  // 239: loom.v1.LoomService.UpdateScheduledWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
+	178, // 240: loom.v1.LoomService.GetScheduledWorkflow:output_type -> loom.v1.ScheduledWorkflow
+	85,  // 241: loom.v1.LoomService.ListScheduledWorkflows:output_type -> loom.v1.ListScheduledWorkflowsResponse
+	214, // 242: loom.v1.LoomService.DeleteScheduledWorkflow:output_type -> google.protobuf.Empty
+	212, // 243: loom.v1.LoomService.TriggerScheduledWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
+	214, // 244: loom.v1.LoomService.PauseSchedule:output_type -> google.protobuf.Empty
+	214, // 245: loom.v1.LoomService.ResumeSchedule:output_type -> google.protobuf.Empty
+	91,  // 246: loom.v1.LoomService.GetScheduleHistory:output_type -> loom.v1.GetScheduleHistoryResponse
+	215, // 247: loom.v1.LoomService.Publish:output_type -> loom.v1.PublishResponse
+	216, // 248: loom.v1.LoomService.Subscribe:output_type -> loom.v1.BusMessage
+	217, // 249: loom.v1.LoomService.Unsubscribe:output_type -> loom.v1.UnsubscribeResponse
+	218, // 250: loom.v1.LoomService.ListTopics:output_type -> loom.v1.ListTopicsResponse
+	219, // 251: loom.v1.LoomService.GetTopicStats:output_type -> loom.v1.TopicStats
+	220, // 252: loom.v1.LoomService.SendAsync:output_type -> loom.v1.SendAsyncResponse
+	221, // 253: loom.v1.LoomService.SendAndReceive:output_type -> loom.v1.SendAndReceiveResponse
+	222, // 254: loom.v1.LoomService.PutSharedMemory:output_type -> loom.v1.PutSharedMemoryResponse
+	223, // 255: loom.v1.LoomService.GetSharedMemory:output_type -> loom.v1.GetSharedMemoryResponse
+	224, // 256: loom.v1.LoomService.DeleteSharedMemory:output_type -> loom.v1.DeleteSharedMemoryResponse
+	225, // 257: loom.v1.LoomService.WatchSharedMemory:output_type -> loom.v1.SharedMemoryValue
+	226, // 258: loom.v1.LoomService.ListSharedMemoryKeys:output_type -> loom.v1.ListSharedMemoryKeysResponse
+	227, // 259: loom.v1.LoomService.GetSharedMemoryStats:output_type -> loom.v1.SharedMemoryStats
+	128, // 260: loom.v1.LoomService.ListArtifacts:output_type -> loom.v1.ListArtifactsResponse
+	130, // 261: loom.v1.LoomService.GetArtifact:output_type -> loom.v1.GetArtifactResponse
+	132, // 262: loom.v1.LoomService.UploadArtifact:output_type -> loom.v1.UploadArtifactResponse
+	134, // 263: loom.v1.LoomService.DeleteArtifact:output_type -> loom.v1.DeleteArtifactResponse
+	136, // 264: loom.v1.LoomService.SearchArtifacts:output_type -> loom.v1.SearchArtifactsResponse
+	138, // 265: loom.v1.LoomService.GetArtifactContent:output_type -> loom.v1.GetArtifactContentResponse
+	140, // 266: loom.v1.LoomService.GetArtifactStats:output_type -> loom.v1.GetArtifactStatsResponse
+	228, // 267: loom.v1.LoomService.ListUIApps:output_type -> loom.v1.ListUIAppsResponse
+	229, // 268: loom.v1.LoomService.GetUIApp:output_type -> loom.v1.GetUIAppResponse
+	230, // 269: loom.v1.LoomService.CreateUIApp:output_type -> loom.v1.CreateUIAppResponse
+	231, // 270: loom.v1.LoomService.UpdateUIApp:output_type -> loom.v1.UpdateUIAppResponse
+	232, // 271: loom.v1.LoomService.DeleteUIApp:output_type -> loom.v1.DeleteUIAppResponse
+	233, // 272: loom.v1.LoomService.ListComponentTypes:output_type -> loom.v1.ListComponentTypesResponse
+	234, // 273: loom.v1.LoomService.ListAgentPresets:output_type -> loom.v1.ListAgentPresetsResponse
+	235, // 274: loom.v1.LoomService.ListWorkflowTemplates:output_type -> loom.v1.ListWorkflowTemplatesResponse
+	236, // 275: loom.v1.LoomService.CreateWorkflowFromTemplate:output_type -> loom.v1.CreateWorkflowFromTemplateResponse
+	142, // 276: loom.v1.AdminService.ListAllSessions:output_type -> loom.v1.ListAllSessionsResponse
+	144, // 277: loom.v1.AdminService.CountSessionsByUser:output_type -> loom.v1.CountSessionsByUserResponse
+	146, // 278: loom.v1.AdminService.GetSystemStats:output_type -> loom.v1.GetSystemStatsResponse
+	189, // [189:279] is the sub-list for method output_type
+	99,  // [99:189] is the sub-list for method input_type
+	99,  // [99:99] is the sub-list for extension type_name
+	99,  // [99:99] is the sub-list for extension extendee
+	0,   // [0:99] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_loom_proto_init() }

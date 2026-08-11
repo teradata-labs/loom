@@ -1988,6 +1988,13 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 // arrival. turnStart is true only at the Chat() entry — the only
 // turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) Message {
+	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
+	// anchors every row persisted during the call at the conversation's
+	// historical time; without one, the caller-stamped wall clock stands.
+	if at, ok := occurredAtFromContext(ctx); ok {
+		msg.Timestamp = at
+	}
+
 	// In-memory derivation, identical arithmetic to the store's subquery — the
 	// only derivation for storeless sessions and unpersisted rows.
 	t := sessionCurrentTurn(session)

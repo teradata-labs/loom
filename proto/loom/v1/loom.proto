@@ -18,6 +18,7 @@ package loom.v1;
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 import "loom/v1/agent_config.proto";
 import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
@@ -680,6 +681,19 @@ message WeaveRequest {
   // When true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)
   // before the query is processed, giving a fresh context window.
   bool reset_context = 10;
+
+  // Historical arrival time for replayed or imported conversations (optional).
+  // When set, every message persisted during this call — the user turn, the
+  // assistant reply, and tool rows — carries this timestamp instead of the
+  // server wall clock, so temporal grounding (compiled-view arrival stamps,
+  // graph-memory extraction anchoring) reflects when the conversation
+  // actually happened rather than when it was ingested.
+  //
+  // Servers reject this field unless server.allow_time_override is enabled
+  // (FAILED_PRECONDITION), and reject values in the future beyond a small
+  // clock-skew allowance (INVALID_ARGUMENT). Live conversations should leave
+  // it unset.
+  google.protobuf.Timestamp occurred_at = 11;
 }
 
 // WeaveResponse contains the execution result.
