@@ -1,9 +1,9 @@
-# Security Scan Triage — Snyk Findings (2026-07)
+# Security Scan Triage
 
-Triage record for the Snyk SAST/SCA findings reported against `teradata-labs/loom:main`
-via ArmorCode as of 2026-07-22. Each class of finding was verified against the code
-before being classified. This document exists so future scans don't re-litigate the
-same findings from scratch.
+Triage record for security-scanner findings against `teradata-labs/loom:main` —
+Snyk SAST/SCA via ArmorCode (2026-07-22) and GitHub CodeQL (2026-07/08). Each class
+of finding was verified against the code before being classified. This document
+exists so future scans don't re-litigate the same findings from scratch.
 
 ## Fixed
 
@@ -20,10 +20,53 @@ The PR #271 hardening itself surfaced three `go/path-injection` CodeQL alerts
 (#666–668) in `pkg/artifacts/session_metadata.go` (`WriteSessionArtifactMetadata`:
 `os.MkdirAll`, `os.CreateTemp`, `os.Rename`). Not exploitable — `ValidateSessionID`
 already allowlists `[A-Za-z0-9._-]` and rejects `..` — but CodeQL doesn't model that
-function as a sanitizer. Fixed by adding the CodeQL-recognized containment pattern
-(`filepath.Clean` + `filepath.Rel` + `filepath.IsLocal`) inside `SessionArtifactsRoot`,
-the single choke point every session metadata path derives from;
-`ReadSessionArtifactMetadata`'s duplicate inline check was folded into it.
+function as a sanitizer. A containment pattern (`filepath.Clean` + `filepath.Rel` +
+`filepath.IsLocal`) was added inside `SessionArtifactsRoot`, the single choke point
+every session metadata path derives from; `ReadSessionArtifactMetadata`'s duplicate
+inline check was folded into it. **Correction (2026-08-11): that pattern did not
+close the alerts** — the guard was applied to a derived value CodeQL doesn't track
+back to the sink. See the next section for the root cause and the fix that worked.
+
+## CodeQL go/path-injection + go/zipslip (2026-08-11)
+
+Triage of the five open CodeQL alerts on `main`: #666–669 (`go/path-injection`,
+`pkg/artifacts/session_metadata.go` — `os.MkdirAll`/`os.CreateTemp`/`os.Rename` in
+`WriteSessionArtifactMetadata`, `os.ReadFile` in `ReadSessionArtifactMetadata`) and
+#670 (`go/zipslip`, `pkg/server/skills_import.go` `extractZipToTempDir`).
+
+**Assessment: all five not exploitable.**
+
+- #666–669: every flagged path derives from `SessionArtifactsRoot`, gated by
+  `ValidateSessionID` (strict `[A-Za-z0-9._-]` allowlist — no separators, no `..`).
+  Hostile IDs (`../x`, `a/b`, `/etc`, …) are covered by
+  `TestSessionArtifactsRoot_rejectsBadPath`. The metadata feature is also
+  default-off (`SessionMetadataEnabled`).
+- #670: `extractZipToTempDir` cleans each entry name, rejects escapes, extracts
+  into a fresh `MkdirTemp` dir, writes only regular files (Go `archive/zip` never
+  materializes symlinks through this path), and caps decompression at 64MB.
+  `TestAddSkill_RejectsHostileZip` covers escaping entries.
+
+**Why the 2026-07 guards didn't register** (verified against the query sources,
+[`TaintedPathCustomizations.qll`](https://github.com/github/codeql/blob/main/go/ql/lib/semmle/go/security/TaintedPathCustomizations.qll)
+and
+[`ZipSlipCustomizations.qll`](https://github.com/github/codeql/blob/main/go/ql/lib/semmle/go/security/ZipSlipCustomizations.qll)):
+
+- CodeQL models `filepath.IsLocal` as a barrier guard (`IsLocalCheck`), but a guard
+  sanitizes only the exact expression it checks. Both sites guarded a derived
+  `rel` value while the tainted `root`/`dest` flowed on to the sinks untouched.
+- The zip check `strings.HasPrefix(rel, ".."+string(filepath.Separator))` also
+  fails CodeQL's `DotDotCheck`, which requires a string literal (`".."`, `"../"`,
+  `"..\\"`); its generic `PrefixCheck` sanitizes on the *true* branch (the
+  `HasPrefix(path, safeDir)` idiom) — the opposite polarity.
+
+**Fix.** Guard the tainted value itself with `filepath.IsLocal` before it is joined:
+`SessionArtifactsRoot` now checks `filepath.IsLocal(sessionID)` (one shared choke
+point closes #666–669), and `extractZipToTempDir` checks `filepath.IsLocal(name)`
+right after `filepath.Clean`, replacing the `IsAbs` + `Rel`/`HasPrefix` block it
+strictly subsumes (closes #670). Semantics are equal-or-stricter: the only newly
+rejected inputs are Windows drive-relative paths (`C:x`) and reserved device names
+(`NUL`). Lesson for future scans: **place the analyzer-modeled check on the exact
+variable that reaches the sink**, not on a value derived from it.
 
 ## No fix available upstream
 
