@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -455,14 +456,24 @@ func TestMemory_SessionHistorySurvivesRestart(t *testing.T) {
 	require.GreaterOrEqual(t, len(llmMsgs), len(msgs),
 		"LLM context must contain prior conversation history after restart")
 
-	// Verify the actual content is present.
+	// Verify the actual content is present. User turns carry the compile-time
+	// arrival stamp in the LLM view (rendered from the persisted Timestamp), so
+	// match them by suffix; the assistant reply is unstamped and matches exactly.
 	var contents []string
 	for _, m := range llmMsgs {
 		contents = append(contents, m.Content)
 	}
-	assert.Contains(t, contents, msgs[0].Content, "first user message must be in LLM context")
+	assertHasSuffix := func(items []string, suffix, msg string) {
+		for _, it := range items {
+			if strings.HasSuffix(it, suffix) {
+				return
+			}
+		}
+		assert.Failf(t, msg, "no compiled message ends with %q; got %v", suffix, items)
+	}
+	assertHasSuffix(contents, msgs[0].Content, "first user message must be in LLM context")
 	assert.Contains(t, contents, msgs[1].Content, "assistant reply must be in LLM context")
-	assert.Contains(t, contents, msgs[2].Content, "second user message must be in LLM context")
+	assertHasSuffix(contents, msgs[2].Content, "second user message must be in LLM context")
 
 	// Also verify a new message can be appended after restore.
 	newMsg := Message{Role: "assistant", Content: "The sky is still blue.", Timestamp: time.Now()}
