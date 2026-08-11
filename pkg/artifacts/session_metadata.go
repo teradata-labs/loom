@@ -117,25 +117,21 @@ func validateSessionArtifactPathSegment(sessionID string) error {
 }
 
 // SessionArtifactsRoot returns $LOOM_DATA_DIR/artifacts/sessions/<sessionID>.
-// The joined path is verified to stay inside the sessions directory, so the
-// returned root is safe to use in filesystem operations even though sessionID
-// originates from API callers. ValidateSessionID already rejects separators
-// and traversal sequences; the Rel/IsLocal check makes that containment
-// explicit at the path level.
+// sessionID originates from API callers: ValidateSessionID enforces a strict
+// [A-Za-z0-9._-] allowlist (no separators, no ".."), and filepath.IsLocal
+// additionally rejects anything absolute, escaping, or reserved (Windows).
+// IsLocal must guard sessionID itself, not a value derived from it — CodeQL
+// credits the barrier only on the exact guarded expression, which is why an
+// earlier filepath.Rel-based containment check left go/path-injection alerts
+// (#666-#669) open.
 func SessionArtifactsRoot(sessionID string) (string, error) {
 	if err := validateSessionArtifactPathSegment(sessionID); err != nil {
 		return "", err
 	}
-	base := filepath.Join(config.GetLoomDataDir(), "artifacts", "sessions")
-	root := filepath.Clean(filepath.Join(base, sessionID))
-	rel, err := filepath.Rel(base, root)
-	if err != nil {
-		return "", fmt.Errorf("invalid session artifact path: %w", err)
-	}
-	if !filepath.IsLocal(rel) {
+	if !filepath.IsLocal(sessionID) {
 		return "", fmt.Errorf("invalid session artifact path")
 	}
-	return root, nil
+	return filepath.Join(config.GetLoomDataDir(), "artifacts", "sessions", sessionID), nil
 }
 
 // sessionMetadataPath returns the path to metadata.json for a session.
