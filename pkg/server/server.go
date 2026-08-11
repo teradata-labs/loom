@@ -60,6 +60,18 @@ type Server struct {
 	activeProviderName string                       // currently active pool provider
 	evalStore          *evals.Store                 // optional; nil means no persistence
 	judgeServer        *JudgeServer                 // optional; nil means use hardcoded judge
+
+	// allowTimeOverride accepts WeaveRequest.occurred_at (replay/import arrival
+	// times). Default false: client-supplied timestamps can poison temporal
+	// grounding, so honoring them is an explicit operator decision
+	// (server.allow_time_override). Set via SetAllowTimeOverride.
+	allowTimeOverride bool
+}
+
+// SetAllowTimeOverride configures whether WeaveRequest.occurred_at is honored
+// (server.allow_time_override). See applyOccurredAt for the gate semantics.
+func (s *Server) SetAllowTimeOverride(allow bool) {
+	s.allowTimeOverride = allow
 }
 
 // SetJudgeServer wires an in-memory JudgeServer so that ABTest can resolve req.JudgeId.
@@ -107,6 +119,13 @@ func (s *Server) SetActiveProviderName(name string) {
 func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.WeaveResponse, error) {
 	if req.Query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+
+	// Replay/import support: validate occurred_at and thread it through the
+	// context so persisted rows anchor at the conversation's historical time.
+	ctx, err := applyOccurredAt(ctx, req, s.allowTimeOverride)
+	if err != nil {
+		return nil, err
 	}
 
 	// Get or create session
@@ -166,6 +185,13 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
 	}
 
+	// Replay/import support: validate occurred_at and thread it through the
+	// context used for the agent call (see applyOccurredAt).
+	ctx, err := applyOccurredAt(stream.Context(), req, s.allowTimeOverride)
+	if err != nil {
+		return err
+	}
+
 	// Generate session ID if not provided
 	sessionID := req.SessionId
 	if sessionID == "" {
@@ -198,7 +224,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 	// Execute agent with progress callback
 	go func() {
-		resp, err := s.agent.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
+		resp, err := s.agent.ChatWithProgress(ctx, sessionID, req.Query, progressCallback)
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan) // Signal no more progress events
 	}()
