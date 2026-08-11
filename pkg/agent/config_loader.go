@@ -1426,7 +1426,7 @@ func loadOrchestrationWorkflow(path string, data map[string]interface{}, llmProv
 			agentIDs = append(agentIDs, moderator)
 		}
 
-	case "fork_join":
+	case "fork-join":
 		if ids, ok := spec["agent_ids"].([]interface{}); ok {
 			for _, id := range ids {
 				if idStr, ok := id.(string); ok {
