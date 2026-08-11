@@ -1143,7 +1143,7 @@ func TestNewSDKClient_BearerTokenAuth(t *testing.T) {
 	require.NotNil(t, client)
 
 	assert.Equal(t, "eu-central-1", client.region)
-	assert.Equal(t, "bedrock-sdk", client.Name())
+	assert.Equal(t, "bedrock", client.Name())
 }
 
 func TestConfig_BearerTokenField(t *testing.T) {
