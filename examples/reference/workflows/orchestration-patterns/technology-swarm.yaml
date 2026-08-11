@@ -12,6 +12,9 @@ metadata:
 
 spec:
   type: swarm  # Changed from pattern: swarm
+  # The question all agents vote on; {{input}} is replaced with the user's
+  # message at execution time.
+  question: '{{input}}'
   strategy: majority
   confidence_threshold: 0.7
   share_votes: false

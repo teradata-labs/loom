@@ -637,6 +637,78 @@ func validatePatternSpecificFields(spec map[string]interface{}, patternType stri
 				Fix:      "Add at least 2 agents for debate",
 			})
 		}
+
+	case "swarm":
+		// swarm requires: question, agent_ids (convertSwarmPattern)
+		if _, hasQuestion := spec["question"]; !hasQuestion {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.question",
+				Message:  "Missing required field for swarm pattern",
+				Expected: "question: string (what the agents vote on)",
+				Fix:      "Add 'question: \"{{input}}\"' (or a literal question) under spec",
+			})
+		}
+		if agentIds, hasAgentIds := spec["agent_ids"]; !hasAgentIds {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "Missing required field for swarm pattern",
+				Expected: "agent_ids: [agent1, agent2]",
+				Fix:      "Add 'agent_ids: [database-expert, cost-analyst]' under spec",
+			})
+		} else if agentList, ok := agentIds.([]interface{}); ok && len(agentList) == 0 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "agent_ids cannot be empty",
+				Expected: "At least one agent ID",
+				Fix:      "Add agent IDs to the list",
+			})
+		}
+
+	case "conditional":
+		// conditional requires: condition_agent_id, condition_prompt, branches
+		// (convertConditionalPattern)
+		if _, hasAgent := spec["condition_agent_id"]; !hasAgent {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.condition_agent_id",
+				Message:  "Missing required field for conditional pattern",
+				Expected: "condition_agent_id: string (agent whose answer selects a branch)",
+				Fix:      "Add 'condition_agent_id: classifier' under spec",
+			})
+		}
+		if _, hasPrompt := spec["condition_prompt"]; !hasPrompt {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.condition_prompt",
+				Message:  "Missing required field for conditional pattern",
+				Expected: "condition_prompt: string",
+				Fix:      "Add 'condition_prompt: \"Is this simple or complex? {{input}}\"' under spec",
+			})
+		}
+		if _, hasBranches := spec["branches"]; !hasBranches {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.branches",
+				Message:  "Missing required field for conditional pattern",
+				Expected: "branches: map of branch key -> nested workflow pattern",
+				Fix:      "Add 'branches:' with one nested workflow spec per branch key",
+			})
+		}
+
+	case "iterative":
+		// iterative requires: pipeline (convertIterativePattern)
+		if _, hasPipeline := spec["pipeline"]; !hasPipeline {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.pipeline",
+				Message:  "Missing required field for iterative pattern",
+				Expected: "pipeline: nested pipeline spec (initial_prompt + stages)",
+				Fix:      "Add 'pipeline:' with initial_prompt and stages under spec",
+			})
+		}
 	}
 
 	return errors

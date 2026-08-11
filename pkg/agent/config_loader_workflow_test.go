@@ -633,6 +633,32 @@ func TestLoadWorkflowAgents_ConditionalRejectsMalformedSpecs(t *testing.T) {
 		wantErr string
 	}{
 		{
+			name: "missing condition_agent_id",
+			spec: `  type: conditional
+  condition_prompt: 'Classify: {{input}}'
+  branches:
+    ok:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+`,
+			wantErr: "conditional workflow requires non-empty 'condition_agent_id'",
+		},
+		{
+			name: "missing condition_prompt",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  branches:
+    ok:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+`,
+			wantErr: "conditional workflow requires non-empty 'condition_prompt'",
+		},
+		{
 			name: "missing branches",
 			spec: `  type: conditional
   condition_agent_id: classifier

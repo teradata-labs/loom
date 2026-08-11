@@ -1602,8 +1602,15 @@ func (c *workflowAgentCollector) collect(spec map[string]interface{}) error {
 		c.addPipelineStages(pipelineSpec)
 
 	case "conditional":
-		if conditionAgent, ok := spec["condition_agent_id"].(string); ok {
-			c.add(conditionAgent)
+		// convertConditionalPattern requires both fields; rejecting them here
+		// keeps the registry from registering a workflow that can never run.
+		conditionAgent, ok := spec["condition_agent_id"].(string)
+		if !ok || strings.TrimSpace(conditionAgent) == "" {
+			return fmt.Errorf("conditional workflow requires non-empty 'condition_agent_id'")
+		}
+		c.add(conditionAgent)
+		if prompt, ok := spec["condition_prompt"].(string); !ok || strings.TrimSpace(prompt) == "" {
+			return fmt.Errorf("conditional workflow requires non-empty 'condition_prompt'")
 		}
 		branches, ok := spec["branches"].(map[string]interface{})
 		if !ok {

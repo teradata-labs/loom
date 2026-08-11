@@ -68,7 +68,6 @@ func TestRealWorkflowExamples(t *testing.T) {
 			// every subtest here rot away unnoticed when examples/ moved.
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				t.Fatalf("Workflow file not found (update the path): %s", fullPath)
-				return
 			}
 
 			// Validate the file
@@ -140,7 +139,6 @@ func TestWorkflowTypeDetectionOnRealFiles(t *testing.T) {
 			// every subtest here rot away unnoticed when examples/ moved.
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				t.Fatalf("Workflow file not found (update the path): %s", fullPath)
-				return
 			}
 
 			// Read and parse file
