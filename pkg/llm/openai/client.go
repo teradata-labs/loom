@@ -159,6 +159,14 @@ func copyHeaders(m map[string]string) map[string]string {
 
 // isRetryableTransportError reports whether an HTTP transport error is transient
 // and safe to retry (stale keep-alive connection recycled by the server).
+//
+// String-based matching is intentionally kept: wrapped net/http errors lose type
+// identity after crossing package boundaries, making errors.Is unreliable here.
+//
+// Single-retry only: a second attempt after EOF/reset is acceptable because the
+// error class indicates the request was never delivered. However, callers must
+// not retry if any response bytes were already received — a successfully
+// processed request whose response was lost in transit would be executed twice.
 func isRetryableTransportError(err error) bool {
 	if err == nil {
 		return false

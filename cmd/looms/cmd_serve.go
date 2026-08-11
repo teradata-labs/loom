@@ -209,6 +209,7 @@ func registerYAMLBuiltinTools(
 		"get_error_details":               "error details retrieval",
 		"delegate_to_agent":               "coordination subsystem",
 		"send_message":                    "communication subsystem (MessageQueue)",
+		"publish":                         "communication subsystem (MessageBus)",
 		"shared_memory_write":             "communication subsystem (SharedMemoryStore)",
 		"shared_memory_read":              "communication subsystem (SharedMemoryStore)",
 		"top_n_query":                     "presentation subsystem",
@@ -220,6 +221,10 @@ func registerYAMLBuiltinTools(
 		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+		// manage_ephemeral_agents is injected per-session by MultiAgentServer.Weave/StreamWeave
+		// when the agent lists it in tools.builtin. Listing it in YAML is the opt-in gate;
+		// the actual registration happens at request time, not at boot.
+		"manage_ephemeral_agents": "multi-agent server (injected at Weave/StreamWeave time)",
 	}
 
 	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
@@ -994,7 +999,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Configure log output file if specified
 	if config.Logging.File != "" {
-
 		zapConfig.OutputPaths = []string{config.Logging.File}
 		zapConfig.ErrorOutputPaths = []string{config.Logging.File}
 	}
@@ -1029,14 +1033,9 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Platform env-var override: when the orchestrator (AgentOpsCore) injects
 	// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, force observability on regardless of
-	// the config-file setting. This lets the platform enable observability at
-	// deploy-time without patching the user's config artifact.
-	if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
-		if !config.Observability.Enabled {
-			logger.Info("Enabling observability (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)")
-			config.Observability.Enabled = true
-		}
-	}
+	// the config-file setting. See applyOTLPEnvOverride for full override logic
+	// (mode + endpoint + headers + insecure).
+	applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
@@ -1054,36 +1053,23 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		// Platform env-var override: when the orchestrator injects
+		// Platform env-var override: when the orchestrator (AgentOpsCore) injects
 		// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, force otel mode and override
 		// config-file values. Env vars take precedence over looms.yaml so
 		// the platform can redirect traces at deploy-time without patching
 		// the user's config artifact.
-		if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+		if otlpEnv := applyOTLPEnvOverride(&config.Observability, logger); otlpEnv != "" {
 			if mode != "otel" {
-				logger.Info("Overriding observability mode to otel (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)",
-					zap.String("original_mode", mode),
-					zap.String("otlp_endpoint", otlpEnv))
+				logOTLPModeOverride(logger, mode, otlpEnv)
 				mode = "otel"
-			}
-			// Env var always wins over config — platform can relocate the
-			// collector without rebuilding the agent artifact.
-			config.Observability.OTLPEndpoint = otlpEnv
-			if raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"); raw != "" {
-				config.Observability.OTLPHeaders = observability.ParseHeadersEnv(raw)
-			}
-			if os.Getenv("LOOM_OTLP_INSECURE") == "true" {
-				config.Observability.OTLPInsecure = true
 			}
 		}
 
 		// Expand ${VAR} references in observability config values so that
 		// the platform can write placeholders in looms.yaml and supply the
 		// real values via pod env vars (same pattern as MCP auth headers).
-		config.Observability.OTLPEndpoint = os.ExpandEnv(config.Observability.OTLPEndpoint)
-		for k, v := range config.Observability.OTLPHeaders {
-			config.Observability.OTLPHeaders[k] = os.ExpandEnv(v)
-		}
+		// Note: a literal '$' in a value must be written as '$$'.
+		expandOTLPConfig(&config.Observability)
 
 		switch mode {
 		case "embedded":

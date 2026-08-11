@@ -9,7 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Session Artifact Metadata & ListSessions API (#146)
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Forward Connect-protocol metadata (auth headers, request ID, user ID) from the HTTP request into the gRPC stream so `UserIDStreamInterceptor` works identically on the SSE path.
+- Use `protojson` for WeaveProgress event marshalling to match the canonical JSON field names clients expect.
+
+#### Tool Alias Resolution & Registry Dedup
+- Tool aliases (e.g. short names defined in agent YAML) are now resolved to the canonical tool name before lookup, preventing duplicate registrations.
+- Registry dedup ensures the same tool cannot be registered twice under different aliases.
+
+#### Health-Check Endpoint Preference
+- `/live` and `/ready` probes now use a single well-known response format; the legacy `/health` redirect is retained for backward compatibility.
+
+#### OTLP Tracing Improvements
+- In-process parent-linkage test added to the OTLP test suite.
+
+### Changed
+
+#### **BREAKING: `manage_ephemeral_agents` is now opt-in**
+Previously, `manage_ephemeral_agents` was automatically injected into every `Weave`/`StreamWeave` session, giving all agents the ability to spawn sub-agents. It is now injected only when the agent's YAML config explicitly lists it under `tools.builtin`:
+
+```yaml
+tools:
+  builtin:
+    - manage_ephemeral_agents
+```
+
+**Migration:** Any deployment that relies on sub-agent spawning must add `manage_ephemeral_agents` to `tools.builtin` in the coordinator agent's YAML config. Agents that do not spawn sub-agents are unaffected. This change prevents unintended sub-agent spawning for agents that never needed it.
+
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
 - New `Session` fields returned by `ListSessions`: `agent_name`, `ended_at`, `metadata_status`, `artifact_count`.

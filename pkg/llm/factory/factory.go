@@ -135,8 +135,15 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.HuggingFaceToken = os.ExpandEnv(config.HuggingFaceToken)
 	config.LiteLLMEndpoint = os.ExpandEnv(config.LiteLLMEndpoint)
 	config.LiteLLMAPIKey = os.ExpandEnv(config.LiteLLMAPIKey)
-	for key, value := range config.LiteLLMExtraHeaders {
-		config.LiteLLMExtraHeaders[key] = os.ExpandEnv(value)
+	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
+	// modified in place (shared-map mutation is a race if the caller holds the
+	// original and another goroutine concurrently reads it).
+	if len(config.LiteLLMExtraHeaders) > 0 {
+		expanded := make(map[string]string, len(config.LiteLLMExtraHeaders))
+		for key, value := range config.LiteLLMExtraHeaders {
+			expanded[key] = os.ExpandEnv(value)
+		}
+		config.LiteLLMExtraHeaders = expanded
 	}
 
 	return &ProviderFactory{

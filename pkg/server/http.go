@@ -373,8 +373,10 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 	// response even though the agent was still working. A ~15s heartbeat
 	// keeps bytes flowing so those idle timeouts don't trigger.
 	heartbeatDone := make(chan struct{})
-	defer close(heartbeatDone)
+	var heartbeatWg sync.WaitGroup
+	heartbeatWg.Add(1)
 	go func() {
+		defer heartbeatWg.Done()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -389,6 +391,13 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 				}
 			}
 		}
+	}()
+	// Close the done channel to signal the goroutine, then wait for it to
+	// finish before returning so it cannot write to the ResponseWriter after
+	// ServeHTTP exits (which net/http forbids).
+	defer func() {
+		close(heartbeatDone)
+		heartbeatWg.Wait()
 	}()
 
 	// Execute StreamWeave
