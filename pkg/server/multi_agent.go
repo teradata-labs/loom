@@ -112,6 +112,15 @@ type MultiAgentServer struct {
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
 	workflowSubAgentsMu sync.RWMutex
 
+	// backgroundWorkerWG tracks every detached background goroutine that logs
+	// through s.logger: the queue monitor, workflow coordinator/sub-agent
+	// notification handlers, broadcast handlers, spawned-agent monitors and
+	// message loops, and MCP tool re-indexers. Whoever owns the logger's sink
+	// (a test's zaptest logger, process shutdown) must join via
+	// WaitBackgroundWorkers before tearing the sink down or the exit logs
+	// race it.
+	backgroundWorkerWG sync.WaitGroup
+
 	// Spawned sub-agent tracking for lifecycle management
 	spawnedAgents   map[string]*spawnedAgentContext // sessionID → spawned agent context
 	spawnedAgentsMu sync.RWMutex
@@ -1368,7 +1377,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
 
+	s.backgroundWorkerWG.Add(1)
 	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+		defer s.backgroundWorkerWG.Done()
 		defer func() {
 			s.logger.Info("Coordinator notification handler stopped",
 				zap.String("coordinator", coordinatorID))
@@ -1533,7 +1544,11 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgent.SetWorkflowCommunicationContext(commCtx)
 
 		// Start sub-agent with notification channel (pass subAgentKey for deregistration)
-		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		s.backgroundWorkerWG.Add(1)
+		go func() {
+			defer s.backgroundWorkerWG.Done()
+			s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		}()
 
 		// AUTO-SUBSCRIBE SUB-AGENT: Subscribe sub-agent to workflow topic for pub-sub communication
 		// This allows sub-agents to receive broadcasts from coordinator and other sub-agents
@@ -1561,7 +1576,11 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.String("subscription_id", subID.ID))
 
 				// Start broadcast notification handler for sub-agent
-				go s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				s.backgroundWorkerWG.Add(1)
+				go func() {
+					defer s.backgroundWorkerWG.Done()
+					s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				}()
 			}
 		}
 	}
@@ -1604,8 +1623,12 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			s.workflowSubAgentsMu.Unlock()
 
 			// Start broadcast notification goroutine
-			go s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
-				coordinatorAgent, sessionID, coordinatorID)
+			s.backgroundWorkerWG.Add(1)
+			go func() {
+				defer s.backgroundWorkerWG.Done()
+				s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
+					coordinatorAgent, sessionID, coordinatorID)
+			}()
 		}
 	}
 
@@ -1944,6 +1967,49 @@ done:
 	}
 }
 
+// WaitBackgroundWorkers blocks until every tracked background goroutine — the
+// message-queue monitor, workflow notification and broadcast handlers,
+// spawned-agent monitors and message loops, and MCP tool re-indexers — has
+// exited. Workers only exit after their contexts are cancelled (the monitor's
+// context from StartMessageQueueMonitor plus the per-agent cancel funcs, which
+// the monitor's shutdown sweep and cancelBackgroundWorkers invoke; MCP
+// re-indexers self-expire within 10s), so cancel those first or this blocks.
+// Call it before tearing down the logger's sink: workers log on the way out,
+// and a sink that is gone first is a data race (observed as zaptest writes
+// after test completion).
+func (s *MultiAgentServer) WaitBackgroundWorkers() {
+	s.backgroundWorkerWG.Wait()
+}
+
+// cancelBackgroundWorkers cancels every tracked workflow worker context
+// (message + broadcast) and every spawned-agent context (monitor + loop)
+// without waiting. Tests pair this with WaitBackgroundWorkers for a
+// deterministic join; when the queue monitor runs, its shutdown sweep already
+// cancels the workflow workers.
+func (s *MultiAgentServer) cancelBackgroundWorkers() {
+	s.workflowSubAgentsMu.Lock()
+	for _, wctx := range s.workflowSubAgents {
+		if wctx.cancelFunc != nil {
+			wctx.cancelFunc()
+		}
+		if wctx.broadcastCancelFunc != nil {
+			wctx.broadcastCancelFunc()
+		}
+	}
+	s.workflowSubAgentsMu.Unlock()
+
+	s.spawnedAgentsMu.Lock()
+	for _, sp := range s.spawnedAgents {
+		if sp.loopCancelFunc != nil {
+			sp.loopCancelFunc()
+		}
+		if sp.cancelFunc != nil {
+			sp.cancelFunc()
+		}
+	}
+	s.spawnedAgentsMu.Unlock()
+}
+
 // StartMessageQueueMonitor starts a background goroutine that monitors the message queue
 // and notifies workflow sub-agents when they have pending messages (event-driven, not polling).
 func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
@@ -1954,7 +2020,9 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 
 	s.logger.Info("Starting message queue monitor for event-driven agent notifications")
 
+	s.backgroundWorkerWG.Add(1)
 	go func() {
+		defer s.backgroundWorkerWG.Done()
 		ticker := time.NewTicker(1 * time.Second) // Check queue every second (cheap, no LLM calls)
 		defer ticker.Stop()
 
@@ -2143,7 +2211,11 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	}
 
 	// Start sub-agent goroutine
-	go s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	s.backgroundWorkerWG.Add(1)
+	go func() {
+		defer s.backgroundWorkerWG.Done()
+		s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	}()
 
 	return nil
 }

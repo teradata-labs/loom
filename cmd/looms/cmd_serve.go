@@ -3468,6 +3468,22 @@ func runServe(cmd *cobra.Command, args []string) {
 		cancelMonitor()
 		logger.Info("Message queue monitor cancelled")
 
+		// Join background worker goroutines (queue monitor, workflow
+		// notification/broadcast handlers, spawned-agent monitors, MCP
+		// re-indexers) so none log after the logger is torn down. Bounded: a
+		// worker mid-LLM-call may take a moment to observe cancellation.
+		workersDone := make(chan struct{})
+		go func() {
+			loomService.WaitBackgroundWorkers()
+			close(workersDone)
+		}()
+		select {
+		case <-workersDone:
+			logger.Info("Background workers stopped")
+		case <-time.After(10 * time.Second):
+			logger.Warn("Timed out waiting for background workers; continuing shutdown")
+		}
+
 		// Stop HTTP server
 		if httpSrv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

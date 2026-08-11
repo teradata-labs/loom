@@ -100,6 +100,14 @@ func setupBroadcastTestServer(t *testing.T, agents map[string]*agent.Agent, regi
 	err = srv.ConfigureCommunication(bus, queue, sharedMem, refStore, policy, logger)
 	require.NoError(t, err)
 
+	// Cleanups run LIFO: any cleanup a test registers after this helper (e.g.
+	// stopping the queue monitor) runs first, then the workers are cancelled
+	// and joined, and only then do the stores above close. Without the join,
+	// a worker's exit log can hit the zaptest logger after the test has
+	// completed — a data race on testing.T.
+	t.Cleanup(srv.WaitBackgroundWorkers)
+	t.Cleanup(srv.cancelBackgroundWorkers)
+
 	return srv
 }
 

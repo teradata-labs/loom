@@ -276,11 +276,19 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 	}
 
 	// Start background monitoring for sub-agent lifecycle
-	go s.monitorSpawnedAgent(subCtx, sessionID)
+	s.backgroundWorkerWG.Add(1)
+	go func() {
+		defer s.backgroundWorkerWG.Done()
+		s.monitorSpawnedAgent(subCtx, sessionID)
+	}()
 
 	// Start background message processing loop (active agent)
 	if len(subscriptionIDs) > 0 {
-		go s.runSpawnedAgentLoop(loopCtx, spawnedAgent)
+		s.backgroundWorkerWG.Add(1)
+		go func() {
+			defer s.backgroundWorkerWG.Done()
+			s.runSpawnedAgentLoop(loopCtx, spawnedAgent)
+		}()
 		logger.Info("Started background message processing loop for spawned agent",
 			zap.String("sub_agent_id", subAgentID),
 			zap.Int("subscriptions", len(subscriptionIDs)))
