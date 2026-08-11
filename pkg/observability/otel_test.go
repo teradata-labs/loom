@@ -409,10 +409,29 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 		span.SetAttribute("llm.model", "claude-3-sonnet")
 		span.SetAttribute("llm.tokens.input", int64(150))
 		span.SetAttribute("llm.tokens.output", int64(50))
+
+		// Verify attributes are recorded on the span before export.
+		if got, ok := span.Attributes["llm.model"].(string); !ok || got != "claude-3-sonnet" {
+			t.Errorf("span.Attributes[llm.model] = %v, want \"claude-3-sonnet\"", span.Attributes["llm.model"])
+		}
+		if got, ok := span.Attributes["llm.tokens.input"].(int64); !ok || got != 150 {
+			t.Errorf("span.Attributes[llm.tokens.input] = %v, want 150", span.Attributes["llm.tokens.input"])
+		}
+
+		countBefore := atomic.LoadInt32(&requestCount)
 		tr.EndSpan(span)
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tr.Flush(flushCtx); err != nil {
+			t.Errorf("Flush error: %v", err)
+		}
+		if atomic.LoadInt32(&requestCount) <= countBefore {
+			t.Error("expected at least one OTLP export request after EndSpan+Flush")
+		}
 	})
 
 	t.Run("Flush triggers export", func(t *testing.T) {
+		countBefore := atomic.LoadInt32(&requestCount)
 		_, span := tr.StartSpan(context.Background(), "llm.completion")
 		tr.EndSpan(span)
 
@@ -421,7 +440,124 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 		if err := tr.Flush(ctx); err != nil {
 			t.Errorf("Flush returned error: %v", err)
 		}
+		if atomic.LoadInt32(&requestCount) <= countBefore {
+			t.Error("expected at least one OTLP export request after Flush")
+		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Parent-child span linkage — regression tests for blocking bug from review
+// ---------------------------------------------------------------------------
+
+// newInMemoryOTelTracer builds an OTelTracer backed by an InMemoryExporter so
+// exported spans can be inspected without a live OTLP collector.
+func newInMemoryOTelTracer(t *testing.T) (*OTelTracer, *tracetest.InMemoryExporter) {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp), // synchronous export so spans are available immediately
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	return &OTelTracer{
+		provider: provider,
+		tracer:   provider.Tracer("loom"),
+		privacy:  PrivacyConfig{},
+	}, exp
+}
+
+// TestParentChildSameTrace verifies that a child span exported by OTelTracer
+// shares the same TraceID as its parent and correctly references the parent's
+// SpanID — not a UUID-derived orphan.
+func TestParentChildSameTrace(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	// Start parent span and keep it active while the child is created.
+	ctx, parent := tr.StartSpan(context.Background(), "parent.op")
+
+	// Start child with the parent context while parent is still active.
+	_, child := tr.StartSpan(ctx, "child.op")
+	tr.EndSpan(child)
+	tr.EndSpan(parent)
+
+	if err := tr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 exported spans, got %d", len(spans))
+	}
+
+	byName := make(map[string]tracetest.SpanStub, 2)
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+
+	parentStub, ok := byName["parent.op"]
+	if !ok {
+		t.Fatal("parent.op span not found in exported spans")
+	}
+	childStub, ok := byName["child.op"]
+	if !ok {
+		t.Fatal("child.op span not found in exported spans")
+	}
+
+	// Both must share the same TraceID.
+	if parentStub.SpanContext.TraceID() != childStub.SpanContext.TraceID() {
+		t.Errorf("trace ID mismatch: parent=%s child=%s — child was orphaned into a separate trace",
+			parentStub.SpanContext.TraceID(), childStub.SpanContext.TraceID())
+	}
+
+	// Child must reference parent's SDK-assigned SpanID.
+	if childStub.Parent.SpanID() != parentStub.SpanContext.SpanID() {
+		t.Errorf("parent span ID mismatch: child.ParentSpanID=%s parent.SpanID=%s",
+			childStub.Parent.SpanID(), parentStub.SpanContext.SpanID())
+	}
+}
+
+// TestThreeGenerationChain verifies the fix holds for a three-level A → B → C chain.
+func TestThreeGenerationChain(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	ctxA, spanA := tr.StartSpan(context.Background(), "A")
+	ctxB, spanB := tr.StartSpan(ctxA, "B")
+	_, spanC := tr.StartSpan(ctxB, "C")
+	tr.EndSpan(spanC)
+	tr.EndSpan(spanB)
+	tr.EndSpan(spanA)
+
+	if err := tr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 exported spans, got %d", len(spans))
+	}
+
+	byName := make(map[string]tracetest.SpanStub, 3)
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+
+	traceID := byName["A"].SpanContext.TraceID()
+	for _, name := range []string{"A", "B", "C"} {
+		if byName[name].SpanContext.TraceID() != traceID {
+			t.Errorf("span %q has different TraceID %s; want %s",
+				name, byName[name].SpanContext.TraceID(), traceID)
+		}
+	}
+
+	if byName["B"].Parent.SpanID() != byName["A"].SpanContext.SpanID() {
+		t.Errorf("B.ParentSpanID=%s != A.SpanID=%s",
+			byName["B"].Parent.SpanID(), byName["A"].SpanContext.SpanID())
+	}
+	if byName["C"].Parent.SpanID() != byName["B"].SpanContext.SpanID() {
+		t.Errorf("C.ParentSpanID=%s != B.SpanID=%s",
+			byName["C"].Parent.SpanID(), byName["B"].SpanContext.SpanID())
+	}
 }
 
 func TestOTelTracerExportsParentChildLinkage(t *testing.T) {
@@ -488,6 +624,99 @@ func TestResolveOTelConfig(t *testing.T) {
 		}
 		if cfg.FlushInterval == 0 {
 			t.Error("flush interval default should be non-zero")
+		}
+	})
+
+	t.Run("service name defaults to loom when OTEL_SERVICE_NAME unset", func(t *testing.T) {
+		t.Setenv("OTEL_SERVICE_NAME", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.ServiceName != "loom" {
+			t.Errorf("expected default service name %q, got %q", "loom", cfg.ServiceName)
+		}
+	})
+
+	t.Run("OTEL_SERVICE_NAME overrides loom default", func(t *testing.T) {
+		t.Setenv("OTEL_SERVICE_NAME", "my-agent")
+		cfg := resolveOTelConfig(OTelConfig{})
+		if cfg.ServiceName != "my-agent" {
+			t.Errorf("expected OTEL_SERVICE_NAME %q, got %q", "my-agent", cfg.ServiceName)
+		}
+	})
+}
+
+func TestResolveOTLPEndpointEnv(t *testing.T) {
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://col:4318/v1/traces")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://col:4318/v1/traces" {
+			t.Errorf("expected traces-specific endpoint verbatim, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT base URL appends /v1/traces", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://col:4317/v1/traces" {
+			t.Errorf("expected base URL + /v1/traces, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT trailing slash is normalised", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317/")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://col:4317/v1/traces" {
+			t.Errorf("trailing slash not stripped, got %q", got)
+		}
+	})
+
+	t.Run("LOOM_OTLP_ENDPOINT fallback used verbatim", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("LOOM_OTLP_ENDPOINT", "http://loom-col:4318/v1/traces")
+		got := resolveOTLPEndpointEnv()
+		if got != "http://loom-col:4318/v1/traces" {
+			t.Errorf("expected LOOM_OTLP_ENDPOINT fallback, got %q", got)
+		}
+	})
+}
+
+func TestResolveOTelConfigHeaders(t *testing.T) {
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_HEADERS preferred over base", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "X-Traces=traces-val")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-Base=base-val")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Headers["X-Traces"] != "traces-val" {
+			t.Errorf("expected traces-specific header, got %v", cfg.Headers)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_HEADERS used when traces header unset", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer tok")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Headers["Authorization"] != "Bearer tok" {
+			t.Errorf("expected base OTLP header, got %v", cfg.Headers)
+		}
+	})
+}
+
+func TestResolveOTelConfigInsecure(t *testing.T) {
+	t.Run("LOOM_OTLP_INSECURE sets Insecure when not already true", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "true")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if !cfg.Insecure {
+			t.Error("expected Insecure=true from LOOM_OTLP_INSECURE")
+		}
+	})
+
+	t.Run("explicit Insecure=true not overwritten by LOOM_OTLP_INSECURE=false", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "false")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318", Insecure: true})
+		if !cfg.Insecure {
+			t.Error("explicit Insecure=true should not be overwritten")
 		}
 	})
 }

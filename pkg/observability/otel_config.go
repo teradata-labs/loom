@@ -34,17 +34,26 @@ type SpanFilterConfig struct {
 // then Loom-specific fallback env vars.
 type OTelConfig struct {
 	// Endpoint is the full OTLP HTTP URL including path.
-	// Env: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or LOOM_OTLP_ENDPOINT
+	// Resolved from env in priority order:
+	//   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — signal-specific, used verbatim.
+	//   OTEL_EXPORTER_OTLP_ENDPOINT        — OTel-spec base URL; /v1/traces is appended.
+	//   LOOM_OTLP_ENDPOINT                 — Loom-specific fallback, used verbatim.
+	// Values may contain ${VAR} placeholders expanded by os.ExpandEnv. A literal
+	// '$' in a value must be written as '$$' to avoid unintended expansion.
 	// Example (Opik local):  http://localhost:5173/api/v1/private/otel/v1/traces
 	// Example (Jaeger):      http://jaeger:4318/v1/traces
 	Endpoint string
 
 	// Headers are sent with every OTLP HTTP request (e.g. Authorization: Bearer <key>).
-	// Env: OTEL_EXPORTER_OTLP_TRACES_HEADERS (format: "key=val,key2=val2")
+	// Resolved from env in priority order:
+	//   OTEL_EXPORTER_OTLP_TRACES_HEADERS — signal-specific (format: "key=val,key2=val2").
+	//   OTEL_EXPORTER_OTLP_HEADERS        — OTel-spec base headers var, same format.
+	//   LOOM_OTLP_HEADERS                 — Loom-specific fallback.
+	// Values may contain ${VAR} placeholders; use '$$' for a literal '$'.
 	Headers map[string]string
 
 	// Insecure selects plaintext HTTP transport. Use for local dev only.
-	// Env: LOOM_OTLP_INSECURE
+	// Env: LOOM_OTLP_INSECURE=true
 	Insecure bool
 
 	// ServiceName populates the resource attribute service.name.
@@ -71,18 +80,40 @@ type OTelConfig struct {
 	SpanFilter SpanFilterConfig
 }
 
+// resolveOTLPEndpointEnv returns the OTLP traces endpoint from environment
+// variables, applying OTel-spec semantics:
+//   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: signal-specific; used verbatim.
+//   - OTEL_EXPORTER_OTLP_ENDPOINT: base URL per spec; /v1/traces is appended.
+//   - LOOM_OTLP_ENDPOINT: Loom-specific fallback; used verbatim.
+func resolveOTLPEndpointEnv() string {
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
+		return strings.TrimRight(v, "/") + "/v1/traces"
+	}
+	return os.Getenv("LOOM_OTLP_ENDPOINT")
+}
+
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = firstEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LOOM_OTLP_ENDPOINT")
+		cfg.Endpoint = resolveOTLPEndpointEnv()
 	}
 	if len(cfg.Headers) == 0 {
-		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
+		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
 	}
+	if !cfg.Insecure {
+		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"
+	}
 	if cfg.ServiceName == "" {
-		cfg.ServiceName = firstEnv("OTEL_SERVICE_NAME", "")
+		if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
+			cfg.ServiceName = name
+		} else {
+			cfg.ServiceName = "loom" // safe default: non-empty service.name in every exported span
+		}
 	}
 	if cfg.ServiceVersion == "" {
 		cfg.ServiceVersion = os.Getenv("OTEL_SERVICE_VERSION")
@@ -99,7 +130,6 @@ func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	return cfg
 }
 
-// parseHeadersEnv parses "key=val,key2=val2" into a map.
 // ParseHeadersEnv parses a comma-separated "key=value" string into a map.
 // This is the format used by OTEL_EXPORTER_OTLP_TRACES_HEADERS.
 func ParseHeadersEnv(raw string) map[string]string {

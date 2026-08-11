@@ -35,12 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### OTLP Tracing (#255)
 - `OTelTracer` exports spans to any OTLP/HTTP backend (Opik, Jaeger, Tempo); Loom span attributes translate to OTel `gen_ai.*` semantic conventions; `mode: otel` in observability config plus auto-select from `OTEL_EXPORTER_OTLP_TRACES_*` env vars; credential and PII redaction default-on for exported spans. OTLP/gRPC is not implemented.
+- In-process parent-linkage test added to the OTLP test suite.
 
 #### Multimodal User Turns (#249)
 - `ChatWithContentBlocks`: user turns carry text + image content blocks end-to-end (agent → provider), with the canonical text preserved on the stored turn.
 
 #### Replay/Import Arrival Time (#308)
 - `WeaveRequest.occurred_at`: replayed or imported conversations anchor every persisted row (user turn, assistant reply, tool rows) at their historical time. Gated by `server.allow_time_override` (default off); future-dated values rejected.
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
 
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
