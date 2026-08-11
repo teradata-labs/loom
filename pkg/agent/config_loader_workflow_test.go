@@ -154,3 +154,137 @@ spec:
 	t.Logf("✓ Coordinator: %s", coordinator.Name)
 	t.Logf("✓ Sub-agents: %v", expectedSubAgents)
 }
+
+func TestLoadWorkflowAgents_ParallelTasks(t *testing.T) {
+	workflowYAML := `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-parallel
+  description: Test parallel workflow
+spec:
+  type: parallel
+  tasks:
+    - agent_id: agent-a
+      prompt: First task
+    - agent_id: agent-b
+      prompt: Second task
+    - agent_id: agent-a
+      prompt: Third task using the first agent
+`
+
+	workflowPath := filepath.Join(t.TempDir(), "test-parallel.yaml")
+	require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+	configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+	require.NoError(t, err)
+	require.Len(t, configs, 3)
+	assert.Equal(t, "test-parallel", configs[0].Name)
+	assert.Equal(t, "test-parallel:agent-a", configs[1].Name)
+	assert.Equal(t, "test-parallel:agent-b", configs[2].Name)
+
+	configsByName := make(map[string]*loomv1.AgentConfig, len(configs))
+	for _, config := range configs {
+		configsByName[config.Name] = config
+	}
+
+	coordinator := configsByName["test-parallel"]
+	require.NotNil(t, coordinator)
+	assert.Equal(t, "coordinator", coordinator.Metadata["role"])
+	assert.Equal(t, "test-parallel", coordinator.Metadata["workflow"])
+	assert.Equal(t, "parallel", coordinator.Metadata["pattern"])
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		subAgent := configsByName["test-parallel:"+agentID]
+		require.NotNil(t, subAgent)
+		assert.Equal(t, "executor", subAgent.Metadata["role"])
+		assert.Equal(t, "test-parallel", subAgent.Metadata["workflow"])
+		assert.Equal(t, agentID, subAgent.Metadata["agent_id"])
+	}
+}
+
+func TestLoadWorkflowAgents_ParallelRejectsMalformedTasks(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		wantErr string
+	}{
+		{
+			name:    "missing tasks",
+			spec:    "  type: parallel\n",
+			wantErr: "parallel workflow requires 'spec.tasks' array",
+		},
+		{
+			name: "tasks is not an array",
+			spec: `  type: parallel
+  tasks:
+    agent_id: agent-a
+    prompt: First task
+`,
+			wantErr: "parallel workflow requires 'spec.tasks' array",
+		},
+		{
+			name: "task is not an object",
+			spec: `  type: parallel
+  tasks:
+    - agent-a
+`,
+			wantErr: "parallel workflow task 0 must be an object",
+		},
+		{
+			name: "task is missing agent ID after valid task",
+			spec: `  type: parallel
+  tasks:
+    - agent_id: agent-a
+      prompt: First task
+    - prompt: Missing agent ID
+`,
+			wantErr: "parallel workflow task 1 missing non-empty 'agent_id'",
+		},
+		{
+			name: "task has empty agent ID",
+			spec: `  type: parallel
+  tasks:
+    - agent_id: ""
+      prompt: Empty agent ID
+`,
+			wantErr: "parallel workflow task 0 missing non-empty 'agent_id'",
+		},
+		{
+			name: "task has non-string agent ID",
+			spec: `  type: parallel
+  tasks:
+    - agent_id: 42
+      prompt: Non-string agent ID
+`,
+			wantErr: "parallel workflow task 0 missing non-empty 'agent_id'",
+		},
+		{
+			name: "task has whitespace-only agent ID",
+			spec: `  type: parallel
+  tasks:
+    - agent_id: "   "
+      prompt: Whitespace-only agent ID
+`,
+			wantErr: "parallel workflow task 0 missing non-empty 'agent_id'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflowYAML := `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: invalid-parallel
+spec:
+` + tt.spec
+
+			workflowPath := filepath.Join(t.TempDir(), "invalid-parallel.yaml")
+			require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+			configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, configs)
+		})
+	}
+}

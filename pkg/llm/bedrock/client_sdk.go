@@ -42,7 +42,6 @@ type SDKClient struct {
 	maxTokens   int64
 	temperature float64
 	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -236,10 +235,13 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 		params.System = systemBlocks
 	}
 
-	// Add tools if provided; mark the last tool with cache_control
+	// Add tools if provided; mark the last tool with cache_control.
+	// The sanitized→original name mapping is request-local so concurrent
+	// requests on a shared client cannot corrupt each other's tool names.
+	var toolNameMap map[string]string
 	if len(tools) > 0 {
-		c.toolNameMap = make(map[string]string)
-		sdkTools := c.convertToolsToSDK(tools)
+		var sdkTools []anthropic.ToolParam
+		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -282,7 +284,7 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	}
 
 	// Convert response to our format
-	llmResp := c.convertResponseFromSDK(message)
+	llmResp := c.convertResponseFromSDK(message, toolNameMap)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -430,16 +432,17 @@ func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.C
 	return append(msgs, anthropic.NewUserMessage(blocks...))
 }
 
-// convertToolsToSDK converts shuttle tools to Anthropic SDK format.
-func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) []anthropic.ToolParam {
+// convertToolsToSDK converts tools to SDK format and returns this request's
+// sanitized→original tool-name mapping alongside them. The mapping is returned
+// rather than stored on the client so concurrent requests stay independent.
+func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string) {
 	var sdkTools []anthropic.ToolParam
+	toolNameMap := make(map[string]string, len(tools))
 
 	for _, tool := range tools {
 		originalName := tool.Name()
 		sanitizedName := llm.SanitizeToolName(originalName)
-		if c.toolNameMap != nil {
-			c.toolNameMap[sanitizedName] = originalName
-		}
+		toolNameMap[sanitizedName] = originalName
 
 		sdkTool := anthropic.ToolParam{
 			Name:        sanitizedName,
@@ -463,11 +466,13 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) []anthropic.ToolPara
 		sdkTools = append(sdkTools, sdkTool)
 	}
 
-	return sdkTools
+	return sdkTools, toolNameMap
 }
 
 // convertResponseFromSDK converts Anthropic SDK response to agent format.
-func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes.LLMResponse {
+// toolNameMap is the request-local sanitized→original mapping produced by
+// convertToolsToSDK for the same request; nil is safe and leaves names as-is.
+func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameMap map[string]string) *llmtypes.LLMResponse {
 	cacheRead := int(message.Usage.CacheReadInputTokens)
 	cacheCreation := int(message.Usage.CacheCreationInputTokens)
 	llmResp := &llmtypes.LLMResponse{
@@ -504,7 +509,7 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes
 
 			toolCall := llmtypes.ToolCall{
 				ID:    block.ID,
-				Name:  llm.ReverseToolName(c.toolNameMap, block.Name),
+				Name:  llm.ReverseToolName(toolNameMap, block.Name),
 				Input: input,
 			}
 			llmResp.ToolCalls = append(llmResp.ToolCalls, toolCall)
@@ -576,10 +581,13 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		params.System = systemBlocks
 	}
 
-	// Add tools if provided; mark the last tool with cache_control
+	// Add tools if provided; mark the last tool with cache_control.
+	// The sanitized→original name mapping is request-local so concurrent
+	// requests on a shared client cannot corrupt each other's tool names.
+	var toolNameMap map[string]string
 	if len(tools) > 0 {
-		c.toolNameMap = make(map[string]string)
-		sdkTools := c.convertToolsToSDK(tools)
+		var sdkTools []anthropic.ToolParam
+		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -633,7 +641,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				// Start tracking a new tool call - reverse map sanitized name
 				toolCall := llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
-					Name:  llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
+					Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
 				}
 				toolCallIndex := len(toolCalls)

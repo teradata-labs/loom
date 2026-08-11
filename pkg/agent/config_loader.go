@@ -1426,12 +1426,36 @@ func loadOrchestrationWorkflow(path string, data map[string]interface{}, llmProv
 			agentIDs = append(agentIDs, moderator)
 		}
 
-	case "fork_join", "parallel":
+	case "fork_join":
 		if ids, ok := spec["agent_ids"].([]interface{}); ok {
 			for _, id := range ids {
 				if idStr, ok := id.(string); ok {
 					agentIDs = append(agentIDs, idStr)
 				}
+			}
+		}
+
+	case "parallel":
+		tasks, ok := spec["tasks"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("parallel workflow requires 'spec.tasks' array")
+		}
+
+		seen := make(map[string]bool)
+		for i, task := range tasks {
+			taskMap, ok := task.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("parallel workflow task %d must be an object", i)
+			}
+
+			agentID, ok := taskMap["agent_id"].(string)
+			if !ok || strings.TrimSpace(agentID) == "" {
+				return nil, fmt.Errorf("parallel workflow task %d missing non-empty 'agent_id'", i)
+			}
+
+			if !seen[agentID] {
+				agentIDs = append(agentIDs, agentID)
+				seen[agentID] = true
 			}
 		}
 
