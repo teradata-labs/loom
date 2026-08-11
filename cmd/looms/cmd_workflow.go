@@ -550,13 +550,9 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
 
-	// Platform env-var override: force observability on when OTLP endpoint is injected.
-	if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
-		if !config.Observability.Enabled {
-			logger.Info("Enabling observability (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)")
-			config.Observability.Enabled = true
-		}
-	}
+	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
+	// injected, force observability on. See applyOTLPEnvOverride for full details.
+	applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
@@ -568,23 +564,13 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 			}
 		}
 
-		// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
-		// set, force otel mode and override config-file values. Env vars take
-		// precedence so the platform can redirect traces at deploy-time.
-		if otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); otlpEnv != "" {
+		// applyOTLPEnvOverride already ran above and set OTLPEndpoint/Headers/
+		// Insecure when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is present; derive
+		// the mode switch from whether the endpoint was set.
+		if config.Observability.OTLPEndpoint != "" {
 			if mode != "otel" {
-				logger.Info("Overriding observability mode to otel (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)",
-					zap.String("original_mode", mode),
-					zap.String("otlp_endpoint", otlpEnv))
+				logOTLPModeOverride(logger, mode, config.Observability.OTLPEndpoint)
 				mode = "otel"
-			}
-			// Env var always wins over config.
-			config.Observability.OTLPEndpoint = otlpEnv
-			if raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"); raw != "" {
-				config.Observability.OTLPHeaders = observability.ParseHeadersEnv(raw)
-			}
-			if os.Getenv("LOOM_OTLP_INSECURE") == "true" {
-				config.Observability.OTLPInsecure = true
 			}
 		}
 
