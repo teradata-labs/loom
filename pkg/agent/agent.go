@@ -1194,15 +1194,14 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
 	}
 
-	// Anchor the model in wall-clock time so relative phrases ("today",
-	// "this month", "yesterday") resolve to real dates. This lives in the
-	// system prompt — NOT prepended to user message Content — so it never
-	// leaks into the user-visible, persisted message body (clients render
-	// Content verbatim). Like the rest of the ROM slot, this is rendered once
-	// at session creation and is byte-stable for the session, so it carries
-	// date granularity (sufficient for temporal grounding); a session that
-	// spans midnight keeps its creation-time anchor rather than a live clock.
-	basePrompt = "CURRENT DATE AND TIME: " + time.Now().Format("Monday, 2006-01-02 15:04 MST") + "\n\n" + basePrompt
+	// Temporal grounding does NOT live here. A wall-clock anchor baked into the
+	// ROM slot would freeze the model's "now" at session creation (warm sessions
+	// span days; a DB-restored session would re-anchor to a different instant),
+	// and — because ROM has its own cross-session cache breakpoint — a
+	// per-session timestamp would defeat prompt-cache reuse across an agent's
+	// sessions. Instead, each user turn carries its arrival time, rendered into
+	// the compiled view only (see renderLocked): the newest user turn always
+	// supplies current time, and inter-turn gaps stay visible.
 
 	// Inject task context (current tasks, ready front, board stats).
 	// Rendered once into ROM at session creation — the ROM slot is
@@ -1835,9 +1834,10 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Content is the canonical, user-visible message body: it is persisted and
 	// returned verbatim to clients.
 	// Do NOT prepend a timestamp here — that leaks a "[Mon 2006-01-02 15:04 MST]"
-	// prefix into every displayed user message. Arrival time is already captured
-	// durably in the Timestamp field; per-turn temporal grounding ("today",
-	// "this month") belongs in the system prompt / ROM, not baked into the body.
+	// prefix into every displayed user message. Arrival time is captured durably
+	// in the Timestamp field; per-turn temporal grounding ("today", "this month")
+	// is restored by rendering that Timestamp into the compiled view only
+	// (renderLocked), never into the stored body.
 	userMsg := a.appendMessage(ctx, session, Message{
 		Role:          "user",
 		Content:       userMessage,

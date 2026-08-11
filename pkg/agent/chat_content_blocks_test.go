@@ -123,13 +123,27 @@ func TestAgent_ChatWithContentBlocks_PropagatesBlocksToLLM(t *testing.T) {
 	require.Len(t, userMsg.ContentBlocks, 2, "both content blocks must reach the provider")
 
 	assert.Equal(t, "text", userMsg.ContentBlocks[0].Type)
-	assert.Equal(t, "What is in this image?", userMsg.ContentBlocks[0].Text)
+	assert.True(t, strings.HasSuffix(userMsg.ContentBlocks[0].Text, "What is in this image?"),
+		"the forwarded text block carries the arrival stamp ahead of the prompt: %q", userMsg.ContentBlocks[0].Text)
 
 	imgBlock := userMsg.ContentBlocks[1]
 	assert.Equal(t, "image", imgBlock.Type)
 	require.NotNil(t, imgBlock.Image)
 	assert.Equal(t, "image/png", imgBlock.Image.Source.MediaType)
 	assert.Equal(t, "aGVsbG8=", imgBlock.Image.Source.Data)
+}
+
+// storedTurns returns the raw, persisted conversation rows for a session — the
+// client-visible bodies, before the compile-time arrival-stamp render. Use this
+// (not Session.GetMessages, which returns the compiled LLM view) to assert what
+// clients actually see persisted.
+func storedTurns(t *testing.T, ag *Agent, sessionID string) []Message {
+	t.Helper()
+	session, ok := ag.GetSession(sessionID)
+	require.True(t, ok, "session should exist")
+	sm, ok := session.SegmentedMem.(*SegmentedMemory)
+	require.True(t, ok, "session should use SegmentedMemory")
+	return sm.GetRecentConversationTurns(1000)
 }
 
 // TestAgent_ChatWithContentBlocks_PersistsCanonicalText verifies userMessage
@@ -143,13 +157,10 @@ func TestAgent_ChatWithContentBlocks_PersistsCanonicalText(t *testing.T) {
 	_, err := ag.ChatWithContentBlocks(context.Background(), sessionID, "canonical text", sampleBlocks(), nil)
 	require.NoError(t, err)
 
-	session, ok := ag.GetSession(sessionID)
-	require.True(t, ok, "session should exist after the call")
-
-	messages := session.GetMessages()
+	messages := storedTurns(t, ag, sessionID)
 	require.GreaterOrEqual(t, len(messages), 2, "expected at least the user turn and assistant reply")
 
-	var userMsg *types.Message
+	var userMsg *Message
 	var sawAssistant bool
 	for i := range messages {
 		switch messages[i].Role {
@@ -216,7 +227,10 @@ func TestAgent_ChatWithContentBlocks_ImageOnlyPrependsText(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, userMsg.ContentBlocks, 2, "text block must be prepended to the image-only set")
 	assert.Equal(t, "text", userMsg.ContentBlocks[0].Type)
-	assert.Equal(t, "What is in this image?", userMsg.ContentBlocks[0].Text, "prepended text must be the canonical userMessage")
+	// The compiled view carries the arrival stamp on the leading text block so it
+	// reaches the multimodal provider; the canonical userMessage follows it.
+	assert.True(t, strings.HasSuffix(userMsg.ContentBlocks[0].Text, "] What is in this image?"),
+		"prepended text is the canonical userMessage behind its arrival stamp: %q", userMsg.ContentBlocks[0].Text)
 	assert.Equal(t, "image", userMsg.ContentBlocks[1].Type)
 }
 
@@ -317,10 +331,8 @@ func TestChat_UserTurnContentIsVerbatim(t *testing.T) {
 	_, err := ag.Chat(context.Background(), "stamp_session", "what ran today?")
 	require.NoError(t, err)
 
-	session, ok := ag.GetSession("stamp_session")
-	require.True(t, ok)
 	var msg Message
-	for _, m := range session.GetMessages() {
+	for _, m := range storedTurns(t, ag, "stamp_session") {
 		if m.Role == "user" {
 			msg = m
 		}
@@ -329,15 +341,50 @@ func TestChat_UserTurnContentIsVerbatim(t *testing.T) {
 	require.False(t, msg.Timestamp.IsZero(), "arrival time is captured in the Timestamp field")
 }
 
-// TestSystemPrompt_CarriesCurrentDate pins the temporal-grounding rule: the
-// current date/time reaches the model through the system prompt (not the user
-// message body), so relative phrases like "today" resolve without leaking a
-// timestamp into user-visible Content.
-func TestSystemPrompt_CarriesCurrentDate(t *testing.T) {
+// TestChat_CompiledUserTurnCarriesTimestamp pins the temporal-grounding rule:
+// the arrival timestamp reaches the model through the COMPILED view of the user
+// turn (rendered from Timestamp), not through the stored body and not through a
+// ROM date anchor. The stored Content stays verbatim; the forwarded message
+// carries the "[Mon 2006-01-02 15:04 MST] " stamp so relative phrases resolve.
+func TestChat_CompiledUserTurnCarriesTimestamp(t *testing.T) {
 	llm := &capturingLLM{response: "ok"}
 	ag := contentBlocksTestAgent(llm)
 
+	// Capture the date band around the call. getSystemPrompt/the stamp read the
+	// clock independently of this assertion, so straddling midnight would flake a
+	// single time.Now() check; accept either day the call could have landed on.
+	dateBefore := time.Now().UTC().Format("2006-01-02")
+	_, err := ag.Chat(context.Background(), "stamp_session", "what ran today?")
+	require.NoError(t, err)
+	dateAfter := time.Now().UTC().Format("2006-01-02")
+
+	// The forwarded (compiled) user turn carries the arrival stamp.
+	var forwarded string
+	for _, m := range llm.lastMessages() {
+		if m.Role == "user" {
+			forwarded = m.Content
+		}
+	}
+	require.NotEmpty(t, forwarded)
+	assert.True(t, strings.HasPrefix(forwarded, "["),
+		"compiled user turn is prefixed with its arrival stamp: %q", forwarded)
+	assert.True(t, strings.HasSuffix(forwarded, "] what ran today?"),
+		"the user's words follow the stamp unchanged: %q", forwarded)
+	assert.True(t, strings.Contains(forwarded, dateBefore) || strings.Contains(forwarded, dateAfter),
+		"the stamp carries today's date (%s or %s): %q", dateBefore, dateAfter, forwarded)
+
+	// The stored body stays verbatim — no stamp leaks into persisted Content.
+	var stored Message
+	for _, m := range storedTurns(t, ag, "stamp_session") {
+		if m.Role == "user" {
+			stored = m
+		}
+	}
+	require.Equal(t, "what ran today?", stored.Content,
+		"stored Content is verbatim, no timestamp prefix")
+
+	// Temporal grounding no longer rides a per-session ROM anchor.
 	prompt := ag.getSystemPrompt(context.Background())
-	require.Contains(t, prompt, "CURRENT DATE AND TIME:", "system prompt anchors the model in wall-clock time")
-	require.Contains(t, prompt, time.Now().Format("2006-01-02"), "the anchor carries today's date")
+	assert.NotContains(t, prompt, "CURRENT DATE AND TIME:",
+		"no wall-clock anchor is baked into the ROM slot")
 }

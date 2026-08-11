@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -638,4 +639,39 @@ func TestExtractedMemory_UnmarshalsEventDateFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2023-03-14", m.EventDate)
 	assert.Equal(t, "approximate", m.EventDateConfidence)
+}
+
+// TestNewestMessageDate_PrefersDurableTimestamp verifies the extractor anchors
+// on the newest turn's arrival Timestamp — the restart-surviving record — so a
+// session resumed after N days anchors to when the conversation happened, not
+// extraction day.
+func TestNewestMessageDate_PrefersDurableTimestamp(t *testing.T) {
+	messages := []types.Message{
+		{Role: "user", Content: "i deployed the service", Timestamp: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)},
+		{Role: "assistant", Content: "noted"},
+		{Role: "user", Content: "did the deploy finish yesterday?", Timestamp: time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)},
+	}
+	assert.Equal(t, "2026-08-04", newestMessageDate(messages), "newest non-zero Timestamp wins")
+
+	// No timestamps: nothing to anchor on from this source.
+	assert.Equal(t, "", newestMessageDate([]types.Message{{Role: "user", Content: "hi"}}))
+}
+
+// TestBuildConversationBlock_RendersPerTurnDates verifies each turn is rendered
+// with its own arrival date so the extractor LLM anchors relative phrases to the
+// turn they were said in, not to the extraction day.
+func TestBuildConversationBlock_RendersPerTurnDates(t *testing.T) {
+	ec := extractionContext{
+		currentDate: "2026-08-04",
+		messages: []types.Message{
+			{Role: "user", Content: "i met alice", Timestamp: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)},
+			{Role: "user", Content: "legacy line"}, // zero Timestamp
+		},
+	}
+	block := buildConversationBlock(ec)
+	assert.Contains(t, block, "Current date: 2026-08-04")
+	assert.Contains(t, block, "1. [user @ 2026-08-01]: i met alice",
+		"a stamped turn renders its own arrival date")
+	assert.Contains(t, block, "2. [user]: legacy line",
+		"a timestamp-less row renders role only, no invented date")
 }

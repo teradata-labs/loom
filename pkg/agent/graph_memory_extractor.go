@@ -112,7 +112,15 @@ func buildConversationBlock(ec extractionContext) string {
 		if msg.Role == "tool" {
 			continue
 		}
-		fmt.Fprintf(&sb, "%d. [%s]: %s\n", i+1, msg.Role, msg.Content)
+		// Render each turn's own arrival date so the extractor anchors relative
+		// phrases ("yesterday", "three days ago") against the turn they were said
+		// in, not the extraction day. Timestamp rides through unchanged from the
+		// stored turn; legacy rows without one fall back to role only.
+		if !msg.Timestamp.IsZero() {
+			fmt.Fprintf(&sb, "%d. [%s @ %s]: %s\n", i+1, msg.Role, msg.Timestamp.UTC().Format("2006-01-02"), msg.Content)
+		} else {
+			fmt.Fprintf(&sb, "%d. [%s]: %s\n", i+1, msg.Role, msg.Content)
+		}
 	}
 
 	return sb.String()
@@ -294,12 +302,17 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		}
 	}
 
-	// Determine the current date for anchoring relative time references.
-	// Try to extract from conversation content (e.g., "session that took place on 2023/05/24"),
-	// fall back to the current wall clock time.
-	currentDate := extractDateFromMessages(recentMessages)
+	// Determine the current date for anchoring relative time references. Prefer
+	// the newest turn's arrival Timestamp — the durable arrival record that
+	// survives restart — so a session resumed after N days anchors to when the
+	// conversation happened, not extraction day. Fall back to a date embedded in
+	// content (e.g. a benchmark's "took place on 2023/05/24"), then wall clock.
+	currentDate := newestMessageDate(recentMessages)
 	if currentDate == "" {
-		currentDate = time.Now().Format("2006-01-02")
+		currentDate = extractDateFromMessages(recentMessages)
+	}
+	if currentDate == "" {
+		currentDate = time.Now().UTC().Format("2006-01-02")
 	}
 
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.
@@ -485,6 +498,20 @@ func parseExtractionResponse(content string) (ExtractedGraphData, bool) {
 		return data, false
 	}
 	return data, true
+}
+
+// newestMessageDate returns the UTC ISO date (YYYY-MM-DD) of the most recent
+// message that carries a non-zero arrival Timestamp, or "" if none do. This is
+// the durable, restart-surviving anchor for relative time references — strictly
+// more robust than scanning Content, which only worked while a timestamp prefix
+// was baked into the body.
+func newestMessageDate(messages []types.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if !messages[i].Timestamp.IsZero() {
+			return messages[i].Timestamp.UTC().Format("2006-01-02")
+		}
+	}
+	return ""
 }
 
 // extractDateFromMessages scans recent messages for date context.
