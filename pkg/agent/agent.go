@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -26,6 +27,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -95,7 +97,8 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// source at log time, so it is safe to wire before options finalize config.
 	a.ctxDebug = a.newContextDebug()
 
-	// Default shared memory threshold: 64 KiB (storage.DefaultSharedMemoryThreshold).
+	// Default shared memory threshold: 16384 bytes (storage.DefaultSharedMemoryThreshold —
+	// the one threshold value of HLD §5.1).
 	a.sharedMemoryThreshold = int64(storage.DefaultSharedMemoryThreshold)
 
 	// Enable self-correction by default (guardrails + circuit breakers)
@@ -148,14 +151,20 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: Pass instrumented executor via SetExecutor() if you want tool tracing
 	a.executor = shuttle.NewExecutor(a.tools)
 
-	// Wire the executor's large-result offload debug log to this agent's
-	// context-dump switch and turn source. The closures read at log time, so
-	// ordering against config-setting options does not matter.
-	a.executor.SetContextDebug(a.contextDebugEnabled, a.contextDebugTurn)
-
 	// Set permission checker on executor if provided
 	if a.permissionChecker != nil {
 		a.executor.SetPermissionChecker(a.permissionChecker)
+	}
+
+	// Attach the admission hook chain if provided. A nil chain leaves the
+	// executor as a pure pass-through.
+	if a.admissionChain != nil {
+		a.executor.SetAdmissionChain(a.admissionChain)
+	}
+
+	// Wire the caller-identity resolver so admission requests carry UserID.
+	if a.identityResolver != nil {
+		a.executor.SetIdentityResolver(a.identityResolver)
 	}
 
 	// Set up system prompt function for memory
@@ -169,6 +178,16 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.MaxContextTokens > 0 || a.config.ReservedOutputTokens > 0 {
 		a.memory.SetContextLimits(a.config.MaxContextTokens, a.config.ReservedOutputTokens)
 	}
+
+	// K — protected newest user turns (HLD §5.1, §9).
+	if a.config.ProtectedRecentTurns > 0 {
+		a.memory.SetProtectedRecentTurns(a.config.ProtectedRecentTurns)
+	}
+
+	// Fold deactivates every skill whose manage_skills load pair lies inside
+	// the folded region (HLD §4.5) — wired through the skills orchestrator's
+	// existing deactivation path plus the per-session tool ledger.
+	a.memory.SetSkillDeactivationHook(a.deactivateSkillForFold)
 
 	// Initialize shared memory store for large tool results (#2: Persistent Global Storage)
 	// Use global singleton so references work across agent instances and survive restarts.
@@ -218,32 +237,15 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			threshold = a.sharedMemoryThreshold
 		}
 		a.executor.SetSharedMemory(a.sharedMemory, threshold)
-	}
 
-	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
-	// See formatToolResult() for automatic registration when error store is used
+		// The approved-set accessor is a dedicated session-keyed membership
+		// store (not the shared-memory cache): authorization state must not be
+		// evictable and renders union rather than replace.
+		a.executor.SetApprovedSet(shuttle.NewApprovedSet())
+	}
 
 	// The findings channel is retired: neither the record_finding tool nor automatic
 	// extraction exists. Durable notes belong in the conversation or in the stores.
-
-	// Initialize SQL result store for queryable large SQL results
-	// This allows filtering/aggregating SQL results without context blowout
-	sqlResultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
-		DBPath:     storage.GetDefaultLoomDBPath(),
-		TTLSeconds: 3600, // 1 hour TTL
-	})
-	if err == nil {
-		// Store reference for later use (e.g., when SetSharedMemory() is called)
-		a.sqlResultStore = sqlResultStore
-
-		// Set on executor so SQL results go to queryable tables
-		if a.executor != nil {
-			a.executor.SetSQLResultStore(sqlResultStore)
-		}
-
-		// PROGRESSIVE DISCLOSURE: query_tool_result tool is registered dynamically after first large result
-		// See formatToolResult() for automatic registration when large results are stored
-	}
 
 	// shell_execute is no longer auto-registered in NewAgent
 	// Agents that need shell_execute must explicitly list it in config.Tools.Builtin
@@ -252,36 +254,19 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
 
-	// get_tool_result is NOT registered: the inline summary already carries preview,
-	// schema, size and retrieval hints, and query_tool_result covers pagination and
-	// SQL filters. The type and its offload exemption remain for callers that wire it
-	// directly.
-	//
-	// v1.0.1: Now returns only metadata, accepts both memory and SQL stores
-	// if a.sharedMemory != nil || sqlResultStore != nil {
-	// 	a.tools.Register(NewGetToolResultTool(a.sharedMemory, sqlResultStore))
-	// }
-	// If SQL store fails to initialize, just log and continue without it
-	// (SQL results will fall back to shared memory)
-
-	// Initialize reference tracker for automatic cleanup (#1: Session-Scoped Reference Pinning)
-	// When sessions end, this ensures all SharedMemory references are released (RefCount decremented).
-	// Without this, references accumulate indefinitely causing memory leaks.
-	if a.sharedMemory != nil {
-		a.refTracker = storage.NewSessionReferenceTracker(a.sharedMemory)
-
-		// Register cleanup hook with SessionStore if persistence is enabled
-		// This decouples reference cleanup from session deletion logic
-		if a.memory != nil {
-			if store := a.memory.GetStore(); store != nil {
-				store.RegisterCleanupHook(a.cleanupSessionReferences)
-			}
-		}
+	// query_tool_result serves THIS TURN's memory by message_id (HLD §7.1) and
+	// recall retrieves summary-cited conversation spans (HLD §6). Registered by
+	// default — their doors are printed by the offload stub and the summary's
+	// citations respectively — through RegisterTool, so the WithoutBuiltinTool
+	// suppression set is honoured.
+	queryTool := shuttle.Tool(NewQueryToolResultTool(a))
+	recallTool := shuttle.Tool(NewRecallTool(a))
+	if a.prompts != nil {
+		queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.recall")
 	}
-
-	// NOTE: conversation_memory tool uses progressive disclosure.
-	// It registers automatically after first L2 swap event.
-	// See checkAndRegisterConversationMemoryTool() for implementation.
+	a.RegisterTool(queryTool)
+	a.RegisterTool(recallTool)
 
 	// Register graph_memory tool eagerly (not progressive disclosure).
 	// Unlike conversation_memory which depends on runtime state (L2 swap events),
@@ -429,7 +414,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// implied by durable error/large-result records, so a restored session
 	// advertises the same tools and reports the same active skills as a live one.
 	if a.memory != nil {
-		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation, a.reFireDisclosureTool)
+		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation)
 		a.memory.SetContextDebug(a.ctxDebug)
 	}
 
@@ -468,44 +453,6 @@ func (a *Agent) reFireSkillActivation(sessionID, skillName string) {
 	}
 	a.skillOrchestrator.ActivatePinned(sessionID, skill, "restore_replay", skillName, 1.0)
 	a.enforceRequiredSkillTools(sessionID)
-}
-
-// reFireDisclosureTool re-registers a first-need disclosure tool into a session
-// during restore replay, mirroring the progressive-disclosure path in
-// formatToolResult: it registers the tool definition once when the backing
-// store is wired and the builtin is not suppressed, then advertises it into the
-// session's ledger. Called from the memory manager's restore walk for each
-// durable error (get_error_details) or large-result (query_tool_result) record.
-func (a *Agent) reFireDisclosureTool(sessionID, toolName string) {
-	// Same ordering hazard as reFireSkillActivation: a restore may precede the
-	// first turn, and this path scopes tools into a session's ledger.
-	a.captureBaseTools()
-	switch toolName {
-	case "get_error_details":
-		if a.errorStore == nil || a.isBuiltinToolSuppressed("get_error_details") {
-			return
-		}
-		if !a.tools.IsRegistered("get_error_details") {
-			errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-			if a.prompts != nil {
-				errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
-			}
-			a.tools.Register(errorTool)
-		}
-		a.registerSessionTool(sessionID, "get_error_details")
-	case "query_tool_result":
-		if (a.sqlResultStore == nil && a.sharedMemory == nil) || a.isBuiltinToolSuppressed("query_tool_result") {
-			return
-		}
-		if !a.tools.IsRegistered("query_tool_result") {
-			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
-			if a.prompts != nil {
-				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-			}
-			a.tools.Register(queryTool)
-		}
-		a.registerSessionTool(sessionID, "query_tool_result")
-	}
 }
 
 // Option is a functional option for configuring an Agent.
@@ -564,6 +511,25 @@ func WithPermissionChecker(checker *shuttle.PermissionChecker) Option {
 	}
 }
 
+// WithAdmissionHooks sets the admission hook chain consulted before every tool
+// body runs. The chain carries the name-level permission check as its first
+// hook; a nil chain leaves tool execution as a pure pass-through.
+func WithAdmissionHooks(chain *shuttle.Chain) Option {
+	return func(a *Agent) {
+		a.admissionChain = chain
+	}
+}
+
+// WithIdentityResolver sets the resolver that reads the caller identity
+// (AdmissionRequest.UserID) from the call context. The value lookup is injected
+// by the composition root because pkg/agent cannot import the storage layer
+// that owns the user-id context key without an import cycle.
+func WithIdentityResolver(resolver func(context.Context) string) Option {
+	return func(a *Agent) {
+		a.identityResolver = resolver
+	}
+}
+
 // WithGuardrails enables pre-flight validation and error tracking.
 func WithGuardrails(guardrails *fabric.GuardrailEngine) Option {
 	return func(a *Agent) {
@@ -599,8 +565,8 @@ func WithoutSelfCorrection() Option {
 // disabling subsystem wiring. Pass one name per call; call repeatedly to
 // suppress multiple tools.
 //
-// Currently honoured for: graph_memory, task_board, conversation_memory,
-// session_memory, get_error_details, query_tool_result. Other tools either
+// Currently honoured for: graph_memory, task_board, query_tool_result,
+// recall, manage_skills, load_pattern. Other tools either
 // are registered eagerly by the caller (cmd_serve) and can be omitted there,
 // or are not subject to suppression.
 func WithoutBuiltinTool(name string) Option {
@@ -644,15 +610,6 @@ func WithSystemPrompt(prompt string) Option {
 func WithDescription(description string) Option {
 	return func(a *Agent) {
 		a.config.Description = description
-	}
-}
-
-// WithErrorStore enables error submission channel for storing full error details.
-// When set, tool execution errors are stored in SQLite with only summaries sent to LLM.
-// The get_error_details built-in tool is automatically registered.
-func WithErrorStore(store ErrorStore) Option {
-	return func(a *Agent) {
-		a.errorStore = store
 	}
 }
 
@@ -860,6 +817,45 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 				zap.Int("count", len(as.Skill.Tools.MCPServers)))
 		}
 	}
+}
+
+// deactivateSkillForFold is fold's skill-deactivation path (HLD §4.5): when a
+// skill's manage_skills load pair is folded, the skill is deactivated via the
+// orchestrator's existing path and its required tools leave the session's
+// advertised ledger — so they leave the provider tools parameter at the next
+// compile. Re-loading the skill is the door back. A tool still required by a
+// remaining active skill (or base) stays.
+func (a *Agent) deactivateSkillForFold(sessionID, skillName string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	var required []string
+	for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+		if as != nil && as.Skill != nil && as.Skill.Name == skillName {
+			required = as.Skill.Tools.RequiredTools
+		}
+	}
+
+	a.skillOrchestrator.DeactivateSkill(sessionID, skillName)
+
+	still := map[string]bool{}
+	for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, n := range as.Skill.Tools.RequiredTools {
+			still[n] = true
+		}
+	}
+	a.mu.Lock()
+	if ledger := a.sessionToolLedger[sessionID]; ledger != nil {
+		for _, n := range required {
+			if !still[n] {
+				delete(ledger, n)
+			}
+		}
+	}
+	a.mu.Unlock()
 }
 
 // applySkillExcludedTools filters the input tool slice by removing any
@@ -1104,38 +1100,6 @@ func (a *Agent) ResetSessionContext(sessionID string) bool {
 // getSystemPrompt loads the system prompt from config or PromptRegistry.
 // Priority: ROM + Config.SystemPrompt (if explicitly set) > ROM + PromptRegistry > Default
 // ROM (Read-Only Memory) provides domain-specific knowledge loaded based on config.Rom
-// formatSystemPromptWithDatetime prepends current date/time information to system prompts.
-// This helps agents maintain temporal awareness and prevents confusion about the current date.
-func formatSystemPromptWithDatetime(prompt string, workflowCtx *WorkflowCommunicationContext) string {
-	now := time.Now()
-
-	// Format: "Monday, January 2, 2006 at 3:04 PM MST"
-	dateStr := now.Format("Monday, January 2, 2006")
-	timeStr := now.Format("3:04 PM MST")
-	timezone := now.Location().String()
-
-	// Get UTC offset for clarity
-	_, offset := now.Zone()
-	offsetHours := offset / 3600
-	offsetSign := "+"
-	if offsetHours < 0 {
-		offsetSign = "-"
-		offsetHours = -offsetHours
-	}
-
-	header := fmt.Sprintf("CURRENT DATE AND TIME\n"+
-		"Date: %s\n"+
-		"Time: %s (UTC%s%d)\n"+
-		"Timezone: %s\n\n"+
-		"---\n\n",
-		dateStr, timeStr, offsetSign, offsetHours, timezone)
-
-	// Add workflow communication instructions if available
-	workflowInstructions := formatWorkflowCommunicationInstructions(workflowCtx)
-
-	return header + workflowInstructions + prompt
-}
-
 func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Load ROM content first (if configured)
 	var romContent string
@@ -1230,11 +1194,9 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
 	}
 
-	// Append graph memory instructions if graph memory is enabled
-	basePrompt += a.graphMemoryPromptSupplement()
-
-	// Inject live task context (current tasks, ready front, board stats).
-	// Rebuilt from DB each turn — survives context compaction.
+	// Inject task context (current tasks, ready front, board stats).
+	// Rendered once into ROM at session creation — the ROM slot is
+	// byte-stable for the session, so this is a snapshot, not a live view.
 	basePrompt += a.buildTaskContext(ctx)
 
 	// Append task board tool instructions after the context block,
@@ -1245,7 +1207,22 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// session creation, so it stays byte-stable for the whole session.
 	basePrompt += a.skillMenuPromptSupplement()
 
-	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
+	// Append the team block for a woven workflow participant. Empty for every
+	// other agent — nothing outside weave attaches a workflow context.
+	basePrompt += a.workflowCommPromptSupplement()
+
+	return basePrompt
+}
+
+// workflowCommPromptSupplement renders the team block for an agent that weave
+// attached a workflow communication context to: the peers it can reach and the
+// mechanics of reaching them. Empty for every other agent — a standalone agent,
+// a cloud workflow step and a plain spawned sub-agent all render nothing,
+// because none of their paths attaches a context. Session-stable: the peer list
+// is fixed for the life of the workflow, so this does not disturb the ROM slot's
+// byte-stability.
+func (a *Agent) workflowCommPromptSupplement() string {
+	return formatWorkflowCommunicationInstructions(a.workflowCommContext)
 }
 
 // skillMenuPromptSupplement renders the agent's bound skills as a
@@ -1276,8 +1253,8 @@ func (a *Agent) skillMenuPromptSupplement() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n\n---\n\nAVAILABLE SKILLS\n\n")
-	b.WriteString("These skills are bound to this agent. Load one with the manage_skills load action to bring its instructions into the conversation; until then only the name and description below are in context.\n\n")
+	b.WriteString("\n\n---\n\n# Available skills\n\n")
+	b.WriteString("Bound to this agent. Load with manage_skills to bring instructions into the conversation; until then, only the name + description below are in context.\n\n")
 	for _, rb := range resolved {
 		if rb.Skill == nil {
 			continue
@@ -1289,38 +1266,6 @@ func (a *Agent) skillMenuPromptSupplement() string {
 		}
 	}
 	return b.String()
-}
-
-// graphMemoryPromptSupplement returns instructions for agents with graph memory enabled.
-// Returns empty string when graph memory is not available.
-func (a *Agent) graphMemoryPromptSupplement() string {
-	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
-		return ""
-	}
-	return `
-
----
-
-GRAPH MEMORY
-
-You have persistent memory across sessions via the graph_memory tool. Relevant memories are automatically loaded into context each turn — you do not need to recall them manually.
-
-When to use the graph_memory tool:
-- When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
-- When you learn facts about systems, tools, or workflows → remember with entities and relationships.
-- When you need deeper context beyond what was auto-loaded → use recall or context_for.
-
-Actions:
-- remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
-- recall: search by searchQuery, filter by type/tags
-- supersede: correct outdated info (preserves lineage)
-- forget: soft-delete
-- relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
-- context_for: get an entity's full profile within a token budget
-- entities: browse the knowledge graph
-- consolidate: merge related memories
-
-Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
 }
 
 // taskBoardPromptSupplement returns instructions for agents with task board enabled.
@@ -1613,9 +1558,17 @@ func (a *Agent) SetWorkflowCommunicationContext(ctx *WorkflowCommunicationContex
 	a.workflowCommContext = ctx
 }
 
-// formatWorkflowCommunicationInstructions generates concise, directive communication instructions
-// based on the agent's workflow context. These instructions are injected at the top of the system
-// prompt (after timestamp) to ensure LLMs see and follow them.
+// formatWorkflowCommunicationInstructions renders an agent's team block: the
+// peers it can reach and the mechanics of reaching them. It is appended to the
+// end of ROM at session creation (see workflowCommPromptSupplement) — weave
+// attaches the context before the session exists, and the peer list is fixed
+// for the life of the workflow, so the rendered block is byte-stable for the
+// session.
+//
+// The reply rule is load-bearing: an agent's turn text is not delivered
+// anywhere, so a received message travels back only when the agent calls
+// send_message. Without that line a worker answers into nothing and the
+// workflow stalls after its first delegation.
 func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) string {
 	if ctx == nil {
 		return ""
@@ -1628,7 +1581,7 @@ func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) 
 		instructions.WriteString("🔔 WORKFLOW COMMUNICATION (PUB-SUB)\n")
 		instructions.WriteString(fmt.Sprintf("Subscribed topics: %s\n", strings.Join(ctx.SubscribedTopics, ", ")))
 		instructions.WriteString("→ To post: publish(topic=\"topic-name\", message=\"your message\")\n")
-		instructions.WriteString("→ Responses auto-inject as \"[BROADCAST FROM agent]: ...\"\n")
+		instructions.WriteString("→ Incoming posts are marked \"[BROADCAST FROM agent]:\"\n")
 		instructions.WriteString("→ Do NOT poll - you will be notified automatically\n\n")
 	}
 
@@ -1637,15 +1590,16 @@ func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) 
 		instructions.WriteString("🔔 WORKFLOW COMMUNICATION (DIRECT MESSAGING)\n")
 		instructions.WriteString(fmt.Sprintf("Available agents: %s\n", strings.Join(ctx.AvailableAgents, ", ")))
 		instructions.WriteString("→ To send: send_message(to_agent=\"agent-id\", message=\"task description\")\n")
-		instructions.WriteString("→ Responses auto-inject as \"[MESSAGE FROM agent]: ...\"\n")
-		instructions.WriteString("→ Do NOT poll - you will be notified automatically\n\n")
+		instructions.WriteString("→ Incoming messages are marked \"[MESSAGE FROM agent]:\"\n")
+		instructions.WriteString("→ When a message arrives, send your answer back to its sender with send_message — your reply text alone is not delivered\n")
+		instructions.WriteString("→ Do NOT poll - you will be notified automatically\n")
 	}
 
-	if instructions.Len() > 0 {
-		instructions.WriteString("---\n\n")
+	if instructions.Len() == 0 {
+		return ""
 	}
 
-	return instructions.String()
+	return "\n\n---\n\n" + strings.TrimRight(instructions.String(), "\n")
 }
 
 // getGuidanceMessage loads a guidance message from PromptRegistry or returns default.
@@ -1851,28 +1805,34 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
+	// TURN END for the previous turn (HLD §1, §7.3): a new turn is starting —
+	// in-memory full payloads are replaced by their persisted-row form and the
+	// in-turn SQLite is dropped. Rows and summary versions are all that remains.
+	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		segMem.DropTurnPayloads()
+	}
+	a.dropInTurnSQLite(sessionID)
+
 	// Add user message to history. ContentBlocks (when present) take precedence
 	// over Content as providers build the request, so multimodal content reaches
 	// the model; Content remains the canonical text for persistence and providers
 	// without multimodal support.
-	userMsg := Message{
+	//
+	// This is the Chat()-entry persist site — the only turn-incrementing event
+	// (HLD §4.5) — hence turnStart=true.
+	//
+	// Time enters the session here, written into the turn at arrival: temporal
+	// words ("today", "this month") resolve at utterance time, and a value
+	// written once is durable content like any other row — the whole session
+	// stays byte-stable. Nothing renders time dynamically anywhere.
+	userMsg := a.appendMessage(ctx, session, Message{
 		Role:          "user",
-		Content:       userMessage,
+		Content:       time.Now().Format("[Mon 2006-01-02 15:04 MST] ") + userMessage,
 		ContentBlocks: p.contentBlocks,
 		AgentID:       a.id, // Track which agent received this message
 		Timestamp:     time.Now(),
-	}
-	session.AddMessage(ctx, userMsg)
-
-	// Persist message if storage configured
-	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
-		// Log error but don't fail the request
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", userMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
+	}, true)
+	_ = userMsg
 
 	// Fire graph memory extraction on the incoming user message immediately,
 	// in parallel with the LLM processing it. The user message is where the
@@ -1902,10 +1862,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
-	// Progressive disclosure: Check if conversation_memory tool should be registered
-	// (after first L2 swap event)
-	a.checkAndRegisterConversationMemoryTool(sessionID)
-	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
@@ -1941,24 +1897,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	}
 
 	// Add assistant response to history
-	assistantMsg := Message{
+	a.appendMessage(ctx, session, Message{
 		Role:       "assistant",
 		Content:    response.Content,
 		AgentID:    a.id, // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
-	}
-	session.AddMessage(ctx, assistantMsg)
+	}, false)
 
-	// Persist final message and session
-	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", sessionID),
-			zap.String("role", assistantMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
+	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
@@ -2032,6 +1980,32 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	return response, nil
 }
 
+// appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
+// persists its durable row once (write rules §4; the store's RETURNING-derived
+// seq and turn override the stamp), and appends the message to the session in
+// full natural form. Nothing is examined, sized, flagged, or transformed at
+// arrival. turnStart is true only at the Chat() entry — the only
+// turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
+func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) Message {
+	// In-memory derivation, identical arithmetic to the store's subquery — the
+	// only derivation for storeless sessions and unpersisted rows.
+	t := sessionCurrentTurn(session)
+	if turnStart {
+		t++
+	}
+	msg.Turn = t
+
+	if err := a.memory.PersistMessage(ctx, session.ID, &msg, turnStart); err != nil {
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", session.ID),
+			zap.String("role", msg.Role),
+			zap.Error(err))
+	}
+
+	session.AddMessage(ctx, msg)
+	return msg
+}
+
 // Response represents the agent's response to a user message.
 type Response struct {
 	// Content is the text response
@@ -2057,6 +2031,25 @@ type ToolExecution struct {
 	Input    map[string]interface{}
 	Result   *shuttle.Result
 	Error    error
+
+	// AdmissionDecision is the audit verdict ("allow"|"deny"|"ask") for a call
+	// matched by an audit binding, stamped by the executor onto
+	// Result.Metadata["admission.decision"]. Empty means the call was not
+	// audited; empty rows are not counted as audit records (SC-004).
+	AdmissionDecision string
+}
+
+// admissionDecisionOf reads the audit verdict the executor stamps onto a
+// governed call's Result.Metadata["admission.decision"]. An ungoverned or
+// unaudited call carries no such key, yielding "".
+func admissionDecisionOf(result *shuttle.Result) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	if v, ok := result.Metadata["admission.decision"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // emitProgress sends a progress event if a callback is configured.
@@ -2242,55 +2235,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"max_tool_executions": a.config.MaxToolExecutions,
 		})
 
-		// === FEATURE INTEGRATION: Token Budget Management ===
-		// Check token budget and enforce compression if needed (segmented memory only)
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			budgetInfo := checkTokenBudget(segMem)
-
-			// Log budget status
-			span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
-			span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
-			span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
-			span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
-
-			if budgetInfo.budgetPct > 70 {
-				span.AddEvent("token_budget.warning", map[string]interface{}{
-					"usage_pct": budgetInfo.budgetPct,
-				})
-			}
-
-			// Force compression once budget usage passes enforceTokenBudget's threshold
-			compressed, err := enforceTokenBudget(ctx, segMem, budgetInfo)
-			if err != nil {
-				return nil, fmt.Errorf("token budget enforcement failed: %w", err)
-			}
-			if compressed {
-				span.AddEvent("memory.compressed", map[string]interface{}{
-					"trigger": "budget_critical",
-				})
-			}
-
-			// After compression, if still critically over budget, attempt recovery.
-			if checkTokenBudget(segMem).budgetPct > 85 {
-				if recovery != nil {
-					budgetChecker := func() float64 { return checkTokenBudget(segMem).budgetPct }
-					recovered, _ := recovery.recoverTokenBudget(ctx, session, segMem, budgetChecker)
-					if !recovered {
-						budgetErr := fmt.Errorf("token budget critically exceeded (%.1f%%) after aggressive trim", checkTokenBudget(segMem).budgetPct)
-						return nil, recovery.buildRecoverableError("token_budget_exceeded", budgetErr, "reset_context", map[string]any{"budget_pct": checkTokenBudget(segMem).budgetPct})
-					}
-				} else {
-					return nil, fmt.Errorf("token budget critically exceeded (%.1f%%) and self-healing disabled", checkTokenBudget(segMem).budgetPct)
-				}
-			}
-		}
-
-		// Build messages for LLM (will use segmented memory if configured)
+		// Build messages for LLM (will use segmented memory if configured).
 		messages := session.GetMessages()
 
 		// === FEATURE INTEGRATION: Soft Reminders ===
-		// Add reminders if approaching limits (non-intrusive, doesn't remove tools)
-		// Thresholds: 75% of max (but minimum of 10 tools / 8 turns)
+		// Compute reminders if approaching limits (non-intrusive, doesn't remove
+		// tools). Thresholds: 75% of max (but minimum of 10 tools / 8 turns).
+		// The reminder is applied transiently at the provider call — appended as
+		// a trailing system message, never onto the ROM message (which would
+		// invalidate the ROM cache prefix at exactly the high-pressure moment)
+		// and never persisted, so it survives any relief recompile of messages.
+		softReminder := ""
 		if session.SegmentedMem != nil {
 			// Check tool execution reminder
 			toolReminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions)
@@ -2298,16 +2253,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			turnReminder := buildTurnReminder(turnCount, a.config.MaxTurns)
 
 			// Combine reminders if both are active
-			combinedReminder := toolReminder + turnReminder
+			softReminder = toolReminder + turnReminder
 
-			if combinedReminder != "" {
-				// Append reminder to system message (if exists) or first user message
-				if len(messages) > 0 && messages[0].Role == "system" {
-					messages[0].Content += combinedReminder
-				} else if len(messages) > 0 && messages[0].Role == "user" {
-					messages[0].Content += combinedReminder
-				}
-
+			if softReminder != "" {
 				span.AddEvent("soft_reminder.added", map[string]interface{}{
 					"tool_count":        toolExecutionCount,
 					"turn_count":        turnCount,
@@ -2330,6 +2278,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		tools := a.advertisedTools(session)
 		tools = recovery.activeTools(tools)
 
+		// KERNEL accounting (HLD §2; blueprint A6): the serialized bytes of the
+		// advertised tool schemas — the provider tools parameter as built — are
+		// part of the compiled artifact and feed releasePressure's estimate.
+		// Recomputed per provider call, which covers every registration change.
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+		}
+
 		// Mutation-debug: the per-session tool projection about to be advertised
 		// on this provider call. No-op unless the context-dump switch is on.
 		if a.contextDebugEnabled() {
@@ -2344,8 +2300,69 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.Strings("advertised", advertised))
 		}
 
-		// Call LLM
-		llmResp, err := a.chatWithRetry(ctx, messages, tools)
+		// Relief runs at compile, before the send: ReleasePressure self-gates on
+		// loom's own estimate (§5.1) — a no-op under the start mark, otherwise it
+		// sheds to the release mark. On a shed, recompile messages and the
+		// advertised tool set so a fold-deactivated skill's tools do not linger.
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
+				zap.L().Info("relief: shed before send",
+					zap.String("session_id", session.ID),
+					zap.Int("estimate_tokens", estimate),
+					zap.Int("target_tokens", target))
+				messages = session.GetMessages()
+				tools = a.advertisedTools(session)
+				tools = recovery.activeTools(tools)
+				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+			}
+		}
+
+		// withReminder appends the turn's soft reminder as a trailing system
+		// message on a copy — transient, past every cache breakpoint, never
+		// stored — so both the normal send and the recovery resend carry it.
+		withReminder := func(msgs []Message) []Message {
+			if softReminder == "" {
+				return msgs
+			}
+			out := make([]Message, len(msgs), len(msgs)+1)
+			copy(out, msgs)
+			return append(out, Message{Role: "system", Content: strings.TrimSpace(softReminder)})
+		}
+
+		// Call LLM. Relief is proactive (above) — loom keeps the context under its
+		// own window. The provider refusal is only a backstop: if a clean
+		// context-too-long still comes back (loom's estimate under-counted), shed
+		// and resend once; a second refusal ends the turn with the recoverable
+		// context_exhausted error.
+		llmResp, err := a.chatWithRetry(ctx, withReminder(messages), tools)
+		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+				_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
+				zap.L().Info("context too long: relief pass complete, resending once",
+					zap.String("session_id", session.ID),
+					zap.Int("estimate_tokens", estimate),
+					zap.Int("target_tokens", target))
+				// Relief can deactivate a skill whose load pair was folded
+				// (HLD §4.5): its tools leave KERNEL. The resend is a recompile,
+				// so recompute BOTH messages and the advertised tool set.
+				messages = session.GetMessages()
+				tools = a.advertisedTools(session)
+				tools = recovery.activeTools(tools)
+				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
+					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+				}
+				llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
+				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
+					zap.L().Error("context too long after relief: turn ends",
+						zap.String("session_id", session.ID),
+						zap.Int("estimate_tokens", estimate),
+						zap.Int("target_tokens", target),
+						zap.Error(err))
+					return nil, recovery.buildRecoverableError("context_exhausted", err, "",
+						map[string]any{"estimate": estimate, "target": target})
+				}
+			}
+		}
 		if err != nil {
 			span.AddEvent("turn.llm_failed", map[string]interface{}{
 				"turn":  turnCount,
@@ -2425,14 +2442,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						})
 						span.RecordError(err)
 
-						// Tier 1: attempt self-healing before propagating.
+						// The output-token CB error propagates on the existing
+						// recoverable channel WITHOUT touching context — a CB
+						// trip is not a context decision (blueprint A5).
 						if recovery != nil {
-							if segMem, ok := session.SegmentedMem.(TrimableMemory); ok {
-								recovered, _ := recovery.recoverOutputTokenCB(ctx, session, segMem, failureTracker, threshold)
-								if recovered {
-									continue
-								}
-							}
 							return nil, recovery.buildRecoverableError("output_token_circuit_breaker", err, "rewind_and_retry", map[string]any{"threshold": threshold})
 						}
 						return nil, fmt.Errorf("output token circuit breaker: %w", err)
@@ -2474,18 +2487,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
-				nudgeMsg := Message{
+				a.appendMessage(ctx, session, Message{
 					Role:      "user",
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
 					AgentID:   a.id,
 					Timestamp: time.Now(),
-				}
-				session.AddMessage(ctx, nudgeMsg)
-				if err := a.memory.PersistMessage(ctx, session.ID, nudgeMsg); err != nil {
-					zap.L().Warn("Failed to persist empty-response nudge",
-						zap.String("session_id", session.ID),
-						zap.Error(err))
-				}
+				}, false)
 				continue // re-enter conversation loop for one more LLM call
 			}
 
@@ -2550,7 +2557,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
-		assistantMsg := Message{
+		a.appendMessage(ctx, session, Message{
 			Role:       "assistant",
 			Content:    llmResp.Content,
 			ToolCalls:  llmResp.ToolCalls,
@@ -2558,18 +2565,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			TokenCount: llmResp.Usage.TotalTokens,
 			CostUSD:    llmResp.Usage.CostUSD,
 			Timestamp:  time.Now(),
-		}
-		session.AddMessage(ctx, assistantMsg)
-
-		// Persist assistant message with tool calls (critical for observability)
-		if err := a.memory.PersistMessage(ctx, session.ID, assistantMsg); err != nil {
-			// Log error but don't fail the request
-			zap.L().Warn("Failed to persist message",
-				zap.String("session_id", session.ID),
-				zap.String("role", assistantMsg.Role),
-				zap.Error(err))
-			span.RecordError(err)
-		}
+		}, false)
 
 		// Execute tool calls with per-turn cap and deduplication.
 		// MaxIterations limits how many tool calls are executed from a single
@@ -2597,7 +2593,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			// Per-turn cap: skip remaining calls with an error result
 			if turnToolCount >= maxPerTurn {
-				skipMsg := Message{
+				a.appendMessage(ctx, session, Message{
 					Role:      "tool",
 					Content:   fmt.Sprintf("turn_limit_exceeded — per-turn tool call limit (%d) reached. Synthesize a response from the results you have.", maxPerTurn),
 					ToolUseID: toolCall.ID,
@@ -2610,13 +2606,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					},
 					AgentID:   a.id,
 					Timestamp: time.Now(),
-				}
-				session.AddMessage(ctx, skipMsg)
-				if persistErr := a.memory.PersistMessage(ctx, session.ID, skipMsg); persistErr != nil {
-					zap.L().Warn("Failed to persist turn-limit skip message",
-						zap.String("session_id", session.ID),
-						zap.Error(persistErr))
-				}
+				}, false)
 				toolExecutionCount++
 				continue
 			}
@@ -2624,20 +2614,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Deduplication: compute canonical key from tool name + sorted JSON input
 			dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
 			if cachedResult, ok := turnDedup[dedupKey]; ok {
-				dedupMsg := Message{
+				a.appendMessage(ctx, session, Message{
 					Role:       "tool",
 					Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
 					ToolUseID:  toolCall.ID,
 					ToolResult: cachedResult,
 					AgentID:    a.id,
 					Timestamp:  time.Now(),
-				}
-				session.AddMessage(ctx, dedupMsg)
-				if persistErr := a.memory.PersistMessage(ctx, session.ID, dedupMsg); persistErr != nil {
-					zap.L().Warn("Failed to persist dedup message",
-						zap.String("session_id", session.ID),
-						zap.Error(persistErr))
-				}
+				}, false)
 				allToolExecutions = append(allToolExecutions, ToolExecution{
 					ToolName: toolCall.Name,
 					Input:    toolCall.Input,
@@ -2755,10 +2739,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			// Record execution
 			execution := ToolExecution{
-				ToolName: toolCall.Name,
-				Input:    toolCall.Input,
-				Result:   result,
-				Error:    err,
+				ToolName:          toolCall.Name,
+				Input:             toolCall.Input,
+				Result:            result,
+				Error:             err,
+				AdmissionDecision: admissionDecisionOf(result),
 			}
 			allToolExecutions = append(allToolExecutions, execution)
 
@@ -2815,25 +2800,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			// Add tool result to conversation
-			toolMsg := Message{
+			a.appendMessage(ctx, session, Message{
 				Role:       "tool",
 				Content:    formattedResult,
 				ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 				ToolResult: result,
 				AgentID:    a.id, // Track which agent executed this tool
 				Timestamp:  time.Now(),
-			}
-			session.AddMessage(ctx, toolMsg)
-
-			// Persist message
-			if persistErr := a.memory.PersistMessage(ctx, session.ID, toolMsg); persistErr != nil {
-				// Log but don't fail
-				zap.L().Warn("Failed to persist message",
-					zap.String("session_id", session.ID),
-					zap.String("role", toolMsg.Role),
-					zap.Error(persistErr))
-				toolSpan.RecordError(persistErr)
-			}
+			}, false)
 
 			// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 			// — the skill body belongs under the user-instruction slot, not the
@@ -2872,13 +2846,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// multi-load turn (rare but possible) still stamps its bodies in
 		// call order.
 		for _, sidecar := range pendingSidecars {
-			session.AddMessage(ctx, sidecar)
-			if persistErr := a.memory.PersistMessage(ctx, session.ID, sidecar); persistErr != nil {
-				zap.L().Warn("Failed to persist text_body sidecar message",
-					zap.String("session_id", session.ID),
-					zap.String("role", sidecar.Role),
-					zap.Error(persistErr))
-			}
+			// Sidecars never advance the turn and hold no special status beyond
+			// that (HLD §4.5).
+			a.appendMessage(ctx, session, sidecar, false)
 		}
 	}
 
@@ -2889,23 +2859,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
-	synthesisMsg := Message{
+	a.appendMessage(ctx, session, Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
 		AgentID:   a.id, // Track which agent created this synthesis request
 		Timestamp: time.Now(),
-	}
-	session.AddMessage(ctx, synthesisMsg)
-
-	// Persist synthesis message for observability
-	if err := a.memory.PersistMessage(ctx, session.ID, synthesisMsg); err != nil {
-		// Log error but don't fail the request
-		zap.L().Warn("Failed to persist message",
-			zap.String("session_id", session.ID),
-			zap.String("role", synthesisMsg.Role),
-			zap.Error(err))
-		span.RecordError(err)
-	}
+	}, false)
 
 	// Make final LLM call WITHOUT tools to force synthesis
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
@@ -2945,6 +2904,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"synthesized":     true,
 		},
 	}, nil
+}
+
+// advertisedToolsBytes measures the serialized bytes of the advertised tool
+// schemas as they ride the provider tools parameter (name + description +
+// input schema JSON).
+func advertisedToolsBytes(tools []shuttle.Tool) int {
+	bytes := 0
+	for _, t := range tools {
+		bytes += len(t.Name()) + len(t.Description())
+		if schema := t.InputSchema(); schema != nil {
+			if b, err := json.Marshal(schema); err == nil {
+				bytes += len(b)
+			}
+		}
+	}
+	return bytes
 }
 
 // canonicalJSON serializes a map to a deterministic JSON string for deduplication.
@@ -3072,93 +3047,6 @@ func (a *Agent) analyzeError(result *shuttle.Result, err error) *fabric.ErrorAna
 // formatToolResult formats a tool execution result for inclusion in conversation.
 // Uses the error submission channel pattern: stores full errors in SQLite and provides
 // error references to the LLM, allowing the agent to fetch full details on demand.
-// checkAndRegisterConversationMemoryTool implements progressive disclosure for conversation_memory tool.
-// Registers the tool after first L2 swap event, when long-term storage becomes relevant.
-func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
-	if a.isBuiltinToolSuppressed("conversation_memory") {
-		return
-	}
-	// Skip if tool already registered
-	if a.tools.IsRegistered("conversation_memory") {
-		return
-	}
-
-	// Get session
-	session, exists := a.memory.GetSession(sessionID)
-	if !exists {
-		return
-	}
-
-	// Check if this session supports swap
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	if !ok || !segMem.IsSwapEnabled() {
-		return
-	}
-
-	// Check if swap has occurred
-	evictions, _ := segMem.GetSwapStats()
-	if evictions == 0 {
-		return // No swap yet, tool not needed
-	}
-
-	// Progressive disclosure: Register conversation_memory tool
-	conversationMemoryTool := shuttle.Tool(NewConversationMemoryTool(a.memory))
-	if a.prompts != nil {
-		conversationMemoryTool = shuttle.NewPromptAwareTool(
-			conversationMemoryTool,
-			a.prompts,
-			"tools.memory.conversation_memory_description",
-		)
-	}
-	a.tools.Register(conversationMemoryTool)
-
-	// Tool will be available in next LLM call
-	// The tool's discovery is natural - agent sees it in tool list when needed
-}
-
-// checkAndRegisterSessionMemoryTool implements progressive disclosure for session_memory tool.
-// Registers the tool after 3+ sessions accumulate, when session management becomes relevant.
-func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
-	if a.isBuiltinToolSuppressed("session_memory") {
-		return
-	}
-	// Skip if tool already registered
-	if a.tools.IsRegistered("session_memory") {
-		return
-	}
-
-	// Skip if no session store
-	if a.memory.store == nil {
-		return
-	}
-
-	// Get agent ID from current agent
-	agentID := a.config.Name // Use agent name as ID
-
-	// Count sessions for this agent using caller's context for proper RLS propagation
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	sessionIDs, err := a.memory.store.LoadAgentSessions(ctx, agentID)
-	if err != nil || len(sessionIDs) < 3 {
-		return // Not enough sessions yet, tool not needed
-	}
-
-	// Progressive disclosure: Register session_memory tool
-	sessionMemoryTool := shuttle.Tool(NewSessionMemoryTool(a.memory.store, a.memory))
-	if a.prompts != nil {
-		sessionMemoryTool = shuttle.NewPromptAwareTool(
-			sessionMemoryTool,
-			a.prompts,
-			"tools.memory.session_memory_description",
-		)
-	}
-	a.tools.Register(sessionMemoryTool)
-
-	// Tool will be available in next LLM call
-	// The tool's discovery is natural - agent sees it in tool list when needed
-}
-
 // checkAndRegisterGraphMemoryTool implements progressive disclosure for the graph_memory tool.
 // Registers the tool immediately if a graph memory store is configured and enabled.
 //
@@ -3502,473 +3390,42 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) stri
 }
 
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
-	// Handle execution errors (tool didn't run)
+	// Arrival appends (HLD §1): the result enters the in-memory message WHOLE.
+	// Nothing is examined, sized, flagged, or transformed at arrival — bounding
+	// happens once, at persist (write rules §4), and large-result offload is a
+	// pure render condition of ContextCompilation (§5.2), not an arrival event.
+	_ = ctx
+	_ = sessionID
+	_ = toolName
+
+	// An error result is a result that failed — same rule, no separate error
+	// store (HLD §4.1).
 	if err != nil {
-		errMsg := fmt.Sprintf("%v", err)
-		summary := extractFirstLine(errMsg, 100)
-
-		// Store full error if error store is available
-		if a.errorStore != nil {
-			errorID, storeErr := a.errorStore.Store(ctx, &StoredError{
-				SessionID:    sessionID,
-				ToolName:     toolName,
-				RawError:     json.RawMessage(fmt.Sprintf(`{"message": %q}`, errMsg)),
-				ShortSummary: summary,
-			})
-
-			if storeErr == nil {
-				// Progressive disclosure: advertise get_error_details after the
-				// first error into THIS session, unless the server suppressed it
-				// (tools.none). Register the definition once; the ledger scopes
-				// the advertisement per session.
-				if !a.isBuiltinToolSuppressed("get_error_details") {
-					if !a.tools.IsRegistered("get_error_details") {
-						errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-						if a.prompts != nil {
-							errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
-						}
-						a.tools.Register(errorTool)
-					}
-					a.registerSessionTool(sessionID, "get_error_details")
-				}
-
-				// Successfully stored - return reference
-				return fmt.Sprintf(`Tool '%s' failed: %s
-[Error ID: %s]
-📋 Use get_error_details("%s") for complete error information`,
-					toolName,
-					summary,
-					errorID,
-					errorID)
-			}
-			// If storage failed, fall through to truncation
-		}
-
-		// Fallback: truncate if error store unavailable or storage failed
-		return fmt.Sprintf("Error: %s", truncateErrorMessage(errMsg, 500))
+		return fmt.Sprintf("Error: %v", err)
 	}
 
-	// Handle tool execution errors (tool ran but failed)
 	if !result.Success {
 		if result.Error != nil {
-			// Marshal raw error preserving original structure
-			rawError, _ := json.Marshal(result.Error)
-			summary := extractErrorSummary(result.Error)
-
-			// Store full error if error store is available
-			if a.errorStore != nil {
-				errorID, storeErr := a.errorStore.Store(ctx, &StoredError{
-					SessionID:    sessionID,
-					ToolName:     toolName,
-					RawError:     rawError,
-					ShortSummary: summary,
-				})
-
-				if storeErr == nil {
-					// Progressive disclosure: advertise get_error_details after the
-					// first error into THIS session, unless the server suppressed it
-					// (tools.none). Register the definition once; the ledger scopes
-					// the advertisement per session.
-					if !a.isBuiltinToolSuppressed("get_error_details") {
-						if !a.tools.IsRegistered("get_error_details") {
-							errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
-							if a.prompts != nil {
-								errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
-							}
-							a.tools.Register(errorTool)
-						}
-						a.registerSessionTool(sessionID, "get_error_details")
-					}
-
-					// Successfully stored - return reference
-					return fmt.Sprintf(`Tool '%s' failed: %s
-[Error ID: %s]
-📋 Use get_error_details tool with error_id="%s" for complete error information`,
-						toolName,
-						summary,
-						errorID,
-						errorID)
-				}
-				// If storage failed, fall through to truncation
-			}
-
-			// Fallback: truncate if error store unavailable or storage failed
-			truncatedMsg := truncateErrorMessage(result.Error.Message, 500)
-			return fmt.Sprintf("Tool error: %s - %s", result.Error.Code, truncatedMsg)
+			return fmt.Sprintf("Tool error: %s - %s", result.Error.Code, result.Error.Message)
 		}
 		return "Tool execution failed"
 	}
 
-	// CRITICAL FIX: Pin DataReferences returned by tools (like tool_search)
-	// Tools may create their own references in SharedMemoryStore, and we need to pin them
-	// to prevent LRU eviction while the session is active
-	if result.DataReference != nil && a.refTracker != nil {
-		a.refTracker.PinForSession(sessionID, result.DataReference.Id)
-	}
-
-	// Progressive disclosure: a tool returned a STORED REFERENCE (e.g. an MCP tool
-	// like dbwrite:query that pre-stores a large {columns, rows} result and tells
-	// the model to use query_tool_result). The agent's own large-result path
-	// advertises query_tool_result in formatToolResult, but a pre-stored reference
-	// bypasses that — so advertise it here too, the moment any tool hands back a
-	// reference. Scoped to THIS session's ledger so it appears only where there's
-	// something to page.
-	// query_tool_result reads from EITHER the SQL result store or shared memory,
-	// so advertise it when either is wired. Requiring only the SQL store missed
-	// shared-memory references (e.g. web_search results stored by the executor) —
-	// the agent saw the reference but had no tool to page it.
-	if result.DataReference != nil && (a.sqlResultStore != nil || a.sharedMemory != nil) &&
-		!a.isBuiltinToolSuppressed("query_tool_result") {
-		if !a.tools.IsRegistered("query_tool_result") {
-			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
-			if a.prompts != nil {
-				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-			}
-			a.tools.Register(queryTool)
-		}
-		a.registerSessionTool(sessionID, "query_tool_result")
-	}
-
-	// Format successful result with smart truncation
 	if result.Data != nil {
 		// Render a string result verbatim; marshal a composite result as JSON.
 		// A Go map must never be rendered with %v.
-		var dataStr string
 		switch v := result.Data.(type) {
 		case string:
-			dataStr = v
+			return v
 		default:
 			if b, marshalErr := json.Marshal(v); marshalErr == nil {
-				dataStr = string(b)
-			} else {
-				dataStr = fmt.Sprintf("[unserializable result: %v]", marshalErr)
+				return string(b)
 			}
+			return fmt.Sprintf("[unserializable result: %v]", result.Data)
 		}
-
-		tokenCount := a.tokenCounter.CountTokens(dataStr)
-
-		// Skip reference creation if MCP tool already truncated (#1: Stop Double-Truncation)
-		// MCP tools handle truncation intelligently at 4096 bytes, creating another
-		// reference would fail since the reference system expects full data
-		if result.Metadata != nil {
-			if truncated, ok := result.Metadata["truncated"].(bool); ok && truncated {
-				// MCP tool already handled truncation - return as-is
-				return dataStr
-			}
-		}
-
-		// Offload is byte-thresholded only, matching the executor's handleLargeResult:
-		// a result strictly below the configured byte threshold stays inline; one at or
-		// above it is stored by reference. Both offload sites share this single threshold.
-		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
-		if a.sharedMemoryThreshold >= 0 {
-			byteThreshold = a.sharedMemoryThreshold
-		}
-		dataBytes := int64(len(dataStr))
-		if byteThreshold > 0 && dataBytes < byteThreshold {
-			// Strictly below the configured byte threshold — keep inline
-			return dataStr
-		}
-
-		// Larger than the byte threshold: store by reference EXCEPT for the exempt set,
-		// whose outputs must enter whole. Recall tools already retrieve stored data, so
-		// re-wrapping them recurses: query_tool_result → DataRef A → query_tool_result(A) → ...
-		// manage_skills delivers the skill body as its own message, so its result must
-		// enter whole rather than be stored by reference regardless of size.
-		// Exempt tools: get_tool_result, query_tool_result, manage_skills.
-		if toolName != "get_tool_result" && toolName != "query_tool_result" && toolName != "manage_skills" {
-			// Large result - store reference and provide summary
-
-			// Try shared memory first (fastest, in-process)
-			if a.sharedMemory != nil {
-				// Generate unique ID for this result
-				refID := fmt.Sprintf("ref_%s_%d", toolName, time.Now().UnixNano())
-
-				// Determine content type
-				contentType := "text/plain"
-				if result.Metadata != nil {
-					if ct, ok := result.Metadata["content_type"].(string); ok {
-						contentType = ct
-					}
-				}
-
-				// Convert result metadata to string map for storage
-				storageMeta := make(map[string]string)
-				if result.Metadata != nil {
-					for k, v := range result.Metadata {
-						storageMeta[k] = fmt.Sprintf("%v", v)
-					}
-				}
-				storageMeta["tool_name"] = toolName
-				storageMeta["session_id"] = sessionID
-
-				// Store in shared memory
-				dataRef, storeErr := a.sharedMemory.Store(refID, []byte(dataStr), contentType, storageMeta, sessionID)
-				if storeErr == nil {
-					// Mutation-debug: a large result was offloaded by reference.
-					// No-op unless the context-dump switch is on.
-					if a.contextDebugEnabled() {
-						zap.L().Debug("context mutation: large-result offload",
-							zap.String("session_id", sessionID),
-							zap.Int("turn", a.contextDebugTurn(sessionID)),
-							zap.String("reference_id", dataRef.Id),
-							zap.Int64("size_bytes", dataBytes),
-							zap.Int64("threshold_bytes", byteThreshold))
-					}
-					// Pin reference for session (auto-cleanup on session end)
-					// This prevents LRU eviction while session is active and ensures cleanup when session ends
-					if a.refTracker != nil {
-						a.refTracker.PinForSession(sessionID, dataRef.Id)
-					}
-
-					// Progressive disclosure: advertise query_tool_result after the
-					// first large result into THIS session, unless the server
-					// suppressed it (tools.none). We're inside `a.sharedMemory !=
-					// nil` and just stored there, so the tool has a backing store
-					// regardless of whether the SQL store is wired.
-					if !a.isBuiltinToolSuppressed("query_tool_result") {
-						if !a.tools.IsRegistered("query_tool_result") {
-							queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
-							if a.prompts != nil {
-								queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-							}
-							a.tools.Register(queryTool)
-						}
-						a.registerSessionTool(sessionID, "query_tool_result")
-					}
-
-					// Get metadata to create rich inline summary (eliminates need for get_tool_result call)
-					meta, metaErr := a.sharedMemory.GetMetadata(dataRef, sessionID)
-					if metaErr == nil && meta != nil {
-						// Format rich metadata inline (same as executor.go does)
-						richSummary := formatAgentSharedMemoryResult(meta, dataRef.Id, toolName)
-						return richSummary
-					}
-
-					// Fallback to basic summary if metadata unavailable
-					summary := extractDataSummary(result.Data, result.Metadata)
-					return fmt.Sprintf(`✓ %s
-
-%s
-
-📎 Full result stored in memory (ID: %s)
-💡 Use get_tool_result(reference_id="%s") to retrieve complete data
-
-Token efficiency: %d tokens → ~50 tokens (%.1f%% reduction)`,
-						toolName,
-						summary,
-						dataRef.Id,
-						dataRef.Id,
-						tokenCount,
-						(float64(tokenCount-50)/float64(tokenCount))*100)
-				}
-			}
-
-			// Fallback: Smart truncation with structure preservation
-			return truncateWithStructure(dataStr, 800, result.Metadata)
-		}
-
-		// Exempt tool (recall tools / manage_skills) over the threshold: return whole.
-		return dataStr
 	}
 
 	return "Success"
-}
-
-// formatAgentSharedMemoryResult creates a rich inline summary with metadata for agent context.
-// Similar to executor.formatSharedMemoryResultSummary but includes tool name context.
-// This eliminates the need for a separate get_tool_result call - agents get all context immediately.
-func formatAgentSharedMemoryResult(meta *storage.DataMetadata, id string, toolName string) string {
-	var summary strings.Builder
-
-	// Header with tool name, data type and size
-	summary.WriteString(fmt.Sprintf("✓ %s completed: Large %s stored in memory (%d bytes, ~%d tokens)\n\n",
-		toolName, meta.DataType, meta.SizeBytes, meta.EstimatedTokens))
-
-	// Preview section
-	if meta.Preview != nil && (len(meta.Preview.First5) > 0 || len(meta.Preview.Last5) > 0) {
-		summary.WriteString("📋 Preview:\n")
-		if len(meta.Preview.First5) > 0 {
-			previewJSON, _ := json.MarshalIndent(meta.Preview.First5, "", "  ")
-			summary.WriteString(fmt.Sprintf("First 5 items:\n%s\n", string(previewJSON)))
-		}
-		if len(meta.Preview.Last5) > 0 && meta.DataType == "json_array" {
-			previewJSON, _ := json.MarshalIndent(meta.Preview.Last5, "", "  ")
-			summary.WriteString(fmt.Sprintf("\nLast 5 items:\n%s\n", string(previewJSON)))
-		}
-		summary.WriteString("\n")
-	}
-
-	// Schema section (if available)
-	if meta.Schema != nil {
-		switch meta.DataType {
-		case "json_object":
-			if len(meta.Schema.Fields) > 0 {
-				fieldNames := make([]string, 0, len(meta.Schema.Fields))
-				for _, field := range meta.Schema.Fields {
-					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
-				}
-				summary.WriteString(fmt.Sprintf("📊 Schema: %d fields\n%s\n\n",
-					len(meta.Schema.Fields), strings.Join(fieldNames, ", ")))
-			}
-		case "json_array":
-			summary.WriteString(fmt.Sprintf("📊 Array: %d items\n", meta.Schema.ItemCount))
-			if len(meta.Schema.Fields) > 0 {
-				fieldNames := make([]string, 0, len(meta.Schema.Fields))
-				for _, field := range meta.Schema.Fields {
-					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
-				}
-				summary.WriteString(fmt.Sprintf("Item schema: %s\n\n", strings.Join(fieldNames, ", ")))
-			}
-		case "text":
-			summary.WriteString(fmt.Sprintf("📊 Text: %d lines\n\n", meta.Schema.ItemCount))
-		}
-	}
-
-	// Retrieval hints - how to access this data
-	summary.WriteString("💡 How to retrieve:\n")
-	switch meta.DataType {
-	case "json_object":
-		// Surface the reference_id + a working call. Previously this branch told
-		// the model the object was "too large for direct retrieval" and gave NO
-		// id — so it could see a result existed (web_search, http_request, ...)
-		// but had no way to read it and would guess wrong ids. Pagination windows
-		// the object as text, so the full content is retrievable.
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)  # read the object (paginated)\n", id))
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')  # if it wraps a 'results' array\n", id))
-		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
-			summary.WriteString("Use the schema above to pick the fields you need.\n")
-		}
-
-	case "json_array":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			summary.WriteString("⚠️ Large dataset - use filtering to avoid context overload\n")
-		}
-
-	case "text":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
-		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
-			summary.WriteString(fmt.Sprintf("⚠️ Large file (%d lines) - paginate to avoid loading all at once\n", meta.Schema.ItemCount))
-		}
-
-	case "csv":
-		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
-		summary.WriteString("💡 CSV auto-converts to queryable SQLite table\n")
-	}
-
-	return summary.String()
-}
-
-func extractDataSummary(data interface{}, metadata map[string]interface{}) string {
-	var parts []string
-
-	// Check metadata for structured info (common in database tools)
-	if metadata != nil {
-		if rows, ok := metadata["rows"].(int); ok {
-			parts = append(parts, fmt.Sprintf("📊 %d rows returned", rows))
-		} else if rows, ok := metadata["row_count"].(int); ok {
-			parts = append(parts, fmt.Sprintf("📊 %d rows returned", rows))
-		}
-
-		if cols, ok := metadata["columns"].([]interface{}); ok {
-			parts = append(parts, fmt.Sprintf("📋 %d columns", len(cols)))
-		} else if cols, ok := metadata["column_count"].(int); ok {
-			parts = append(parts, fmt.Sprintf("📋 %d columns", cols))
-		}
-
-		if execTime, ok := metadata["execution_time_ms"].(int64); ok {
-			parts = append(parts, fmt.Sprintf("⏱️  %dms", execTime))
-		}
-	}
-
-	// Try to extract structural info from data itself
-	switch v := data.(type) {
-	case map[string]interface{}:
-		if rows, ok := v["rows"].([]interface{}); ok {
-			parts = append(parts, fmt.Sprintf("📊 %d rows", len(rows)))
-		}
-		if cols, ok := v["columns"].([]interface{}); ok {
-			parts = append(parts, fmt.Sprintf("📋 Columns: %v", cols))
-		}
-	case []interface{}:
-		parts = append(parts, fmt.Sprintf("📊 %d items returned", len(v)))
-	case string:
-		if len(v) > 100 {
-			parts = append(parts, fmt.Sprintf("📄 Text result (%d chars)", len(v)))
-		}
-	}
-
-	if len(parts) == 0 {
-		return "Result available (details stored)"
-	}
-
-	return strings.Join(parts, " • ")
-}
-
-// truncateWithStructure intelligently truncates data while preserving structure.
-// For JSON/tabular data, shows sample rows + summary instead of raw truncation.
-func truncateWithStructure(dataStr string, maxChars int, metadata map[string]interface{}) string {
-	if len(dataStr) <= maxChars {
-		return dataStr
-	}
-
-	// Try to parse as JSON for smart truncation
-	var jsonData interface{}
-	if err := json.Unmarshal([]byte(dataStr), &jsonData); err == nil {
-		// Successfully parsed as JSON
-		switch v := jsonData.(type) {
-		case map[string]interface{}:
-			// Likely table data with rows/columns
-			if rows, ok := v["rows"].([]interface{}); ok {
-				sampleSize := 3
-				if len(rows) > sampleSize {
-					v["rows"] = rows[:sampleSize]
-					sampleJSON, _ := json.MarshalIndent(v, "", "  ")
-					return fmt.Sprintf("%s\n\n... [showing %d of %d rows. Result truncated due to size.]",
-						string(sampleJSON), sampleSize, len(rows))
-				}
-			}
-		case []interface{}:
-			// Array of items
-			sampleSize := 5
-			if len(v) > sampleSize {
-				sample, _ := json.MarshalIndent(v[:sampleSize], "", "  ")
-				return fmt.Sprintf("%s\n\n... [showing %d of %d items]", string(sample), sampleSize, len(v))
-			}
-		}
-	}
-
-	// Fallback: Simple truncation at clean break point
-	truncateAt := maxChars
-	if idx := strings.LastIndex(dataStr[:maxChars], "\n"); idx > 0 {
-		truncateAt = idx
-	}
-
-	return dataStr[:truncateAt] + fmt.Sprintf("\n\n... [truncated %d → %d chars, %.1f%% reduction]",
-		len(dataStr), truncateAt, (float64(len(dataStr)-truncateAt)/float64(len(dataStr)))*100)
-}
-
-// truncateErrorMessage truncates error messages to a maximum length while preserving readability.
-// This prevents massive Go stack traces from MCP tools from breaking LLM API calls.
-func truncateErrorMessage(msg string, maxLen int) string {
-	if len(msg) <= maxLen {
-		return msg
-	}
-
-	// Try to find a clean break point (newline) near the limit
-	// This helps preserve the first line of multi-line errors
-	truncateAt := maxLen
-	for i := 0; i < maxLen && i < len(msg); i++ {
-		if msg[i] == '\n' {
-			// Found a newline within limit - use it as break point
-			truncateAt = i
-			break
-		}
-	}
-
-	return msg[:truncateAt] + fmt.Sprintf("... [truncated %d chars]", len(msg)-truncateAt)
 }
 
 // GetSession retrieves a session by ID.
@@ -3984,49 +3441,56 @@ func (a *Agent) ListSessions() []*Session {
 // DeleteSession removes a session.
 func (a *Agent) DeleteSession(sessionID string) {
 	a.memory.DeleteSession(sessionID)
+	// Drop the session's recorded approvals alongside its other per-session
+	// state: the approved set is bounded by live sessions only because every
+	// retirement path frees its buckets.
+	if as := a.executor.ApprovedSet(); as != nil {
+		as.ForgetSession(sessionID)
+	}
 	// Drop the session's advertised-tool ledger too, or it grows unbounded on a
 	// long-running multi-session server. scopedToolNames is process-global (a
 	// name is scoped once any session scopes it) and is intentionally not pruned.
 	a.mu.Lock()
 	delete(a.sessionToolLedger, sessionID)
 	a.mu.Unlock()
+	// In-turn SQLite databases are normally dropped at the session's next turn
+	// start; a deleted session has no next turn, so drop them here.
+	a.dropInTurnSQLite(sessionID)
+}
+
+// ApprovedSet returns the executor's approved-set accessor; nil until one is
+// wired.
+func (a *Agent) ApprovedSet() shuttle.ApprovedSetAccessor {
+	return a.executor.ApprovedSet()
+}
+
+// AdoptApprovedSet hands this agent an existing approved-set accessor. The
+// hot-reload path carries the outgoing agent's set onto its replacement so
+// live sessions' recorded approvals survive the swap — an agent rebuild is an
+// operator action on the agent, not on its sessions, and must not falsify an
+// approval a human already gave. A nil accessor is ignored.
+func (a *Agent) AdoptApprovedSet(s shuttle.ApprovedSetAccessor) {
+	if s != nil {
+		a.executor.SetApprovedSet(s)
+	}
 }
 
 // ClearAllSessions removes all sessions from memory.
 // Used by the benchmark server to free memory between scenarios.
 func (a *Agent) ClearAllSessions() {
+	// Every retirement path frees the sessions' approved-set buckets — the
+	// set's growth is bounded by live sessions only if this sibling of
+	// DeleteSession retires them too.
+	if as := a.executor.ApprovedSet(); as != nil {
+		for _, s := range a.memory.ListSessions() {
+			as.ForgetSession(s.ID)
+		}
+	}
 	a.memory.ClearAll()
 	a.mu.Lock()
 	a.sessionToolLedger = make(map[string]map[string]bool)
 	a.mu.Unlock()
-}
-
-// cleanupSessionReferences releases all shared memory references for a session.
-// Called automatically when sessions are deleted (via cleanup hook).
-// This prevents reference leaks by decrementing RefCount on all pinned references.
-func (a *Agent) cleanupSessionReferences(ctx context.Context, sessionID string) {
-	if a.refTracker == nil {
-		return
-	}
-
-	// Start Hawk span for observability
-	_, span := a.tracer.StartSpan(ctx, "agent.cleanup_session_references")
-	defer a.tracer.EndSpan(span)
-
-	span.SetAttribute("session_id", sessionID)
-
-	// Release all references for this session
-	releasedCount := a.refTracker.UnpinSession(sessionID)
-
-	// Record metrics
-	span.SetAttribute("references_released", fmt.Sprintf("%d", releasedCount))
-
-	// Log if references were released
-	if releasedCount > 0 {
-		span.SetAttribute("status", "cleaned")
-	} else {
-		span.SetAttribute("status", "no_refs")
-	}
+	a.dropAllInTurnSQLite()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.
@@ -4239,14 +3703,23 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 		}
 		a.executor.SetSharedMemory(a.sharedMemory, eff)
 	}
+	// One value, three roles (HLD §5.1): the same bound is the compile-time
+	// offload bound, the persist-time row bound, and the retrieval page bound.
+	if a.memory != nil && threshold > 0 {
+		a.memory.SetThresholdBytes(threshold)
+	}
 }
 
-// SetMaxToolResults configures how many tool results to keep in the conversation kernel.
-// 0 = use default (5). Propagates to the memory manager for new sessions.
-func (a *Agent) SetMaxToolResults(n int) {
-	a.maxToolResults = n
+// SetOffloadExemptTools replaces the set of tool names whose current-turn
+// results always render whole regardless of the offload threshold (§5.2
+// step 6 carve-out), for existing and future sessions. Use it for tools
+// whose full output is the product of the call — content the model must
+// read inline in the producing turn — where an offload stub would defeat
+// the call. Prior-turn and evicted rows still render stubs, so relief and
+// turn-end truncation behave identically for every tool.
+func (a *Agent) SetOffloadExemptTools(names []string) {
 	if a.memory != nil {
-		a.memory.SetMaxToolResults(n)
+		a.memory.SetOffloadExemptTools(names)
 	}
 }
 
@@ -4268,6 +3741,15 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 			threshold = a.sharedMemoryThreshold
 		}
 		a.executor.SetSharedMemory(sharedMemory, threshold)
+
+		// The approved-set accessor is a dedicated session-keyed membership
+		// store (not the shared-memory cache): authorization state must not be
+		// evictable and renders union rather than replace. Create it only when
+		// absent — replacing an existing set would silently discard live
+		// sessions' recorded approvals.
+		if a.executor.ApprovedSet() == nil {
+			a.executor.SetApprovedSet(shuttle.NewApprovedSet())
+		}
 	}
 
 	// Inject into memory manager (which handles all sessions)
@@ -4275,49 +3757,6 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 		a.memory.SetSharedMemory(sharedMemory)
 	}
 
-	// GetToolResultTool is not registered (see NewAgent), so there is nothing to
-	// re-point at the new store here. Kept for callers that wire it directly.
-	// if sharedMemory != nil && a.tools != nil {
-	// 	a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
-	// }
-
-	// Re-register QueryToolResultTool with the new shared memory instance if it was already registered
-	// This fixes the bug where query_tool_result was using an old singleton store while
-	// tool_search was storing data in the new multi-agent server's shared memory
-	// Note: With progressive disclosure, this tool is only registered after first large result
-	if sharedMemory != nil && a.sqlResultStore != nil && a.tools != nil {
-		if a.tools.IsRegistered("query_tool_result") {
-			// Re-register with new shared memory instance
-			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
-			if a.prompts != nil {
-				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-			}
-			a.tools.Register(queryTool)
-		}
-	}
-
-	// Update reference tracker with new store
-	if sharedMemory != nil {
-		a.refTracker = storage.NewSessionReferenceTracker(sharedMemory)
-	}
-}
-
-// SetSQLResultStore configures SQL result store for this agent.
-// This enables queryable storage for large SQL results, preventing context blowout.
-func (a *Agent) SetSQLResultStore(sqlStore storage.ResultStore) {
-	// Store reference for later use
-	a.sqlResultStore = sqlStore
-
-	// Inject into tool executor so SQL results go to queryable tables. The store
-	// is wired regardless so large results are stored; the query_tool_result TOOL
-	// itself is NOT registered here — it is progressively disclosed (registered
-	// only after the first large result is stored; see formatToolResult /
-	// agent.go:3753). Registering it eagerly whenever a store existed put it in the
-	// model's tool list every turn even with nothing to query, defeating the
-	// progressive-disclosure design.
-	if a.executor != nil {
-		a.executor.SetSQLResultStore(sqlStore)
-	}
 }
 
 // SetReferenceStore configures the reference store for inter-agent communication.

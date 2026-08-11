@@ -31,6 +31,15 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify remote plugins are version-pinned
+        run: |
+          unpinned=$(grep -E '^[[:space:]]*-?[[:space:]]*remote:' buf.gen.yaml | grep -vE 'remote:[[:space:]]*[^:[:space:]]+/[^:[:space:]]+/[^:[:space:]]+:v[0-9]' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::Unpinned remote plugin(s) in buf.gen.yaml — pin each to a version (plugin:vX.Y.Z):"
+            echo "$unpinned"
+            exit 1
+          fi
+
       - name: Buf Lint
         run: buf lint
 
@@ -103,6 +112,24 @@ jobs:
     strategy:
       matrix:
         go-version: ['1.26']
+    services:
+      # The postgres storage backend is a deployed configuration; its store
+      # behavior (HITL resolve CAS, tenant scoping, ExpireRequest) must be
+      # asserted against a real postgres, not compile-checked. Tests gate on
+      # TEST_POSTGRES_URL and skip when it is unset (local runs without one).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: loom
+          POSTGRES_PASSWORD: loom_ci
+          POSTGRES_DB: loom_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -143,13 +170,19 @@ jobs:
           done || true
 
       - name: Run tests with race detection
+        env:
+          # Points the postgres-backed store tests at the service container;
+          # they skip when this is unset.
+          TEST_POSTGRES_URL: postgres://loom:loom_ci@localhost:5432/loom_test?sslmode=disable
         run: |
           # pipefail so a non-zero `go test` exit is not masked by `tee`.
+          # ./cmd/... is in the gate: the CLI is the standalone respond door,
+          # and a test that does not gate is not coverage.
           set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            ./pkg/... ./internal/... \
+            ./pkg/... ./internal/... ./cmd/... \
             | tee test-output.log
 
       - name: Run example tests
@@ -398,7 +431,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif

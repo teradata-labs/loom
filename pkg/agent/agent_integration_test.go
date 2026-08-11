@@ -812,19 +812,24 @@ func TestAgent_ToolRegistration(t *testing.T) {
 
 	ag := NewAgent(mockBackend, mockLLM, WithConfig(cfg))
 
-	// A pattern library is always configured (NewAgent builds one even for an
-	// empty PatternsDir), so load_pattern is registered at construction as the
-	// sole base advertised tool. shell_execute is not auto-registered;
-	// query_tool_result uses progressive disclosure (registered after first large
-	// result); get_error_details is registered after first error; get_tool_result
-	// and record_finding are removed.
+	// Base tools at construction: load_pattern (a pattern library is always
+	// configured), plus query_tool_result and recall — registered always (HLD
+	// §6/§7.1: their doors are printed by the offload stub and the summary's
+	// citations). shell_execute is not auto-registered; get_tool_result,
+	// get_error_details and record_finding are removed.
 	tools := ag.RegisteredTools()
-	if len(tools) != 1 || tools[0].Name() != "load_pattern" {
-		names := make([]string, len(tools))
-		for i, tl := range tools {
-			names[i] = tl.Name()
+	names := make([]string, len(tools))
+	for i, tl := range tools {
+		names[i] = tl.Name()
+	}
+	expected := map[string]bool{"load_pattern": true, "query_tool_result": true, "recall": true}
+	if len(tools) != len(expected) {
+		t.Fatalf("Expected the three base tools at construction, got: %v", names)
+	}
+	for _, n := range names {
+		if !expected[n] {
+			t.Fatalf("Unexpected base tool %q at construction (got %v)", n, names)
 		}
-		t.Fatalf("Expected only the load_pattern base tool at construction, got: %v", names)
 	}
 	base := len(tools)
 

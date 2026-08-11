@@ -34,9 +34,7 @@ import (
 // All stores share the same loom.db file via separate connections with WAL mode.
 type SQLiteBackend struct {
 	sessionStore      agent.SessionStorage
-	errorStore        agent.ErrorStore
 	artifactStore     artifacts.ArtifactStore
-	resultStore       storage.ResultStore
 	humanRequestStore shuttle.HumanRequestStore
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
@@ -75,35 +73,12 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		return nil, fmt.Errorf("failed to create session store: %w", err)
 	}
 
-	// Create error store (reuses same DB path with separate connection)
-	errorStore, err := agent.NewSQLiteErrorStore(dbPath, tracer)
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("failed to create error store: %w", err),
-			sessionStore.Close(),
-		)
-	}
-
 	// Create artifact store (reuses same DB path)
 	artifactStore, err := artifacts.NewSQLiteStore(dbPath, tracer)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to create artifact store: %w", err),
 			sessionStore.Close(),
-			errorStore.Close(),
-		)
-	}
-
-	// Create result store
-	resultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
-		DBPath: dbPath,
-	})
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("failed to create result store: %w", err),
-			sessionStore.Close(),
-			errorStore.Close(),
-			artifactStore.Close(),
 		)
 	}
 
@@ -116,9 +91,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		return nil, errors.Join(
 			fmt.Errorf("failed to create human request store: %w", err),
 			sessionStore.Close(),
-			errorStore.Close(),
 			artifactStore.Close(),
-			resultStore.Close(),
 		)
 	}
 
@@ -128,9 +101,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for migrator: %w", err),
 			sessionStore.Close(),
-			errorStore.Close(),
 			artifactStore.Close(),
-			resultStore.Close(),
 			humanStore.Close(),
 		)
 	}
@@ -140,9 +111,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 			fmt.Errorf("failed to create migrator: %w", err),
 			migratorDB.Close(),
 			sessionStore.Close(),
-			errorStore.Close(),
 			artifactStore.Close(),
-			resultStore.Close(),
 			humanStore.Close(),
 		)
 	}
@@ -154,9 +123,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 			fmt.Errorf("failed to open DB for graph memory: %w", err),
 			migratorDB.Close(),
 			sessionStore.Close(),
-			errorStore.Close(),
 			artifactStore.Close(),
-			resultStore.Close(),
 			humanStore.Close(),
 		)
 	}
@@ -171,9 +138,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 			graphMemDB.Close(),
 			migratorDB.Close(),
 			sessionStore.Close(),
-			errorStore.Close(),
 			artifactStore.Close(),
-			resultStore.Close(),
 			humanStore.Close(),
 		)
 	}
@@ -181,9 +146,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 
 	return &SQLiteBackend{
 		sessionStore:      sessionStore,
-		errorStore:        errorStore,
 		artifactStore:     artifactStore,
-		resultStore:       resultStore,
 		humanRequestStore: humanStore,
 		graphMemoryStore:  graphMemoryStore,
 		graphMemDB:        graphMemDB,
@@ -200,19 +163,9 @@ func (b *SQLiteBackend) SessionStorage() agent.SessionStorage {
 	return b.sessionStore
 }
 
-// ErrorStore returns the error store implementation.
-func (b *SQLiteBackend) ErrorStore() agent.ErrorStore {
-	return b.errorStore
-}
-
 // ArtifactStore returns the artifact store implementation.
 func (b *SQLiteBackend) ArtifactStore() artifacts.ArtifactStore {
 	return b.artifactStore
-}
-
-// ResultStore returns the SQL result store implementation.
-func (b *SQLiteBackend) ResultStore() storage.ResultStore {
-	return b.resultStore
 }
 
 // HumanRequestStore returns the human request store implementation.
@@ -280,14 +233,8 @@ func (b *SQLiteBackend) Close() error {
 	if err := b.sessionStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("session store close: %w", err)
 	}
-	if err := b.errorStore.Close(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("error store close: %w", err)
-	}
 	if err := b.artifactStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("artifact store close: %w", err)
-	}
-	if err := b.resultStore.Close(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("result store close: %w", err)
 	}
 	if err := b.humanRequestStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("human request store close: %w", err)

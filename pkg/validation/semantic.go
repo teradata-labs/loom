@@ -349,12 +349,10 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 	// Add framework tools (auto-registered, not in builtin.Names())
 	frameworkTools := []string{
-		"workspace",           // Session-scoped file management (auto-registered)
-		"tool_search",         // Tool discovery via FTS (conditionally registered)
-		"get_error_details",   // Progressive disclosure (conditionally registered)
-		"query_tool_result",   // Progressive disclosure (conditionally registered)
-		"conversation_memory", // Memory tool (auto-registered)
-		"session_memory",      // Session memory tool (auto-registered)
+		"workspace",         // Session-scoped file management (auto-registered)
+		"tool_search",       // Tool discovery via FTS (conditionally registered)
+		"query_tool_result", // In-turn retrieval (registered at construction)
+		"recall",            // Summary-span retrieval (registered at construction)
 		// Server-registered tools (not in pkg/shuttle/builtin/registry.go but
 		// reachable by name from agent configs — wired in cmd/looms/cmd_serve.go
 		// and referenced by templates/presets):
@@ -397,8 +395,7 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 		// Warn about auto-registered tools that should NOT be listed
 		autoRegistered := map[string]bool{
-			"workspace": true, "get_error_details": true, "conversation_memory": true,
-			"session_memory": true, "query_tool_result": true,
+			"workspace": true, "query_tool_result": true, "recall": true,
 		}
 		if autoRegistered[toolName] {
 			warnings = append(warnings, ValidationWarning{
@@ -634,12 +631,6 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"find_tools":   "tool_search",
 		"search_tool":  "tool_search",
 
-		// get_error_details variations (note: correct name has 's')
-		"get_error":        "get_error_details",
-		"get_error_detail": "get_error_details",
-		"error_detail":     "get_error_details",
-		"error_details":    "get_error_details",
-
 		// query_tool_result variations
 		"query_result":    "query_tool_result",
 		"get_tool_result": "query_tool_result",
@@ -681,15 +672,14 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"write_memory": "shared_memory_write",
 
 		// Deprecated tool names → correct replacements
-		"search_conversation":    "conversation_memory",
-		"recall_conversation":    "conversation_memory",
-		"clear_recalled_context": "conversation_memory",
-		"receive_message":        "send_message",
-		"receive_broadcast":      "publish",
-		"subscribe":              "publish",
-		"generate_agent":         "agent_management",
-		"list_agents":            "agent_management",
-		"get_agent":              "agent_management",
+		"search_conversation": "recall",
+		"recall_conversation": "recall",
+		"receive_message":     "send_message",
+		"receive_broadcast":   "publish",
+		"subscribe":           "publish",
+		"generate_agent":      "agent_management",
+		"list_agents":         "agent_management",
+		"get_agent":           "agent_management",
 	}
 
 	if suggestion, ok := typos[tool]; ok {

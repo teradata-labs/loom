@@ -47,10 +47,10 @@ const patternGuidanceHeader = "# Relevant Pattern Guidance"
 // any compiled message is an AC2 breach.
 const findingsBlockHeader = "## Verified Findings (Working Memory)"
 
-// l2SummaryPrefix is the prefix GetMessagesForLLM gives the L2 summary system
-// message — the only system-slot content the ROM-only invariant permits beyond
-// the ROM itself.
-const l2SummaryPrefix = "Previous conversation summary:"
+// l2SummaryPrefix identifies the summary system message — since the compile
+// emits the summary's newest version as-is (HLD §5.2 step 3), the tests
+// install summaries carrying this sentinel prefix.
+const l2SummaryPrefix = "S1-L2-SUMMARY"
 
 // --- rig: a tool that accumulates tool-results -------------------------------
 
@@ -193,14 +193,11 @@ func TestChannelsDeleted_S1_SystemSlotROMOnlyAcrossLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 4, countToolExecutions(workResp, "fetch_data"), "the work phase produced four tool-results")
 
-	// compaction: age the earlier turns out of L1 into the L2 summary
+	// fold: install a summary version directly (compaction triggers are
+	// deleted — fold is the only writer, exercised via relief elsewhere)
 	segMem := sessionSegmentedMemory(t, ag, sessionID)
-	segMem.SetCompressor(&mockCompressor{
-		enabled:    true,
-		compressFn: func(msgs []Message) string { return "S1-L2-SUMMARY" },
-	})
-	segMem.CompactMemory(context.Background())
-	require.Contains(t, segMem.GetL2Summary(), "S1-L2-SUMMARY", "compaction produced an L2 summary")
+	segMem.setSummary(1, "S1-L2-SUMMARY")
+	require.Contains(t, segMem.GetL2Summary(), "S1-L2-SUMMARY", "the summary version installed")
 
 	// second grant
 	grantResp, err := ag.Chat(context.Background(), sessionID, "load the sample pattern again")

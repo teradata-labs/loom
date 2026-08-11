@@ -17,6 +17,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// spawnTaskTimeout bounds a synchronous spawn task. Tool execution carries no
+// timeout of its own — a tool call is bounded only by the incoming request's
+// context — so without this a stuck sub-agent would hold the parent's turn open
+// for as long as the request lives. Derived from the caller's context, so
+// parent cancellation still propagates.
+const spawnTaskTimeout = 2 * time.Minute
+
 // SpawnSubAgent spawns a new agent as a child of the current session.
 // This implements the builtin.SpawnHandler interface.
 func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.SpawnSubAgentRequest) (*builtin.SpawnSubAgentResponse, error) {
@@ -163,9 +170,13 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.Strings("subscribed_topics", spawnCommCtx.SubscribedTopics),
 		zap.String("workflow_name", spawnCommCtx.WorkflowName))
 
-	// Create contexts for lifecycle management
-	subCtx, cancel := context.WithCancel(context.Background())      // #nosec -- intentional: background worker goroutine that must outlive request context
-	loopCtx, loopCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
+	// Create contexts for lifecycle management. Rooted in the spawning
+	// request's tenant identity (not a bare Background): the turns these
+	// contexts drive reach tenant-scoped stores, and the postgres HITL store
+	// refuses any operation with no user id in context — which would deny
+	// every held tool call on a spawned agent in microseconds with no card.
+	subCtx, cancel := context.WithCancel(turnIdentityContext(ctx))      // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
+	loopCtx, loopCancel := context.WithCancel(turnIdentityContext(ctx)) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 
 	// Determine auto-despawn timeout (default: 15 minutes of inactivity)
 	autoDespawnTimeout := 15 * time.Minute
@@ -191,6 +202,7 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		cancelFunc:         cancel,
 		loopCancelFunc:     loopCancel,
 		autoDespawnTimeout: autoDespawnTimeout,
+		runCtx:             loopCtx,
 	}
 
 	s.spawnedAgentsMu.Lock()
@@ -202,17 +214,65 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.String("sub_agent_id", subAgentID),
 		zap.Int("subscribed_topics", len(subscribedTopics)))
 
-	// TODO: Send initial message if provided
-	// For now, parent must send initial message via send_message or publish
-	// The initial_message parameter is stored in metadata for future use
+	// A spawn carrying a task runs it now: the sub-agent's answer is this call's
+	// result (SpawnSubAgentResponse.Output), so the parent reads it where it
+	// called, and no reply has to find its way back. Runs before the monitor and
+	// message-loop goroutines start, so a failure returns with nothing running.
+	var (
+		output     string
+		status     = "spawned"
+		tokensUsed int64
+		costUSD    float64
+		durationMs int64
+	)
 	if req.InitialMessage != "" {
-		if spawnedAgent.metadata == nil {
-			spawnedAgent.metadata = make(map[string]string)
-		}
-		spawnedAgent.metadata["initial_message"] = req.InitialMessage
-		logger.Info("Initial message stored in metadata (parent should send via send_message/publish)",
+		logger.Info("Running spawned agent's initial task",
+			zap.String("sub_agent_id", subAgentID),
 			zap.String("session_id", sessionID),
 			zap.String("message_preview", truncateString(req.InitialMessage, 50)))
+
+		taskStart := time.Now()
+		taskCtx, taskCancel := context.WithTimeout(ctx, spawnTaskTimeout)
+		chatResp, chatErr := ag.Chat(taskCtx, sessionID, req.InitialMessage)
+		taskCancel()
+		durationMs = time.Since(taskStart).Milliseconds()
+
+		if chatErr != nil {
+			s.cleanupSpawnedAgent(sessionID, "initial task failed")
+			return nil, fmt.Errorf("sub-agent %s failed its task: %w", subAgentID, chatErr)
+		}
+
+		output = chatResp.Content
+		status = "completed"
+		tokensUsed = int64(chatResp.Usage.TotalTokens)
+		costUSD = chatResp.Usage.CostUSD
+
+		logger.Info("Spawned agent completed its task",
+			zap.String("sub_agent_id", subAgentID),
+			zap.Int("output_len", len(output)),
+			zap.Int64("duration_ms", durationMs))
+
+		// A sub-agent that answered and subscribes to nothing is finished: its
+		// answer is already this call's result, and there is no command to give
+		// it another task. Tear it down here rather than leaving it to the idle
+		// reaper — it would otherwise hold one of the parent's spawn slots for
+		// fifteen minutes, so a parent delegating repeatedly would hit the
+		// spawn limit for children that had all already answered. Nothing has
+		// been started yet, so this is the whole teardown.
+		if len(subscriptionIDs) == 0 {
+			s.cleanupSpawnedAgent(sessionID, "task completed")
+			logger.Info("One-shot sub-agent despawned after answering",
+				zap.String("sub_agent_id", subAgentID))
+			return &builtin.SpawnSubAgentResponse{
+				SubAgentID: subAgentID,
+				SessionID:  sessionID,
+				Status:     status,
+				Output:     output,
+				TokensUsed: tokensUsed,
+				CostUSD:    costUSD,
+				DurationMs: durationMs,
+			}, nil
+		}
 	}
 
 	// Start background monitoring for sub-agent lifecycle
@@ -230,8 +290,12 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 	resp := &builtin.SpawnSubAgentResponse{
 		SubAgentID:       subAgentID,
 		SessionID:        sessionID,
-		Status:           "spawned",
+		Status:           status,
 		SubscribedTopics: subscribedTopics,
+		Output:           output,
+		TokensUsed:       tokensUsed,
+		CostUSD:          costUSD,
+		DurationMs:       durationMs,
 	}
 
 	logger.Info("Sub-agent spawn complete",

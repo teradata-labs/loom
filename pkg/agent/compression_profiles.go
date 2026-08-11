@@ -25,12 +25,13 @@ type CompressionProfile struct {
 	// Ensures at least last few exchanges are preserved even if small
 	MinL1Messages int
 
-	// Warning threshold as percentage (0-100)
-	// Compression triggers when token usage exceeds this
+	// Warning threshold as percentage of usable context (0-100).
+	// The relief release mark (LWM, HLD §5.1): relief sheds down to this.
 	WarningThresholdPercent int
 
-	// Critical threshold as percentage (0-100)
-	// Aggressive compression when token usage exceeds this
+	// Critical threshold as percentage of usable context (0-100).
+	// The relief start mark (HWM, HLD §5.1): relief begins when the
+	// estimate reaches this.
 	CriticalThresholdPercent int
 
 	// Number of messages to compress in normal conditions
@@ -51,7 +52,7 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		MaxL1Tokens:              6400, // ~8 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            4,
 		WarningThresholdPercent:  60,
-		CriticalThresholdPercent: 75,
+		CriticalThresholdPercent: 90,
 		NormalBatchSize:          3,
 		WarningBatchSize:         5,
 		CriticalBatchSize:        7,
@@ -60,8 +61,8 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		Name:                     "data_intensive",
 		MaxL1Tokens:              4000, // ~5 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            3,
-		WarningThresholdPercent:  50,
-		CriticalThresholdPercent: 70,
+		WarningThresholdPercent:  60,
+		CriticalThresholdPercent: 90,
 		NormalBatchSize:          2,
 		WarningBatchSize:         4,
 		CriticalBatchSize:        6,
@@ -70,8 +71,8 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		Name:                     "conversational",
 		MaxL1Tokens:              9600, // ~12 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            6,
-		WarningThresholdPercent:  70,
-		CriticalThresholdPercent: 85,
+		WarningThresholdPercent:  60,
+		CriticalThresholdPercent: 90,
 		NormalBatchSize:          4,
 		WarningBatchSize:         6,
 		CriticalBatchSize:        8,

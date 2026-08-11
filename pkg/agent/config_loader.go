@@ -1427,12 +1427,36 @@ func loadOrchestrationWorkflow(path string, data map[string]interface{}, llmProv
 			agentIDs = append(agentIDs, moderator)
 		}
 
-	case "fork_join", "parallel":
+	case "fork_join":
 		if ids, ok := spec["agent_ids"].([]interface{}); ok {
 			for _, id := range ids {
 				if idStr, ok := id.(string); ok {
 					agentIDs = append(agentIDs, idStr)
 				}
+			}
+		}
+
+	case "parallel":
+		tasks, ok := spec["tasks"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("parallel workflow requires 'spec.tasks' array")
+		}
+
+		seen := make(map[string]bool)
+		for i, task := range tasks {
+			taskMap, ok := task.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("parallel workflow task %d must be an object", i)
+			}
+
+			agentID, ok := taskMap["agent_id"].(string)
+			if !ok || strings.TrimSpace(agentID) == "" {
+				return nil, fmt.Errorf("parallel workflow task %d missing non-empty 'agent_id'", i)
+			}
+
+			if !seen[agentID] {
+				agentIDs = append(agentIDs, agentID)
+				seen[agentID] = true
 			}
 		}
 
@@ -1487,12 +1511,7 @@ Description: %s
 
 Your role is to orchestrate the workflow execution, manage agent coordination, and ensure proper sequencing of tasks.
 
-Sub-agents: %s
-
-You can use session_memory to search past workflow sessions:
-- session_memory(action="list") - list your own coordinator sessions
-- session_memory(action="list", agent_id="agent-name") - list sessions for a specific sub-agent
-- session_memory(action="summary", session_id="...") - retrieve conversation summary from a session`,
+Sub-agents: %s`,
 		workflowName, patternType, description, strings.Join(agentIDs, ", "))
 
 	coordinatorConfig := &loomv1.AgentConfig{
@@ -1501,7 +1520,7 @@ You can use session_memory to search past workflow sessions:
 		SystemPrompt: coordinatorPrompt,
 		Llm:          llmConfig,
 		Tools: &loomv1.ToolsConfig{
-			Builtin: []string{"send_message", "publish", "shared_memory_read", "shared_memory_write", "session_memory"},
+			Builtin: []string{"send_message", "publish", "shared_memory_read", "shared_memory_write"},
 		},
 		Memory: &loomv1.MemoryConfig{
 			Type:       "sqlite",

@@ -193,7 +193,7 @@ func TestAuditLog_SaveMessage_FKViolation(t *testing.T) {
 		Content:   "test message",
 		Timestamp: time.Now().UTC(),
 	}
-	err := store.SaveMessage(ctx, "nonexistent-session-id", msg)
+	err := store.SaveMessage(ctx, "nonexistent-session-id", &msg, false)
 	// This may fail with FK violation or RLS denial -- either way, it should be logged
 	if err != nil {
 		entries := logs.FilterMessage("message insert FK violation (session not found for user, possible RLS denial)")

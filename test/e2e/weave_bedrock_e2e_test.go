@@ -403,10 +403,8 @@ func TestE2E_SwitchModel_Bedrock(t *testing.T) {
 	assert.True(t, switchResp.GetSuccess(), "SwitchModel should report success")
 	assert.NotNil(t, switchResp.GetPreviousModel(), "previous model info should be set")
 	assert.NotNil(t, switchResp.GetNewModel(), "new model info should be set")
-	// The factory may resolve "bedrock" → "bedrock-sdk" for specific models;
-	// verify the new provider is in the bedrock family rather than exact match.
-	assert.Contains(t, switchResp.GetNewModel().GetProvider(), "bedrock",
-		"switched provider should be in the bedrock family")
+	assert.Equal(t, "bedrock", switchResp.GetNewModel().GetProvider(),
+		"switched provider should use the canonical Bedrock identity")
 
 	t.Logf("SwitchModel: %s/%s → %s/%s",
 		switchResp.GetPreviousModel().GetProvider(), switchResp.GetPreviousModel().GetId(),

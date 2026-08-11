@@ -33,11 +33,12 @@ import (
 const (
 	// DefaultMaxMemoryBytes is 1GB
 	DefaultMaxMemoryBytes = 1 * 1024 * 1024 * 1024
-	// DefaultSharedMemoryThreshold is 64 KiB: tool results larger than this are stored
-	// by reference (inline preview + handle); smaller results stay inline in history.
-	// Per-agent override via MemoryConfig.SharedMemoryThresholdBytes:
-	//   -1 = use this default, 0 = always reference, >0 = reference if exceeds N bytes.
-	DefaultSharedMemoryThreshold = 64 * 1024
+	// DefaultSharedMemoryThreshold is 16384 bytes — the one threshold value of
+	// HLD §5.1, serving three roles: compile-time offload bound, persist-time
+	// row bound, retrieval page bound. Per-agent override via
+	// MemoryConfig.SharedMemoryThresholdBytes (cloud binds its
+	// query_tool_result_threshold_bytes config through SetSharedMemoryThreshold).
+	DefaultSharedMemoryThreshold = 16384
 	// DefaultCompressionThreshold is 1MB
 	DefaultCompressionThreshold = 1 * 1024 * 1024
 	// DefaultTTLSeconds is 1 hour
@@ -302,8 +303,8 @@ func (s *SharedMemoryStore) get(ref *loomv1.DataReference, callerSession string,
 	return sharedData.Data, nil
 }
 
-// IncrementRefCount increments the reference count for a data chunk.
-// Used by SessionReferenceTracker to pin references and prevent eviction.
+// IncrementRefCount increments the reference count for a data chunk,
+// pinning it against eviction.
 func (s *SharedMemoryStore) IncrementRefCount(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

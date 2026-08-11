@@ -162,8 +162,6 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 | `shared_memory_read` / `shared_memory_write` | Key-value store for multi-agent shared state |
 | `workspace` | Session-scoped artifact management with FTS5 search |
 | `graph_memory` | Persistent cross-session knowledge graph (remember/recall/supersede/consolidate/relate) |
-| `conversation_memory` | Query conversation history with recall/search/clear |
-| `session_memory` | Persist/restore agent session state with FTS5 search |
 | `agent_management` | Spawn, list, pause, resume agents with structured JSON API |
 | `contact_human` | Request human-in-the-loop intervention |
 

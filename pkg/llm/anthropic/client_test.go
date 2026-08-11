@@ -664,7 +664,9 @@ func TestClient_Chat_SystemBlockCacheControl(t *testing.T) {
 	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
 	ctx := &mockContext{Context: context.Background()}
 	msgs := []types.Message{
-		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "system", Content: "ROM operating guide.", CacheBreakpoint: true},
+		{Role: "system", Content: "covers msg:1-5 …summary…", CacheBreakpoint: true},
+		{Role: "system", Content: "transient soft reminder"},
 		{Role: "user", Content: "hi"},
 	}
 	_, err := client.Chat(ctx, msgs, nil)
@@ -672,7 +674,9 @@ func TestClient_Chat_SystemBlockCacheControl(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify the system block contains cache_control: ephemeral
+	// The compile's markers decide: each marked system message is its own
+	// block carrying cache_control; the unmarked one carries none — ROM and
+	// summary cache independently, and a fold cannot bust ROM's prefix.
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
@@ -682,17 +686,21 @@ func TestClient_Chat_SystemBlockCacheControl(t *testing.T) {
 		t.Fatal("expected system field in request")
 	}
 	systemBlocks, ok := systemRaw.([]interface{})
-	if !ok || len(systemBlocks) == 0 {
-		t.Fatal("expected system to be an array of blocks")
+	if !ok || len(systemBlocks) != 3 {
+		t.Fatalf("expected 3 system blocks (one per source message), got %v", systemRaw)
 	}
-	block := systemBlocks[0].(map[string]interface{})
-	cc, hasCacheControl := block["cache_control"]
-	if !hasCacheControl {
-		t.Error("expected cache_control on system block")
-	}
-	ccMap := cc.(map[string]interface{})
-	if ccMap["type"] != "ephemeral" {
-		t.Errorf("expected cache_control.type == ephemeral, got %v", ccMap["type"])
+	for i, wantCC := range []bool{true, true, false} {
+		block := systemBlocks[i].(map[string]interface{})
+		cc, hasCacheControl := block["cache_control"]
+		if hasCacheControl != wantCC {
+			t.Errorf("system block %d: cache_control present=%v, want %v", i, hasCacheControl, wantCC)
+			continue
+		}
+		if wantCC {
+			if ccMap := cc.(map[string]interface{}); ccMap["type"] != "ephemeral" {
+				t.Errorf("system block %d: cache_control.type == %v, want ephemeral", i, ccMap["type"])
+			}
+		}
 	}
 }
 

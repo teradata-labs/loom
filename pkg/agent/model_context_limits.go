@@ -157,6 +157,48 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 	}
 }
 
+// EffectiveOutputReservation returns the token count the relief water marks
+// must subtract from the window (HLD §5.1 "usable"). The provider accepts
+// exactly when prompt + max_tokens ≤ window, so the reservation has to cover
+// the request's REAL max_tokens — otherwise usable is over-stated and the
+// marks sit above the provider's refusal line, where proactive relief can
+// never fire.
+//
+// loom resolves the wire max_tokens in two places with different rules
+// (registry builds clients from llm.max_tokens; the factory falls back to the
+// catalog), so the reservation takes the largest value any build path could
+// send:
+//
+//  1. the configured reserve (llm.reserved_output_tokens), or 10% of the
+//     window when unset — the historical default;
+//  2. llm.max_tokens, when explicitly configured — sent verbatim by every
+//     build path;
+//  3. the model's catalog MaxOutputTokens — what the factory sends when
+//     llm.max_tokens is unset.
+//
+// Taking the maximum only ever grows the reservation, so it never changes what
+// loom asks the provider for; it can make relief fire earlier than strictly
+// necessary, which is the safe direction. Returns 0 when nothing is known, so
+// callers keep their existing defaults.
+func EffectiveOutputReservation(provider, model string, configuredMaxTokens, configuredReserved, maxContextTokens int) int {
+	reservation := configuredReserved
+	if reservation <= 0 && maxContextTokens > 0 {
+		reservation = maxContextTokens / 10
+	}
+	if configuredMaxTokens > reservation {
+		reservation = configuredMaxTokens
+	}
+	if info := catalog.Lookup(provider, model); info != nil && int(info.MaxOutputTokens) > reservation {
+		reservation = int(info.MaxOutputTokens)
+	}
+	// The reserve must leave a working budget: never claim more than half the
+	// window (the SegmentedMemory constructor applies the same cap).
+	if maxContextTokens > 0 && reservation >= maxContextTokens {
+		reservation = maxContextTokens / 2
+	}
+	return reservation
+}
+
 // ResolveContextLimits determines the context limits to use, with fallback precedence:
 //  1. Explicit configuration (if configuredMax > 0)
 //  2. Built-in catalog entry for provider+model (authoritative ContextWindow /

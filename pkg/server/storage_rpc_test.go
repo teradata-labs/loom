@@ -24,7 +24,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -51,9 +50,7 @@ func (m *mockInspectableBackend) PendingMigrations(_ context.Context) ([]*backen
 }
 
 func (m *mockStorageBackend) SessionStorage() agent.SessionStorage         { return nil }
-func (m *mockStorageBackend) ErrorStore() agent.ErrorStore                 { return nil }
 func (m *mockStorageBackend) ArtifactStore() artifacts.ArtifactStore       { return nil }
-func (m *mockStorageBackend) ResultStore() storage.ResultStore             { return nil }
 func (m *mockStorageBackend) HumanRequestStore() shuttle.HumanRequestStore { return nil }
 func (m *mockStorageBackend) Close() error                                 { return nil }
 

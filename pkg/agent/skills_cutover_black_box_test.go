@@ -143,6 +143,10 @@ func firstSystemMessage(t *testing.T, rec contextDumpRecord) string {
 // comparison between turns.
 func messageJSON(t *testing.T, m Message) string {
 	t.Helper()
+	// CacheBreakpoint is a transient per-call cache directive, not authored
+	// content — it advances every turn as the stable frontier grows. Prefix-
+	// extension and rewrite checks compare content identity, so exclude it.
+	m.CacheBreakpoint = false
 	b, err := json.Marshal(m)
 	require.NoError(t, err)
 	return string(b)
@@ -224,14 +228,11 @@ func runSkillsCutoverS1(t *testing.T) []contextDumpRecord {
 	require.NoError(t, err)
 	require.Equal(t, 6, countToolExecutions(workResp, "fetch_data"), "the work phase produced six tool-results")
 
-	// compaction: age the earlier turns out of L1 into the L2 summary
+	// fold: install a summary version directly (compaction triggers are
+	// deleted — fold is the only writer, exercised via relief elsewhere)
 	segMem := sessionSegmentedMemory(t, rig.agent, sessionID)
-	segMem.SetCompressor(&mockCompressor{
-		enabled:    true,
-		compressFn: func(msgs []Message) string { return "S1-L2-SUMMARY" },
-	})
-	segMem.CompactMemory(context.Background())
-	require.Contains(t, segMem.GetL2Summary(), "S1-L2-SUMMARY", "compaction produced an L2 summary")
+	segMem.setSummary(1, "S1-L2-SUMMARY")
+	require.Contains(t, segMem.GetL2Summary(), "S1-L2-SUMMARY", "the summary version installed")
 
 	// grant 2
 	grantResp, err := rig.agent.Chat(context.Background(), sessionID, "load the beta skill")
@@ -268,7 +269,7 @@ func TestSkillsCutover_AC1_ROMContainsBoundSkillMenuAtSessionCreation(t *testing
 	require.NoError(t, err)
 	require.Len(t, resolved, len(skillsCutoverBoundBindings), "resolver resolves the bound set")
 
-	assert.Contains(t, rom, "AVAILABLE SKILLS", "ROM carries the skill menu header")
+	assert.Contains(t, rom, "# Available skills", "ROM carries the skill menu header")
 	for _, rb := range resolved {
 		line := fmt.Sprintf("- %s — %s", rb.Skill.Name, rb.Skill.Description)
 		assert.Contains(t, rom, line,
@@ -300,7 +301,7 @@ func TestSkillsCutover_AC2_ROMByteIdenticalEveryTurnWithStaticSkillList(t *testi
 
 	rom0 := firstSystemMessage(t, recs[0])
 	// The static skill list is part of the byte-stable ROM being compared.
-	require.Contains(t, rom0, "AVAILABLE SKILLS", "turn-1 ROM carries the static skill menu")
+	require.Contains(t, rom0, "# Available skills", "turn-1 ROM carries the static skill menu")
 	require.Contains(t, rom0, "- alpha-skill — First plain test skill.",
 		"turn-1 ROM carries the bound-skill menu list")
 

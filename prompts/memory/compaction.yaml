@@ -5,32 +5,38 @@ namespace: loom
 prompts:
   - id: compaction
     content: |
-      Compress the conversation that follows into a compact L2 summary that
-      preserves the information a later turn needs to act correctly.
+      You are folding conversation into the session summary. Your input is the
+      current summary (if one exists) followed by the region of conversation
+      being folded; each region message is prefixed with its msg:<n> address.
+      Your output REPLACES the current summary entirely — it supersedes, it is
+      not merged.
 
-      Preserve, verbatim in meaning:
-      - Decisions and approvals WITH their exact scope: state both the approval
-        and the precise question or thing it answered (who approved what, for
-        which action or boundary). A decision without its scope is not preserved.
-      - Open commitments and pending actions: what was promised or is still owed,
-        and any conditions attached.
-      - Reference and reload pointers: identifiers, paths, session or result
-        handles, and tool references needed to retrieve full detail later.
-      - Constraints, requirements, and stated preferences that still bind.
+      Write the cumulative state of the work: what was done, what came of it,
+      what is settled, what was ruled out, and what is open. State of work,
+      never transcript narration — no "the user then asked", no turn-by-turn
+      retelling.
 
-      Compress aggressively:
-      - Reasoning, deliberation, and intermediate exploration — keep the outcome,
-        drop the derivation.
-      - Data that can be reproduced from a preserved reference or by re-running a
-        tool — keep the pointer, drop the payload.
+      The FIRST LINE of your output must state the covered span, exactly:
+      covers msg:<first>-<last>
+      using the lowest and highest msg: addresses of the region being folded.
 
-      Write plain factual statements. Do not invent facts not present in the
-      conversation. Do not add commentary about the summarisation itself.
+      Cite msg:<n> addresses inline for anything worth exact retrieval — a
+      decision's wording, a specification, an approval — so it can be recalled
+      later by that address.
+
+      Carry forward from the current summary everything that still binds:
+      standing constraints, requirements, approvals with their exact scope,
+      open commitments and their conditions, and identifiers or paths still
+      needed. Drop what is resolved: a commitment that was fulfilled, a
+      question that was answered and acted on, exploration that led nowhere.
+
+      Do not invent facts not present in the input. Do not add commentary
+      about the summarisation itself.
     variables: {}
     tags:
       - memory
       - compaction
-      - summarization
+      - fold
     metadata:
-      version: "v1.0"
-      description: "Decision-preserving L2 compaction prompt for memory compression"
+      version: "v2.0"
+      description: "State-of-work fold prompt (HLD §5.4.4): supersede, cover span, cite msg: addresses"

@@ -21,57 +21,66 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/storage"
 )
+
+// boundedPayloadValue marshals data for an inter-agent message and bounds the
+// result at threshold bytes (D3: inter-agent messages carry content inline,
+// bounded by the same 16384 write rule as any stored row; a ref crossing
+// agents is a ref crossing turns, which §4.3 forbids).
+//
+// Within the bound the marshaled bytes ride exactly. Over it, the payload is
+// REPLACED by a small self-describing JSON document — never the marshaled
+// bytes cut mid-structure, which is not JSON and which no receiver can
+// unmarshal. The receiver therefore always gets a well-formed document, and an
+// over-bound send says so in the payload itself.
+// Returns the wire value and the TRUE marshaled size, so the metadata records
+// what was produced even when the value carries the bound notice instead.
+func boundedPayloadValue(data interface{}, threshold int) ([]byte, int, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to marshal data: %w", err)
+	}
+	if len(raw) <= threshold {
+		return raw, len(raw), nil
+	}
+	stub, err := json.Marshal(map[string]interface{}{
+		"truncated":      true,
+		"original_bytes": len(raw),
+		"preview":        previewOf(string(raw)),
+		"note": fmt.Sprintf("payload exceeded the %d-byte inter-agent bound and was not sent; "+
+			"ask the sender for a narrower slice.", threshold),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to marshal bound notice: %w", err)
+	}
+	return stub, len(raw), nil
+}
 
 // Send sends a message to another agent using value or reference semantics.
 // The communication policy determines whether to use direct value or reference.
 func (a *Agent) Send(ctx context.Context, toAgent string, messageType string, data interface{}) (*loomv1.CommunicationMessage, error) {
-	if a.refStore == nil {
-		return nil, fmt.Errorf("reference store not configured")
-	}
-
 	if a.commPolicy == nil {
 		return nil, fmt.Errorf("communication policy not configured")
 	}
 
-	// Marshal data to JSON
-	dataBytes, err := json.Marshal(data)
+	// Marshal data to JSON, bounded inline (D3). The metadata records the TRUE
+	// size, so a receiver can see what the bound elided.
+	dataBytes, trueSize, err := boundedPayloadValue(data, int(storage.DefaultSharedMemoryThreshold))
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal data: %w", err)
+		return nil, err
 	}
 
 	// Create message payload
 	payload := &loomv1.MessagePayload{
 		Metadata: &loomv1.PayloadMetadata{
-			SizeBytes:   int64(len(dataBytes)),
+			SizeBytes:   int64(trueSize),
 			ContentType: "application/json",
 			Compression: "none",
 			Encoding:    "none",
 		},
 	}
-
-	// Determine whether to use reference or value based on policy
-	if a.commPolicy.ShouldUseReference(messageType, int64(len(dataBytes))) {
-		// Store data and use reference
-		opts := communication.StoreOptions{
-			Type:        inferReferenceType(messageType),
-			ContentType: "application/json",
-		}
-
-		ref, err := a.refStore.Store(ctx, dataBytes, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to store reference: %w", err)
-		}
-
-		payload.Data = &loomv1.MessagePayload_Reference{
-			Reference: ref,
-		}
-	} else {
-		// Use direct value
-		payload.Data = &loomv1.MessagePayload_Value{
-			Value: dataBytes,
-		}
-	}
+	payload.Data = &loomv1.MessagePayload_Value{Value: dataBytes}
 
 	// Get policy for message type
 	policy := a.commPolicy.GetPolicy(messageType)
@@ -109,17 +118,9 @@ func (a *Agent) Receive(ctx context.Context, msg *loomv1.CommunicationMessage) (
 		dataBytes = data.Value
 
 	case *loomv1.MessagePayload_Reference:
-		// Reference - resolve it
-		if a.refStore == nil {
-			return nil, fmt.Errorf("reference store not configured")
-		}
-
-		resolved, err := a.refStore.Resolve(ctx, data.Reference)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve reference: %w", err)
-		}
-
-		dataBytes = resolved
+		// The ref path is deleted (blueprint D3): inter-agent messages carry
+		// content inline. A reference payload has no resolver.
+		return nil, fmt.Errorf("reference payloads are no longer supported — inter-agent messages carry content inline")
 
 	default:
 		return nil, fmt.Errorf("unknown payload type")
@@ -134,26 +135,6 @@ func (a *Agent) Receive(ctx context.Context, msg *loomv1.CommunicationMessage) (
 	return result, nil
 }
 
-// inferReferenceType infers the reference type from message type
-func inferReferenceType(messageType string) loomv1.ReferenceType {
-	switch messageType {
-	case "session_state":
-		return loomv1.ReferenceType_REFERENCE_TYPE_SESSION_STATE
-	case "workflow_context":
-		return loomv1.ReferenceType_REFERENCE_TYPE_WORKFLOW_CONTEXT
-	case "collaboration_state":
-		return loomv1.ReferenceType_REFERENCE_TYPE_COLLABORATION_STATE
-	case "tool_result":
-		return loomv1.ReferenceType_REFERENCE_TYPE_TOOL_RESULT
-	case "pattern_data":
-		return loomv1.ReferenceType_REFERENCE_TYPE_PATTERN_DATA
-	case "trace":
-		return loomv1.ReferenceType_REFERENCE_TYPE_OBSERVABILITY_TRACE
-	default:
-		return loomv1.ReferenceType_REFERENCE_TYPE_LARGE_PAYLOAD
-	}
-}
-
 // generateMessageID generates a unique message identifier
 func generateMessageID() string {
 	return fmt.Sprintf("msg-%d", time.Now().UnixNano())
@@ -163,51 +144,22 @@ func generateMessageID() string {
 // If the destination agent is offline, the message is queued for later delivery.
 // Returns immediately without waiting for the message to be delivered.
 func (a *Agent) SendAsync(ctx context.Context, toAgent string, messageType string, data interface{}) (string, error) {
-	if a.refStore == nil {
-		return "", fmt.Errorf("reference store not configured")
-	}
-
 	if a.commPolicy == nil {
 		return "", fmt.Errorf("communication policy not configured")
 	}
 
-	// Marshal data to JSON
-	dataBytes, err := json.Marshal(data)
+	bounded, trueSize, err := boundedPayloadValue(data, int(storage.DefaultSharedMemoryThreshold))
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal data: %w", err)
+		return "", err
 	}
-
-	// Create message payload
 	payload := &loomv1.MessagePayload{
 		Metadata: &loomv1.PayloadMetadata{
-			SizeBytes:   int64(len(dataBytes)),
+			SizeBytes:   int64(trueSize),
 			ContentType: "application/json",
 			Compression: "none",
 			Encoding:    "none",
 		},
-	}
-
-	// Determine whether to use reference or value based on policy
-	if a.commPolicy.ShouldUseReference(messageType, int64(len(dataBytes))) {
-		// Store data and use reference
-		opts := communication.StoreOptions{
-			Type:        inferReferenceType(messageType),
-			ContentType: "application/json",
-		}
-
-		ref, err := a.refStore.Store(ctx, dataBytes, opts)
-		if err != nil {
-			return "", fmt.Errorf("failed to store reference: %w", err)
-		}
-
-		payload.Data = &loomv1.MessagePayload_Reference{
-			Reference: ref,
-		}
-	} else {
-		// Use direct value
-		payload.Data = &loomv1.MessagePayload_Value{
-			Value: dataBytes,
-		}
+		Data: &loomv1.MessagePayload_Value{Value: bounded},
 	}
 
 	// Generate message ID
@@ -243,10 +195,6 @@ func (a *Agent) SendAsync(ctx context.Context, toAgent string, messageType strin
 // SendAndReceive sends a message and waits for a response (RPC-style).
 // Blocks until response is received or timeout occurs.
 func (a *Agent) SendAndReceive(ctx context.Context, toAgent string, messageType string, data interface{}, timeout time.Duration) (interface{}, error) {
-	if a.refStore == nil {
-		return nil, fmt.Errorf("reference store not configured")
-	}
-
 	if a.commPolicy == nil {
 		return nil, fmt.Errorf("communication policy not configured")
 	}
@@ -258,44 +206,23 @@ func (a *Agent) SendAndReceive(ctx context.Context, toAgent string, messageType 
 		defer cancel()
 	}
 
-	// Marshal data to JSON
-	dataBytes, err := json.Marshal(data)
+	// Marshal data to JSON, bounded inline (D3). The metadata records the TRUE
+	// size, so a receiver can see what the bound elided.
+	dataBytes, trueSize, err := boundedPayloadValue(data, int(storage.DefaultSharedMemoryThreshold))
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal data: %w", err)
+		return nil, err
 	}
 
 	// Create message payload
 	payload := &loomv1.MessagePayload{
 		Metadata: &loomv1.PayloadMetadata{
-			SizeBytes:   int64(len(dataBytes)),
+			SizeBytes:   int64(trueSize),
 			ContentType: "application/json",
 			Compression: "none",
 			Encoding:    "none",
 		},
 	}
-
-	// Determine whether to use reference or value based on policy
-	if a.commPolicy.ShouldUseReference(messageType, int64(len(dataBytes))) {
-		// Store data and use reference
-		opts := communication.StoreOptions{
-			Type:        inferReferenceType(messageType),
-			ContentType: "application/json",
-		}
-
-		ref, err := a.refStore.Store(ctx, dataBytes, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to store reference: %w", err)
-		}
-
-		payload.Data = &loomv1.MessagePayload_Reference{
-			Reference: ref,
-		}
-	} else {
-		// Use direct value
-		payload.Data = &loomv1.MessagePayload_Value{
-			Value: dataBytes,
-		}
-	}
+	payload.Data = &loomv1.MessagePayload_Value{Value: dataBytes}
 
 	// Use message queue for request-response if configured
 	if a.messageQueue != nil {
@@ -326,14 +253,8 @@ func (a *Agent) SendAndReceive(ctx context.Context, toAgent string, messageType 
 		case *loomv1.MessagePayload_Value:
 			responseBytes = data.Value
 		case *loomv1.MessagePayload_Reference:
-			if a.refStore == nil {
-				return nil, fmt.Errorf("reference store not configured")
-			}
-			resolved, err := a.refStore.Resolve(ctx, data.Reference)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve response reference: %w", err)
-			}
-			responseBytes = resolved
+			// The ref path is deleted (blueprint D3).
+			return nil, fmt.Errorf("reference payloads are no longer supported — inter-agent messages carry content inline")
 		default:
 			return nil, fmt.Errorf("unknown response payload type")
 		}
@@ -354,10 +275,6 @@ func (a *Agent) SendAndReceive(ctx context.Context, toAgent string, messageType 
 // SendWithAck sends a message and waits for acknowledgment.
 // Returns nil if message was successfully delivered and acknowledged.
 func (a *Agent) SendWithAck(ctx context.Context, toAgent string, messageType string, data interface{}, timeout time.Duration) error {
-	if a.refStore == nil {
-		return fmt.Errorf("reference store not configured")
-	}
-
 	if a.commPolicy == nil {
 		return fmt.Errorf("communication policy not configured")
 	}
@@ -369,43 +286,18 @@ func (a *Agent) SendWithAck(ctx context.Context, toAgent string, messageType str
 		defer cancel()
 	}
 
-	// Marshal data to JSON
-	dataBytes, err := json.Marshal(data)
+	bounded, trueSize, err := boundedPayloadValue(data, int(storage.DefaultSharedMemoryThreshold))
 	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
+		return err
 	}
-
-	// Create message payload
 	payload := &loomv1.MessagePayload{
 		Metadata: &loomv1.PayloadMetadata{
-			SizeBytes:   int64(len(dataBytes)),
+			SizeBytes:   int64(trueSize),
 			ContentType: "application/json",
 			Compression: "none",
 			Encoding:    "none",
 		},
-	}
-
-	// Determine whether to use reference or value based on policy
-	if a.commPolicy.ShouldUseReference(messageType, int64(len(dataBytes))) {
-		// Store data and use reference
-		opts := communication.StoreOptions{
-			Type:        inferReferenceType(messageType),
-			ContentType: "application/json",
-		}
-
-		ref, err := a.refStore.Store(ctx, dataBytes, opts)
-		if err != nil {
-			return fmt.Errorf("failed to store reference: %w", err)
-		}
-
-		payload.Data = &loomv1.MessagePayload_Reference{
-			Reference: ref,
-		}
-	} else {
-		// Use direct value
-		payload.Data = &loomv1.MessagePayload_Value{
-			Value: dataBytes,
-		}
+		Data: &loomv1.MessagePayload_Value{Value: bounded},
 	}
 
 	// Generate message ID for tracking

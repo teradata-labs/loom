@@ -139,59 +139,17 @@ func TestBaseline_SegmentedMemory_AddMessage_ExactCounts(t *testing.T) {
 	assert.Equal(t, 73, step3, "ROM + 3 messages")
 }
 
-// TestBaseline_SegmentedMemory_CacheSchema_ExactDelta pins the exact token
-// delta when a schema is cached.
-func TestBaseline_SegmentedMemory_CacheSchema_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.CacheSchema("users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("CacheSchema: before=%d, after=%d, delta=%d", before, after, delta)
-	// Schema is counted as: CountTokens("users: CREATE TABLE users ...")
-	assert.Greater(t, delta, 0, "schema must increase token count")
-	// Pin the exact value
-	tc := GetTokenCounter()
-	expected := tc.CountTokens("users: CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
-	assert.Equal(t, expected, delta, "schema delta must match CountTokens of 'key: schema'")
-}
-
-// TestBaseline_SegmentedMemory_AddToolResult_ExactDelta pins the token delta
-// when a tool result is added.
-func TestBaseline_SegmentedMemory_AddToolResult_ExactDelta(t *testing.T) {
-	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
-
-	before := sm.GetTokenCount()
-	sm.AddToolResult(CachedToolResult{
-		ToolName: "execute_sql",
-		Args:     map[string]interface{}{"query": "SELECT 1"},
-		Result:   "1 row returned",
-	})
-	after := sm.GetTokenCount()
-
-	delta := after - before
-	t.Logf("AddToolResult: before=%d, after=%d, delta=%d", before, after, delta)
-	assert.Greater(t, delta, 0, "tool result must increase token count")
-}
-
 // TestBaseline_SegmentedMemory_FullSession pins the complete token count for
 // a fully built-up session. This is the master regression value.
 func TestBaseline_SegmentedMemory_FullSession(t *testing.T) {
 	sm := NewSegmentedMemory(baselineROM, 200000, 20000)
 	ctx := context.Background()
 
-	// Set tools directly (internal field, same package)
-	sm.mu.Lock()
-	sm.tools = []string{"execute_sql", "get_schema", "list_tables"}
-	sm.tokenCountDirty = true
-	sm.mu.Unlock()
-
-	sm.CacheSchema("users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+	// KERNEL is the advertised tool schemas' serialized bytes (A6).
+	sm.SetAdvertisedToolsBytes(4096)
 
 	afterSetup := sm.GetTokenCount()
-	t.Logf("After setup (ROM + tools + schema): %d", afterSetup)
+	t.Logf("After setup (ROM + kernel bytes): %d", afterSetup)
 
 	sm.AddMessage(ctx, Message{Role: "user", Content: baselineUserMsg})
 	afterUser := sm.GetTokenCount()
