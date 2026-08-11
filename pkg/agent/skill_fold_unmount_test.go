@@ -1,13 +1,17 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/skills"
 )
 
@@ -126,4 +130,61 @@ func TestFoldUnmount_BaseToolImmune(t *testing.T) {
 		"a base tool required by a folded skill never leaves its own session")
 	assert.Contains(t, advertisedNames(a, &Session{ID: "some-other-session"}), "base_probe",
 		"requiring a base tool never scoped it away from other sessions")
+}
+
+// Link A of the fold-unmount chain (HLD §4.5), untested until now: a REAL
+// releasePressure fold whose region contains a manage_skills load pair must
+// fire the skill-deactivation hook with that skill's name and pin the
+// folded-skill note onto the summary. (Links B and C — deactivation, ledger
+// refcount, advertised-set shrink — are covered by the tests above; the
+// chain was also observed live: gateway-opus beat-42 fold dropped the kernel
+// 17→12, removing exactly the five mounted TD_ tools.)
+func TestReleasePressure_FoldFiresSkillDeactivation(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	const sessionID = "sess-fold-skill"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetThreshold(6000)
+	sm.SetSessionStore(store, sessionID)
+	sm.SetCompressor(&foldCompressor{out: "covers msg:1-4\nsummary of the old turns"})
+
+	var deactivated []string
+	sm.SetSkillDeactivationHook(func(sid, skill string) {
+		assert.Equal(t, sessionID, sid, "hook must carry the folding session's id")
+		deactivated = append(deactivated, skill)
+	})
+
+	persist := func(role, content, toolUseID string, calls []ToolCall, turnStart bool) {
+		m := Message{Role: role, Content: content, ToolUseID: toolUseID, ToolCalls: calls}
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &m, turnStart))
+		sm.AddMessage(ctx, m)
+	}
+
+	// Turn 1: the manage_skills load pair the fold must recognize.
+	persist("user", "load the skill", "", nil, true)
+	persist("assistant", "", "", []ToolCall{{ID: "load-1", Name: "manage_skills",
+		Input: map[string]interface{}{"action": "load", "name": "gamma-skill"}}}, false)
+	persist("tool", "Skill loaded: gamma-skill", "load-1", nil, false)
+
+	// Compressible bulk (uniform runs tokenize cheaply, so eviction sheds
+	// nothing and the pass escalates to FOLD — the escalation this test needs).
+	for turn := 2; turn <= 7; turn++ {
+		persist("user", fmt.Sprintf("question %d", turn), "", nil, true)
+		callID := fmt.Sprintf("c%d", turn)
+		persist("assistant", "", "", []ToolCall{{ID: callID, Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
+		persist("tool", strings.Repeat("r", 5000), callID, nil, false)
+	}
+
+	shed, _, _ := sm.ReleasePressure(ctx, 0)
+	require.True(t, shed, "pressure pass must shed")
+
+	require.Equal(t, []string{"gamma-skill"}, deactivated,
+		"the fold over the load pair must fire the deactivation hook exactly once")
+	assert.Contains(t, sm.summary.text, "[Folded active skill(s): gamma-skill",
+		"the summary must pin the folded-skill note — the model's cue to reload")
 }
