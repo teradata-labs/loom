@@ -118,6 +118,23 @@ func TestNewRegistry(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRegistry_CreateLLMProvider_LiteLLM(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("LITELLM_ENDPOINT", "http://litellm.example/v1/chat/completions")
+	t.Setenv("LITELLM_API_KEY", "test-key")
+
+	provider, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider:  "litellm",
+		Model:     "openai/test-model",
+		MaxTokens: 2048,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Equal(t, "litellm", provider.Name())
+	assert.Equal(t, "openai/test-model", provider.Model())
+}
+
 func TestRegistry_LoadAgents(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()

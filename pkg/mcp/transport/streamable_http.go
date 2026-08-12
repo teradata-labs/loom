@@ -92,10 +92,8 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	t := &StreamableHTTPTransport{
-		endpoint: config.Endpoint,
-		client: &http.Client{Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-		}},
+		endpoint:       config.Endpoint,
+		client:         &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()},
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -292,8 +290,9 @@ func (t *StreamableHTTPTransport) Close() error {
 	// Wait for streams to finish
 	t.activeStreams.Wait()
 
-	// Terminate session if enabled
-	if t.enableSessions && t.sessionMgr.HasSession() {
+	// A server-issued session must always be terminated, even when proactive
+	// session management was disabled in the client configuration.
+	if t.sessionMgr.HasSession() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = t.terminateSession(ctx) // Best effort

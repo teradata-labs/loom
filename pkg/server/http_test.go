@@ -373,11 +373,10 @@ func TestSSEStreamWrapperWriteHeartbeat(t *testing.T) {
 	assert.False(t, strings.HasPrefix(body, "data:"), "heartbeat must not be parsed as a data event")
 }
 
-// TestSSEStreamWrapperSendAndHeartbeatConcurrent guards against data races
-// between Send (StreamWeave goroutine) and writeHeartbeat (heartbeat ticker
-// goroutine) writing to the same http.ResponseWriter/Flusher concurrently.
+// TestSSEStreamWrapperWritesConcurrent guards against data races among progress,
+// heartbeat, and terminal error writes to the same ResponseWriter/Flusher.
 // Run with -race to catch regressions if the mutex is ever removed.
-func TestSSEStreamWrapperSendAndHeartbeatConcurrent(t *testing.T) {
+func TestSSEStreamWrapperWritesConcurrent(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapper := &sseStreamWrapper{
 		ctx:     nil, //nolint:staticcheck // test-only stream wrapper, no context needed
@@ -387,7 +386,7 @@ func TestSSEStreamWrapperSendAndHeartbeatConcurrent(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 20; i++ {
@@ -401,7 +400,12 @@ func TestSSEStreamWrapperSendAndHeartbeatConcurrent(t *testing.T) {
 			_ = wrapper.Send(progress)
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		wrapper.writeError(errors.New("stream failed"))
+	}()
 	wg.Wait()
+	assert.Contains(t, rr.Body.String(), `"stage":"EXECUTION_STAGE_FAILED"`)
 }
 
 // TestIsClientCanceled verifies that client-initiated stream cancellations

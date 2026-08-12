@@ -108,6 +108,11 @@ type Config struct {
 	// skills into the agents/skills directories on startup. Set to true for runtime
 	// pods that should only serve the explicitly configured agent(s).
 	SkipEmbeddedAgents bool `mapstructure:"skip_embedded_agents"`
+
+	// PatternsDir is the server-level directory containing pattern YAML files.
+	// Per-agent metadata["patterns_dir"] overrides this; agents fall back to
+	// $LOOM_DATA_DIR/patterns when both are empty.
+	PatternsDir string `mapstructure:"patterns_dir"`
 }
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.

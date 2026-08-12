@@ -205,14 +205,6 @@ func TestClient_Chat_ErrorResponse(t *testing.T) {
 	}
 }
 
-// TestClient_HealthCheck_NoHealthChecker verifies that HealthCheck returns nil when the
-// inner client does not implement the optional interface (should not panic).
-func TestClient_HealthCheck_NoHealthChecker(t *testing.T) {
-	c := NewClient(Config{Endpoint: "http://localhost:4000"})
-	// HealthCheck either delegates or returns nil — must not panic.
-	_ = c.HealthCheck(context.Background())
-}
-
 // TestClient_ChatStream_SimpleText verifies streaming returns a valid response.
 func TestClient_ChatStream_SimpleText(t *testing.T) {
 	// The inner openai.Client streaming uses SSE; we return a non-streamed

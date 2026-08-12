@@ -613,6 +613,8 @@ spec:
 
 Defined in proto as `AgentConfig.ephemeral_agents`. Policies for dynamically spawning agents at runtime.
 
+Dynamic spawning is opt-in. The agent must explicitly include `manage_ephemeral_agents` in `spec.tools`; otherwise the server does not register the spawning tool for that agent, even when ephemeral-agent policies are present. The `task_automator` and `coordinator` built-in presets include this tool. Other agents should add it only when their instructions require runtime delegation.
+
 > **Note**: Ephemeral agent policies are defined in the proto schema but are **not currently parsed from YAML** by the config loader. They must be set programmatically via the Go API or gRPC. The YAML example below shows the proto schema for reference.
 
 ```yaml

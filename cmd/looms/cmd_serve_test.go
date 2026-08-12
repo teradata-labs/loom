@@ -14,12 +14,79 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"go.uber.org/zap"
 )
+
+func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
+	receivedHeaders := make(chan http.Header, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders <- r.Header.Clone()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("SERVE_LITELLM_URL", server.URL)
+	t.Setenv("SERVE_LITELLM_TOKEN", "expanded-token")
+
+	tests := []struct {
+		name   string
+		create func() (interface{}, error)
+	}{
+		{
+			name: "static server config",
+			create: func() (interface{}, error) {
+				return createProviderWithRateLimit(LLMConfig{
+					Provider:            "litellm",
+					LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
+					LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
+					LiteLLMModel:        "test-model",
+					RateLimit:           LLMRateLimitConfig{Disabled: true},
+				}, zap.NewNop())
+			},
+		},
+		{
+			name: "proto agent config",
+			create: func() (interface{}, error) {
+				return createLLMProviderFromProtoConfig(
+					&loomv1.LLMConfig{Provider: "litellm", Model: "test-model"},
+					&Config{LLM: LLMConfig{
+						LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
+						LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
+					}},
+					zap.NewNop(),
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := tt.create()
+			require.NoError(t, err)
+			client, ok := raw.(*litellm.Client)
+			require.True(t, ok)
+			response, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, "ok", response.Content)
+			assert.Equal(t, "expanded-token", (<-receivedHeaders).Get("X-Tenant"))
+		})
+	}
+}
 
 func TestInitializeMCPManager(t *testing.T) {
 	// Skip these tests - they require real MCP server binaries and are integration tests
