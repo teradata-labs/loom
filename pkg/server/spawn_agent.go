@@ -275,23 +275,25 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		}
 	}
 
-	// Start background monitoring for sub-agent lifecycle
-	s.backgroundWorkerWG.Add(1)
-	go func() {
-		defer s.backgroundWorkerWG.Done()
+	// Start background monitoring for sub-agent lifecycle. Admission closes
+	// once shutdown begins; an unmonitored spawn would outlive its lifecycle
+	// management, so a spawn racing shutdown fails cleanly instead.
+	if !s.goWorker("spawned-agent-monitor", func() {
 		s.monitorSpawnedAgent(subCtx, sessionID)
-	}()
+	}) {
+		s.cleanupSpawnedAgent(sessionID, "server shutting down")
+		return nil, fmt.Errorf("cannot spawn sub-agent %s: server is shutting down", subAgentID)
+	}
 
 	// Start background message processing loop (active agent)
 	if len(subscriptionIDs) > 0 {
-		s.backgroundWorkerWG.Add(1)
-		go func() {
-			defer s.backgroundWorkerWG.Done()
+		if s.goWorker("spawned-agent-loop", func() {
 			s.runSpawnedAgentLoop(loopCtx, spawnedAgent)
-		}()
-		logger.Info("Started background message processing loop for spawned agent",
-			zap.String("sub_agent_id", subAgentID),
-			zap.Int("subscriptions", len(subscriptionIDs)))
+		}) {
+			logger.Info("Started background message processing loop for spawned agent",
+				zap.String("sub_agent_id", subAgentID),
+				zap.Int("subscriptions", len(subscriptionIDs)))
+		}
 	}
 
 	// Build response
