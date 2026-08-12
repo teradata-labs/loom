@@ -18,11 +18,13 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 )
@@ -114,6 +116,21 @@ func TestValidateProviders_UsesHealthCheckerWhenAvailable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), llm.calls.Load(), "Chat should not be called when HealthCheck is available")
 	assert.Equal(t, int64(1), llm.healthCalls.Load(), "HealthCheck should be invoked exactly once")
+}
+
+func TestValidateProviders_LiteLLMDeadProxyIsUnhealthy(t *testing.T) {
+	provider := litellm.NewClient(litellm.Config{
+		Endpoint: "http://127.0.0.1:1",
+		Model:    "test-model",
+	})
+	ag := agent.NewAgent(&mockBackend{}, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := ValidateProviders(ctx, map[string]*agent.Agent{"agent1": ag})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "litellm/test-model")
 }
 
 func TestValidateProviders_ReportsFailures(t *testing.T) {

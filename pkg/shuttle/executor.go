@@ -165,6 +165,16 @@ func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 	e.builtinToolProvider = provider
 }
 
+// CanonicalToolName returns the registered tool's own name for a lookup key.
+// Registry aliases point at the same Tool instance, so this keeps permissions,
+// admission, and circuit breakers keyed consistently with direct calls.
+func (e *Executor) CanonicalToolName(name string) string {
+	if tool, ok := e.registry.Get(name); ok {
+		return tool.Name()
+	}
+	return name
+}
+
 // admit runs the admission gates for a tool call. It returns the request handed
 // to the hooks, the admission result, and — when the decision is Deny — a ready
 // permission_denied Result to return in place of running the tool. The
@@ -262,7 +272,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// dynamic registration) so an externally-resolved tool is governed at the
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, toolName, normalizedParams)
+	req, admRes, denied := e.admit(ctx, tool.Name(), normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil

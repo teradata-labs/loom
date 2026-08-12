@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,6 +30,27 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+type retryBodyTransport struct {
+	bodies [][]byte
+}
+
+func (t *retryBodyTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	t.bodies = append(t.bodies, body)
+	if len(t.bodies) == 1 {
+		return nil, io.EOF
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(bytes.NewBufferString(
+			`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)),
+	}, nil
+}
 
 func TestNewClient(t *testing.T) {
 	tests := []struct {
@@ -78,6 +100,45 @@ func TestNewClient(t *testing.T) {
 			assert.Equal(t, tt.want.maxTokens, got.maxTokens)
 			assert.Equal(t, tt.want.temperature, got.temperature)
 			assert.NotNil(t, got.httpClient)
+		})
+	}
+}
+
+func TestClient_ChatRetryReconstructsRequestBody(t *testing.T) {
+	transport := &retryBodyTransport{}
+	client := NewClient(Config{APIKey: "test-key", Endpoint: "http://openai.test/chat"})
+	client.httpClient = &http.Client{Transport: transport}
+
+	response, err := client.Chat(context.Background(), []types.Message{{Role: "user", Content: "hello"}}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", response.Content)
+	require.Len(t, transport.bodies, 2)
+	assert.NotEmpty(t, transport.bodies[0])
+	assert.Equal(t, transport.bodies[0], transport.bodies[1])
+}
+
+func TestClient_ConvertResponseDropsIncompleteToolCalls(t *testing.T) {
+	client := NewClient(Config{})
+	tests := []struct {
+		name string
+		call ToolCall
+	}{
+		{name: "missing id", call: ToolCall{Function: FunctionCall{Name: "search", Arguments: `{}`}}},
+		{name: "missing name", call: ToolCall{ID: "call_123", Function: FunctionCall{Arguments: `{}`}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := client.convertResponse(&ChatCompletionResponse{
+				Choices: []ChatCompletionChoice{{
+					Message:      ChatMessage{ToolCalls: []ToolCall{tt.call}},
+					FinishReason: "tool_calls",
+				}},
+			})
+
+			assert.Empty(t, response.ToolCalls)
+			assert.Equal(t, "end_turn", response.StopReason)
 		})
 	}
 }
@@ -1073,4 +1134,55 @@ func TestClient_ExtraHeaders_Stream(t *testing.T) {
 
 	assert.Equal(t, "env=test", receivedHeaders.Get("x-litellm-tags"))
 	assert.Equal(t, "Bearer test-key", receivedHeaders.Get("Authorization"))
+}
+
+func TestClient_ChatStream_BackfillsToolCallIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"get_weather","arguments":"\"Boston\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	response, err := client.ChatStream(
+		&mockContext{Context: context.Background()},
+		[]types.Message{{Role: "user", Content: "weather"}},
+		nil,
+		nil,
+	)
+
+	require.NoError(t, err)
+	require.Len(t, response.ToolCalls, 1)
+	assert.Equal(t, "call_123", response.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", response.ToolCalls[0].Name)
+	assert.Equal(t, "Boston", response.ToolCalls[0].Input["location"])
+	assert.Equal(t, "tool_use", response.StopReason)
+}
+
+func TestClient_ChatStream_DroppedToolCallEndsTurn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	response, err := client.ChatStream(
+		&mockContext{Context: context.Background()},
+		[]types.Message{{Role: "user", Content: "run it"}},
+		nil,
+		nil,
+	)
+
+	require.NoError(t, err)
+	assert.Empty(t, response.ToolCalls)
+	assert.Equal(t, "end_turn", response.StopReason)
 }

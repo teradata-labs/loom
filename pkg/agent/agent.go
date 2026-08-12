@@ -3021,7 +3021,7 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 
 	// Execute with circuit breaker if enabled
 	if a.circuitBreakers != nil {
-		breaker := a.circuitBreakers.GetBreaker(toolName)
+		breaker := a.circuitBreakers.GetBreaker(a.executor.CanonicalToolName(toolName))
 		cbErr := breaker.Execute(func() error {
 			result, err = a.executor.Execute(ctxWithAgent, toolName, input)
 			return err

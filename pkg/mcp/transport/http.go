@@ -35,6 +35,7 @@ import (
 // migrate to StreamableHTTPTransport.
 type HTTPTransport struct {
 	endpoint   string
+	headers    map[string]string
 	sseClient  *sse.Client
 	httpClient *http.Client
 
@@ -78,6 +79,7 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 
 	t := &HTTPTransport{
 		endpoint:  config.Endpoint,
+		headers:   config.Headers,
 		sseClient: sseClient,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second, // Prevent hanging on unreachable servers
@@ -143,6 +145,9 @@ func (h *HTTPTransport) Send(ctx context.Context, message []byte) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range h.headers {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
