@@ -304,14 +304,22 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 	var systemBlocks []anthropic.TextBlockParam
 	var sdkMessages []anthropic.MessageParam
 
+	// Anthropic allows 4 cache_control blocks per request and this client
+	// spends one on the tool list, so at most 3 message markers pass through.
+	// The compile emits up to 4 (ROM, summary, lastStable, till-NOW); the cap
+	// drops the last — the till-NOW marker.
+	const maxMessageMarkers = 3
+	marked := 0
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
 			// Each system message is its own block; the marker rides with it.
 			if msg.Content != "" {
 				block := anthropic.TextBlockParam{Text: msg.Content}
-				if msg.CacheBreakpoint {
+				if msg.CacheBreakpoint && marked < maxMessageMarkers {
 					block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+					marked++
 				}
 				systemBlocks = append(systemBlocks, block)
 			}
@@ -383,8 +391,9 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 		// the summary are system messages, already cached via the System block
 		// above; here we mark the message breakpoint (the last stable message
 		// before any current-turn offload stub) on the block just appended.
-		if msg.CacheBreakpoint && msg.Role != "system" {
+		if msg.CacheBreakpoint && msg.Role != "system" && marked < maxMessageMarkers {
 			markLastBlockCacheControl(sdkMessages)
+			marked++
 		}
 	}
 

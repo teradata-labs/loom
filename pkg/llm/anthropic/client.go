@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -241,6 +242,14 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 	var systemBlocks []TextBlockParam
 	var apiMessages []Message
 
+	// Anthropic allows 4 cache_control blocks per request and this client
+	// spends one on the tool list, so at most 3 message markers pass through.
+	// The compile emits up to 4 (ROM, summary, lastStable, till-NOW); the cap
+	// drops the last — the till-NOW marker, whose value is harvested on the
+	// gateway path that has the spare slot.
+	const maxMessageMarkers = 3
+	marked := 0
+
 	markLast := func() {
 		if n := len(apiMessages); n > 0 {
 			blocks := apiMessages[n-1].Content
@@ -258,8 +267,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 			// tokens don't count against the ITPM rate limit.
 			if msg.Content != "" {
 				block := TextBlockParam{Type: "text", Text: msg.Content}
-				if msg.CacheBreakpoint {
+				if msg.CacheBreakpoint && marked < maxMessageMarkers {
 					block.CacheControl = &CacheControl{Type: "ephemeral"}
+					marked++
 				}
 				systemBlocks = append(systemBlocks, block)
 			}
@@ -349,8 +359,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		// before any current-turn ephemeral content (HLD §5.2 step 8). Marking
 		// anything later — e.g. the tip — buys cache writes that are never
 		// read back, because ephemeral content re-renders next call.
-		if msg.CacheBreakpoint && msg.Role != "system" {
+		if msg.CacheBreakpoint && msg.Role != "system" && marked < maxMessageMarkers {
 			markLast()
+			marked++
 		}
 	}
 
@@ -651,6 +662,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	toolCallIndex := make(map[int]int)
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -768,6 +783,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 

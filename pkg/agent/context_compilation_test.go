@@ -290,12 +290,13 @@ func TestAgent_SetOffloadExemptTools_ForwardsToMemory(t *testing.T) {
 	(&Agent{}).SetOffloadExemptTools([]string{"reference_lookup"})
 }
 
-// TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the cache
-// breakpoint freezes BEFORE a current-turn query_tool_result call/result pair.
-// That pair is ephemeral (§4.3) and pruned when the turn settles; if it sat
-// inside the cached prefix, the next call's prefix would lose it and miss the
-// cache. This is the same freeze rule the offload stub gets — here with no
-// offload stub preceding the pair (the anomalous failed cross-turn query).
+// TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the frozen
+// fallback breakpoint sits BEFORE a current-turn query_tool_result call/result
+// pair. That pair is ephemeral (§4.3) and pruned when the turn settles, so the
+// prefix that survives settle must end before it — the lastStable marker is
+// what the next turn's first call falls back to. The pair itself additionally
+// sits under the till-NOW marker (§5.2 step 8 addendum): within the turn it is
+// append-only-stable, so caching up to the tip is read back until settle.
 func TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint(t *testing.T) {
 	sm := newCompileMemory(t)
 	// Turn 1 settled.
@@ -309,21 +310,22 @@ func TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint(t *testing.T) {
 		Content: "error: not_this_turn", Turn: 2})
 
 	out := sm.GetMessagesForLLM()
-	queryIdx, bpIdx := -1, -1
+	queryIdx, fallbackIdx := -1, -1
 	for i, m := range out {
 		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == "query_tool_result" {
 			queryIdx = i
 		}
-		if i >= 1 && m.CacheBreakpoint { // i>=1 skips the ROM breakpoint at idx 0
-			bpIdx = i
+		if i >= 1 && m.CacheBreakpoint && (queryIdx == -1 || i < queryIdx) { // i>=1 skips the ROM breakpoint at idx 0
+			fallbackIdx = i
 		}
 	}
 	require.NotEqual(t, -1, queryIdx, "the query_tool_result call is present")
-	require.NotEqual(t, -1, bpIdx, "a message cache breakpoint was placed")
-	assert.Less(t, bpIdx, queryIdx,
-		"the breakpoint freezes before the ephemeral query pair, keeping it out of the cached prefix")
-	assert.False(t, out[queryIdx].CacheBreakpoint, "the query call itself is never the breakpoint")
-	assert.False(t, out[queryIdx+1].CacheBreakpoint, "the query result is never the breakpoint")
+	require.NotEqual(t, -1, fallbackIdx, "a fallback breakpoint was placed before the pair")
+	assert.Less(t, fallbackIdx, queryIdx,
+		"the fallback breakpoint freezes before the ephemeral query pair — the prefix that survives settle ends there")
+	assert.False(t, out[queryIdx].CacheBreakpoint, "the query call itself is never a breakpoint")
+	assert.True(t, out[queryIdx+1].CacheBreakpoint,
+		"the till-NOW marker rides the tip — the pair is cached intra-turn and falls away at settle")
 }
 
 func TestCompile_EvictedFlagRendersEvictedStub(t *testing.T) {

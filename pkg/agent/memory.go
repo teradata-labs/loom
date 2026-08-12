@@ -726,6 +726,10 @@ func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Mess
 		}
 		stored := *msg
 		stored.ToolCalls = filtered
+		// Thinking blocks never persist (signatures are turn-scoped replay
+		// material); the plain Thinking text rides the stored copy for
+		// display (thinking_content).
+		stored.ThinkingBlocks = nil
 		if err := m.store.SaveMessage(ctx, sessionID, &stored, turnStart); err != nil {
 			return err
 		}

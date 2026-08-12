@@ -78,8 +78,8 @@ memory:
 **Configuration:**
 - **Max L1 Messages:** 5 (~4000 tokens, aggressive compression)
 - **Min L1 Messages:** 3 (minimum preserved for recency)
-- **Warning Threshold:** 50% (compress early)
-- **Critical Threshold:** 70%
+- **Warning Threshold:** 45% (shed deep — the low-water mark relief sheds down to)
+- **Critical Threshold:** 80% (start early — the high-water mark where relief begins)
 - **Batch Sizes:** normal=2, warning=4, critical=6
 
 **Use Cases:**
@@ -105,7 +105,7 @@ memory:
 - **Max L1 Messages:** 12 (~9600 tokens, preserve recent context)
 - **Min L1 Messages:** 6 (minimum preserved for recency)
 - **Warning Threshold:** 70%
-- **Critical Threshold:** 85%
+- **Critical Threshold:** 92%
 - **Batch Sizes:** normal=4, warning=6, critical=8
 
 **Use Cases:**
@@ -132,7 +132,7 @@ memory:
 - **Max L1 Messages:** 8 (~6400 tokens)
 - **Min L1 Messages:** 4 (minimum preserved for recency)
 - **Warning Threshold:** 60%
-- **Critical Threshold:** 75%
+- **Critical Threshold:** 90%
 - **Batch Sizes:** normal=3, warning=5, critical=7
 
 **Use Cases:**
@@ -372,7 +372,7 @@ memory:
 **Default behavior:**
 - Max L1 messages: 8 (~6400 tokens at 800 tokens/message)
 - Min L1 messages: 4 (minimum preserved for recency)
-- Thresholds: 60%/75% (changed from 70%/85%)
+- Thresholds: 60%/90% (balanced profile water marks)
 - Max tool results in kernel: 5
 
 These changes provide better compression defaults while maintaining reasonable context preservation.

@@ -1886,8 +1886,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 	// Add assistant response to history
 	a.appendMessage(ctx, session, Message{
-		Role:       "assistant",
+		Role: "assistant",
+		// Turn-ending message: thinking text rides for persistence; blocks
+		// would be stripped by the next turn's compile, so none are carried.
 		Content:    response.Content,
+		Thinking:   response.Thinking,
 		AgentID:    a.id, // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
@@ -2527,13 +2530,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
 		a.appendMessage(ctx, session, Message{
-			Role:       "assistant",
-			Content:    llmResp.Content,
-			ToolCalls:  llmResp.ToolCalls,
-			AgentID:    a.id, // Track which agent generated this response
-			TokenCount: llmResp.Usage.TotalTokens,
-			CostUSD:    llmResp.Usage.CostUSD,
-			Timestamp:  time.Now(),
+			Role:           "assistant",
+			Content:        llmResp.Content,
+			ToolCalls:      llmResp.ToolCalls,
+			Thinking:       llmResp.Thinking,
+			ThinkingBlocks: llmResp.ThinkingBlocks,
+			AgentID:        a.id, // Track which agent generated this response
+			TokenCount:     llmResp.Usage.TotalTokens,
+			CostUSD:        llmResp.Usage.CostUSD,
+			Timestamp:      time.Now(),
 		}, false)
 
 		// Execute tool calls with per-turn cap and deduplication.

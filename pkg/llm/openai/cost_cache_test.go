@@ -72,3 +72,39 @@ func TestProviderCostHeaderWins(t *testing.T) {
 		}
 	}
 }
+
+// Genuine-OpenAI cached reads bill at OpenAI's tiers, not Anthropic's: 0.5x on
+// cached input and NO write premium. The regression this pins: a single
+// Anthropic-shaped multiplier (0.10x read) under-charged real gpt-4o cached
+// reads 5x.
+func TestCalculateCost_OpenAIFamilyUsesOpenAICacheTiers(t *testing.T) {
+	c := &Client{model: "gpt-4o"}
+	const (
+		promptTokens = 100_000 // includes the cached bucket below
+		cacheRead    = 80_000
+		output       = 1_000
+	)
+	got := c.calculateCost(promptTokens, output, cacheRead, 0)
+
+	// 20k uncached @ $2.50/M + 80k cached @ 0.5x ($1.25/M) + 1k out @ $10/M.
+	want := (20_000*2.50 + 80_000*2.50*0.5 + 1_000*10.00) / 1e6
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("openai cache cost = %.6f, want %.6f (0.5x read, no write premium)", got, want)
+	}
+	// The Anthropic-shaped 0.10x read would be visibly cheaper — pin the gap.
+	if wrong := (20_000*2.50 + 80_000*2.50*0.10 + 1_000*10.00) / 1e6; got <= wrong {
+		t.Fatalf("cost %.6f still at the Anthropic 0.10x read tier (%.6f)", got, wrong)
+	}
+}
+
+// A garbage litellm cost header ("Inf"/"NaN") parses in ParseFloat and +Inf is
+// not < 0 — both must fall back to the estimate, never poison CostUSD.
+func TestParseProviderCost_RejectsInfAndNaN(t *testing.T) {
+	for _, v := range []string{"Inf", "+Inf", "-Inf", "NaN"} {
+		h := http.Header{}
+		h.Set(providerCostHeader, v)
+		if got := parseProviderCost(h); got != 0 {
+			t.Fatalf("header %q parsed to %v, want 0 (fallback)", v, got)
+		}
+	}
+}

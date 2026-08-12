@@ -289,3 +289,66 @@ func TestMech_OrphanSyntheticResult(t *testing.T) {
 		t.Error("§5.2 step 7: no synthetic failed result for the orphaned tool_use — API pairing would break on replay")
 	}
 }
+
+// TestMech_TillNowMarker — §5.2 step 8 addendum: besides ROM, summary and the
+// lastStable breakpoint, every compile marks the last markable message (the
+// till-NOW breakpoint), so the full context is cache-written each call. The
+// marker is only worth its write because the rendered context is append-only
+// within a turn — offload stubs render deterministically — so each call's
+// context is a byte prefix of the next call's and the tip write is read back.
+// Total markers must stay within Anthropic's budget of 4.
+func TestMech_TillNowMarker(t *testing.T) {
+	requireGate(t)
+	const threshold = 16384
+	r := newRig(t, routeOutDir(t, "tillnow"), nil, 200000, 8000, threshold)
+	sid := "tillnow"
+
+	// One user turn, three tool iterations, each result over the threshold —
+	// the single-turn CLI shape that starved the cache when only the frozen
+	// lastStable marker existed.
+	if err := drive(t, r, sid, "big scans",
+		callTools(emit("s1", threshold+50, "string")),
+		callTools(emit("s2", threshold+50, "string")),
+		callTools(emit("s3", threshold+50, "string")),
+		sayText("done")); err != nil {
+		t.Fatal(err)
+	}
+
+	stages := r.readStages(t)
+	if len(stages) < 4 {
+		t.Fatalf("want >=4 provider calls, got %d", len(stages))
+	}
+	for si, s := range stages {
+		markers, lastMarkable := 0, -1
+		for i, m := range s.Messages {
+			if m.CacheBreakpoint {
+				markers++
+			}
+			if m.Content != "" {
+				lastMarkable = i
+			}
+		}
+		if markers > 4 {
+			t.Errorf("stage %d: %d cache markers — over Anthropic's budget of 4", si, markers)
+		}
+		if lastMarkable >= 0 && !s.Messages[lastMarkable].CacheBreakpoint {
+			t.Errorf("stage %d: last markable message carries no till-NOW marker", si)
+		}
+	}
+
+	// Append-only within the turn: every call's context must be a
+	// byte-identical prefix of the next call's — re-rendering here would turn
+	// the tip write into a dead write and re-bill the tail every call.
+	for i := 0; i+1 < len(stages); i++ {
+		a, b := stages[i].Messages, stages[i+1].Messages
+		if len(a) > len(b) {
+			t.Fatalf("stage %d has more messages than stage %d — context shrank mid-turn", i, i+1)
+		}
+		for j := range a {
+			if a[j].Role != b[j].Role || a[j].Content != b[j].Content {
+				t.Fatalf("stage %d message %d (role %s, %d bytes) re-rendered by stage %d (role %s, %d bytes)",
+					i, j, a[j].Role, len(a[j].Content), i+1, b[j].Role, len(b[j].Content))
+			}
+		}
+	}
+}

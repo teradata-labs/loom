@@ -296,7 +296,7 @@ Schema Request → Check Cache
 
 **Content**: Recent messages, verbatim.
 
-**Size**: Uncapped. L1 is not bounded by a message count or by an L1 token ceiling — it grows until overall token budget pressure triggers compaction, and shrinks by whole batches when it does. The only floor is `minL1Messages`, the recency floor that compaction will not compress below.
+**Size**: Uncapped. L1 is not bounded by a message count or by an L1 token ceiling — it grows until overall token budget pressure triggers compaction, and shrinks by whole batches when it does. The floor is `protectedRecentTurns`, the recency floor that compaction will not compress below (`minL1Messages` is a vestigial parsed field that drives nothing).
 
 **Eviction Policy**: FIFO (First-In-First-Out) to L2, driven by budget pressure
 
@@ -304,9 +304,9 @@ Schema Request → Check Cache
 ```
 Profile          │ MinMsgs │ Warning% │ Critical% │ Batch (Warning/Critical)
 ─────────────────┼─────────┼──────────┼───────────┼─────────────────────────
-data_intensive   │ 3       │ 50%      │ 70%       │ 4/6
-balanced         │ 4       │ 60%      │ 75%       │ 5/7
-conversational   │ 6       │ 70%      │ 85%       │ 6/8
+data_intensive   │ 3       │ 45%      │ 80%       │ 4/6
+balanced         │ 4       │ 60%      │ 90%       │ 5/7
+conversational   │ 6       │ 70%      │ 92%       │ 6/8
 ```
 
 `MaxL1Tokens` also exists per profile — 4000 / 6400 / 9600 as static fallbacks, or derived from the real window by dynamic memory allocation — but it gates nothing. It is validated at profile load and reported as a stat and log field (`GetStats` as `l1_max_tokens`, profile-init logs); no code path compares L1 size against it.

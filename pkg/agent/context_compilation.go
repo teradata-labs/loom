@@ -158,6 +158,21 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 		out[lastStable].CacheBreakpoint = true
 	}
 
+	// The till-NOW breakpoint — the fourth marker, on the last markable
+	// message. Within a turn the region past lastStable is byte-stable:
+	// offload stubs render deterministically and query_tool_result re-reads
+	// append rather than rewrite, so this marker is read back by every
+	// following call of the same turn. At turn settle the region re-renders
+	// and the request falls back to the lastStable marker — cross-turn
+	// behavior unchanged. Clients that spend a marker on the tool list cap
+	// message markers at three, which skips exactly this one.
+	for i := len(out) - 1; i >= 0 && i != lastStable; i-- {
+		if out[i].Content != "" {
+			out[i].CacheBreakpoint = true
+			break
+		}
+	}
+
 	return out
 }
 
@@ -181,6 +196,14 @@ func hasQueryToolResultCall(m *Message) bool {
 // the evicted cases, so relief and prior turns behave identically for every
 // tool.
 func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
+	if m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && m.Turn < t {
+		// Settled turns render without thinking blocks: the provider ignores
+		// them there, and the strip is a deterministic render (same one-time
+		// prefix rewrite as the stub re-render at the settle boundary).
+		r := *m
+		r.ThinkingBlocks = nil
+		return r
+	}
 	if m.Role != "tool" {
 		return *m
 	}
@@ -419,6 +442,9 @@ func (sm *SegmentedMemory) estimateLocked() int {
 				bytes += len(b)
 			}
 		}
+		for _, tb := range compiled[i].ThinkingBlocks {
+			bytes += len(tb.Thinking) + len(tb.Signature)
+		}
 	}
 	cheap := int(float64(bytes) / cheapBytesPerToken)
 	if limit := sm.startMarkLocked(0); limit <= 0 || cheap < limit {
@@ -451,6 +477,10 @@ func (sm *SegmentedMemory) msgTokensLocked(tc *TokenCounter, m *Message) int {
 			sm.msgTokenCache = make(map[string]int)
 		}
 		sm.msgTokenCache[m.Content] = n
+	}
+	for _, tb := range m.ThinkingBlocks {
+		// Thinking rides the wire in-turn: text tokenized, signature ~4B/token.
+		n += tc.CountTokens(tb.Thinking) + len(tb.Signature)/4
 	}
 	if len(m.ToolCalls) > 0 {
 		if b, err := json.Marshal(m.ToolCalls); err == nil {
@@ -593,13 +623,20 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			rungs = append(rungs, b)
 		}
 	}
-	ops := make([]reliefOp, 0, 2*len(rungs))
+	ops := make([]reliefOp, 0, 2*len(rungs)+3)
 	for _, b := range rungs {
 		ops = append(ops, reliefOp{"evict", b, sm.evictLocked})
 	}
+	// Rung 0 — the current turn's consumed region, cheapest first: sweep the
+	// never-persisted query pairs, then evict consumed results. Reversibility
+	// order (all eviction before any fold) extends across regions: an evicted
+	// row is one re-run away; a folded region is gone.
+	ops = append(ops, reliefOp{"sweep_qtr", t, sm.sweepRetrievalPairsLocked})
+	ops = append(ops, reliefOp{"evict", t, sm.evictLocked})
 	for _, b := range rungs {
 		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
 	}
+	ops = append(ops, reliefOp{"fold", t, sm.foldLocked})
 	for _, op := range ops {
 		if !op.run(ctx, op.boundary) {
 			// An operation that changed nothing (its rows were already flagged
@@ -627,10 +664,87 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	return true, estimate, target
 }
 
+// sweepRetrievalPairsLocked removes the current turn's CONSUMED
+// query_tool_result call/result pairs from L1 — the §4.3 predicate applied
+// mid-turn, verbatim from the persist seam (Memory.PersistMessage): strip the
+// qtr entries from an assistant row's calls, drop the matching result rows,
+// drop an assistant row left with no text, no calls and no content blocks —
+// both sides always. These rows are never persisted, so removal is in-memory
+// only: there is nothing to write and nothing a crash can half-do; L1
+// converges toward its own persisted history. Pairs at or after the last
+// assistant message are pending (query issued, answer not yet consumed) and
+// are never touched. Returns whether anything changed. Must hold lock.
+func (sm *SegmentedMemory) sweepRetrievalPairsLocked(_ context.Context, _ int64) bool {
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	if lastAssistant <= 0 {
+		return false
+	}
+
+	dropRow := make(map[int]bool)
+	qtrIDs := make(map[string]bool)
+	changed := false
+	for i := 0; i < lastAssistant; i++ {
+		m := &sm.contextMessages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		kept := m.ToolCalls[:0:0]
+		for _, c := range m.ToolCalls {
+			if c.Name == "query_tool_result" {
+				if c.ID != "" {
+					qtrIDs[c.ID] = true
+				}
+				changed = true
+				continue
+			}
+			kept = append(kept, c)
+		}
+		if len(kept) == len(m.ToolCalls) {
+			continue
+		}
+		m.ToolCalls = kept
+		if m.Content == "" && len(m.ToolCalls) == 0 && len(m.ContentBlocks) == 0 {
+			dropRow[i] = true
+		}
+	}
+	if !changed {
+		return false
+	}
+	for i := 0; i < lastAssistant; i++ {
+		m := &sm.contextMessages[i]
+		if m.Role == "tool" && m.ToolUseID != "" && qtrIDs[m.ToolUseID] {
+			dropRow[i] = true
+		}
+	}
+
+	if len(dropRow) > 0 {
+		out := sm.contextMessages[:0:0]
+		for i := range sm.contextMessages {
+			if !dropRow[i] {
+				out = append(out, sm.contextMessages[i])
+			}
+		}
+		sm.contextMessages = out
+	}
+	sm.l1Dirty = true
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+	return true
+}
+
 // evictLocked marks evicted=true on every tool row with turn ≤ b whose stored
 // content ≥ 2× its stub (the eviction floor, §5.1) — one transaction, in-memory
-// copies updated in the same step. Returns whether anything changed. Must hold
-// lock.
+// copies updated in the same step. The pending region — every row after the
+// last assistant message, i.e. the results of the not-yet-dispatched call — is
+// never evicted: stubbing a result the model has not read defeats the call.
+// (For b < t the guard is formally a no-op: pending rows carry turn t and are
+// already excluded by the turn bound.) Returns whether anything changed. Must
+// hold lock.
 func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
 	callName := make(map[string]string)
 	for i := range sm.contextMessages {
@@ -641,11 +755,21 @@ func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
 		}
 	}
 
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+
 	var marked []int
 	var seqs []int64
 	for i := range sm.contextMessages {
 		m := &sm.contextMessages[i]
 		if m.Role != "tool" || m.Evicted || m.Turn > b {
+			continue
+		}
+		if i > lastAssistant {
 			continue
 		}
 		stub := sm.evictedStub(m, callName)
@@ -705,6 +829,23 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	count := 0
 	for count < len(sm.contextMessages) && sm.contextMessages[count].Turn <= b {
 		count++
+	}
+	if b >= sm.currentTurnLocked() {
+		// Rung 0: the region may reach into the current turn, but never the
+		// pending pair — cap it before the last assistant message (exclusive:
+		// the call signature must survive with its results). For b < t the cap
+		// is formally a no-op: the prefix ends before any turn-t row.
+		lastAssistant := -1
+		for i := range sm.contextMessages {
+			if sm.contextMessages[i].Role == "assistant" {
+				lastAssistant = i
+			}
+		}
+		if lastAssistant < 0 {
+			count = 0
+		} else if count > lastAssistant {
+			count = lastAssistant
+		}
 	}
 	count = sm.adjustCompressionBoundary(count)
 	if count <= 0 {

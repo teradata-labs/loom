@@ -109,6 +109,17 @@ type Message struct {
 	// ToolCalls contains tool invocations (if role is assistant)
 	ToolCalls []ToolCall
 
+	// Thinking is the assistant's extended-thinking plain text (display and
+	// persistence — lands in the store's thinking_content). Never sent to
+	// the provider; the wire form is ThinkingBlocks.
+	Thinking string
+
+	// ThinkingBlocks carries the assistant's extended-thinking blocks for
+	// in-turn replay (tool-loop continuations). Opaque: signatures are
+	// provider-signed and never interpreted. Never persisted — the compile
+	// strips settled turns and the persist seam drops them entirely.
+	ThinkingBlocks []ThinkingBlock
+
 	// ToolUseID is the ID of the tool_use block this result corresponds to (if role is tool)
 	// This is used by LLM providers like Bedrock/Anthropic to match tool results to tool requests
 	ToolUseID string
@@ -192,6 +203,20 @@ type LLMResponse struct {
 	// Thinking contains the agent's internal reasoning process
 	// (for models that support extended thinking like Claude with thinking blocks)
 	Thinking string
+
+	// ThinkingBlocks carries the structured thinking blocks (with provider
+	// signatures) for verbatim in-turn replay; Thinking above remains the
+	// concatenated plain text for events and display.
+	ThinkingBlocks []ThinkingBlock
+}
+
+// ThinkingBlock is one extended-thinking block of an assistant response,
+// carried opaquely: Signature is provider-signed and never interpreted;
+// redacted blocks keep their encrypted payload in Thinking.
+type ThinkingBlock struct {
+	Type      string // "thinking" | "redacted_thinking"
+	Thinking  string
+	Signature string
 }
 
 // LLMProvider defines the interface for LLM providers.

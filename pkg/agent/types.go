@@ -422,6 +422,7 @@ func ValidatePatternConfig(cfg *PatternConfig) error {
 // These types are now defined in pkg/types to break import cycles.
 type Message = types.Message
 type ContentBlock = types.ContentBlock
+type ThinkingBlock = types.ThinkingBlock
 type ToolCall = types.ToolCall
 type Usage = types.Usage
 type LLMResponse = types.LLMResponse

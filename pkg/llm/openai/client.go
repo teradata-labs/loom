@@ -14,6 +14,7 @@
 package openai
 
 import (
+	"errors"
 	"go.uber.org/zap"
 
 	"bufio"
@@ -22,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -43,15 +45,16 @@ var (
 
 // Client implements the LLMProvider interface for OpenAI's API.
 type Client struct {
-	apiKey       string
-	model        string
-	endpoint     string
-	httpClient   *http.Client
-	maxTokens    int
-	temperature  float64
-	rateLimiter  *llm.RateLimiter
-	toolNameMap  map[string]string // sanitized name → original name
-	extraHeaders map[string]string // additional headers sent with every request
+	apiKey        string
+	model         string
+	endpoint      string
+	httpClient    *http.Client
+	maxTokens     int
+	temperature   float64
+	thinkingLevel string // "", "none": off; any other value requests adaptive thinking on Claude models
+	rateLimiter   *llm.RateLimiter
+	toolNameMap   map[string]string // sanitized name → original name
+	extraHeaders  map[string]string // additional headers sent with every request
 }
 
 // Config holds configuration for the OpenAI client.
@@ -62,6 +65,11 @@ type Config struct {
 	Timeout           time.Duration // Default: 60s
 	MaxTokens         int           // Default: 4096
 	Temperature       float64       // Default: 1.0
+	// ThinkingLevel requests extended thinking ("", "none" = off; "low",
+	// "medium", "high", "auto" = on). On this wire every non-off level maps
+	// to Anthropic adaptive thinking, and only for Claude-family models —
+	// other models' requests are byte-identical to a client without it.
+	ThinkingLevel     string
 	RateLimiterConfig llm.RateLimiterConfig
 	// ExtraHeaders are additional HTTP headers sent with every request.
 	// Useful for proxy-specific metadata (e.g. LiteLLM user tracking tags).
@@ -125,13 +133,14 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:       config.APIKey,
-		model:        config.Model,
-		endpoint:     config.Endpoint,
-		maxTokens:    config.MaxTokens,
-		temperature:  config.Temperature,
-		rateLimiter:  rateLimiter,
-		extraHeaders: copyHeaders(config.ExtraHeaders),
+		apiKey:        config.APIKey,
+		model:         config.Model,
+		endpoint:      config.Endpoint,
+		maxTokens:     config.MaxTokens,
+		temperature:   config.Temperature,
+		thinkingLevel: config.ThinkingLevel,
+		rateLimiter:   rateLimiter,
+		extraHeaders:  copyHeaders(config.ExtraHeaders),
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -183,6 +192,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Model:       c.model,
 		Messages:    apiMessages,
 		Temperature: c.temperature,
+		Thinking:    c.thinkingParam(),
 	}
 	if c.usesMaxCompletionTokens() {
 		req.MaxCompletionTokens = c.maxTokens
@@ -300,6 +310,23 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 				apiMsg.ToolCalls = toolCalls
 			}
 
+			// In-turn thinking replay: blocks ride back verbatim so the
+			// provider's signatures survive the round-trip. Settled turns
+			// arrive here already stripped by the compile. A block that is
+			// still text-empty (capture should have completed it) is dropped
+			// rather than replayed: Anthropic 400s on a thinking block with
+			// no thinking field, while a missing block is tolerated (probed).
+			if len(msg.ThinkingBlocks) > 0 {
+				wire := make([]WireThinkingBlock, 0, len(msg.ThinkingBlocks))
+				for _, b := range msg.ThinkingBlocks {
+					if b.Thinking == "" && b.Type != "redacted_thinking" {
+						continue
+					}
+					wire = append(wire, WireThinkingBlock{Type: b.Type, Thinking: b.Thinking, Signature: b.Signature})
+				}
+				apiMsg.ThinkingBlocks = wire
+			}
+
 			apiMessages = append(apiMessages, apiMsg)
 
 		case "tool":
@@ -337,6 +364,42 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 // to a claude model benefit from the marker, and only those get it.
 func (c *Client) emitsCacheControl() bool {
 	return strings.Contains(strings.ToLower(c.model), "claude")
+}
+
+// completeThinkingBlocks pairs relocated thinking text back into blocks that
+// arrived signature-only — the gateway's split shape puts the text in
+// reasoning_content and ships a block skeleton carrying only the signature.
+// Anthropic requires the thinking field on replay (400 without it), and the
+// signature verifies against exactly this text, so reattaching it re-forms
+// the original signed block. A block that carried its own text keeps it; the
+// fill applies only when no non-redacted block carried any.
+func completeThinkingBlocks(blocks []llmtypes.ThinkingBlock, text string) {
+	if text == "" {
+		return
+	}
+	for i := range blocks {
+		if blocks[i].Type != "redacted_thinking" && blocks[i].Thinking != "" {
+			return
+		}
+	}
+	for i := range blocks {
+		if blocks[i].Type != "redacted_thinking" {
+			blocks[i].Thinking = text
+			return
+		}
+	}
+}
+
+// thinkingParam returns the request's thinking field, or nil (omitted on the
+// wire) when thinking is off or the model is not Claude-family — the same
+// gate as cache_control, kept one predicate on purpose. Every non-off level
+// maps to adaptive: budget_tokens is rejected by Claude 4.6+/5, and adaptive
+// carries no effort knob on this wire.
+func (c *Client) thinkingParam() map[string]interface{} {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" || !c.emitsCacheControl() {
+		return nil
+	}
+	return map[string]interface{}{"type": "adaptive"}
 }
 
 // withCacheControl rewrites a message's content into the block form carrying a
@@ -509,6 +572,24 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 			}
 		}
 
+		// Extract thinking. Both observed shapes handled: text in
+		// reasoning_content with signature-only blocks, and text inside the
+		// blocks with empty reasoning_content.
+		if len(choice.Message.ThinkingBlocks) > 0 {
+			for _, b := range choice.Message.ThinkingBlocks {
+				llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+					Type: b.Type, Thinking: b.Thinking, Signature: b.Signature,
+				})
+				if b.Type != "redacted_thinking" {
+					llmResp.Thinking += b.Thinking
+				}
+			}
+		}
+		if llmResp.Thinking == "" {
+			llmResp.Thinking = choice.Message.ReasoningContent
+		}
+		completeThinkingBlocks(llmResp.ThinkingBlocks, llmResp.Thinking)
+
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
 			// Parse arguments JSON string back to map
@@ -548,7 +629,13 @@ func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, ma
 	return 0, 0, false
 }
 
-// providerCostHeader is litellm's own computed cost for the call. It is
+// providerCostHeader is litellm's own computed cost for the call.
+//
+// Streaming caveat, and why calculateCost must remain: HTTP response headers
+// are written before the SSE body streams, so on a streaming call the gateway
+// cannot know the final token counts at header time — the header is absent or
+// zero there, and only non-streaming responses carry an authoritative figure.
+// Zero therefore falls back to the local estimate. It is
 // cache-aware and authoritative — preferred over any local estimate.
 const providerCostHeader = "x-litellm-response-cost"
 
@@ -563,7 +650,9 @@ func parseProviderCost(h http.Header) float64 {
 		return 0
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < 0 {
+	// ParseFloat accepts "Inf" and "NaN"; +Inf also passes a plain `< 0` check,
+	// so a garbage header would otherwise poison CostUSD with +Inf downstream.
+	if err != nil || f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
 		return 0
 	}
 	return f
@@ -580,16 +669,23 @@ func costOrEstimate(providerCostUSD float64, estimate func() float64) float64 {
 
 // calculateCost estimates the cost in USD based on token usage.
 //
-// Cache tiers matter: a cache write bills at 1.25x the input rate and a cache
-// read at 0.10x, so a cache-blind total over-charges a cache-heavy workload by
-// several fold. NOTE the OpenAI-compatible semantics: prompt_tokens INCLUDES
-// cached tokens (unlike Anthropic native, where input_tokens excludes them),
-// so the uncached remainder must be derived by subtraction.
+// Cache tiers matter, and they are PER FAMILY: Anthropic bills a cache write
+// at 1.25x the input rate and a cache read at 0.10x; OpenAI bills cached input
+// at 0.5x (gpt-4o: $1.25/M cached vs $2.50/M) with NO write premium. A
+// cache-blind total over-charges a cache-heavy workload several fold — and a
+// single Anthropic-shaped multiplier under-charges genuine OpenAI cached reads
+// 5x. The multipliers below therefore follow the rate card that was selected.
+// NOTE the OpenAI-compatible semantics: prompt_tokens INCLUDES cached tokens
+// (unlike Anthropic native, where input_tokens excludes them), so the uncached
+// remainder must be derived by subtraction.
 //
 // This is the FALLBACK. When the gateway reports its own cost (litellm's
 // x-litellm-response-cost header) that figure is authoritative and is used
 // instead — see providerCostUSD.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	// Cache multipliers of the selected rate card; OpenAI defaults, swapped to
+	// Anthropic's when the family matcher below selects Anthropic rates.
+	cacheWriteMult, cacheReadMult := 1.0, 0.5
 	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
 	// to the provider-local rates below only for model ids it does not list.
 	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("openai", c.model)
@@ -602,6 +698,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 		if in, out, matched := anthropicFallbackPricing(c.model); matched {
 			inputCostPerM, outputCostPerM = in, out
 			ok = true
+			cacheWriteMult, cacheReadMult = 1.25, 0.10
 		}
 	}
 	if !ok {
@@ -663,8 +760,8 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 		uncached = 0
 	}
 	inputCost := float64(uncached) * inputCostPerM / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputCostPerM * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputCostPerM * 0.10 / 1_000_000
+	cacheWriteCost := float64(cacheCreationTokens) * inputCostPerM * cacheWriteMult / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputCostPerM * cacheReadMult / 1_000_000
 	outputCost := float64(outputTokens) * outputCostPerM / 1_000_000
 	return inputCost + cacheWriteCost + cacheReadCost + outputCost
 }
@@ -705,6 +802,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Model:         c.model,
 		Messages:      apiMessages,
 		Temperature:   c.temperature,
+		Thinking:      c.thinkingParam(),
 		Stream:        true,                               // Enable streaming
 		StreamOptions: &StreamOptions{IncludeUsage: true}, // final usage chunk (tokens + cache)
 	}
@@ -776,7 +874,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolCalls []llmtypes.ToolCall
 	toolCallMap := make(map[int]*llmtypes.ToolCall) // Track tool calls by index
 
+	// Streaming thinking assembly (observed litellm contract): text arrives
+	// as reasoning_content deltas and/or inside thinking_blocks fragments;
+	// the signature arrives in a block fragment. Fragments merge by index.
+	var reasoningBuffer strings.Builder
+	thinkBlockMap := make(map[int]*llmtypes.ThinkingBlock)
+	var thinkBlockOrder []int
+
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -814,6 +923,31 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					if tokenCallback != nil {
 						tokenCallback(token)
 					}
+				}
+			}
+
+			// Extract thinking deltas — accumulated only, never forwarded to
+			// the token callback (thinking is not user-visible output).
+			if choice.Delta.ReasoningContent != "" {
+				reasoningBuffer.WriteString(choice.Delta.ReasoningContent)
+			}
+			for _, tb := range choice.Delta.ThinkingBlocks {
+				idx := 0
+				if tb.Index != nil {
+					idx = *tb.Index
+				}
+				blk, exists := thinkBlockMap[idx]
+				if !exists {
+					blk = &llmtypes.ThinkingBlock{}
+					thinkBlockMap[idx] = blk
+					thinkBlockOrder = append(thinkBlockOrder, idx)
+				}
+				if tb.Type != "" {
+					blk.Type = tb.Type
+				}
+				blk.Thinking += tb.Thinking
+				if tb.Signature != "" {
+					blk.Signature = tb.Signature
 				}
 			}
 
@@ -867,6 +1001,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
@@ -920,11 +1057,32 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		stopReason = finishReason
 	}
 
+	// Assemble thinking: blocks in arrival order; plain text from the blocks
+	// when they carried it, else from the reasoning_content deltas.
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkBlockOrder {
+		blk := thinkBlockMap[idx]
+		if blk.Type == "" {
+			blk.Type = "thinking"
+		}
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+	if thinkingText == "" {
+		thinkingText = reasoningBuffer.String()
+	}
+	completeThinkingBlocks(thinkingBlocks, thinkingText)
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
 		Metadata: map[string]interface{}{
 			"model":         c.model,
 			"finish_reason": finishReason,

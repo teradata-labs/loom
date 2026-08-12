@@ -16,6 +16,7 @@ import (
 // Code that imports pkg/llm/types will continue to work.
 type ToolCall = types.ToolCall
 type Message = types.Message
+type ThinkingBlock = types.ThinkingBlock
 type Usage = types.Usage
 type LLMResponse = types.LLMResponse
 type LLMProvider = types.LLMProvider
