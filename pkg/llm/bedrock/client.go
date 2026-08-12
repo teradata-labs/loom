@@ -84,6 +84,9 @@ type Config struct {
 	ModelID     string  // Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 	MaxTokens   int     // Default: 4096
 	Temperature float64 // Default: 1.0
+	// ThinkingLevel requests extended thinking ("", "none" = off). Adaptive
+	// (summarized) on 4.6+/5 model ids, budget tiers on older ones.
+	ThinkingLevel string
 
 	// Rate Limiting Configuration
 	RateLimiterConfig llm.RateLimiterConfig // Optional: rate limiting config (enables automatic throttle handling)

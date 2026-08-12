@@ -36,13 +36,14 @@ import (
 // SDKClient implements the LLMProvider interface using the official Anthropic SDK for Bedrock.
 // This is simpler and better maintained than the direct AWS SDK approach.
 type SDKClient struct {
-	client      anthropic.Client
-	modelID     string
-	region      string
-	maxTokens   int64
-	temperature float64
-	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
+	client        anthropic.Client
+	modelID       string
+	region        string
+	maxTokens     int64
+	temperature   float64
+	thinkingLevel string
+	rateLimiter   *llm.RateLimiter
+	toolNameMap   map[string]string // sanitized name → original name
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -175,7 +176,8 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 
 	return &SDKClient{
 		client:      client,
-		modelID:     cfg.ModelID,
+		modelID:       cfg.ModelID,
+		thinkingLevel: cfg.ThinkingLevel,
 		region:      cfg.Region,
 		maxTokens:   int64(cfg.MaxTokens),
 		temperature: cfg.Temperature,
@@ -229,6 +231,7 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 		Messages:    sdkMessages,
 		MaxTokens:   c.maxTokens,
 		Temperature: anthropic.Float(c.temperature),
+		Thinking:    c.thinkingConfig(),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.
@@ -300,6 +303,32 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 // when compile marked it (HLD §5.2 step 8). Merging them into a single block
 // would put ROM and the summary behind one breakpoint, so a fold — which
 // rewrites only the summary — would invalidate ROM's cached prefix too.
+// thinkingConfig maps the level to the SDK thinking union: adaptive with
+// summarized display on 4.6+/5 models (the level tiers collapse there — no
+// effort knob exists), enabled+budget_tokens tiers on older ones. Zero value
+// = field omitted = thinking off.
+func (c *SDKClient) thinkingConfig() anthropic.ThinkingConfigParamUnion {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return anthropic.ThinkingConfigParamUnion{}
+	}
+	m := strings.ToLower(c.modelID)
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			return anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+				Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+			}}
+		}
+	}
+	budget := int64(16384)
+	switch c.thinkingLevel {
+	case "low":
+		budget = 4096
+	case "high":
+		budget = 32768
+	}
+	return anthropic.ThinkingConfigParamOfEnabled(budget)
+}
+
 func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
 	var systemBlocks []anthropic.TextBlockParam
 	var sdkMessages []anthropic.MessageParam
@@ -355,6 +384,16 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 
 		case "assistant":
 			var content []anthropic.ContentBlockParamUnion
+
+			// In-turn thinking replay: blocks ride back verbatim and FIRST
+			// (response order). Settled turns arrive already stripped.
+			for _, tb := range msg.ThinkingBlocks {
+				if tb.Type == "redacted_thinking" {
+					content = append(content, anthropic.NewRedactedThinkingBlock(tb.Thinking))
+					continue
+				}
+				content = append(content, anthropic.NewThinkingBlock(tb.Signature, tb.Thinking))
+			}
 
 			// Add text content if present
 			if msg.Content != "" {
@@ -501,6 +540,13 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes
 		switch block.Type {
 		case "text":
 			llmResp.Content += block.Text
+		case "thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "thinking", Thinking: block.Thinking, Signature: block.Signature})
+			llmResp.Thinking += block.Thinking
+		case "redacted_thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "redacted_thinking", Thinking: block.Data})
 		case "tool_use":
 			// Parse tool input from JSON
 			var input map[string]interface{}
@@ -578,6 +624,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Messages:    sdkMessages,
 		MaxTokens:   c.maxTokens,
 		Temperature: anthropic.Float(c.temperature),
+		Thinking:    c.thinkingConfig(),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.
@@ -625,6 +672,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Map content block index to tool call index in our array
 	blockIndexToToolIndex := make(map[int64]int)
 
+	// Streaming thinking assembly: blocks open at content_block_start and
+	// accumulate thinking_delta / signature_delta fragments by block index.
+	thinkBlocks := make(map[int64]*llmtypes.ThinkingBlock)
+	var thinkOrder []int64
+
 	for stream.Next() {
 		event := stream.Current()
 
@@ -637,6 +689,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.CacheCreationInputTokens = int(event.Message.Usage.CacheCreationInputTokens)
 
 		case "content_block_start":
+			if event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking" {
+				blk := &llmtypes.ThinkingBlock{Type: event.ContentBlock.Type,
+					Thinking: event.ContentBlock.Thinking, Signature: event.ContentBlock.Signature}
+				if event.ContentBlock.Type == "redacted_thinking" {
+					blk.Thinking = event.ContentBlock.Data
+				}
+				thinkBlocks[event.Index] = blk
+				thinkOrder = append(thinkOrder, event.Index)
+			}
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
 				// Start tracking a new tool call - reverse map sanitized name
@@ -662,6 +723,19 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				// Call token callback (non-blocking)
 				if tokenCallback != nil {
 					tokenCallback(token)
+				}
+			}
+
+			// Handle thinking deltas — accumulated only, never forwarded to
+			// the token callback.
+			if event.Delta.Type == "thinking_delta" {
+				if blk, ok := thinkBlocks[event.Index]; ok {
+					blk.Thinking += event.Delta.Thinking
+				}
+			}
+			if event.Delta.Type == "signature_delta" {
+				if blk, ok := thinkBlocks[event.Index]; ok {
+					blk.Signature += event.Delta.Signature
 				}
 			}
 
@@ -720,11 +794,25 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 
+	// Assemble streamed thinking in arrival order; non-redacted text feeds
+	// Thinking (display/persistence).
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkOrder {
+		blk := thinkBlocks[idx]
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
 			"stop_reason": stopReason,

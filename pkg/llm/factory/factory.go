@@ -47,6 +47,10 @@ type FactoryConfig struct {
 	DefaultProvider string
 	DefaultModel    string
 
+	// ThinkingLevel requests extended thinking from providers that support it
+	// ("", "none" = off). Passed through to anthropic/bedrock client configs.
+	ThinkingLevel string
+
 	// Anthropic configuration
 	AnthropicAPIKey string
 	AnthropicModel  string
@@ -182,10 +186,11 @@ func (f *ProviderFactory) createAnthropicProvider(model string) (interface{}, er
 	}
 
 	return anthropic.NewClient(anthropic.Config{
-		APIKey:      apiKey,
-		Model:       model,
-		MaxTokens:   f.resolveMaxOutput("anthropic", model),
-		Temperature: f.config.Temperature,
+		APIKey:        apiKey,
+		Model:         model,
+		MaxTokens:     f.resolveMaxOutput("anthropic", model),
+		Temperature:   f.config.Temperature,
+		ThinkingLevel: f.config.ThinkingLevel,
 	}), nil
 }
 
@@ -206,6 +211,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 	}
 
 	cfg := bedrock.Config{
+		ThinkingLevel:   f.config.ThinkingLevel,
 		Region:          region,
 		AccessKeyID:     f.config.BedrockAccessKeyID,
 		SecretAccessKey: f.config.BedrockSecretAccessKey,

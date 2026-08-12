@@ -76,14 +76,15 @@ func DefaultAnthropicRateLimiterConfig() llm.RateLimiterConfig {
 
 // Client implements the LLMProvider interface for Anthropic's Claude API.
 type Client struct {
-	apiKey      string
-	model       string
-	endpoint    string
-	httpClient  *http.Client
-	maxTokens   int
-	temperature float64
-	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
+	apiKey        string
+	model         string
+	endpoint      string
+	httpClient    *http.Client
+	maxTokens     int
+	temperature   float64
+	thinkingLevel string
+	rateLimiter   *llm.RateLimiter
+	toolNameMap   map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Anthropic client.
@@ -94,6 +95,10 @@ type Config struct {
 	Timeout           time.Duration
 	MaxTokens         int     // Default: 4096
 	Temperature       float64 // Default: 1.0
+	// ThinkingLevel requests extended thinking ("", "none" = off). Non-off
+	// levels map to adaptive (display summarized) on 4.6+/5 models and to
+	// budget_tokens tiers (low 4k / medium+auto 16k / high 32k) on older ones.
+	ThinkingLevel     string
 	RateLimiterConfig llm.RateLimiterConfig
 }
 
@@ -132,12 +137,13 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:      config.APIKey,
-		model:       config.Model,
-		endpoint:    config.Endpoint,
-		maxTokens:   config.MaxTokens,
-		temperature: config.Temperature,
-		rateLimiter: rateLimiter,
+		apiKey:        config.APIKey,
+		model:         config.Model,
+		endpoint:      config.Endpoint,
+		maxTokens:     config.MaxTokens,
+		temperature:   config.Temperature,
+		thinkingLevel: config.ThinkingLevel,
+		rateLimiter:   rateLimiter,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -207,6 +213,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Messages:    apiMessages,
 		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
+		Thinking:    c.thinkingParam(),
 	}
 
 	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
@@ -226,6 +233,36 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert response
 	return c.convertResponse(resp), nil
+}
+
+// thinkingParam returns the request's thinking field, or nil (omitted) when
+// thinking is off. 4.6+/5 models take adaptive with summarized display (the
+// display default, omitted, returns signature-only blocks with no text —
+// observed live); older models still take enabled+budget_tokens, where the
+// level tiers finally differ.
+func (c *Client) thinkingParam() map[string]interface{} {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return nil
+	}
+	m := strings.ToLower(c.model)
+	adaptive := false
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			adaptive = true
+			break
+		}
+	}
+	if adaptive {
+		return map[string]interface{}{"type": "adaptive", "display": "summarized"}
+	}
+	budget := 16384
+	switch c.thinkingLevel {
+	case "low":
+		budget = 4096
+	case "high":
+		budget = 32768
+	}
+	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}
 }
 
 // convertMessages converts agent messages to Anthropic format.
@@ -310,6 +347,17 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 
 		case "assistant":
 			var content []ContentBlock
+
+			// In-turn thinking replay: blocks ride back verbatim and FIRST
+			// (the response order). Empty text stays valid — MarshalJSON keeps
+			// the field present. Settled turns arrive already stripped.
+			for _, tb := range msg.ThinkingBlocks {
+				if tb.Type == "redacted_thinking" {
+					content = append(content, ContentBlock{Type: "redacted_thinking", Data: tb.Thinking})
+					continue
+				}
+				content = append(content, ContentBlock{Type: "thinking", Thinking: tb.Thinking, Signature: tb.Signature})
+			}
 
 			// Add text content if present
 			if msg.Content != "" {
@@ -504,6 +552,15 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 		case "text":
 			llmResp.Content += block.Text
 
+		case "thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "thinking", Thinking: block.Thinking, Signature: block.Signature})
+			llmResp.Thinking += block.Thinking
+
+		case "redacted_thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "redacted_thinking", Thinking: block.Data})
+
 		case "tool_use":
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    block.ID,
@@ -570,6 +627,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Messages:    apiMessages,
 		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
+		Thinking:    c.thinkingParam(),
 		Stream:      true, // Enable streaming
 	}
 
@@ -658,6 +716,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolCalls []llmtypes.ToolCall
 	// Track tool input JSON as it streams in (indexed by content block index)
 	toolInputBuffers := make(map[int]*strings.Builder)
+
+	// Streaming thinking assembly: blocks open at content_block_start and
+	// accumulate thinking_delta / signature_delta fragments by index.
+	thinkBlocks := make(map[int]*llmtypes.ThinkingBlock)
+	var thinkOrder []int
 	// Map content block index → toolCalls slice index for tool_use blocks
 	toolCallIndex := make(map[int]int)
 
@@ -693,6 +756,15 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					continue
 				}
 				switch event.Delta.Type {
+				case "thinking_delta":
+					// Accumulated only — thinking never reaches the token callback.
+					if blk, ok := thinkBlocks[event.Index]; ok {
+						blk.Thinking += event.Delta.Thinking
+					}
+				case "signature_delta":
+					if blk, ok := thinkBlocks[event.Index]; ok {
+						blk.Signature += event.Delta.Signature
+					}
 				case "text_delta":
 					if event.Delta.Text != "" {
 						token := event.Delta.Text
@@ -712,6 +784,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 
 			case "content_block_start":
+				if event.ContentBlock != nil &&
+					(event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking") {
+					blk := &llmtypes.ThinkingBlock{Type: event.ContentBlock.Type,
+						Thinking: event.ContentBlock.Thinking, Signature: event.ContentBlock.Signature}
+					if event.ContentBlock.Type == "redacted_thinking" {
+						blk.Thinking = event.ContentBlock.Data
+					}
+					thinkBlocks[event.Index] = blk
+					thinkOrder = append(thinkOrder, event.Index)
+				}
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 					// Start tracking a new tool call
 					idx := len(toolCalls)
@@ -802,11 +884,25 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 
+	// Assemble streamed thinking in arrival order; plain text from the
+	// non-redacted blocks feeds Thinking (display/persistence).
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkOrder {
+		blk := thinkBlocks[idx]
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
 		Metadata: map[string]interface{}{
 			"model":       c.model,
 			"stop_reason": stopReason,
