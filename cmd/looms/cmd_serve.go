@@ -2429,6 +2429,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Set logger for server operations
 	loomService.SetLogger(logger)
 
+	// Honor WeaveRequest.occurred_at only when the operator opted in —
+	// replay/import arrival times are rejected otherwise (see applyOccurredAt).
+	loomService.SetAllowTimeOverride(config.Server.AllowTimeOverride)
+	if config.Server.AllowTimeOverride {
+		logger.Info("Arrival-time override enabled (server.allow_time_override): WeaveRequest.occurred_at will be honored")
+	}
+
 	// Set provider factory for dynamic model switching
 	loomService.SetProviderFactory(providerFactory)
 	logger.Info("Provider factory configured on server for model switching")

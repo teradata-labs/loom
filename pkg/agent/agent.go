@@ -1194,6 +1194,15 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
 	}
 
+	// Temporal grounding does NOT live here. A wall-clock anchor baked into the
+	// ROM slot would freeze the model's "now" at session creation (warm sessions
+	// span days; a DB-restored session would re-anchor to a different instant),
+	// and — because ROM has its own cross-session cache breakpoint — a
+	// per-session timestamp would defeat prompt-cache reuse across an agent's
+	// sessions. Instead, each user turn carries its arrival time, rendered into
+	// the compiled view only (see renderLocked): the newest user turn always
+	// supplies current time, and inter-turn gaps stay visible.
+
 	// Inject task context (current tasks, ready front, board stats).
 	// Rendered once into ROM at session creation — the ROM slot is
 	// byte-stable for the session, so this is a snapshot, not a live view.
@@ -1821,13 +1830,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// This is the Chat()-entry persist site — the only turn-incrementing event
 	// (HLD §4.5) — hence turnStart=true.
 	//
-	// Time enters the session here, written into the turn at arrival: temporal
-	// words ("today", "this month") resolve at utterance time, and a value
-	// written once is durable content like any other row — the whole session
-	// stays byte-stable. Nothing renders time dynamically anywhere.
+	// Content is the canonical, user-visible message body: it is persisted and
+	// returned verbatim to clients.
+	// Do NOT prepend a timestamp here — that leaks a "[Mon 2006-01-02 15:04 MST]"
+	// prefix into every displayed user message. Arrival time is captured durably
+	// in the Timestamp field; per-turn temporal grounding ("today", "this month")
+	// is restored by rendering that Timestamp into the compiled view only
+	// (renderLocked), never into the stored body.
 	userMsg := a.appendMessage(ctx, session, Message{
 		Role:          "user",
-		Content:       time.Now().Format("[Mon 2006-01-02 15:04 MST] ") + userMessage,
+		Content:       userMessage,
 		ContentBlocks: p.contentBlocks,
 		AgentID:       a.id, // Track which agent received this message
 		Timestamp:     time.Now(),
@@ -1987,6 +1999,13 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 // arrival. turnStart is true only at the Chat() entry — the only
 // turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) Message {
+	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
+	// anchors every row persisted during the call at the conversation's
+	// historical time; without one, the caller-stamped wall clock stands.
+	if at, ok := occurredAtFromContext(ctx); ok {
+		msg.Timestamp = at
+	}
+
 	// In-memory derivation, identical arithmetic to the store's subquery — the
 	// only derivation for storeless sessions and unpersisted rows.
 	t := sessionCurrentTurn(session)

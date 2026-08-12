@@ -27,6 +27,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // --- write rule §4.1: truncation ---------------------------------------------
@@ -109,6 +110,89 @@ func TestCompile_AtThresholdRendersFull(t *testing.T) {
 		if m.Role == "tool" {
 			assert.Equal(t, page, m.Content, "strictly over the threshold, not at it — a page must never stub itself")
 		}
+	}
+}
+
+func TestCompile_UserTurnRendersArrivalStampInViewOnly(t *testing.T) {
+	sm := newCompileMemory(t)
+	ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "what ran today?", Turn: 1, Timestamp: ts})
+
+	out := sm.GetMessagesForLLM()
+	var rendered string
+	for _, m := range out {
+		if m.Role == "user" {
+			rendered = m.Content
+		}
+	}
+	assert.Equal(t, "[Mon 2026-08-10 14:05 UTC] what ran today?", rendered,
+		"the compiled user turn carries the arrival stamp, rendered from Timestamp in UTC")
+
+	// The stored row is untouched — the stamp is a pure render condition.
+	stored := sm.GetRecentConversationTurns(1)
+	require.Len(t, stored, 1)
+	assert.Equal(t, "what ran today?", stored[0].Content,
+		"stored Content stays verbatim; only the view is stamped")
+}
+
+func TestCompile_UserTurnWithoutTimestampRendersVerbatim(t *testing.T) {
+	sm := newCompileMemory(t)
+	// Legacy row with a zero Timestamp must render unchanged.
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "legacy turn", Turn: 1})
+
+	out := sm.GetMessagesForLLM()
+	for _, m := range out {
+		if m.Role == "user" {
+			assert.Equal(t, "legacy turn", m.Content, "no stamp is invented for a timestamp-less row")
+		}
+	}
+}
+
+// TestCompile_MultimodalUserTurnStampsLeadingTextBlock verifies the arrival
+// stamp reaches multimodal providers: they build the request from ContentBlocks,
+// so the stamp must land on the leading text block too, not just Content. The
+// stored blocks stay verbatim — only the compiled view is stamped.
+func TestCompile_MultimodalUserTurnStampsLeadingTextBlock(t *testing.T) {
+	sm := newCompileMemory(t)
+	ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
+	blocks := []ContentBlock{
+		{Type: "text", Text: "what is in this image?"},
+		{Type: "image", Image: &types.ImageContent{Type: "image", Source: types.ImageSource{Type: "base64", MediaType: "image/png", Data: "aGVsbG8="}}},
+	}
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "what is in this image?", ContentBlocks: blocks, Turn: 1, Timestamp: ts})
+
+	out := sm.GetMessagesForLLM()
+	var rendered Message
+	for _, m := range out {
+		if m.Role == "user" {
+			rendered = m
+		}
+	}
+	require.Len(t, rendered.ContentBlocks, 2)
+	assert.Equal(t, "[Mon 2026-08-10 14:05 UTC] what is in this image?", rendered.ContentBlocks[0].Text,
+		"the leading text block carries the stamp so multimodal providers see it")
+	assert.Equal(t, "image", rendered.ContentBlocks[1].Type, "the image block is untouched")
+
+	// The stored blocks are untouched — the stamp is a pure render condition.
+	stored := sm.GetRecentConversationTurns(1)
+	require.Len(t, stored, 1)
+	require.Len(t, stored[0].ContentBlocks, 2)
+	assert.Equal(t, "what is in this image?", stored[0].ContentBlocks[0].Text,
+		"stored blocks stay verbatim; only the view is stamped")
+}
+
+func TestCompile_TwoCompilesAreByteIdentical(t *testing.T) {
+	sm := newCompileMemory(t)
+	ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "hello", Turn: 1, Timestamp: ts})
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Content: "hi", Turn: 1})
+
+	first := sm.GetMessagesForLLM()
+	second := sm.GetMessagesForLLM()
+	require.Equal(t, len(first), len(second))
+	for i := range first {
+		assert.Equal(t, first[i].Content, second[i].Content,
+			"the compiled view is byte-stable across calls (Timestamp is write-once)")
 	}
 }
 

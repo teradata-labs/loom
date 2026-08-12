@@ -492,8 +492,19 @@ message WeaveRequest {
   bool enable_trace = 8;              // Optional: Enable tracing for this request
   string agent_id = 9;               // Optional: Agent ID to route request to (uses default if empty)
   bool reset_context = 10;            // Optional: Clear context window before processing
+  google.protobuf.Timestamp occurred_at = 11; // Optional: historical arrival time for replayed/imported conversations
 }
 ```
+
+**`occurred_at` (replay/import only):** when set, every message persisted
+during the call — user turn, assistant reply, tool rows — carries this
+timestamp instead of the server wall clock, so temporal grounding
+(graph-memory extraction anchoring, arrival stamps) reflects when the
+conversation actually happened. The server rejects the field with
+`FAILED_PRECONDITION` unless `server.allow_time_override: true` is set in
+`looms.yaml` (default: false — client-supplied timestamps can poison temporal
+grounding), and rejects future-dated values with `INVALID_ARGUMENT`. Live
+conversations should leave it unset.
 
 ### Client Example
 

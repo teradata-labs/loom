@@ -10,32 +10,31 @@ metadata:
 
 spec:
   type: pipeline
-  pipeline:
-    initial_prompt: "Check system health metrics and alert on anomalies"
-    stages:
-      - agent_id: metrics-collector
-        prompt: |
-          Collect current system metrics:
-          - CPU usage
-          - Memory usage
-          - Disk I/O
-          - Network throughput
-          - Database connection pool
-          - API response times
+  initial_prompt: "Check system health metrics and alert on anomalies"
+  stages:
+    - agent_id: metrics-collector
+      prompt_template: |
+        Collect current system metrics:
+        - CPU usage
+        - Memory usage
+        - Disk I/O
+        - Network throughput
+        - Database connection pool
+        - API response times
 
-      - agent_id: anomaly-detector
-        prompt: |
-          Analyze metrics for anomalies:
-          - Compare against baseline
-          - Check for threshold violations
-          - Detect unusual patterns
+    - agent_id: anomaly-detector
+      prompt_template: |
+        Analyze metrics for anomalies:
+        - Compare against baseline
+        - Check for threshold violations
+        - Detect unusual patterns
 
-      - agent_id: alerting
-        prompt: |
-          If anomalies detected:
-          - Send alerts to on-call engineer
-          - Create incident ticket
-          - Log to monitoring dashboard
+    - agent_id: alerting
+      prompt_template: |
+        If anomalies detected:
+        - Send alerts to on-call engineer
+        - Create incident ticket
+        - Log to monitoring dashboard
 
 # Schedule Configuration
 schedule:

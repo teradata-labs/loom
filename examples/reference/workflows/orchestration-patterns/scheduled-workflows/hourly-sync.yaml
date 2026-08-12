@@ -10,23 +10,22 @@ metadata:
 
 spec:
   type: pipeline
-  pipeline:
-    initial_prompt: "Synchronize customer data from CRM to data warehouse"
-    stages:
-      - agent_id: data-extractor
-        prompt: |
-          Extract new and updated customer records from the CRM system
-          since the last sync timestamp.
+  initial_prompt: "Synchronize customer data from CRM to data warehouse"
+  stages:
+    - agent_id: data-extractor
+      prompt_template: |
+        Extract new and updated customer records from the CRM system
+        since the last sync timestamp.
 
-      - agent_id: data-transformer
-        prompt: |
-          Transform the extracted data to match the warehouse schema.
-          Apply data quality rules and validation.
+    - agent_id: data-transformer
+      prompt_template: |
+        Transform the extracted data to match the warehouse schema.
+        Apply data quality rules and validation.
 
-      - agent_id: data-loader
-        prompt: |
-          Load the transformed data into the data warehouse.
-          Update the last sync timestamp on success.
+    - agent_id: data-loader
+      prompt_template: |
+        Load the transformed data into the data warehouse.
+        Update the last sync timestamp on success.
 
 # Schedule Configuration
 schedule:

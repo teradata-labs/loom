@@ -43,6 +43,9 @@ type Config struct {
 	// It is not loaded from config file - use LOOM_DATA_DIR environment variable to override.
 	DataDir string `mapstructure:"-"`
 
+	// PatternsDir is the default directory containing pattern YAML files.
+	PatternsDir string `mapstructure:"patterns_dir"`
+
 	// Server configuration
 	Server ServerConfig `mapstructure:"server"`
 
@@ -202,15 +205,16 @@ type TUIConfig struct {
 
 // ServerConfig holds server-specific configuration.
 type ServerConfig struct {
-	Port             int                 `mapstructure:"port"`
-	Host             string              `mapstructure:"host"`
-	HTTPPort         int                 `mapstructure:"http_port"` // HTTP/REST+SSE port (default: 5006, 0=disabled)
-	EnableReflection bool                `mapstructure:"enable_reflection"`
-	InsecureAdmin    bool                `mapstructure:"insecure_admin"` // Allow admin endpoints without LOOM_ADMIN_TOKEN (default: false)
-	TLS              TLSConfig           `mapstructure:"tls"`
-	Clarification    ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
-	CORS             CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
-	Auth             AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
+	Port              int                 `mapstructure:"port"`
+	Host              string              `mapstructure:"host"`
+	HTTPPort          int                 `mapstructure:"http_port"` // HTTP/REST+SSE port (default: 5006, 0=disabled)
+	EnableReflection  bool                `mapstructure:"enable_reflection"`
+	InsecureAdmin     bool                `mapstructure:"insecure_admin"`      // Allow admin endpoints without LOOM_ADMIN_TOKEN (default: false)
+	AllowTimeOverride bool                `mapstructure:"allow_time_override"` // Honor WeaveRequest.occurred_at for replayed/imported conversations (default: false)
+	TLS               TLSConfig           `mapstructure:"tls"`
+	Clarification     ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
+	CORS              CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
+	Auth              AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
 }
 
 // AuthConfig gates JWT authentication of Loom's gRPC/HTTP endpoints. When
@@ -1100,6 +1104,8 @@ func setDefaults() {
 	viper.SetDefault("server.enable_reflection", true)
 	viper.SetDefault("server.insecure_admin", false)
 	viper.SetDefault("skip_embedded_agents", false)
+	viper.SetDefault("server.allow_time_override", false)
+	viper.SetDefault("patterns_dir", filepath.Join(loomconfig.GetLoomDataDir(), "patterns"))
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1831,6 +1837,7 @@ server:
   host: 0.0.0.0
   enable_reflection: true
   # insecure_admin: false  # Set to true to allow admin endpoints without LOOM_ADMIN_TOKEN (NOT recommended for production)
+  # allow_time_override: false  # Set to true to honor WeaveRequest.occurred_at (replayed/imported conversations only)
 
 llm:
   # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral

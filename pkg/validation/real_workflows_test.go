@@ -30,19 +30,31 @@ func TestRealWorkflowExamples(t *testing.T) {
 	}{
 		{
 			name:         "architecture_debate_orchestration",
-			path:         "examples/reference/workflows/architecture-debate.yaml",
+			path:         "examples/reference/workflows/orchestration-patterns/architecture-debate.yaml",
 			workflowType: "orchestration",
 			shouldPass:   true,
 		},
 		{
 			name:         "dungeon_crawl_multi_agent",
-			path:         "examples/dungeon-crawler/workflows/dungeon-crawl.yaml",
+			path:         "examples/reference/workflows/event-driven/dungeon-crawler/workflows/dungeon-crawl.yaml",
 			workflowType: "multi-agent",
 			shouldPass:   true,
 		},
 		{
 			name:         "security_analysis_fork_join",
-			path:         "examples/reference/workflows/security-analysis.yaml",
+			path:         "examples/reference/workflows/orchestration-patterns/security-analysis.yaml",
+			workflowType: "orchestration",
+			shouldPass:   true,
+		},
+		{
+			name:         "complexity_routing_conditional",
+			path:         "examples/reference/workflows/orchestration-patterns/complexity-routing.yaml",
+			workflowType: "orchestration",
+			shouldPass:   true,
+		},
+		{
+			name:         "technology_swarm",
+			path:         "examples/reference/workflows/orchestration-patterns/technology-swarm.yaml",
 			workflowType: "orchestration",
 			shouldPass:   true,
 		},
@@ -52,10 +64,10 @@ func TestRealWorkflowExamples(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fullPath := filepath.Join(projectRoot, tt.path)
 
-			// Check if file exists
+			// A moved or deleted example must fail loudly: silent skips let
+			// every subtest here rot away unnoticed when examples/ moved.
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				t.Skipf("Workflow file not found: %s", fullPath)
-				return
+				t.Fatalf("Workflow file not found (update the path): %s", fullPath)
 			}
 
 			// Validate the file
@@ -104,17 +116,17 @@ func TestWorkflowTypeDetectionOnRealFiles(t *testing.T) {
 	}{
 		{
 			name:         "debate_is_orchestration",
-			path:         "examples/reference/workflows/architecture-debate.yaml",
+			path:         "examples/reference/workflows/orchestration-patterns/architecture-debate.yaml",
 			expectedType: "orchestration",
 		},
 		{
-			name:         "vacation_is_multi_agent",
-			path:         "examples/vacation-planner/workflows/vacation-planning-workflow.yaml",
+			name:         "brainstorm_is_multi_agent",
+			path:         "examples/reference/workflows/event-driven/brainstorm-session/workflows/brainstorm-session.yaml",
 			expectedType: "multi-agent",
 		},
 		{
 			name:         "security_analysis_is_orchestration",
-			path:         "examples/reference/workflows/security-analysis.yaml",
+			path:         "examples/reference/workflows/orchestration-patterns/security-analysis.yaml",
 			expectedType: "orchestration",
 		},
 	}
@@ -123,10 +135,10 @@ func TestWorkflowTypeDetectionOnRealFiles(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fullPath := filepath.Join(projectRoot, tt.path)
 
-			// Check if file exists
+			// A moved or deleted example must fail loudly: silent skips let
+			// every subtest here rot away unnoticed when examples/ moved.
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				t.Skipf("Workflow file not found: %s", fullPath)
-				return
+				t.Fatalf("Workflow file not found (update the path): %s", fullPath)
 			}
 
 			// Read and parse file
