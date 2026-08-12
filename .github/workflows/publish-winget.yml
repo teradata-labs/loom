@@ -81,9 +81,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          # Resolve the fork owner from the PAT, NOT github.actor: when
+          # release.yml dispatches this workflow, the actor is
+          # github-actions[bot], and fork lookups under that owner resolve
+          # nothing — the run then tries to clone a fork that cannot exist
+          # (first observed on the v1.4.0 release). The fork lives under the
+          # PAT owner's account, so ask the API who the token belongs to.
+          $login = gh api user --jq .login
+          Write-Host "PAT owner: $login (github.actor was '${{ github.actor }}')"
+
           # Check for existing fork (might have custom name)
-          $forkName = "${{ github.actor }}/winget-pkgs"
-          $altForkName = "${{ github.actor }}/loom-winget-pkgs"
+          $forkName = "$login/winget-pkgs"
+          $altForkName = "$login/loom-winget-pkgs"
 
           $fork = $null
           if ((gh repo view $forkName 2>&1 | Out-String) -notmatch "Could not resolve") {
@@ -183,7 +192,7 @@ jobs:
           Automated PR from GitHub Actions.
 
           @microsoft-github-policy-service agree" `
-            --head "${{ github.actor }}:$branch" `
+            --head "$($login):$branch" `
             --base master
 
           Write-Host "✅ Manual PR created successfully"
