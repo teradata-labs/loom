@@ -15,6 +15,9 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -42,6 +45,52 @@ func TestNewManager(t *testing.T) {
 	assert.NotNil(t, mgr.logger)
 	assert.NotNil(t, mgr.clients)
 	assert.False(t, mgr.started)
+}
+
+func TestManager_AddServerExpandsStreamableHTTPEnvironment(t *testing.T) {
+	received := make(chan http.Header, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- r.Header.Clone():
+		default:
+		}
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		if len(request.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      json.RawMessage(request.ID),
+			"result": map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]interface{}{},
+				"serverInfo":      map[string]string{"name": "test", "version": "1.0.0"},
+			},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("MCP_TEST_URL", server.URL)
+	t.Setenv("MCP_TEST_TOKEN", "expanded-token")
+
+	manager, err := NewManager(Config{
+		ClientInfo: ClientInfo{Name: "test-client", Version: "1.0.0"},
+	}, zap.NewNop())
+	require.NoError(t, err)
+	require.NoError(t, manager.AddServer(context.Background(), "remote", ServerConfig{
+		Enabled:   true,
+		Transport: "streamable-http",
+		URL:       "${MCP_TEST_URL}",
+		Headers:   map[string]string{"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+	}))
+	defer func() { _ = manager.RemoveServer("remote") }()
+
+	headers := <-received
+	assert.Equal(t, "Bearer expanded-token", headers.Get("Authorization"))
 }
 
 func TestNewManager_InvalidConfig(t *testing.T) {

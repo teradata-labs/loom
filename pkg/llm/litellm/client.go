@@ -140,17 +140,6 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools
 	return c.inner.ChatStream(ctx, messages, tools, tokenCallback)
 }
 
-// HealthCheck verifies the proxy is reachable via a minimal OPTIONS/GET probe.
-// Delegates to the inner openai.Client health check.
-func (c *Client) HealthCheck(ctx context.Context) error {
-	if hc, ok := any(c.inner).(interface {
-		HealthCheck(context.Context) error
-	}); ok {
-		return hc.HealthCheck(ctx)
-	}
-	return nil
-}
-
 // normalizeEndpoint ensures the endpoint is the full chat-completions path.
 // avmo-tera-cloud injects LITELLM_BASE_URL as a bare base URL
 // (e.g. "http://litellm:4000"), so we append the standard path when it is absent.

@@ -50,6 +50,31 @@ func TestStreamableHTTPTransport_SendsCustomHeaders(t *testing.T) {
 		"custom Authorization header must be applied to the outgoing request")
 }
 
+func TestHTTPTransport_SendAppliesCustomHeaders(t *testing.T) {
+	requestReceived := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/messages":
+			requestReceived <- r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusAccepted)
+		case "/sse":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	transport, err := NewHTTPTransport(HTTPConfig{
+		Endpoint: server.URL,
+		Headers:  map[string]string{"Authorization": "Bearer legacy-token"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = transport.Close() }()
+
+	require.NoError(t, transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0"}`)))
+	assert.Equal(t, "Bearer legacy-token", <-requestReceived)
+}
+
 // TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions is a
 // regression test for the Atlassian remote MCP HTTP 400 failure: a session-based
 // streamable-http server issues an Mcp-Session-Id on the initialize response and
@@ -63,8 +88,14 @@ func TestStreamableHTTPTransport_SendsCustomHeaders(t *testing.T) {
 func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testing.T) {
 	const sessionID = "sess-abc-123"
 	var followUpSession string
+	var deletedSession string
 	var reqCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletedSession = r.Header.Get("Mcp-Session-Id")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		reqCount++
 		if reqCount == 1 {
 			// initialize response establishes the session
@@ -92,7 +123,6 @@ func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testi
 		EnableSessions: false, // deliberately off — server still mandates the session id
 	})
 	require.NoError(t, err)
-	defer func() { _ = tr.Close() }()
 
 	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)))
 	require.Equal(t, sessionID, tr.GetSessionID(),
@@ -101,6 +131,9 @@ func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testi
 	require.NoError(t, tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
 	assert.Equal(t, sessionID, followUpSession,
 		"follow-up request must echo the server-issued Mcp-Session-Id")
+	require.NoError(t, tr.Close())
+	assert.Equal(t, sessionID, deletedSession,
+		"Close must terminate a server-issued session even when EnableSessions is false")
 }
 
 // TestStreamableHTTPTransport_Accepts202PlainTextAck reproduces the Atlassian

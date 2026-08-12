@@ -140,6 +140,36 @@ func TestExecutor_Execute_ResolvesSanitizedQualifiedName(t *testing.T) {
 	require.Equal(t, 1, tool.ExecuteCount)
 }
 
+func TestExecutor_Execute_AliasCannotBypassCanonicalDisabledTool(t *testing.T) {
+	tests := []struct {
+		name     string
+		callName string
+	}{
+		{name: "plain suffix", callName: "base_writeQuery"},
+		{name: "sanitized qualified name", callName: "teradata-aiop-mcp-server_base_writeQuery"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewRegistry()
+			exec := NewExecutor(reg)
+			tool := &MockTool{MockName: "teradata-aiop-mcp-server:base_writeQuery"}
+			reg.Register(tool)
+			exec.SetPermissionChecker(NewPermissionChecker(PermissionConfig{
+				DisabledTools: []string{tool.Name()},
+			}))
+
+			result, err := exec.Execute(context.Background(), tt.callName, nil)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.False(t, result.Success)
+			require.Equal(t, "permission_denied", result.Error.Code)
+			require.Equal(t, 0, tool.ExecuteCount)
+		})
+	}
+}
+
 func TestExecutor_Execute_RejectsAmbiguousServerPrefixedSuffix(t *testing.T) {
 	reg := NewRegistry()
 	exec := NewExecutor(reg)

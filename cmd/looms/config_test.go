@@ -707,6 +707,19 @@ storage:
 		"LOOM_STORAGE_POSTGRES_DSN should work even without dsn key in YAML")
 }
 
+func TestEnvVar_PatternsDir_NoYAMLKey(t *testing.T) {
+	viper.Reset()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("server:\n  port: 60051\n"), 0o644))
+	t.Setenv("LOOM_PATTERNS_DIR", "/opt/loom/patterns")
+
+	cfg, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, "/opt/loom/patterns", cfg.PatternsDir)
+}
+
 func TestEnvVar_NestedKeys(t *testing.T) {
 	// Verify SetEnvKeyReplacer works for other nested keys too.
 	viper.Reset()

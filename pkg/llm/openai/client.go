@@ -498,6 +498,10 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 
 // convertResponse converts OpenAI response to agent format.
 func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResponse {
+	finishReason := ""
+	if len(resp.Choices) > 0 {
+		finishReason = resp.Choices[0].FinishReason
+	}
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
 			InputTokens:              resp.Usage.PromptTokens,
@@ -509,7 +513,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 		},
 		Metadata: map[string]interface{}{
 			"model":         resp.Model,
-			"finish_reason": resp.Choices[0].FinishReason,
+			"finish_reason": finishReason,
 		},
 	}
 
@@ -549,6 +553,9 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 			// Skip tool calls with empty id or name — strict providers (Bedrock)
 			// reject messages containing toolUse blocks where either field is empty.
 			if tc.ID == "" || tc.Function.Name == "" {
+				zap.L().Warn("dropping incomplete tool call",
+					zap.String("tool_call_id", tc.ID),
+					zap.String("tool_name", tc.Function.Name))
 				continue
 			}
 			// Parse arguments JSON string back to map
@@ -565,6 +572,9 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 				Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
 				Input: input,
 			})
+		}
+		if llmResp.StopReason == "tool_use" && len(choice.Message.ToolCalls) > 0 && len(llmResp.ToolCalls) == 0 {
+			llmResp.StopReason = "end_turn"
 		}
 	}
 
@@ -794,17 +804,23 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
-						// New tool call - map sanitized name back to original
 						toolCallMap[idx] = &llmtypes.ToolCall{
-							ID:    tcDelta.ID,
-							Name:  llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name),
 							Input: make(map[string]interface{}),
 						}
+					}
+					tc := toolCallMap[idx]
+					// Some OpenAI-compatible proxies emit arguments before the ID
+					// and function name. Backfill identity fields on every delta so
+					// an args-first tool call is not silently discarded at the end.
+					if tcDelta.ID != "" {
+						tc.ID = tcDelta.ID
+					}
+					if tcDelta.Function.Name != "" {
+						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
 					}
 
 					// Accumulate function arguments (they come in chunks)
 					if tcDelta.Function.Arguments != "" {
-						tc := toolCallMap[idx]
 						// Note: Arguments are accumulated as string, parsed at the end
 						if existingArgs, ok := tc.Input["_args"].(string); ok {
 							tc.Input["_args"] = existingArgs + tcDelta.Function.Arguments
@@ -843,12 +859,17 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// 4. Parse accumulated tool call arguments
+	droppedToolCall := false
 	for _, tc := range toolCallMap {
 		// Skip tool calls with empty name or ID — Bedrock (and other strict
 		// providers) reject messages containing toolUse blocks where name or
 		// toolUseId is empty. This can happen when streaming produces partial
 		// delta chunks that initialize a slot before the name/id arrive.
 		if tc.ID == "" || tc.Name == "" {
+			zap.L().Warn("dropping incomplete streamed tool call",
+				zap.String("tool_call_id", tc.ID),
+				zap.String("tool_name", tc.Name))
+			droppedToolCall = true
 			continue
 		}
 		if argsStr, ok := tc.Input["_args"].(string); ok {
@@ -889,7 +910,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	case "length":
 		stopReason = "max_tokens"
 	case "tool_calls", "function_call":
-		stopReason = "tool_use"
+		if droppedToolCall && len(toolCalls) == 0 {
+			stopReason = "end_turn"
+		} else {
+			stopReason = "tool_use"
+		}
 	case "content_filter":
 		stopReason = "content_filter"
 	default:

@@ -14,11 +14,16 @@
 package factory
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/llm/litellm"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
 // TestCreateLiteLLMProvider_FromConfig verifies that explicit config values are
@@ -156,7 +161,18 @@ func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
 	// LITELLM_BASE_URL is NOT set in the config placeholder, but IS set as a
 	// direct env var for the fallback lookup.
 	t.Setenv("MY_CUSTOM_ENDPOINT", "") // placeholder target unset
-	t.Setenv("LITELLM_BASE_URL", "http://fallback-litellm:4000")
+	requestPath := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath <- r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("LITELLM_BASE_URL", server.URL)
 
 	f := NewProviderFactory(FactoryConfig{
 		LiteLLMEndpoint: "${MY_CUSTOM_ENDPOINT}", // expands to ""
@@ -167,5 +183,10 @@ func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
 
 	raw, err := f.createLiteLLMProvider("")
 	require.NoError(t, err)
-	require.NotNil(t, raw)
+	client, ok := raw.(*litellm.Client)
+	require.True(t, ok)
+	response, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", response.Content)
+	assert.Equal(t, "/v1/chat/completions", <-requestPath)
 }

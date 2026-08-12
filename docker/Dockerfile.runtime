@@ -61,6 +61,8 @@ WORKDIR /workdir
 
 # LOOM_DATA_DIR: agent config and SQLite are mounted here via ConfigMap/subPath
 ENV LOOM_DATA_DIR=/workdir
+# LOOM_PATTERNS_DIR: domain patterns copied into this runtime image
+ENV LOOM_PATTERNS_DIR=/opt/loom/patterns
 # LOOM_SKILLS_DIR: built-in skills fallback (agent skills_dir takes precedence)
 ENV LOOM_SKILLS_DIR=/opt/loom/skills
 # Disable embedded agent/skill installation (weaver, guide) — runtime pods only serve the deployed agent

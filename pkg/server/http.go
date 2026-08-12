@@ -337,24 +337,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
-	// Propagate auth and tracing headers from the HTTP request into gRPC
-	// incoming metadata so that UserIDStreamInterceptor and any downstream
-	// context readers (e.g. auth token forwarding to MCP tools) work
-	// identically on the SSE path as they do on the native gRPC path.
 	ctx := r.Context()
-	md := metadata.New(nil)
-	if v := r.Header.Get("Authorization"); v != "" {
-		md.Set("authorization", v)
-	}
-	if v := r.Header.Get("X-User-ID"); v != "" {
-		md.Set("x-user-id", v)
-	}
-	if v := r.Header.Get("X-Request-ID"); v != "" {
-		md.Set("x-request-id", v)
-	}
-	if len(md) > 0 {
-		ctx = metadata.NewIncomingContext(ctx, md)
-	}
 
 	// Create gRPC stream
 	stream := &sseStreamWrapper{
@@ -412,7 +395,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 			h.logger.Error("StreamWeave failed", zap.Error(err))
 		}
 		// Send error as SSE event
-		h.sendSSEError(w, stream.flusher, err)
+		stream.writeError(err)
 	}
 }
 
@@ -483,6 +466,27 @@ func (s *sseStreamWrapper) writeHeartbeat() error {
 	}
 	s.flusher.Flush()
 	return nil
+}
+
+func (s *sseStreamWrapper) writeError(err error) {
+	errorEvent := map[string]interface{}{
+		"error":    err.Error(),
+		"stage":    "EXECUTION_STAGE_FAILED",
+		"progress": 0,
+	}
+	data, marshalErr := json.Marshal(errorEvent)
+	if marshalErr != nil {
+		s.logger.Error("failed to marshal SSE error", zap.Error(marshalErr))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, writeErr := fmt.Fprintf(s.writer, "data: %s\n\n", data); writeErr != nil {
+		s.logger.Error("failed to write SSE error", zap.Error(writeErr))
+		return
+	}
+	s.flusher.Flush()
 }
 
 func (s *sseStreamWrapper) SetHeader(md metadata.MD) error {
@@ -589,17 +593,4 @@ func (h *HTTPServer) handleAppHTML(w http.ResponseWriter, _ *http.Request, name 
 			"connect-src 'self'; frame-ancestors 'self'")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content) // #nosec -- trusted internal app HTML served with strict CSP headers
-}
-
-// sendSSEError sends an error event via SSE
-func (h *HTTPServer) sendSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	errorEvent := map[string]interface{}{
-		"error":    err.Error(),
-		"stage":    "EXECUTION_STAGE_FAILED",
-		"progress": 0,
-	}
-
-	data, _ := json.Marshal(errorEvent)
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
 }
