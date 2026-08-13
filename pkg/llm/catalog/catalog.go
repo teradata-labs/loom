@@ -41,6 +41,31 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// on 2026-04-22. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
 			{
+				// Claude Opus 5. Adaptive thinking. $5/$25 like the 4.x Opus line.
+				Id:                  "claude-opus-5",
+				Name:                "Claude Opus 5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-sonnet-5",
+				Name:                "Claude Sonnet 5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  3.0,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
 				// Current flagship. Uses adaptive thinking (not extended thinking).
 				Id:                  "claude-opus-4-7",
 				Name:                "Claude Opus 4.7",

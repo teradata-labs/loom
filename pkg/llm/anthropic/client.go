@@ -89,12 +89,12 @@ type Client struct {
 
 // Config holds configuration for the Anthropic client.
 type Config struct {
-	APIKey            string
-	Model             string // Default: claude-sonnet-4-5-20250929
-	Endpoint          string // Default: https://api.anthropic.com/v1/messages
-	Timeout           time.Duration
-	MaxTokens         int     // Default: 4096
-	Temperature       float64 // Default: 1.0
+	APIKey      string
+	Model       string // Default: claude-sonnet-4-5-20250929
+	Endpoint    string // Default: https://api.anthropic.com/v1/messages
+	Timeout     time.Duration
+	MaxTokens   int     // Default: 4096
+	Temperature float64 // Default: 1.0
 	// ThinkingLevel requests extended thinking ("", "none" = off). Non-off
 	// levels map to adaptive (display summarized) on 4.6+/5 models and to
 	// budget_tokens tiers (low 4k / medium+auto 16k / high 32k) on older ones.
@@ -593,6 +593,18 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 			// Claude Opus 4.5, 4.6, 4.7: $5/$25
 			inputPricePerM = 5.0
 			outputPricePerM = 25.0
+		case strings.Contains(c.model, "opus"):
+			// Any newer Opus (5+) not yet in the catalog: $5/$25, never the
+			// sonnet default — a missing catalog entry must not silently
+			// under-price Opus at sonnet rates.
+			inputPricePerM = 5.0
+			outputPricePerM = 25.0
+		case strings.Contains(c.model, "fable"):
+			// Claude Fable 5: $10/$50. Not the sonnet default — Fable is the
+			// most expensive family, so a missing catalog entry must never
+			// under-price it.
+			inputPricePerM = 10.0
+			outputPricePerM = 50.0
 		case strings.Contains(c.model, "haiku"):
 			// Claude Haiku 4.5: $1/$5
 			inputPricePerM = 1.0
