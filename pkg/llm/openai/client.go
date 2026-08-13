@@ -793,6 +793,12 @@ func (c *Client) usesMaxCompletionTokens() bool {
 func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
 
+	// Latency split stamps, surfaced via response Metadata: prep (conversion +
+	// marshal), then wait-to-first-SSE-chunk of ANY delta type. The token
+	// callback fires only on text deltas, so tool-call turns are invisible to
+	// callback-based TTFT — these stamps are the client's own ground truth.
+	prepStart := time.Now()
+
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
 	c.toolNameMap = make(map[string]string)
@@ -837,6 +843,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// 2. Send request with rate limiting if enabled
+	sendStart := time.Now()
+	var firstChunkAt time.Time
+	sseChunks := 0
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
 		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
@@ -908,6 +917,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// Skip malformed chunks but continue processing
 			continue
 		}
+		if firstChunkAt.IsZero() {
+			firstChunkAt = time.Now()
+		}
+		sseChunks++
 
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]
@@ -1076,6 +1089,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 	completeThinkingBlocks(thinkingBlocks, thinkingText)
 
+	md := map[string]interface{}{
+		"model":         c.model,
+		"finish_reason": finishReason,
+		"streaming":     true,
+		"prep_ms":       sendStart.Sub(prepStart).Milliseconds(),
+		"sse_chunks":    sseChunks,
+	}
+	if !firstChunkAt.IsZero() {
+		md["ttft_ms"] = firstChunkAt.Sub(sendStart).Milliseconds()
+		md["gen_ms"] = time.Since(firstChunkAt).Milliseconds()
+	}
+
 	return &llmtypes.LLMResponse{
 		Content:        contentBuffer.String(),
 		StopReason:     stopReason,
@@ -1083,11 +1108,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		ToolCalls:      toolCalls,
 		Thinking:       thinkingText,
 		ThinkingBlocks: thinkingBlocks,
-		Metadata: map[string]interface{}{
-			"model":         c.model,
-			"finish_reason": finishReason,
-			"streaming":     true,
-		},
+		Metadata:       md,
 	}, nil
 }
 
