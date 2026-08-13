@@ -103,6 +103,11 @@ func (t *TaskListTool) Execute(ctx context.Context, input map[string]interface{}
 		for _, r := range raw {
 			m, _ := r.(map[string]interface{})
 			title, _ := m["title"].(string)
+			if title == "" {
+				// Models routinely send "description" for the item name on
+				// their first call; accept it rather than burn a reject.
+				title, _ = m["description"].(string)
+			}
 			criteria, _ := m["criteria"].(string)
 			items = append(items, types.TaskItem{Title: title, Criteria: criteria})
 		}
