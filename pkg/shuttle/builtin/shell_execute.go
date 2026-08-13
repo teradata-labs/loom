@@ -230,8 +230,17 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
 		absLoomDataDir, _ := filepath.Abs(loomDataDir)
 
-		// Check if path is within LOOM_DATA_DIR or a whitelisted directory
+		// Check if path is within LOOM_DATA_DIR or a whitelisted directory.
+		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
+		// is honored exactly as this guard's Suggestion advertises — without
+		// it, an anchored workspace outside the data dir rejects every call.
 		isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+		if !isAllowed {
+			absSandboxDir, _ := filepath.Abs(config.GetLoomSandboxDir())
+			if absSandboxDir != "" && strings.HasPrefix(absWorkingDir, absSandboxDir) {
+				isAllowed = true
+			}
+		}
 		if !isAllowed {
 			// Whitelist /tmp for temporary file operations (common for agent workflows)
 			if runtime.GOOS != "windows" && strings.HasPrefix(absWorkingDir, "/tmp") {

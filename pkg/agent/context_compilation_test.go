@@ -809,3 +809,101 @@ func TestPreviewMeta_Deterministic(t *testing.T) {
 		assert.Equal(t, t1, t2)
 	}
 }
+
+// flakyCompressor fails its first failN calls, then returns out. Counts calls.
+type flakyCompressor struct {
+	out   string
+	failN int
+	calls int
+}
+
+func (f *flakyCompressor) CompressMessages(ctx context.Context, messages []Message) (string, error) {
+	f.calls++
+	if f.calls <= f.failN {
+		return "", fmt.Errorf("scripted compressor failure %d", f.calls)
+	}
+	return f.out, nil
+}
+func (f *flakyCompressor) IsEnabled() bool { return true }
+
+// reliefSingleTurnFixture builds a single-turn session whose pressure mass is
+// assistant TEXT (unevictable), so ReleasePressure must escalate to the
+// rung-0 fold of the current turn.
+func reliefSingleTurnFixture(t *testing.T) *SegmentedMemory {
+	t.Helper()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	const sessionID = "sess-single-turn"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetThreshold(6000)
+	sm.SetSessionStore(store, sessionID)
+
+	persist := func(role, content, toolUseID string, calls []ToolCall, turnStart bool) {
+		m := Message{Role: role, Content: content, ToolUseID: toolUseID, ToolCalls: calls}
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &m, turnStart))
+		sm.AddMessage(ctx, m)
+	}
+
+	persist("user", "TICKET: build the marts; payment_method_share = share of the source's transaction count", "", nil, true)
+	for i := 0; i < 5; i++ {
+		persist("assistant", strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120), "", nil, false)
+	}
+	persist("assistant", "", "", []ToolCall{{ID: "cLast", Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
+	persist("tool", "small result", "cLast", nil, false)
+	require.Equal(t, int64(1), sm.CurrentTurn())
+	return sm
+}
+
+// Invariant: a rung-0 fold of the current turn NEVER folds the turn's
+// user-role rows — the ticket survives in L1 verbatim while the assistant
+// prose around it folds into a real summary.
+func TestReleasePressure_NeverFoldsCurrentTurnUserRows(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	sm.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+
+	shed, _, _ := sm.ReleasePressure(context.Background(), 0)
+	require.True(t, shed, "pressure must shed via rung-0 fold")
+
+	msgs := sm.GetMessages()
+	foundTicket := false
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "payment_method_share = share of the source's transaction count") {
+			foundTicket = true
+		}
+	}
+	assert.True(t, foundTicket, "the ticket must survive the fold verbatim in L1")
+	assert.Contains(t, sm.summary.text, "summary of the analysis prose", "the fold itself must have committed")
+}
+
+// Invariant: with no working compressor there is NO fold — no heuristic
+// fallback, no "(unsummarized)" marker, no mutation.
+func TestReleasePressure_FoldAbortsWithoutSummary(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	fc := &flakyCompressor{failN: 99}
+	sm.SetCompressor(fc)
+
+	before := len(sm.GetMessages())
+	sm.ReleasePressure(context.Background(), 0)
+
+	assert.Equal(t, 3, fc.calls, "compressor must be retried exactly compressAttempts times")
+	assert.NotContains(t, sm.summary.text, "unsummarized", "the heuristic fallback must not exist")
+	assert.Equal(t, before, len(sm.GetMessages()), "an aborted fold mutates nothing")
+}
+
+// Invariant: a transient compressor failure is retried and the fold commits
+// on a later attempt.
+func TestReleasePressure_FoldRetriesThenSucceeds(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	fc := &flakyCompressor{failN: 2, out: "covers msg:1-99\nsummary after retry"}
+	sm.SetCompressor(fc)
+
+	shed, _, _ := sm.ReleasePressure(context.Background(), 0)
+	require.True(t, shed)
+	assert.Equal(t, 3, fc.calls, "two failures then the success")
+	assert.Contains(t, sm.summary.text, "summary after retry")
+}

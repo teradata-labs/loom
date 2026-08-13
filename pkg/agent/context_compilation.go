@@ -851,9 +851,29 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	if count <= 0 {
 		return false
 	}
-	region := sm.contextMessages[:count]
 
-	// The covered span, from the region's persisted seqs.
+	// Partition the prefix: the current turn's user-role rows — the ticket
+	// and any skill-body sidecar — are the run's INPUT and never fold. They
+	// cannot be re-derived from anything else in the session; a summary is a
+	// paraphrase of the axioms, not the axioms. They stay in L1 verbatim and
+	// re-enter the compile untouched. For b < t the predicate never fires:
+	// settled turns fold whole, user rows included.
+	tNow := sm.currentTurnLocked()
+	foldRegion := make([]Message, 0, count)
+	protected := make([]Message, 0, 2)
+	for i := 0; i < count; i++ {
+		if sm.contextMessages[i].Turn == tNow && sm.contextMessages[i].Role == "user" {
+			protected = append(protected, sm.contextMessages[i])
+			continue
+		}
+		foldRegion = append(foldRegion, sm.contextMessages[i])
+	}
+	if len(foldRegion) == 0 {
+		return false
+	}
+	region := foldRegion
+
+	// The covered span, from the folded rows' persisted seqs.
 	var loSeq, hiSeq int64
 	var seqs []int64
 	for i := range region {
@@ -905,9 +925,19 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// The LOCK IS RELEASED across the call: the compressor is a pure function
 	// of the snapshot built above, and holding the write lock through a
 	// network call would serialize every reader behind it for the duration.
+	// The compressor is REQUIRED: a fold without a real summary is task
+	// amnesia, not relief. There is no heuristic fallback — if the compressor
+	// is absent or still failing after retries, the fold aborts with no
+	// mutation and the ladder moves on honestly.
+	if sm.compressor == nil || !sm.compressor.IsEnabled() {
+		zap.L().Warn("releasePressure: fold skipped — no compressor configured",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b))
+		return false
+	}
 	newText := ""
-	fallback := false
-	if sm.compressor != nil && sm.compressor.IsEnabled() {
+	const compressAttempts = 3
+	for attempt := 1; attempt <= compressAttempts; attempt++ {
 		sm.mu.Unlock()
 		compressCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		// The re-lock is DEFERRED, not sequential. ReleasePressure holds a
@@ -939,7 +969,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			return false
 		}
 
-		if err == nil && compressed != "" {
+		if err == nil && strings.TrimSpace(compressed) != "" {
 			newText = strings.TrimSpace(compressed)
 			// The first line states the covered span (§5.4.4) — enforced here
 			// when the compressor omitted it OR echoed a stale line: a span
@@ -948,19 +978,19 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			if !coversThrough(newText, hiSeq) {
 				newText = fmt.Sprintf("covers msg:%d-%d\n", loSeq, hiSeq) + newText
 			}
+			break
 		}
+		zap.L().Warn("releasePressure: compressor attempt failed",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b),
+			zap.Int("attempt", attempt),
+			zap.Error(err))
 	}
 	if newText == "" {
-		// Compressor failure (§5.4.5): version n+1 = the previous text
-		// unchanged plus one line — coverage is never silently claimed and
-		// never lost; the next fold's compressor pass absorbs it.
-		fallback = true
-		line := fmt.Sprintf("also covers msg:%d-%d (unsummarized): %s", loSeq, hiSeq, firstUserLine(region))
-		if sm.summary.text == "" {
-			newText = line
-		} else {
-			newText = sm.summary.text + "\n" + line
-		}
+		zap.L().Error("releasePressure: fold aborted — compressor failed after retries; no fallback exists (a fold without a summary is amnesia)",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b))
+		return false
 	}
 
 	// Skills whose load pair folds are deactivated (§4.5). Accumulate them on the
@@ -1016,8 +1046,9 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// post-stage state without a re-read (folded rows are filtered at the
 	// database read on reload).
 	sm.summary = summaryState{n: n1, text: newText}
-	remaining := make([]Message, len(sm.contextMessages)-count)
-	copy(remaining, sm.contextMessages[count:])
+	remaining := make([]Message, 0, len(protected)+len(sm.contextMessages)-count)
+	remaining = append(remaining, protected...)
+	remaining = append(remaining, sm.contextMessages[count:]...)
 	sm.contextMessages = remaining
 	sm.l1Dirty = true
 	sm.updateTokenCount()
@@ -1026,25 +1057,13 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	zap.L().Info("releasePressure: fold",
 		zap.String("session_id", sm.sessionID),
 		zap.Int64("boundary_turn", b),
-		zap.Int("rows_folded", count),
+		zap.Int("rows_folded", len(region)),
+		zap.Int("rows_protected", len(protected)),
 		zap.Int64("seq_lo", loSeq),
 		zap.Int64("seq_hi", hiSeq),
 		zap.Int("version", n1),
-		zap.Int("output_bytes", len(newText)),
-		zap.Bool("fallback", fallback))
+		zap.Int("output_bytes", len(newText)))
 	return true
-}
-
-// firstUserLine returns the first line of the region's first user message —
-// the §5.4.5 fallback citation.
-func firstUserLine(region []Message) string {
-	for i := range region {
-		if region[i].Role == "user" && region[i].Content != "" {
-			line, _, _ := strings.Cut(region[i].Content, "\n")
-			return line
-		}
-	}
-	return ""
 }
 
 // foldedSkillLoads returns the names of skills whose manage_skills load pair —

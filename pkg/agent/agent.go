@@ -235,12 +235,19 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// suppression set is honoured.
 	queryTool := shuttle.Tool(NewQueryToolResultTool(a))
 	recallTool := shuttle.Tool(NewRecallTool(a))
+	// task_list: the session-internal checklist. Registered by default like
+	// the two above — base-advertised from turn one, suppressible via the
+	// WithoutBuiltinTool set. Its state lives on the session (types.TaskList),
+	// outside Messages, so context relief cannot touch it.
+	taskTool := shuttle.Tool(NewTaskListTool(a))
 	if a.prompts != nil {
 		queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
 		recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.recall")
+		taskTool = shuttle.NewPromptAwareTool(taskTool, a.prompts, "tools.task_list")
 	}
 	a.RegisterTool(queryTool)
 	a.RegisterTool(recallTool)
+	a.RegisterTool(taskTool)
 
 	// Register graph_memory tool eagerly (not progressive disclosure).
 	// Unlike conversation_memory which depends on runtime state (L2 swap events),
@@ -2265,16 +2272,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// withReminder appends the turn's soft reminder as a trailing system
-		// message on a copy — transient, past every cache breakpoint, never
-		// stored — so both the normal send and the recovery resend carry it.
+		// withReminder appends the transient tail — task-list block first,
+		// then the turn's soft reminder — as one trailing system message on a
+		// copy: transient, past every cache breakpoint, never stored, carried
+		// by both the normal send and the recovery resend. The task block is
+		// re-rendered every iteration, so a status update between calls
+		// changes only this trailing message and no cached byte.
+		taskBlock := ""
+		if session.Tasks != nil {
+			taskBlock = session.Tasks.Render(taskListRenderBudget)
+		}
 		withReminder := func(msgs []Message) []Message {
-			if softReminder == "" {
+			tail := strings.TrimSpace(taskBlock + "\n\n" + softReminder)
+			if tail == "" {
 				return msgs
 			}
 			out := make([]Message, len(msgs), len(msgs)+1)
 			copy(out, msgs)
-			return append(out, Message{Role: "system", Content: strings.TrimSpace(softReminder)})
+			return append(out, Message{Role: "system", Content: tail})
 		}
 
 		// Call LLM. Relief is proactive (above) — loom keeps the context under its
