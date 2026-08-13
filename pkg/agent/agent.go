@@ -116,20 +116,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
 
-	// Initialize automatic graph memory extraction if graph memory is enabled.
-	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
-		a.graphMemoryConfig.Enabled && a.graphMemoryConfig.EnableExtraction {
-		a.enableGraphMemoryExtraction = true
-		a.graphExtractionCadence = int(a.graphMemoryConfig.ExtractionCadence)
-		if a.graphExtractionCadence <= 0 {
-			a.graphExtractionCadence = 5
-		}
-		a.graphToolExecutionsSinceExtraction = 0
-
-		// Conversation-turn-based extraction (fires on LLM responses, not just tool use).
-		a.graphConversationExtractionCadence = int(a.graphMemoryConfig.ConversationExtractionCadence)
-		a.graphTurnsSinceExtraction = 0
-	}
+	// Automatic graph memory (background extraction + recall injection) is
+	// permanently disabled: it put LLM bookkeeping calls on the message
+	// critical path. Graph memory exists only through the explicit
+	// graph_memory tool.
 
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
@@ -1822,17 +1812,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	}, true)
 	_ = userMsg
 
-	// Fire graph memory extraction on the incoming user message immediately,
-	// in parallel with the LLM processing it. The user message is where the
-	// information lives — extract entities/facts before the response comes back.
-	if a.enableGraphMemoryExtraction {
-		a.graphExtractionWG.Add(1)
-		go func() {
-			defer a.graphExtractionWG.Done()
-			a.extractGraphMemoryAsync(ctx, sessionID)
-		}()
-	}
-
 	// Store progressCallback in context so nested operations (tools, backends) can access it.
 	// This enables sub-agent progress reporting (e.g., weaver's sub-agents).
 	if p.progressCallback != nil {
@@ -2191,9 +2170,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 	}
-
-	// Inject graph memory context (if enabled and available).
-	a.injectGraphMemoryContext(ctx, session)
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
@@ -2798,20 +2774,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
-			// After each tool execution, check if we should extract graph memories.
-			// Skip when the tool IS graph_memory — explicit use is higher quality.
-			if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
-				a.graphToolExecutionsSinceExtraction++
-				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
-					a.graphExtractionWG.Add(1)
-					go func() {
-						defer a.graphExtractionWG.Done()
-						a.extractGraphMemoryAsync(ctx, session.ID)
-					}()
-					a.graphToolExecutionsSinceExtraction = 0
-				}
-			}
 		}
 
 		// Drain buffered text_body sidecars from this batch AFTER every
