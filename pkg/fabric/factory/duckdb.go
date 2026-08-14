@@ -16,24 +16,36 @@ import (
 	"github.com/teradata-labs/loom/pkg/fabric"
 )
 
-// DuckDBBackend executes queries against a duckdb database file. duckdb is an
+// DuckDBBackend executes queries against duckdb database files. duckdb is an
 // embedded library, not a server: every consumer in a dbt-duckdb environment
 // (dbt itself included) opens the file from a process that carries the duckdb
 // library. Go has no pure-Go binding, so this backend delegates to python3 —
 // the process that already serves every duckdb access in those environments.
 // The engine is an implementation detail behind fabric.ExecutionBackend; a
 // CGO driver can replace it without touching any caller.
+//
+// One path: direct read-only connection, unqualified table names. Several
+// paths (comma-separated DSN): there is no default — an in-memory session
+// ATTACHes every file read-only under its filename stem, and all references
+// are qualified (stem.schema.table). SHOW DATABASES lists the attachments.
 type DuckDBBackend struct {
-	path string // database file path
-	name string
+	paths []string // database file paths
+	name  string
 }
 
-// NewDuckDBBackend creates a backend for the duckdb file at path.
-func NewDuckDBBackend(name, path string) (*DuckDBBackend, error) {
-	if path == "" {
+// NewDuckDBBackend creates a backend for one or more duckdb files. dsn is a
+// single path or a comma-separated list.
+func NewDuckDBBackend(name, dsn string) (*DuckDBBackend, error) {
+	var paths []string
+	for _, p := range strings.Split(dsn, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
 		return nil, fmt.Errorf("duckdb backend requires a database file path")
 	}
-	b := &DuckDBBackend{path: path, name: name}
+	b := &DuckDBBackend{paths: paths, name: name}
 	if err := b.Ping(context.Background()); err != nil {
 		return nil, fmt.Errorf("duckdb backend unavailable: %w", err)
 	}
@@ -49,20 +61,27 @@ func (b *DuckDBBackend) Name() string {
 }
 
 // pythonQuery runs one query in a python3 process embedding duckdb and
-// returns columns plus stringified rows. Read-only connection: the backend
-// serves probes; mutations belong to the pipeline tooling (dbt).
+// returns columns plus stringified rows. Read-only connections only: the
+// backend serves probes; mutations belong to the pipeline tooling (dbt).
+// Multiple files attach into an in-memory session — no default database.
 func (b *DuckDBBackend) pythonQuery(ctx context.Context, query string, maxRows int) ([]string, [][]*string, error) {
 	script := `
-import sys, json, duckdb
-path, limit = sys.argv[1], int(sys.argv[2])
+import sys, json, os, duckdb
+paths, limit = sys.argv[1].split(","), int(sys.argv[2])
 q = sys.stdin.read()
-con = duckdb.connect(path, read_only=True)
+if len(paths) == 1:
+    con = duckdb.connect(paths[0], read_only=True)
+else:
+    con = duckdb.connect()
+    for p in paths:
+        stem = os.path.splitext(os.path.basename(p))[0]
+        con.execute('ATTACH %s AS "%s" (READ_ONLY)' % ("'" + p.replace("'", "''") + "'", stem))
 cur = con.execute(q)
 cols = [d[0] for d in cur.description] if cur.description else []
 rows = cur.fetchmany(limit)
 print(json.dumps({"cols": cols, "rows": [[None if v is None else str(v) for v in r] for r in rows]}))
 `
-	cmd := exec.CommandContext(ctx, "python3", "-c", script, b.path, fmt.Sprint(maxRows))
+	cmd := exec.CommandContext(ctx, "python3", "-c", script, strings.Join(b.paths, ","), fmt.Sprint(maxRows))
 	cmd.Stdin = strings.NewReader(query)
 	out, err := cmd.Output()
 	if err != nil {
@@ -123,7 +142,7 @@ func (b *DuckDBBackend) ExecuteQuery(ctx context.Context, query string) (*fabric
 // GetSchema returns column names/types for a table or view.
 func (b *DuckDBBackend) GetSchema(ctx context.Context, resource string) (*fabric.Schema, error) {
 	cols, raw, err := b.pythonQuery(ctx,
-		fmt.Sprintf("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = '%s' ORDER BY ordinal_position", strings.ReplaceAll(resource, "'", "''")),
+		schemaInfoQuery(resource),
 		duckdbMaxRows)
 	if err != nil {
 		return nil, err
@@ -220,4 +239,24 @@ func pythonErrorLine(stderr string) string {
 		}
 	}
 	return lines[len(lines)-1]
+}
+
+// schemaInfoQuery builds the information_schema lookup for a resource that
+// may be bare (hosts), schema-qualified (main.hosts) or catalog-qualified
+// (airbnb.main.hosts — attached-database form).
+func schemaInfoQuery(resource string) string {
+	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	parts := strings.Split(resource, ".")
+	cond := ""
+	switch len(parts) {
+	case 3:
+		cond = fmt.Sprintf("table_catalog = '%s' AND table_schema = '%s' AND table_name = '%s'",
+			esc(parts[0]), esc(parts[1]), esc(parts[2]))
+	case 2:
+		cond = fmt.Sprintf("table_schema = '%s' AND table_name = '%s'", esc(parts[0]), esc(parts[1]))
+	default:
+		cond = fmt.Sprintf("table_name = '%s'", esc(resource))
+	}
+	return "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE " +
+		cond + " ORDER BY ordinal_position"
 }

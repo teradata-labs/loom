@@ -107,3 +107,52 @@ func TestFactoryDuckDB(t *testing.T) {
 		t.Fatalf("ping failed: %v", err)
 	}
 }
+
+// Several files, no default: an in-memory session attaches each read-only
+// under its filename stem; references are fully qualified.
+func TestDuckDBBackendMultiAttach(t *testing.T) {
+	if !havePythonDuckDB() {
+		t.Skip("python3-duckdb not available")
+	}
+	dir := t.TempDir()
+	a := filepath.Join(dir, "alpha.duckdb")
+	z := filepath.Join(dir, "zeta.duckdb")
+	seedDuckDB(t, a)
+	seed2 := `
+import duckdb
+con = duckdb.connect("` + z + `")
+con.execute("create table orders (id int)")
+con.execute("insert into orders values (10),(20)")
+con.close()
+`
+	if out, err := exec.Command("python3", "-c", seed2).CombinedOutput(); err != nil {
+		t.Fatalf("seed failed: %v %s", err, out)
+	}
+
+	b, err := NewDuckDBBackend("multi", a+","+z)
+	if err != nil {
+		t.Fatalf("backend failed: %v", err)
+	}
+	ctx := context.Background()
+
+	// qualified references reach both databases
+	res, err := b.ExecuteQuery(ctx, "SELECT count(*) AS n FROM alpha.main.hosts")
+	if err != nil || res.Rows[0]["n"] != "2" {
+		t.Fatalf("alpha query failed: %v %+v", err, res)
+	}
+	res, err = b.ExecuteQuery(ctx, "SELECT count(*) AS n FROM zeta.main.orders")
+	if err != nil || res.Rows[0]["n"] != "2" {
+		t.Fatalf("zeta query failed: %v %+v", err, res)
+	}
+
+	// unqualified reference has no default database to land in
+	if _, err := b.ExecuteQuery(ctx, "SELECT count(*) FROM hosts"); err == nil {
+		t.Fatal("unqualified name must not resolve when several files are attached")
+	}
+
+	// schema lookup works catalog-qualified
+	schema, err := b.GetSchema(ctx, "zeta.main.orders")
+	if err != nil || len(schema.Fields) != 1 {
+		t.Fatalf("qualified schema failed: %v %+v", err, schema)
+	}
+}
