@@ -582,6 +582,7 @@ type TaskItem struct {
 	ID       int
 	Title    string
 	Criteria string
+	Contract string // output contract for data deliverables; write-once like Criteria
 	Status   string // "pending" | "in_progress" | "done" | "cancelled"
 	Reason   string // required when Status == "cancelled"
 }
@@ -613,6 +614,7 @@ func (tl *TaskList) Create(items []TaskItem) ([]int, error) {
 			ID:       tl.nextID,
 			Title:    strings.TrimSpace(it.Title),
 			Criteria: strings.TrimSpace(it.Criteria),
+			Contract: strings.TrimSpace(it.Contract),
 			Status:   "pending",
 		})
 		ids = append(ids, tl.nextID)
@@ -685,6 +687,9 @@ func (tl *TaskList) Render(maxBytes int) string {
 			line := fmt.Sprintf("#%d IN PROGRESS: %s", it.ID, it.Title)
 			if it.Criteria != "" {
 				line += " — criteria: " + it.Criteria
+			}
+			if it.Contract != "" {
+				line += " — output contract: " + it.Contract
 			}
 			inProg = append(inProg, line)
 		case "pending":

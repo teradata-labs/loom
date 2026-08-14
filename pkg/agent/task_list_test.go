@@ -181,16 +181,18 @@ func TestMech_TaskListRidesTransientTail(t *testing.T) {
 		assert.NotContains(t, msg.Content, "TASKS (")
 	}
 
-	// Call 2: created — trailing system message carries the render with
-	// pending items and the criteria vault text.
+	// Call 2: created — trailing USER message (system-role tails get hoisted
+	// into the cached head by OpenAI→Anthropic gateways) carries the render,
+	// wrapped in the reminder tag so it reads as state, not a user ask.
 	last2 := mock.captured[1][len(mock.captured[1])-1]
-	assert.Equal(t, "system", last2.Role)
+	assert.Equal(t, "user", last2.Role)
+	assert.Contains(t, last2.Content, "<system-reminder>")
 	assert.Contains(t, last2.Content, "TASKS (0 done)")
 	assert.Contains(t, last2.Content, "#1 pending: intermediates")
 
 	// Call 3: after update — tail reflects in_progress WITH criteria verbatim.
 	last3 := mock.captured[2][len(mock.captured[2])-1]
-	assert.Equal(t, "system", last3.Role)
+	assert.Equal(t, "user", last3.Role)
 	assert.Contains(t, last3.Content, "#1 IN PROGRESS: intermediates — criteria: share = source transaction count")
 
 	// The render lives ONLY in the tail: no earlier message in call 3

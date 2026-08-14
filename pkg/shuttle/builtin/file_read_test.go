@@ -25,8 +25,9 @@ func TestFileReadTool_Name(t *testing.T) {
 func TestFileReadTool_Description(t *testing.T) {
 	tool := NewFileReadTool("")
 	desc := tool.Description()
-	assert.Contains(t, desc, "DEPRECATED")
-	assert.Contains(t, desc, "local filesystem")
+	assert.NotContains(t, desc, "DEPRECATED")
+	assert.Contains(t, desc, "glob")
+	assert.Contains(t, desc, "pattern")
 }
 
 func TestFileReadTool_InputSchema(t *testing.T) {
@@ -35,7 +36,10 @@ func TestFileReadTool_InputSchema(t *testing.T) {
 
 	assert.NotNil(t, schema)
 	assert.Equal(t, "object", schema.Type)
-	assert.Contains(t, schema.Required, "path")
+	// paths/path are alternatives — neither is schema-required; Execute validates.
+	assert.Empty(t, schema.Required)
+	assert.Contains(t, schema.Properties, "paths")
+	assert.Contains(t, schema.Properties, "pattern")
 }
 
 func TestFileReadTool_Execute_Success(t *testing.T) {
@@ -245,4 +249,136 @@ func TestIsSensitiveReadPath(t *testing.T) {
 			assert.Equal(t, tc.expected, result, "path: %s", tc.path)
 		})
 	}
+}
+
+// One call reads many files via globs; blocks carry === path === headers.
+func TestFileReadTool_MultiGlobRead(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "models", "dim"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "models", "a.sql"), []byte("select 1"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "models", "dim", "b.sql"), []byte("select 2"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.md"), []byte("hi"), 0600))
+
+	tool := NewFileReadTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"models/**/*.sql", "readme.md"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "=== models/a.sql ===")
+	assert.Contains(t, out, "=== models/dim/b.sql ===")
+	assert.Contains(t, out, "=== readme.md ===")
+	assert.Contains(t, out, "select 2")
+}
+
+// pattern mode returns matching lines as path:line, not full contents.
+func TestFileReadTool_PatternSearch(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "x.sql"), []byte("select a\nfrom snap__hosts\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "y.sql"), []byte("select b\nfrom t\n"), 0600))
+
+	tool := NewFileReadTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths":   []interface{}{"*.sql"},
+		"pattern": "snap__",
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "x.sql:2: from snap__hosts")
+	assert.NotContains(t, out, "select a")
+	assert.NotContains(t, out, "y.sql:")
+}
+
+// A missing path fails its block only; the call still succeeds.
+func TestFileReadTool_MultiPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("fine"), 0600))
+	tool := NewFileReadTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"ok.txt", "missing.txt"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "fine")
+	assert.Contains(t, out, "ERROR: not found")
+}
+
+// Wildcard sweeps skip gitignored machinery and hidden dirs; explicit paths
+// and globs aimed into ignored folders still work.
+func TestFileReadTool_SweepHonorsGitignore(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("target/\ndbt_packages/\nlogs/\n"), 0600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "models"), 0750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "target", "compiled"), 0750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".hidden"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "models", "a.sql"), []byte("select 1"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "target", "compiled", "a.sql"), []byte("compiled"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".hidden", "h.sql"), []byte("hidden"), 0600))
+
+	tool := NewFileReadTool(dir)
+
+	// project-wide sweep: only source survives
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"**/*.sql"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "models/a.sql")
+	assert.NotContains(t, out, "target/compiled")
+	assert.NotContains(t, out, ".hidden")
+
+	// explicit literal path into ignored dir: untouched
+	res, err = tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"target/compiled/a.sql"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	assert.Contains(t, res.Data.(string), "compiled")
+
+	// glob whose literal prefix aims inside the ignored dir: declared intent, passes
+	res, err = tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"target/**/*.sql"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	assert.Contains(t, res.Data.(string), "compiled")
+}
+
+// Without a .gitignore, only the hidden-dir convention applies.
+func TestFileReadTool_SweepNoGitignore(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "target"), 0750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "target", "b.sql"), []byte("select 2"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "c.sql"), []byte("gitfile"), 0600))
+
+	tool := NewFileReadTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"**/*.sql"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "target/b.sql") // no .gitignore → no project opinion
+	assert.NotContains(t, out, ".git")      // hidden convention still holds
+}
+
+// A glob matching nothing is reported as a note — an empty folder is
+// information in a survey; the call still succeeds on the other entries.
+func TestFileReadTool_ZeroMatchReported(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.sql"), []byte("select 1"), 0600))
+	tool := NewFileReadTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"paths": []interface{}{"*.sql", "snapshots/**/*.sql"},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	out := res.Data.(string)
+	assert.Contains(t, out, "select 1")
+	assert.Contains(t, out, "(no matches: snapshots/**/*.sql)")
 }

@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 
+	"strings"
+
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -27,10 +29,16 @@ where exactness matters (column semantics, thresholds, formats). Criteria
 are write-once: they cannot be edited later, only cancelled with a reason
 and re-created — re-read the task text before re-creating.
 
-update — move one item: in_progress when you start it, done when its
+update — move items: in_progress when you start one, done when its
 criteria hold in the built result, cancelled (reason required) when the
 task text makes it unnecessary. Keep exactly one item in_progress at a
-time. done and cancelled are final.
+time. done and cancelled are final. Batch transitions by passing updates
+as an array — completing the current item and starting the next is one
+call.
+
+For data deliverables fill output_contract — the columns, types, units,
+and null semantics the reader of the output will rely on; verify the built
+result against it in the final verification item.
 
 The current list is shown to you on every step. The work is complete only
 when no item is pending or in_progress.`
@@ -66,13 +74,27 @@ func (t *TaskListTool) InputSchema() *shuttle.JSONSchema {
 				Items: &shuttle.JSONSchema{
 					Type: "object",
 					Properties: map[string]*shuttle.JSONSchema{
-						"title":    {Type: "string", Description: "the deliverable"},
-						"criteria": {Type: "string", Description: "its acceptance criteria, from the task text"},
+						"title":           {Type: "string", Description: "the deliverable"},
+						"criteria":        {Type: "string", Description: "its acceptance criteria, from the task text"},
+						"output_contract": {Type: "string", Description: "for data deliverables: the columns, types, units, and null semantics the reader of this output will rely on"},
 					},
 					Required: []string{"title"},
 				},
 			},
-			"id":     {Type: "integer", Description: "(update) task id"},
+			"updates": {
+				Type:        "array",
+				Description: "(update) transitions applied in order — batch completing the current item and starting the next into one call",
+				Items: &shuttle.JSONSchema{
+					Type: "object",
+					Properties: map[string]*shuttle.JSONSchema{
+						"id":     {Type: "integer", Description: "task id"},
+						"status": {Type: "string", Description: "in_progress | done | cancelled"},
+						"reason": {Type: "string", Description: "(cancelled) why the task text makes this unnecessary"},
+					},
+					Required: []string{"id", "status"},
+				},
+			},
+			"id":     {Type: "integer", Description: "(update) task id — single-transition form; prefer updates"},
 			"status": {Type: "string", Description: "(update) in_progress | done | cancelled"},
 			"reason": {Type: "string", Description: "(update, cancelled) why the task text makes this unnecessary"},
 		},
@@ -109,7 +131,8 @@ func (t *TaskListTool) Execute(ctx context.Context, input map[string]interface{}
 				title, _ = m["description"].(string)
 			}
 			criteria, _ := m["criteria"].(string)
-			items = append(items, types.TaskItem{Title: title, Criteria: criteria})
+			contract, _ := m["output_contract"].(string)
+			items = append(items, types.TaskItem{Title: title, Criteria: criteria, Contract: contract})
 		}
 		if sess.Tasks == nil {
 			sess.Tasks = types.NewTaskList()
@@ -125,9 +148,34 @@ func (t *TaskListTool) Execute(ctx context.Context, input map[string]interface{}
 		if sess.Tasks == nil {
 			return taskListFail("no_tasks", "no task list exists — create first"), nil
 		}
+		// Batch form: updates applied in declared order, each reported on its
+		// own line; one failure does not stop the rest.
+		if raw, ok := input["updates"].([]interface{}); ok && len(raw) > 0 {
+			lines := make([]string, 0, len(raw))
+			failed := 0
+			for _, r := range raw {
+				m, _ := r.(map[string]interface{})
+				idF, ok := m["id"].(float64) // JSON numbers arrive as float64
+				if !ok {
+					lines = append(lines, "FAILED: update missing integer id")
+					failed++
+					continue
+				}
+				status, _ := m["status"].(string)
+				reason, _ := m["reason"].(string)
+				if err := sess.Tasks.Update(int(idF), status, reason); err != nil {
+					lines = append(lines, "FAILED #"+fmt.Sprint(int(idF))+": "+err.Error())
+					failed++
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("#%d → %s", int(idF), status))
+			}
+			return &shuttle.Result{Success: failed < len(raw),
+				Data: strings.Join(lines, "\n")}, nil
+		}
 		idF, ok := input["id"].(float64) // JSON numbers arrive as float64
 		if !ok {
-			return taskListFail("invalid_input", "update requires an integer id"), nil
+			return taskListFail("invalid_input", "update requires updates: [{id, status}] or an integer id"), nil
 		}
 		status, _ := input["status"].(string)
 		reason, _ := input["reason"].(string)

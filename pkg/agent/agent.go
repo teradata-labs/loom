@@ -2289,7 +2289,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			out := make([]Message, len(msgs), len(msgs)+1)
 			copy(out, msgs)
-			return append(out, Message{Role: "system", Content: tail})
+			// USER role, never system: gateways fold trailing system-role
+			// messages into the Anthropic system parameter at the HEAD of the
+			// request, where this mutating block would invalidate every cache
+			// segment on every call. A trailing user message stays in place —
+			// after the till-NOW breakpoint, outside every cached segment.
+			// The reminder tag marks it as harness state, not a user ask.
+			return append(out, Message{Role: "user",
+				Content: "<system-reminder>\n" + tail + "\n</system-reminder>"})
 		}
 
 		// Call LLM. Relief is proactive (above) — loom keeps the context under its
