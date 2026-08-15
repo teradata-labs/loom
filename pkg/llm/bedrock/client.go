@@ -827,6 +827,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
 	if !ok {
 		switch {
+		case strings.Contains(c.modelID, "claude-opus-5"):
+			// Claude Opus 5: $5 per 1M input, $25 per 1M output
+			inputPricePerMillion = 5.0
+			outputPricePerMillion = 25.0
+		case strings.Contains(c.modelID, "claude-sonnet-5"):
+			// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
+			inputPricePerMillion = 3.0
+			outputPricePerMillion = 15.0
 		case strings.Contains(c.modelID, "claude-opus-4-1"):
 			// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
 			inputPricePerMillion = 15.0
