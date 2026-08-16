@@ -246,6 +246,8 @@ open questions.
 4. Workflow YAML cannot express `session_mode`/`feedback_template`/`cooldown_ms` today —
    `parseOutputRetryPolicy` (`workflow_config.go:728`) only reads `max_retries` and
    `include_valid_values`. Relevant when the leveling policy grows a YAML surface.
+   ✅ **Fixed 2026-08-16** — all three are parsed now; see "Phase 2d: the workflow YAML
+   surface".
 
 ## Known limitations (honest)
 
@@ -421,6 +423,8 @@ one agent call — the disabled case even carries a deliberately invalid policy
 - 📋 Workflow **YAML** surface: `workflow_config.go` does not parse
   `leveling_policy`, so YAML-defined workflows cannot enable leveling yet; only
   clients constructing the proto directly (gRPC/Go) can.
+  ✅ **Shipped 2026-08-16** — a `leveling:` block on pipeline stages and parallel
+  tasks now populates this proto; see "Phase 2d: the workflow YAML surface".
 - 📋 A proto judge reference (deliberately excluded this phase; see decision #2).
 - ⚠️ Escalation rungs run without agent tools (one-shot chat). A rung that
   needs tool use is future work.
@@ -914,7 +918,8 @@ follow-up to design a task set that actually produces fenced JSON remains open.
 - 📋 No new live-model measurement. The benchmark numbers above are Go-level only; C3 escalation
   remains **unproven**, exactly as Phase 2b concluded.
 - 📋 No proto change, so no `buf` regeneration was required. The YAML surface still cannot enable
-  leveling.
+  leveling. ✅ **Changed 2026-08-16** — the YAML surface can enable leveling as of Phase 2d
+  (still no proto change).
 - ⚠️ The disabled path still discards the outcome and returns a nil report, so validator warnings
   are not surfaced there. That Phase 1 limitation stands by design.
 
@@ -1154,3 +1159,169 @@ Single-hop attribute lookup (multi-hop synthesis untested); 200-record corpus; e
 queries favor BM25; embeddings from a chat model rather than a dedicated embedding model;
 one seeded draw; `VectorRecall` is brute-force O(n) cosine — fine at 200 records, unmeasured
 at scale.
+
+---
+
+# Phase 2d: the workflow YAML surface (2026-08-16)
+
+**Status**: ✅ Implemented — the config-surface gap Phase 2 left open ("YAML-defined workflows
+cannot enable leveling") is closed. In the working tree, not committed. **No proto change was
+needed**: the messages and both carrier fields already existed, so this is purely a
+YAML→proto loader change. Leveling remains off by default.
+
+Chronologically this lands after Phase 4, but it completes Phase 2's config-surface work, hence
+the number.
+
+## What shipped
+
+| File | Contents |
+|---|---|
+| `pkg/orchestration/workflow_config_leveling.go` (new) | `parseLevelingPolicy`, `parseLevelingLadder`, `parseLevelingTierPolicies`, `parseLLMRoleName`, `parseRetrySessionMode`, and the presence-reporting scalar readers (`yamlBoolField`, `yamlStringField`, `yamlInt32Field`, `yamlFloat64Field`) |
+| `pkg/orchestration/workflow_config.go` | `parseOutputPolicy` (new), `parseOutputRetryPolicy` extended, stage/task wiring |
+| `pkg/orchestration/leveling_config.go` | `validateLevelingLadderShape` — the agent-free half of ladder validation, so a malformed ladder fails at load instead of at execution |
+| `pkg/orchestration/testdata/leveling-pipeline.yaml` (new) | A realistic leveling workflow used by the end-to-end test |
+| `pkg/orchestration/workflow_config_leveling_test.go` (new) | 11 test functions / 58 subtests, all passing under `-race` |
+
+## The YAML schema as implemented
+
+`leveling:` is accepted on a **pipeline stage** and on a **parallel task** (and therefore on an
+iterative pattern's stages, which reuse the pipeline converter). `leveling_policy:` is accepted
+as an alias — every other block in this loader is keyed on its proto field name, and a silently
+ignored key is worse than a second spelling. Setting both is an error.
+
+```yaml
+stages:
+  - agent_id: worker
+    prompt_template: "{{previous}}"
+    output_policy:
+      output_schema: '{"type":"object","required":["answer"], ... }'
+    leveling:
+      enabled: true                        # REQUIRED when the block is present
+      short_circuit_mid: true              # optional; absent ⇒ UNSET ⇒ true
+      max_escalations: 2                   # optional; absent ⇒ UNSET ⇒ 1; 0 disables escalation
+      max_cost_usd: 0.50                   # optional; 0 = no ceiling
+      frontier_min_output_cost_usd: 10.0   # optional; 0 = built-in default
+      mid_min_output_cost_usd: 1.5         # optional; 0 = built-in default
+      ladder:                              # optional
+        - provider: ollama                 # resolved from the agent's provider pool
+          model: deepseek-r1:latest
+        - role: orchestrator               # or LLM_ROLE_ORCHESTRATOR / llm-role-orchestrator
+      tier_policies:                       # optional; keys: unknown, local, small-open,
+        local:                             #   mid, frontier
+          retry_budget: 2
+          aggressive_coercion: true
+          scaffolding_depth: 0             # 📋 carried, consumed by nothing (C2)
+```
+
+Role names accept the generated enum name, the short form, either case, and `-` for `_`.
+`unspecified` is rejected as an explicit value — on a rung it means "no role", which the shape
+check reports more usefully.
+
+## Semantics of absence (the whole point)
+
+| YAML | Proto field | Executor gate |
+|---|---|---|
+| no `leveling:` key | **nil** — not an empty message | closed |
+| `leveling:` with a null value | **nil** (matching `hitl_gate`'s precedent for an explicit null) | closed |
+| `leveling: {enabled: false}` | non-nil, `enabled=false` | closed |
+| `leveling: {enabled: true, …}` | non-nil, `enabled=true` | open |
+
+Two absence rules are load-bearing and pinned by tests:
+
+1. **An absent block produces a nil proto field.** Both executors gate on
+   `GetLevelingPolicy().GetEnabled()`, so nil and disabled behave identically — but nil is what
+   "the feature does not exist for this stage" looks like on the wire and in storage.
+2. **`short_circuit_mid` and `max_escalations` stay UNSET when their key is absent.** They are
+   proto3 `optional` precisely because their Go defaults are `true` and `1`: writing a proto3
+   zero value for an absent key would invert them. The loader only assigns them when the key is
+   present, via `proto.Bool`/`proto.Int32`. Presence is read through helpers that return
+   `(value, present, error)` rather than through struct-tag unmarshalling, which cannot tell
+   absent from zero.
+
+A third rule is new policy, not inherited: **`enabled` is required when the block is present.**
+Defaulting a missing `enabled` to false would parse a full, carefully written leveling block
+into something that does nothing, with no diagnostic. `enabled: false` is accepted and inert.
+Omitting the block entirely remains the way to say "off".
+
+## Where each validation fires
+
+Load time means `LoadWorkflowFromYAML` / `LoadWorkflowFromYAMLBytes`; all load errors wrap
+`ErrInvalidWorkflow` and name the YAML path (`spec.stages[0].leveling.ladder[1].role`).
+
+| Check | Fires at | Authority |
+|---|---|---|
+| Block/rung/tier-map shape, scalar types, fractional integers, unknown role name, unknown `session_mode`, both leveling keys set, missing `enabled` | **load** | the loader (nothing else can see YAML types) |
+| Negative `max_escalations`/`max_cost_usd`/`retry_budget`/`scaffolding_depth`, unknown tier key | **load**, and again at convert | `LevelingPolicyFromProto`, called by the loader as a validation gate and discarded — no duplicated rules or messages |
+| Rung names neither role nor provider | **load**, and again at resolve | new `validateLevelingLadderShape`; `resolveLevelingLadder` re-checks because it also serves callers that never touched a config loader, with identical wording |
+| Rung's provider is absent from the agent's pool / role has no LLM | **execution only** | `resolveLevelingLadder` — needs the executing agent, so it is unknowable at load time |
+
+Semantic checks are skipped for a disabled block, deliberately: `LevelingPolicyFromProto`'s
+rule is that a policy which was never enabled can never fail conversion, and the YAML surface
+inherits it. `leveling: {enabled: false, max_escalations: -1, tier_policies: {NOT-A-TIER: {}}}`
+loads, stores, and stays inert. Type errors still fire — there is nothing to store otherwise.
+
+## Two adjacent blocks this needed
+
+**`output_policy` is now parsed** (stage and task, all five fields). Without it a parallel task
+had no way to express a schema in YAML, so leveling on a task could never have a free signal —
+the surface would have been reachable but useless. Parsing it does **not** make it enforced: the
+only readers of `OutputPolicy` are the leveling paths
+(`effectiveLevelingOutputPolicy`, `ParallelExecutor.executeTaskWithLeveling`), verified by grep,
+so a stage or task carrying `output_policy` without an enabled leveling policy behaves exactly
+as before. The Phase 2 safety constraint is unchanged and its inertness tests are untouched; a
+new test loads a YAML stage with a hostile disabled policy plus a violated schema and asserts
+one agent call, no validation, no warnings.
+
+⚠️ `acceptance_criteria`, `validator_agent_id` and `judge_config_id` are parsed and stored but
+consumed by nothing (`OutputValidator.validate` is deliberately LLM-free). They round-trip; they
+do not evaluate.
+
+**`parseOutputRetryPolicy` was extended** — gap #4 from the Phase 1 "What the code contradicted"
+list. It now reads `session_mode` (short or full enum form), `feedback_template` and
+`cooldown_ms` in addition to `max_retries`/`include_valid_values`. This matters for leveling
+because escalation prompts are built from `FeedbackTemplate`. Preserved: a `retry_policy` with
+`max_retries <= 0` still yields a nil policy, exactly as before. New: setting one of the three
+new keys *with* `max_retries <= 0` is now an error rather than a silent drop, because that
+combination is always a mistake. The function gained an error return and a path argument; it is
+package-private with four call sites, all in `workflow_config.go`, all updated.
+
+## Test coverage of the distinction that matters
+
+| Test | Pins |
+|---|---|
+| `TestWorkflowYAMLLevelingAbsentBlockYieldsNilPolicy` | absent / null / alias-null block ⇒ nil field on both carriers |
+| `TestWorkflowYAMLLevelingOptionalFieldsUnsetVsExplicitZero` | **the UNSET-vs-explicit-zero distinction**: nil pointers for absent keys, non-nil pointers for explicit `false`/`0`, and the defaults `LevelingPolicyFromProto` derives from each |
+| `TestWorkflowYAMLLevelingFullRoundTrip` | every field, both carriers, plus the alias |
+| `TestWorkflowYAMLLevelingDisabledBlockLoadsAndStaysInert` | disabled block with hostile fields loads, and the loaded stage is inert in the executor |
+| `TestWorkflowYAMLLevelingErrors` (19 cases) | load-time messages, on stages and tasks |
+| `TestWorkflowYAMLLevelingSemanticErrorsSkippedWhenDisabled` / `…TypeErrorsFireEvenWhenDisabled` | the enabled-gated vs always-on halves of validation |
+| `TestWorkflowYAMLLevelingRoleForms` | short form, full enum name, case and `-`/`_` variants |
+| `TestLoadWorkflowFromYAML_LevelingReachesExecutorGate` | end-to-end from `testdata/leveling-pipeline.yaml`: the gate opens, the YAML-declared ladder rung resolves from the provider pool, and the rung's output wins (1 primary call from `retry_budget: 0`, 1 rung call) — plus the same for a parallel task |
+| `TestWorkflowYAMLOutputPolicyBlock`, `TestWorkflowYAMLRetryPolicyExtendedFields` | the two adjacent blocks |
+
+## Verification record (2026-08-16, Phase 2d)
+
+Exit codes were read from redirected files, never through a pipe.
+
+- ✅ `go build -tags fts5 ./...` — exit 0, no output.
+- ✅ `go test -tags fts5 -race ./pkg/orchestration/` — exit 0.
+- ✅ `go test -tags fts5 -race -short ./...` — exit 0, 95 packages `ok`, 0 failures.
+- ✅ `go vet -tags fts5 ./pkg/orchestration/` — exit 0.
+- ✅ `gofmt -l ./pkg ./cmd ./internal` — exit 0, no files listed.
+- ✅ No proto change, so no `buf` regeneration.
+- ⚠️ `just lint` not run: the same golangci-lint/Go export-data incompatibility recorded in the
+  Phase 0/1, 2b and 2c sections. `go vet` + `gofmt` are the usable gates.
+
+## What this does not change
+
+- 📋 **No judge can be configured from YAML**, by design (Phase 2 decision #2). Combined with
+  Phase 3's finding that the free schema signal is blind to reasoning errors, a YAML-configured
+  leveling policy can close the **format** gap and nothing else. Escalation on semantic
+  wrongness still requires a Go caller that supplies a `LevelingJudge` — and Phase 3b says that
+  judge must be reasoning-class to be worth its latency.
+- 📋 `scaffolding_depth` is now expressible in YAML and still consumed by nothing (C2, which
+  Phase 3b deprioritized on evidence).
+- 📋 C4 self-consistency, and the follow-ups Phases 2b–4 opened, are untouched.
+- ⚠️ A rung's provider/role must exist on the executing agent; that can only fail at execution
+  time, so a YAML file can be valid and still fail its first run. The error names the rung index
+  and the agent.

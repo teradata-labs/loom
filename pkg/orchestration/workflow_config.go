@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -346,9 +347,22 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 			return nil, fmt.Errorf("%w: stage %d missing 'prompt_template'", ErrInvalidWorkflow, i)
 		}
 
+		stagePath := fmt.Sprintf("spec.stages[%d]", i)
+
 		validationPrompt, _ := stageMap["validation_prompt"].(string)
 		outputSchema, _ := stageMap["output_schema"].(string)
-		retryPolicy := parseOutputRetryPolicy(stageMap)
+		retryPolicy, err := parseOutputRetryPolicy(stageMap, stagePath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+		}
+		outputPolicy, err := parseOutputPolicy(stageMap, stagePath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+		}
+		levelingPolicy, err := parseLevelingPolicy(stageMap, stagePath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+		}
 		hitlGate, err := parseHITLGate(stageMap)
 		if err != nil {
 			return nil, fmt.Errorf("%w: stage %d: %s", ErrInvalidWorkflow, i, err.Error())
@@ -360,7 +374,9 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 			ValidationPrompt: validationPrompt,
 			OutputSchema:     outputSchema,
 			RetryPolicy:      retryPolicy,
+			OutputPolicy:     outputPolicy,
 			HitlGate:         hitlGate,
+			LevelingPolicy:   levelingPolicy,
 		}
 	}
 
@@ -416,10 +432,22 @@ func convertParallelPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 			}
 		}
 
+		taskPath := fmt.Sprintf("spec.tasks[%d]", i)
+		outputPolicy, err := parseOutputPolicy(taskMap, taskPath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+		}
+		levelingPolicy, err := parseLevelingPolicy(taskMap, taskPath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+		}
+
 		tasks[i] = &loomv1.AgentTask{
-			AgentId:  agentID,
-			Prompt:   prompt,
-			Metadata: metadata,
+			AgentId:        agentID,
+			Prompt:         prompt,
+			Metadata:       metadata,
+			OutputPolicy:   outputPolicy,
+			LevelingPolicy: levelingPolicy,
 		}
 	}
 
@@ -510,7 +538,10 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 	}
 
 	// Extract optional retry_policy
-	retryPolicy := parseOutputRetryPolicy(spec)
+	retryPolicy, err := parseOutputRetryPolicy(spec, "spec")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
 
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Conditional{
@@ -688,7 +719,10 @@ func convertSwarmPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, 
 	judgeAgentID, _ := spec["judge_agent_id"].(string)
 
 	// Extract optional retry_policy
-	retryPolicy := parseOutputRetryPolicy(spec)
+	retryPolicy, err := parseOutputRetryPolicy(spec, "spec")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
 
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Swarm{
@@ -723,43 +757,141 @@ func parseVotingStrategy(strategy string) loomv1.VotingStrategy {
 	}
 }
 
+// retryPolicyRetryOnlyKeys are the retry_policy fields that only mean something
+// once at least one retry is allowed. They are named in the error raised when
+// they appear alongside max_retries <= 0, because silently dropping them (which
+// is what returning nil does) is how a typo becomes a mystery.
+var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "cooldown_ms"}
+
 // parseOutputRetryPolicy parses an optional retry_policy from YAML config.
-// Returns nil if no retry_policy is present or if max_retries is 0/negative.
-func parseOutputRetryPolicy(raw map[string]interface{}) *loomv1.OutputRetryPolicy {
+// path is the YAML location of the enclosing block, used only for errors.
+//
+// Returns nil if no retry_policy is present or if max_retries is 0/negative —
+// both mean "no retry policy". Setting session_mode, feedback_template or
+// cooldown_ms without a positive max_retries is an error rather than a silent
+// drop.
+//
+// YAML shape:
+//
+//	retry_policy:
+//	  max_retries: 2                      # required for the policy to exist
+//	  include_valid_values: true          # optional; absent = true
+//	  session_mode: fresh                 # optional; fresh | continue | escalate
+//	  feedback_template: "..."            # optional; {{error}}, {{previous_output}},
+//	  cooldown_ms: 250                    #   {{attempt}}, {{max_retries}}
+func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.OutputRetryPolicy, error) {
 	retryRaw, ok := raw["retry_policy"].(map[string]interface{})
 	if !ok {
-		return nil
+		return nil, nil
 	}
+	path = path + ".retry_policy"
 
 	policy := &loomv1.OutputRetryPolicy{}
 
-	if maxRetries, ok := retryRaw["max_retries"]; ok {
-		switch v := maxRetries.(type) {
-		case int:
-			policy.MaxRetries = types.SafeInt32(v)
-		case int32:
-			policy.MaxRetries = v
-		case int64:
-			policy.MaxRetries = types.SafeInt32FromInt64(v)
-		case float64:
-			policy.MaxRetries = types.SafeInt32(int(v))
-		}
+	maxRetries, _, err := yamlInt32Field(retryRaw, path, "max_retries")
+	if err != nil {
+		return nil, err
 	}
+	policy.MaxRetries = maxRetries
 
 	// Return nil if max_retries is 0 or negative — same as "no retry policy"
 	if policy.MaxRetries <= 0 {
-		return nil
+		for _, key := range retryPolicyRetryOnlyKeys {
+			if _, present := retryRaw[key]; present {
+				return nil, fmt.Errorf("%s.%s needs max_retries >= 1: with no retries allowed the whole retry_policy is discarded", path, key)
+			}
+		}
+		return nil, nil
 	}
 
 	// Default to true — proto3 bool defaults to false, but including valid values
 	// in retry prompts is the safe default (helps the LLM produce correct output).
 	// Only set to false if explicitly configured.
 	policy.IncludeValidValues = true
-	if includeValues, ok := retryRaw["include_valid_values"].(bool); ok {
+	includeValues, present, err := yamlBoolField(retryRaw, path, "include_valid_values")
+	if err != nil {
+		return nil, err
+	}
+	if present {
 		policy.IncludeValidValues = includeValues
 	}
 
-	return policy
+	sessionMode, present, err := yamlStringField(retryRaw, path, "session_mode")
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		mode, ok := parseRetrySessionMode(sessionMode)
+		if !ok {
+			return nil, fmt.Errorf("%s.session_mode %q is not a known retry session mode (valid: %s; the full enum name such as RETRY_SESSION_MODE_FRESH is also accepted)",
+				path, sessionMode, strings.Join(retrySessionModeShortNames(), ", "))
+		}
+		policy.SessionMode = mode
+	}
+
+	if policy.FeedbackTemplate, _, err = yamlStringField(retryRaw, path, "feedback_template"); err != nil {
+		return nil, err
+	}
+
+	cooldownMs, _, err := yamlInt32Field(retryRaw, path, "cooldown_ms")
+	if err != nil {
+		return nil, err
+	}
+	if cooldownMs < 0 {
+		return nil, fmt.Errorf("%s.cooldown_ms must be >= 0, got %d", path, cooldownMs)
+	}
+	policy.CooldownMs = cooldownMs
+
+	return policy, nil
+}
+
+// parseOutputPolicy parses an optional unified output_policy block from a
+// pipeline stage or parallel task.
+//
+// Returns nil when the block is absent. Parsing it does not make it enforced:
+// the only executors that read OutputPolicy are the capability-leveling paths,
+// so a stage or task carrying output_policy without an enabled leveling policy
+// behaves exactly as it did before — see the leveling doc's OutputPolicy safety
+// constraint.
+//
+// YAML shape:
+//
+//	output_policy:
+//	  output_schema: '{"type":"object", ...}'   # optional
+//	  acceptance_criteria: "..."                # optional (no executor consumes it yet)
+//	  validator_agent_id: reviewer              # optional (ditto)
+//	  judge_config_id: strict-judge             # optional (ditto)
+//	  retry_policy: { ... }                     # optional; see parseOutputRetryPolicy
+func parseOutputPolicy(enclosing map[string]interface{}, path string) (*loomv1.OutputPolicy, error) {
+	raw, ok := enclosing["output_policy"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	block, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s.output_policy must be an object, got %T", path, raw)
+	}
+	path = path + ".output_policy"
+
+	policy := &loomv1.OutputPolicy{}
+	var err error
+	if policy.OutputSchema, _, err = yamlStringField(block, path, "output_schema"); err != nil {
+		return nil, err
+	}
+	if policy.AcceptanceCriteria, _, err = yamlStringField(block, path, "acceptance_criteria"); err != nil {
+		return nil, err
+	}
+	if policy.ValidatorAgentId, _, err = yamlStringField(block, path, "validator_agent_id"); err != nil {
+		return nil, err
+	}
+	if policy.JudgeConfigId, _, err = yamlStringField(block, path, "judge_config_id"); err != nil {
+		return nil, err
+	}
+	if policy.RetryPolicy, err = parseOutputRetryPolicy(block, path); err != nil {
+		return nil, err
+	}
+
+	return policy, nil
 }
 
 // parseHITLGate parses an optional hitl_gate block from a pipeline stage.

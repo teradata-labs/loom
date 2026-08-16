@@ -107,6 +107,27 @@ func LevelingPolicyFromProto(p *loomv1.LevelingPolicy) (*LevelingPolicy, error) 
 	return policy, nil
 }
 
+// validateLevelingLadderShape checks the part of a proto ladder that can be
+// judged without an agent: every rung must exist and must name either a role or
+// a provider. It exists so a config surface (the workflow YAML loader) can
+// reject a malformed ladder at load time instead of at execution time.
+//
+// resolveLevelingLadder re-checks both conditions because it must — it resolves
+// rungs supplied by callers that never went through a config loader — and its
+// wording is kept identical to these messages.
+func validateLevelingLadderShape(protoRungs []*loomv1.LevelingRung) error {
+	for i, pr := range protoRungs {
+		switch {
+		case pr == nil:
+			return fmt.Errorf("leveling ladder: rung %d is nil", i+1)
+		case pr.GetRole() != loomv1.LLMRole_LLM_ROLE_UNSPECIFIED, pr.GetProvider() != "":
+		default:
+			return fmt.Errorf("leveling ladder: rung %d needs role or provider", i+1)
+		}
+	}
+	return nil
+}
+
 // resolveLevelingLadder builds the executor's ladder: the caller's primary rung
 // followed by one rung per proto rung, each bound to an LLM already configured
 // on the executing agent.
