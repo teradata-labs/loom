@@ -147,8 +147,14 @@ leaned. The code confirmed the lean twice over:
    remaps session modes — **no LLM upgrade happens anywhere in Loom today**. The comment is
    aspirational. The leveling executor is where that upgrade now actually lives.
 
-The executor calls `ValidateAndRetry` unmodified for every rung, so same-model retry semantics,
+The executor calls `ValidateAndRetry` for the primary rung, so same-model retry semantics,
 feedback templates, session modes, and cooldowns are inherited rather than reimplemented.
+
+⚠️ As written at Phase 1 this said "unmodified for every rung". Two corrections: escalation
+rungs were never routed through the validator (Phase 2 executes them as one-shot
+`LLMProvider.Chat` calls), and Phase 2c *did* modify `ValidateAndRetry` — it now returns a
+`ValidationOutcome` and accepts a `CoerceFunc`. The retry semantics it inherits are still
+the validator's, not reimplemented.
 
 ## Tier taxonomy + exact derivation (design decision #2 — resolved)
 
@@ -184,7 +190,7 @@ policy is also disabled (`leveling_executor.go:55-86`).
 |---|---|---|
 | Flag off (nil policy or `Enabled: false`) | One nil/bool check, then direct delegation (`leveling_executor.go:177-181`) | 0 |
 | Flag on, primary is `frontier` / `mid` (default) / `unknown` | One memoized catalog lookup (two map hits, 0 allocs) + one tracer span (`:200-223`) | 0 — the judge is never consulted on this path |
-| Flag on, low tier, first pass passes schema | One JSON-schema check (already free in the validator) re-applied once | 0 |
+| Flag on, low tier, first pass passes schema | One JSON-schema check (already free in the validator) re-applied once ⚠️ *corrected at Phase 2b (the re-check cost ~9.2 µs / 203 allocs, not "free"); removed entirely in Phase 2c — the validator's verdict is now reused* | 0 |
 | Flag on, low tier, fenced-but-valid JSON | Free `extractJSONFromText` coercion instead of any retry/escalation | 0 |
 | Flag on, low tier, no schema, no judge | Nothing — no signal exists, output stands (`:428-429`) | 0 |
 | Flag on, low tier, failure signal | Escalation rungs, each budget-checked first | ≤ `MaxEscalations`, hard-capped by `MaxCostUSD` |
@@ -192,6 +198,11 @@ policy is also disabled (`leveling_executor.go:55-86`).
 Signal precedence is fixed (`evaluate`, `leveling_executor.go:359-430`): schema (free) owns the
 verdict when present and the judge is then never called; the judge (one LLM call, cost counted)
 runs only when no schema exists; escalation fires only on an explicit failure signal.
+
+⚠️ Line refs in this section are as of Phase 1 and have drifted. Since Phase 2c the *primary*
+rung's verdict comes from `primaryVerdict`, not `evaluate`; `evaluate` still governs the
+escalation rungs, which do not go through the validator. The precedence rules themselves are
+unchanged.
 
 ## Escalation policy interface (design decision #3 — partially resolved)
 
@@ -208,7 +219,9 @@ type LevelingPolicy struct {
 
 `TierPolicy` knobs: `RetryBudget` (✅ consumed — becomes the validator's `MaxRetries` when the
 caller supplied none), `AggressiveCoercion` (✅ consumed — free JSON extraction before declaring
-schema failure), `ScaffoldingDepth` (📋 reserved for C2, documented as not consumed).
+schema failure; since Phase 2c this runs *inside* the validator on the failing attempt, so it no
+longer waits for the retry budget to drain), `ScaffoldingDepth` (📋 reserved for C2, documented
+as not consumed).
 
 `LevelingJudge` is a local func type because `pkg/evals/judges` imports `pkg/orchestration` —
 importing it back would be a cycle. An adapter from `judges.Judge` is a one-liner at the call
@@ -236,10 +249,10 @@ open questions.
 
 ## Known limitations (honest)
 
-- ⚠️ Coercion runs after `ValidateAndRetry` returns, so with a tier retry budget a
-  fenced-but-valid payload burns same-model retries before free coercion rescues it. Fixing
-  this cleanly needs a coercion hook inside `OutputValidator.validate` — deferred so this phase
-  would not modify existing files.
+- ✅ **Fixed in Phase 2c** (was: coercion runs after `ValidateAndRetry` returns, so with a tier
+  retry budget a fenced-but-valid payload burns same-model retries before free coercion rescues
+  it). `ValidateAndRetry` now takes a `CoerceFunc` and applies the rewrite on the failing
+  attempt itself, so no retry is burned — see the Phase 2c section.
 - ⚠️ On the disabled path the validator's warnings are not surfaced (nil report by design).
 - ⚠️ Judge spend counts against `MaxCostUSD`, but a judge skipped by the ceiling fails open
   (`Passed=true`, `BudgetExhausted=true`) — the output was never examined, so rejecting it
@@ -384,7 +397,7 @@ one agent call — the disabled case even carries a deliberately invalid policy
 |---|---|---|
 | No leveling policy / `enabled: false` | One proto getter check per stage/task | 0 |
 | Enabled, frontier/mid (default)/unknown primary | Policy conversion + one memoized catalog lookup + one tracer span | 0 |
-| Enabled, low tier, output passes schema | The above + one free JSON-schema check | 0 |
+| Enabled, low tier, output passes schema | The above + one free JSON-schema check ⚠️ *see Phase 2b: this was a second, non-free re-check; removed in Phase 2c* | 0 |
 | Enabled, low tier, failure signal | Escalation rungs, each budget-checked first | ≤ `max_escalations`, capped by `max_cost_usd` |
 
 ## Verification record (2026-08-15, Phase 2)
@@ -612,7 +625,10 @@ the schema on its first attempt and makes more than one call fails the test.
 
 ### What enabling leveling actually costs in Go, with no model involved
 
-`BenchmarkLevelingEnabledOverhead`, synthetic instant `Execute`, 200000 iterations:
+`BenchmarkLevelingEnabledOverhead`, synthetic instant `Execute`, 200000 iterations. **This
+table is a historical record of what the code measured at Phase 2b; the redundancy it
+identified was removed in Phase 2c and these enabled-path numbers no longer describe the
+current code** (see "Phase 2c results" for the after numbers):
 
 | Path | ns/op | B/op | allocs/op |
 |---|---|---|---|
@@ -623,20 +639,23 @@ the schema on its first attempt and makes more than one call fails the test.
 One `validateJSONSchema` call in isolation measures **9211 ns / 11436 B / 203 allocs**.
 That accounts for essentially the whole delta.
 
-⚠️ **This corrects the Phase 1 and Phase 2 latency tables in this document.** Both state
-that the enabled-but-short-circuiting path adds "one memoized catalog lookup + one tracer
-span". It also adds **a second, redundant JSON-Schema validation**: `ValidateAndRetry`
-validates the output, and then the executor re-validates it — at `leveling_executor.go`
-`:221-223` on the short-circuit path and inside `evaluate` (`:390`) on the active path.
-The catalog lookup is ~16 ns; the redundant validation is ~9.2 µs, roughly 570× larger,
-and is the actual cost of enabling leveling. Leveling bookkeeping (span, report, policy
-plumbing) is the remaining ~2.4 µs.
+⚠️ **This corrected the Phase 1 and Phase 2 latency tables in this document, and has since
+itself been superseded — see Phase 2c.** Both earlier tables state that the
+enabled-but-short-circuiting path adds "one memoized catalog lookup + one tracer span". As
+measured at Phase 2b it also added **a second, redundant JSON-Schema validation**:
+`ValidateAndRetry` validated the output, and then the executor re-validated it — at
+`leveling_executor.go` `:221-223` on the short-circuit path and inside `evaluate` (`:390`) on
+the active path. The catalog lookup is ~16 ns; the redundant validation was ~9.2 µs, roughly
+570× larger, and was the actual cost of enabling leveling. Leveling bookkeeping (span, report,
+policy plumbing) is the remaining ~2.4 µs.
 
-In practice this is 11.6 µs against a ~900,000 µs model call — **0.0013%**, which is why
-arms 3 and 4 are indistinguishable. The requirement holds comfortably. But the doc claim
-was wrong and the redundancy is real; removing it needs the validator to surface its
-verdict to the caller, which is the same refactor the Phase 1 section already deferred
-for the coercion hook.
+In practice that was 11.6 µs against a ~900,000 µs model call — **0.0013%**, which is why
+arms 3 and 4 are indistinguishable. The requirement held comfortably even then. But the
+earlier doc claim was wrong and the redundancy was real; removing it needed the validator to
+surface its verdict to the caller, which was the same refactor the Phase 1 section had
+deferred for the coercion hook. **Phase 2c did that refactor**, so the Phase 1/Phase 2 latency
+tables ("one memoized catalog lookup + one tracer span") are accurate again for the
+short-circuit path, and the enabled paths each lost 203 allocs / ~11,446 B.
 
 ## Verdict (honest, including what did not work)
 
@@ -728,9 +747,10 @@ into `head`/`grep` (which reports the pipeline's exit code, not the command's).
 
 ## Follow-ups this phase opened
 
-- 📋 Remove the redundant second `validateJSONSchema` on the leveling path (~9.2 µs and
-  203 allocs per execution). Needs `OutputValidator` to surface its verdict to the
-  caller — the same refactor already deferred for the coercion hook.
+- ✅ **Done in Phase 2c.** Remove the redundant second `validateJSONSchema` on the leveling
+  path (~9.2 µs and 203 allocs per execution). `ValidateAndRetry` now returns a
+  `ValidationOutcome` the executor reuses; the coercion hook landed in the same refactor.
+  Measured: each enabled path lost exactly 203 allocs and ~11,446 B.
 - 📋 Re-run the measurement with a genuinely larger escalation rung (e.g. a 70B local
   model, or a hosted frontier model) before making any claim about C3. As measured, C3 is
   unproven, not validated.
@@ -745,3 +765,155 @@ into `head`/`grep` (which reports the pipeline's exit code, not the command's).
   blind spot and was deliberately **not** changed — it is a separate index on a
   provider-cost path, outside the tier-resolution scope of this phase. Tagged models
   still miss it and fall back to provider-local rates.
+
+---
+
+# Phase 2c results (2026-08-15): validator verdict refactor + in-validator coercion
+
+**Status**: ✅ Implemented — the refactor this document deferred twice (Phase 1's coercion hook,
+Phase 2b's redundant-validation follow-up) is done. In the working tree, not committed. Leveling
+remains off by default, and the disabled path is byte-for-byte unchanged.
+
+Both deferrals were the *same* refactor: the validator knew the verdict and threw it away, so the
+executor had to re-derive it. Surfacing the verdict fixes the redundancy and makes room for the
+coercion hook in one change.
+
+## What changed
+
+**1. `ValidateAndRetry` returns its verdict** (`pkg/orchestration/output_validator.go`).
+
+```go
+type ValidationOutcome struct {
+    Passed          bool     // final attempt satisfied the policy (vacuously true for a nil policy)
+    Err             error    // validation error from the final attempt; nil when Passed
+    Warnings        []string // one entry per failed attempt
+    CoercionApplied bool     // coerce produced the pass; result carries the rewrite
+}
+
+func (v *OutputValidator) ValidateAndRetry(
+    ctx context.Context, policy *loomv1.OutputPolicy,
+    execute ExecuteFunc, feedback FeedbackFunc,
+    originalPrompt string, workflowID string,
+    coerce CoerceFunc,
+) (*loomv1.AgentResult, ValidationOutcome, error)
+```
+
+A non-nil `error` still means execution or the context failed, not that validation failed — an
+output that fails every attempt comes back with `Passed=false` and a nil error, as before.
+
+**2. Coercion moved inside the retry loop.** The new
+`CoerceFunc func(output string) (coerced string, ok bool)` (nil = no coercion) is consulted on a
+schema failure *before* the attempt is written off. When the rewrite validates, the validator
+rewrites `result.Output` in place, sets `CoercionApplied`, and returns a pass immediately: no
+retries burned, and no warning recorded for the rescued attempt.
+
+**3. The executor reuses the verdict instead of re-deriving it**
+(`pkg/orchestration/leveling_executor.go`).
+
+| Path | Before | After |
+|---|---|---|
+| Disabled | `ValidateAndRetry`, nil report | Unchanged — passes nil `coerce`, discards the outcome |
+| Short-circuit | `ValidateAndRetry`, then `validateJSONSchema` again to set `report.Passed` | `report.Passed = outcome.Passed`; the re-check is deleted |
+| Active, primary rung | `ValidateAndRetry`, then `evaluate` re-validated the schema *and* ran a second coercion pass | New `primaryVerdict` helper reads the outcome; no re-validation, no second coercion |
+| Active, escalation rungs | `evaluate` | Unchanged — rungs are one-shot `Chat` calls that never touch the validator, so `evaluate` still owns their schema check and coercion |
+
+The coerce hook is handed to the validator only when `TierPolicy.AggressiveCoercion` is on *and*
+a schema is present; it wraps the existing `extractJSONFromText`. The judge branch, previously
+duplicated between the primary and escalation paths, was extracted into a shared `judgeVerdict`
+helper so the budget ceiling and fail-open rules live in one place.
+
+## Measured: the redundancy is gone
+
+`BenchmarkLevelingEnabledOverhead`,
+`go test -tags fts5 -run '^$' -bench BenchmarkLevelingEnabledOverhead -benchtime=2s -count=3
+./pkg/orchestration/`, Apple M4 Pro, same machine and session for both halves:
+
+| Path | ns/op before (3 runs) | ns/op after (3 runs) | B/op before → after | allocs/op before → after |
+|---|---|---|---|---|
+| disabled | 9999 / 10042 / 10078 | 10139 / 10394 / 11400 | 11965 → 11964–11965 | 211 → **211** |
+| enabled, `local` primary, passes schema | 20844 / 20892 / 21983 | 11805 / 14316 / 14589 | 24543–24544 → 13097–13098 | 436 → **233** |
+| enabled, `frontier` primary (short-circuits) | 20688 / 20824 / 20946 | 11713 / 11721 / 11767 | 24463–24464 → 13017–13018 | 435 → **232** |
+
+The **alloc delta is the clean signal**: each enabled path lost exactly **203 allocs and 11,446
+B** — precisely the one `validateJSONSchema` call the Phase 2b section measured in isolation at
+9211 ns / 11436 B / 203 allocs. One redundant call removed, one call's worth of allocations gone,
+on both enabled paths.
+
+ns/op medians: enabled-`local` 20.9 µs → ~14 µs (noisy run to run, 11.8–14.6 µs);
+enabled-`frontier` ~20.8 µs → ~11.7 µs. Enabled-vs-disabled overhead is now **~1.3–4 µs** of
+leveling bookkeeping (span, report, policy plumbing, catalog lookup) instead of ~11 µs. The
+disabled path is unchanged, which was the requirement — the small ns/op spread there
+(10.1–11.4 µs vs 10.0–10.1 µs) is run-to-run noise on an identical code path, and the
+211 allocs/op is byte-for-byte identical.
+
+Against a ~900,000 µs model call this was already 0.0013% and is now less. The point of the
+change is not latency headroom; it is that the code no longer does the same work twice, and that
+coercion now rescues on the attempt that failed.
+
+## One deliberate behavior change
+
+On the **enabled active path**, a coercion-rescued attempt no longer contributes an
+`"attempt N: ..."` entry to `report.Warnings`. Previously the validator recorded the failure and
+returned, and the executor coerced afterwards — so the warning survived even though the output
+was rescued for free. Now the rescue happens before the warning is recorded, so a run that was
+fully repaired by coercion reports empty warnings and `CoercionApplied=true`.
+
+This is intended: a warning is a record of a failure the caller should know about, and a free
+rewrite that satisfied the schema on the same attempt is not one. It is pinned by tests rather
+than left to chance — the fenced-but-valid case with retry budget 3 asserts **exactly one execute
+call, empty warnings, `CoercionApplied=true`**.
+
+Anyone parsing `validation_warnings` to count attempts should know this: on the leveling path the
+count is now failures that were *not* rescued.
+
+## Breaking change (stated plainly)
+
+`ValidateAndRetry` is exported and its signature changed — one added parameter, one added return
+value. **No back-compat wrapper was kept.** The only callers in the repo were the leveling
+executor and tests, all updated; an external caller would not compile. Given the validator's
+Phase 2 status ("persisted but never enforced" — no executor read `OutputPolicy` before Phase 2),
+an out-of-tree caller is unlikely, but the break is real and is not hidden behind a shim.
+
+## Limitation fixed
+
+The Phase 1 "Known limitations" bullet — *coercion runs after `ValidateAndRetry` returns, so with
+a tier retry budget a fenced-but-valid payload burns same-model retries before free coercion
+rescues it* — is **✅ fixed**. Coercion is attempted on the failing attempt itself, so the retry
+budget is never spent on a payload a free rewrite could have saved. That bullet has been updated
+in place.
+
+Note this fixes an *ordering* bug that Phase 2b never observed live: `llama2` emitted
+almost-correct JSON with a type error, not fenced or prose-wrapped JSON, so 0 coercions fired
+across 40 trials. `AggressiveCoercion` is still exercised only by unit tests, and the Phase 2b
+follow-up to design a task set that actually produces fenced JSON remains open.
+
+## Verification record (2026-08-15, Phase 2c)
+
+- ✅ `go build -tags fts5 ./...` — exit 0.
+- ✅ `go vet -tags fts5 ./pkg/orchestration/` — exit 0; `gofmt -l pkg/orchestration` — no files
+  listed.
+- ✅ `go test -tags fts5 -race ./pkg/orchestration/ ./pkg/llm/catalog/ ./pkg/llm/factory/` — all
+  `ok`, exit 0.
+- ✅ Disabled path pinned unchanged by `TestPipelineOutputPolicyInertWithoutLeveling` and the
+  leveling executor's "matches direct `ValidateAndRetry`" subtest — both passing.
+- ✅ New table-driven tests in `pkg/orchestration/output_validator_test.go` cover the outcome
+  struct, warning format, coercion skipping the retry prompt, execution-error and
+  canceled-context outcomes, `coerce` not being consulted on a pass, and the primary verdict
+  coming from the validator rather than a re-check.
+- ✅ Full-repo `go test -tags fts5 -race ./...` — exit 0, 95 packages `ok`, 0 failures, 0 data
+  races (result read from a redirected log file, not a pipe).
+- ⚠️ `just lint` **was run and still fails environmentally** — golangci-lint 1.57.2 cannot read
+  Go 1.26.5 export data and errors even on the stdlib (`could not import sync/atomic ...
+  unsupported version: 2`), the same failure recorded in the Phase 0/1 and Phase 2b sections.
+  `go vet` + `gofmt` are the usable gates.
+
+## What this phase did not change
+
+- 📋 C2 adaptive-scaffolding pattern domain, C4 self-consistency, Phase 4 eval harness — all
+  still unbuilt.
+- 📋 No new live-model measurement. The benchmark numbers above are Go-level only; C3 escalation
+  remains **unproven**, exactly as Phase 2b concluded.
+- 📋 No proto change, so no `buf` regeneration was required. The YAML surface still cannot enable
+  leveling.
+- ⚠️ The disabled path still discards the outcome and returns a nil report, so validator warnings
+  are not surfaced there. That Phase 1 limitation stands by design.
