@@ -84,35 +84,117 @@ func (t ModelTier) String() string {
 	}
 }
 
+// ParseModelTier converts a tier name back into a ModelTier. It is the exact
+// inverse of ModelTier.String(): the accepted inputs are "unknown", "local",
+// "small-open", "mid" and "frontier". Matching is exact — no case folding and
+// no whitespace trimming, so callers own any normalization. Any other input
+// returns (TierUnknown, false), which lets callers distinguish an explicit
+// "unknown" from an unrecognized string.
+func ParseModelTier(s string) (ModelTier, bool) {
+	switch s {
+	case "unknown":
+		return TierUnknown, true
+	case "local":
+		return TierLocal, true
+	case "small-open":
+		return TierSmallOpen, true
+	case "mid":
+		return TierMid, true
+	case "frontier":
+		return TierFrontier, true
+	default:
+		return TierUnknown, false
+	}
+}
+
+// TierThresholds carries the pricing cutoffs used to derive a tier, expressed
+// in USD per 1M output tokens. A zero or negative field means "use the
+// built-in constant" (FrontierMinOutputCostUSD, MidMinOutputCostUSD), so the
+// zero value behaves exactly like DefaultTierThresholds.
+//
+// A consequence of that rule: a threshold of 0 cannot be expressed. A caller
+// who wants every priced model to clear a cutoff passes a small positive
+// number (e.g. 0.0001) rather than 0. This is deliberate — it keeps the zero
+// value usable as "defaults" so callers embedding TierThresholds in a config
+// struct do not have to populate both fields to get the built-in behavior.
+type TierThresholds struct {
+	// FrontierMinOutputCostUSD is the output price at or above which a
+	// reasoning model is treated as frontier.
+	FrontierMinOutputCostUSD float64
+	// MidMinOutputCostUSD is the output price at or above which a
+	// non-reasoning model is treated as mid rather than small-open.
+	MidMinOutputCostUSD float64
+}
+
+// DefaultTierThresholds returns the built-in cutoffs, FrontierMinOutputCostUSD
+// and MidMinOutputCostUSD.
+func DefaultTierThresholds() TierThresholds {
+	return TierThresholds{
+		FrontierMinOutputCostUSD: FrontierMinOutputCostUSD,
+		MidMinOutputCostUSD:      MidMinOutputCostUSD,
+	}
+}
+
+// withDefaults substitutes the built-in constant for each non-positive field.
+// It returns a value, so it allocates nothing.
+func (th TierThresholds) withDefaults() TierThresholds {
+	if th.FrontierMinOutputCostUSD <= 0 {
+		th.FrontierMinOutputCostUSD = FrontierMinOutputCostUSD
+	}
+	if th.MidMinOutputCostUSD <= 0 {
+		th.MidMinOutputCostUSD = MidMinOutputCostUSD
+	}
+	return th
+}
+
 // TierOf returns the capability tier for (provider, modelID) using the
 // package-level catalog Lookup, which applies NormalizeProvider and consults
 // whichever Source is currently registered. Returns TierUnknown when the pair
 // is not cataloged. On the static-source path this is one memoized lookup and
 // allocates nothing.
 func TierOf(provider, modelID string) ModelTier {
-	return TierFromInfo(Lookup(provider, modelID))
+	return TierOfWith(provider, modelID, DefaultTierThresholds())
+}
+
+// TierOfWith is TierOf with caller-supplied thresholds. Non-positive fields in
+// th fall back to the built-in constants, so a zero-value TierThresholds gives
+// the same answers as TierOf. Like TierOf it allocates nothing on the
+// static-source path.
+func TierOfWith(provider, modelID string, th TierThresholds) ModelTier {
+	return TierFromInfoWith(Lookup(provider, modelID), th)
 }
 
 // TierFromInfo derives the tier from an already-resolved ModelInfo, for
 // callers that hold one and want to avoid a second lookup. A nil info returns
+// TierUnknown. It is TierFromInfoWith with the built-in thresholds.
+func TierFromInfo(info *loomv1.ModelInfo) ModelTier {
+	return TierFromInfoWith(info, DefaultTierThresholds())
+}
+
+// TierFromInfoWith derives the tier from an already-resolved ModelInfo,
+// comparing output price against th rather than the built-in constants.
+// Non-positive fields in th fall back to those constants. A nil info returns
 // TierUnknown.
 //
 // The rules are applied in order, and the order matters: a zero-cost model is
 // local even when it advertises reasoning (a self-hosted deepseek-r1 is a
 // local model, not a frontier one), and an expensive non-reasoning model lands
-// in mid rather than frontier because frontier requires reasoning.
-func TierFromInfo(info *loomv1.ModelInfo) ModelTier {
+// in mid rather than frontier because frontier requires reasoning. Thresholds
+// shift where the price boundaries fall; they do not change the rules or their
+// order.
+func TierFromInfoWith(info *loomv1.ModelInfo, th TierThresholds) ModelTier {
 	if info == nil {
 		return TierUnknown
 	}
+	th = th.withDefaults()
 	// The catalog uses 0/0 pricing exclusively for self-hosted models.
 	if info.CostPer_1MInputUsd == 0 && info.CostPer_1MOutputUsd == 0 {
 		return TierLocal
 	}
-	if info.IsReasoning && info.CostPer_1MOutputUsd >= FrontierMinOutputCostUSD {
+	if info.IsReasoning && info.CostPer_1MOutputUsd >= th.FrontierMinOutputCostUSD {
 		return TierFrontier
 	}
-	if info.IsReasoning || info.CostPer_1MOutputUsd >= MidMinOutputCostUSD {
+	if info.IsReasoning || info.CostPer_1MOutputUsd >= th.MidMinOutputCostUSD {
 		return TierMid
 	}
 	return TierSmallOpen
