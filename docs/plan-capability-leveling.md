@@ -1081,3 +1081,76 @@ reasoning ceiling is its weights; the loop can route around the ceiling but not 
 📋 Open: knowledge-gap track (vector-store augmentation) — the one intervention that converts
 reasoning problems into lookup problems and the plan's one untested original claim; and a
 verify-cheap task family where the r1-critic economics flip positive.
+
+---
+
+# Phase 4 results — knowledge-bound experiment, vector-store augmentation (2026-08-15)
+
+**Status**: ✅ Measured — 5 arms × 30 identical questions over 200 fictional device records,
+live local Ollama, 5m28s, $0. Harness: `pkg/orchestration/leveling_knowledge_live_test.go`
+(env-gated, skipped in `-short`; corpus generator pinned by non-live tests in
+`leveling_knowledge_gen_test.go`). Per-trial data: `docs/experiments/knowledge_arms.jsonl`
+(150 rows) and `knowledge_corpus.jsonl` (200 rows).
+
+## Design
+
+The corpus is **fictional by construction** (deterministic splitmix64 records seeded via
+`crc32("knowledge|<index>")`), so no model can know the answers from weights — any lift over
+the no-context floor is pure retrieval, cleanly separated from model capability. Questions ask
+one integer attribute of one device (`{"answer": <integer>}`, same contract and parse machinery
+as Phase 3), with `{"answer": -1}` as an explicit abstention escape so hallucination and
+abstention are distinguishable. Near-collision device IDs make retrieval non-trivial.
+Retrieval arms use Loom's own machinery: BM25 via the graph-memory FTS5 `Recall()` path
+(questions must be quoted-OR rewritten — a raw question is an FTS5 syntax error), vector via
+the previously **uncalled** `VectorRecall` with embeddings from `llama3.2:latest` through
+Ollama's OpenAI-compatible endpoint (3072 dims, probed not hardcoded — the `dimensions` field
+silently truncates if set wrong). Seed 0, temperature 0.1.
+
+## Results
+
+| Arm | Accuracy | Abstained | Hallucinated | Retrieval hit@5 | Latency med |
+|---|---|---|---|---|---|
+| 1 llama2, no context | 0/30 | 21 | **0** | — | 1.1s |
+| 2 llama2 + oracle fact | **30/30** | 0 | 0 | 30/30 | 0.4s |
+| 3 llama2 + BM25 top-5 | **30/30** | 0 | 0 | 30/30 | 0.8s |
+| 4 llama2 + vector top-5 | 15/30 | 15 | 0 | 15/30 | 0.8s |
+| 5 deepseek-r1, no context | 0/30 | 29 | 1 | — | 7.2s |
+
+## Findings
+
+1. **The knowledge-gap claim is CONFIRMED, completely.** Weak model + BM25 retrieval: 100%.
+   Strong model alone: 0%. This is the only experiment in the program where the weak model
+   beats the strong one outright — knowledge is the gap where weights genuinely are not the
+   ceiling.
+2. **Utilization is not a bottleneck.** Across every arm, whenever the gold fact was in the
+   prompt the weak model answered correctly: 75/75 (oracle 30, BM25 30, vector hits 15).
+   Every failure in the entire run was retrieval's, none the model's.
+3. **BM25 was flawless; chat-model embeddings were the weak link.** Vector recall@5 was 50%
+   over near-identical sentences, and each miss became an honest abstention. Caveat: exact-ID
+   questions favor lexical matching — paraphrased queries would narrow BM25's edge; a dedicated
+   embedding model (e.g. nomic-embed-text) was not tested because it is not installed.
+4. **Neither model confabulated fictional facts.** Hallucination: llama2 0/30, r1 1/30, under
+   "answer only from provided information" prompting with an abstention escape. The floor arms
+   abstained or failed to parse instead of inventing values.
+5. **Retrieval made the weak model faster, not slower.** Median 0.4-0.8s with context vs 1.1s
+   without (an unanchored model rambles; a grounded one answers). Retrieval itself cost ~7ms
+   (BM25) / ~140ms (vector embed+search) per question.
+
+## The completed gap matrix
+
+| Gap | Verdict across Phases 2b-4 | Mechanism |
+|---|---|---|
+| Format | ✅ closed, free | coercion + schema retry (30/30 twice) |
+| Reasoning | ❌ cannot be closed locally — only routed around | escalate to a reasoning model behind a trustworthy signal; retry/self-critique/scaffolds all failed |
+| Knowledge | ✅ closed fully, weak beats strong | retrieval injection; BM25 already in Loom |
+
+For loom-knowledge: start delivery on the FTS5/BM25 path Loom already ships (it won here),
+treat embedding-model choice as the make-or-break decision for the vector path, and expect
+context utilization — the part loom-knowledge cannot control — to be a non-problem.
+
+## Confounds, stated
+
+Single-hop attribute lookup (multi-hop synthesis untested); 200-record corpus; exact-ID
+queries favor BM25; embeddings from a chat model rather than a dedicated embedding model;
+one seeded draw; `VectorRecall` is brute-force O(n) cosine — fine at 200 records, unmeasured
+at scale.
