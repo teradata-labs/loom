@@ -5717,6 +5717,11 @@
         "rateLimit": {
           "$ref": "#/definitions/v1LLMRateLimitConfig",
           "description": "Client-side rate limiting configuration.\nWhen nil, rate limiting is enabled with provider-appropriate defaults."
+        },
+        "seed": {
+          "type": "string",
+          "format": "int64",
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\nHonored by: ollama. Other providers ignore it today."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
