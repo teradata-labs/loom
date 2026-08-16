@@ -225,10 +225,11 @@ func TestLevelingDisabledIsInert(t *testing.T) {
 
 		// Direct validator call as the reference behavior.
 		refRung := newMockRung(0.02, lvlInvalidJSON)
-		refResult, refWarnings, refErr := validator.ValidateAndRetry(
-			context.Background(), schemaPolicy(1, true), refRung.execute, nil, "do the thing", "wf-ref")
+		refResult, refOutcome, refErr := validator.ValidateAndRetry(
+			context.Background(), schemaPolicy(1, true), refRung.execute, nil, "do the thing", "wf-ref", nil)
 		require.NoError(t, refErr)
-		require.NotEmpty(t, refWarnings, "reference call surfaces validation warnings")
+		require.NotEmpty(t, refOutcome.Warnings, "reference call surfaces validation warnings")
+		assert.False(t, refOutcome.Passed, "the reference output never satisfies the schema")
 
 		// Same inputs through a disabled leveling executor.
 		lvlRung := newMockRung(0.02, lvlInvalidJSON)
@@ -282,7 +283,7 @@ func TestLevelingFrontierShortCircuits(t *testing.T) {
 	assert.Equal(t, 0, judge.count(), "judge must never run on the short-circuit path")
 	assert.Equal(t, 1, rung0.count())
 	assert.Equal(t, 0, rung1.count())
-	assert.False(t, report.Passed, "free schema re-check still reports the failure")
+	assert.False(t, report.Passed, "the validator's own verdict reports the failure")
 	assert.InDelta(t, 0.40, report.TotalCostUSD, 1e-9)
 	require.NotNil(t, result)
 	assert.Equal(t, lvlInvalidJSON, result.Output)

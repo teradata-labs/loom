@@ -28,7 +28,10 @@ type TierPolicy struct {
 	// OutputPolicy carries no RetryPolicy of its own.
 	RetryBudget int
 	// AggressiveCoercion attempts free JSON extraction (extractJSONFromText)
-	// before declaring a schema failure.
+	// before declaring a schema failure. On the primary rung it is handed to
+	// the validator, so a rewrite that satisfies the schema ends the retry loop
+	// instead of arriving after the retries are spent; on escalation rungs,
+	// which bypass the validator, it is applied in evaluate.
 	AggressiveCoercion bool
 	// ScaffoldingDepth is reserved for the capability-leveling pattern domain
 	// (C2, not yet implemented). It is not consumed by this executor.
@@ -180,7 +183,7 @@ func (e *LevelingExecutor) Execute(
 	// this is byte-for-byte the behavior of not having this executor at all.
 	if e.policy == nil || !e.policy.Enabled {
 		result, _, err := e.validator.ValidateAndRetry(
-			ctx, outputPolicy, ladder[0].Execute, ladder[0].Feedback, prompt, workflowID)
+			ctx, outputPolicy, ladder[0].Execute, ladder[0].Feedback, prompt, workflowID, nil)
 		return result, nil, err
 	}
 
@@ -208,19 +211,17 @@ func (e *LevelingExecutor) Execute(
 	// nothing to add, or it is unclassified and we refuse to guess. Either way
 	// no judge runs and no rung beyond the primary is touched.
 	if e.shouldShortCircuit(report.Tier) {
-		result, warnings, err := e.validator.ValidateAndRetry(
-			ctx, outputPolicy, ladder[0].Execute, ladder[0].Feedback, prompt, workflowID)
+		// No coercion on this path: a strong or unclassified primary gets the
+		// plain validator contract, and its own verdict is the report's.
+		result, outcome, err := e.validator.ValidateAndRetry(
+			ctx, outputPolicy, ladder[0].Execute, ladder[0].Feedback, prompt, workflowID, nil)
 		report.ShortCircuited = true
-		report.Warnings = append(report.Warnings, warnings...)
+		report.Warnings = append(report.Warnings, outcome.Warnings...)
 		report.TotalCostUSD = resultCostUSD(result)
 		if err != nil {
 			return result, report, err
 		}
-		// Free structural re-check only; never an LLM call on this path.
-		report.Passed = true
-		if schema := outputPolicy.GetOutputSchema(); schema != "" && result != nil {
-			report.Passed = validateJSONSchema(schema, result.Output) == nil
-		}
+		report.Passed = outcome.Passed
 		e.logger.Debug("leveling short-circuited",
 			zap.String("tier", report.Tier.String()),
 			zap.Bool("passed", report.Passed))
@@ -251,15 +252,27 @@ func (e *LevelingExecutor) Execute(
 		}
 	}
 
-	result, warnings, err := e.validator.ValidateAndRetry(
-		ctx, effPolicy, wrappedExecute, wrappedFeedback, prompt, workflowID)
-	report.Warnings = append(report.Warnings, warnings...)
+	// Coercion runs inside the validator so a free rewrite that satisfies the
+	// schema ends the retry loop instead of being discovered after the retry
+	// budget is already spent.
+	var coerce CoerceFunc
+	if tierPolicy.AggressiveCoercion && schema != "" {
+		coerce = func(output string) (string, bool) {
+			extracted := extractJSONFromText(output)
+			return extracted, extracted != ""
+		}
+	}
+
+	result, outcome, err := e.validator.ValidateAndRetry(
+		ctx, effPolicy, wrappedExecute, wrappedFeedback, prompt, workflowID, coerce)
+	report.Warnings = append(report.Warnings, outcome.Warnings...)
+	report.CoercionApplied = report.CoercionApplied || outcome.CoercionApplied
 	if err != nil {
 		report.TotalCostUSD = total
 		return result, report, err
 	}
 
-	verdict := e.evaluate(ctx, schema, tierPolicy, result, prompt, report, &total)
+	verdict := e.primaryVerdict(ctx, schema, result, outcome, prompt, report, &total)
 	if verdict.pass {
 		// Includes the no-signal case: nothing told us the output is bad, so we
 		// spend nothing proving otherwise.
@@ -361,13 +374,45 @@ func (e *LevelingExecutor) budgetExceeded(total float64) bool {
 	return e.policy.MaxCostUSD > 0 && total >= e.policy.MaxCostUSD
 }
 
-// evaluate decides whether one attempt's output is acceptable, preferring free
-// signals. Order matters for latency and cost:
+// primaryVerdict turns the validator's own verdict on the primary rung into a
+// leveling verdict. The validator already ran the schema check — and, when the
+// tier enables coercion, the rewrite — so with a schema present this is pure
+// bookkeeping: no schema is re-validated and no coercion is retried here. Only
+// the schema-less case has work left, and only when a judge is configured.
+func (e *LevelingExecutor) primaryVerdict(
+	ctx context.Context,
+	schema string,
+	result *loomv1.AgentResult,
+	outcome ValidationOutcome,
+	prompt string,
+	report *LevelingReport,
+	total *float64,
+) levelingVerdict {
+	if result == nil {
+		return levelingVerdict{pass: false, reason: "no result produced", signal: true}
+	}
+
+	if schema != "" {
+		if outcome.Passed {
+			return levelingVerdict{pass: true, signal: true}
+		}
+		// A non-nil result means the validator ran at least one attempt, so a
+		// failed outcome always carries the error that failed it.
+		return levelingVerdict{pass: false, reason: outcome.Err.Error(), signal: true}
+	}
+
+	return e.judgeVerdict(ctx, result, prompt, report, total)
+}
+
+// evaluate decides whether an escalation rung's output is acceptable, preferring
+// free signals. Escalation rungs are executed directly rather than through the
+// validator, so the schema check and coercion happen here. Order matters for
+// latency and cost:
 //
 //  1. A schema is structural and free — if one is present it owns the verdict
 //     and the judge is never consulted.
 //  2. Free JSON extraction is tried before declaring a schema failure, so a
-//     fenced-but-valid payload never triggers a paid escalation.
+//     fenced-but-valid payload never triggers another paid escalation.
 //  3. Only with no schema at all does the judge run, and only inside budget.
 //  4. With neither schema nor judge there is no signal, so the output stands.
 //
@@ -404,34 +449,48 @@ func (e *LevelingExecutor) evaluate(
 		return levelingVerdict{pass: false, reason: schemaErr.Error(), signal: true}
 	}
 
-	if e.policy.Judge != nil {
-		if e.budgetExceeded(*total) {
-			// Skipping the judge leaves us without a verdict. Fail open rather
-			// than reject an output we never actually examined.
-			report.BudgetExhausted = true
-			e.logger.Debug("leveling judge skipped by cost ceiling",
-				zap.Float64("total_cost_usd", *total),
-				zap.Float64("max_cost_usd", e.policy.MaxCostUSD))
-			return levelingVerdict{pass: true, signal: true, budgetBlocked: true}
-		}
-		pass, reason, costUSD, judgeErr := e.policy.Judge(ctx, prompt, result.Output)
-		report.JudgeCalls++
-		*total += costUSD
-		if judgeErr != nil {
-			// Fail open: a broken judge must not degrade a result.
-			report.Warnings = append(report.Warnings, fmt.Sprintf("judge error: %v", judgeErr))
-			e.logger.Debug("leveling judge errored, treating output as acceptable",
-				zap.Error(judgeErr))
-			return levelingVerdict{pass: true, signal: true}
-		}
-		e.logger.Debug("leveling judge verdict",
-			zap.Bool("pass", pass),
-			zap.Float64("judge_cost_usd", costUSD))
-		return levelingVerdict{pass: pass, reason: reason, signal: true}
+	return e.judgeVerdict(ctx, result, prompt, report, total)
+}
+
+// judgeVerdict consults the optional LLM judge — the only signal left once no
+// schema is present. Shared by the primary rung and the escalation rungs so the
+// budget and fail-open rules live in exactly one place.
+func (e *LevelingExecutor) judgeVerdict(
+	ctx context.Context,
+	result *loomv1.AgentResult,
+	prompt string,
+	report *LevelingReport,
+	total *float64,
+) levelingVerdict {
+	if e.policy.Judge == nil {
+		// No schema, no judge: no signal exists, so no work is done.
+		return levelingVerdict{pass: true, signal: false}
 	}
 
-	// No schema, no judge: no signal exists, so no work is done.
-	return levelingVerdict{pass: true, signal: false}
+	if e.budgetExceeded(*total) {
+		// Skipping the judge leaves us without a verdict. Fail open rather
+		// than reject an output we never actually examined.
+		report.BudgetExhausted = true
+		e.logger.Debug("leveling judge skipped by cost ceiling",
+			zap.Float64("total_cost_usd", *total),
+			zap.Float64("max_cost_usd", e.policy.MaxCostUSD))
+		return levelingVerdict{pass: true, signal: true, budgetBlocked: true}
+	}
+
+	pass, reason, costUSD, judgeErr := e.policy.Judge(ctx, prompt, result.Output)
+	report.JudgeCalls++
+	*total += costUSD
+	if judgeErr != nil {
+		// Fail open: a broken judge must not degrade a result.
+		report.Warnings = append(report.Warnings, fmt.Sprintf("judge error: %v", judgeErr))
+		e.logger.Debug("leveling judge errored, treating output as acceptable",
+			zap.Error(judgeErr))
+		return levelingVerdict{pass: true, signal: true}
+	}
+	e.logger.Debug("leveling judge verdict",
+		zap.Bool("pass", pass),
+		zap.Float64("judge_cost_usd", costUSD))
+	return levelingVerdict{pass: pass, reason: reason, signal: true}
 }
 
 // effectiveOutputPolicy applies the tier's retry budget to the caller's policy
