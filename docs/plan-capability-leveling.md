@@ -1325,3 +1325,78 @@ Exit codes were read from redirected files, never through a pipe.
 - ⚠️ A rung's provider/role must exist on the executing agent; that can only fail at execution
   time, so a YAML file can be valid and still fail its first run. The error names the rung index
   and the agent.
+
+---
+
+# Phase 5 results — SQL generation, the home-turf validation (2026-08-16)
+
+**Status**: ✅ Measured — 4 arms × 30 identical NL→SQL questions over a deterministic synthetic
+retail schema (4 tables, 1118 rows), generated SQL **actually executed** against SQLite and
+scored by result-set equality against executed reference SQL. Weak model `llama3.2:latest`
+(current-generation, replacing Phase 3's llama2), strong `deepseek-r1:latest`. 9m21s live run,
+$0. Harness: `pkg/orchestration/leveling_sql_live_test.go` + generator/tests in
+`leveling_sql_gen_test.go`; per-trial data `docs/experiments/sql_arms.jsonl` +
+`sql_questions.jsonl`. Calibration (50-question probe, Python) and the Go generator were
+parity-locked: identical row counts, four checksums, status distributions, and reference
+results across both implementations.
+
+## Why this experiment
+
+Pre-PR validation on Loom's actual workload (SQL agents) with a weak model someone would
+actually deploy, in the regime the program identified as leveling's home: a **free programmatic
+signal** — does the query execute — with a known blind spot: queries that run cleanly and
+return wrong data.
+
+## Results (N=30, seed 0, temp 0.1; arms 2/3 signal = execution success, judged in 5ms of
+sqlite per check, zero LLM calls, zero USD)
+
+| Arm | Correct | Silent wrong | Exec error | LLM calls | r1 calls |
+|---|---|---|---|---|---|
+| 1 llama3.2 alone | 17/30 (57%) | 5 | 8 | 30 | 0 |
+| 2 + retry-on-exec-error | **23/30 (77%)** | 7 | **0** | 38 | 0 |
+| 3 + ladder → r1 | 23/30 (77%) | 7 | 0 | 38 | **0** |
+| 4 r1 alone (ceiling) | 30/30 (100%) | 0 | 0 | 30 | 30 |
+
+Determinism note: the first full run was externally killed one question before completion; the
+rerun reproduced arms 1–3 identically (seed-pinned), which is itself a live demonstration of
+the reproducibility the seed plumbing (40a9335) was built for.
+
+## Findings
+
+1. **The free rung pays on Loom's workload.** One same-model retry carrying the sqlite error
+   text resolved all 8 execution failures (6 → correct, 2 → executable-but-wrong): +20pp
+   accuracy for 8 extra ~1s weak-model calls and 0.19s of sqlite. Contrast Phase 3: llama2
+   given a *semantic critique* repaired 0/18. **Error-message-driven repair of format-class
+   failures works on a current 3B model; critique-driven repair of reasoning does not work on
+   weak models.** Both halves are now measured.
+2. **The escalation rung never fired — for the right reason this time.** Arm 3 made zero r1
+   calls: the cheap rung fixed everything the signal could see before escalation was reachable.
+   Ladder ordering (free retry before paid model) is behaving as designed.
+3. **The blind spot is real and quantified.** 7 silently-wrong queries (wrong joins, invented
+   arithmetic — they execute cleanly) were invisible to the execution signal in both leveled
+   arms: zero escalations fired on them, and the judge's false-PASS rate on wrong outputs was
+   46.7%. r1 solved all 7 — but the ladder never sent them. **On an execution-only signal,
+   83.3% was the structural accuracy ceiling; result-set verification or a reasoning critic is
+   required to pass it.** This is Phase 3's schema-blindness, reproduced on SQL.
+4. **Retries convert crashes into confident wrong answers.** 2 of 8 exec errors became
+   silent_wrongs after retry (arm 1: 5 silent → arms 2/3: 7). Free repair fixes form, not
+   meaning; a fixed query that now runs is not therefore right.
+5. **Failure structure is bimodal by join depth**, matching calibration: filter/count and
+   2-table joins ~perfect; 3-table joins 0/6 (semantic errors); top-N 0/6 (one deterministic
+   syntax bug, retry-recoverable). The weak model's SQL competence cliff is architectural,
+   not random.
+
+## Economics on this mix
+
+Arm 3 (77%) cost 30.4s of model time; arm 4 (100%) cost 475s — the weak ladder is ~15× cheaper
+in wall-clock but gives up 23pp of accuracy, all of it in the silent-wrong blind spot. The
+rational production configs are therefore: execution-signal ladder when result verification
+exists downstream or errors are tolerable; strong model (or a result-verifying judge per the
+Phase 3b r1-critic finding) when silent wrongness is unacceptable.
+
+## Confounds, stated
+
+SQLite dialect, not Teradata; single schema and 5 template families; N=30, one seeded draw;
+arms 2/3 identical by construction here (escalation unreachable — a signal that could see
+silent wrongs would differentiate them); llama3.2's F4 failure is one deterministic bug with
+multiplicity 6, so the +20pp free-rung gain leans heavily on one recoverable defect class.
