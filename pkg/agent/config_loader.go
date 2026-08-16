@@ -31,6 +31,17 @@ func safeInt32(val int, fieldName string) (int32, error) {
 	return int32(val), nil
 }
 
+// copyInt64Ptr returns a fresh pointer holding the same value, or nil for nil.
+// Used for optional scalar fields so the YAML struct and the proto message never
+// share the same backing int64.
+func copyInt64Ptr(val *int64) *int64 {
+	if val == nil {
+		return nil
+	}
+	v := *val
+	return &v
+}
+
 // convertLLMConfigYAMLToProto converts a LLMConfigYAML pointer to a proto LLMConfig.
 // Returns (nil, nil) if the input is nil, allowing callers to distinguish "not configured"
 // from "configured with values". This is used for role-specific LLM configs (judge, orchestrator, etc.)
@@ -65,6 +76,7 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		TopK:                 topK,
 		MaxContextTokens:     maxContextTokens,
 		ReservedOutputTokens: reservedOutputTokens,
+		Seed:                 copyInt64Ptr(y.Seed),
 	}, nil
 }
 
@@ -84,6 +96,7 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		TopK:                 int(pb.TopK),
 		MaxContextTokens:     int(pb.MaxContextTokens),
 		ReservedOutputTokens: int(pb.ReservedOutputTokens),
+		Seed:                 copyInt64Ptr(pb.Seed),
 	}
 }
 
@@ -157,6 +170,12 @@ type LLMConfigYAML struct {
 	TopK                 int      `yaml:"top_k"`
 	MaxContextTokens     int      `yaml:"max_context_tokens"`
 	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+
+	// Seed pins the sampling seed for reproducible generations.
+	// A pointer so that an omitted key (nil → provider samples randomly) is
+	// distinguishable from an explicit `seed: 0`, which some providers accept
+	// as a real seed. Honored by the ollama provider; others ignore it.
+	Seed *int64 `yaml:"seed"`
 }
 
 // ToolsConfigYAML represents tools configuration in YAML
@@ -1095,6 +1114,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			TopK:                 int(config.Llm.TopK),
 			MaxContextTokens:     int(config.Llm.MaxContextTokens),
 			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
+			Seed:                 copyInt64Ptr(config.Llm.Seed),
 		}
 	}
 

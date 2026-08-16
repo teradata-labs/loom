@@ -1179,6 +1179,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Model:             config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),
+			Seed:              config.Seed,
 			RateLimiterConfig: rlCfg,
 		}), nil
 
