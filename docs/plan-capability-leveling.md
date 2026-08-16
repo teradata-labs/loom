@@ -917,3 +917,107 @@ follow-up to design a task set that actually produces fenced JSON remains open.
   leveling.
 - ⚠️ The disabled path still discards the outcome and returns a nil report, so validator warnings
   are not surfaced there. That Phase 1 limitation stands by design.
+
+---
+
+# Phase 3 results — reasoning-bound experiment (2026-08-15)
+
+**Status**: ✅ Measured — 5 arms × 30 identical seeded problems, live local Ollama, 39m8s
+wall-clock, $0. Harness: `pkg/orchestration/leveling_reasoning_live_test.go` (env-gated on
+`LOOM_LIVE_OLLAMA=1`, skipped in `-short`). Per-trial data:
+`docs/experiments/reasoning_arms.jsonl` (150 rows) and `docs/experiments/judge_probe.jsonl`
+(20 rows), committed alongside this doc.
+
+## Hypotheses
+
+- **H1**: a JSON schema cannot detect a wrong-but-well-formed answer, so schema-only leveling
+  never escalates on reasoning errors.
+- **H2**: with a judge signal, escalation becomes reachable and accuracy approaches the
+  strong-model ceiling.
+- **H3**: a judge critique fed back to the SAME weak model (self-critique rung) recovers some
+  accuracy before a stronger model is paid for.
+
+## Design
+
+Task: `arith_chain` L11 — `(a+b)*c−d`, a,b∈[10,49], c∈[11,19], d∈[10,99] — ground truth
+computed in Go, never model-judged. Problems reproduced from the calibration generator via
+`crc32("arith_chain|11|<index>")`; all arms saw the identical 30 problems. Seed 0 and
+temperature 0.1 on every model via the new `LLMConfig.seed` (commit 40a9335), so arms are
+paired problem-by-problem: arms 1 and 2 returned byte-identical answers on all 30 problems.
+
+Output schema `{"answer": <integer>}` — satisfiable by a wrong answer, deliberately.
+
+Judge: an **oracle** (pure Go, compares to ground truth) so ladder mechanics are measured
+without judge noise. Its critique never leaks the answer — exact reason string: *"the
+arithmetic in the worked solution is incorrect; recompute each step carefully and give only the
+corrected JSON."* A secondary probe measured a real local judge separately (below).
+
+Models: weak `llama2:latest` (7B), strong `deepseek-r1:latest`, judge probe `llama3.1:latest`.
+The cloud-routed model is structurally refused by `assertLocalOnlyModel`.
+
+## Results
+
+| Arm | Accuracy | Schema pass | Calls (by rung) | Esc | Latency med/max |
+|---|---|---|---|---|---|
+| 1 llama2, leveling off | 12/30 (40%) | 0/30 raw | 30 (r0=30) | 0 | 1.9s / 3.6s |
+| 2 llama2 + schema-only | 12/30 (40%) | 30/30 (all via coercion) | 30 (r0=30) | **0** | 2.0s / 2.1s |
+| 3a llama2 + oracle judge → r1 | 27/30 (90%) | — | 48 (r0=30, r1=18) | 18 | 25.1s / 87.6s |
+| 3b … → llama2 self-critique → r1 | 29/30 (97%) | — | 66 (r0=30, r1=18, r2=18) | 36 | 23.3s / 85.3s |
+| 4 r1 alone | 30/30 (100%) | 30/30 | 30 (r0=30) | 0 | 18.0s / 45.8s |
+
+Total model time: arm 3a 859.8s, arm 3b 778.5s, arm 4 591.2s — **on this 60%-wrong mix,
+leveling with escalation cost MORE total compute and wall-clock than simply running the strong
+model, and scored lower.**
+
+## Verdicts
+
+**H1 — CONFIRMED, exactly.** Arm 2 escalated zero times in 30 problems; all 18 wrong answers
+passed the schema (after free coercion rescued formatting on every reply). Accuracy identical
+to arm 1 problem-by-problem. The free signal is structurally blind to reasoning errors. This
+also retroactively explains Phase 2b: C3 wasn't underperforming — it was unreachable.
+
+**H2 — CONFIRMED, with a cost asterisk.** Oracle-judged escalation fired on exactly the 18
+wrong answers (no misroutes, by construction) and lifted accuracy 40% → 90%. The 3 misses were
+r1 escalation replies that came back unparseable (empty), not wrong answers.
+
+**H3 — FAILED.** Self-critique repair rate: **0/18 (0.0%)**. Given an answer-free critique,
+llama2 never once fixed its own arithmetic; all 18 proceeded to r1 anyway. Arm 3b's higher
+total (29 vs 27) is r1 reply-parsing variance at rung 2, not self-repair — the rung itself
+contributed 18 extra weak-model calls and ~2s per wrong problem for zero repairs. A
+self-critique rung should NOT become a default TierPolicy knob on this evidence.
+
+**The finding that governs C3's viability: real local judges are not good enough.**
+`llama3.1:latest` judging (problem, weak-answer) pairs agreed with ground truth **7/20 (35%)**
+— 13 false PASSes (wrong answers it would have let through un-escalated), 0 false FAILs. With
+that judge, arm 3a's 90% would collapse most of the way back toward arm 1. The plan's
+"unreliable judge misroutes escalation" risk is now quantified: on arithmetic verification a
+7–8B judge is worse than a coin flip at catching wrongness.
+
+**Judge cost on the happy path**: 27 of 48 judge invocations in arm 3a (56%) were on outputs
+that were already correct. With a real judge each is one extra LLM call (~0.8s measured with
+llama3.1) added to every problem the weak model already got right — a direct violation of the
+no-added-latency happy-path requirement. An oracle/programmatic judge costs nothing; an LLM
+judge cannot be free.
+
+## What this means for the feature
+
+1. **Leveling's economics depend on the base wrong-rate.** At 60% wrong, escalate-on-fail costs
+   more than strong-alone. Break-even here is roughly a weak model that is right ≳⅔ of the
+   time; below that, just use the strong model.
+2. **C3 is viable only where a programmatic verdict exists** — schema, tests, checksums, an
+   oracle. That is precisely the free-signal regime the executor already prioritizes. For
+   semantic wrongness with no programmatic check, local-LLM judges are the binding constraint
+   (35% agreement), and no ladder can outrun its signal.
+3. **The format-gap result from Phase 2b stands** — coercion rescued 30/30 malformed replies
+   here too, for free.
+4. 📋 Follow-ups: r1's 3 unparseable escalation replies (empty content under the retry prompt)
+   deserve a look at `num_predict`/prompt shape; judge quality vs. judge size is unmeasured
+   above 8B; C2/C4 remain unbuilt and this evidence lowers C4's priority (self-consistency
+   voting shares H3's weakness: the weak model's votes cluster on plausible-wrong answers).
+
+## Confounds, stated
+
+Single task family (arithmetic); single weak model; N=30 (arm-level 95% CIs ≈ ±17pp); seed=0
+temp=0.1 throughout — deterministic-ish, so these numbers are one draw, not a distribution;
+oracle judge is an upper bound no real judge reached; r1's unparseable replies counted against
+arms 3a/3b (they are real failures of the escalation path, not scoring artifacts).
