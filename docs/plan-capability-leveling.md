@@ -1021,3 +1021,63 @@ Single task family (arithmetic); single weak model; N=30 (arm-level 95% CIs ≈ 
 temp=0.1 throughout — deterministic-ish, so these numbers are one draw, not a distribution;
 oracle judge is an upper bound no real judge reached; r1's unparseable replies counted against
 arms 3a/3b (they are real failures of the escalation path, not scoring artifacts).
+
+---
+
+# Phase 3b results — critic-quality and scaffolding probes (2026-08-15)
+
+**Status**: ✅ Measured — two targeted probes following Phase 3, run against the same 30-problem
+set and the same 20 judge pairs. Scripts and per-trial JSONL committed in `docs/experiments/`
+(`probe_r1_judge.py`, `probe_scaffold.py`, `r1_judge_probe.jsonl`, `scaffold_probe.jsonl`).
+
+## Probe 1 — a reasoning model as the judge
+
+Identical 20 (problem, weak-solution) pairs and identical verdict prompt as the Phase 3
+llama3.1 probe:
+
+| Judge | Agreement | False pass | False fail | Latency med/max |
+|---|---|---|---|---|
+| llama3.1 (8B, non-reasoning) | 7/20 (35%) | 13 | 0 | 0.8s |
+| deepseek-r1 (reasoning) | **20/20 (100%)** | 0 | 0 | 30.9s / 74.2s |
+
+**Judge quality is a model-selection problem, not a local-model limit.** A local reasoning
+model verified flawlessly where a same-scale non-reasoning model was worse than a coin flip.
+This revises Phase 3's C3 verdict: judge-driven escalation is viable with a reasoning-class
+critic. The surviving constraint is economics — an r1 verdict (31s median) costs more than an
+r1 solution (18s median) on this task, so critic-driven ladders only pay where **verification
+is cheaper than generation** (long-form output, code with tests, executable SQL). Cross-critique
+between non-reasoning peers remains contraindicated (13 false passes).
+
+## Probe 2 — forced-step scaffolding (C2's hypothesis, tested before building C2)
+
+Same 30 problems as the arms; llama2 with two imposed procedures. Baseline: 12/30 (40%).
+
+| Variant | Accuracy | Fixed vs baseline | Broke vs baseline |
+|---|---|---|---|
+| S1 — one step per line, re-check each line | 8/30 (27%) | 0 | 4 |
+| S2 — forced partial-product decomposition + self-check | **1/30 (3%)** | 0 | 11 |
+
+**Scaffolding was monotonically harmful: the more structure imposed, the worse the result.**
+Zero problems were fixed by either variant. The captured failure mode (i=0): llama2 executed
+all seven S2 steps fluently while mangling their semantics — it split the wrong operand
+(`TENS = 31 * 10` instead of splitting the multiplier 18), invented `ONES = 31 - 1 = 30`,
+computed the equivalent of 31 × 11, and its CHECK step then **passed**, because a self-check
+without ground truth only confirms the internal consistency of the wrong chain.
+
+Procedure adherence is itself a reasoning task. A model that cannot bind variables in a recipe
+cannot be leveled by giving it a longer recipe. Caveat: two prompt designs do not exhaust the
+scaffold space — but the direction was consistent and the failure mode mechanistic, so C2
+(proactive scaffolding for low tiers) is **deprioritized on evidence**, not just untested.
+
+## The unified picture after five measurements
+
+For a 7B non-reasoning model, nothing that tries to extract more reasoning from the model
+itself worked: same-model retry repaired 0 reasoning errors, self-critique repaired 0/18,
+light scaffolding −13pp, heavy scaffolding −37pp. What worked: free format repair (coercion,
+30/30), and genuine escalation to a reasoning model behind a trustworthy signal — programmatic
+(oracle: 40%→90%) or, now, a reasoning-model critic (100% agreement). The weak model's
+reasoning ceiling is its weights; the loop can route around the ceiling but not raise it.
+
+📋 Open: knowledge-gap track (vector-store augmentation) — the one intervention that converts
+reasoning problems into lookup problems and the plan's one untested original claim; and a
+verify-cheap task family where the r1-critic economics flip positive.
