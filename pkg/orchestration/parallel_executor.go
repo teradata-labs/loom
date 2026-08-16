@@ -215,15 +215,41 @@ func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.Agent
 	return results, modelsUsed, nil
 }
 
-// executeTaskWithSpan runs a single task with comprehensive observability.
+// executeTaskWithSpan runs a single task with agent-level tracing. Capability
+// leveling is opt-in per task: with no leveling policy (or one that is
+// disabled) this runs the unchanged single-chat path and the task's
+// OutputPolicy stays unenforced exactly as it was before leveling existed.
 func (e *ParallelExecutor) executeTaskWithSpan(ctx context.Context, task *loomv1.AgentTask, taskIndex int) (*loomv1.AgentResult, string, error) {
-	startTime := time.Now()
-
+	if task.GetLevelingPolicy().GetEnabled() {
+		return e.executeTaskWithLeveling(ctx, task, taskIndex)
+	}
 	// Get agent from orchestrator
 	ag, err := e.orchestrator.GetAgent(ctx, task.AgentId)
 	if err != nil {
 		return nil, "", err
 	}
+	return e.runTaskAgent(ctx, ag, task, e.taskSessionID(task, taskIndex), task.Prompt, taskIndex)
+}
+
+// taskSessionID is the deterministic session ID for a task's first (or only)
+// chat.
+func (e *ParallelExecutor) taskSessionID(task *loomv1.AgentTask, taskIndex int) string {
+	return fmt.Sprintf("%s-task%d-%s", e.workflowID, taskIndex+1, task.AgentId)
+}
+
+// runTaskAgent runs one task chat under an agent span and builds its
+// AgentResult. sessionID and prompt are parameters rather than derived here so
+// the output validator can drive retries in a fresh or continued session while
+// every attempt keeps the same tracing and metadata.
+func (e *ParallelExecutor) runTaskAgent(
+	ctx context.Context,
+	ag *agent.Agent,
+	task *loomv1.AgentTask,
+	sessionID string,
+	prompt string,
+	taskIndex int,
+) (*loomv1.AgentResult, string, error) {
+	startTime := time.Now()
 
 	// Create trace span for agent execution
 	ctx, agentSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("parallel.agent.%s", task.AgentId))
@@ -235,9 +261,7 @@ func (e *ParallelExecutor) executeTaskWithSpan(ctx context.Context, task *loomv1
 		agentSpan.SetAttribute("task.number", fmt.Sprintf("%d", taskIndex+1))
 	}
 
-	// Execute agent conversation with deterministic session ID
-	sessionID := fmt.Sprintf("%s-task%d-%s", e.workflowID, taskIndex+1, task.AgentId)
-	response, err := ag.Chat(ctx, sessionID, task.Prompt)
+	response, err := ag.Chat(ctx, sessionID, prompt)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)
 	}
@@ -286,6 +310,71 @@ func (e *ParallelExecutor) executeTaskWithSpan(ctx context.Context, task *loomv1
 	}
 
 	return result, model, nil
+}
+
+// executeTaskWithLeveling runs a task through the capability-leveling executor.
+// It is reached only when task.leveling_policy.enabled is true, so the task's
+// OutputPolicy is enforced here (and only here) because leveling was explicitly
+// asked for.
+//
+// Each task builds its own LevelingExecutor and its own ladder, and rung
+// execution is a one-shot LLM call that never mutates the agent, so tasks
+// running concurrently share no leveling state.
+func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *loomv1.AgentTask, taskIndex int) (*loomv1.AgentResult, string, error) {
+	policy, err := LevelingPolicyFromProto(task.GetLevelingPolicy())
+	if err != nil {
+		return nil, "", fmt.Errorf("task %d (%s): %w", taskIndex, task.AgentId, err)
+	}
+
+	ag, err := e.orchestrator.GetAgent(ctx, task.AgentId)
+	if err != nil {
+		return nil, "", err
+	}
+
+	sessionID := e.taskSessionID(task, taskIndex)
+	primary := LevelingRung{
+		Provider: ag.GetLLMProviderName(),
+		Model:    ag.GetLLMModel(),
+		Execute: func(ctx context.Context, attemptSessionID, attemptPrompt string) (*loomv1.AgentResult, error) {
+			result, _, execErr := e.runTaskAgent(ctx, ag, task, attemptSessionID, attemptPrompt, taskIndex)
+			return result, execErr
+		},
+		Feedback: func(ctx context.Context, attemptSessionID, feedback string) (*loomv1.AgentResult, error) {
+			result, _, execErr := e.runTaskAgent(ctx, ag, task, attemptSessionID, feedback, taskIndex)
+			return result, execErr
+		},
+	}
+
+	ladder, err := resolveLevelingLadder(ag, task.AgentId, primary, task.GetLevelingPolicy().GetLadder())
+	if err != nil {
+		return nil, "", fmt.Errorf("task %d (%s): %w", taskIndex, task.AgentId, err)
+	}
+
+	leveler := NewLevelingExecutor(nil, policy, e.orchestrator.tracer, e.orchestrator.logger)
+	result, report, err := leveler.Execute(ctx, task.GetOutputPolicy(), ladder, task.Prompt, sessionID)
+	if err != nil {
+		return nil, "", err
+	}
+	base := map[string]string{
+		"task_index": fmt.Sprintf("%d", taskIndex),
+		"agent_name": ag.GetName(),
+	}
+	for k, v := range task.Metadata {
+		base[k] = v
+	}
+	backfillLevelingResultMetadata(result, base)
+	if report != nil && !report.Passed {
+		// Graceful degradation, matching the leveling executor's contract: the
+		// best output obtained is returned rather than failing the task.
+		e.orchestrator.logger.Warn("Task continuing with unvalidated output after capability leveling",
+			zap.String("agent_id", task.AgentId),
+			zap.Int("task_index", taskIndex),
+			zap.String("tier", report.Tier.String()),
+			zap.Int("escalations", report.Escalations),
+			zap.Bool("budget_exhausted", report.BudgetExhausted),
+			zap.Strings("warnings", report.Warnings))
+	}
+	return result, ag.GetLLMModel(), nil
 }
 
 // mergeResults merges task results using the specified strategy.

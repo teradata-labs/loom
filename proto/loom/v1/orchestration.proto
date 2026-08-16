@@ -7,6 +7,7 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/agent_config.proto";
 import "loom/v1/collaboration.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
@@ -120,6 +121,14 @@ message PipelineStage {
   // persist and later resume. Gates are supported on pipeline and iterative
   // patterns only.
   HITLGate hitl_gate = 7;
+
+  // Optional: capability-leveling policy for this stage. Leveling activates
+  // only when leveling_policy.enabled is true; when active, the stage's
+  // output_policy (field 6) is consumed as the validation contract that
+  // decides whether to escalate. When this field is absent or disabled the
+  // stage behaves exactly as before, including leaving output_policy
+  // unenforced by the pipeline executor.
+  LevelingPolicy leveling_policy = 8;
 }
 
 // HITLGate declares a human approval gate on a pipeline stage boundary.
@@ -422,6 +431,85 @@ message AgentTask {
 
   // Optional: Output validation policy for this task's output.
   OutputPolicy output_policy = 4;
+
+  // Optional: capability-leveling policy for this task. Leveling activates
+  // only when leveling_policy.enabled is true; when active, the task's
+  // output_policy (field 4) is consumed as the validation contract that
+  // decides whether to escalate. When this field is absent or disabled the
+  // task behaves exactly as before, including leaving output_policy
+  // unenforced by the executor.
+  LevelingPolicy leveling_policy = 5;
+}
+
+// LevelingRung is one step of a capability-leveling escalation ladder — a
+// stronger model tried when a weaker primary's output fails validation.
+message LevelingRung {
+  // Provider name, used to resolve the rung's LLM from the executing agent's
+  // provider pool (Agent.GetProviderPool) and for catalog tier resolution.
+  string provider = 1;
+
+  // Model identifier for catalog tier resolution. Optional when role is set:
+  // the resolved role LLM reports its own model.
+  string model = 2;
+
+  // Optional: resolve the rung's LLM from the executing agent's role LLMs
+  // (Agent.GetLLMForRole). Takes precedence over the provider pool lookup
+  // when set to a value other than LLM_ROLE_UNSPECIFIED.
+  LLMRole role = 3;
+}
+
+// LevelingTierPolicy holds per-tier capability-leveling knobs, overriding the
+// built-in defaults for one tier.
+message LevelingTierPolicy {
+  // Same-model retry count applied when the stage/task OutputPolicy carries
+  // no retry_policy of its own.
+  int32 retry_budget = 1;
+
+  // Attempt free JSON extraction from mixed text before declaring a schema
+  // failure (no LLM call).
+  bool aggressive_coercion = 2;
+
+  // Reserved for the capability-leveling pattern domain (C2). Carried in
+  // config but not consumed by any executor yet.
+  int32 scaffolding_depth = 3;
+}
+
+// LevelingPolicy configures capability leveling: escalate a weak model's
+// failed output up a ladder of stronger models, spending nothing when the
+// primary output passes. Leveling activates ONLY when enabled is true; an
+// absent policy or enabled=false leaves executor behavior unchanged,
+// including leaving any OutputPolicy on the same stage/task unenforced
+// (matching pre-leveling behavior).
+message LevelingPolicy {
+  // Leveling is off unless explicitly true.
+  bool enabled = 1;
+
+  // When unset, defaults to true: mid-tier primaries short-circuit (no
+  // judge, no escalation) like frontier ones.
+  optional bool short_circuit_mid = 2;
+
+  // Ladder rungs allowed beyond the primary. When unset, defaults to 1.
+  // 0 disables escalation while keeping per-tier retry/coercion active.
+  optional int32 max_escalations = 3;
+
+  // Hard cost ceiling in USD across all leveling-visible LLM calls
+  // (attempts on every rung plus judge spend). 0 = no ceiling.
+  double max_cost_usd = 4;
+
+  // Escalation ladder beyond the primary model, tried in order.
+  repeated LevelingRung ladder = 5;
+
+  // Output price ($/1M tokens) at or above which a reasoning model is
+  // classified frontier. 0 = built-in default (10.0).
+  double frontier_min_output_cost_usd = 6;
+
+  // Output price ($/1M tokens) at or above which a non-reasoning model is
+  // classified mid. 0 = built-in default (1.5).
+  double mid_min_output_cost_usd = 7;
+
+  // Per-tier knob overrides keyed by tier name: "local", "small-open",
+  // "mid", "frontier", "unknown". Absent tiers use built-in defaults.
+  map<string, LevelingTierPolicy> tier_policies = 8;
 }
 
 // ConditionalPattern routes execution based on an agent's decision.

@@ -73,6 +73,10 @@ type LevelingPolicy struct {
 	// TierPolicies overrides DefaultTierPolicies() per tier; a tier absent from
 	// this map falls back to its built-in entry. nil uses the defaults.
 	TierPolicies map[catalog.ModelTier]TierPolicy
+	// Thresholds shifts the pricing cutoffs used to classify the primary rung.
+	// The zero value means the catalog's built-in cutoffs, so leaving this
+	// field alone gives the same tiers as catalog.TierOf.
+	Thresholds catalog.TierThresholds
 }
 
 // DefaultLevelingPolicy returns the default policy: disabled, mid-tier
@@ -195,9 +199,10 @@ func (e *LevelingExecutor) Execute(
 		e.tracer.EndSpan(span)
 	}()
 
-	// One memoized catalog lookup. This is the entire cost of the enabled-but-
-	// short-circuiting path.
-	report.Tier = catalog.TierOf(ladder[0].Provider, ladder[0].Model)
+	// One memoized catalog lookup, using the policy's thresholds (a zero-value
+	// TierThresholds resolves to the catalog's built-in cutoffs). This is the
+	// entire cost of the enabled-but-short-circuiting path.
+	report.Tier = catalog.TierOfWith(ladder[0].Provider, ladder[0].Model, e.policy.Thresholds)
 
 	// Short-circuit: the primary is already strong enough that leveling has
 	// nothing to add, or it is unclassified and we refuse to guess. Either way

@@ -22,6 +22,7 @@ package catalog
 
 import (
 	"context"
+	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -946,6 +947,28 @@ func NormalizeProvider(provider string) string {
 	return provider
 }
 
+// BaseModelID strips a trailing ":tag" qualifier from a model ID, returning the
+// bare model name. Ollama identifies installed models as "name:tag"
+// ("llama3.1:latest", "qwen3:30b") while the catalog keys Ollama entries on the
+// bare name, so the two inventories disagree on spelling for the same model.
+//
+// Only the last colon is considered, and only when no "/" follows it, because a
+// colon before a path separator is a registry port rather than a tag separator
+// ("localhost:5000/library/llama3" has no tag). An ID with no tag, or one
+// beginning with a colon, is returned unchanged.
+//
+// The result is a substring of the input, so this allocates nothing.
+func BaseModelID(modelID string) string {
+	i := strings.LastIndexByte(modelID, ':')
+	if i <= 0 {
+		return modelID
+	}
+	if strings.IndexByte(modelID[i:], '/') >= 0 {
+		return modelID
+	}
+	return modelID[:i]
+}
+
 // Lookup returns the ModelInfo for a given provider + model ID, or nil when
 // the pair is not in the currently registered default source. This is the
 // package-level convenience form; it delegates to DefaultSource().Lookup with
@@ -960,8 +983,25 @@ func NormalizeProvider(provider string) string {
 //	    catalog.StaticSource(),
 //	})
 //
-// This is an exact-match lookup at each source; callers that need prefix or
-// version-suffix matching must handle that above.
+// Each Source performs an exact-match lookup. Lookup adds exactly one fallback
+// on top of that: when the exact ID is not found anywhere in the registered
+// source and the ID carries a ":tag" qualifier, the whole source is consulted a
+// second time with BaseModelID(modelID). An exact match therefore always wins
+// over a tag-stripped one — including an exact match in a later chain entry —
+// and a lookup that succeeds today cannot change answer, because the fallback
+// runs only after a nil return.
+//
+// Both passes go through the same Source value so a concurrent Register cannot
+// split them across two different catalogs. Callers needing any other relaxation
+// (prefix or version-suffix matching) must still handle it above this call.
 func Lookup(provider, modelID string) *loomv1.ModelInfo {
-	return DefaultSource().Lookup(context.Background(), provider, modelID)
+	src := DefaultSource()
+	ctx := context.Background()
+	if info := src.Lookup(ctx, provider, modelID); info != nil {
+		return info
+	}
+	if base := BaseModelID(modelID); base != modelID {
+		return src.Lookup(ctx, provider, base)
+	}
+	return nil
 }
