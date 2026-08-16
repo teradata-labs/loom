@@ -37,12 +37,12 @@ const (
 // paths accepts globs (including ** via directory walk) so one call surveys
 // many files; pattern turns the call into a project-wide search.
 //
-// Wildcard sweeps honor the project's own .gitignore and skip hidden
-// directories — the project declares its machinery folders (target/,
-// dbt_packages/, …), the tool owns no list. Explicitly named paths, and
-// globs whose literal prefix already points inside an ignored folder,
-// bypass the filter: declared intent is never blocked, only accidental
-// sweeps inherit the project's hygiene.
+// Wildcard sweeps skip build artifacts: hidden directories, the project's
+// own .gitignore, and dbt's conventional machinery folders (target/,
+// dbt_packages/, logs/) — a project without a .gitignore still gets dbt's
+// hygiene. Explicitly named paths, and globs whose literal prefix already
+// points inside a skipped folder, bypass the filter: declared intent is
+// never blocked, only accidental sweeps inherit the hygiene.
 type FileReadTool struct {
 	baseDir string // Optional base directory for safety
 
@@ -52,6 +52,11 @@ type FileReadTool struct {
 
 // MaxMultiReadFiles caps glob expansion — a wider match must be narrowed.
 const MaxMultiReadFiles = 50
+
+// buildArtifactDirs are dbt's regenerated machinery folders — compiled and
+// run SQL, installed packages, logs. Wildcard sweeps skip them the way they
+// skip hidden directories; a literal path into one still reads.
+var buildArtifactDirs = map[string]bool{"target": true, "dbt_packages": true, "logs": true}
 
 // NewFileReadTool creates a new file read tool.
 // If baseDir is empty, reads from current directory (with safety checks).
@@ -70,7 +75,7 @@ func (t *FileReadTool) Name() string {
 
 // Description returns the tool description.
 func (t *FileReadTool) Description() string {
-	return `Read files. paths accepts globs (models/**/*.sql), so one call can read many files. With pattern, acts as a project-wide search returning matching lines (path:line). Use this for all file reading and searching. Max 10MB per file; won't read sensitive system paths.`
+	return `Read files. paths accepts globs (models/**/*.sql), so one call can read many files; wildcards skip build artifacts (target/, dbt_packages/, logs/) — name such a path exactly to read it. pattern, acts as a project-wide search returning matching lines (path:line). Use this for all file reading and searching. Max 10MB per file.`
 }
 
 func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {
@@ -554,6 +559,9 @@ func (t *FileReadTool) sweepExcluded(absPath string) bool {
 	}
 	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
 		if len(seg) > 1 && strings.HasPrefix(seg, ".") {
+			return true
+		}
+		if buildArtifactDirs[seg] {
 			return true
 		}
 	}

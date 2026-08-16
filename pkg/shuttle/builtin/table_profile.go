@@ -37,6 +37,9 @@ const (
 	profileMaxFreqColumns = 6
 	// profileSampleRows is the number of sample rows appended.
 	profileSampleRows = 5
+	// profileMaxTables bounds one batch call; beyond it the rest are named,
+	// not profiled.
+	profileMaxTables = 20
 )
 
 // NewTableProfileTool wraps the given backend.
@@ -52,18 +55,39 @@ func (t *TableProfileTool) Backend() string { return "" }
 
 // Description returns the tool description.
 func (t *TableProfileTool) Description() string {
-	return `One call returns a table's shape: row count, per-column profile — type, nulls, distinct, min/max, value frequencies for low-cardinality columns — and 5 sample rows. Profile every table you will read from or build on, at survey time, before trusting any column's meaning. The profile shows what you would not think to ask: frozen timestamps, sentinel values, formats that don't match the column name. Follow up anything odd with execute_query.`
+	return `Get profiles for all tables in the project with one call: row count, per-column profile — type, nulls, distinct, min/max, value frequencies for low-cardinality columns — and 5 sample rows each. You are strongly advised to fetch the profiles of all tables together in one single call to reduce cost — never one call per table. Follow up anything odd with execute_query.`
 }
 
 // InputSchema returns the JSON schema for the tool input.
 func (t *TableProfileTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
-		"Parameters for profiling a table",
+		"Parameters for profiling tables",
 		map[string]*shuttle.JSONSchema{
-			"table": shuttle.NewStringSchema("Table or view name to profile."),
+			"tables": shuttle.NewArraySchema(
+				"Tables or views to profile — every table the work touches, in one call.",
+				shuttle.NewStringSchema("Table or view name, optionally schema-qualified."),
+			),
 		},
-		[]string{"table"},
+		[]string{"tables"},
 	)
+}
+
+// parseProfileTables extracts the batch, coercing the shapes the schema does
+// not advertise: the legacy single "table" string parameter.
+func parseProfileTables(params map[string]interface{}) []string {
+	var out []string
+	if raw, ok := params["tables"].([]interface{}); ok {
+		for _, r := range raw {
+			if s, ok := r.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	if s, ok := params["table"].(string); ok && strings.TrimSpace(s) != "" {
+		out = append(out, strings.TrimSpace(s))
+	}
+	return out
 }
 
 // safeIdentifier admits plain identifiers, schema-qualified (main.t) and
@@ -71,30 +95,56 @@ func (t *TableProfileTool) InputSchema() *shuttle.JSONSchema {
 // everything else is rejected rather than quoted into a query.
 var safeIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*){0,2}$`)
 
-// Execute assembles the profile from backend primitives.
+// Execute profiles each named table independently: one unknown table costs
+// its own section, never the batch.
 func (t *TableProfileTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	start := time.Now()
 
-	fail := func(code, msg string) (*shuttle.Result, error) {
+	tables := parseProfileTables(params)
+	if len(tables) == 0 {
 		return &shuttle.Result{
 			Success:         false,
-			Error:           &shuttle.Error{Code: code, Message: msg},
+			Error:           &shuttle.Error{Code: "INVALID_PARAMS", Message: "tables is required"},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
-
-	table, _ := params["table"].(string)
-	table = strings.TrimSpace(table)
-	if table == "" {
-		return fail("INVALID_PARAMS", "table is required")
+	skipped := 0
+	if len(tables) > profileMaxTables {
+		skipped = len(tables) - profileMaxTables
+		tables = tables[:profileMaxTables]
 	}
+
+	sections := make([]string, 0, len(tables))
+	failed := 0
+	for _, table := range tables {
+		body, err := t.profileOne(ctx, table)
+		if err != nil {
+			sections = append(sections, fmt.Sprintf("TABLE %s — PROFILE FAILED: %v", table, err))
+			failed++
+			continue
+		}
+		sections = append(sections, body)
+	}
+	out := strings.Join(sections, "\n\n")
+	if skipped > 0 {
+		out += fmt.Sprintf("\n\n[%d more tables not profiled — max %d per call, call again for the rest]", skipped, profileMaxTables)
+	}
+	return &shuttle.Result{
+		Success:         failed < len(tables),
+		Data:            out,
+		ExecutionTimeMs: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// profileOne assembles one table's profile from backend primitives.
+func (t *TableProfileTool) profileOne(ctx context.Context, table string) (string, error) {
 	if !safeIdentifier.MatchString(table) {
-		return fail("INVALID_PARAMS", fmt.Sprintf("%q is not a plain table name", table))
+		return "", fmt.Errorf("%q is not a plain table name", table)
 	}
 
 	schema, err := t.backend.GetSchema(ctx, table)
 	if err != nil {
-		return fail("PROFILE_FAILED", err.Error())
+		return "", err
 	}
 	fields := schema.Fields
 	truncatedCols := false
@@ -129,10 +179,10 @@ func (t *TableProfileTool) Execute(ctx context.Context, params map[string]interf
 	aggRes, err := t.backend.ExecuteQuery(ctx,
 		fmt.Sprintf("SELECT %s FROM %s", strings.Join(sel, ", "), quoteIdent(table)))
 	if err != nil {
-		return fail("PROFILE_FAILED", err.Error())
+		return "", err
 	}
 	if len(aggRes.Rows) == 0 {
-		return fail("PROFILE_FAILED", "profile query returned nothing")
+		return "", fmt.Errorf("profile query returned nothing")
 	}
 	agg := aggRes.Rows[0]
 	rowCount := cellString(agg["__rows"])
@@ -183,7 +233,7 @@ func (t *TableProfileTool) Execute(ctx context.Context, params map[string]interf
 	sample, err := t.backend.ExecuteQuery(ctx,
 		fmt.Sprintf("SELECT * FROM %s LIMIT %d", quoteIdent(table), profileSampleRows))
 	if err != nil {
-		return fail("PROFILE_FAILED", err.Error())
+		return "", err
 	}
 
 	// Render.
@@ -209,13 +259,9 @@ func (t *TableProfileTool) Execute(ctx context.Context, params map[string]interf
 	for _, c := range sample.Columns {
 		sampleCols = append(sampleCols, c.Name)
 	}
-	b.WriteString(renderQueryRows(sampleCols, sample.Rows, false))
+	b.WriteString(renderQueryRows(sampleCols, sample.Rows, 0))
 
-	return &shuttle.Result{
-		Success:         true,
-		Data:            b.String(),
-		ExecutionTimeMs: time.Since(start).Milliseconds(),
-	}, nil
+	return b.String(), nil
 }
 
 // quoteIdent double-quotes an identifier (schema-qualified parts separately).

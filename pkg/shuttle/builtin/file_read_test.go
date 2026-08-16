@@ -349,10 +349,11 @@ func TestFileReadTool_SweepHonorsGitignore(t *testing.T) {
 }
 
 // Without a .gitignore, only the hidden-dir convention applies.
-func TestFileReadTool_SweepNoGitignore(t *testing.T) {
+func TestFileReadTool_SweepSkipsBuildArtifactsWithoutGitignore(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "target"), 0750))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.sql"), []byte("select 1"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "target", "b.sql"), []byte("select 2"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "c.sql"), []byte("gitfile"), 0600))
 
@@ -363,8 +364,9 @@ func TestFileReadTool_SweepNoGitignore(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.Success)
 	out := res.Data.(string)
-	assert.Contains(t, out, "target/b.sql") // no .gitignore → no project opinion
-	assert.NotContains(t, out, ".git")      // hidden convention still holds
+	assert.Contains(t, out, "select 1")
+	assert.NotContains(t, out, "target/b.sql") // dbt convention holds without a .gitignore
+	assert.NotContains(t, out, ".git")         // hidden convention still holds
 }
 
 // A glob matching nothing is reported as a note — an empty folder is
@@ -381,4 +383,52 @@ func TestFileReadTool_ZeroMatchReported(t *testing.T) {
 	out := res.Data.(string)
 	assert.Contains(t, out, "select 1")
 	assert.Contains(t, out, "(no matches: snapshots/**/*.sql)")
+}
+
+// Wildcard sweeps skip dbt's build artifacts even when the project has no
+// .gitignore; a literal path into them still reads.
+func TestFileReadSweepSkipsBuildArtifacts(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("dbt_project.yml", "name: x")
+	mk("models/staging/orders/_sources.yml", "sources: []")
+	mk("models/staging/orders/stg_orders.sql", "select 1")
+	mk("target/compiled/x/models/staging/orders/stg_orders.sql", "select 1 -- compiled")
+	mk("target/run/x/models/staging/orders/stg_orders.sql", "create table ...")
+	mk("dbt_packages/dbt_utils/macros/a.sql", "{% macro a() %}{% endmacro %}")
+	mk("logs/dbt.log", "log")
+	tool := NewFileReadTool(root)
+
+	res, _ := tool.Execute(context.Background(), map[string]interface{}{"paths": []interface{}{"**/*.yml"}})
+	if !res.Success {
+		t.Fatalf("yml sweep failed: %+v", res)
+	}
+	out := res.Data.(string)
+	if !strings.Contains(out, "_sources.yml") || !strings.Contains(out, "dbt_project.yml") {
+		t.Fatalf("yml sweep missing project files:\n%s", out)
+	}
+	res, _ = tool.Execute(context.Background(), map[string]interface{}{"paths": []interface{}{"**/*.sql"}})
+	out = res.Data.(string)
+	if strings.Contains(out, "compiled") || strings.Contains(out, "create table") || strings.Contains(out, "macro a") {
+		t.Fatalf("sql sweep must skip target/ and dbt_packages/:\n%s", out)
+	}
+	if !strings.Contains(out, "stg_orders.sql") {
+		t.Fatalf("sql sweep lost the real model:\n%s", out)
+	}
+	res, _ = tool.Execute(context.Background(), map[string]interface{}{"paths": []interface{}{"target/compiled/x/models/staging/orders/stg_orders.sql"}})
+	if !res.Success || !strings.Contains(res.Data.(string), "compiled") {
+		t.Fatalf("literal path into target/ must read: %+v", res)
+	}
+	res, _ = tool.Execute(context.Background(), map[string]interface{}{"paths": []interface{}{"target/compiled/**/*.sql"}})
+	if !res.Success || !strings.Contains(res.Data.(string), "compiled") {
+		t.Fatalf("glob whose prefix aims inside target/ must read: %+v", res)
+	}
 }

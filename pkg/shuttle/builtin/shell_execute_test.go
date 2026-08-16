@@ -378,11 +378,15 @@ func TestShellExecuteTool_LargeOutput(t *testing.T) {
 	// Should succeed since we're under the limit
 	assert.True(t, result.Success, "Large output within limits should succeed")
 
-	// Verify we actually got substantial output
+	// Large streams come back as a head+tail view with an explicit elision
+	// marker — the result is a bounded rendering, not the raw firehose.
 	if result.Data != nil {
 		data := result.Data.(map[string]interface{})
 		stdout := data["stdout"].(string)
-		assert.Greater(t, len(stdout), 100000, "Should have substantial output")
+		assert.LessOrEqual(t, len(stdout), shellOutputCap+200, "stdout must be compacted")
+		assert.Contains(t, stdout, "bytes elided", "elision must be explicit")
+		assert.Contains(t, stdout, "line-1-", "head preserved")
+		assert.Contains(t, stdout, "line-5000-", "tail preserved")
 	}
 }
 
@@ -711,5 +715,26 @@ func TestFilterSensitiveEnvVars(t *testing.T) {
 			result := filterSensitiveEnvVars(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
+	}
+}
+
+// ANSI escapes are stripped from output; oversized streams keep head and tail
+// with an explicit elision marker.
+func TestShellOutputCompaction(t *testing.T) {
+	in := "\x1b[0m10:06:32  \x1b[33mWARNING\x1b[0m: test line"
+	if got := compactShellOutput(in); got != "10:06:32  WARNING: test line" {
+		t.Fatalf("ANSI not stripped: %q", got)
+	}
+	big := strings.Repeat("A", 5*1024) + strings.Repeat("B", 5*1024) + strings.Repeat("C", 5*1024)
+	got := compactShellOutput(big)
+	if len(got) > shellOutputCap+200 {
+		t.Fatalf("cap not applied: %d bytes", len(got))
+	}
+	if !strings.HasPrefix(got, "A") || !strings.HasSuffix(got, "C") || !strings.Contains(got, "bytes elided") {
+		t.Fatalf("head/tail/marker shape wrong: %q…%q", got[:20], got[len(got)-20:])
+	}
+	small := "plain output, no escapes"
+	if compactShellOutput(small) != small {
+		t.Fatal("small clean output must pass through untouched")
 	}
 }

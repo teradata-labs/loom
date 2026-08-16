@@ -36,19 +36,61 @@ func (t *ExecuteQueryTool) Backend() string { return "" }
 
 // Description returns the tool description.
 func (t *ExecuteQueryTool) Description() string {
-	return `Run a read-only SQL query against the project's warehouse. Use it to probe data before building and to verify what you built. Mutations are rejected — schema changes and loads go through dbt.`
+	return `Run read-only SQL batches against the project's warehouse. You are strongly advised to batch multiple queries together and run them in one call — every independent check (counts, distributions, verifications) in a single call to reduce cost. Mutations are rejected — schema changes and loads go through dbt.`
 }
 
 // InputSchema returns the JSON schema for the tool input.
 func (t *ExecuteQueryTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
-		"Parameters for the SQL probe",
+		"Parameters for the SQL probe batch",
 		map[string]*shuttle.JSONSchema{
-			"sql":       shuttle.NewStringSchema("The read-only query: SELECT / WITH / SHOW / DESCRIBE / EXPLAIN."),
-			"row_limit": shuttle.NewNumberSchema("Maximum rows to return (default 200)."),
+			"statements": {
+				Type:        "array",
+				Description: "Statements to run — batch every independent probe into one call. Each entry is {label, sql}.",
+				Items: &shuttle.JSONSchema{
+					Type: "object",
+					Properties: map[string]*shuttle.JSONSchema{
+						"label": shuttle.NewStringSchema("Short name for this check; heads its result section."),
+						"sql":   shuttle.NewStringSchema("One read-only statement: SELECT / WITH / SHOW / DESCRIBE / EXPLAIN."),
+					},
+					Required: []string{"sql"},
+				},
+			},
+			"row_limit": shuttle.NewNumberSchema("Maximum rows returned per statement (default 50). Prefer aggregation over raising it."),
 		},
-		[]string{"sql"},
+		[]string{"statements"},
 	)
+}
+
+// queryStatement is one parsed entry of the statements batch.
+type queryStatement struct {
+	label string
+	sql   string
+}
+
+// parseStatements extracts the batch, coercing the conventional shapes the
+// schema does not advertise: a bare sql string parameter and bare-string
+// array entries both become unlabeled statements. Trained habits get
+// absorbed, not rejected.
+func parseStatements(params map[string]interface{}) []queryStatement {
+	var stmts []queryStatement
+	if raw, ok := params["statements"].([]interface{}); ok {
+		for _, r := range raw {
+			switch v := r.(type) {
+			case map[string]interface{}:
+				label, _ := v["label"].(string)
+				sqlText, _ := v["sql"].(string)
+				stmts = append(stmts, queryStatement{label: label, sql: strings.TrimSpace(sqlText)})
+			case string:
+				stmts = append(stmts, queryStatement{sql: strings.TrimSpace(v)})
+			}
+		}
+		return stmts
+	}
+	if sqlText, ok := params["sql"].(string); ok && strings.TrimSpace(sqlText) != "" {
+		stmts = append(stmts, queryStatement{sql: strings.TrimSpace(sqlText)})
+	}
+	return stmts
 }
 
 // Execute gates for read-only-ness and delegates to the backend.
@@ -67,40 +109,105 @@ func (t *ExecuteQueryTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
-	sqlText, _ := params["sql"].(string)
-	sqlText = strings.TrimSpace(sqlText)
-	if sqlText == "" {
-		return fail("INVALID_PARAMS", "sql is required", "Provide a SELECT query")
-	}
-	if err := checkReadOnly(sqlText); err != nil {
-		return fail("READ_ONLY", err.Error(), "read-only: mutations go through dbt or shell")
+	stmts := parseStatements(params)
+	if len(stmts) == 0 {
+		return fail("INVALID_PARAMS", "statements is required", "Provide statements: [{label, sql}, ...]")
 	}
 
-	rowLimit := 200
+	rowLimit := 50
 	if rl, ok := params["row_limit"].(float64); ok && rl > 0 {
 		rowLimit = int(rl)
 	}
 
-	res, err := t.backend.ExecuteQuery(ctx, sqlText)
-	if err != nil {
-		return fail("QUERY_FAILED", err.Error(), "")
+	// Per-statement render budget: the whole batch stays lean no matter how
+	// many statements share the call. Explicit row_limit is respected — the
+	// budget only bounds the default rendering.
+	budget := stmtRenderBudget / len(stmts)
+	if budget > stmtRenderBudgetMax {
+		budget = stmtRenderBudgetMax
+	}
+	if budget < stmtRenderBudgetMin {
+		budget = stmtRenderBudgetMin
 	}
 
-	truncated := false
+	// Each statement runs and reports independently: one bad statement costs
+	// its own section, never the batch. Only an entirely failed batch carries
+	// a typed Error (first failure's code) so retry logic keeps working.
+	sections := make([]string, 0, len(stmts))
+	failed := 0
+	var firstErr *shuttle.Error
+	for i, s := range stmts {
+		head := s.label
+		if head == "" {
+			head = fmt.Sprintf("statement %d", i+1)
+		}
+		body, sErr := t.runOne(ctx, s.sql, rowLimit, budget)
+		if sErr != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = sErr
+			}
+			body = fmt.Sprintf("ERROR: %s", sErr.Message)
+		}
+		if len(stmts) == 1 && s.label == "" {
+			sections = append(sections, body)
+		} else {
+			sections = append(sections, fmt.Sprintf("== %s ==\n%s", head, body))
+		}
+	}
+	res := &shuttle.Result{
+		Success:         failed < len(stmts),
+		Data:            strings.Join(sections, "\n\n"),
+		ExecutionTimeMs: time.Since(start).Milliseconds(),
+	}
+	if failed == len(stmts) {
+		res.Error = firstErr
+	}
+	return res, nil
+}
+
+const (
+	// stmtRenderBudget is the rendered-byte budget shared by a call's
+	// statements; each statement gets an equal slice, clamped below.
+	stmtRenderBudget = 14 * 1024
+	// stmtRenderBudgetMax bounds a lone statement's slice.
+	stmtRenderBudgetMax = 8 * 1024
+	// stmtRenderBudgetMin keeps a slice useful in very large batches.
+	stmtRenderBudgetMin = 2 * 1024
+)
+
+// runOne executes a single statement and renders its section body within the
+// byte budget; a non-nil error marks a failed statement (rendered inline,
+// isolated from the batch).
+func (t *ExecuteQueryTool) runOne(ctx context.Context, sqlText string, rowLimit, budgetBytes int) (string, *shuttle.Error) {
+	if sqlText == "" {
+		return "", &shuttle.Error{Code: "INVALID_PARAMS", Message: "empty sql"}
+	}
+	if err := checkReadOnly(sqlText); err != nil {
+		return "", &shuttle.Error{Code: "READ_ONLY", Message: err.Error(), Suggestion: "read-only: mutations go through dbt or shell"}
+	}
+	res, err := t.backend.ExecuteQuery(ctx, sqlText)
+	if err != nil {
+		return "", &shuttle.Error{Code: "QUERY_FAILED", Message: err.Error()}
+	}
 	rows := res.Rows
 	if len(rows) > rowLimit {
 		rows = rows[:rowLimit]
-		truncated = true
 	}
 	cols := make([]string, 0, len(res.Columns))
 	for _, c := range res.Columns {
 		cols = append(cols, c.Name)
 	}
-	return &shuttle.Result{
-		Success:         true,
-		Data:            renderQueryRows(cols, rows, truncated),
-		ExecutionTimeMs: time.Since(start).Milliseconds(),
-	}, nil
+	// Shrink shown rows until the rendered table fits the budget. Wide rows
+	// converge in a few halvings; the footer always states what was cut.
+	shown := rows
+	for {
+		out := renderQueryRows(cols, shown, len(res.Rows)-len(shown))
+		if len(out) <= budgetBytes || len(shown) <= 5 {
+			return out, nil
+		}
+		shown = shown[:len(shown)/2]
+	}
 }
 
 // checkReadOnly enforces the probe contract: single statement, first keyword
@@ -155,14 +262,23 @@ func isSQLWordChar(c byte) bool {
 	return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
 }
 
-// renderQueryRows aligns columns for reading; NULL renders as NULL.
-func renderQueryRows(cols []string, rows []map[string]interface{}, truncated bool) string {
+// queryCellMaxLen bounds a rendered cell — long text columns get elided, a
+// probe needs the value's shape, not its entirety.
+const queryCellMaxLen = 40
+
+// renderQueryRows aligns columns for reading; NULL renders as NULL; omitted
+// is the count of rows cut by the row limit (0 = complete result).
+func renderQueryRows(cols []string, rows []map[string]interface{}, omitted int) string {
 	cell := func(row map[string]interface{}, col string) string {
 		v, ok := row[col]
 		if !ok || v == nil {
 			return "NULL"
 		}
-		return fmt.Sprint(v)
+		s := fmt.Sprint(v)
+		if len(s) > queryCellMaxLen {
+			s = s[:queryCellMaxLen-1] + "…"
+		}
+		return s
 	}
 	widths := make([]int, len(cols))
 	for i, c := range cols {
@@ -187,8 +303,8 @@ func renderQueryRows(cols []string, rows []map[string]interface{}, truncated boo
 		b.WriteString("\n")
 	}
 	b.WriteString(fmt.Sprintf("(%d rows)", len(rows)))
-	if truncated {
-		b.WriteString(" [truncated at row_limit — narrow with WHERE or aggregation]")
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf(" [+%d more not shown — narrow with WHERE or aggregate]", omitted))
 	}
 	return b.String()
 }

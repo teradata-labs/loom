@@ -533,8 +533,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				Retryable:  false,
 			},
 			Data: map[string]interface{}{
-				"stdout":      strings.Join(stdoutLines, "\n"),
-				"stderr":      strings.Join(stderrLines, "\n"),
+				"stdout":      compactShellOutput(strings.Join(stdoutLines, "\n")),
+				"stderr":      compactShellOutput(strings.Join(stderrLines, "\n")),
 				"exit_code":   -1,
 				"shell":       actualShellType,
 				"working_dir": cleanWorkingDir,
@@ -545,8 +545,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Build result
-	stdout := strings.Join(stdoutLines, "\n")
-	stderr := strings.Join(stderrLines, "\n")
+	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
+	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
 	success := exitCode == 0
 
 	result := &shuttle.Result{
@@ -818,4 +818,31 @@ func checkCommandTokenSize(command string) error {
 	}
 
 	return nil
+}
+
+// ansiEscape matches CSI/OSC terminal escape sequences — pure rendering bytes
+// that inflate build-tool output (dbt colorizes every line) without carrying
+// information.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
+
+const (
+	// shellOutputCap bounds one stream's bytes in the result.
+	shellOutputCap = 12 * 1024
+	// shellOutputHead / shellOutputTail split the cap: build tools put
+	// failures inline and the summary at the end, so the tail gets the bulk.
+	shellOutputHead = 4 * 1024
+	shellOutputTail = 8 * 1024
+)
+
+// compactShellOutput strips terminal escape sequences and, past the cap,
+// keeps the head and tail of the stream with an explicit elision marker.
+func compactShellOutput(s string) string {
+	s = ansiEscape.ReplaceAllString(s, "")
+	if len(s) <= shellOutputCap {
+		return s
+	}
+	elided := len(s) - shellOutputHead - shellOutputTail
+	return s[:shellOutputHead] +
+		fmt.Sprintf("\n[... %d bytes elided — rerun with a filter (grep/tail) to see the middle ...]\n", elided) +
+		s[len(s)-shellOutputTail:]
 }

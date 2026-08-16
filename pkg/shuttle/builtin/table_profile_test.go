@@ -96,4 +96,23 @@ con.close()
 	if res.Success {
 		t.Fatal("missing table must fail")
 	}
+
+	// Batch: every named table profiles in one call; a bad name reports its
+	// own section without failing the rest.
+	if _, err := backend.ExecuteQuery(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("backend gone: %v", err)
+	}
+	res, err = tool.Execute(context.Background(), map[string]interface{}{
+		"tables": []interface{}{"hosts", "nope", "hosts"},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("batch with one bad table must still succeed: %v %+v", err, res)
+	}
+	out = res.Data.(string)
+	if strings.Count(out, "TABLE hosts — 4 rows") != 2 {
+		t.Fatalf("expected two hosts profiles:\n%s", out)
+	}
+	if !strings.Contains(out, "TABLE nope — PROFILE FAILED") {
+		t.Fatalf("bad table missing its failure section:\n%s", out)
+	}
 }

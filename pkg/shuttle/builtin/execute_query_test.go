@@ -106,8 +106,68 @@ func TestExecuteQueryRowLimit(t *testing.T) {
 		"sql": "SELECT id FROM t", "row_limit": float64(3),
 	})
 	out := res.Data.(string)
-	if !strings.Contains(out, "(3 rows)") || !strings.Contains(out, "truncated at row_limit") {
+	if !strings.Contains(out, "(3 rows)") || !strings.Contains(out, "+7 more not shown") {
 		t.Fatalf("expected truncated output: %s", out)
+	}
+}
+
+// A batch of labeled statements renders one section per label; one failing
+// statement reports inline without failing the batch.
+func TestExecuteQueryBatchSectionsAndIsolation(t *testing.T) {
+	be := &fakeSQLBackend{
+		cols: []fabric.Column{{Name: "n"}},
+		rows: []map[string]interface{}{{"n": "7"}},
+	}
+	tool := NewExecuteQueryTool(be)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"statements": []interface{}{
+			map[string]interface{}{"label": "row count", "sql": "SELECT count(*) AS n FROM t"},
+			map[string]interface{}{"label": "bad", "sql": "DELETE FROM t"},
+			map[string]interface{}{"sql": "SELECT count(*) AS n FROM u"},
+		},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("batch with one bad statement must still succeed: %v %+v", err, res)
+	}
+	out := res.Data.(string)
+	for _, want := range []string{"== row count ==", "== bad ==", "ERROR:", "== statement 3 ==", "(1 rows)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// An entirely failed batch carries the first failure's typed error.
+func TestExecuteQueryAllFailedCarriesError(t *testing.T) {
+	be := &fakeSQLBackend{}
+	tool := NewExecuteQueryTool(be)
+	res, _ := tool.Execute(context.Background(), map[string]interface{}{
+		"statements": []interface{}{
+			map[string]interface{}{"sql": "DROP TABLE a"},
+			map[string]interface{}{"sql": "DELETE FROM b"},
+		},
+	})
+	if res.Success || res.Error == nil || res.Error.Code != "READ_ONLY" {
+		t.Fatalf("all-failed batch must carry typed error: %+v", res)
+	}
+}
+
+// The unadvertised conventional shapes are absorbed: a bare sql parameter and
+// bare-string array entries both run as statements.
+func TestExecuteQueryCoercesConventionalForms(t *testing.T) {
+	be := &fakeSQLBackend{cols: []fabric.Column{{Name: "x"}}, rows: []map[string]interface{}{{"x": "1"}}}
+	tool := NewExecuteQueryTool(be)
+	res, _ := tool.Execute(context.Background(), map[string]interface{}{
+		"statements": []interface{}{"SELECT 1 AS x"},
+	})
+	if !res.Success || !strings.Contains(res.Data.(string), "(1 rows)") {
+		t.Fatalf("bare-string entry not coerced: %+v", res)
+	}
+	res, _ = tool.Execute(context.Background(), map[string]interface{}{
+		"sql": "SELECT 1 AS x",
+	})
+	if !res.Success || strings.Contains(res.Data.(string), "== statement") {
+		t.Fatalf("bare sql param must run unlabeled and unsectioned: %+v", res)
 	}
 }
 
@@ -218,5 +278,36 @@ func TestExecuteQueryGateIgnoresStringLiterals(t *testing.T) {
 		if err := checkReadOnly(q); err == nil {
 			t.Errorf("mutation passed the gate: %q", q)
 		}
+	}
+}
+
+// A statement whose rendered table would dominate the call is shrunk to its
+// byte budget with the cut stated in the footer; small results are untouched.
+func TestExecuteQueryRenderBudget(t *testing.T) {
+	wide := strings.Repeat("x", 200)
+	cols := make([]fabric.Column, 12)
+	row := map[string]interface{}{}
+	for i := range cols {
+		cols[i] = fabric.Column{Name: fmt.Sprintf("c%d", i)}
+		row[cols[i].Name] = wide
+	}
+	rows := make([]map[string]interface{}, 50)
+	for i := range rows {
+		rows[i] = row
+	}
+	be := &fakeSQLBackend{cols: cols, rows: rows}
+	tool := NewExecuteQueryTool(be)
+	res, _ := tool.Execute(context.Background(), map[string]interface{}{
+		"statements": []interface{}{
+			map[string]interface{}{"label": "wide", "sql": "SELECT * FROM w"},
+			map[string]interface{}{"label": "wide2", "sql": "SELECT * FROM w"},
+		},
+	})
+	out := res.Data.(string)
+	if len(out) > 16*1024 {
+		t.Fatalf("batch render exceeds offload-safe size: %d bytes", len(out))
+	}
+	if !strings.Contains(out, "more not shown") {
+		t.Fatalf("budget cut not stated in footer:\n%s", out[:200])
 	}
 }
