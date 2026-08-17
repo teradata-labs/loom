@@ -71,14 +71,35 @@ func ExtraHeadersFromContext(ctx context.Context) map[string]string {
 	return h
 }
 
+// CodeStreamLost is the JSON-RPC error code (implementation-defined range
+// -32000..-32019) the transport synthesizes when a response stream ends
+// before the final response for an in-flight request arrived. The 2026-07-28
+// revision removed stream resumption, so the caller's recovery is to re-issue
+// the request as a new request (with the same idempotency key).
+const CodeStreamLost = -32000
+
 // requestHeaderPeek extracts the body fields the standard request headers
 // mirror, without decoding the full message.
 type requestHeaderPeek struct {
-	Method string `json:"method"`
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
 	Params struct {
 		Name string `json:"name"`
 		URI  string `json:"uri"`
 	} `json:"params"`
+}
+
+// requestID extracts the raw JSON-RPC id from a request body, or nil for
+// notifications and unparseable bodies.
+func requestID(message []byte) json.RawMessage {
+	var peek requestHeaderPeek
+	if err := json.Unmarshal(message, &peek); err != nil {
+		return nil
+	}
+	if string(peek.ID) == "null" {
+		return nil
+	}
+	return peek.ID
 }
 
 // requestHeaderFields derives the Mcp-Method and Mcp-Name header values from

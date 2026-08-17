@@ -15,6 +15,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,60 @@ func TestBareHTTPErrorYieldsTypedStatusError(t *testing.T) {
 	var statusErr *HTTPStatusError
 	require.True(t, errors.As(err, &statusErr), "want *HTTPStatusError, got %T: %v", err, err)
 	assert.Equal(t, http.StatusNotFound, statusErr.Code)
+}
+
+func TestStreamLossSynthesizesErrorResponse(t *testing.T) {
+	// SSE stream carries a progress notification but ends before the final
+	// response: the transport must synthesize a CodeStreamLost error for the
+	// in-flight request instead of letting it hang.
+	trans, _ := newTestTransport(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n"))
+	})
+
+	require.NoError(t, trans.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"t"}}`)))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// First message: the progress notification.
+	msg, err := trans.Receive(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, string(msg), "notifications/progress")
+
+	// Second message: the synthesized stream-lost error for id 42.
+	msg, err = trans.Receive(ctx)
+	require.NoError(t, err)
+	var resp struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(msg, &resp))
+	assert.Equal(t, 42, resp.ID)
+	assert.Equal(t, CodeStreamLost, resp.Error.Code)
+}
+
+func TestCompleteStreamDoesNotSynthesize(t *testing.T) {
+	trans, _ := newTestTransport(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n\n"))
+	})
+
+	require.NoError(t, trans.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}`)))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	msg, err := trans.Receive(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, string(msg), `"result"`)
+
+	// No further message may arrive (no synthesis for a completed request).
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer shortCancel()
+	_, err = trans.Receive(shortCtx)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestLegacySessionExpiryStillSignalled(t *testing.T) {

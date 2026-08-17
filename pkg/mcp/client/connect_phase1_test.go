@@ -39,12 +39,15 @@ type scriptedTransport struct {
 	discoverResult    *protocol.DiscoverResult // nil → JSON-RPC MethodNotFound
 	initializeVersion string                   // "" → 2024-11-05
 	tools             []protocol.Tool
-	callResult        json.RawMessage // result payload for tools/call
+	callResult        json.RawMessage   // result payload for tools/call
+	callResults       []json.RawMessage // per-attempt results; overrides callResult when set
+	callStreamLost    int               // answer this many leading tools/call attempts with CodeStreamLost
 
 	// Recording
 	sawDiscover      bool
 	sawInitialize    bool
 	lastExtraHeaders map[string]string
+	callParams       []json.RawMessage // raw params of every tools/call attempt
 
 	responses chan []byte
 }
@@ -105,7 +108,19 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 		resp.Result, _ = json.Marshal(protocol.ToolListResult{Tools: tools})
 	case "tools/call":
 		f.mu.Lock()
-		resp.Result = f.callResult
+		f.callParams = append(f.callParams, append(json.RawMessage(nil), req.Params...))
+		attempt := len(f.callParams) - 1
+		if attempt < f.callStreamLost {
+			resp.Error = protocol.NewError(transport.CodeStreamLost, "response stream lost before completion; re-issue the request", nil)
+		} else if len(f.callResults) > 0 {
+			idx := attempt - f.callStreamLost
+			if idx >= len(f.callResults) {
+				idx = len(f.callResults) - 1
+			}
+			resp.Result = f.callResults[idx]
+		} else {
+			resp.Result = f.callResult
+		}
 		f.mu.Unlock()
 	default:
 		resp.Error = protocol.NewError(protocol.MethodNotFound, "method not found", nil)

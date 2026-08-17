@@ -88,8 +88,44 @@ const (
 	MetaClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 	MetaClientInfo         = "io.modelcontextprotocol/clientInfo"
 	MetaServerInfo         = "io.modelcontextprotocol/serverInfo"
+	MetaSubscriptionID     = "io.modelcontextprotocol/subscriptionId"
 	MetaLogLevel           = "io.modelcontextprotocol/logLevel"
 )
+
+// MetaIdempotencyKey is Loom's vendor _meta key carrying the idempotency key
+// for side-effectful calls. The client mints a fresh UUID per logical call
+// and reuses it verbatim when re-issuing after a lost response stream, so a
+// dedupe-aware server can join the retry to the original run instead of
+// executing twice (migration spec §7.5).
+const MetaIdempotencyKey = "com.teradata.loom/idempotencyKey"
+
+// StampMetaKey sets a single _meta key on a request's params, preserving all
+// existing _meta content. It follows the same object rules as StampMeta.
+func StampMetaKey(params json.RawMessage, key string, value interface{}) (json.RawMessage, error) {
+	obj := map[string]json.RawMessage{}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &obj); err != nil {
+			return nil, fmt.Errorf("params must be a JSON object to carry _meta: %w", err)
+		}
+	}
+	meta := map[string]json.RawMessage{}
+	if raw, ok := obj["_meta"]; ok {
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return nil, fmt.Errorf("existing _meta is not a JSON object: %w", err)
+		}
+	}
+	valJSON, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	meta[key] = valJSON
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	obj["_meta"] = metaJSON
+	return json.Marshal(obj)
+}
 
 // Result types required on every result by the 2026-07-28 revision. Results
 // from earlier-protocol servers omit the field and MUST be treated as

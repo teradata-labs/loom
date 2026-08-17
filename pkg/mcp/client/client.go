@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
@@ -330,7 +331,11 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// sendRequest sends a request and waits for response
+// sendRequest sends a request and waits for its final response, driving the
+// revision-level behaviors that operate on whole logical calls: _meta
+// stamping, idempotency keys, and one re-issue after a lost response stream
+// (the 2026-07-28 recovery for broken streams, safe because the re-issue
+// carries the same idempotency key a dedupe-aware server can join on).
 func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	// Validate request
 	if err := protocol.ValidateRequest(req); err != nil {
@@ -342,20 +347,11 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		req.ID = c.nextRequestID()
 	}
 
-	// Under the stateless revision every request carries its protocol
-	// version, client capabilities, and client identity in params._meta.
 	c.mu.RLock()
 	stateless := c.statelessMode
 	version := c.protocolVersion
 	info := c.clientInfo
 	c.mu.RUnlock()
-	if stateless {
-		stamped, stampErr := protocol.StampMeta(req.Params, version, info, protocol.ClientCapabilities{})
-		if stampErr != nil {
-			return nil, fmt.Errorf("failed to stamp _meta: %w", stampErr)
-		}
-		req.Params = stamped
-	}
 
 	// The MCP-Protocol-Version header is required on every POST by the
 	// 2026-07-28 transport and defined since 2025-06-18; it must match the
@@ -365,7 +361,74 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		ctx = transport.WithExtraHeaders(ctx, map[string]string{"MCP-Protocol-Version": version})
 	}
 
-	// Create response channel
+	// The idempotency key names this logical call across re-issues; it is
+	// minted once here and stamped identically on every attempt.
+	idemKey := ""
+	if stateless && req.Method == "tools/call" {
+		idemKey = uuid.NewString()
+	}
+
+	baseParams := req.Params
+	reissued := false
+
+	for {
+		params := baseParams
+		if stateless {
+			// Every request carries protocol version, client capabilities,
+			// and client identity in params._meta under the stateless core.
+			stamped, stampErr := protocol.StampMeta(params, version, info, c.clientCapabilities())
+			if stampErr != nil {
+				return nil, fmt.Errorf("failed to stamp _meta: %w", stampErr)
+			}
+			if idemKey != "" {
+				stamped, stampErr = protocol.StampMetaKey(stamped, protocol.MetaIdempotencyKey, idemKey)
+				if stampErr != nil {
+					return nil, fmt.Errorf("failed to stamp idempotency key: %w", stampErr)
+				}
+			}
+			params = stamped
+		}
+
+		attemptReq := &protocol.Request{
+			JSONRPC: req.JSONRPC,
+			ID:      req.ID,
+			Method:  req.Method,
+			Params:  params,
+		}
+
+		resp, err := c.dispatchAndWait(ctx, attemptReq)
+		if err != nil {
+			var rpcErr *protocol.Error
+			if stateless && !reissued && errors.As(err, &rpcErr) && rpcErr.Code == transport.CodeStreamLost {
+				// Spec-mandated recovery: re-issue as a new request with a
+				// new ID. The unchanged idempotency key lets the server join
+				// the retry to the original run instead of executing twice.
+				reissued = true
+				req.ID = c.nextRequestID()
+				c.logger.Warn("response stream lost; re-issuing request",
+					zap.String("method", req.Method),
+					zap.String("idempotency_key", idemKey))
+				continue
+			}
+			return nil, err
+		}
+
+		// Under the stateless revision every result carries a resultType
+		// envelope. Surfacing interim MRTR results here — the one choke point
+		// all request paths share — prevents any caller from decoding an
+		// input_required interim result as if it were the final one.
+		if stateless {
+			if err := checkResultEnvelope(req.Method, resp.Result); err != nil {
+				return nil, err
+			}
+		}
+		return resp, nil
+	}
+}
+
+// dispatchAndWait performs one wire attempt: register the pending request,
+// send, and wait for its response or context cancellation.
+func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	respChan := make(chan *protocol.Response, 1)
 	reqIDStr := req.ID.String()
 
@@ -373,7 +436,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 	c.pending[reqIDStr] = respChan
 	c.pendingMu.Unlock()
 
-	// Cleanup
 	defer func() {
 		c.pendingMu.Lock()
 		delete(c.pending, reqIDStr)
@@ -381,7 +443,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		close(respChan)
 	}()
 
-	// Serialize request
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -391,7 +452,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		zap.String("method", req.Method),
 		zap.String("id", reqIDStr))
 
-	// Send request
 	if err := c.transport.Send(ctx, reqJSON); err != nil {
 		c.logger.Error("Failed to send request via transport",
 			zap.String("method", req.Method),
@@ -403,7 +463,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		zap.String("method", req.Method),
 		zap.String("id", reqIDStr))
 
-	// Wait for response with timeout
 	select {
 	case <-ctx.Done():
 		c.logger.Debug("Context cancelled while waiting for response",
@@ -416,17 +475,14 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		if resp.Error != nil {
 			return nil, resp.Error
 		}
-		// Under the stateless revision every result carries a resultType
-		// envelope. Surfacing interim MRTR results here — the one choke point
-		// all request paths share — prevents any caller from decoding an
-		// input_required interim result as if it were the final one.
-		if stateless {
-			if err := checkResultEnvelope(req.Method, resp.Result); err != nil {
-				return nil, err
-			}
-		}
 		return resp, nil
 	}
+}
+
+// clientCapabilities builds the capabilities stamped into _meta on every
+// stateless request.
+func (c *Client) clientCapabilities() protocol.ClientCapabilities {
+	return protocol.ClientCapabilities{}
 }
 
 // receiveLoop receives messages from transport

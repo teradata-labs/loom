@@ -205,7 +205,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		t.logger.Debug("Read SSE response data", zap.Int("bytes", len(allData)))
 
 		// Parse the SSE data from the buffer
-		return t.handleSSEStream(ctx, io.NopCloser(bytes.NewReader(allData)))
+		return t.handleSSEStream(ctx, io.NopCloser(bytes.NewReader(allData)), requestID(message))
 
 	case "application/json":
 		// Single JSON response
@@ -281,13 +281,24 @@ func (t *StreamableHTTPTransport) Close() error {
 	return nil
 }
 
-// handleSSEStream processes an SSE response stream.
-func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.ReadCloser) error {
+// handleSSEStream processes an SSE response stream. expectedID is the
+// JSON-RPC id of the request that opened the stream (nil for notifications);
+// if the stream ends without delivering that request's final response, a
+// CodeStreamLost error response is synthesized so the pending request fails
+// promptly instead of hanging until its context deadline. Resumption was
+// removed by the 2026-07-28 revision, so re-issuing is the only recovery.
+func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.ReadCloser, expectedID json.RawMessage) error {
 	t.logger.Debug("Starting SSE stream handler")
 	t.activeStreams.Add(1)
 	go func() {
+		sawFinal := expectedID == nil
 		defer t.activeStreams.Done()
 		defer func() { _ = body.Close() }()
+		defer func() {
+			if !sawFinal {
+				t.synthesizeStreamLost(ctx, expectedID)
+			}
+		}()
 
 		parser := NewSSEParser(body)
 
@@ -309,10 +320,6 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 					return
 				}
 				t.logger.Warn("SSE stream error", zap.Error(err))
-				select {
-				case t.errors <- fmt.Errorf("SSE parse error: %w", err):
-				default:
-				}
 				return
 			}
 
@@ -326,21 +333,67 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				zap.String("event_id", event.ID),
 				zap.ByteString("data", event.Data))
 
+			if !sawFinal && isResponseForID(event.Data, expectedID) {
+				sawFinal = true
+			}
+
 			// Send message to channel
 			select {
 			case t.messages <- event.Data:
 				t.logger.Debug("Message sent to channel")
 			case <-t.streamCtx.Done():
 				t.logger.Debug("Stream context cancelled")
+				sawFinal = true // shutdown, not a stream loss
 				return
 			case <-ctx.Done():
 				t.logger.Debug("Request context cancelled")
+				sawFinal = true // caller gave up; no synthesis needed
 				return
 			}
 		}
 	}()
 
 	return nil
+}
+
+// isResponseForID reports whether data is a JSON-RPC response (result or
+// error) whose id matches expectedID.
+func isResponseForID(data []byte, expectedID json.RawMessage) bool {
+	var probe struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	if len(probe.Result) == 0 && len(probe.Error) == 0 {
+		return false
+	}
+	return string(probe.ID) == string(expectedID)
+}
+
+// synthesizeStreamLost delivers a CodeStreamLost error response for a request
+// whose response stream ended before its final response arrived.
+func (t *StreamableHTTPTransport) synthesizeStreamLost(ctx context.Context, id json.RawMessage) {
+	t.logger.Warn("response stream lost before completion; synthesizing stream-lost error",
+		zap.ByteString("request_id", id))
+	synth, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error": map[string]interface{}{
+			"code":    CodeStreamLost,
+			"message": "response stream lost before completion; re-issue the request",
+		},
+	})
+	if err != nil {
+		return
+	}
+	select {
+	case t.messages <- synth:
+	case <-t.streamCtx.Done():
+	case <-ctx.Done():
+	}
 }
 
 // handleHTTPStatus handles HTTP status codes per MCP spec. The boolean is
