@@ -48,9 +48,16 @@ type scriptedTransport struct {
 	sawInitialize    bool
 	lastExtraHeaders map[string]string
 	callParams       []json.RawMessage // raw params of every tools/call attempt
+	listenSupported  bool              // answer subscriptions/listen by holding the stream open
+	listenParams     []json.RawMessage // raw params of every subscriptions/listen request
+	listenIDs        []json.RawMessage // raw JSON-RPC ids of listen requests
+	toolsListCalls   int
 
 	responses chan []byte
 }
+
+// inject delivers a raw server-to-client message (notification or response).
+func (f *scriptedTransport) inject(data []byte) { f.responses <- data }
 
 func newScriptedTransport() *scriptedTransport {
 	return &scriptedTransport{responses: make(chan []byte, 10)}
@@ -103,9 +110,23 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 		resp.Result, _ = json.Marshal(result)
 	case "tools/list":
 		f.mu.Lock()
+		f.toolsListCalls++
 		tools := f.tools
 		f.mu.Unlock()
 		resp.Result, _ = json.Marshal(protocol.ToolListResult{Tools: tools})
+	case "subscriptions/listen":
+		f.mu.Lock()
+		supported := f.listenSupported
+		if supported {
+			f.listenParams = append(f.listenParams, append(json.RawMessage(nil), req.Params...))
+			idJSON, _ := json.Marshal(req.ID)
+			f.listenIDs = append(f.listenIDs, idJSON)
+		}
+		f.mu.Unlock()
+		if supported {
+			return nil // stream stays open; the test injects events
+		}
+		resp.Error = protocol.NewError(protocol.MethodNotFound, "method not found", nil)
 	case "tools/call":
 		f.mu.Lock()
 		f.callParams = append(f.callParams, append(json.RawMessage(nil), req.Params...))

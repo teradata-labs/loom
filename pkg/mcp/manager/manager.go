@@ -33,6 +33,10 @@ type Manager struct {
 	clients map[string]*client.Client
 	mu      sync.RWMutex
 	started bool
+
+	// Tool-list watching (subscriptions/listen) lifecycle.
+	stopCh  chan struct{}
+	watchWG sync.WaitGroup
 }
 
 // NewManager creates a new MCP manager.
@@ -49,6 +53,7 @@ func NewManager(config Config, logger *zap.Logger) (*Manager, error) {
 		config:  config,
 		logger:  logger,
 		clients: make(map[string]*client.Client),
+		stopCh:  make(chan struct{}),
 	}, nil
 }
 
@@ -62,6 +67,12 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.logger.Info("Starting MCP manager", zap.Int("server_count", len(m.config.Servers)))
+
+	// Recreate the stop channel after a previous Stop so watchers spawned by
+	// this Start observe this run's lifecycle.
+	if m.stopCh == nil {
+		m.stopCh = make(chan struct{})
+	}
 
 	// Start each enabled server
 	var startErrors []error
@@ -185,6 +196,13 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 	// Store client
 	m.clients[name] = mcpClient
 
+	// Stateless servers deliver tool-list changes via subscriptions/listen;
+	// keep the tool cache fresh for the manager's lifetime.
+	if mcpClient.IsStateless() && m.stopCh != nil {
+		m.watchWG.Add(1)
+		go m.watchToolLists(name, mcpClient, m.stopCh)
+	}
+
 	return nil
 }
 
@@ -198,6 +216,13 @@ func (m *Manager) Stop() error {
 	}
 
 	m.logger.Info("Stopping MCP manager", zap.Int("server_count", len(m.clients)))
+
+	// Stop tool-list watchers before closing their clients.
+	if m.stopCh != nil {
+		close(m.stopCh)
+		m.stopCh = nil
+	}
+	m.watchWG.Wait()
 
 	var errors []error
 	for name, client := range m.clients {

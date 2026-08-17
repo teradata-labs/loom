@@ -65,8 +65,11 @@ type Client struct {
 	// Handlers
 	progressHandlers map[string]ProgressHandler
 
-	// Notifications
+	// Notifications. subs holds active subscriptions/listen demux entries
+	// keyed by subscription ID; untagged notifications go to notifications.
 	notifications chan Notification
+	subs          map[string]*subscriptionEntry
+	subsMu        sync.RWMutex
 
 	// Lifecycle
 	ctx    context.Context
@@ -142,6 +145,7 @@ func NewClient(config Config) *Client {
 		toolHeaderParams: make(map[string][]protocol.HeaderParam),
 		progressHandlers: make(map[string]ProgressHandler),
 		notifications:    make(chan Notification, 100),
+		subs:             make(map[string]*subscriptionEntry),
 	}
 
 	// Start message receiver
@@ -575,9 +579,15 @@ func (c *Client) receiveLoop() {
 			continue
 		}
 
-		// Try to parse as request (for sampling, etc.)
+		// Try to parse as request or notification
 		var req protocol.Request
 		if err := json.Unmarshal(data, &req); err == nil && req.Method != "" {
+			if req.ID == nil {
+				// Notifications (no id) are dispatched, never answered —
+				// answering one with an error response violates JSON-RPC.
+				c.dispatchNotification(req.Method, req.Params)
+				continue
+			}
 			c.handleRequest(&req)
 			continue
 		}
