@@ -1018,6 +1018,21 @@ looms serve
 
 ---
 
+## MCP Endpoint (loom-mcp)
+
+### LOOM_MCP_RESOURCE_URL
+
+The public URL identifying this HTTP-MCP deployment as an OAuth 2.0 protected
+resource (RFC 9728). When set together with the `LOOM_SERVER_AUTH_*` auth
+configuration (enabled + an explicit `LOOM_SERVER_AUTH_SUPABASE_ISSUER` or a
+project ref to derive one), `loom-mcp --http` serves the metadata document at
+`/.well-known/oauth-protected-resource`, pointing clients at the deployment's
+authorization server. Unset (the default) disables the endpoint.
+
+```bash
+export LOOM_MCP_RESOURCE_URL=https://mcp.example.com
+```
+
 ## Testing Environment Variables
 
 Many environment variables are used in tests. See test files for examples:

@@ -44,6 +44,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -240,9 +241,27 @@ func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logg
 		logger.Warn("HTTP-MCP endpoint authentication is DISABLED; the endpoint is unauthenticated")
 	}
 
+	// OAuth 2.0 Protected Resource Metadata (RFC 9728, MCP 2026-07-28 §8.4):
+	// points clients at this deployment's authorization server. Served
+	// outside the auth middleware — discovery metadata must be publicly
+	// readable — and only when the deployment is configured for auth.
+	mux := http.NewServeMux()
+	if metadata, ok := buildProtectedResourceMetadata(); ok {
+		mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(metadata)
+		})
+		logger.Info("serving OAuth protected resource metadata (RFC 9728)")
+	}
+	mux.Handle("/", handler)
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -310,6 +329,36 @@ func buildEdgeAuthenticator(logger *zap.Logger) (auth *loomserver.Authenticator,
 		logger.Fatal("failed to initialize HTTP-MCP authenticator", zap.Error(err))
 	}
 	return authr, required, true
+}
+
+// buildProtectedResourceMetadata assembles the RFC 9728 document from the
+// deployment's auth configuration: the authorization server is the Supabase
+// issuer (explicit, or derived from the project ref), and the resource
+// identifier comes from LOOM_MCP_RESOURCE_URL (the public URL of this MCP
+// endpoint). Absent configuration disables the endpoint.
+func buildProtectedResourceMetadata() ([]byte, bool) {
+	if !envBool("LOOM_SERVER_AUTH_ENABLED") {
+		return nil, false
+	}
+	issuer := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_ISSUER")
+	if issuer == "" {
+		if ref := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF"); ref != "" {
+			issuer = "https://" + ref + ".supabase.co/auth/v1"
+		}
+	}
+	resource := os.Getenv("LOOM_MCP_RESOURCE_URL")
+	if issuer == "" || resource == "" {
+		return nil, false
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"resource":                 resource,
+		"authorization_servers":    []string{issuer},
+		"bearer_methods_supported": []string{"header"},
+	})
+	if err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 // authMiddleware validates the inbound Supabase JWT and forwards the caller
