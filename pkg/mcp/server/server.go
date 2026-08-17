@@ -105,10 +105,13 @@ func NewMCPServer(name, version string, logger *zap.Logger, opts ...Option) *MCP
 		notifyCh: make(chan []byte, 16),
 	}
 
-	// Register built-in handlers
+	// Register built-in handlers. initialize/ping serve the legacy handshake
+	// family through the deprecation window; server/discover is the mandatory
+	// RPC of the 2026-07-28 revision.
 	s.RegisterHandler("initialize", s.handleInitialize)
 	s.RegisterHandler("notifications/initialized", s.handleNotificationsInitialized)
 	s.RegisterHandler("ping", s.handlePing)
+	s.RegisterHandler("server/discover", s.handleDiscover)
 
 	// Apply options
 	for _, opt := range opts {
@@ -136,6 +139,10 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	if err := protocol.ValidateRequest(&req); err != nil {
 		return marshalResponse(nil, nil, protocol.NewError(protocol.InvalidRequest, err.Error(), nil))
 	}
+
+	// Extract the 2026-07-28 per-request _meta identity into the context;
+	// handlers and observability read from there, never from params.
+	ctx = withRequestMeta(ctx, req.Params)
 
 	s.logger.Debug("handling request", zap.String("method", req.Method), zap.Any("id", req.ID))
 	start := time.Now()
@@ -193,6 +200,14 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	if req.ID == nil {
 		// Notification - no response
 		return nil, nil
+	}
+
+	// Stateless results carry the revision-level envelope (resultType +
+	// serverInfo _meta); error responses and legacy results are untouched.
+	if RequestMetaFromContext(ctx).Stateless() {
+		if stamped, stampErr := s.stampResult(result); stampErr == nil {
+			return marshalResponse(req.ID, stamped, nil)
+		}
 	}
 
 	return marshalResponse(req.ID, result, nil)
@@ -311,7 +326,12 @@ func (s *MCPServer) handleNotificationsInitialized(_ context.Context, _ json.Raw
 // removal no earlier than 2027-07-28. The method does not exist under the
 // 2026-07-28 revision; migration Phase 2 answers MethodNotFound when the
 // request carries stateless _meta.
-func (s *MCPServer) handlePing(_ context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
+func (s *MCPServer) handlePing(ctx context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
+	// The method does not exist under the stateless revision.
+	if RequestMetaFromContext(ctx).Stateless() {
+		return nil, protocol.NewError(protocol.MethodNotFound,
+			"ping does not exist in MCP 2026-07-28; connection health is a transport property", nil)
+	}
 	return struct{}{}, nil
 }
 

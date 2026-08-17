@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"go.uber.org/zap"
 )
 
@@ -182,6 +183,15 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Dual-mode admission (MCP 2026-07-28): a request declaring a stateless
+	// revision in params._meta bypasses the session layer entirely — no
+	// lookup, no minting, no session response header, and any stale
+	// Mcp-Session-Id it carries is ignored, as the specification requires.
+	if peek := peekStatelessRequest(body); protocol.IsStatelessVersion(peek.version) {
+		s.handleStatelessPost(w, r, body, peek)
+		return
+	}
+
 	// Check if this is an initialize request (needs session creation)
 	isInit := s.isInitializeRequest(body)
 
@@ -248,6 +258,100 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 // acceptsEventStream reports whether the request's Accept header opts into SSE.
 func acceptsEventStream(accept string) bool {
 	return strings.Contains(accept, "text/event-stream")
+}
+
+// statelessPeek carries the body fields dual-mode admission and header
+// validation need, extracted in a single parse.
+type statelessPeek struct {
+	id      json.RawMessage
+	method  string
+	version string
+}
+
+func peekStatelessRequest(body []byte) statelessPeek {
+	var p struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return statelessPeek{}
+	}
+	peek := statelessPeek{id: p.ID, method: p.Method}
+	if raw, ok := p.Params.Meta[protocol.MetaProtocolVersion]; ok {
+		_ = json.Unmarshal(raw, &peek.version)
+	}
+	return peek
+}
+
+// handleStatelessPost admits a 2026-07-28 request: header-body validation
+// (SEP-2243), then dispatch with no session machinery.
+func (s *StreamableHTTPServer) handleStatelessPost(w http.ResponseWriter, r *http.Request, body []byte, peek statelessPeek) {
+	// Servers that process the body MUST reject requests whose mirrored
+	// headers disagree with it (HeaderMismatch, -32020). A missing header is
+	// tolerated during the deprecation window so older 2025-06-18-family
+	// clients that stamp _meta early are not broken; conformant clients
+	// always send them.
+	if hdr := r.Header.Get("Mcp-Method"); hdr != "" && hdr != peek.method {
+		s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+			fmt.Sprintf("Mcp-Method header %q does not match body method %q", hdr, peek.method))
+		return
+	}
+	if hdr := r.Header.Get("MCP-Protocol-Version"); hdr != "" && hdr != peek.version {
+		s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+			fmt.Sprintf("MCP-Protocol-Version header %q does not match _meta protocol version %q", hdr, peek.version))
+		return
+	}
+	if r.Header.Get("Mcp-Method") == "" {
+		s.logger.Debug("stateless request without Mcp-Method header", zap.String("method", peek.method))
+	}
+
+	// POST-response SSE for streaming-capable handlers, exactly as on the
+	// legacy path — request-scoped streaming is unchanged by the revision.
+	if s.streamHandler != nil && acceptsEventStream(r.Header.Get("Accept")) {
+		if flusher, ok := w.(http.Flusher); ok {
+			s.handleStreamingPost(w, r, flusher, body)
+			return
+		}
+	}
+
+	resp, err := s.handler(r.Context(), body)
+	if err != nil {
+		s.logger.Error("handler error", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if resp == nil {
+		// Notification - accepted but no content
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+// writeJSONRPCError answers with an HTTP error status carrying a JSON-RPC
+// error body, as the 2026-07-28 transport requires for header-validation
+// failures.
+func (s *StreamableHTTPServer) writeJSONRPCError(w http.ResponseWriter, status int, id json.RawMessage, code int, message string) {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]interface{}{"code": code, "message": message},
+	})
+	if err != nil {
+		http.Error(w, message, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // handleStreamingPost answers a POST as Server-Sent Events. It writes the SSE

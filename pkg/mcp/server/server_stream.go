@@ -37,6 +37,10 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 		return marshalResponse(nil, nil, protocol.NewError(protocol.ParseError, "invalid JSON", nil))
 	}
 
+	// The streaming path bypasses HandleMessage, so it extracts _meta itself;
+	// the fallback path re-extracts inside HandleMessage, which is harmless.
+	ctx = withRequestMeta(ctx, req.Params)
+
 	// Only requests (with an id) for a streamable tool take the streaming path.
 	sp, _ := s.toolProvider.(StreamingToolProvider)
 	if req.Method != "tools/call" || req.ID == nil || sp == nil {
@@ -61,6 +65,11 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 		result = &protocol.CallToolResult{
 			Content: []protocol.Content{{Type: "text", Text: err.Error()}},
 			IsError: true,
+		}
+	}
+	if RequestMetaFromContext(ctx).Stateless() {
+		if stamped, stampErr := s.stampResult(result); stampErr == nil {
+			return marshalResponse(req.ID, stamped, nil)
 		}
 	}
 	return marshalResponse(req.ID, result, nil)
