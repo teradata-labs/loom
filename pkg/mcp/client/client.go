@@ -61,7 +61,6 @@ type Client struct {
 	toolsMu          sync.RWMutex
 
 	// Handlers
-	samplingHandler  SamplingHandler
 	progressHandlers map[string]ProgressHandler
 
 	// Notifications
@@ -102,9 +101,6 @@ type Config struct {
 	// Timeouts
 	RequestTimeout time.Duration // Default: 30s
 }
-
-// SamplingHandler is called when server requests LLM completion
-type SamplingHandler func(ctx context.Context, params protocol.SamplingParams) (*protocol.SamplingResult, error)
 
 // ProgressHandler is called for progress updates
 type ProgressHandler func(progress, total float64)
@@ -506,28 +502,18 @@ func (c *Client) handleResponse(resp *protocol.Response) {
 	}
 }
 
-// handleRequest handles incoming requests from server (sampling, etc.)
+// handleRequest answers incoming server-initiated requests. Under the
+// 2026-07-28 revision servers must not send them (MRTR embeds their content
+// in input_required results instead), and the legacy sampling support was
+// dead code (no handler was ever registered), so every server-initiated
+// request is answered MethodNotFound.
 func (c *Client) handleRequest(req *protocol.Request) {
-	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
 	defer cancel()
 
-	var resp *protocol.Response
-	var err error
+	resp := c.createErrorResponse(req.ID, protocol.MethodNotFound,
+		fmt.Sprintf("method not found: %s", req.Method), nil)
 
-	switch req.Method {
-	case "sampling/createMessage":
-		resp, err = c.handleSamplingRequest(ctx, req)
-	default:
-		resp = c.createErrorResponse(req.ID, protocol.MethodNotFound,
-			fmt.Sprintf("method not found: %s", req.Method), nil)
-	}
-
-	if err != nil {
-		c.logger.Error("failed to handle request", zap.String("method", req.Method), zap.Error(err))
-		return
-	}
-
-	// Send response
 	respJSON, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		c.logger.Error("failed to marshal response", zap.String("method", req.Method), zap.Error(marshalErr))
@@ -536,48 +522,6 @@ func (c *Client) handleRequest(req *protocol.Request) {
 	if err := c.transport.Send(ctx, respJSON); err != nil {
 		c.logger.Error("failed to send response", zap.Error(err))
 	}
-}
-
-// handleSamplingRequest processes incoming sampling request from server
-func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
-	c.mu.RLock()
-	handler := c.samplingHandler
-	c.mu.RUnlock()
-
-	if handler == nil {
-		return c.createErrorResponse(req.ID, protocol.MethodNotFound, "sampling not supported", nil), nil
-	}
-
-	// Parse params
-	var params protocol.SamplingParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return c.createErrorResponse(req.ID, protocol.InvalidParams, "invalid sampling params", err), nil
-	}
-
-	// Call handler
-	result, err := handler(ctx, params)
-	if err != nil {
-		return c.createErrorResponse(req.ID, protocol.InternalError, "sampling failed", err), nil
-	}
-
-	// Create response
-	resultJSON, marshalErr := json.Marshal(result)
-	if marshalErr != nil {
-		c.logger.Error("failed to marshal sampling result", zap.Error(marshalErr))
-		return c.createErrorResponse(req.ID, protocol.InternalError, "failed to marshal sampling result", marshalErr), nil
-	}
-	return &protocol.Response{
-		JSONRPC: protocol.JSONRPCVersion,
-		ID:      req.ID,
-		Result:  resultJSON,
-	}, nil
-}
-
-// SetSamplingHandler registers a handler for sampling requests
-func (c *Client) SetSamplingHandler(handler SamplingHandler) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.samplingHandler = handler
 }
 
 // nextRequestID generates next request ID

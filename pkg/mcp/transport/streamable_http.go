@@ -31,18 +31,14 @@ import (
 // ErrSessionExpired indicates the server session has expired (HTTP 404).
 var ErrSessionExpired = errors.New("session expired")
 
-// StreamableHTTPTransport implements the MCP streamable-http transport.
-// This is the modern MCP transport (2025-03-26 spec) with session management
-// and stream resumption support.
+// StreamableHTTPTransport implements the MCP streamable-http transport with
+// legacy session management (pre-2026 revisions).
 type StreamableHTTPTransport struct {
 	endpoint string
 	client   *http.Client
 
 	// Session management
 	sessionMgr *SessionManager
-
-	// Stream resumption
-	resumption *StreamResumption
 
 	// Message channels
 	messages chan []byte
@@ -60,18 +56,22 @@ type StreamableHTTPTransport struct {
 	streamCtx     context.Context
 
 	// Configuration
-	enableSessions   bool
-	enableResumption bool
-	headers          map[string]string // custom headers (e.g. Authorization) sent on every request
+	enableSessions bool
+	headers        map[string]string // custom headers (e.g. Authorization) sent on every request
 }
 
 // StreamableHTTPConfig configures streamable-http transport.
 type StreamableHTTPConfig struct {
-	Endpoint         string            // MCP endpoint URL
-	Headers          map[string]string // Custom headers
-	EnableSessions   bool              // Enable session management
-	EnableResumption bool              // Enable stream resumption
-	Logger           *zap.Logger       // Logger
+	Endpoint       string            // MCP endpoint URL
+	Headers        map[string]string // Custom headers
+	EnableSessions bool              // Enable session management
+	// EnableResumption is a no-op. SSE resumption never had a read path in
+	// Loom (no Last-Event-ID was ever sent) and the 2026-07-28 revision
+	// removes resumption from the protocol; the field is retained only so
+	// existing configs keep loading. It is removed after the deprecation
+	// window (2027-07-28).
+	EnableResumption bool
+	Logger           *zap.Logger // Logger
 }
 
 // NewStreamableHTTPTransport creates a new streamable-http transport.
@@ -87,19 +87,21 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
+	if config.EnableResumption {
+		logger.Warn("enable_resumption is deprecated and has no effect: SSE resumption was removed by MCP 2026-07-28 and never had a read path in this client")
+	}
+
 	t := &StreamableHTTPTransport{
-		endpoint:         config.Endpoint,
-		client:           &http.Client{},
-		sessionMgr:       NewSessionManager(),
-		resumption:       NewStreamResumption(100),
-		messages:         make(chan []byte, 100),
-		errors:           make(chan error, 1),
-		logger:           logger,
-		streamCtx:        streamCtx,
-		streamCancel:     streamCancel,
-		enableSessions:   config.EnableSessions,
-		enableResumption: config.EnableResumption,
-		headers:          config.Headers,
+		endpoint:       config.Endpoint,
+		client:         &http.Client{},
+		sessionMgr:     NewSessionManager(),
+		messages:       make(chan []byte, 100),
+		errors:         make(chan error, 1),
+		logger:         logger,
+		streamCtx:      streamCtx,
+		streamCancel:   streamCancel,
+		enableSessions: config.EnableSessions,
+		headers:        config.Headers,
 	}
 
 	logger.Info("Streamable HTTP transport created", zap.String("endpoint", config.Endpoint))
@@ -320,11 +322,6 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				continue
 			}
 
-			// Store event for resumption
-			if t.enableResumption && event.ID != "" {
-				t.resumption.AddEvent(*event)
-			}
-
 			t.logger.Debug("SSE event parsed successfully",
 				zap.String("event_id", event.ID),
 				zap.ByteString("data", event.Data))
@@ -362,9 +359,6 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
 		t.logger.Warn("Session expired (404), clearing session")
 		t.sessionMgr.ClearSession()
-		if t.enableResumption {
-			t.resumption.Clear()
-		}
 		return true, ErrSessionExpired
 	}
 

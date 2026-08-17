@@ -141,61 +141,6 @@ func TestSessionManager(t *testing.T) {
 	})
 }
 
-func TestStreamResumption(t *testing.T) {
-	t.Run("add and retrieve events", func(t *testing.T) {
-		sr := NewStreamResumption(5)
-
-		// Add events
-		event1 := SSEEvent{ID: "event1", Data: []byte(`{"id":1}`)}
-		event2 := SSEEvent{ID: "event2", Data: []byte(`{"id":2}`)}
-		event3 := SSEEvent{ID: "event3", Data: []byte(`{"id":3}`)}
-
-		sr.AddEvent(event1)
-		sr.AddEvent(event2)
-		sr.AddEvent(event3)
-
-		assert.Equal(t, "event3", sr.GetLastEventID())
-
-		// Get events after event1
-		events := sr.GetEventsAfter("event1")
-		assert.Len(t, events, 2)
-		assert.Equal(t, "event2", events[0].ID)
-		assert.Equal(t, "event3", events[1].ID)
-	})
-
-	t.Run("event not in buffer", func(t *testing.T) {
-		sr := NewStreamResumption(5)
-		sr.AddEvent(SSEEvent{ID: "event1", Data: []byte(`{"id":1}`)})
-
-		events := sr.GetEventsAfter("nonexistent")
-		assert.Nil(t, events)
-	})
-
-	t.Run("circular buffer overflow", func(t *testing.T) {
-		sr := NewStreamResumption(3)
-
-		// Add more events than buffer size
-		for i := 1; i <= 5; i++ {
-			sr.AddEvent(SSEEvent{
-				ID:   string(rune('a' + i - 1)),
-				Data: []byte(`{}`),
-			})
-		}
-
-		// Should only have last 3 events
-		assert.Equal(t, "e", sr.GetLastEventID())
-	})
-
-	t.Run("clear resumption", func(t *testing.T) {
-		sr := NewStreamResumption(5)
-		sr.AddEvent(SSEEvent{ID: "event1", Data: []byte(`{}`)})
-		assert.Equal(t, "event1", sr.GetLastEventID())
-
-		sr.Clear()
-		assert.Equal(t, "", sr.GetLastEventID())
-	})
-}
-
 func TestSSEParser(t *testing.T) {
 	t.Run("parse single event", func(t *testing.T) {
 		data := "id: event1\nevent: message\ndata: {\"jsonrpc\":\"2.0\"}\n\n"

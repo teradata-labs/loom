@@ -749,11 +749,6 @@ func (ic *InstrumentedClient) Ping(ctx context.Context) error {
 	return ic.client.Ping(ctx)
 }
 
-// SetSamplingHandler delegates to the underlying client.
-func (ic *InstrumentedClient) SetSamplingHandler(handler SamplingHandler) {
-	ic.client.SetSamplingHandler(handler)
-}
-
 // UnsubscribeResource delegates to the underlying client.
 func (ic *InstrumentedClient) UnsubscribeResource(ctx context.Context, uri string) error {
 	return ic.client.UnsubscribeResource(ctx, uri)

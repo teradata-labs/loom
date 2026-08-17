@@ -201,39 +201,6 @@ type PromptMessage struct {
 	Content interface{} `json:"content"` // Can be string or Content object
 }
 
-// SamplingParams contains parameters for sampling/createMessage
-type SamplingParams struct {
-	Messages       []PromptMessage        `json:"messages"`
-	ModelPrefs     *ModelPreferences      `json:"modelPreferences,omitempty"`
-	SystemPrompt   string                 `json:"systemPrompt,omitempty"`
-	IncludeContext string                 `json:"includeContext,omitempty"` // "none", "thisServer", "allServers"
-	Temperature    *float64               `json:"temperature,omitempty"`
-	MaxTokens      int                    `json:"maxTokens"`
-	StopSequences  []string               `json:"stopSequences,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// ModelPreferences specifies LLM selection preferences
-type ModelPreferences struct {
-	Hints                []ModelHint `json:"hints,omitempty"`
-	CostPriority         *float64    `json:"costPriority,omitempty"`         // 0-1
-	SpeedPriority        *float64    `json:"speedPriority,omitempty"`        // 0-1
-	IntelligencePriority *float64    `json:"intelligencePriority,omitempty"` // 0-1
-}
-
-// ModelHint suggests model preferences
-type ModelHint struct {
-	Name string `json:"name,omitempty"`
-}
-
-// SamplingResult is the response from sampling/createMessage
-type SamplingResult struct {
-	Role       string  `json:"role"` // "assistant"
-	Content    Content `json:"content"`
-	Model      string  `json:"model"`
-	StopReason string  `json:"stopReason,omitempty"` // "endTurn", "stopSequence", "maxTokens"
-}
-
 // Notification types
 
 // ProgressNotification reports progress for a long-running operation
@@ -244,13 +211,6 @@ type ProgressNotification struct {
 	// Message is an optional human-readable status (MCP 2025-03-26). loom uses
 	// it to stream the agent's cumulative partial response text as it generates.
 	Message string `json:"message,omitempty"`
-}
-
-// LogNotification sends log messages from server to client
-type LogNotification struct {
-	Level  string      `json:"level"` // "debug", "info", "warning", "error"
-	Logger string      `json:"logger,omitempty"`
-	Data   interface{} `json:"data"`
 }
 
 // ResourceUpdatedNotification notifies of a resource change
