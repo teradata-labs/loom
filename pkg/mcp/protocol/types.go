@@ -105,6 +105,11 @@ type Tool struct {
 // ToolListResult is the response from tools/list
 type ToolListResult struct {
 	Tools []Tool `json:"tools"`
+	// CacheableResult fields (2026-07-28, SEP-2549): freshness hint and
+	// intermediary cacheability. "private" prevents shared caches from
+	// serving one identity's list to another.
+	TTLMs      int64  `json:"ttlMs,omitempty"`
+	CacheScope string `json:"cacheScope,omitempty"`
 }
 
 // CallToolParams contains parameters for tools/call
@@ -145,7 +150,9 @@ type Resource struct {
 
 // ResourceListResult is the response from resources/list
 type ResourceListResult struct {
-	Resources []Resource `json:"resources"`
+	Resources  []Resource `json:"resources"`
+	TTLMs      int64      `json:"ttlMs,omitempty"`
+	CacheScope string     `json:"cacheScope,omitempty"`
 }
 
 // ReadResourceParams contains parameters for resources/read
@@ -155,7 +162,9 @@ type ReadResourceParams struct {
 
 // ReadResourceResult is the response from resources/read
 type ReadResourceResult struct {
-	Contents []ResourceContents `json:"contents"`
+	Contents   []ResourceContents `json:"contents"`
+	TTLMs      int64              `json:"ttlMs,omitempty"`
+	CacheScope string             `json:"cacheScope,omitempty"`
 }
 
 // ResourceContents contains resource data
@@ -191,7 +200,9 @@ type PromptArgument struct {
 
 // PromptListResult is the response from prompts/list
 type PromptListResult struct {
-	Prompts []Prompt `json:"prompts"`
+	Prompts    []Prompt `json:"prompts"`
+	TTLMs      int64    `json:"ttlMs,omitempty"`
+	CacheScope string   `json:"cacheScope,omitempty"`
 }
 
 // GetPromptParams contains parameters for prompts/get

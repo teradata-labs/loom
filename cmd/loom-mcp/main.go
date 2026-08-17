@@ -135,11 +135,17 @@ func main() {
 			skillsDir = home + "/.loom/skills"
 		}
 	}
+	// The list-result ttlMs freshness hint (2026-07-28, SEP-2549) depends on
+	// whether the tool set can change at runtime: with skills enabled, lazy
+	// loading may add tools, so lists go stale quickly; without, a long TTL
+	// keeps serialized lists byte-stable for downstream prompt caches.
+	listTTL := 5 * time.Minute
 	if skillsDir != "" {
 		skillLib := skills.NewLibrary(skills.WithSearchPaths(skillsDir))
 		skillOrch := skills.NewOrchestrator(skillLib)
 		bridgeOpts = append(bridgeOpts, server.WithSkillOrchestrator(skillOrch))
 		logger.Info("skills orchestrator initialized", zap.String("skills_dir", skillsDir))
+		listTTL = server.DefaultListTTLMs * time.Millisecond
 	}
 
 	// Connect to running looms via gRPC
@@ -156,6 +162,7 @@ func main() {
 	mcpServer := server.NewMCPServer(serverName, version.Get(), logger,
 		server.WithToolProvider(bridge),
 		server.WithResourceProvider(bridge),
+		server.WithListTTL(listTTL),
 		server.WithExtensions(protocol.ServerAppsExtension()),
 		server.WithInstructions("To create agents or workflows, call loom_build with a natural-language description; Loom's weaver authors and saves them for you. Do not construct workflow YAML or patterns directly — the weaver knows Loom's components and conventions far better. Use loom_execute_workflow to RUN a workflow the weaver built."),
 	)

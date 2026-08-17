@@ -51,6 +51,14 @@ type MCPServer struct {
 	// by the listen request's JSON-RPC id.
 	subscriptions map[string]*serverSubscription
 	subsMu        sync.RWMutex
+
+	// CacheableResult fields (2026-07-28, SEP-2549) stamped on list/read
+	// results. cacheScope defaults to "private" because bridge tool lists
+	// vary by identity (visibility); an intermediary caching one tenant's
+	// list for another would be a cross-tenant leak, so "public" is an
+	// explicit provider opt-in.
+	listTTLMs  int64
+	cacheScope string
 }
 
 // Option configures an MCPServer.
@@ -61,7 +69,7 @@ func WithToolProvider(p ToolProvider) Option {
 	return func(s *MCPServer) {
 		s.capabilities.Tools = &protocol.ToolsCapability{}
 		s.toolProvider = p
-		s.RegisterHandler("tools/list", newToolsListHandler(p))
+		s.RegisterHandler("tools/list", newToolsListHandler(s, p))
 		s.RegisterHandler("tools/call", newToolsCallHandler(p))
 	}
 }
@@ -73,8 +81,33 @@ func WithResourceProvider(p ResourceProvider) Option {
 		s.capabilities.Resources = &protocol.ResourcesCapability{
 			ListChanged: true,
 		}
-		s.RegisterHandler("resources/list", newResourcesListHandler(p))
-		s.RegisterHandler("resources/read", newResourcesReadHandler(p))
+		s.RegisterHandler("resources/list", newResourcesListHandler(s, p))
+		s.RegisterHandler("resources/read", newResourcesReadHandler(s, p))
+	}
+}
+
+// DefaultListTTLMs is the conservative freshness hint stamped on list/read
+// results when no override is configured: short enough that a changing tool
+// set (TER-263 lazy skill loading) is picked up quickly.
+const DefaultListTTLMs = 15000
+
+// WithListTTL overrides the ttlMs freshness hint on list/read results.
+// Deployments whose tool set is static (no lazy skill loading) should set a
+// long TTL — byte-stable lists raise downstream prompt-cache hit rates.
+func WithListTTL(d time.Duration) Option {
+	return func(s *MCPServer) {
+		if ms := d.Milliseconds(); ms > 0 {
+			s.listTTLMs = ms
+		}
+	}
+}
+
+// WithPublicCacheScope marks this server's list/read results as cacheable by
+// shared intermediaries. Only for genuinely tenant-independent servers: a
+// provider whose lists vary by identity must never set this.
+func WithPublicCacheScope() Option {
+	return func(s *MCPServer) {
+		s.cacheScope = "public"
 	}
 }
 
@@ -109,6 +142,8 @@ func NewMCPServer(name, version string, logger *zap.Logger, opts ...Option) *MCP
 		logger:        logger,
 		notifyCh:      make(chan []byte, 16),
 		subscriptions: make(map[string]*serverSubscription),
+		listTTLMs:     DefaultListTTLMs,
+		cacheScope:    "private",
 	}
 
 	// Register built-in handlers. initialize/ping serve the legacy handshake
