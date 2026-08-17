@@ -41,6 +41,13 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 	// the fallback path re-extracts inside HandleMessage, which is harmless.
 	ctx = withRequestMeta(ctx, req.Params)
 
+	// subscriptions/listen (2026-07-28) holds this response stream open and
+	// delivers opted-in change notifications; it exists only on the
+	// streaming path (the synchronous path answers MethodNotFound).
+	if req.Method == protocol.MethodSubscriptionsListen && req.ID != nil {
+		return s.handleSubscriptionsListenStream(ctx, &req, w)
+	}
+
 	// Only requests (with an id) for a streamable tool take the streaming path.
 	sp, _ := s.toolProvider.(StreamingToolProvider)
 	if req.Method != "tools/call" || req.ID == nil || sp == nil {

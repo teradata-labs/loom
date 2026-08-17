@@ -46,6 +46,11 @@ type MCPServer struct {
 	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
 	notifyCh           chan []byte                  // Buffered channel for outgoing notifications
 	toolProvider       ToolProvider                 // Registered via WithToolProvider; used for streaming dispatch
+
+	// subscriptions/listen registry (2026-07-28): active listen streams keyed
+	// by the listen request's JSON-RPC id.
+	subscriptions map[string]*serverSubscription
+	subsMu        sync.RWMutex
 }
 
 // Option configures an MCPServer.
@@ -100,9 +105,10 @@ func NewMCPServer(name, version string, logger *zap.Logger, opts ...Option) *MCP
 			Name:    name,
 			Version: version,
 		},
-		handlers: make(map[string]MethodHandler),
-		logger:   logger,
-		notifyCh: make(chan []byte, 16),
+		handlers:      make(map[string]MethodHandler),
+		logger:        logger,
+		notifyCh:      make(chan []byte, 16),
+		subscriptions: make(map[string]*serverSubscription),
 	}
 
 	// Register built-in handlers. initialize/ping serve the legacy handshake
@@ -353,17 +359,7 @@ func (s *MCPServer) ClientCapabilities() *protocol.ClientCapabilities {
 // The notification is sent asynchronously via the Serve() select loop.
 // If the channel is full the notification is dropped with a warning log.
 func (s *MCPServer) NotifyResourceListChanged() {
-	notif, err := marshalNotification("notifications/resources/list_changed", nil)
-	if err != nil {
-		s.logger.Error("failed to marshal resource list changed notification", zap.Error(err))
-		return
-	}
-	select {
-	case s.notifyCh <- notif:
-		s.logger.Debug("enqueued resources/list_changed notification")
-	default:
-		s.logger.Warn("notification channel full, dropping resources/list_changed")
-	}
+	s.publishNotification(protocol.NotificationResourcesListChanged, "", nil)
 }
 
 // marshalNotification creates a JSON-RPC notification (no id field).
