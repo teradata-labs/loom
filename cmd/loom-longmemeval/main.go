@@ -63,6 +63,7 @@ var (
 	questionTypes string
 	mode          string
 	isolate       bool
+	useOccurredAt bool
 )
 
 func main() {
@@ -171,6 +172,7 @@ Three benchmark modes:
 	cmd.Flags().StringVar(&questionTypes, "types", "", "Comma-separated question types to include (empty = all)")
 	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest (default), multi-session, or context-stuffing")
 	cmd.Flags().BoolVar(&isolate, "isolate", true, "Create a fresh agent per entry for graph memory isolation (default: true)")
+	cmd.Flags().BoolVar(&useOccurredAt, "occurred-at", true, "Send haystack/question dates as WeaveRequest.occurred_at so memories anchor at historical dates (requires server.allow_time_override: true)")
 
 	return cmd
 }
@@ -341,16 +343,18 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 		zap.Int("entries", len(entries)),
 		zap.Int("concurrency", concurrency),
 		zap.Bool("isolate", isolate),
+		zap.Bool("occurred_at", useOccurredAt),
 	)
 
 	// Create runner (connects to running Loom server via gRPC)
 	runner, err := NewRunner(RunConfig{
-		Mode:        RunMode(mode),
-		ServerAddr:  serverAddr,
-		AgentID:     agentID,
-		Concurrency: concurrency,
-		Verbose:     verbose,
-		Isolate:     isolate,
+		Mode:          RunMode(mode),
+		ServerAddr:    serverAddr,
+		AgentID:       agentID,
+		Concurrency:   concurrency,
+		Verbose:       verbose,
+		Isolate:       isolate,
+		UseOccurredAt: useOccurredAt,
 	}, logger)
 	if err != nil {
 		return err

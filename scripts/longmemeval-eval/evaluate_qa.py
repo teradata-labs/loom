@@ -6,6 +6,10 @@ Adapted from https://github.com/xiaowu0162/LongMemEval/blob/main/src/evaluation/
 Changes from upstream:
   - Added gpt-5.1 to model_zoo (gpt-4o retired Feb 2026)
   - Default metric model changed to gpt-5.1
+  - Added 'bedrock' backend (boto3 converse; credentials/region from the AWS
+    default chain, region override via AWS_REGION) and 'azure' backend
+    (AzureOpenAI; needs AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and
+    AZURE_OPENAI_DEPLOYMENT_ID). Judge prompts are unchanged from the paper.
 """
 
 import os
@@ -23,7 +27,31 @@ model_zoo = {
     'gpt-4o-mini': ('gpt-4o-mini-2024-07-18', 'openai'),
     'gpt-4o': ('gpt-4o-2024-08-06', 'openai'),
     'gpt-5.1': ('gpt-5.1', 'openai'),
+    'claude-opus-4-6-bedrock': ('global.anthropic.claude-opus-4-6-v1', 'bedrock'),
+    'azure-gpt': (os.getenv('AZURE_OPENAI_DEPLOYMENT_ID', ''), 'azure'),
 }
+
+
+def bedrock_converse_with_backoff(client, model_id, prompt, max_tries=5):
+    import random
+    import time
+    from botocore.exceptions import ClientError
+    retryable = ('ThrottlingException', 'ServiceUnavailableException', 'ModelNotReadyException')
+    for attempt in range(max_tries):
+        try:
+            resp = client.converse(
+                modelId=model_id,
+                messages=[{'role': 'user', 'content': [{'text': prompt}]}],
+                inferenceConfig={'maxTokens': 64, 'temperature': 0},
+            )
+            return resp['output']['message']['content'][0]['text']
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            if code in retryable and attempt < max_tries - 1:
+                time.sleep(min(2 ** attempt + random.random(), 30))
+                continue
+            raise
+    raise RuntimeError('bedrock converse retries exhausted')
 
 
 @backoff.on_exception(backoff.expo, (openai.RateLimitError,
@@ -75,18 +103,30 @@ if __name__ == '__main__':
         print('Available:', ', '.join(model_zoo.keys()))
         exit()
     metric_model, metric_model_source = model_zoo[metric_model_short]
+    metric_client = None
+    bedrock_client = None
     if metric_model_source == 'openai':
         openai.organization = os.getenv('OPENAI_ORGANIZATION')
-        openai_api_key = os.getenv('OPENAI_API_KEY')
-        openai_api_base = None
+        metric_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    elif metric_model_source == 'azure':
+        from openai import AzureOpenAI
+        endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+        if not endpoint or not metric_model:
+            print('azure backend requires AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT_ID')
+            exit(1)
+        metric_client = AzureOpenAI(
+            azure_endpoint=endpoint,
+            api_key=os.getenv('AZURE_OPENAI_API_KEY'),
+            api_version=os.getenv('AZURE_OPENAI_API_VERSION', '2024-10-21'),
+        )
+    elif metric_model_source == 'bedrock':
+        import boto3
+        bedrock_client = boto3.client(
+            'bedrock-runtime',
+            region_name=os.getenv('AWS_REGION', 'us-west-2'),
+        )
     else:
-        openai_api_key = "EMPTY"
-        openai_api_base = "http://localhost:8001/v1"
-
-    metric_client = OpenAI(
-        api_key=openai_api_key,
-        base_url=openai_api_base,
-    )
+        metric_client = OpenAI(api_key="EMPTY", base_url="http://localhost:8001/v1")
 
     try:
         hypotheses = [json.loads(line) for line in open(hyp_file).readlines()]
@@ -115,17 +155,20 @@ if __name__ == '__main__':
             hyp = entry['hypothesis']
 
             prompt = get_anscheck_prompt(qtype, q, ans, hyp, abstention='_abs' in entry['question_id'])
-            kwargs = {
-                'model': metric_model,
-                'messages': [
-                    {"role": "user", "content": prompt}
-                ],
-                'n': 1,
-                'temperature': 0,
-                'max_completion_tokens': 64
-            }
-            completion = chat_completions_with_backoff(metric_client, **kwargs)
-            eval_response = completion.choices[0].message.content.strip()
+            if metric_model_source == 'bedrock':
+                eval_response = bedrock_converse_with_backoff(bedrock_client, metric_model, prompt).strip()
+            else:
+                kwargs = {
+                    'model': metric_model,
+                    'messages': [
+                        {"role": "user", "content": prompt}
+                    ],
+                    'n': 1,
+                    'temperature': 0,
+                    'max_completion_tokens': 64
+                }
+                completion = chat_completions_with_backoff(metric_client, **kwargs)
+                eval_response = completion.choices[0].message.content.strip()
             label = 'yes' in eval_response.lower()
             entry['autoeval_label'] = {
                 'model': metric_model,

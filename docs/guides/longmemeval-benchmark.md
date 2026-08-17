@@ -37,6 +37,7 @@ The six question categories are:
 
 - Loom server running (`just build-server && ./bin/looms serve`)
 - An LLM provider configured in `~/.loom/looms.yaml` with judge access (examples in this guide use Bedrock Opus 4.6)
+- `server.allow_time_override: true` in `~/.loom/looms.yaml`. The harness sends each haystack session's date as `WeaveRequest.occurred_at` so extraction anchors memories at the historical date instead of the run day. Without the flag, every entry fails with `FAILED_PRECONDITION` (pass `--occurred-at=false` to run without the override, but expect temporal-reasoning to degrade — memories then anchor to the run date, contradicting the dates inside the replayed conversations)
 - Benchmark binary built: `just build-longmemeval`
 - Network access to `huggingface.co` for the one-time dataset download (~285 MB for the oracle set)
 
@@ -182,6 +183,7 @@ Additional run flags:
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `--isolate` | `true` | Create a fresh `lme-tmp-<qid>` agent per entry; delete it afterward. Ensures no cross-entry memory bleed. |
+| `--occurred-at` | `true` | Send haystack/question dates as `WeaveRequest.occurred_at` so memories anchor at historical dates. Requires `server.allow_time_override: true` on the server. |
 | `--concurrency` | `3` | Number of entries processed in parallel. Lower to `2` if you see Bedrock throttling. |
 | `--server` | `localhost:60051` | Loom gRPC address. |
 | `--agent` | `""` | Use a specific agent ID instead of cloning the default. |
