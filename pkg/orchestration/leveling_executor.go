@@ -33,9 +33,6 @@ type TierPolicy struct {
 	// instead of arriving after the retries are spent; on escalation rungs,
 	// which bypass the validator, it is applied in evaluate.
 	AggressiveCoercion bool
-	// ScaffoldingDepth is reserved for the capability-leveling pattern domain
-	// (C2, not yet implemented). It is not consumed by this executor.
-	ScaffoldingDepth int
 }
 
 // DefaultTierPolicies returns the built-in per-tier knobs. Callers get a fresh

@@ -68,14 +68,11 @@ func TestWorkflowYAMLLevelingScalarTypeErrors(t *testing.T) {
 			contains: []string{"tier_policies[local].aggressive_coercion must be a boolean"},
 		},
 		{
-			name:     "tier scaffolding_depth not an integer",
+			// The removed key has no type left to get wrong: whatever it carries,
+			// the load fails because the key itself is gone.
+			name:     "removed scaffolding_depth outranks its old type check",
 			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            scaffolding_depth: deep\n",
-			contains: []string{"tier_policies[local].scaffolding_depth must be an integer"},
-		},
-		{
-			name:     "tier scaffolding_depth fractional",
-			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            scaffolding_depth: 1.5\n",
-			contains: []string{"tier_policies[local].scaffolding_depth must be a whole number"},
+			contains: []string{"tier_policies[local].scaffolding_depth was removed"},
 		},
 		{
 			name:     "blank role is not a role",
@@ -127,7 +124,6 @@ func TestWorkflowYAMLLevelingNullTierEntryMeansDefaults(t *testing.T) {
 	require.NotNil(t, local)
 	assert.Equal(t, int32(0), local.GetRetryBudget())
 	assert.False(t, local.GetAggressiveCoercion())
-	assert.Equal(t, int32(0), local.GetScaffoldingDepth())
 	assert.Equal(t, int32(1), tiers["mid"].GetRetryBudget())
 
 	// The empty entry is a valid tier name, so conversion succeeds and the tier

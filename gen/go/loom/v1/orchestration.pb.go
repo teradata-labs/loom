@@ -1998,11 +1998,8 @@ type LevelingTierPolicy struct {
 	// Attempt free JSON extraction from mixed text before declaring a schema
 	// failure (no LLM call).
 	AggressiveCoercion bool `protobuf:"varint,2,opt,name=aggressive_coercion,json=aggressiveCoercion,proto3" json:"aggressive_coercion,omitempty"`
-	// Reserved for the capability-leveling pattern domain (C2). Carried in
-	// config but not consumed by any executor yet.
-	ScaffoldingDepth int32 `protobuf:"varint,3,opt,name=scaffolding_depth,json=scaffoldingDepth,proto3" json:"scaffolding_depth,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *LevelingTierPolicy) Reset() {
@@ -2047,13 +2044,6 @@ func (x *LevelingTierPolicy) GetAggressiveCoercion() bool {
 		return x.AggressiveCoercion
 	}
 	return false
-}
-
-func (x *LevelingTierPolicy) GetScaffoldingDepth() int32 {
-	if x != nil {
-		return x.ScaffoldingDepth
-	}
-	return 0
 }
 
 // LevelingPolicy configures capability leveling: escalate a weak model's
@@ -3684,11 +3674,10 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\fLevelingRung\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12$\n" +
-	"\x04role\x18\x03 \x01(\x0e2\x10.loom.v1.LLMRoleR\x04role\"\x95\x01\n" +
+	"\x04role\x18\x03 \x01(\x0e2\x10.loom.v1.LLMRoleR\x04role\"\x81\x01\n" +
 	"\x12LevelingTierPolicy\x12!\n" +
 	"\fretry_budget\x18\x01 \x01(\x05R\vretryBudget\x12/\n" +
-	"\x13aggressive_coercion\x18\x02 \x01(\bR\x12aggressiveCoercion\x12+\n" +
-	"\x11scaffolding_depth\x18\x03 \x01(\x05R\x10scaffoldingDepth\"\xa8\x04\n" +
+	"\x13aggressive_coercion\x18\x02 \x01(\bR\x12aggressiveCoercionJ\x04\b\x03\x10\x04R\x11scaffolding_depth\"\xa8\x04\n" +
 	"\x0eLevelingPolicy\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12/\n" +
 	"\x11short_circuit_mid\x18\x02 \x01(\bH\x00R\x0fshortCircuitMid\x88\x01\x01\x12,\n" +

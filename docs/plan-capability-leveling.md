@@ -48,6 +48,16 @@ store. Output: `Tier(provider, model) → tier` + per-tier policy knobs (scaffol
 strictness, retry budget, escalation ladder).
 
 ### C2 — Capability-adaptive scaffolding (a `capability-leveling` pattern domain)
+
+> ❌ **Rejected on evidence 2026-08-16.** Phase 3b's scaffolding probes measured imposed
+> procedure making the weak model *worse*, monotonically in the amount of structure: 27% (light)
+> and 3% (heavy) against a 40% baseline, with zero problems fixed by either variant. The captured
+> failure mode is form without semantics — the model executed all seven steps fluently while
+> splitting the wrong operand. Procedure adherence is itself a reasoning task, so a model that
+> cannot bind variables in a recipe cannot be leveled with a longer recipe. The
+> `scaffolding_depth` knob reserved for this component was removed from the proto, the Go policy
+> and the YAML surface in the same pre-merge cut. Original plan text below, unedited.
+
 Given the tier, adjust before generation:
 - prompt scaffolding depth (more explicit instructions + few-shot for lower tiers),
 - output-schema strictness / coercion aggressiveness,
@@ -75,6 +85,15 @@ Loom's existing **per-agent cost budget** as the hard ceiling. Closes the judge�
 that today stops at same-model retry.
 
 ### C4 — Self-consistency (parallel, optional)
+
+> ❌ **Rejected on evidence 2026-08-16.** Majority voting needs the weak model's errors to be
+> independent, and the same clustering weakness was measured twice: Phase 3's self-critique arm
+> repaired 0/18 wrong answers, and Phase 3b found every intervention that tries to extract more
+> reasoning from the model itself negative. A weak model's samples concentrate on the same
+> plausible-wrong answers, so voting over them amplifies the error rather than correcting it — N
+> draws against one ceiling are still bounded by that ceiling. Phase 3 already lowered C4's
+> priority on this reasoning; Phase 3b settled it. Original plan text below, unedited.
+
 N-sample the primary answer, aggregate via a generalization of the existing `majorityPass`
 aggregator (`pkg/evals/judges/aggregator.go`) applied to primary outputs (today it votes over
 judges, not generations).
@@ -85,9 +104,11 @@ judges, not generations).
   `output_validator.go`, or add a `pkg/orchestration/leveling_executor.go`? Prototype the C3 loop
   on ONE task: cheap/local model → judge → escalate-to-strong on fail. Measure quality + cost/latency
   delta. This validates the whole thesis cheaply before committing the design.
-- **Phase 1 — C1 tier abstraction + C2 adaptive-scaffolding pattern domain.**
+- **Phase 1 — C1 tier abstraction + C2 adaptive-scaffolding pattern domain.** (C1 shipped; the
+  C2 half was ❌ rejected on evidence 2026-08-16 — see the C2 section.)
 - **Phase 2 — C3 escalation router**, wired to judge/confidence + provider pool + cost budget.
-- **Phase 3 — C4 self-consistency.**
+- **Phase 3 — C4 self-consistency.** (❌ never built, rejected on evidence 2026-08-16 — the
+  phase number was instead spent measuring *whether* it would work. See the C4 section.)
 - **Phase 4 — eval harness (the proof).** Measure "weak model + leveling vs. weak model alone
   vs. frontier alone" across knowledge-bound and reasoning-bound task sets. This is both the
   credibility artifact and the regression guard. Reuse `pkg/evals`.
@@ -221,7 +242,8 @@ type LevelingPolicy struct {
 caller supplied none), `AggressiveCoercion` (✅ consumed — free JSON extraction before declaring
 schema failure; since Phase 2c this runs *inside* the validator on the failing attempt, so it no
 longer waits for the retry budget to drain), `ScaffoldingDepth` (📋 reserved for C2, documented
-as not consumed).
+as not consumed — ❌ **removed pre-merge 2026-08-16** once C2 was rejected on measurement; it
+never shipped, so `TierPolicy` today has two fields, not three).
 
 `LevelingJudge` is a local func type because `pkg/evals/judges` imports `pkg/orchestration` —
 importing it back would be a cycle. An adapter from `judges.Judge` is a one-liner at the call
@@ -263,6 +285,8 @@ open questions.
   Phase 4 eval harness, wiring the executor into `WorkflowPattern`/proto/YAML (Phase 2), and a
   real quality/cost measurement on a live low-tier model — the spike's escalation loop is
   test-verified with mocks, not benchmarked against real models yet.
+  ❌ **Update 2026-08-16: C2 and C4 were rejected on evidence, not merely left unbuilt** — see
+  their sections. Everything else on this list resolved in the later phases recorded below.
 
 ## Verification record (2026-08-15)
 
@@ -316,6 +340,10 @@ Three new messages, plus one new import (`loom/v1/agent_config.proto`, for `LLMR
 - `LevelingRung` — `provider` (1), `model` (2), `role` (3, `LLMRole`).
 - `LevelingTierPolicy` — `retry_budget` (1), `aggressive_coercion` (2),
   `scaffolding_depth` (3, 📋 reserved for C2; carried in config, consumed by nothing).
+  ❌ **Field 3 was removed pre-merge 2026-08-16** and is now `reserved 3` /
+  `reserved "scaffolding_depth"` — the message is new in this PR, so it never existed on `main`
+  and `buf breaking` stays clean. Removing it cost one `reserved` line; keeping it would have
+  been a permanent dead API. See "What this feature is, and is not".
 
 Carrier fields: `PipelineStage.leveling_policy = 8` (previous max was
 `hitl_gate = 7`) and `AgentTask.leveling_policy = 5` (previous max was
@@ -333,7 +361,8 @@ defaults (`DefaultLevelingPolicy` has `ShortCircuitMid: true`,
   disabled policy **without validating any other field**, so stored configs that
   were never enabled can never fail conversion. Negative `max_escalations`,
   `max_cost_usd`, `retry_budget`, or `scaffolding_depth` and unrecognized tier
-  keys are rejected with errors, not clamped. The returned policy's `Judge` is
+  keys are rejected with errors, not clamped. (The `scaffolding_depth` check went
+  away with the field on 2026-08-16.) The returned policy's `Judge` is
   always nil (decision #2 above).
 - `resolveLevelingLadder`: rung 0 is the executing agent's own conversation;
   each proto rung resolves through exactly one of two existing lookups —
@@ -417,7 +446,8 @@ one agent call — the disabled case even carries a deliberately invalid policy
 
 - 📋 C2 adaptive-scaffolding pattern domain (`scaffolding_depth` is carried in
   proto but consumed by nothing — documented on the field).
-- 📋 C4 self-consistency.
+  ❌ **2026-08-16: rejected on measurement and the field removed** — see the C2 section.
+- 📋 C4 self-consistency. ❌ **2026-08-16: rejected on measurement** — see the C4 section.
 - 📋 Phase 4 eval harness; no live low-tier-model quality/cost measurement yet —
   the escalation loop is test-verified with mocks.
 - 📋 Workflow **YAML** surface: `workflow_config.go` does not parse
@@ -914,7 +944,8 @@ follow-up to design a task set that actually produces fenced JSON remains open.
 ## What this phase did not change
 
 - 📋 C2 adaptive-scaffolding pattern domain, C4 self-consistency, Phase 4 eval harness — all
-  still unbuilt.
+  still unbuilt. (❌ C2 and C4 were rejected on evidence on 2026-08-16 and will stay unbuilt;
+  the Phase 4 eval harness landed as the knowledge experiment below.)
 - 📋 No new live-model measurement. The benchmark numbers above are Go-level only; C3 escalation
   remains **unproven**, exactly as Phase 2b concluded.
 - 📋 No proto change, so no `buf` regeneration was required. The YAML surface still cannot enable
@@ -1019,6 +1050,8 @@ judge cannot be free.
    deserve a look at `num_predict`/prompt shape; judge quality vs. judge size is unmeasured
    above 8B; C2/C4 remain unbuilt and this evidence lowers C4's priority (self-consistency
    voting shares H3's weakness: the weak model's votes cluster on plausible-wrong answers).
+   ❌ **Resolved 2026-08-16**: this reasoning, plus Phase 3b, closed C2 and C4 as rejected rather
+   than deferred.
 
 ## Confounds, stated
 
@@ -1180,7 +1213,7 @@ the number.
 | `pkg/orchestration/workflow_config.go` | `parseOutputPolicy` (new), `parseOutputRetryPolicy` extended, stage/task wiring |
 | `pkg/orchestration/leveling_config.go` | `validateLevelingLadderShape` — the agent-free half of ladder validation, so a malformed ladder fails at load instead of at execution |
 | `pkg/orchestration/testdata/leveling-pipeline.yaml` (new) | A realistic leveling workflow used by the end-to-end test |
-| `pkg/orchestration/workflow_config_leveling_test.go` (new) | 11 test functions / 58 subtests, all passing under `-race` |
+| `pkg/orchestration/workflow_config_leveling_test.go` (new) | 11 test functions / 58 subtests, all passing under `-race` (net +1 subtest on 2026-08-16: the negative-`scaffolding_depth` case became a removed-key rejection, and a second case pins that the rejection also fires on a disabled block) |
 
 ## The YAML schema as implemented
 
@@ -1210,7 +1243,16 @@ stages:
         local:                             #   mid, frontier
           retry_budget: 2
           aggressive_coercion: true
-          scaffolding_depth: 0             # 📋 carried, consumed by nothing (C2)
+```
+
+⚠️ As shipped in Phase 2d this block also accepted `scaffolding_depth: 0` ("carried, consumed by
+nothing (C2)"). The key was **removed on 2026-08-16** and is now a load-time error naming its
+replacement-by-nothing, so an old config fails loudly rather than being silently ignored:
+
+```
+spec.stages[0].leveling.tier_policies[local].scaffolding_depth was removed: C2
+capability-adaptive scaffolding was rejected on measurement (it made a weak model worse), so the
+knob is gone rather than dead — remove the key (see docs/plan-capability-leveling.md)
 ```
 
 Role names accept the generated enum name, the short form, either case, and `-` for `_`.
@@ -1252,6 +1294,7 @@ Load time means `LoadWorkflowFromYAML` / `LoadWorkflowFromYAMLBytes`; all load e
 |---|---|---|
 | Block/rung/tier-map shape, scalar types, fractional integers, unknown role name, unknown `session_mode`, both leveling keys set, missing `enabled` | **load** | the loader (nothing else can see YAML types) |
 | Negative `max_escalations`/`max_cost_usd`/`retry_budget`/`scaffolding_depth`, unknown tier key | **load**, and again at convert | `LevelingPolicyFromProto`, called by the loader as a validation gate and discarded — no duplicated rules or messages |
+| The removed `scaffolding_depth` key (added to this table 2026-08-16) | **load**, regardless of `enabled` | the loader. It sits with the type errors, not the semantic ones: the key is absent from the schema at every enabled state, so — as with a wrong YAML type — there is nothing to store either way |
 | Rung names neither role nor provider | **load**, and again at resolve | new `validateLevelingLadderShape`; `resolveLevelingLadder` re-checks because it also serves callers that never touched a config loader, with identical wording |
 | Rung's provider is absent from the agent's pool / role has no LLM | **execution only** | `resolveLevelingLadder` — needs the executing agent, so it is unknowable at load time |
 
@@ -1293,7 +1336,7 @@ package-private with four call sites, all in `workflow_config.go`, all updated.
 | `TestWorkflowYAMLLevelingOptionalFieldsUnsetVsExplicitZero` | **the UNSET-vs-explicit-zero distinction**: nil pointers for absent keys, non-nil pointers for explicit `false`/`0`, and the defaults `LevelingPolicyFromProto` derives from each |
 | `TestWorkflowYAMLLevelingFullRoundTrip` | every field, both carriers, plus the alias |
 | `TestWorkflowYAMLLevelingDisabledBlockLoadsAndStaysInert` | disabled block with hostile fields loads, and the loaded stage is inert in the executor |
-| `TestWorkflowYAMLLevelingErrors` (19 cases) | load-time messages, on stages and tasks |
+| `TestWorkflowYAMLLevelingErrors` (19 cases) | load-time messages, on stages and tasks — including (since 2026-08-16) that an explicit `scaffolding_depth` key is **rejected, not ignored** |
 | `TestWorkflowYAMLLevelingSemanticErrorsSkippedWhenDisabled` / `…TypeErrorsFireEvenWhenDisabled` | the enabled-gated vs always-on halves of validation |
 | `TestWorkflowYAMLLevelingRoleForms` | short form, full enum name, case and `-`/`_` variants |
 | `TestLoadWorkflowFromYAML_LevelingReachesExecutorGate` | end-to-end from `testdata/leveling-pipeline.yaml`: the gate opens, the YAML-declared ladder rung resolves from the provider pool, and the rung's output wins (1 primary call from `retry_budget: 0`, 1 rung call) — plus the same for a parallel task |
@@ -1321,7 +1364,11 @@ Exit codes were read from redirected files, never through a pipe.
   judge must be reasoning-class to be worth its latency.
 - 📋 `scaffolding_depth` is now expressible in YAML and still consumed by nothing (C2, which
   Phase 3b deprioritized on evidence).
+  ❌ **Reversed 2026-08-16**: rather than ship a YAML knob nothing reads, the field was removed
+  from proto, Go and YAML, and an explicit key is now a load error. See the C2 section and
+  "What this feature is, and is not".
 - 📋 C4 self-consistency, and the follow-ups Phases 2b–4 opened, are untouched.
+  (❌ C4 rejected on evidence 2026-08-16.)
 - ⚠️ A rung's provider/role must exist on the executing agent; that can only fail at execution
   time, so a YAML file can be valid and still fail its first run. The error names the rung index
   and the agent.
@@ -1400,3 +1447,72 @@ SQLite dialect, not Teradata; single schema and 5 template families; N=30, one s
 arms 2/3 identical by construction here (escalation unreachable — a signal that could see
 silent wrongs would differentiate them); llama3.2's F4 failure is one deterministic bug with
 multiplicity 6, so the +20pp free-rung gain leans heavily on one recoverable defect class.
+
+---
+
+# What this feature is, and is not (2026-08-16)
+
+A bounded enhancement to an existing control loop, measured on both sides. This section states
+the scope plainly so the PR is not read as more than it is.
+
+## Additive, and off unless asked for
+
+Leveling activates only on `leveling_policy.enabled = true`. An absent policy and
+`enabled: false` are the same closed gate in both executors, and absence is not merely
+documented: a stage carrying a hostile disabled policy **and** a violated schema is asserted to
+make one agent call, with no validation and no warnings
+(`TestWorkflowYAMLLevelingDisabledBlockLoadsAndStaysInert`). Enabled-but-unneeded costs one
+memoized catalog lookup — **~16 ns**, after Phase 2c removed the redundant second schema
+validation that had been ~570× larger and was the real cost of enabling it. Nothing about
+existing behavior changes when nothing is configured.
+
+## Built out of Loom's primitives, and it subtracts as well as adds
+
+`OutputValidator` owns retry and coercion; `pkg/llm/catalog` owns tiering;
+`Agent.GetLLMForRole` and the agent's provider pool own rung resolution; the FTS5 graph-memory
+`Recall()` path owns retrieval. No router, no store, and no pricing table was added — rung spend
+comes from each provider's own catalog-priced `Usage.CostUSD`.
+
+The PR also removes things. `scaffolding_depth` was cut before merge rather than shipped as a
+knob nothing reads, and two planned components are marked ❌ rejected above because measurement
+disproved them (C2 scaffolding, C4 self-consistency). One `reserved` line now; a permanent dead
+field otherwise.
+
+## Every capability claim has a measured counter-claim
+
+| Claim | The bound measured with it |
+|---|---|
+| Format closes, and closes free | Coercion rescued 30/30 malformed replies, twice — but the schema signal is structurally blind to wrong answers: Phase 3 arm 2 escalated **zero** times on 18 wrong answers that all passed the schema |
+| Knowledge closes, and the weak model beats the strong one | BM25 retrieval took llama2 from 0/30 to **30/30** where deepseek-r1 alone scored 0/30 — on single-hop attribute lookup over a 200-record fictional corpus |
+| Reasoning does **not** close | Same-model retry, self-critique (0/18) and scaffolding (−13pp, −37pp) all failed. Escalation behind a trustworthy signal routes *around* the ceiling; it does not raise it. That is routing, not magic |
+| Execution signals pay on Loom's own workload | One free retry carrying the sqlite error text: +20pp (57% → 77%) for 8 extra ~1s calls — and **83.3% is the structural ceiling** of an execution-only signal, because 7 silently-wrong queries execute cleanly and never escalate (2 of them created *by* the retry) |
+
+The honest summary: leveling makes a weak model's output meet a contract, and routes past the
+model when a signal can see that it should. Where no programmatic signal exists, the critic must
+be reasoning-class to be trusted (Phase 3b: 20/20 agreement, at ~31s per verdict against ~18s to
+just generate the answer) — which makes it a cost decision, not a capability one.
+
+## What loom-knowledge takes from this
+
+loom-knowledge exists because Loom's graph memory is agent-scoped by design — "no cross-agent
+leakage" is a stated non-goal of it — so nothing in Loom holds one curated graph that many agents
+read. That is the gap its README opens with, and this program measured the retrieval design for
+it before it gets built:
+
+- **Lexical first, embeddings as the upgrade path — not the reverse.** BM25 over the FTS5
+  `Recall()` path Loom already ships was flawless (30/30, ~7 ms/query). Chat-model embeddings
+  through `VectorRecall` reached **50% recall@5** on near-identical sentences at ~140 ms/query,
+  and every miss became an honest abstention. Phase 4's caveat stands: exact-ID questions favor
+  lexical matching, and no dedicated embedding model was tested.
+- **Context utilization is a non-problem.** Whenever the gold fact was in the prompt, the weak
+  model used it — 75/75 across every arm. The part loom-knowledge cannot control is the part that
+  needs no work; every failure in that run was retrieval's.
+- **Its weak-model consumers get contract reliability from the tier surface.** A retrieval
+  service's callers are exactly the cheap models this feature levels, and format-class failure is
+  the class leveling closes for free.
+
+loom-knowledge is a separate repo with no Loom build dependency yet (the `require` line is
+commented out in its `go.mod`), and its own README puts synthesis in the does-not-exist-yet
+column — no document or web ingest, no cross-source entity resolution, no LLM in the ingest path;
+a Teradata schema crawl is the one implemented ingest path. So this is groundwork for a design
+decision it has not made yet, not an integration.

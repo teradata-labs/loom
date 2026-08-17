@@ -127,7 +127,7 @@ func TestLevelingPolicyFromProto(t *testing.T) {
 				FrontierMinOutputCostUsd: 25,
 				MidMinOutputCostUsd:      2.5,
 				TierPolicies: map[string]*loomv1.LevelingTierPolicy{
-					"local": {RetryBudget: 4, AggressiveCoercion: true, ScaffoldingDepth: 2},
+					"local": {RetryBudget: 4, AggressiveCoercion: true},
 					"mid":   {RetryBudget: 0, AggressiveCoercion: false},
 				},
 			},
@@ -141,7 +141,7 @@ func TestLevelingPolicyFromProto(t *testing.T) {
 				assert.InDelta(t, 2.5, got.Thresholds.MidMinOutputCostUSD, 1e-9)
 				require.Len(t, got.TierPolicies, 2)
 				assert.Equal(t,
-					TierPolicy{RetryBudget: 4, AggressiveCoercion: true, ScaffoldingDepth: 2},
+					TierPolicy{RetryBudget: 4, AggressiveCoercion: true},
 					got.TierPolicies[catalog.TierLocal])
 				assert.Equal(t, TierPolicy{}, got.TierPolicies[catalog.TierMid])
 				assert.Nil(t, got.Judge, "the proto surface carries no judge")
@@ -254,14 +254,6 @@ func TestLevelingPolicyFromProtoErrors(t *testing.T) {
 				TierPolicies: map[string]*loomv1.LevelingTierPolicy{"local": {RetryBudget: -2}},
 			},
 			wantMsg: []string{"retry_budget", "local"},
-		},
-		{
-			name: "negative scaffolding_depth",
-			in: &loomv1.LevelingPolicy{
-				Enabled:      true,
-				TierPolicies: map[string]*loomv1.LevelingTierPolicy{"mid": {ScaffoldingDepth: -3}},
-			},
-			wantMsg: []string{"scaffolding_depth", "mid"},
 		},
 	}
 

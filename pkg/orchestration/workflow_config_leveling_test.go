@@ -124,7 +124,6 @@ func TestWorkflowYAMLLevelingFullRoundTrip(t *testing.T) {
           local:
             retry_budget: 2
             aggressive_coercion: true
-            scaffolding_depth: 3
           small-open:
             retry_budget: 1
 `
@@ -155,7 +154,6 @@ func TestWorkflowYAMLLevelingFullRoundTrip(t *testing.T) {
 		require.NotNil(t, local)
 		assert.Equal(t, int32(2), local.GetRetryBudget())
 		assert.True(t, local.GetAggressiveCoercion())
-		assert.Equal(t, int32(3), local.GetScaffoldingDepth())
 		smallOpen := p.GetTierPolicies()["small-open"]
 		require.NotNil(t, smallOpen)
 		assert.Equal(t, int32(1), smallOpen.GetRetryBudget())
@@ -374,9 +372,13 @@ func TestWorkflowYAMLLevelingErrors(t *testing.T) {
 			contains: []string{`tier "local" retry_budget must be >= 0`},
 		},
 		{
-			name:     "negative scaffolding depth",
-			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            scaffolding_depth: -1\n",
-			contains: []string{`tier "local" scaffolding_depth must be >= 0`},
+			name: "removed scaffolding_depth key is rejected, not ignored",
+			body: "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            scaffolding_depth: 3\n",
+			contains: []string{
+				"spec.stages[0].leveling.tier_policies[local].scaffolding_depth was removed",
+				"C2 capability-adaptive scaffolding was rejected on measurement",
+				"docs/plan-capability-leveling.md",
+			},
 		},
 		{
 			name:     "ladder is not a list",
@@ -462,6 +464,10 @@ func TestWorkflowYAMLLevelingTypeErrorsFireEvenWhenDisabled(t *testing.T) {
 		"ladder not a list":      "      leveling:\n        enabled: false\n        ladder: ollama\n",
 		"max_escalations a word": "      leveling:\n        enabled: false\n        max_escalations: lots\n",
 		"unknown role":           "      leveling:\n        enabled: false\n        ladder:\n          - role: wizard\n",
+		// The removed knob belongs on this side of the asymmetry: the key is not
+		// in the schema at any enabled state, so a disabled block cannot store
+		// it either. Ignoring it quietly is what removing the knob prevents.
+		"removed scaffolding_depth": "      leveling:\n        enabled: false\n        tier_policies:\n          local:\n            scaffolding_depth: 3\n",
 	}
 
 	for name, body := range bodies {

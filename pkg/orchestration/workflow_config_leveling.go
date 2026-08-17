@@ -27,6 +27,13 @@ const (
 	levelingBlockAliasKey = "leveling_policy"
 )
 
+// removedTierPolicyScaffoldingDepthKey is a tier knob that existed only while
+// this feature was on its branch. It is rejected rather than ignored: the key
+// had one intended consumer (C2 capability-adaptive scaffolding), that consumer
+// was rejected on measurement, and a config the loader silently drops is the
+// exact failure mode removing the knob was meant to prevent.
+const removedTierPolicyScaffoldingDepthKey = "scaffolding_depth"
+
 // llmRoleEnumPrefix is the generated enum's value prefix, stripped when
 // accepting the short form of a role name and re-added when parsing one.
 const llmRoleEnumPrefix = "LLM_ROLE_"
@@ -88,7 +95,6 @@ const retrySessionModeEnumPrefix = "RETRY_SESSION_MODE_"
 //	    local:                             # small-open, mid, frontier
 //	      retry_budget: 2
 //	      aggressive_coercion: true
-//	      scaffolding_depth: 0             # carried, consumed by nothing yet
 func parseLevelingPolicy(enclosing map[string]interface{}, path string) (*loomv1.LevelingPolicy, error) {
 	raw, key, err := levelingBlockValue(enclosing, path)
 	if err != nil {
@@ -234,6 +240,11 @@ func parseLevelingLadder(block map[string]interface{}, path string) ([]*loomv1.L
 // parseLevelingTierPolicies parses the optional per-tier knob overrides. Tier
 // names are not checked here: LevelingPolicyFromProto rejects unknown names and
 // lists the valid ones, and routing the check through it keeps one authority.
+//
+// The removed scaffolding_depth key is rejected here, alongside the shape and
+// scalar-type checks, rather than in the enabled-gated semantic pass: the key no
+// longer exists in the schema at any enabled state, so — like a wrong YAML type
+// — there is nothing to store either way.
 func parseLevelingTierPolicies(block map[string]interface{}, path string) (map[string]*loomv1.LevelingTierPolicy, error) {
 	raw, ok := block["tier_policies"]
 	if !ok || raw == nil {
@@ -265,8 +276,9 @@ func parseLevelingTierPolicies(block map[string]interface{}, path string) (map[s
 		if tier.AggressiveCoercion, _, err = yamlBoolField(tierMap, tierPath, "aggressive_coercion"); err != nil {
 			return nil, err
 		}
-		if tier.ScaffoldingDepth, _, err = yamlInt32Field(tierMap, tierPath, "scaffolding_depth"); err != nil {
-			return nil, err
+		if _, removed := tierMap[removedTierPolicyScaffoldingDepthKey]; removed {
+			return nil, fmt.Errorf("%s.%s was removed: C2 capability-adaptive scaffolding was rejected on measurement (it made a weak model worse), so the knob is gone rather than dead — remove the key (see docs/plan-capability-leveling.md)",
+				tierPath, removedTierPolicyScaffoldingDepthKey)
 		}
 		tiers[name] = tier
 	}

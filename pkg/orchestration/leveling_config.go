@@ -38,9 +38,9 @@ const (
 //
 // Proto3 optional fields carry the executor's defaults when absent:
 // short_circuit_mid defaults to true and max_escalations to 1, matching
-// DefaultLevelingPolicy. Negative max_escalations, max_cost_usd, retry_budget
-// or scaffolding_depth are rejected rather than clamped — a negative bound is a
-// config mistake, not an intent.
+// DefaultLevelingPolicy. Negative max_escalations, max_cost_usd or retry_budget
+// are rejected rather than clamped — a negative bound is a config mistake, not
+// an intent.
 //
 // The returned policy's Judge is always nil. The proto surface deliberately
 // carries no judge reference: the free structural signal (a JSON Schema on the
@@ -93,13 +93,9 @@ func LevelingPolicyFromProto(p *loomv1.LevelingPolicy) (*LevelingPolicy, error) 
 			if tp.GetRetryBudget() < 0 {
 				return nil, fmt.Errorf("leveling policy: tier %q retry_budget must be >= 0, got %d", name, tp.GetRetryBudget())
 			}
-			if tp.GetScaffoldingDepth() < 0 {
-				return nil, fmt.Errorf("leveling policy: tier %q scaffolding_depth must be >= 0, got %d", name, tp.GetScaffoldingDepth())
-			}
 			policy.TierPolicies[tier] = TierPolicy{
 				RetryBudget:        int(tp.GetRetryBudget()),
 				AggressiveCoercion: tp.GetAggressiveCoercion(),
-				ScaffoldingDepth:   int(tp.GetScaffoldingDepth()),
 			}
 		}
 	}
