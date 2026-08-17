@@ -24,6 +24,12 @@ import "context"
 // is present (local SQLite deployments, auth disabled).
 const DefaultUserID = "default-user"
 
+// IdempotencyKeyMetadataKey is the gRPC metadata key the MCP bridge uses to
+// forward a client's com.teradata.loom/idempotencyKey to looms, where weave
+// dedupe joins a re-issued request to its original run (MCP 2026-07-28
+// migration, decision D1).
+const IdempotencyKeyMetadataKey = "x-loom-idempotency-key"
+
 // userIDKey is the context key for the authenticated caller's user ID.
 type userIDKey struct{}
 

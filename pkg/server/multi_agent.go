@@ -138,6 +138,7 @@ type MultiAgentServer struct {
 
 	// LLM concurrency control to prevent rate limiting
 	llmSemaphore        chan struct{} // Semaphore to limit concurrent LLM calls
+	weaveDedupe         *weaveDeduper // Idempotency-key dedupe for Weave/StreamWeave (MCP 2026-07-28, D1)
 	llmConcurrencyLimit int           // Max concurrent LLM calls (configurable)
 
 	// Agent lifecycle state tracking (created_at, status, config, etc.)
@@ -260,6 +261,7 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store agent.SessionStor
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
 		llmSemaphore:                      make(chan struct{}, defaultLLMConcurrency),
+		weaveDedupe:                       newWeaveDeduper(),
 		agentStates:                       make(map[string]*agentState),
 		traceStoreLocal:                   newTraceStore(1 * time.Hour), // Eagerly initialize trace store for GetTrace RPC
 	}
@@ -730,9 +732,19 @@ func (s *MultiAgentServer) ListAgents(ctx context.Context, req *loomv1.ListAgent
 }
 
 // Weave executes a user query using the specified agent.
-func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.WeaveResponse, error) {
+func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) (weaveResp *loomv1.WeaveResponse, weaveErr error) {
 	if req.Query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+
+	// Idempotency dedupe (MCP 2026-07-28, D1): a re-issued request carrying
+	// the same key joins the original run instead of executing the turn twice.
+	if key := incomingIdempotencyKey(ctx); key != "" {
+		entry, isOwner := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(ctx), key))
+		if !isOwner {
+			return awaitDedupeResult(ctx, entry)
+		}
+		defer func() { entry.finish(weaveResp, weaveErr) }()
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -885,10 +897,27 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 }
 
 // StreamWeave streams agent execution progress.
-func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) error {
+func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) (weaveErr error) {
 	// Validate query
 	if req.Query == "" {
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
+	}
+
+	// Idempotency dedupe (MCP 2026-07-28, D1): duplicates join the original
+	// run and receive only its terminal result as one COMPLETED event —
+	// progress replay would be rebuilding the stream resumption the revision
+	// deleted. dedupeFinal is set at the completion site below.
+	var dedupeFinal *loomv1.WeaveResponse
+	if key := incomingIdempotencyKey(stream.Context()); key != "" {
+		entry, isOwner := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(stream.Context()), key))
+		if !isOwner {
+			joined, joinErr := awaitDedupeResult(stream.Context(), entry)
+			if joinErr != nil {
+				return joinErr
+			}
+			return stream.Send(completedProgressFromResponse(joined))
+		}
+		defer func() { entry.finish(dedupeFinal, weaveErr) }()
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -1122,6 +1151,15 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 		},
+	}
+
+	// Record the terminal result for idempotency joiners (D1 dedupe).
+	dedupeFinal = &loomv1.WeaveResponse{
+		Text:         sanitizeUTF8(resp.Content),
+		SessionId:    sessionID,
+		AgentId:      resolvedAgentID,
+		ContextState: contextState,
+		Cost:         completionProgress.Cost,
 	}
 
 	return stream.Send(completionProgress)
