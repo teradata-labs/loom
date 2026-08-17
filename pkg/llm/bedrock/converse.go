@@ -138,6 +138,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Extract response content
 	var contentText string
+	var thinkingText string
 	var toolCalls []llmtypes.ToolCall
 
 	if output.Output != nil {
@@ -148,6 +149,9 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 				switch b := block.(type) {
 				case *bedrocktypes.ContentBlockMemberText:
 					contentText += b.Value
+
+				case *bedrocktypes.ContentBlockMemberReasoningContent:
+					thinkingText += reasoningContentText(b.Value)
 
 				case *bedrocktypes.ContentBlockMemberToolUse:
 					// Extract tool call
@@ -180,6 +184,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 	// Build response
 	response := &llmtypes.LLMResponse{
 		Content:    contentText,
+		Thinking:   thinkingText,
 		ToolCalls:  toolCalls,
 		StopReason: string(output.StopReason),
 		Usage:      usage,
@@ -221,4 +226,19 @@ func toolUseInputToMap(doc document.Interface) map[string]interface{} {
 	}
 	_ = json.Unmarshal(raw, &input)
 	return input
+}
+
+// reasoningContentText extracts the model's reasoning text from a Converse
+// reasoningContent block. Reasoning models on Bedrock (DeepSeek, Qwen, ...)
+// interleave these with text/toolUse blocks; before this they were silently
+// dropped, so a reasoning-heavy turn could surface as an empty response.
+// The text maps to LLMResponse.Thinking — never Content — reasoning is not
+// part of the user-facing answer and must not enter the replayed
+// conversation. Redacted reasoning (encrypted bytes) has no readable text
+// and is skipped.
+func reasoningContentText(rc bedrocktypes.ReasoningContentBlock) string {
+	if r, ok := rc.(*bedrocktypes.ReasoningContentBlockMemberReasoningText); ok {
+		return aws.ToString(r.Value.Text)
+	}
+	return ""
 }
