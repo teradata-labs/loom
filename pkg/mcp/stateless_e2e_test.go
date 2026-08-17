@@ -19,12 +19,14 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/internal/mcpstate"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/server"
@@ -80,4 +82,74 @@ func TestStatelessEndToEnd(t *testing.T) {
 	mcpServer.NotifyToolsListChanged()
 	change := waitNotif()
 	assert.Equal(t, protocol.NotificationToolsListChanged, change.Method)
+}
+
+// TestMRTREndToEnd exercises the full Multi Round-Trip Request cycle with
+// zero fakes: a server handler pauses with sealed requestState, the client's
+// InputHandler answers, and the retry completes with the state verified.
+func TestMRTREndToEnd(t *testing.T) {
+	sealer, err := mcpstate.NewSealer([]byte("e2e-deployment-secret"))
+	require.NoError(t, err)
+
+	mcpServer := server.NewMCPServer("loom-mcp-mrtr", "1.4.0", nil)
+	mcpServer.RegisterHandler("confirm/op", func(ctx context.Context, _, _ json.RawMessage) (interface{}, error) {
+		retry := server.RequestMetaFromContext(ctx).RetryInput
+		if retry.RequestState == "" {
+			// First round: pause for confirmation, sealing the pending action.
+			state, sealErr := sealer.Seal("", []byte(`{"action":"drop table sales"}`), 0)
+			require.NoError(t, sealErr)
+			return nil, &protocol.InputRequiredError{
+				Requests: protocol.InputRequests{
+					"confirm": {Method: "elicitation/create", Params: json.RawMessage(`{"message":"Proceed with: drop table sales?"}`)},
+				},
+				RequestState: state,
+			}
+		}
+		// Retry: verify the sealed state survived the round trip untouched.
+		data, unsealErr := sealer.Unseal("", retry.RequestState)
+		if unsealErr != nil {
+			return nil, protocol.NewError(protocol.InvalidRequest, "invalid request state", nil)
+		}
+		require.JSONEq(t, `{"action":"drop table sales"}`, string(data))
+		var answer json.RawMessage
+		for _, resp := range retry.Responses {
+			answer = resp
+		}
+		return map[string]interface{}{"confirmed": true, "answer": string(answer)}, nil
+	})
+
+	httpServer, err := transport.NewStreamableHTTPServer(transport.StreamableHTTPServerConfig{
+		Handler: mcpServer.HandleMessage,
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(httpServer)
+	defer ts.Close()
+
+	trans, err := transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{Endpoint: ts.URL})
+	require.NoError(t, err)
+
+	handlerCalls := 0
+	c := client.NewClient(client.Config{
+		Transport: trans,
+		MRTR: client.MRTRConfig{
+			Handler: func(ctx context.Context, reqs protocol.InputRequests) (protocol.InputResponses, error) {
+				handlerCalls++
+				out := protocol.InputResponses{}
+				for key := range reqs {
+					out[key] = json.RawMessage(`{"action":"accept","content":{"confirm":true}}`)
+				}
+				return out, nil
+			},
+		},
+	})
+	defer func() { _ = c.Close() }()
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom", Version: "1.4.0"}))
+	require.True(t, c.IsStateless())
+
+	// RawRequest runs the client's full pipeline, including the central MRTR
+	// driver, against the custom pausing handler.
+	resp, err := c.RawRequest(context.Background(), "confirm/op", json.RawMessage(`{}`))
+	require.NoError(t, err)
+	assert.Equal(t, 1, handlerCalls, "one MRTR round")
+	assert.Contains(t, string(resp), `"confirmed":true`)
 }

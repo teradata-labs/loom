@@ -52,6 +52,42 @@ type InputRequiredResult struct {
 	RequestState *string `json:"requestState,omitempty"`
 }
 
+// InputRequiredError is returned by a server-side handler that needs caller
+// input before completing. The server core converts it into an
+// InputRequiredResult (resultType "input_required") for stateless clients;
+// handler signatures stay unchanged. RequestState must survive a stateless
+// retry that may land on another replica — seal it (internal/mcpstate) when
+// it influences authorization or business logic.
+type InputRequiredError struct {
+	Requests     InputRequests
+	RequestState string
+}
+
+func (e *InputRequiredError) Error() string {
+	return fmt.Sprintf("caller input required (%d requests)", len(e.Requests))
+}
+
+// RetryInput is the MRTR payload a client attaches when retrying the
+// original request: its answers plus the echoed opaque state.
+type RetryInput struct {
+	Responses    InputResponses
+	RequestState string
+}
+
+// ParseRetryInput extracts inputResponses and requestState from a retried
+// request's params; both zero when this is not an MRTR retry.
+func ParseRetryInput(params json.RawMessage) RetryInput {
+	if len(params) == 0 {
+		return RetryInput{}
+	}
+	var probe struct {
+		InputResponses InputResponses `json:"inputResponses"`
+		RequestState   string         `json:"requestState"`
+	}
+	_ = json.Unmarshal(params, &probe)
+	return RetryInput{Responses: probe.InputResponses, RequestState: probe.RequestState}
+}
+
 // ParseInputRequired decodes an input_required interim result.
 func ParseInputRequired(result json.RawMessage) (*InputRequiredResult, error) {
 	var irr InputRequiredResult

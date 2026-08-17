@@ -215,16 +215,38 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	duration := time.Since(start)
 
 	if err != nil {
+		if req.ID == nil {
+			// Notification - don't send error response
+			s.logger.Warn("handler error on notification", zap.String("method", req.Method), zap.Error(err))
+			return nil, nil
+		}
+		// MRTR (2026-07-28): a handler pausing for caller input is not a
+		// failure — it becomes an input_required interim result for
+		// stateless clients. Legacy clients cannot drive MRTR, so they get
+		// a plain error instead of an interim result they would misread.
+		var inputReq *protocol.InputRequiredError
+		if errors.As(err, &inputReq) {
+			if !RequestMetaFromContext(ctx).Stateless() {
+				return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest,
+					"this operation requires interactive input, which needs an MCP 2026-07-28 (MRTR-capable) client", nil))
+			}
+			result := protocol.InputRequiredResult{
+				ResultType:    protocol.ResultTypeInputRequired,
+				InputRequests: inputReq.Requests,
+				RequestState:  inputReq.RequestState,
+			}
+			if stamped, stampErr := s.stampResult(result); stampErr == nil {
+				return marshalResponse(req.ID, stamped, nil)
+			}
+			return marshalResponse(req.ID, result, nil)
+		}
+
 		// Handler returned an error
 		s.logger.Warn("handler error",
 			zap.String("method", req.Method),
 			zap.Duration("duration", duration),
 			zap.Error(err),
 		)
-		if req.ID == nil {
-			// Notification - don't send error response
-			return nil, nil
-		}
 		// Preserve original JSON-RPC error code if the handler returned a *protocol.Error
 		var rpcErr *protocol.Error
 		if errors.As(err, &rpcErr) {

@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -67,6 +68,20 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 
 	result, err := sp.CallToolStream(ctx, callParams.Name, callParams.Arguments, progressToken, emit)
 	if err != nil {
+		// MRTR pause on the streaming path: the interim result is the final
+		// event of this stream; the client answers and retries the call.
+		var inputReq *protocol.InputRequiredError
+		if errors.As(err, &inputReq) && RequestMetaFromContext(ctx).Stateless() {
+			interim := protocol.InputRequiredResult{
+				ResultType:    protocol.ResultTypeInputRequired,
+				InputRequests: inputReq.Requests,
+				RequestState:  inputReq.RequestState,
+			}
+			if stamped, stampErr := s.stampResult(interim); stampErr == nil {
+				return marshalResponse(req.ID, stamped, nil)
+			}
+			return marshalResponse(req.ID, interim, nil)
+		}
 		// Mirror newToolsCallHandler: surface tool failures as an isError result,
 		// not a transport error, so the client still receives a well-formed event.
 		result = &protocol.CallToolResult{

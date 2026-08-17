@@ -33,6 +33,11 @@ type RequestMeta struct {
 	ClientCaps      *protocol.ClientCapabilities
 	LogLevel        string
 	IdempotencyKey  string
+
+	// RetryInput carries a client's MRTR retry payload (inputResponses +
+	// echoed requestState); zero when the request is not a retry. Handlers
+	// read it here instead of parsing params themselves.
+	RetryInput protocol.RetryInput
 }
 
 // Stateless reports whether the request declared a stateless-core revision.
@@ -99,6 +104,7 @@ func parseRequestMeta(params json.RawMessage) *RequestMeta {
 	if raw, ok := probe.Meta[protocol.MetaIdempotencyKey]; ok {
 		_ = json.Unmarshal(raw, &meta.IdempotencyKey)
 	}
+	meta.RetryInput = protocol.ParseRetryInput(params)
 	return meta
 }
 

@@ -350,6 +350,24 @@ func (c *Client) IsInitialized() bool {
 	return c.initialized
 }
 
+// RawRequest sends an arbitrary JSON-RPC request through the client's full
+// request pipeline — _meta stamping, idempotency keys, stream-loss re-issue,
+// and MRTR driving — and returns the raw result. Intended for conformance
+// testing and protocol extensions; typed methods cover the core surface.
+func (c *Client) RawRequest(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	req := &protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      c.nextRequestID(),
+		Method:  method,
+		Params:  params,
+	}
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
 // NegotiatedVersion returns the protocol revision agreed with the server, or
 // the empty string before Connect/Initialize completes.
 func (c *Client) NegotiatedVersion() string {
