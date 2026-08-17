@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lme-server
+  namespace: loom-lme
+  labels:
+    app: lme-server
+spec:
+  replicas: 1
+  # The server holds per-run sqlite state on an emptyDir; never run two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lme-server
+  template:
+    metadata:
+      labels:
+        app: lme-server
+    spec:
+      nodeSelector:
+        loom-role: lme
+      tolerations:
+        - key: loom-role
+          value: lme
+          effect: NoSchedule
+      containers:
+        - name: server
+          image: loomcloudacr.azurecr.io/loom-longmemeval:latest
+          command: ["/looms"]
+          args: ["serve", "--config", "/etc/loom/looms.yaml"]
+          ports:
+            - name: grpc
+              containerPort: 60051
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /var/lib/loom
+            - name: LOOM_LLM_BEDROCK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lme-bedrock
+                  key: bearer-token
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loom
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/loom
+          resources:
+            requests:
+              cpu: "3"
+              memory: "8Gi"
+            limits:
+              cpu: "6"
+              memory: "16Gi"
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: lme-server-config
+        - name: state
+          emptyDir:
+            sizeLimit: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lme-server
+  namespace: loom-lme
+spec:
+  selector:
+    app: lme-server
+  ports:
+    - name: grpc
+      port: 60051
+      targetPort: grpc
