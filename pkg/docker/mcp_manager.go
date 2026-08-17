@@ -193,10 +193,10 @@ func (msm *MCPServerManager) StartMCPServer(
 		Version: "1.0.0",
 	}
 
-	if err := mcpClient.Initialize(initCtx, clientInfo); err != nil {
-		// #nosec G104 -- best-effort cleanup on initialization failure
+	if err := mcpClient.Connect(initCtx, clientInfo); err != nil {
+		// #nosec G104 -- best-effort cleanup on connection failure
 		_ = trans.Close()
-		return fmt.Errorf("failed to initialize MCP server: %w", err)
+		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
 	// Store managed server

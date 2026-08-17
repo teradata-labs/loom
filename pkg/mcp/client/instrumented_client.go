@@ -51,6 +51,50 @@ func NewInstrumentedClient(client *Client, tracer observability.Tracer, serverNa
 	}
 }
 
+// Connect negotiates the protocol revision with observability
+// instrumentation. Like Client.Connect, it probes server/discover and falls
+// back to the initialize handshake for pre-2026 servers.
+func (ic *InstrumentedClient) Connect(ctx context.Context, clientInfo protocol.Implementation) error {
+	ctx, span := ic.tracer.StartSpan(ctx, observability.SpanMCPClientConnect)
+	defer ic.tracer.EndSpan(span)
+
+	start := time.Now()
+	span.SetAttribute(observability.AttrMCPServerName, ic.serverName)
+	span.SetAttribute(observability.AttrMCPOperation, "connect")
+	span.SetAttribute("mcp.client.name", clientInfo.Name)
+	span.SetAttribute("mcp.client.version", clientInfo.Version)
+
+	err := ic.client.Connect(ctx, clientInfo)
+	span.SetAttribute("mcp.duration_ms", time.Since(start).Milliseconds())
+	if err != nil {
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
+		}
+		span.SetAttribute(observability.AttrErrorType, fmt.Sprintf("%T", err))
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		ic.tracer.RecordMetric(observability.MetricMCPErrors, 1, map[string]string{
+			observability.AttrMCPServerName: ic.serverName,
+			observability.AttrMCPOperation:  "connect",
+		})
+		return err
+	}
+	span.Status = observability.Status{Code: observability.StatusOK}
+	span.SetAttribute(observability.AttrMCPProtocolVersion, ic.client.NegotiatedVersion())
+	span.SetAttribute("mcp.stateless", ic.client.IsStateless())
+	return nil
+}
+
+// NegotiatedVersion returns the protocol revision agreed with the server.
+func (ic *InstrumentedClient) NegotiatedVersion() string {
+	return ic.client.NegotiatedVersion()
+}
+
+// IsStateless reports whether the client negotiated a 2026-07-28+ revision.
+func (ic *InstrumentedClient) IsStateless() bool {
+	return ic.client.IsStateless()
+}
+
 // Initialize performs the MCP handshake with observability instrumentation.
 func (ic *InstrumentedClient) Initialize(ctx context.Context, clientInfo protocol.Implementation) error {
 	// Start span
