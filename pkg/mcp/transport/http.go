@@ -27,7 +27,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// HTTPTransport implements Transport over HTTP/SSE
+// HTTPTransport implements Transport over HTTP/SSE.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The HTTP+SSE transport (2024-11-05) is
+// Deprecated under the protocol's feature lifecycle policy (SEP-2596);
+// migrate to StreamableHTTPTransport.
 type HTTPTransport struct {
 	endpoint   string
 	sseClient  *sse.Client
@@ -50,7 +55,10 @@ type HTTPConfig struct {
 	Logger   *zap.Logger       // Logger
 }
 
-// NewHTTPTransport creates a new HTTP/SSE transport
+// NewHTTPTransport creates a new HTTP/SSE transport.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Use NewStreamableHTTPTransport.
 func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 	if config.SSEPath == "" {
 		config.SSEPath = "/sse"

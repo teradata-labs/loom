@@ -142,6 +142,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		})
 	case "http", "sse":
 		// Legacy HTTP/SSE transport (deprecated, backwards compatibility)
+		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.URL,
 			Logger:   m.logger.With(zap.String("server", name)),
@@ -156,21 +157,29 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 
 	// Create client
 	mcpClient := client.NewClient(client.Config{
-		Transport: trans,
-		Logger:    m.logger.With(zap.String("server", name)),
+		Transport:       trans,
+		Logger:          m.logger.With(zap.String("server", name)),
+		ProtocolVersion: config.ProtocolVersion,
 	})
 
-	// Initialize with the timeout context
+	// Connect with the timeout context: negotiates the protocol revision
+	// (server/discover probe with initialize fallback), honoring any
+	// protocol_version pin from the server config.
 
 	clientInfo := protocol.Implementation{
 		Name:    m.config.ClientInfo.Name,
 		Version: m.config.ClientInfo.Version,
 	}
 
-	if err := mcpClient.Initialize(startCtx, clientInfo); err != nil {
+	if err := mcpClient.Connect(startCtx, clientInfo); err != nil {
 		_ = trans.Close()
-		return fmt.Errorf("failed to initialize: %w", err)
+		return fmt.Errorf("failed to connect: %w", err)
 	}
+
+	m.logger.Info("MCP server connected",
+		zap.String("server", name),
+		zap.String("negotiated_revision", mcpClient.NegotiatedVersion()),
+		zap.Bool("stateless", mcpClient.IsStateless()))
 
 	// Store client
 	m.clients[name] = mcpClient
@@ -313,14 +322,28 @@ func (m *Manager) ServerNames() []string {
 	return names
 }
 
-// IsHealthy checks if a server is healthy by pinging it.
+// IsHealthy checks if a server is healthy. Legacy-revision connections use
+// protocol ping; the method does not exist under the stateless 2026-07-28
+// revision, so those connections are probed with a lightweight tools/list
+// (which doubles as a tool-cache refresh).
 func (m *Manager) IsHealthy(ctx context.Context, serverName string) bool {
 	client, err := m.GetClient(serverName)
 	if err != nil {
 		return false
 	}
 
+	if client.IsStateless() {
+		if _, err := client.ListTools(ctx); err != nil {
+			m.logger.Warn("Server health check failed",
+				zap.String("server", serverName),
+				zap.Error(err))
+			return false
+		}
+		return true
+	}
+
 	// Ping the server
+	//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 	if err := client.Ping(ctx); err != nil {
 		m.logger.Warn("Server health check failed",
 			zap.String("server", serverName),

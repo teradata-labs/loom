@@ -41,14 +41,24 @@ type Client struct {
 	serverInfo         protocol.Implementation
 	serverCapabilities protocol.ServerCapabilities
 
+	// Negotiated revision state (see connect.go). statelessMode is true when
+	// the server speaks a 2026-07-28+ revision; requests then carry protocol
+	// version, client capabilities, and client identity in params._meta
+	// instead of relying on the initialize handshake.
+	statelessMode bool
+	clientInfo    protocol.Implementation
+	versionPin    string
+
 	// Request tracking
 	nextID    int64
 	pending   map[string]chan *protocol.Response
 	pendingMu sync.RWMutex
 
-	// Tool cache
-	tools   map[string]protocol.Tool
-	toolsMu sync.RWMutex
+	// Tool cache. toolHeaderParams holds the validated x-mcp-header
+	// annotations per tool, refreshed together with tools by ListTools.
+	tools            map[string]protocol.Tool
+	toolHeaderParams map[string][]protocol.HeaderParam
+	toolsMu          sync.RWMutex
 
 	// Handlers
 	samplingHandler  SamplingHandler
@@ -74,9 +84,20 @@ type Config struct {
 	Name    string
 	Version string
 
-	// Capabilities
+	// Capabilities.
+	//
+	// Deprecated: SupportsSampling and SupportsRoots are frozen legacy MCP
+	// surface (docs/architecture/mcp-2026-07-28-migration.md §9.2); removal
+	// no earlier than 2027-07-28. Sampling and Roots are Deprecated by
+	// SEP-2577 and were never wired to behavior in this client.
 	SupportsSampling bool
 	SupportsRoots    bool
+
+	// ProtocolVersion pins the revision Connect negotiates. Empty or "auto"
+	// negotiates normally; "legacy" forces the initialize handshake without
+	// probing server/discover; an explicit revision (e.g. "2026-07-28")
+	// requires the server to speak exactly that revision.
+	ProtocolVersion string
 
 	// Timeouts
 	RequestTimeout time.Duration // Default: 30s
@@ -109,10 +130,12 @@ func NewClient(config Config) *Client {
 	c := &Client{
 		transport:        config.Transport,
 		logger:           config.Logger,
+		versionPin:       config.ProtocolVersion,
 		ctx:              ctx,
 		cancel:           cancel,
 		pending:          make(map[string]chan *protocol.Response),
 		tools:            make(map[string]protocol.Tool),
+		toolHeaderParams: make(map[string][]protocol.HeaderParam),
 		progressHandlers: make(map[string]ProgressHandler),
 		notifications:    make(chan Notification, 100),
 	}
@@ -187,10 +210,12 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		return fmt.Errorf("failed to parse initialize result: %w", err)
 	}
 
-	// Verify protocol version
-	if result.ProtocolVersion != protocol.ProtocolVersion {
-		return fmt.Errorf("protocol version mismatch: client=%s server=%s",
-			protocol.ProtocolVersion, result.ProtocolVersion)
+	// Verify the server answered with a revision this client can speak. The
+	// previous strict equality check broke against any server negotiating a
+	// different (including newer, backwards-compatible) handshake revision.
+	if !protocol.IsSupportedVersion(result.ProtocolVersion) {
+		return fmt.Errorf("unsupported protocol version from server: %s (client supports up to %s)",
+			result.ProtocolVersion, protocol.PreferredVersion)
 	}
 
 	// Store server info
@@ -234,7 +259,12 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 	return nil
 }
 
-// Ping sends a ping to check connection health
+// Ping sends a ping to check connection health.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The method does not exist under the
+// 2026-07-28 revision; health on stateless HTTP connections is a transport
+// property.
 func (c *Client) Ping(ctx context.Context) error {
 	req := &protocol.Request{
 		JSONRPC: protocol.JSONRPCVersion,
@@ -266,6 +296,14 @@ func (c *Client) IsInitialized() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.initialized
+}
+
+// NegotiatedVersion returns the protocol revision agreed with the server, or
+// the empty string before Connect/Initialize completes.
+func (c *Client) NegotiatedVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion
 }
 
 // Close closes the client connection
@@ -306,6 +344,29 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 	// Generate request ID if not set
 	if req.ID == nil {
 		req.ID = c.nextRequestID()
+	}
+
+	// Under the stateless revision every request carries its protocol
+	// version, client capabilities, and client identity in params._meta.
+	c.mu.RLock()
+	stateless := c.statelessMode
+	version := c.protocolVersion
+	info := c.clientInfo
+	c.mu.RUnlock()
+	if stateless {
+		stamped, stampErr := protocol.StampMeta(req.Params, version, info, protocol.ClientCapabilities{})
+		if stampErr != nil {
+			return nil, fmt.Errorf("failed to stamp _meta: %w", stampErr)
+		}
+		req.Params = stamped
+	}
+
+	// The MCP-Protocol-Version header is required on every POST by the
+	// 2026-07-28 transport and defined since 2025-06-18; it must match the
+	// version stamped in _meta. Older servers ignore unknown headers, and
+	// non-HTTP transports ignore the context entry.
+	if version != "" {
+		ctx = transport.WithExtraHeaders(ctx, map[string]string{"MCP-Protocol-Version": version})
 	}
 
 	// Create response channel
@@ -358,6 +419,15 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 			zap.String("id", reqIDStr))
 		if resp.Error != nil {
 			return nil, resp.Error
+		}
+		// Under the stateless revision every result carries a resultType
+		// envelope. Surfacing interim MRTR results here — the one choke point
+		// all request paths share — prevents any caller from decoding an
+		// input_required interim result as if it were the final one.
+		if stateless {
+			if err := checkResultEnvelope(req.Method, resp.Result); err != nil {
+				return nil, err
+			}
 		}
 		return resp, nil
 	}

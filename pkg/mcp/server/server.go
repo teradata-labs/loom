@@ -306,6 +306,11 @@ func (s *MCPServer) handleNotificationsInitialized(_ context.Context, _ json.Raw
 }
 
 // handlePing handles the ping request.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The method does not exist under the
+// 2026-07-28 revision; migration Phase 2 answers MethodNotFound when the
+// request carries stateless _meta.
 func (s *MCPServer) handlePing(_ context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
 	return struct{}{}, nil
 }

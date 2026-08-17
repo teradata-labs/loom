@@ -218,6 +218,7 @@ func createMCPClientFromConfig(config *loomv1.MCPConnection) (mcp.MCPClient, err
 		if config.Url == "" {
 			return nil, fmt.Errorf("URL is required for HTTP/SSE transport")
 		}
+		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.Url,
 			Logger:   zap.NewNop(),

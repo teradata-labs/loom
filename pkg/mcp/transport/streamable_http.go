@@ -17,6 +17,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -132,6 +133,22 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		req.Header.Set(k, v)
 	}
 
+	// Standard MCP request headers (2026-07-28, SEP-2243). Required on the new
+	// revision so gateways can route on Mcp-Method without parsing bodies;
+	// older servers ignore unknown headers, so they are sent unconditionally.
+	if method, name := requestHeaderFields(message); method != "" {
+		req.Header.Set("Mcp-Method", method)
+		if name != "" {
+			req.Header.Set("Mcp-Name", name)
+		}
+	}
+
+	// Per-request headers from the client layer: MCP-Protocol-Version and
+	// Mcp-Param-* values mirrored from x-mcp-header tool parameters.
+	for k, v := range ExtraHeadersFromContext(ctx) {
+		req.Header.Set(k, v)
+	}
+
 	// Add session ID if we have one
 	if sessionID := t.sessionMgr.GetSessionID(); sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
@@ -150,7 +167,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	defer func() { _ = resp.Body.Close() }()
 
 	// Handle HTTP errors
-	if err := t.handleHTTPStatus(resp); err != nil {
+	if handled, err := t.handleHTTPStatus(ctx, resp); handled || err != nil {
 		return err
 	}
 
@@ -329,32 +346,57 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 	return nil
 }
 
-// handleHTTPStatus handles HTTP status codes per MCP spec.
-func (t *StreamableHTTPTransport) handleHTTPStatus(resp *http.Response) error {
+// handleHTTPStatus handles HTTP status codes per MCP spec. The boolean is
+// true when the response was fully consumed here (an error body delivered as
+// a protocol message); the caller must not read the body further in that case.
+func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *http.Response) (bool, error) {
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusAccepted:
-		return nil
+	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
+		return false, nil
+	}
 
-	case http.StatusBadRequest:
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("bad request (400): %s", body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	case http.StatusNotFound:
-		// Session expired
+	// Legacy (2025-03-26..2025-11-25) session expiry: a 404 while holding a
+	// session means the server dropped it.
+	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
 		t.logger.Warn("Session expired (404), clearing session")
 		t.sessionMgr.ClearSession()
 		if t.enableResumption {
 			t.resumption.Clear()
 		}
-		return ErrSessionExpired
-
-	case http.StatusMethodNotAllowed:
-		return fmt.Errorf("method not allowed (405): server doesn't support this operation")
-
-	default:
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP error %d: %s", resp.StatusCode, body)
+		return true, ErrSessionExpired
 	}
+
+	// 2026-07-28 servers carry JSON-RPC error responses in HTTP 4xx bodies
+	// (unknown method → 404 with -32601, version problems → 400 with -32022,
+	// header mismatch → 400 with -32020). Deliver them as protocol messages
+	// so the pending request receives the typed JSON-RPC error instead of a
+	// transport failure.
+	if isJSONRPCErrorResponse(body) {
+		select {
+		case t.messages <- body:
+			return true, nil
+		case <-ctx.Done():
+			return true, ctx.Err()
+		}
+	}
+
+	return true, &HTTPStatusError{Code: resp.StatusCode, Body: body}
+}
+
+// isJSONRPCErrorResponse reports whether body is a routable JSON-RPC error
+// response: correct version, an id to route on, and an error member.
+func isJSONRPCErrorResponse(body []byte) bool {
+	var probe struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false
+	}
+	return probe.JSONRPC == "2.0" && len(probe.ID) > 0 && string(probe.ID) != "null" && len(probe.Error) > 0
 }
 
 // terminateSession sends DELETE request to terminate session.

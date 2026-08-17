@@ -16,6 +16,8 @@ package manager
 
 import (
 	"fmt"
+
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 )
 
 // Config defines the configuration for the MCP manager.
@@ -63,6 +65,13 @@ type ServerConfig struct {
 
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `yaml:"enable_resumption" json:"enable_resumption"`
+
+	// ProtocolVersion pins the MCP revision negotiated with this server.
+	// Empty or "auto" negotiates normally (server/discover probe with
+	// initialize fallback); "legacy" forces the initialize handshake without
+	// probing; an explicit revision (e.g. "2026-07-28") requires the server
+	// to speak exactly that revision and fails without fallback.
+	ProtocolVersion string `yaml:"protocol_version" json:"protocol_version"`
 
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
@@ -135,6 +144,15 @@ func (s *ServerConfig) Validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid transport: %s (must be 'stdio', 'http', 'sse', or 'streamable-http')", s.Transport)
+	}
+
+	switch s.ProtocolVersion {
+	case "", "auto", "legacy":
+	default:
+		if !protocol.IsSupportedVersion(s.ProtocolVersion) {
+			return fmt.Errorf("invalid protocol_version: %s (must be 'auto', 'legacy', or a supported revision such as %s)",
+				s.ProtocolVersion, protocol.PreferredVersion)
+		}
 	}
 
 	return nil
