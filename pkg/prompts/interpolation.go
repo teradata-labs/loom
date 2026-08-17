@@ -86,10 +86,12 @@ func escapeValue(value interface{}) string {
 // escapeString escapes special characters to prevent prompt injection.
 //
 // Implements multiple escaping strategies for production use:
-// - Control character removal
-// - XML/HTML entity escaping
-// - Unicode normalization
-// - Prompt injection pattern detection
+//   - Control character removal
+//   - XML/HTML entity escaping
+//   - Unicode normalization
+//   - Prompt injection pattern detection
+//   - Edge backtick stripping, so remnants cannot reassemble a ``` fence
+//     across value/template boundaries
 func escapeString(s string) string {
 	// 1. Remove null bytes and invalid UTF-8
 	s = strings.ReplaceAll(s, "\x00", "")
@@ -127,6 +129,16 @@ func escapeString(s string) string {
 
 	// 7. Trim leading/trailing whitespace
 	s = strings.TrimSpace(s)
+
+	// 8. Strip backticks (and any space interleaved with them) from the edges.
+	// sanitizePromptInjection caps interior backtick runs below fence length,
+	// but a remnant run at the value's edge can merge with backticks in the
+	// surrounding template or an adjacent interpolated value and reassemble a
+	// ``` fence: interpolating "`````" twice, adjacently, used to yield "````".
+	// With clean edges and short interior runs, no concatenation of escaped
+	// values with template text can form a fence the template did not already
+	// contain. Interior backticks (e.g. "a``b") are preserved.
+	s = strings.TrimFunc(s, func(r rune) bool { return r == '`' || r == ' ' })
 
 	return s
 }

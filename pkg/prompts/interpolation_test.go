@@ -94,6 +94,27 @@ func TestInterpolate(t *testing.T) {
 			vars:     map[string]interface{}{"data": "hello\x00world"},
 			want:     "Data: helloworld",
 		},
+		{
+			// Regression: fence remnants from two adjacent interpolations
+			// used to recombine — "`````" sanitized to "``" per value, and
+			// "``"+"``" = "````" contains "```".
+			name:     "Adjacent fence remnants cannot recombine",
+			template: "{{.a}}{{.a}}",
+			vars:     map[string]interface{}{"a": "`````"},
+			want:     "",
+		},
+		{
+			name:     "Value backtick cannot extend a template backtick run",
+			template: "``{{.a}}",
+			vars:     map[string]interface{}{"a": "`"},
+			want:     "``",
+		},
+		{
+			name:     "Interior backticks in values survive",
+			template: "run {{.cmd}}",
+			vars:     map[string]interface{}{"cmd": "a``b"},
+			want:     "run a``b",
+		},
 	}
 
 	for _, tt := range tests {
@@ -144,6 +165,11 @@ func TestEscapeString(t *testing.T) {
 		{"tab", "col1\tcol2", "col1 col2"},
 		{"null byte", "hello\x00world", "helloworld"},
 		{"multiple special chars", "a\nb\tc\x00d\r\ne", "a b cd e"}, // null byte removed, not replaced
+		{"fence removed mid-value", "a```b", "a b"},
+		{"fence remnant stripped at edge", "`````", ""},          // "```" removed, "``" remnant must not survive at an edge
+		{"edge backticks stripped", "``x``", "x"},                // edges can merge with neighbours into a fence
+		{"interior short backtick run survives", "a``b", "a``b"}, // interior runs cannot reach fence length
+		{"interleaved edge backticks and spaces", "` ` `", ""},   // stripping must not re-expose an edge backtick
 	}
 
 	for _, tt := range tests {
