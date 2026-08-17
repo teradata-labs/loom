@@ -517,17 +517,32 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 
 // findAgentBySession iterates all agents to find which one owns the given session.
 // Returns the agent, its ID, and true if found. This is the same pattern used by
-// GetSession(), DeleteSession(), and GetConversationHistory().
-func (s *MultiAgentServer) findAgentBySession(sessionID string) (*agent.Agent, string, bool) {
+// GetSession(), DeleteSession(), and GetConversationHistory(). Sessions owned
+// by a different user are invisible to the caller: wrong-owner lookups behave
+// exactly like lookups of a session that does not exist.
+func (s *MultiAgentServer) findAgentBySession(sessionID, callerUserID string) (*agent.Agent, string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for agentID, ag := range s.agents {
-		if _, ok := ag.GetSession(sessionID); ok {
+		if session, ok := ag.GetSession(sessionID); ok {
+			if !sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			return ag, agentID, true
 		}
 	}
 	return nil, "", false
+}
+
+// sessionAccessibleBy is the per-user isolation predicate shared by every
+// session-scoped RPC. It denies only when both the caller and the session
+// carry a non-empty user ID that differ: sessions created before ownership
+// stamping existed (UserID == "") stay reachable so upgrades do not strand
+// live sessions, and identity-less callers (single-tenant deployments) see
+// everything, matching the pre-isolation behavior they rely on.
+func sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
+	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
 }
 
 // AddAgent adds a new agent to the server at runtime
@@ -734,7 +749,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	var agentID string
 
 	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId, postgres.UserIDFromContext(ctx)); ok {
 			ag, agentID = found, foundID
 			if s.logger != nil {
 				s.logger.Info("Weave: routed to agent by session ownership",
@@ -888,7 +903,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	var resolvedAgentID string
 
 	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId, postgres.UserIDFromContext(stream.Context())); ok {
 			ag, resolvedAgentID = found, foundID
 			if s.logger != nil {
 				s.logger.Info("StreamWeave: routed to agent by session ownership",
@@ -2881,10 +2896,8 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 	for _, ag := range s.agents {
 		session, ok := ag.GetSession(req.SessionId)
 		if ok {
-			// Enforce per-user isolation: if both the caller and the session have a
-			// non-empty user ID that differ, treat as not found to prevent cross-tenant
-			// access via the in-memory cache.
-			if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+			// Wrong-owner is indistinguishable from not-found.
+			if !sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			return ConvertSession(session), nil
@@ -2910,9 +2923,7 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
 		for _, sess := range sessions {
-			// Enforce per-user isolation: skip sessions owned by a different user
-			// when both caller and session have a non-empty user ID.
-			if callerUserID != "" && sess.UserID != "" && sess.UserID != callerUserID {
+			if !sessionAccessibleBy(callerUserID, sess) {
 				continue
 			}
 			memSessions = append(memSessions, sess)
@@ -2950,7 +2961,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if !ok {
 			continue
 		}
-		if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+		if !sessionAccessibleBy(callerUserID, session) {
 			continue
 		}
 		deleteAgent = ag
@@ -2968,7 +2979,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if stored == nil {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
-		if callerUserID != "" && stored.UserID != "" && stored.UserID != callerUserID {
+		if !sessionAccessibleBy(callerUserID, stored) {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
 	} else if deleteAgent == nil {
@@ -3014,13 +3025,21 @@ func (s *MultiAgentServer) GetConversationHistory(ctx context.Context, req *loom
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	// Wrong-owner is indistinguishable from not-found; the store re-filters on
+	// Postgres (RLS) and the SQLite store predicates by ctx identity, so this
+	// in-memory check is the first gate, not the only one.
+	callerUserID := postgres.UserIDFromContext(ctx)
+
 	// Try to find the session in any agent to verify it exists
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for _, ag := range s.agents {
-		_, ok := ag.GetSession(req.SessionId)
+		session, ok := ag.GetSession(req.SessionId)
 		if ok {
+			if !sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			// Reload messages from database to ensure IDs are populated
 			// (in-memory messages don't have database IDs until reloaded)
 			messages, err := s.sessionStore.LoadMessages(ctx, req.SessionId)
@@ -4419,11 +4438,16 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 		zap.String("session_id", req.SessionId),
 		zap.String("agent_id", req.AgentId))
 
-	// Verify session exists
+	// Verify session exists and is visible to the caller (wrong-owner is
+	// indistinguishable from not-found).
+	callerUserID := postgres.UserIDFromContext(ctx)
 	s.mu.RLock()
 	sessionExists := false
 	for _, ag := range s.agents {
-		if _, ok := ag.GetSession(req.SessionId); ok {
+		if session, ok := ag.GetSession(req.SessionId); ok {
+			if !sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			sessionExists = true
 			break
 		}

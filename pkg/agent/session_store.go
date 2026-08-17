@@ -39,6 +39,17 @@ var validSQLIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 // The hook receives the session ID being deleted.
 type SessionCleanupHook func(ctx context.Context, sessionID string)
 
+// storeUserID resolves the owner identity for session rows: the
+// authenticated caller when present, otherwise the single-tenant default —
+// so local no-auth deployments keep their pre-existing behavior while
+// auth-enabled deployments get per-user isolation (migration 000009).
+func storeUserID(ctx context.Context) string {
+	if u := types.UserIDFromContext(ctx); u != "" {
+		return u
+	}
+	return types.DefaultUserID
+}
+
 // SessionStore provides persistent storage for sessions, messages, and tool executions.
 // All database operations are traced to hawk for observability.
 type SessionStore struct {
@@ -104,6 +115,7 @@ func (s *SessionStore) initSchema() error {
 		updated_at INTEGER NOT NULL,
 		total_cost_usd REAL DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
+		user_id TEXT NOT NULL DEFAULT 'default-user',
 		FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL
 	);
 
@@ -284,6 +296,12 @@ func (s *SessionStore) initSchema() error {
 		// tool_executions INSERT (the error is swallowed) and persistence
 		// silently stops.
 		"admission_decision": "ALTER TABLE tool_executions ADD COLUMN admission_decision TEXT",
+		// Session ownership (MCP 2026-07-28 migration, Immediate brief Part A):
+		// pre-existing rows belong to the single-tenant default owner, matching
+		// the postgres 000006 convention. The sessions schema is owned by this
+		// initSchema (not the pkg/storage/sqlite migrator, whose 000001 only
+		// bootstraps): a numbered migration here would double-ALTER.
+		"user_id": "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default-user'",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
@@ -323,6 +341,8 @@ func (s *SessionStore) initSchema() error {
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"
 				case "message_agent_id":
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"
+				case "user_id":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
 				}
 				if indexSQL != "" {
 					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
@@ -422,9 +442,12 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		return fmt.Errorf("failed to marshal context: %w", err)
 	}
 
+	// The upsert is ownership-guarded: a conflicting row belonging to a
+	// different user is left untouched (the DO UPDATE WHERE clause fails), so
+	// a caller cannot overwrite another user's session by reusing its ID.
 	query := `
-		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, user_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			agent_id = excluded.agent_id,
@@ -433,6 +456,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 			updated_at = excluded.updated_at,
 			total_cost_usd = excluded.total_cost_usd,
 			total_tokens = excluded.total_tokens
+		WHERE sessions.user_id = excluded.user_id
 	`
 
 	// Handle NULL for empty optional fields (SQLite compatibility)
@@ -447,6 +471,11 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		parentSessionID = session.ParentSessionID
 	}
 
+	owner := session.UserID
+	if owner == "" {
+		owner = storeUserID(ctx)
+	}
+
 	_, err = s.db.ExecContext(ctx, query,
 		session.ID,
 		sessionName,
@@ -457,6 +486,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.UpdatedAt.Unix(),
 		session.TotalCostUSD,
 		session.TotalTokens,
+		owner,
 	)
 	s.mu.Unlock()
 
@@ -487,10 +517,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	query := `
 		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
 		FROM sessions
-		WHERE id = ?
+		WHERE id = ? AND user_id = ?
 	`
 
-	row := s.db.QueryRowContext(ctx, query, sessionID)
+	row := s.db.QueryRowContext(ctx, query, sessionID, storeUserID(ctx))
 
 	var session Session
 	var contextJSON string
@@ -519,8 +549,8 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	if parentSessionID.Valid {
 		session.ParentSessionID = parentSessionID.String
 	}
-	// SQLite backend is single-tenant; set default UserID
-	session.UserID = "default-user"
+	// The row matched the caller's identity predicate; record that owner.
+	session.UserID = storeUserID(ctx)
 
 	if err == sql.ErrNoRows {
 		span.SetAttribute("found", "false")
@@ -896,11 +926,11 @@ func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([
 	query := `
 		SELECT id
 		FROM sessions
-		WHERE agent_id = ?
+		WHERE agent_id = ? AND user_id = ?
 		ORDER BY updated_at DESC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, agentID)
+	rows, err := s.db.QueryContext(ctx, query, agentID, storeUserID(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent sessions: %w", err)
@@ -1265,8 +1295,9 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	span.SetAttribute("session_id", sessionID)
 
 	s.mu.Lock()
-	// CASCADE delete will remove messages, tool executions, and artifacts
-	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", sessionID)
+	// CASCADE delete will remove messages, tool executions, and artifacts.
+	// The owner predicate makes cross-user deletion a silent no-op.
+	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ? AND user_id = ?", sessionID, storeUserID(ctx))
 	if err != nil {
 		s.mu.Unlock()
 		span.RecordError(err)
@@ -1308,7 +1339,7 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM sessions ORDER BY updated_at DESC")
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM sessions WHERE user_id = ? ORDER BY updated_at DESC", storeUserID(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
