@@ -220,15 +220,3 @@ func (c *Client) IsStateless() bool {
 	defer c.mu.RUnlock()
 	return c.statelessMode
 }
-
-// checkResultEnvelope inspects a result's revision-level envelope and rejects
-// interim MRTR results. It runs centrally in sendRequest for every stateless
-// request, so no method-specific decoder can mistake an input_required
-// interim result for the final one.
-func checkResultEnvelope(method string, result json.RawMessage) error {
-	env := protocol.ParseResultEnvelope(result)
-	if env.ResultType == protocol.ResultTypeInputRequired {
-		return &InputRequiredNotSupportedError{Method: method}
-	}
-	return nil
-}

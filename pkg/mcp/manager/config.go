@@ -17,6 +17,7 @@ package manager
 import (
 	"fmt"
 
+	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 )
 
@@ -30,6 +31,11 @@ type Config struct {
 
 	// ClientInfo provides implementation details sent to MCP servers
 	ClientInfo ClientInfo `yaml:"client_info" json:"client_info"`
+
+	// MRTR configures Multi Round-Trip Request handling for every managed
+	// client. Wired programmatically (e.g. via NewElicitationInputHandler),
+	// never from YAML.
+	MRTR client.MRTRConfig `yaml:"-" json:"-"`
 }
 
 // ServerConfig defines the configuration for a single MCP server.

@@ -14,6 +14,8 @@
 // Package protocol implements MCP protocol types for the Model Context Protocol.
 package protocol
 
+import "encoding/json"
+
 // ProtocolVersion is the MCP protocol version supported by this implementation
 const ProtocolVersion = "2024-11-05"
 
@@ -45,20 +47,29 @@ type Implementation struct {
 
 // ClientCapabilities declares what the client supports
 type ClientCapabilities struct {
-	Roots    *RootsCapability    `json:"roots,omitempty"`
-	Sampling *SamplingCapability `json:"sampling,omitempty"`
+	Roots       *RootsCapability           `json:"roots,omitempty"`
+	Sampling    *SamplingCapability        `json:"sampling,omitempty"`
+	Elicitation *ElicitationCapability     `json:"elicitation,omitempty"`
+	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // ServerCapabilities declares what the server supports
 type ServerCapabilities struct {
-	Tools     *ToolsCapability     `json:"tools,omitempty"`
-	Resources *ResourcesCapability `json:"resources,omitempty"`
-	Prompts   *PromptsCapability   `json:"prompts,omitempty"`
-	Logging   *LoggingCapability   `json:"logging,omitempty"`
+	Tools      *ToolsCapability           `json:"tools,omitempty"`
+	Resources  *ResourcesCapability       `json:"resources,omitempty"`
+	Prompts    *PromptsCapability         `json:"prompts,omitempty"`
+	Logging    *LoggingCapability         `json:"logging,omitempty"`
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // Capability markers (empty structs indicate support)
 type RootsCapability struct{}
+
+// ElicitationCapability marks client support for answering elicitation
+// requests, which under MRTR (2026-07-28) arrive embedded in input_required
+// results. Servers must not issue elicitation inputRequests to clients that
+// do not declare it.
+type ElicitationCapability struct{}
 type SamplingCapability struct{}
 type ToolsCapability struct{}
 

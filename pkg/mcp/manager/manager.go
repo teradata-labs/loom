@@ -160,6 +160,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		Transport:       trans,
 		Logger:          m.logger.With(zap.String("server", name)),
 		ProtocolVersion: config.ProtocolVersion,
+		MRTR:            m.config.MRTR,
 	})
 
 	// Connect with the timeout context: negotiates the protocol revision

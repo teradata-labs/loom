@@ -49,6 +49,7 @@ type Client struct {
 	statelessMode bool
 	clientInfo    protocol.Implementation
 	versionPin    string
+	mrtr          MRTRConfig
 
 	// Request tracking
 	nextID    int64
@@ -99,6 +100,11 @@ type Config struct {
 	// requires the server to speak exactly that revision.
 	ProtocolVersion string
 
+	// MRTR configures Multi Round-Trip Request handling (2026-07-28). When
+	// Handler is set, the client answers input_required results and retries;
+	// it also advertises the elicitation capability so servers may elicit.
+	MRTR MRTRConfig
+
 	// Timeouts
 	RequestTimeout time.Duration // Default: 30s
 }
@@ -128,6 +134,7 @@ func NewClient(config Config) *Client {
 		transport:        config.Transport,
 		logger:           config.Logger,
 		versionPin:       config.ProtocolVersion,
+		mrtr:             config.MRTR,
 		ctx:              ctx,
 		cancel:           cancel,
 		pending:          make(map[string]chan *protocol.Response),
@@ -369,10 +376,12 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 	}
 
 	baseParams := req.Params
+	curParams := baseParams // replaced by MRTR retries (original + latest round's input)
 	reissued := false
+	rounds := 0
 
 	for {
-		params := baseParams
+		params := curParams
 		if stateless {
 			// Every request carries protocol version, client capabilities,
 			// and client identity in params._meta under the stateless core.
@@ -414,12 +423,45 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		}
 
 		// Under the stateless revision every result carries a resultType
-		// envelope. Surfacing interim MRTR results here — the one choke point
+		// envelope. Handling interim MRTR results here — the one choke point
 		// all request paths share — prevents any caller from decoding an
 		// input_required interim result as if it were the final one.
 		if stateless {
-			if err := checkResultEnvelope(req.Method, resp.Result); err != nil {
-				return nil, err
+			env := protocol.ParseResultEnvelope(resp.Result)
+			if env.ResultType == protocol.ResultTypeInputRequired {
+				if c.mrtr.Handler == nil {
+					return nil, &InputRequiredNotSupportedError{Method: req.Method}
+				}
+				rounds++
+				if rounds > c.mrtr.maxRounds() {
+					return nil, &MRTRRoundsExceededError{Method: req.Method, Rounds: rounds - 1}
+				}
+				irr, err := protocol.ParseInputRequired(resp.Result)
+				if err != nil {
+					return nil, err
+				}
+				var responses protocol.InputResponses
+				if len(irr.InputRequests) > 0 {
+					// The handler gathers the requested input (elicitation via
+					// the approval gate); without inputRequests the server only
+					// wants an immediate retry echoing its state.
+					responses, err = c.mrtr.Handler(ctx, irr.InputRequests)
+					if err != nil {
+						return nil, fmt.Errorf("MRTR input handler failed for %s: %w", req.Method, err)
+					}
+				}
+				// Each round rebuilds from the original params so only the
+				// latest round's responses and requestState are carried.
+				curParams, err = protocol.AttachRetryInput(baseParams, responses, irr.RequestState)
+				if err != nil {
+					return nil, fmt.Errorf("failed to build MRTR retry params: %w", err)
+				}
+				req.ID = c.nextRequestID()
+				c.logger.Debug("MRTR retry",
+					zap.String("method", req.Method),
+					zap.Int("round", rounds),
+					zap.Int("input_requests", len(irr.InputRequests)))
+				continue
 			}
 		}
 		return resp, nil
@@ -480,9 +522,15 @@ func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*p
 }
 
 // clientCapabilities builds the capabilities stamped into _meta on every
-// stateless request.
+// stateless request. Elicitation is advertised only when an MRTR handler can
+// actually answer it — servers must not issue inputRequests the client has
+// not declared support for.
 func (c *Client) clientCapabilities() protocol.ClientCapabilities {
-	return protocol.ClientCapabilities{}
+	caps := protocol.ClientCapabilities{}
+	if c.mrtr.Handler != nil {
+		caps.Elicitation = &protocol.ElicitationCapability{}
+	}
+	return caps
 }
 
 // receiveLoop receives messages from transport
