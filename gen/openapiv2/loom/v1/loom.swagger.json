@@ -5949,11 +5949,6 @@
         "aggressiveCoercion": {
           "type": "boolean",
           "description": "Attempt free JSON extraction from mixed text before declaring a schema\nfailure (no LLM call)."
-        },
-        "scaffoldingDepth": {
-          "type": "integer",
-          "format": "int32",
-          "description": "Reserved for the capability-leveling pattern domain (C2). Carried in\nconfig but not consumed by any executor yet."
         }
       },
       "description": "LevelingTierPolicy holds per-tier capability-leveling knobs, overriding the\nbuilt-in defaults for one tier."

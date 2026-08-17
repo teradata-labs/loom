@@ -469,9 +469,12 @@ message LevelingTierPolicy {
   // failure (no LLM call).
   bool aggressive_coercion = 2;
 
-  // Reserved for the capability-leveling pattern domain (C2). Carried in
-  // config but not consumed by any executor yet.
-  int32 scaffolding_depth = 3;
+  // Field 3 was scaffolding_depth, removed before this message ever shipped:
+  // C2 (capability-adaptive scaffolding) was rejected on measurement, so the
+  // knob would have been permanently dead API surface. See the Phase 3b
+  // scaffolding probes in docs/plan-capability-leveling.md.
+  reserved 3;
+  reserved "scaffolding_depth";
 }
 
 // LevelingPolicy configures capability leveling: escalate a weak model's
