@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lme-runner-script
+  namespace: loom-lme
+data:
+  run-slices.sh: |
+    #!/bin/bash
+    # Drives the full LongMemEval run in resumable chunks. Each chunk's output
+    # lands on the results PVC; chunks whose output already exists are skipped,
+    # so a pod restart (node reboot, transient failure, job re-run) resumes
+    # instead of restarting. Failed chunks have partial output removed so the
+    # next attempt redoes them; a non-zero exit makes the Job retry the pod.
+    set -uo pipefail
+
+    : "${SERVER:?}" "${DATASET_FILE:?}" "${MODE:?}" "${CONCURRENCY:?}" "${CHUNK:?}" "${OCCURRED_AT:?}" "${RESULTS_DIR:?}"
+
+    # Per-type question counts in LongMemEval (oracle and _S share them).
+    types=(temporal-reasoning multi-session knowledge-update single-session-user single-session-assistant single-session-preference)
+    counts=(133 133 78 70 56 30)
+
+    failed=0
+    for i in "${!types[@]}"; do
+      t="${types[$i]}"; n="${counts[$i]}"
+      offset=0
+      while [ "$offset" -lt "$n" ]; do
+        lim="$CHUNK"
+        [ $((offset + lim)) -gt "$n" ] && lim=$((n - offset))
+        out="${RESULTS_DIR}/s500-${t}-o$(printf '%03d' "$offset").jsonl"
+        det="${out%.jsonl}-detailed.json"
+        if [ -s "$out" ]; then
+          echo "skip completed chunk: $out"
+          offset=$((offset + CHUNK))
+          continue
+        fi
+        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} ==="
+        if ! /loom-longmemeval run \
+            --server "$SERVER" \
+            --dataset "$DATASET_FILE" \
+            --mode "$MODE" \
+            --types "$t" \
+            --offset "$offset" \
+            --limit "$lim" \
+            --concurrency "$CONCURRENCY" \
+            --occurred-at="$OCCURRED_AT" \
+            --output "$out" \
+            --detailed "$det"; then
+          echo "CHUNK FAILED: ${t} offset=${offset} (removing partial output for retry)"
+          rm -f "$out" "$det"
+          failed=1
+        fi
+        offset=$((offset + CHUNK))
+      done
+    done
+
+    echo "=== run complete (failed=${failed}) ==="
+    exit "$failed"
