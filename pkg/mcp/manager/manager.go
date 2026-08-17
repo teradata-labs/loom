@@ -200,6 +200,9 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 	// keep the tool cache fresh for the manager's lifetime.
 	if mcpClient.IsStateless() && m.stopCh != nil {
 		m.watchWG.Add(1)
+		// #nosec G118 -- the watcher's lifetime is the manager's, not this start
+		// request's: startCtx carries a connect timeout that must not kill the
+		// long-lived watch loop. Shutdown is governed by stopCh (closed in Stop).
 		go m.watchToolLists(name, mcpClient, m.stopCh)
 	}
 

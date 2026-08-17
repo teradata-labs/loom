@@ -12,13 +12,13 @@ Pinned decisions marked **[proposed]** are best-judgment calls that have not bee
 
 | Brief | Contents | Depends on | Status |
 |---|---|---|---|
-| [Immediate](phase-immediate.md) | Session-ownership enforcement; §9.1 dead-code deletions | nothing | 📋 Ready |
-| [Phase 1](phase-1-client-exposure.md) | Manager → `Connect`, revision pin, wider fallback, envelope wiring, client headers, freeze markers | Phase 0 (landed) | 📋 Ready |
-| [Phase 2](phase-2-server-dual-mode.md) | `server/discover`, `_meta` middleware, dual-mode admission, idempotency keys | Phase 0; D1 ✅ | 📋 Ready |
+| [Immediate](phase-immediate.md) | Session-ownership enforcement; §9.1 dead-code deletions | nothing | ⚠️ Part A (ownership) open; Part B ✅ done 2026-08-17 (`1a6c4e69`) |
+| [Phase 1](phase-1-client-exposure.md) | Manager → `Connect`, revision pin, wider fallback, envelope wiring, client headers, freeze markers | Phase 0 (landed) | ✅ Done 2026-08-17 (`61f59492`, `3ed4bf51`, `5a147ddd`) incl. all outbound client paths |
+| [Phase 2](phase-2-server-dual-mode.md) | `server/discover`, `_meta` middleware, dual-mode admission, idempotency keys | Phase 0; D1 ✅ | ⚠️ Client half ✅ (`a45d0474`: key stamping, stream-loss synthesis + re-issue); server half open |
 | [Phase 3](phase-3-caching-ordering.md) | `CacheableResult`, deterministic ordering, deploy config changes | Phase 2 | 📋 Ready after 2 |
-| [Phase 4](phase-4-mrtr.md) | MRTR types, client driver + HITL adapter, server `InputRequired`, sealed state | Phase 2; D2 ✅ | 📋 Ready after 2 |
-| [Phase 5](phase-5-subscriptions.md) | `subscriptions/listen` both sides; notifyCh fix; TER-263 `ttlMs` | Phase 2 | 📋 Ready after 2 |
-| [Phase 6](phase-6-extensions-tasks.md) | Extensions capability, Apps identity, Tasks extension | Phase 2; D3 ✅ = Tasks deferred | 📋 Parts A/B ready after 2; Part C deferred |
+| [Phase 4](phase-4-mrtr.md) | MRTR types, client driver + HITL adapter, server `InputRequired`, sealed state | Phase 2; D2 ✅ | ⚠️ Client half ✅ (`64cffb63`: protocol types, driver, elicitation capability, HITL adapter); server half open |
+| [Phase 5](phase-5-subscriptions.md) | `subscriptions/listen` both sides; notifyCh fix; TER-263 `ttlMs` | Phase 2 | ⚠️ Client half ✅ (`6c528670`: Subscribe, demux, manager watch loop); server half + notifyCh fix open |
+| [Phase 6](phase-6-extensions-tasks.md) | Extensions capability, Apps identity, Tasks extension | Phase 2; D3 ✅ = Tasks deferred | ⚠️ Capabilities `extensions` fields ✅ (in `64cffb63`); Apps declaration + discover wiring open; Part C deferred |
 | [Phase 7](phase-7-auth.md) | PRM server-side (D4 ✅ scope b) | none (parallel) | 📋 Ready |
 | [Phase 8](phase-8-conformance.md) | Conformance matrix, scenario tables, SDK interop CI | grows with 1–6 | 📋 Starts with Phase 1 |
 | Phase 9 | §9.2 deletions at window expiry (2027-07-28+): grep for the Phase 1 freeze-marker string, delete everything it tags, drop the `http`/`sse` transport values | Window expiry | 📋 Not before 2027-07-28 |
