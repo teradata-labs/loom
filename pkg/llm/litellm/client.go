@@ -28,6 +28,10 @@ package litellm
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -80,8 +84,12 @@ type Config struct {
 // Client implements types.LLMProvider and types.StreamingLLMProvider by
 // delegating to an openai.Client pointed at the LiteLLM proxy endpoint.
 type Client struct {
-	inner *openai.Client
-	model string
+	inner        *openai.Client
+	model        string
+	healthURL    string
+	apiKey       string
+	extraHeaders map[string]string
+	httpClient   *http.Client
 }
 
 // NewClient creates a new LiteLLM client.
@@ -121,7 +129,14 @@ func NewClient(cfg Config) *Client {
 		ExtraHeaders:      cfg.ExtraHeaders,
 	})
 
-	return &Client{inner: inner, model: cfg.Model}
+	return &Client{
+		inner:        inner,
+		model:        cfg.Model,
+		healthURL:    healthEndpoint(cfg.Endpoint),
+		apiKey:       cfg.APIKey,
+		extraHeaders: cfg.ExtraHeaders,
+		httpClient:   &http.Client{Timeout: cfg.Timeout},
+	}
 }
 
 // Name returns the provider identifier.
@@ -138,6 +153,41 @@ func (c *Client) Chat(ctx context.Context, messages []types.Message, tools []shu
 // ChatStream streams tokens from the LiteLLM proxy as they are generated.
 func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*types.LLMResponse, error) {
 	return c.inner.ChatStream(ctx, messages, tools, tokenCallback)
+}
+
+// HealthCheck verifies the LiteLLM proxy without invoking a model completion.
+func (c *Client) HealthCheck(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.healthURL, nil)
+	if err != nil {
+		return fmt.Errorf("create LiteLLM health request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	for key, value := range c.extraHeaders {
+		req.Header.Set(key, value)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("query LiteLLM liveliness: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("LiteLLM health check failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func healthEndpoint(chatEndpoint string) string {
+	parsed, err := url.Parse(chatEndpoint)
+	if err != nil {
+		return strings.TrimSuffix(chatEndpoint, "/v1/chat/completions") + "/health/liveliness"
+	}
+	parsed.Path = "/health/liveliness"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
 // normalizeEndpoint ensures the endpoint is the full chat-completions path.

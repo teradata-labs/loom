@@ -16,6 +16,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,6 +24,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type wrappedRoundTripper struct{}
+
+func (wrappedRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not used")
+}
 
 // TestStreamableHTTPTransport_SendsCustomHeaders verifies that custom headers
 // (e.g. an Authorization bearer token for an authenticated remote MCP server
@@ -140,6 +147,55 @@ func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testi
 // remote MCP behaviour: a notification (e.g. notifications/initialized) is
 // acknowledged with 202 Accepted and Content-Type text/plain, which must be
 // treated as a successful acknowledgment rather than an unexpected Content-Type.
+func TestStreamableHTTPTransportReestablishesExpiredSession(t *testing.T) {
+	const oldSession = "session-old"
+	const newSession = "session-new"
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("Mcp-Session-Id", oldSession)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		case 2:
+			assert.Equal(t, oldSession, r.Header.Get("Mcp-Session-Id"))
+			w.WriteHeader(http.StatusNotFound)
+		case 3:
+			assert.Empty(t, r.Header.Get("Mcp-Session-Id"))
+			w.Header().Set("Mcp-Session-Id", newSession)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{}}`))
+		default:
+			assert.Equal(t, newSession, r.Header.Get("Mcp-Session-Id"))
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer server.Close()
+
+	transport, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: server.URL})
+	require.NoError(t, err)
+	defer func() { _ = transport.Close() }()
+
+	require.NoError(t, transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)))
+	assert.Equal(t, oldSession, transport.GetSessionID())
+	require.ErrorIs(t, transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)), ErrSessionExpired)
+	require.NoError(t, transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"initialize"}`)))
+	assert.Equal(t, newSession, transport.GetSessionID())
+	require.NoError(t, transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
+}
+
+func TestNewStreamableHTTPTransportHandlesWrappedDefaultTransport(t *testing.T) {
+	original := http.DefaultTransport
+	http.DefaultTransport = wrappedRoundTripper{}
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	transport, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: "http://localhost"})
+	require.NoError(t, err)
+	require.NotNil(t, transport.client.Transport)
+	_ = transport.Close()
+}
+
 func TestStreamableHTTPTransport_Accepts202PlainTextAck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
