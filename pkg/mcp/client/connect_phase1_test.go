@@ -39,21 +39,23 @@ type scriptedTransport struct {
 	discoverResult    *protocol.DiscoverResult // nil → JSON-RPC MethodNotFound
 	initializeVersion string                   // "" → 2024-11-05 (unless initializeEcho)
 	initializeEcho    bool                     // echo the requested protocolVersion (dual-revision server)
+	carriesHeaders    bool                     // pose as a Streamable HTTP transport (RequestHeaderCarrier)
 	tools             []protocol.Tool
 	callResult        json.RawMessage   // result payload for tools/call
 	callResults       []json.RawMessage // per-attempt results; overrides callResult when set
 	callStreamLost    int               // answer this many leading tools/call attempts with CodeStreamLost
 
 	// Recording
-	sawDiscover      bool
-	sawInitialize    bool
-	requestedInitVer string // protocolVersion the client sent in InitializeParams
-	lastExtraHeaders map[string]string
-	callParams       []json.RawMessage // raw params of every tools/call attempt
-	listenSupported  bool              // answer subscriptions/listen by holding the stream open
-	listenParams     []json.RawMessage // raw params of every subscriptions/listen request
-	listenIDs        []json.RawMessage // raw JSON-RPC ids of listen requests
-	toolsListCalls   int
+	sawDiscover       bool
+	sawInitialize     bool
+	requestedInitVer  string // protocolVersion the client sent in InitializeParams
+	lastExtraHeaders  map[string]string
+	sentNotifications []protocol.Request // client-sent notifications (no id)
+	callParams        []json.RawMessage  // raw params of every tools/call attempt
+	listenSupported   bool               // answer subscriptions/listen by holding the stream open
+	listenParams      []json.RawMessage  // raw params of every subscriptions/listen request
+	listenIDs         []json.RawMessage  // raw JSON-RPC ids of listen requests
+	toolsListCalls    int
 
 	responses chan []byte
 }
@@ -76,7 +78,10 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 	f.mu.Unlock()
 
 	if req.ID == nil {
-		return nil // notifications/initialized
+		f.mu.Lock()
+		f.sentNotifications = append(f.sentNotifications, req)
+		f.mu.Unlock()
+		return nil // notifications are not answered
 	}
 
 	var resp protocol.Response
@@ -170,6 +175,20 @@ func (f *scriptedTransport) Receive(ctx context.Context) ([]byte, error) {
 }
 
 func (f *scriptedTransport) Close() error { return nil }
+
+// CarriesRequestHeaders lets a test pose as a Streamable HTTP transport
+// (transport.RequestHeaderCarrier); the zero value simulates stdio.
+func (f *scriptedTransport) CarriesRequestHeaders() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.carriesHeaders
+}
+
+func (f *scriptedTransport) notificationsSent() []protocol.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]protocol.Request(nil), f.sentNotifications...)
+}
 
 func (f *scriptedTransport) snapshot() (sawDiscover, sawInitialize bool, headers map[string]string) {
 	f.mu.Lock()

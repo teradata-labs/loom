@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
@@ -124,6 +125,12 @@ func (c *Client) Subscribe(ctx context.Context, filter protocol.NotificationFilt
 	c.pendingMu.Unlock()
 
 	cleanup := func(endErr error) {
+		// The terminal error is published before anything externally visible
+		// closes: a consumer that observes the closed Notifications channel
+		// (or Done) must never read Err() == nil for an abnormal end.
+		sub.errMu.Lock()
+		sub.err = endErr
+		sub.errMu.Unlock()
 		// notifCh is closed under the write lock: dispatchNotification sends
 		// under the read lock (non-blocking), so close and send are mutually
 		// exclusive and a send-on-closed-channel panic is impossible.
@@ -134,9 +141,6 @@ func (c *Client) Subscribe(ctx context.Context, filter protocol.NotificationFilt
 		c.pendingMu.Lock()
 		delete(c.pending, subID)
 		c.pendingMu.Unlock()
-		sub.errMu.Lock()
-		sub.err = endErr
-		sub.errMu.Unlock()
 		close(sub.done)
 	}
 
@@ -166,13 +170,71 @@ func (c *Client) Subscribe(ctx context.Context, filter protocol.NotificationFilt
 			c.logger.Debug("subscription closed gracefully", zap.String("subscription_id", subID))
 			cleanup(nil)
 		case <-ctx.Done():
+			// Caller cancellation must reach the server, not just local
+			// state. On Streamable HTTP the request context's cancellation
+			// already closes the listen SSE stream — the transport-level
+			// cancellation signal; on other transports (stdio) the protocol
+			// requires notifications/cancelled naming the listen request.
+			c.cancelSubscriptionUpstream(req.ID)
 			cleanup(ctx.Err())
 		case <-c.ctx.Done():
+			// Client shutdown tears the whole transport down; no
+			// per-subscription cancellation is needed.
 			cleanup(c.ctx.Err())
 		}
 	}()
 
 	return sub, nil
+}
+
+// cancelSubscriptionUpstream sends notifications/cancelled for a cancelled
+// subscription on transports where closing the response stream is not the
+// cancellation signal. Without it, a stdio server keeps the subscription
+// alive and keeps emitting notifications nobody consumes.
+func (c *Client) cancelSubscriptionUpstream(listenID *protocol.RequestID) {
+	if c.transportCarriesHeaders() {
+		return // Streamable HTTP: closing the stream is the cancellation
+	}
+
+	params, err := json.Marshal(protocol.CancelledParams{
+		RequestID: listenID,
+		Reason:    "subscription cancelled by client",
+	})
+	if err != nil {
+		c.logger.Warn("failed to marshal cancellation params", zap.Error(err))
+		return
+	}
+	notif := &protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		Method:  protocol.NotificationCancelled,
+		Params:  params,
+	}
+	data, err := json.Marshal(notif)
+	if err != nil {
+		c.logger.Warn("failed to marshal cancellation notification", zap.Error(err))
+		return
+	}
+
+	// The subscription's own context is already cancelled; the notification
+	// gets a short lease tied to the client lifecycle instead.
+	sendCtx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	if err := c.transport.Send(sendCtx, data); err != nil {
+		c.logger.Debug("failed to send subscription cancellation", zap.Error(err))
+		return
+	}
+	c.logger.Debug("subscription cancellation sent", zap.String("subscription_id", listenID.String()))
+}
+
+// transportCarriesHeaders reports whether the transport mirrors requests
+// into per-request HTTP headers (Streamable HTTP). Header-conditional
+// behaviors — x-mcp-header handling, stream-close-as-cancellation — key off
+// this.
+func (c *Client) transportCarriesHeaders() bool {
+	if hc, ok := c.transport.(transport.RequestHeaderCarrier); ok {
+		return hc.CarriesRequestHeaders()
+	}
+	return false
 }
 
 // dispatchNotification routes a server notification: subscription-tagged

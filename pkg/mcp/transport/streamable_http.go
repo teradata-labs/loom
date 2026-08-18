@@ -248,6 +248,11 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	}
 }
 
+// CarriesRequestHeaders implements RequestHeaderCarrier: Streamable HTTP
+// mirrors body fields into per-request headers and scopes each request to
+// its own response stream.
+func (t *StreamableHTTPTransport) CarriesRequestHeaders() bool { return true }
+
 // Receive implements Transport by receiving the next message.
 func (t *StreamableHTTPTransport) Receive(ctx context.Context) ([]byte, error) {
 	select {

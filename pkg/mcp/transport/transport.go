@@ -32,6 +32,20 @@ type Transport interface {
 	Close() error
 }
 
+// RequestHeaderCarrier is the optional interface of transports that mirror
+// JSON-RPC body fields into per-request HTTP headers (Streamable HTTP,
+// SEP-2243) and scope each request to its own response stream. Two
+// 2026-07-28 client behaviors are conditional on it:
+//
+//   - x-mcp-header validation and Mcp-Param-* mirroring apply only on such
+//     transports — clients on other transports (e.g. stdio) MAY ignore the
+//     annotations entirely, and must not hide tools over them;
+//   - cancelling a subscription is expressed by closing the listen request's
+//     response stream, whereas other transports send notifications/cancelled.
+type RequestHeaderCarrier interface {
+	CarriesRequestHeaders() bool
+}
+
 // ReadWriteCloser wraps standard I/O interfaces
 type ReadWriteCloser interface {
 	io.Reader

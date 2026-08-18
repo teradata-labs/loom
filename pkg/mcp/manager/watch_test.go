@@ -35,6 +35,7 @@ type watchFakeTransport struct {
 	listenOK       bool
 	toolsListCalls int
 	listenIDs      []string
+	events         []string // request-order trace: "tools/list", "listen"
 	responses      chan []byte
 }
 
@@ -68,11 +69,13 @@ func (f *watchFakeTransport) Send(_ context.Context, message []byte) error {
 	case "tools/list":
 		f.mu.Lock()
 		f.toolsListCalls++
+		f.events = append(f.events, "tools/list")
 		f.mu.Unlock()
 		resp.Result, _ = json.Marshal(protocol.ToolListResult{})
 	case protocol.MethodSubscriptionsListen:
 		f.mu.Lock()
 		ok := f.listenOK
+		f.events = append(f.events, "listen")
 		if ok {
 			idJSON, _ := json.Marshal(req.ID)
 			f.listenIDs = append(f.listenIDs, string(idJSON))
@@ -124,31 +127,44 @@ func startWatcher(t *testing.T, ft *watchFakeTransport) (*Manager, *client.Clien
 	return m, cl, stopCh
 }
 
-func TestWatchRefetchesOnListChange(t *testing.T) {
+func TestWatchSubscribesThenReconcilesOnAck(t *testing.T) {
 	ft := newWatchFakeTransport(true)
 	m, _, stopCh := startWatcher(t, ft)
 
-	// The watcher refetches once on (re)open, then subscribes.
+	// The watcher subscribes first — no fetch may precede the subscription,
+	// or a change landing between fetch and subscription establishment would
+	// be lost (review finding 6, PR #327).
 	require.Eventually(t, func() bool {
 		ft.mu.Lock()
 		defer ft.mu.Unlock()
-		return ft.toolsListCalls >= 1 && len(ft.listenIDs) == 1
-	}, 3*time.Second, 10*time.Millisecond, "watcher must refetch then subscribe")
+		return len(ft.listenIDs) == 1
+	}, 3*time.Second, 10*time.Millisecond, "watcher must subscribe")
+	assert.Zero(t, ft.listCalls(), "no fetch before the subscription is acknowledged")
 
 	ft.mu.Lock()
 	subID := ft.listenIDs[0]
 	ft.mu.Unlock()
-	before := ft.listCalls()
 
-	// Ack, then a change notification → one more refetch.
+	// The acknowledgment is the race-free reconciliation point: the server
+	// sends nothing before it and notifies every change after it.
 	ft.responses <- []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":{"_meta":{"%s":%s}}}`,
 		protocol.NotificationSubscriptionAcknowledged, protocol.MetaSubscriptionID, subID))
+	require.Eventually(t, func() bool {
+		return ft.listCalls() == 1
+	}, 3*time.Second, 10*time.Millisecond, "acknowledgment must trigger the reconciliation fetch")
+
+	// A change notification → one more refetch.
 	ft.responses <- []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":{"_meta":{"%s":%s}}}`,
 		protocol.NotificationToolsListChanged, protocol.MetaSubscriptionID, subID))
-
 	require.Eventually(t, func() bool {
-		return ft.listCalls() > before
+		return ft.listCalls() == 2
 	}, 3*time.Second, 10*time.Millisecond, "change notification must trigger a refetch")
+
+	ft.mu.Lock()
+	events := append([]string(nil), ft.events...)
+	ft.mu.Unlock()
+	require.GreaterOrEqual(t, len(events), 2)
+	assert.Equal(t, "listen", events[0], "subscription must be opened before any fetch")
 
 	close(stopCh)
 	waitDone(t, &m.watchWG)
@@ -161,7 +177,7 @@ func TestWatchExitsWhenListenUnsupported(t *testing.T) {
 	// The watcher must exit on its own (MethodNotFound), without stopCh.
 	waitDone(t, &m.watchWG)
 	close(stopCh)
-	assert.Equal(t, 1, ft.listCalls(), "one refetch before the unsupported probe")
+	assert.Zero(t, ft.listCalls(), "no fetches against a server without subscriptions support")
 }
 
 func waitDone(t *testing.T, wg *sync.WaitGroup) {

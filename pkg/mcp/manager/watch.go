@@ -61,19 +61,17 @@ func (m *Manager) watchToolLists(name string, cl *client.Client, stopCh <-chan s
 		default:
 		}
 
-		// Refetch first: notifications missed while disconnected are
-		// reconciled by refreshing the list, not replayed.
-		if _, err := cl.ListTools(ctx); err != nil {
-			logger.Debug("tool refetch failed; retrying after backoff", zap.Error(err))
-			if !sleepOrDone(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-
-		sub, err := cl.Subscribe(ctx, protocol.NotificationFilter{ToolsListChanged: true})
+		// Subscribe first, reconcile after the acknowledgment (inside
+		// consumeSubscription). Fetching before the subscription is
+		// established leaves a window in which a tool change is neither in
+		// the fetched list nor delivered as a notification — the cache would
+		// stay stale until the next change or reconnect. The server
+		// guarantees the acknowledgment precedes every notification and that
+		// changes after it are notified, so ack-then-fetch has no such gap.
+		subCtx, subCancel := context.WithCancel(ctx)
+		sub, err := cl.Subscribe(subCtx, protocol.NotificationFilter{ToolsListChanged: true})
 		if err != nil {
+			subCancel()
 			var rpcErr *protocol.Error
 			if errors.As(err, &rpcErr) && rpcErr.Code == protocol.MethodNotFound {
 				logger.Debug("server does not implement subscriptions/listen; tool-list watching disabled")
@@ -90,7 +88,20 @@ func (m *Manager) watchToolLists(name string, cl *client.Client, stopCh <-chan s
 		backoff = watchBackoffMin
 		logger.Info("watching tool-list changes", zap.String("subscription_id", sub.ID))
 
-		m.consumeSubscription(ctx, logger, cl, sub)
+		refetchFailed := m.consumeSubscription(subCtx, logger, cl, sub)
+		subCancel()
+
+		if refetchFailed {
+			// The subscription was healthy but the reconciliation fetch
+			// failed, so the cache cannot be trusted; tear the subscription
+			// down and re-establish from scratch after backoff.
+			logger.Warn("tool refetch after acknowledgment failed; re-subscribing after backoff")
+			if !sleepOrDone(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
 
 		if err := sub.Err(); err != nil {
 			// MethodNotFound arrives asynchronously (the listen request's
@@ -113,22 +124,34 @@ func (m *Manager) watchToolLists(name string, cl *client.Client, stopCh <-chan s
 	}
 }
 
-// consumeSubscription refreshes the client tool cache on every change event
-// until the subscription ends or ctx is cancelled.
-func (m *Manager) consumeSubscription(ctx context.Context, logger *zap.Logger, cl *client.Client, sub *client.Subscription) {
+// consumeSubscription reconciles the tool cache on the subscription's
+// acknowledgment (the race-free point: nothing precedes the ack, everything
+// after it is notified) and refreshes it on every change event, until the
+// subscription ends or ctx is cancelled. The return value is true when the
+// post-acknowledgment reconciliation fetch failed and the subscription must
+// be re-established.
+func (m *Manager) consumeSubscription(ctx context.Context, logger *zap.Logger, cl *client.Client, sub *client.Subscription) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-sub.Done():
-			return
+			return false
 		case notif, ok := <-sub.Notifications:
 			if !ok {
-				return
+				return false
 			}
 			switch notif.Method {
 			case protocol.NotificationSubscriptionAcknowledged:
 				logger.Debug("subscription acknowledged")
+				// Reconciliation fetch: changes missed while unsubscribed
+				// (including before the first subscription) are picked up by
+				// refreshing the list now that notifications are guaranteed.
+				if _, err := cl.ListTools(ctx); err != nil {
+					logger.Warn("tool refetch after acknowledgment failed", zap.Error(err))
+					return true
+				}
+				logger.Info("tool list reconciled after subscription acknowledgment")
 			case protocol.NotificationToolsListChanged:
 				if _, err := cl.ListTools(ctx); err != nil {
 					logger.Warn("tool refetch after list-change failed", zap.Error(err))

@@ -26,6 +26,20 @@ const (
 	NotificationResourceUpdated          = "notifications/resources/updated"
 )
 
+// NotificationCancelled is the client-to-server notification cancelling an
+// in-flight request. Under 2026-07-28 it is used only on the stdio
+// transport: on Streamable HTTP, closing the request's SSE response stream
+// is itself the cancellation signal and no message is sent.
+const NotificationCancelled = "notifications/cancelled"
+
+// CancelledParams is the params object of a notifications/cancelled
+// notification. RequestID names the request being cancelled — for a
+// subscription, the JSON-RPC id of its subscriptions/listen request.
+type CancelledParams struct {
+	RequestID *RequestID `json:"requestId"`
+	Reason    string     `json:"reason,omitempty"`
+}
+
 // NotificationFilter selects which notification types a subscriptions/listen
 // stream delivers. Omitted fields mean "not subscribed". The server's
 // acknowledgment echoes the subset it agreed to honor.
