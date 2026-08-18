@@ -353,6 +353,7 @@ func TestListToolsFiltersInvalidHeaderAnnotations(t *testing.T) {
 	})
 
 	ft := newScriptedTransport()
+	ft.carriesHeaders = true // Streamable HTTP: rejection is a MUST
 	ft.discoverResult = statelessDiscoverResult()
 	ft.tools = []protocol.Tool{valid, invalid}
 	c := connectClient(t, ft, Config{})
@@ -367,8 +368,75 @@ func TestListToolsFiltersInvalidHeaderAnnotations(t *testing.T) {
 	require.Error(t, err, "rejected tool must not be callable")
 }
 
+// TestListToolsIgnoresHeaderAnnotationsOffStreamableHTTP (review finding 10,
+// PR #327): the MUST-reject rule is scoped to Streamable HTTP clients;
+// clients on other transports (stdio) MAY ignore x-mcp-header annotations
+// entirely and must not hide tools over them. Same for legacy-negotiated
+// connections, where the annotation does not exist.
+func TestListToolsIgnoresHeaderAnnotationsOffStreamableHTTP(t *testing.T) {
+	invalid := simpleTool("bad", map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"items_field": map[string]interface{}{
+				"type":  "array",
+				"items": map[string]interface{}{"type": "string", "x-mcp-header": "Item"},
+			},
+		},
+	})
+
+	t.Run("stdio stateless", func(t *testing.T) {
+		ft := newScriptedTransport() // carriesHeaders unset → stdio-like
+		ft.discoverResult = statelessDiscoverResult()
+		ft.tools = []protocol.Tool{invalid}
+		c := connectClient(t, ft, Config{})
+		require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+		tools, err := c.ListTools(context.Background())
+		require.NoError(t, err)
+		require.Len(t, tools, 1, "stdio clients must not hide tools over header annotations")
+		assert.Equal(t, "bad", tools[0].Name)
+	})
+
+	t.Run("legacy streamable http", func(t *testing.T) {
+		ft := newScriptedTransport()
+		ft.carriesHeaders = true // Streamable HTTP transport, but legacy revision
+		ft.tools = []protocol.Tool{invalid}
+		c := connectClient(t, ft, Config{ProtocolVersion: "legacy"})
+		require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+		tools, err := c.ListTools(context.Background())
+		require.NoError(t, err)
+		require.Len(t, tools, 1, "the annotation does not exist under legacy revisions; tools must not be hidden")
+	})
+}
+
+// TestCallToolDoesNotMirrorHeadersOffStreamableHTTP: with enforcement off,
+// no Mcp-Param-* values may be mirrored even for tools whose schema carries
+// valid annotations.
+func TestCallToolDoesNotMirrorHeadersOffStreamableHTTP(t *testing.T) {
+	ft := newScriptedTransport() // stdio-like
+	ft.discoverResult = statelessDiscoverResult()
+	ft.tools = []protocol.Tool{simpleTool("execute_sql", map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"region": map[string]interface{}{"type": "string", "x-mcp-header": "Region"},
+		},
+	})}
+	ft.callResult = json.RawMessage(`{"content":[],"resultType":"complete"}`)
+	c := connectClient(t, ft, Config{})
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+	_, err := c.CallTool(context.Background(), "execute_sql", map[string]interface{}{"region": "us-west1"})
+	require.NoError(t, err)
+
+	_, _, headers := ft.snapshot()
+	_, mirrored := headers["Mcp-Param-Region"]
+	assert.False(t, mirrored, "header mirroring is a Streamable HTTP behavior; stdio must not mirror")
+}
+
 func TestCallToolMirrorsHeaderParams(t *testing.T) {
 	ft := newScriptedTransport()
+	ft.carriesHeaders = true // mirroring is a Streamable HTTP behavior
 	ft.discoverResult = statelessDiscoverResult()
 	ft.tools = []protocol.Tool{simpleTool("execute_sql", map[string]interface{}{
 		"type": "object",

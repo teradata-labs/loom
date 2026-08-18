@@ -46,13 +46,26 @@ func (c *Client) ListTools(ctx context.Context) ([]protocol.Tool, error) {
 		return nil, fmt.Errorf("failed to parse tools/list result: %w", err)
 	}
 
-	// Validate x-mcp-header annotations (SEP-2243). A tool definition with an
-	// invalid annotation MUST be excluded from the list so one malformed tool
-	// cannot block the rest; the validated annotations are cached for
-	// CallTool to mirror into Mcp-Param-* headers.
+	// x-mcp-header handling (SEP-2243) is scoped by the specification:
+	// clients using the Streamable HTTP transport MUST reject tool
+	// definitions with invalid annotations — rejection means excluding the
+	// tool from tools/list, so one malformed definition cannot block the
+	// rest — while clients on other transports (e.g. stdio) MAY ignore the
+	// annotations entirely, and must not hide tools over them. The
+	// annotation also only exists under the 2026-07-28 revision, so
+	// legacy-negotiated connections ignore it on every transport. The
+	// validated annotations are cached for CallTool to mirror into
+	// Mcp-Param-* headers; when enforcement is off the cache stays empty
+	// and nothing is mirrored.
+	enforceHeaderAnnotations := c.IsStateless() && c.transportCarriesHeaders()
+
 	valid := make([]protocol.Tool, 0, len(result.Tools))
 	headerParams := make(map[string][]protocol.HeaderParam)
 	for _, tool := range result.Tools {
+		if !enforceHeaderAnnotations {
+			valid = append(valid, tool)
+			continue
+		}
 		hp, err := protocol.ToolHeaderParams(tool)
 		if err != nil {
 			c.logger.Warn("rejecting tool with invalid x-mcp-header annotation",
