@@ -176,6 +176,7 @@ Selected with `--mode`:
 |------|----------|----------|
 | `ingest` (default) | All haystack sessions + the question run through one agent session. Memory is built during ingestion; the question is asked in the same session. | Evaluating how well graph memory builds from a contiguous stream. |
 | `multi-session` | Separate agent session per haystack conversation, then the question is asked in a fresh session. Cross-session recall via graph memory + conversation memory. | Evaluating real-world Loom usage where sessions are bounded. Note: underperforms ingest mode today (see [Results](#results-we-observed)). |
+| `conversation` | Replays every haystack turn, in order, into one continuous session — user turns as user messages and the original assistant turns recorded verbatim (generation-free), never regenerated. The question is asked in the same thread. Unlike the blob-per-session modes, this exercises the memory pipeline as a live chat would: salience accumulates turn-by-turn and context compression fires as the thread grows. Requires `server.allow_time_override: true`. | Evaluating memory under realistic accumulation (salience + compression), not just retrieval over a static transcript. |
 | `context-stuffing` | All session history is injected directly into one Weave call as prompt context; no memory system involved. | Baseline comparison. |
 
 Additional run flags:

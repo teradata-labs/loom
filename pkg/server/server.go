@@ -127,6 +127,12 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	if err != nil {
 		return nil, err
 	}
+	// Generation-free replay: a scripted assistant turn substitutes for the LLM
+	// call while the memory pipeline still runs (see applyReplayAssistant).
+	ctx, err = applyReplayAssistant(ctx, req, s.allowTimeOverride)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get or create session
 	sessionID := req.SessionId
@@ -188,6 +194,12 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	// Replay/import support: validate occurred_at and thread it through the
 	// context used for the agent call (see applyOccurredAt).
 	ctx, err := applyOccurredAt(stream.Context(), req, s.allowTimeOverride)
+	if err != nil {
+		return err
+	}
+	// Generation-free replay: a scripted assistant turn substitutes for the LLM
+	// call while the memory pipeline still runs (see applyReplayAssistant).
+	ctx, err = applyReplayAssistant(ctx, req, s.allowTimeOverride)
 	if err != nil {
 		return err
 	}
