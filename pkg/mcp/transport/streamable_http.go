@@ -49,10 +49,9 @@ type StreamableHTTPTransport struct {
 	errors   chan error
 
 	// Lifecycle
-	mu      sync.Mutex
-	closed  bool
-	started bool
-	logger  *zap.Logger
+	mu     sync.Mutex
+	closed bool
+	logger *zap.Logger
 
 	// Stream management
 	activeStreams sync.WaitGroup
@@ -86,10 +85,16 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
+	httpTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		httpTransport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	} else {
+		httpTransport = httpTransport.Clone()
+	}
 
 	t := &StreamableHTTPTransport{
 		endpoint:         config.Endpoint,
-		client:           &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()},
+		client:           &http.Client{Transport: httpTransport},
 		sessionMgr:       NewSessionManager(),
 		resumption:       NewStreamResumption(100),
 		messages:         make(chan []byte, 100),
@@ -114,8 +119,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		t.mu.Unlock()
 		return fmt.Errorf("transport closed")
 	}
-	started := t.started
-	t.started = true
 	t.mu.Unlock()
 
 	// Build POST request
@@ -155,7 +158,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Extract session ID from the response (on the first request).
+	// Extract a server-issued session ID whenever no active session is stored.
 	//
 	// Capture the server-issued Mcp-Session-Id whenever one is present,
 	// regardless of the enable_sessions config flag. Per the MCP streamable-http
@@ -166,7 +169,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	// ("Request must be an initialize request if no session ID is provided").
 	// The enable_sessions flag still controls proactive session termination on
 	// Close (see below).
-	if !started {
+	if !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -180,8 +183,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	contentType := resp.Header.Get("Content-Type")
 	t.logger.Debug("Received HTTP response",
 		zap.String("content-type", contentType),
-		zap.Int("status", resp.StatusCode),
-		zap.Bool("started", started))
+		zap.Int("status", resp.StatusCode))
 
 	// A POST carrying a notification or response may be acknowledged with 202
 	// and no JSON-RPC body. A request with an id must receive a JSON/SSE result.
@@ -399,15 +401,11 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		return err
 	}
 
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
-
 	// Add custom headers
 	for k, v := range t.headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
 
 	resp, err := t.client.Do(req)
 	if err != nil {

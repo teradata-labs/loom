@@ -20,15 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### SSE Server Improvements (StreamWeave HTTP path)
 - Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
-- Forward Connect-protocol metadata (auth headers, request ID, user ID) from the HTTP request into the gRPC stream so `UserIDStreamInterceptor` works identically on the SSE path.
-- Use `protojson` for WeaveProgress event marshalling to match the canonical JSON field names clients expect.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
 
 #### Tool Alias Resolution & Registry Dedup
 - Tool aliases (e.g. short names defined in agent YAML) are now resolved to the canonical tool name before lookup, preventing duplicate registrations.
 - Registry dedup ensures the same tool cannot be registered twice under different aliases.
 
-#### Health-Check Endpoint Preference
-- `/live` and `/ready` probes now use a single well-known response format; the legacy `/health` redirect is retained for backward compatibility.
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
 
 #### OTLP Tracing Improvements
 - In-process parent-linkage test added to the OTLP test suite.
@@ -46,13 +45,14 @@ tools:
 
 **Migration:** Any deployment that relies on sub-agent spawning must add `manage_ephemeral_agents` to `tools.builtin` in the coordinator agent's YAML config. Agents that do not spawn sub-agents are unaffected. This change prevents unintended sub-agent spawning for agents that never needed it.
 
+- `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
+- `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
+
+### Added
+
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
 - New `Session` fields returned by `ListSessions`: `agent_name`, `ended_at`, `metadata_status`, `artifact_count`.
-
-### Changed
-- `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
-- `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
 
 ## [1.3.0] - 2026-06-01
 

@@ -146,6 +146,20 @@ func (e *Executor) CanonicalToolName(name string) string {
 	if tool, ok := e.registry.Get(name); ok {
 		return tool.Name()
 	}
+	suffix := ":" + name
+	canonical := ""
+	for _, tool := range e.registry.ListTools() {
+		toolName := tool.Name()
+		if strings.HasSuffix(toolName, suffix) || strings.ReplaceAll(toolName, ":", "_") == name {
+			if canonical != "" && canonical != toolName {
+				return name
+			}
+			canonical = toolName
+		}
+	}
+	if canonical != "" {
+		return canonical
+	}
 	return name
 }
 
@@ -595,6 +609,21 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	var registryErr error
+	if e.toolRegistry != nil {
+		resp, err := e.toolRegistry.Search(ctx, &loomv1.SearchToolsRequest{
+			Query:         toolName,
+			Mode:          loomv1.SearchMode_SEARCH_MODE_FAST,
+			MaxResults:    1,
+			IncludeSchema: true,
+		})
+		if err != nil {
+			registryErr = err
+		} else if len(resp.Results) > 0 {
+			return e.registerIndexedTool(ctx, resp.Results[0].Tool)
+		}
+	}
+
 	// Fast path: the tool may already be registered locally under its
 	// server-qualified name (e.g., "teradata-aiop-mcp-server:base_readQuery")
 	// while the LLM called it using either:
@@ -615,8 +644,6 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
 	if len(matches) == 1 {
-		// Register an alias so subsequent calls skip this scan.
-		e.registry.RegisterAlias(toolName, matches[0])
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
@@ -627,29 +654,16 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 		return nil, fmt.Errorf("ambiguous tool name %q matches %s", toolName, strings.Join(names, ", "))
 	}
 
-	// Check if tool registry is configured
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")
 	}
-
-	// Search for the tool in the registry
-	// Use the exact tool name as the query for a precise match
-	resp, err := e.toolRegistry.Search(ctx, &loomv1.SearchToolsRequest{
-		Query:         toolName,
-		Mode:          loomv1.SearchMode_SEARCH_MODE_FAST, // Use fast mode for keyword match
-		MaxResults:    1,
-		IncludeSchema: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to search tool registry: %w", err)
+	if registryErr != nil {
+		return nil, fmt.Errorf("failed to search tool registry: %w", registryErr)
 	}
+	return nil, fmt.Errorf("tool not found in registry")
+}
 
-	if len(resp.Results) == 0 {
-		return nil, fmt.Errorf("tool not found in registry")
-	}
-
-	toolInfo := resp.Results[0].Tool
-
+func (e *Executor) registerIndexedTool(ctx context.Context, toolInfo *loomv1.IndexedTool) (Tool, error) {
 	// Handle based on tool source
 	switch toolInfo.Source {
 	case loomv1.ToolSource_TOOL_SOURCE_MCP:

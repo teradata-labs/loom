@@ -144,8 +144,6 @@ func builtinToolsToSuppress() []string {
 			"shared_memory_write",
 			"top_n_query",
 			"group_by_query",
-			// Orchestration tool registered per-session by MultiAgentServer.Weave.
-			"manage_ephemeral_agents",
 		)
 	}
 	return suppressed
@@ -510,7 +508,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 	// avmo-tera-cloud runtime pods that write looms.yaml with placeholders and
 	// supply real values via pod env vars), then fall back to direct env lookups.
 	resolve := func(explicit, envKey string) string {
-		v := os.ExpandEnv(explicit)
+		v := loomconfig.ExpandEnvPlaceholders(explicit)
 		if v != "" {
 			return v
 		}
@@ -533,15 +531,16 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
+		accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
 		// NewClientForModel routes Anthropic Claude models to the streaming +
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		client, err := bedrock.NewClientForModel(bedrock.Config{
 			Region:            resolve(cfg.BedrockRegion, "AWS_DEFAULT_REGION"),
-			AccessKeyID:       resolve(cfg.BedrockAccessKeyID, "AWS_ACCESS_KEY_ID"),
-			SecretAccessKey:   resolve(cfg.BedrockSecretAccessKey, "AWS_SECRET_ACCESS_KEY"),
-			SessionToken:      resolve(cfg.BedrockSessionToken, "AWS_SESSION_TOKEN"),
-			BearerToken:       os.ExpandEnv(cfg.BedrockBearerToken),
+			AccessKeyID:       accessKeyID,
+			SecretAccessKey:   secretAccessKey,
+			SessionToken:      sessionToken,
+			BearerToken:       loomconfig.ExpandEnvPlaceholders(cfg.BedrockBearerToken),
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
 			MaxTokens:         cfg.MaxTokens,
@@ -554,7 +553,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return client, nil
 
 	case "ollama":
-		endpoint := os.ExpandEnv(cfg.OllamaEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(cfg.OllamaEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("OLLAMA_ENDPOINT")
 		}
@@ -674,6 +673,16 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 	}
 }
 
+func resolveBedrockCredentials(cfg LLMConfig) (string, string, string) {
+	accessKeyID := loomconfig.ExpandEnvPlaceholders(cfg.BedrockAccessKeyID)
+	secretAccessKey := loomconfig.ExpandEnvPlaceholders(cfg.BedrockSecretAccessKey)
+	sessionToken := loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
+	if accessKeyID != "" || secretAccessKey != "" || sessionToken != "" || cfg.BedrockProfile != "" {
+		return accessKeyID, secretAccessKey, sessionToken
+	}
+	return os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN")
+}
+
 // llmRoleDisplayName returns a short, human-readable name for an LLM role enum.
 func llmRoleDisplayName(role loomv1.LLMRole) string {
 	switch role {
@@ -770,7 +779,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.AnthropicModel
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.AnthropicAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.AnthropicAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
@@ -791,11 +800,11 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		return bedrock.NewClientForModel(bedrock.Config{
-			Region:          os.ExpandEnv(serverConfig.LLM.BedrockRegion),
-			AccessKeyID:     os.ExpandEnv(serverConfig.LLM.BedrockAccessKeyID),
-			SecretAccessKey: os.ExpandEnv(serverConfig.LLM.BedrockSecretAccessKey),
-			SessionToken:    os.ExpandEnv(serverConfig.LLM.BedrockSessionToken),
-			BearerToken:     os.ExpandEnv(serverConfig.LLM.BedrockBearerToken),
+			Region:          loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockRegion),
+			AccessKeyID:     loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockAccessKeyID),
+			SecretAccessKey: loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockSecretAccessKey),
+			SessionToken:    loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockSessionToken),
+			BearerToken:     loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockBearerToken),
 			Profile:         serverConfig.LLM.BedrockProfile,
 			ModelID:         modelID,
 			MaxTokens:       maxTokens,
@@ -807,7 +816,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.OllamaModel
 		}
-		endpoint := os.ExpandEnv(serverConfig.LLM.OllamaEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.OllamaEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("OLLAMA_ENDPOINT")
 		}
@@ -824,7 +833,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.OpenAIModel
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.OpenAIAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.OpenAIAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
@@ -839,13 +848,13 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 	case "azure-openai", "azureopenai":
 		deploymentID := protoConfig.Model
 		if deploymentID == "" {
-			deploymentID = os.ExpandEnv(serverConfig.LLM.AzureOpenAIDeploymentID)
+			deploymentID = loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.AzureOpenAIDeploymentID)
 		}
-		endpoint := os.ExpandEnv(serverConfig.LLM.AzureOpenAIEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.AzureOpenAIEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.AzureOpenAIAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.AzureOpenAIAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("AZURE_OPENAI_API_KEY")
 		}
@@ -853,7 +862,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Endpoint:     endpoint,
 			DeploymentID: deploymentID,
 			APIKey:       apiKey,
-			EntraToken:   os.ExpandEnv(serverConfig.LLM.AzureOpenAIEntraToken),
+			EntraToken:   loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.AzureOpenAIEntraToken),
 			MaxTokens:    maxTokens,
 			Temperature:  temperature,
 			Timeout:      timeout,
@@ -865,7 +874,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.MistralModel
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.MistralAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.MistralAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("MISTRAL_API_KEY")
 		}
@@ -882,7 +891,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.GeminiModel
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.GeminiAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.GeminiAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("GEMINI_API_KEY")
 		}
@@ -899,7 +908,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.HuggingFaceModel
 		}
-		token := os.ExpandEnv(serverConfig.LLM.HuggingFaceToken)
+		token := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.HuggingFaceToken)
 		if token == "" {
 			token = os.Getenv("HUGGINGFACE_API_KEY")
 		}
@@ -925,14 +934,14 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// AutomaticEnv does not bind nested secret keys that are absent from
 		// the config. Expand ${VAR} references first (consistent with MCP/o11y
 		// pattern), then fall back to direct env lookups for backwards compat.
-		endpoint := os.ExpandEnv(serverConfig.LLM.LiteLLMEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.LiteLLMEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_BASE_URL")
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.LiteLLMAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.LiteLLMAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("LITELLM_API_KEY")
 		}
@@ -957,27 +966,27 @@ func expandEnvMap(values map[string]string) map[string]string {
 	}
 	expanded := make(map[string]string, len(values))
 	for key, value := range values {
-		expanded[key] = os.ExpandEnv(value)
+		expanded[key] = loomconfig.ExpandEnvPlaceholders(value)
 	}
 	return expanded
 }
 
 // exportConfigToEnv exports certain config values as environment variables
 // so that builtin tools can access them without requiring explicit parameters.
-// Values are run through os.ExpandEnv so that ${VAR} placeholders written by
+// Values are run through the safe placeholder expander so ${VAR} values written by
 // the config translator (e.g. "${BRAVE_API_KEY}") resolve to the real pod
 // env var injected at deploy time.
 func exportConfigToEnv(cfg *Config) {
 	// Export web search API keys if configured
-	if v := os.ExpandEnv(cfg.Tools.WebSearch.BraveAPIKey); v != "" {
+	if v := loomconfig.ExpandEnvPlaceholders(cfg.Tools.WebSearch.BraveAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("BRAVE_API_KEY", v)
 	}
-	if v := os.ExpandEnv(cfg.Tools.WebSearch.TavilyAPIKey); v != "" {
+	if v := loomconfig.ExpandEnvPlaceholders(cfg.Tools.WebSearch.TavilyAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("TAVILY_API_KEY", v)
 	}
-	if v := os.ExpandEnv(cfg.Tools.WebSearch.SerpAPIKey); v != "" {
+	if v := loomconfig.ExpandEnvPlaceholders(cfg.Tools.WebSearch.SerpAPIKey); v != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("SERPAPI_KEY", v)
 	}
@@ -1057,12 +1066,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Create tracer based on mode
 	var tracer observability.Tracer
-
-	// Platform env-var override: when the orchestrator (AgentOpsCore) injects
-	// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, force observability on regardless of
-	// the config-file setting. See applyOTLPEnvOverride for full override logic
-	// (mode + endpoint + headers + insecure).
-	applyOTLPEnvOverride(&config.Observability, logger)
+	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
@@ -1085,18 +1089,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		// config-file values. Env vars take precedence over looms.yaml so
 		// the platform can redirect traces at deploy-time without patching
 		// the user's config artifact.
-		if otlpEnv := applyOTLPEnvOverride(&config.Observability, logger); otlpEnv != "" {
+		if otlpEnv != "" {
 			if mode != "otel" {
 				logOTLPModeOverride(logger, mode, otlpEnv)
 				mode = "otel"
 			}
 		}
-
-		// Expand ${VAR} references in observability config values so that
-		// the platform can write placeholders in looms.yaml and supply the
-		// real values via pod env vars (same pattern as MCP auth headers).
-		// Note: a literal '$' in a value must be written as '$$'.
-		expandOTLPConfig(&config.Observability)
 
 		switch mode {
 		case "embedded":
@@ -3807,24 +3805,13 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
-		// Expand ${ENV_VAR} in header values so secrets (e.g. a bearer token for
-		// an authenticated remote MCP server) come from the environment rather
-		// than being committed to the config file.
-		var headers map[string]string
-		if len(serverConfig.Headers) > 0 {
-			headers = make(map[string]string, len(serverConfig.Headers))
-			for k, v := range serverConfig.Headers {
-				headers[k] = os.ExpandEnv(v)
-			}
-		}
-
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
 			Transport:        transport,
 			URL:              serverConfig.URL,
-			Headers:          headers,
+			Headers:          serverConfig.Headers,
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,

@@ -28,6 +28,30 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestResolveBedrockCredentialsProfileIgnoresAmbientCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "ambient-access")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "ambient-session")
+
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(LLMConfig{BedrockProfile: "selected-profile"})
+	require.Empty(t, accessKeyID)
+	require.Empty(t, secretAccessKey)
+	require.Empty(t, sessionToken)
+}
+
+func TestResolveBedrockCredentialsPreservesExplicitCredentials(t *testing.T) {
+	t.Setenv("BEDROCK_ACCESS", "explicit$access")
+	t.Setenv("AWS_SESSION_TOKEN", "ambient-session")
+
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(LLMConfig{
+		BedrockAccessKeyID:     "${BEDROCK_ACCESS}",
+		BedrockSecretAccessKey: "explicit-secret",
+	})
+	require.Equal(t, "explicit$access", accessKeyID)
+	require.Equal(t, "explicit-secret", secretAccessKey)
+	require.Empty(t, sessionToken)
+}
+
 func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 	receivedHeaders := make(chan http.Header, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

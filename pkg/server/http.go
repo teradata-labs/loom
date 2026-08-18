@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -26,7 +27,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // CORSConfig holds CORS configuration
@@ -435,7 +435,7 @@ func (s *sseStreamWrapper) Send(progress *loomv1.WeaveProgress) error {
 	// playground's parseLoomWeaveProgress) expect. Plain encoding/json would
 	// instead emit the struct's snake_case json tags and raw numeric enums,
 	// which those clients cannot parse.
-	data, err := protojson.Marshal(progress)
+	data, err := json.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("failed to marshal progress: %w", err)
 	}
@@ -483,7 +483,11 @@ func (s *sseStreamWrapper) writeError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, writeErr := fmt.Fprintf(s.writer, "data: %s\n\n", data); writeErr != nil {
-		s.logger.Error("failed to write SSE error", zap.Error(writeErr))
+		if isClientCanceled(writeErr) || errors.Is(writeErr, syscall.EPIPE) || errors.Is(writeErr, syscall.ECONNRESET) {
+			s.logger.Debug("client disconnected before SSE error could be written", zap.Error(writeErr))
+		} else {
+			s.logger.Error("failed to write SSE error", zap.Error(writeErr))
+		}
 		return
 	}
 	s.flusher.Flush()

@@ -170,6 +170,15 @@ func TestExecutor_Execute_AliasCannotBypassCanonicalDisabledTool(t *testing.T) {
 	}
 }
 
+func TestExecutorCanonicalToolNameResolvesUniqueSuffixBeforeExecution(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&mockTool{name: "server:query"})
+	executor := NewExecutor(registry)
+
+	require.Equal(t, "server:query", executor.CanonicalToolName("query"))
+	require.Equal(t, "server:query", executor.CanonicalToolName("server_query"))
+}
+
 func TestExecutor_Execute_RejectsAmbiguousServerPrefixedSuffix(t *testing.T) {
 	reg := NewRegistry()
 	exec := NewExecutor(reg)

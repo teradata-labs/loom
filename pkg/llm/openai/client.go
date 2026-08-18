@@ -23,10 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -162,9 +164,6 @@ func copyHeaders(m map[string]string) map[string]string {
 // isRetryableTransportError reports whether an HTTP transport error is transient
 // and safe to retry (stale keep-alive connection recycled by the server).
 //
-// String-based matching is intentionally kept: wrapped net/http errors lose type
-// identity after crossing package boundaries, making errors.Is unreliable here.
-//
 // Single-retry only: a second attempt after EOF/reset is acceptable because the
 // error class indicates the request was never delivered. However, callers must
 // not retry if any response bytes were already received — a successfully
@@ -176,9 +175,42 @@ func isRetryableTransportError(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	s := err.Error()
-	return strings.Contains(s, "EOF") || strings.Contains(s, "connection reset by peer") ||
-		strings.Contains(s, "use of closed network connection")
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, net.ErrClosed)
+}
+
+func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	for attempt := 1; attempt <= 2; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		for key, value := range c.extraHeaders {
+			httpReq.Header.Set(key, value)
+		}
+
+		var response *http.Response
+		var doErr error
+		if c.rateLimiter != nil {
+			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+				return c.httpClient.Do(httpReq)
+			})
+			doErr = err
+			if err == nil {
+				response = result.(*http.Response)
+			}
+		} else {
+			response, doErr = c.httpClient.Do(httpReq)
+		}
+		if doErr == nil {
+			return response, nil
+		}
+		if attempt == 2 || !isRetryableTransportError(doErr) {
+			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
+		}
+	}
+	return nil, fmt.Errorf("HTTP request failed")
 }
 
 // getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
@@ -238,6 +270,17 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 // convertMessages converts agent messages to OpenAI format.
 func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	var apiMessages []ChatMessage
+	validToolCallIDs := make(map[string]struct{})
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.ID != "" && llm.SanitizeToolName(toolCall.Name) != "" {
+				validToolCallIDs[toolCall.ID] = struct{}{}
+			}
+		}
+	}
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -341,6 +384,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 			apiMessages = append(apiMessages, apiMsg)
 
 		case "tool":
+			if _, ok := validToolCallIDs[msg.ToolUseID]; !ok {
+				continue
+			}
 			// Tool results as tool role message
 			apiMessages = append(apiMessages, ChatMessage{
 				Role:       "tool",
@@ -705,37 +751,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 2. Send request with rate limiting if enabled.
 	// Retry once on transient transport errors (stale keep-alive connection
 	// recycled by the LLM proxy, manifesting as EOF).
-	var httpResp *http.Response
-	for attempt := 1; attempt <= 2; attempt++ {
-		httpReq, reqErr := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-		if reqErr != nil {
-			return nil, fmt.Errorf("failed to create request: %w", reqErr)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-		for k, v := range c.extraHeaders {
-			httpReq.Header.Set(k, v)
-		}
-
-		var doErr error
-		if c.rateLimiter != nil {
-			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-				return c.httpClient.Do(httpReq)
-			})
-			doErr = err
-			if err == nil {
-				httpResp = result.(*http.Response)
-			}
-		} else {
-			httpResp, doErr = c.httpClient.Do(httpReq)
-		}
-		if doErr != nil {
-			if attempt < 2 && isRetryableTransportError(doErr) {
-				continue
-			}
-			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
-		}
-		break
+	httpResp, err := c.sendRequest(ctx, body)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -945,37 +963,9 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 	// Send request with rate limiting if enabled.
 	// Retry once on transient transport errors (stale keep-alive connection
 	// recycled by the LLM proxy, manifesting as EOF).
-	var httpResp *http.Response
-	for attempt := 1; attempt <= 2; attempt++ {
-		httpReq, reqErr := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-		if reqErr != nil {
-			return nil, fmt.Errorf("failed to create request: %w", reqErr)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-		for k, v := range c.extraHeaders {
-			httpReq.Header.Set(k, v)
-		}
-
-		var doErr error
-		if c.rateLimiter != nil {
-			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-				return c.httpClient.Do(httpReq)
-			})
-			doErr = err
-			if err == nil {
-				httpResp = result.(*http.Response)
-			}
-		} else {
-			httpResp, doErr = c.httpClient.Do(httpReq)
-		}
-		if doErr != nil {
-			if attempt < 2 && isRetryableTransportError(doErr) {
-				continue
-			}
-			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
-		}
-		break
+	httpResp, err := c.sendRequest(ctx, body)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
