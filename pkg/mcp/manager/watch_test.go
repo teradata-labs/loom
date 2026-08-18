@@ -57,8 +57,12 @@ func (f *watchFakeTransport) Send(_ context.Context, message []byte) error {
 	switch req.Method {
 	case "server/discover":
 		result := protocol.DiscoverResult{
-			ProtocolVersions: []string{protocol.Version20260728},
-			ServerInfo:       protocol.Implementation{Name: "watch-fake", Version: "1.0"},
+			ResultType:        protocol.ResultTypeComplete,
+			SupportedVersions: []string{protocol.Version20260728},
+			CacheScope:        "public",
+		}
+		if err := result.SetServerInfo(protocol.Implementation{Name: "watch-fake", Version: "1.0"}); err != nil {
+			return err
 		}
 		resp.Result, _ = json.Marshal(result)
 	case "tools/list":
