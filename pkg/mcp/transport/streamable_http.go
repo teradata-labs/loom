@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"sync"
 	"time"
@@ -163,7 +164,15 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	if err != nil {
 		return fmt.Errorf("POST request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	// Body ownership: the SSE path transfers the live response body to the
+	// stream goroutine, which closes it when the stream ends; every other
+	// path closes it here.
+	bodyOwned := false
+	defer func() {
+		if !bodyOwned {
+			_ = resp.Body.Close()
+		}
+	}()
 
 	// Handle HTTP errors
 	if handled, err := t.handleHTTPStatus(ctx, resp); handled || err != nil {
@@ -188,27 +197,27 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		}
 	}
 
-	// Handle response based on Content-Type
+	// Handle response based on Content-Type. Parse the media type properly:
+	// servers legitimately send parameters such as
+	// "text/event-stream; charset=utf-8".
 	contentType := resp.Header.Get("Content-Type")
+	mediaType := contentType
+	if parsed, _, mimeErr := mime.ParseMediaType(contentType); mimeErr == nil {
+		mediaType = parsed
+	}
 	t.logger.Debug("Received HTTP response",
 		zap.String("content-type", contentType),
 		zap.Int("status", resp.StatusCode))
 
-	switch contentType {
+	switch mediaType {
 	case "text/event-stream":
-		// SSE stream response
+		// SSE response stream. The body must be parsed live, never buffered:
+		// a subscriptions/listen response intentionally stays open for the
+		// stream's lifetime, so reading until close would block forever and
+		// no notification would ever be delivered.
 		t.logger.Debug("Handling SSE stream response")
-
-		// For single-event responses, the server might close the connection immediately
-		// Read all the data first to avoid "read on closed response body" errors
-		allData, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read SSE response: %w", err)
-		}
-		t.logger.Debug("Read SSE response data", zap.Int("bytes", len(allData)))
-
-		// Parse the SSE data from the buffer
-		return t.handleSSEStream(ctx, io.NopCloser(bytes.NewReader(allData)), requestID(message))
+		bodyOwned = true
+		return t.handleSSEStream(ctx, resp.Body, requestID(message))
 
 	case "application/json":
 		// Single JSON response
@@ -303,12 +312,37 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 			}
 		}()
 
+		// The parser blocks in a body read between events; closing the body
+		// is the only way to interrupt it. Without this, Close() would wait
+		// on activeStreams until the server ended the stream — indefinitely
+		// for a subscriptions/listen stream. Cancelling the request context
+		// is also how a client cancels an HTTP subscription (closing the SSE
+		// stream is the cancellation signal under 2026-07-28).
+		unblockDone := make(chan struct{})
+		defer close(unblockDone)
+		go func() {
+			select {
+			case <-t.streamCtx.Done():
+				_ = body.Close()
+			case <-ctx.Done():
+				_ = body.Close()
+			case <-unblockDone:
+			}
+		}()
+
 		parser := NewSSEParser(body)
 
 		for {
 			t.logger.Debug("Parsing SSE event")
 			event, err := parser.ParseEvent()
 			if err != nil {
+				// Deliberate teardown — transport close or request
+				// cancellation — is not a lost stream: no synthesis.
+				if t.streamCtx.Err() != nil || ctx.Err() != nil {
+					t.logger.Debug("SSE stream ended by shutdown or cancellation")
+					sawFinal = true
+					return
+				}
 				if err == io.EOF {
 					t.logger.Debug("SSE stream closed normally")
 					return
