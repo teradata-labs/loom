@@ -33,11 +33,13 @@ const (
 )
 
 // watchToolLists maintains one subscriptions/listen loop for a stateless
-// client. It exits when stopCh closes (manager stop), the client closes, or
-// the server answers MethodNotFound (subscriptions unsupported). stopCh is
-// passed explicitly so a manager restart cannot race the field.
-func (m *Manager) watchToolLists(name string, cl *client.Client, stopCh <-chan struct{}) {
-	defer m.watchWG.Done()
+// client. It exits when stop closes (manager stop, StopServer, or
+// RemoveServer), the client closes, or the server answers MethodNotFound
+// (subscriptions unsupported); done closes on exit so the manager can wait
+// for the watcher before closing its client. The channels are passed
+// explicitly so a restart cannot race manager fields.
+func (m *Manager) watchToolLists(name string, cl *client.Client, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 
 	logger := m.logger.With(zap.String("server", name))
 	backoff := watchBackoffMin
@@ -48,7 +50,7 @@ func (m *Manager) watchToolLists(name string, cl *client.Client, stopCh <-chan s
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-stopCh:
+		case <-stop:
 			cancel()
 		case <-watcherDone: // watcher exited on its own; don't leak
 		}

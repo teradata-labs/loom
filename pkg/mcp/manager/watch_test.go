@@ -111,7 +111,7 @@ func (f *watchFakeTransport) listCalls() int {
 	return f.toolsListCalls
 }
 
-func startWatcher(t *testing.T, ft *watchFakeTransport) (*Manager, *client.Client, chan struct{}) {
+func startWatcher(t *testing.T, ft *watchFakeTransport) (*Manager, *client.Client, *watcherHandle) {
 	t.Helper()
 	cl := client.NewClient(client.Config{Transport: ft})
 	t.Cleanup(func() { _ = cl.Close() })
@@ -121,15 +121,14 @@ func startWatcher(t *testing.T, ft *watchFakeTransport) (*Manager, *client.Clien
 	m, err := NewManager(Config{}, nil)
 	require.NoError(t, err)
 
-	stopCh := make(chan struct{})
-	m.watchWG.Add(1)
-	go m.watchToolLists("fake", cl, stopCh)
-	return m, cl, stopCh
+	h := &watcherHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	go m.watchToolLists("fake", cl, h.stop, h.done)
+	return m, cl, h
 }
 
 func TestWatchSubscribesThenReconcilesOnAck(t *testing.T) {
 	ft := newWatchFakeTransport(true)
-	m, _, stopCh := startWatcher(t, ft)
+	_, _, h := startWatcher(t, ft)
 
 	// The watcher subscribes first — no fetch may precede the subscription,
 	// or a change landing between fetch and subscription establishment would
@@ -166,30 +165,113 @@ func TestWatchSubscribesThenReconcilesOnAck(t *testing.T) {
 	require.GreaterOrEqual(t, len(events), 2)
 	assert.Equal(t, "listen", events[0], "subscription must be opened before any fetch")
 
-	close(stopCh)
-	waitDone(t, &m.watchWG)
+	close(h.stop)
+	waitWatcher(t, h)
 }
 
 func TestWatchExitsWhenListenUnsupported(t *testing.T) {
 	ft := newWatchFakeTransport(false)
-	m, _, stopCh := startWatcher(t, ft)
+	_, _, h := startWatcher(t, ft)
 
-	// The watcher must exit on its own (MethodNotFound), without stopCh.
-	waitDone(t, &m.watchWG)
-	close(stopCh)
+	// The watcher must exit on its own (MethodNotFound), without stop.
+	waitWatcher(t, h)
+	close(h.stop)
 	assert.Zero(t, ft.listCalls(), "no fetches against a server without subscriptions support")
 }
 
-func waitDone(t *testing.T, wg *sync.WaitGroup) {
+func waitWatcher(t *testing.T, h *watcherHandle) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-h.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("watcher did not stop")
 	}
+}
+
+// registerFakeServer wires a connected fake-backed client and its watcher
+// into the manager the way startServer does, so per-server lifecycle can be
+// exercised without a real transport config.
+func registerFakeServer(t *testing.T, m *Manager, name string, ft *watchFakeTransport) *watcherHandle {
+	t.Helper()
+	cl := client.NewClient(client.Config{Transport: ft})
+	require.NoError(t, cl.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+	h := &watcherHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	m.mu.Lock()
+	m.clients[name] = cl
+	m.watchers[name] = h
+	m.mu.Unlock()
+	go m.watchToolLists(name, cl, h.stop, h.done)
+	return h
+}
+
+// TestStopServerStopsWatcher (review finding 9, PR #327): stopping one
+// server must stop that server's watcher — previously it kept retrying
+// subscriptions against the closed client until the whole manager stopped.
+func TestStopServerStopsWatcher(t *testing.T) {
+	ft := newWatchFakeTransport(true)
+	m, err := NewManager(Config{}, nil)
+	require.NoError(t, err)
+	h := registerFakeServer(t, m, "fake", ft)
+
+	require.Eventually(t, func() bool {
+		ft.mu.Lock()
+		defer ft.mu.Unlock()
+		return len(ft.listenIDs) == 1
+	}, 3*time.Second, 10*time.Millisecond, "watcher must subscribe before the stop")
+
+	require.NoError(t, m.StopServer("fake"))
+	waitWatcher(t, h)
+
+	m.mu.RLock()
+	_, watcherLeft := m.watchers["fake"]
+	_, clientLeft := m.clients["fake"]
+	m.mu.RUnlock()
+	assert.False(t, watcherLeft, "watcher registration must be removed")
+	assert.False(t, clientLeft, "client must be removed")
+}
+
+// TestRemoveServerStopsWatcher mirrors TestStopServerStopsWatcher for
+// RemoveServer, which also drops the config entry.
+func TestRemoveServerStopsWatcher(t *testing.T) {
+	ft := newWatchFakeTransport(true)
+	m, err := NewManager(Config{Servers: map[string]ServerConfig{"fake": {}}}, nil)
+	require.NoError(t, err)
+	h := registerFakeServer(t, m, "fake", ft)
+
+	require.Eventually(t, func() bool {
+		ft.mu.Lock()
+		defer ft.mu.Unlock()
+		return len(ft.listenIDs) == 1
+	}, 3*time.Second, 10*time.Millisecond, "watcher must subscribe before the removal")
+
+	require.NoError(t, m.RemoveServer("fake"))
+	waitWatcher(t, h)
+
+	m.mu.RLock()
+	_, watcherLeft := m.watchers["fake"]
+	m.mu.RUnlock()
+	assert.False(t, watcherLeft, "watcher registration must be removed")
+	_, err = m.GetServerConfig("fake")
+	assert.Error(t, err, "config entry must be removed")
+}
+
+// TestManagerStopStopsAllWatchers: manager Stop must stop every per-server
+// watcher before closing clients.
+func TestManagerStopStopsAllWatchers(t *testing.T) {
+	ftA, ftB := newWatchFakeTransport(true), newWatchFakeTransport(true)
+	m, err := NewManager(Config{}, nil)
+	require.NoError(t, err)
+	m.started = true
+	hA := registerFakeServer(t, m, "a", ftA)
+	hB := registerFakeServer(t, m, "b", ftB)
+
+	require.NoError(t, m.Stop())
+	waitWatcher(t, hA)
+	waitWatcher(t, hB)
+
+	m.mu.RLock()
+	left := len(m.watchers)
+	m.mu.RUnlock()
+	assert.Zero(t, left, "no watcher registrations may survive Stop")
 }

@@ -34,9 +34,17 @@ type Manager struct {
 	mu      sync.RWMutex
 	started bool
 
-	// Tool-list watching (subscriptions/listen) lifecycle.
-	stopCh  chan struct{}
-	watchWG sync.WaitGroup
+	// Tool-list watching (subscriptions/listen) lifecycle: one watcher per
+	// stateless server, individually stoppable so StopServer/RemoveServer
+	// end a server's watcher without waiting for manager shutdown.
+	watchers map[string]*watcherHandle
+}
+
+// watcherHandle controls one server's tool-list watcher: closing stop asks
+// the watcher to exit; done closes when it has.
+type watcherHandle struct {
+	stop chan struct{}
+	done chan struct{}
 }
 
 // NewManager creates a new MCP manager.
@@ -50,10 +58,10 @@ func NewManager(config Config, logger *zap.Logger) (*Manager, error) {
 	}
 
 	return &Manager{
-		config:  config,
-		logger:  logger,
-		clients: make(map[string]*client.Client),
-		stopCh:  make(chan struct{}),
+		config:   config,
+		logger:   logger,
+		clients:  make(map[string]*client.Client),
+		watchers: make(map[string]*watcherHandle),
 	}, nil
 }
 
@@ -67,12 +75,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.logger.Info("Starting MCP manager", zap.Int("server_count", len(m.config.Servers)))
-
-	// Recreate the stop channel after a previous Stop so watchers spawned by
-	// this Start observe this run's lifecycle.
-	if m.stopCh == nil {
-		m.stopCh = make(chan struct{})
-	}
 
 	// Start each enabled server
 	var startErrors []error
@@ -197,16 +199,33 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 	m.clients[name] = mcpClient
 
 	// Stateless servers deliver tool-list changes via subscriptions/listen;
-	// keep the tool cache fresh for the manager's lifetime.
-	if mcpClient.IsStateless() && m.stopCh != nil {
-		m.watchWG.Add(1)
-		// #nosec G118 -- the watcher's lifetime is the manager's, not this start
-		// request's: startCtx carries a connect timeout that must not kill the
-		// long-lived watch loop. Shutdown is governed by stopCh (closed in Stop).
-		go m.watchToolLists(name, mcpClient, m.stopCh)
+	// keep the tool cache fresh for the server registration's lifetime.
+	if mcpClient.IsStateless() {
+		h := &watcherHandle{stop: make(chan struct{}), done: make(chan struct{})}
+		m.watchers[name] = h
+		// #nosec G118 -- the watcher's lifetime is the server registration's,
+		// not this start request's: startCtx carries a connect timeout that
+		// must not kill the long-lived watch loop. Shutdown is governed by the
+		// per-server stop channel (Stop/StopServer/RemoveServer close it).
+		go m.watchToolLists(name, mcpClient, h.stop, h.done)
 	}
 
 	return nil
+}
+
+// stopWatcherLocked stops the named server's watcher and waits for it to
+// exit; the caller holds m.mu. Waiting before the client is closed prevents
+// the watcher from issuing calls against a closed client, and removing the
+// registration prevents a duplicate watcher when the same name is re-added.
+// Watchers never take m.mu, so waiting under the lock cannot deadlock.
+func (m *Manager) stopWatcherLocked(name string) {
+	h, ok := m.watchers[name]
+	if !ok {
+		return
+	}
+	delete(m.watchers, name)
+	close(h.stop)
+	<-h.done
 }
 
 // Stop closes all server connections.
@@ -221,11 +240,9 @@ func (m *Manager) Stop() error {
 	m.logger.Info("Stopping MCP manager", zap.Int("server_count", len(m.clients)))
 
 	// Stop tool-list watchers before closing their clients.
-	if m.stopCh != nil {
-		close(m.stopCh)
-		m.stopCh = nil
+	for name := range m.watchers {
+		m.stopWatcherLocked(name)
 	}
-	m.watchWG.Wait()
 
 	var errors []error
 	for name, client := range m.clients {
@@ -289,6 +306,10 @@ func (m *Manager) StopServer(name string) error {
 		return fmt.Errorf("server not found: %s", name)
 	}
 
+	// The watcher must be gone before its client closes; otherwise it keeps
+	// retrying subscriptions against a closed client until manager shutdown.
+	m.stopWatcherLocked(name)
+
 	if err := client.Close(); err != nil {
 		m.logger.Error("Failed to close server",
 			zap.String("server", name),
@@ -308,7 +329,8 @@ func (m *Manager) RemoveServer(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Stop the client if it's running
+	// Stop the watcher, then the client if it's running
+	m.stopWatcherLocked(name)
 	if client, exists := m.clients[name]; exists {
 		if err := client.Close(); err != nil {
 			m.logger.Error("Failed to close server during removal",
