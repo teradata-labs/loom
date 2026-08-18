@@ -147,11 +147,51 @@ const (
 // 2026-07-28 servers implement to advertise supported revisions, capabilities,
 // and identity. Clients call it for up-front version selection or as a
 // backward-compatibility probe: pre-2026 servers answer MethodNotFound.
+//
+// Field names follow the published schema: the version list is
+// supportedVersions, and the server identity travels in _meta under
+// io.modelcontextprotocol/serverInfo rather than as a top-level field.
+// resultType, supportedVersions, capabilities, ttlMs, and cacheScope are all
+// required on conforming responses (so servers marshalling this type emit
+// them unconditionally); the client parses leniently and insists only on
+// supportedVersions.
 type DiscoverResult struct {
-	ProtocolVersions []string               `json:"protocolVersions"`
-	Capabilities     ServerCapabilities     `json:"capabilities"`
-	ServerInfo       Implementation         `json:"serverInfo"`
-	Extensions       map[string]interface{} `json:"extensions,omitempty"`
+	ResultType        string                     `json:"resultType"`
+	SupportedVersions []string                   `json:"supportedVersions"`
+	Capabilities      ServerCapabilities         `json:"capabilities"`
+	Instructions      string                     `json:"instructions,omitempty"`
+	TTLMs             int64                      `json:"ttlMs"`
+	CacheScope        string                     `json:"cacheScope"`
+	Meta              map[string]json.RawMessage `json:"_meta,omitempty"`
+}
+
+// ServerInfo extracts the server identity from the result's _meta block
+// (io.modelcontextprotocol/serverInfo). The boolean is false when the server
+// omitted it or the value is malformed — the field is a SHOULD, not a MUST.
+func (d *DiscoverResult) ServerInfo() (Implementation, bool) {
+	raw, ok := d.Meta[MetaServerInfo]
+	if !ok {
+		return Implementation{}, false
+	}
+	var info Implementation
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return Implementation{}, false
+	}
+	return info, true
+}
+
+// SetServerInfo stamps the server identity into the result's _meta block —
+// the marshalling counterpart of ServerInfo for servers emitting the result.
+func (d *DiscoverResult) SetServerInfo(info Implementation) error {
+	raw, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+	if d.Meta == nil {
+		d.Meta = make(map[string]json.RawMessage, 1)
+	}
+	d.Meta[MetaServerInfo] = raw
+	return nil
 }
 
 // StampMeta merges the stateless-revision identity keys into a request's

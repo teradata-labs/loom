@@ -35,7 +35,7 @@ Loom's outbound MCP client (the manager) negotiates revisions with every upstrea
 | 4 | Probe answered 401 | `Connect` | Hard error naming the status; no fallback |
 | 5 | Probe answered 500 | `Connect` | Hard error; no fallback |
 | 6 | Discover offers only `["2031-01-01"]` | `Connect` | `UnsupportedProtocolVersion` typed error listing offered versions |
-| 7 | Discover returns empty `protocolVersions` | `Connect` | Error (exists in `discover()`; add test) |
+| 7 | Discover returns empty `supportedVersions` | `Connect` | Error (exists in `discover()`; add test) |
 | 8 | Discover offers `["2025-11-25"]` (legacy-family only) | `Connect` | Handshake runs; legacy mode |
 | 9 | Pin `protocol_version: "legacy"` vs a discover-capable server | `Connect` | No probe issued (assert on transport); handshake directly |
 | 10 | Pin `"2026-07-28"` vs server offering only legacy | `Connect` | Hard error; no silent downgrade |

@@ -91,10 +91,10 @@ func (c *Client) connectAuto(ctx context.Context, clientInfo protocol.Implementa
 		return fmt.Errorf("server/discover failed: %w", err)
 	}
 
-	version, ok := protocol.NegotiateVersion(disc.ProtocolVersions)
+	version, ok := protocol.NegotiateVersion(disc.SupportedVersions)
 	if !ok {
 		return protocol.NewError(protocol.UnsupportedProtocolVersion,
-			fmt.Sprintf("no mutually supported protocol revision: server offers %v", disc.ProtocolVersions),
+			fmt.Sprintf("no mutually supported protocol revision: server offers %v", disc.SupportedVersions),
 			nil)
 	}
 
@@ -131,14 +131,14 @@ func (c *Client) connectPinned(ctx context.Context, clientInfo protocol.Implemen
 	if err != nil {
 		return fmt.Errorf("protocol version pinned to %s but server/discover failed: %w", pin, err)
 	}
-	for _, v := range disc.ProtocolVersions {
+	for _, v := range disc.SupportedVersions {
 		if v == pin {
 			c.enterStatelessMode(pin, disc)
 			return nil
 		}
 	}
 	return protocol.NewError(protocol.UnsupportedProtocolVersion,
-		fmt.Sprintf("protocol version pinned to %s but server offers %v", pin, disc.ProtocolVersions),
+		fmt.Sprintf("protocol version pinned to %s but server offers %v", pin, disc.SupportedVersions),
 		nil)
 }
 
@@ -164,35 +164,50 @@ func isLegacyServerSignal(err error) bool {
 }
 
 // enterStatelessMode records the negotiated stateless revision and the
-// server identity discover reported.
+// server identity discover reported in the result's _meta block (a SHOULD in
+// the specification, so a missing identity is tolerated).
 func (c *Client) enterStatelessMode(version string, disc *protocol.DiscoverResult) {
+	serverInfo, hasInfo := disc.ServerInfo()
+
 	c.mu.Lock()
 	c.initialized = true
 	c.statelessMode = true
 	c.protocolVersion = version
-	c.serverInfo = disc.ServerInfo
+	c.serverInfo = serverInfo
 	c.serverCapabilities = disc.Capabilities
 	c.mu.Unlock()
 
 	c.logger.Info("MCP client connected (stateless revision)",
 		zap.String("version", version),
-		zap.String("server", disc.ServerInfo.Name),
-		zap.String("serverVersion", disc.ServerInfo.Version),
+		zap.String("server", serverInfo.Name),
+		zap.String("serverVersion", serverInfo.Version),
+		zap.Bool("serverIdentified", hasInfo),
 		zap.Bool("tools", disc.Capabilities.Tools != nil),
 		zap.Bool("resources", disc.Capabilities.Resources != nil),
 		zap.Bool("prompts", disc.Capabilities.Prompts != nil),
 	)
 }
 
-// discover calls server/discover. It is issued before any mode is selected,
-// so the request is intentionally not stamped with _meta; the required
-// MCP-Protocol-Version header carries the client's preferred revision.
+// discover calls server/discover. The probe is a first-class 2026-07-28
+// request: its params carry the standard _meta identity keys stamped at the
+// client's preferred revision, and the MCP-Protocol-Version header must match
+// the version in _meta — conforming servers reject a mismatch (or a missing
+// body field) with HeaderMismatch.
 func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error) {
+	c.mu.RLock()
+	info := c.clientInfo
+	c.mu.RUnlock()
+
+	params, err := protocol.StampMeta(nil, protocol.PreferredVersion, info, c.clientCapabilities())
+	if err != nil {
+		return nil, fmt.Errorf("failed to stamp server/discover params: %w", err)
+	}
+
 	req := &protocol.Request{
 		JSONRPC: protocol.JSONRPCVersion,
 		ID:      c.nextRequestID(),
 		Method:  "server/discover",
-		Params:  json.RawMessage(`{}`),
+		Params:  params,
 	}
 
 	ctx = transport.WithExtraHeaders(ctx, map[string]string{
@@ -208,8 +223,8 @@ func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error)
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse server/discover result: %w", err)
 	}
-	if len(result.ProtocolVersions) == 0 {
-		return nil, fmt.Errorf("server/discover returned no protocol versions")
+	if len(result.SupportedVersions) == 0 {
+		return nil, fmt.Errorf("server/discover returned no supported versions")
 	}
 	return &result, nil
 }

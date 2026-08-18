@@ -119,3 +119,102 @@ func TestServerInfoFromMeta(t *testing.T) {
 		t.Fatal("expected no serverInfo")
 	}
 }
+
+// TestDiscoverResultParsesOfficialExample decodes the verbatim response
+// example from the published 2026-07-28 Discovery specification
+// (modelcontextprotocol.io/specification/2026-07-28/server/discover) so the
+// client's wire model cannot drift from the official field names again:
+// supportedVersions (not protocolVersions), server identity under
+// _meta[io.modelcontextprotocol/serverInfo] (not top-level serverInfo).
+func TestDiscoverResultParsesOfficialExample(t *testing.T) {
+	official := json.RawMessage(`{
+		"resultType": "complete",
+		"supportedVersions": ["2026-07-28"],
+		"capabilities": {
+			"tools": {},
+			"resources": {}
+		},
+		"_meta": {
+			"io.modelcontextprotocol/serverInfo": {
+				"name": "ExampleServer",
+				"version": "1.0.0"
+			}
+		},
+		"instructions": "This server provides weather and resource utilities.",
+		"ttlMs": 3600000,
+		"cacheScope": "public"
+	}`)
+
+	var result DiscoverResult
+	if err := json.Unmarshal(official, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SupportedVersions) != 1 || result.SupportedVersions[0] != Version20260728 {
+		t.Fatalf("supportedVersions not parsed: %+v", result.SupportedVersions)
+	}
+	if result.Capabilities.Tools == nil || result.Capabilities.Resources == nil {
+		t.Fatalf("capabilities not parsed: %+v", result.Capabilities)
+	}
+	info, ok := result.ServerInfo()
+	if !ok || info.Name != "ExampleServer" || info.Version != "1.0.0" {
+		t.Fatalf("serverInfo not extracted from _meta: %+v ok=%v", info, ok)
+	}
+	if result.ResultType != ResultTypeComplete {
+		t.Fatalf("resultType: %q", result.ResultType)
+	}
+	if result.Instructions == "" || result.TTLMs != 3600000 || result.CacheScope != "public" {
+		t.Fatalf("caching/instruction fields not parsed: %+v", result)
+	}
+
+	version, negotiated := NegotiateVersion(result.SupportedVersions)
+	if !negotiated || version != Version20260728 {
+		t.Fatalf("negotiation against official example failed: %q %v", version, negotiated)
+	}
+}
+
+// TestDiscoverResultServerInfoAbsent covers the SHOULD nature of serverInfo:
+// a response without it is valid and must not fail parsing.
+func TestDiscoverResultServerInfoAbsent(t *testing.T) {
+	var result DiscoverResult
+	raw := `{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{},"ttlMs":0,"cacheScope":"private"}`
+	if err := json.Unmarshal(json.RawMessage(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.ServerInfo(); ok {
+		t.Fatal("expected absent serverInfo")
+	}
+}
+
+// TestDiscoverResultRoundTripsServerInfo covers the server-side marshalling
+// counterpart: SetServerInfo places the identity where ServerInfo reads it.
+func TestDiscoverResultRoundTripsServerInfo(t *testing.T) {
+	res := DiscoverResult{
+		ResultType:        ResultTypeComplete,
+		SupportedVersions: []string{Version20260728},
+		CacheScope:        "private",
+	}
+	if err := res.SetServerInfo(Implementation{Name: "loom", Version: "1.4.0"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probe["supportedVersions"]; !ok {
+		t.Fatalf("marshalled result missing supportedVersions: %s", out)
+	}
+	if _, ok := probe["serverInfo"]; ok {
+		t.Fatalf("serverInfo must not appear top-level: %s", out)
+	}
+	var back DiscoverResult
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if info, ok := back.ServerInfo(); !ok || info.Name != "loom" {
+		t.Fatalf("serverInfo did not round-trip: %+v ok=%v", info, ok)
+	}
+}

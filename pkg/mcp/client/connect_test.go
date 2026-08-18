@@ -27,9 +27,10 @@ import (
 // see initialize; a legacy server answers MethodNotFound to the discover
 // probe and handles the handshake.
 type fakeRevisionTransport struct {
-	statelessServer bool
-	responses       chan []byte
-	lastToolsCall   json.RawMessage
+	statelessServer  bool
+	responses        chan []byte
+	lastToolsCall    json.RawMessage
+	lastDiscoverCall json.RawMessage
 }
 
 func newFakeRevisionTransport(stateless bool) *fakeRevisionTransport {
@@ -50,13 +51,18 @@ func (f *fakeRevisionTransport) Send(ctx context.Context, message []byte) error 
 
 	switch req.Method {
 	case "server/discover":
+		f.lastDiscoverCall = req.Params
 		if !f.statelessServer {
 			resp.Error = protocol.NewError(protocol.MethodNotFound, "method not found", nil)
 			break
 		}
 		result := protocol.DiscoverResult{
-			ProtocolVersions: []string{protocol.Version20260728, protocol.Version20251125},
-			ServerInfo:       protocol.Implementation{Name: "fake", Version: "1.0"},
+			ResultType:        protocol.ResultTypeComplete,
+			SupportedVersions: []string{protocol.Version20260728, protocol.Version20251125},
+			CacheScope:        "public",
+		}
+		if err := result.SetServerInfo(protocol.Implementation{Name: "fake", Version: "1.0"}); err != nil {
+			return err
 		}
 		resp.Result, _ = json.Marshal(result)
 	case "initialize":
@@ -104,6 +110,27 @@ func TestConnectStatelessNegotiation(t *testing.T) {
 	}
 	if c.ServerInfo().Name != "fake" {
 		t.Fatalf("serverInfo not recorded: %+v", c.ServerInfo())
+	}
+
+	// The discover probe itself must carry the standard _meta identity keys —
+	// the request "carries no body parameters beyond the standard _meta", and
+	// a conforming server rejects a probe whose body lacks the protocolVersion
+	// that the MCP-Protocol-Version header names (HeaderMismatch).
+	var probeParams struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if err := json.Unmarshal(ft.lastDiscoverCall, &probeParams); err != nil || probeParams.Meta == nil {
+		t.Fatalf("discover probe params missing _meta: %s", ft.lastDiscoverCall)
+	}
+	var probeVersion string
+	if err := json.Unmarshal(probeParams.Meta[protocol.MetaProtocolVersion], &probeVersion); err != nil || probeVersion != protocol.Version20260728 {
+		t.Fatalf("discover probe not stamped with preferred version: %s", ft.lastDiscoverCall)
+	}
+	if _, ok := probeParams.Meta[protocol.MetaClientInfo]; !ok {
+		t.Fatalf("discover probe missing clientInfo in _meta: %s", ft.lastDiscoverCall)
+	}
+	if _, ok := probeParams.Meta[protocol.MetaClientCapabilities]; !ok {
+		t.Fatalf("discover probe missing clientCapabilities in _meta: %s", ft.lastDiscoverCall)
 	}
 
 	// A follow-up request must carry the stamped _meta identity keys.

@@ -170,10 +170,22 @@ func (f *scriptedTransport) snapshot() (sawDiscover, sawInitialize bool, headers
 }
 
 func statelessDiscoverResult() *protocol.DiscoverResult {
-	return &protocol.DiscoverResult{
-		ProtocolVersions: []string{protocol.Version20260728, protocol.Version20241105},
-		ServerInfo:       protocol.Implementation{Name: "scripted", Version: "1.0"},
+	return discoverResultOffering(protocol.Version20260728, protocol.Version20241105)
+}
+
+// discoverResultOffering builds an official-shape DiscoverResult advertising
+// the given revisions, with the server identity in _meta as the schema
+// requires.
+func discoverResultOffering(versions ...string) *protocol.DiscoverResult {
+	res := &protocol.DiscoverResult{
+		ResultType:        protocol.ResultTypeComplete,
+		SupportedVersions: versions,
+		CacheScope:        "public",
 	}
+	if err := res.SetServerInfo(protocol.Implementation{Name: "scripted", Version: "1.0"}); err != nil {
+		panic(err)
+	}
+	return res
 }
 
 func connectClient(t *testing.T, ft *scriptedTransport, cfg Config) *Client {
@@ -233,10 +245,7 @@ func TestConnectPinStatelessOffered(t *testing.T) {
 
 func TestConnectPinStatelessNotOfferedFailsWithoutFallback(t *testing.T) {
 	ft := newScriptedTransport()
-	ft.discoverResult = &protocol.DiscoverResult{
-		ProtocolVersions: []string{protocol.Version20251125},
-		ServerInfo:       protocol.Implementation{Name: "scripted", Version: "1.0"},
-	}
+	ft.discoverResult = discoverResultOffering(protocol.Version20251125)
 	c := connectClient(t, ft, Config{ProtocolVersion: protocol.Version20260728})
 
 	require.Error(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))

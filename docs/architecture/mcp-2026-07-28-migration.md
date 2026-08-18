@@ -91,14 +91,14 @@ Source 1 is an invariant handlers can satisfy locally. Source 2 cannot be satisf
     │                   │                                                     │
     ├─ Connect() ──────▶│                                                     │
     │                   │                                                     │
-    │                   ├─ POST server/discover (unstamped, no _meta) ───────▶│
+    │                   ├─ POST server/discover (stamped params._meta) ──────▶│
     │                   │                                                     │
     │     ──────────────────────── alt — 2026-07-28 server responds ──────────────────────────────
     │                   │                                                     │
     │                   │◀─────────────────────────────────── DiscoverResult ─┤
     │                   │                                                     │
     │         ┌──────────────────────────────────────────────┐                │
-    │         │ {protocolVersions, capabilities, serverInfo} │                │
+    │         │ {supportedVersions, caps, _meta.serverInfo}  │                │
     │         └──────────────────────────────────────────────┘                │
     │                   │                                                     │
     │               ┌──────────────────────────────────┐                      │
@@ -251,7 +251,7 @@ Session behavior in `streamable_http.go` becomes conditional: the client stores 
 `streamable_http_server.go` `handlePost` currently rejects a request bearing an *unknown* `Mcp-Session-Id` with 404, mints a session only on `initialize`, and — as recorded in §2 — admits header-less requests for any method. The dual-mode behavior is:
 
 1. A request carrying `_meta` with `io.modelcontextprotocol/protocolVersion` >= `2026-07-28` is stateless. It is admitted without session lookup, no session is minted, and no `Mcp-Session-Id` response header is set.
-2. A request without stateless `_meta` follows the existing legacy path unchanged, including session minting on `initialize`. (Loom's own unstamped `server/discover` probe rides this path safely: no session header means no session check, and dispatch answers `MethodNotFound` on pre-migration servers, which is exactly the fallback signal `Connect` expects.)
+2. A request without stateless `_meta` follows the existing legacy path unchanged, including session minting on `initialize`. (Loom's own `server/discover` probe carries stamped `_meta` per the published Discovery specification, so against a dual-mode Loom server it is admitted on the stateless path; against a pre-migration server the stamped `_meta` is just an ignored params field and dispatch answers `MethodNotFound`, which is exactly the fallback signal `Connect` expects.)
 3. A request whose `Mcp-Method` header disagrees with the JSON-RPC `method` field is rejected with `HeaderMismatch` (`-32020`).
 
 The `httpSession` map, its janitor, and `handleDelete` become legacy-only machinery and carry a removal marker for the post-window cleanup.
@@ -284,7 +284,7 @@ Lazy skill loading makes `tools/list` output change during a session's lifetime.
 
 ### 7.1 server/discover and _meta middleware
 
-`MCPServer` registers `server/discover` returning `DiscoverResult{ProtocolVersions: ["2026-07-28", "2024-11-05"], Capabilities, ServerInfo}`. This is the mandatory RPC of the new revision and the backward-compatibility probe for clients. The list names only revisions the server actually implements — `2025-11-25` semantics were never implemented server-side, so advertising it would be a false claim; revisions are added to the list only when their conformance cells (§10) exist.
+`MCPServer` registers `server/discover` returning the official-schema `DiscoverResult`: `supportedVersions: ["2026-07-28", "2024-11-05"]`, `capabilities`, the required `resultType`/`ttlMs`/`cacheScope` fields, and the server identity under `_meta["io.modelcontextprotocol/serverInfo"]` (never as a top-level field). This is the mandatory RPC of the new revision and the backward-compatibility probe for clients. The list names only revisions the server actually implements — `2025-11-25` semantics were never implemented server-side, so advertising it would be a false claim; revisions are added to the list only when their conformance cells (§10) exist.
 
 A `_meta` extraction step runs in `HandleMessage` before dispatch: it parses the three identity keys plus `logLevel` and OpenTelemetry keys (`traceparent`, `tracestate`, `baggage`) out of `params._meta` into the request context. Handlers and the observability layer read from context; no handler parses `_meta` itself. Results on stateless requests are stamped with `resultType: "complete"` (or `"input_required"` from MRTR-aware handlers) and `_meta[io.modelcontextprotocol/serverInfo]`.
 
