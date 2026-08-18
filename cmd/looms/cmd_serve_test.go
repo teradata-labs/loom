@@ -54,8 +54,14 @@ func TestResolveBedrockCredentialsPreservesExplicitCredentials(t *testing.T) {
 
 func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 	receivedHeaders := make(chan http.Header, 2)
+	receivedModels := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 		receivedHeaders <- r.Header.Clone()
+		receivedModels <- request.Model
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"choices": []map[string]interface{}{{
 				"message":       map[string]string{"role": "assistant", "content": "ok"},
@@ -66,6 +72,7 @@ func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 	defer server.Close()
 	t.Setenv("SERVE_LITELLM_URL", server.URL)
 	t.Setenv("SERVE_LITELLM_TOKEN", "expanded-token")
+	t.Setenv("SERVE_LITELLM_MODEL", "expanded-model")
 
 	tests := []struct {
 		name   string
@@ -78,7 +85,7 @@ func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 					Provider:            "litellm",
 					LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
 					LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
-					LiteLLMModel:        "test-model",
+					LiteLLMModel:        "${SERVE_LITELLM_MODEL}",
 					RateLimit:           LLMRateLimitConfig{Disabled: true},
 				}, zap.NewNop())
 			},
@@ -87,10 +94,11 @@ func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 			name: "proto agent config",
 			create: func() (interface{}, error) {
 				return createLLMProviderFromProtoConfig(
-					&loomv1.LLMConfig{Provider: "litellm", Model: "test-model"},
+					&loomv1.LLMConfig{Provider: "litellm"},
 					&Config{LLM: LLMConfig{
 						LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
 						LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
+						LiteLLMModel:        "${SERVE_LITELLM_MODEL}",
 					}},
 					zap.NewNop(),
 				)
@@ -108,6 +116,7 @@ func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "ok", response.Content)
 			assert.Equal(t, "expanded-token", (<-receivedHeaders).Get("X-Tenant"))
+			assert.Equal(t, "expanded-model", <-receivedModels)
 		})
 	}
 }

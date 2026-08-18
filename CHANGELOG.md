@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### LiteLLM Health Checks
 - Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
 
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
