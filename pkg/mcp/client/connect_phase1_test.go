@@ -543,3 +543,40 @@ func TestInitializedNotificationCarriesNegotiatedVersion(t *testing.T) {
 	assert.Equal(t, protocol.Version20250618, headers["MCP-Protocol-Version"],
 		"initialized notification must carry the negotiated protocol version header")
 }
+
+// TestConnectFallsBackOnLegacySessionRejection: strict legacy Streamable
+// HTTP session servers (e.g. the official TypeScript SDK's 2025 server)
+// reject any pre-initialize request with a bare 400 ("session required").
+// Per the transport specification's backward-compatibility rule, a 400
+// whose body is not a recognized modern JSON-RPC error identifies a legacy
+// server and the client falls back to the handshake.
+func TestConnectFallsBackOnLegacySessionRejection(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.discoverErr = &transport.HTTPStatusError{
+		Code: http.StatusBadRequest,
+		Body: []byte("Bad Request: Mcp-Session-Id header is required"),
+	}
+	c := connectClient(t, ft, Config{})
+
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	assert.False(t, c.IsStateless())
+	_, sawInit, _ := ft.snapshot()
+	assert.True(t, sawInit, "bare 400 without a modern error body must fall back to initialize")
+}
+
+// TestConnectDoesNotFallBackOnModernErrorBody: a 400 carrying a recognized
+// modern JSON-RPC error (even id-less, which cannot be routed to the pending
+// request) identifies a modern server; falling back to the legacy handshake
+// over it would be wrong.
+func TestConnectDoesNotFallBackOnModernErrorBody(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.discoverErr = &transport.HTTPStatusError{
+		Code: http.StatusBadRequest,
+		Body: []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2027-01-01"]}}}`),
+	}
+	c := connectClient(t, ft, Config{})
+
+	require.Error(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	_, sawInit, _ := ft.snapshot()
+	assert.False(t, sawInit, "a modern error body must not trigger legacy fallback")
+}

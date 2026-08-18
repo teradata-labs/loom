@@ -150,8 +150,14 @@ func (c *Client) connectPinned(ctx context.Context, clientInfo protocol.Implemen
 // indicates a pre-2026 server rather than a genuine failure. Conformant
 // legacy servers answer MethodNotFound at the JSON-RPC layer; HTTP servers
 // predating the modern endpoint (or strict gateways in front of them) may
-// instead answer with a bare 404, 405, or 501. Auth failures and server
-// errors are never treated as a legacy signal.
+// instead answer with a bare 404, 405, or 501. A 400 falls back only when
+// its body is not a recognized modern JSON-RPC error, per the transport
+// specification's backward-compatibility rule — strict legacy session
+// servers reject any pre-initialize request with a bare 400 ("session
+// required"), while modern servers put UnsupportedProtocolVersionError or
+// HeaderMismatch in the body (routable bodies never even reach here: the
+// transport delivers them as typed protocol errors). Auth failures and
+// server errors are never treated as a legacy signal.
 func isLegacyServerSignal(err error) bool {
 	var rpcErr *protocol.Error
 	if errors.As(err, &rpcErr) && rpcErr.Code == protocol.MethodNotFound {
@@ -162,7 +168,30 @@ func isLegacyServerSignal(err error) bool {
 		switch httpErr.Code {
 		case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 			return true
+		case http.StatusBadRequest:
+			return !hasModernErrorBody(httpErr.Body)
 		}
+	}
+	return false
+}
+
+// hasModernErrorBody reports whether an HTTP error body carries a JSON-RPC
+// error with one of the codes only modern (2026-07-28+) servers emit. Such a
+// body identifies a modern server even when it cannot be routed to the
+// pending request (e.g. the specification permits id-less error responses),
+// so the client must not fall back to the legacy handshake over it.
+func hasModernErrorBody(body []byte) bool {
+	var probe struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil || probe.Error == nil {
+		return false
+	}
+	switch probe.Error.Code {
+	case protocol.HeaderMismatch, protocol.MissingRequiredClientCapability, protocol.UnsupportedProtocolVersion:
+		return true
 	}
 	return false
 }
