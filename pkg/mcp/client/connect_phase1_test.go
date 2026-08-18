@@ -424,3 +424,19 @@ func TestConnectDiscoverNegotiatedLegacyRequestsThatRevision(t *testing.T) {
 	assert.Equal(t, protocol.Version20250618, ft.requestedInitVersion())
 	assert.Equal(t, protocol.Version20250618, c.NegotiatedVersion())
 }
+
+// TestInitializedNotificationCarriesNegotiatedVersion: the notification that
+// completes the legacy handshake is sent after negotiation, so it must carry
+// the negotiated MCP-Protocol-Version header (required on every subsequent
+// request by 2025-06-18+). The scripted transport records the extra headers
+// of the last send, which for a legacy Connect is notifications/initialized.
+func TestInitializedNotificationCarriesNegotiatedVersion(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.initializeEcho = true
+	c := connectClient(t, ft, Config{ProtocolVersion: protocol.Version20250618})
+
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	_, _, headers := ft.snapshot()
+	assert.Equal(t, protocol.Version20250618, headers["MCP-Protocol-Version"],
+		"initialized notification must carry the negotiated protocol version header")
+}

@@ -229,3 +229,53 @@ func TestStreamableHTTPConfig_Validation(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionAdoptedAfterProbePrecedesInitialize is review finding 3's
+// scenario: with Connect-style negotiation the server/discover probe is the
+// first POST, so the legacy initialize response — the only response that
+// mints an Mcp-Session-Id — is no longer the first exchange. The transport
+// must adopt the session whenever a legacy server offers one and none is
+// held, not only on the first request, and echo it on every later POST.
+func TestSessionAdoptedAfterProbePrecedesInitialize(t *testing.T) {
+	var (
+		requests    int
+		sessionSeen []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		sessionSeen = append(sessionSeen, r.Header.Get("Mcp-Session-Id"))
+		w.Header().Set("Content-Type", "application/json")
+		switch requests {
+		case 1:
+			// Legacy server answering the server/discover probe: JSON-RPC
+			// MethodNotFound (no session minted here).
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}`))
+		case 2:
+			// initialize: mint the session.
+			w.Header().Set("Mcp-Session-Id", "legacy-session-42")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"legacy","version":"1"}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":3,"result":{}}`))
+		}
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{
+		Endpoint:       srv.URL,
+		EnableSessions: true,
+	})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	ctx := context.Background()
+	require.NoError(t, tr.Send(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{}}}`)))
+	require.NoError(t, tr.Send(ctx, []byte(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}`)))
+	require.NoError(t, tr.Send(ctx, []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`)))
+
+	require.Len(t, sessionSeen, 3)
+	assert.Empty(t, sessionSeen[0], "no session before the server minted one")
+	assert.Empty(t, sessionSeen[1], "initialize itself carries no session yet")
+	assert.Equal(t, "legacy-session-42", sessionSeen[2],
+		"the session minted by the initialize response must be echoed on subsequent requests even though initialize was not the first POST")
+	assert.Equal(t, "legacy-session-42", tr.GetSessionID())
+}

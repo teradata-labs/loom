@@ -45,10 +45,9 @@ type StreamableHTTPTransport struct {
 	errors   chan error
 
 	// Lifecycle
-	mu      sync.Mutex
-	closed  bool
-	started bool
-	logger  *zap.Logger
+	mu     sync.Mutex
+	closed bool
+	logger *zap.Logger
 
 	// Stream management
 	activeStreams sync.WaitGroup
@@ -116,8 +115,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		t.mu.Unlock()
 		return fmt.Errorf("transport closed")
 	}
-	started := t.started
-	t.started = true
 	t.mu.Unlock()
 
 	// Build POST request
@@ -173,8 +170,15 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Extract session ID from response (on first request)
-	if !started && t.enableSessions {
+	// Adopt a session ID whenever a legacy server mints one and none is held.
+	// Only the initialize response carries this header (2026-07-28 servers
+	// never send it), but which POST that is depends on probe order — the
+	// server/discover probe precedes initialize on auto-negotiated
+	// connections, so gating on "first request" would discard the session and
+	// break every subsequent call against strict legacy session servers. This
+	// also re-adopts a fresh session after ErrSessionExpired cleared the old
+	// one and the client re-initialized.
+	if t.enableSessions && !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -188,8 +192,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	contentType := resp.Header.Get("Content-Type")
 	t.logger.Debug("Received HTTP response",
 		zap.String("content-type", contentType),
-		zap.Int("status", resp.StatusCode),
-		zap.Bool("started", started))
+		zap.Int("status", resp.StatusCode))
 
 	switch contentType {
 	case "text/event-stream":

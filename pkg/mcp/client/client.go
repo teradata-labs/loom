@@ -271,7 +271,14 @@ func (c *Client) initializeWithVersion(ctx context.Context, clientInfo protocol.
 
 	c.logger.Debug("Sending initialized notification")
 
-	if err := c.transport.Send(ctx, notificationJSON); err != nil {
+	// The version is negotiated by this point, and 2025-06-18+ requires the
+	// MCP-Protocol-Version header on every subsequent HTTP request — the
+	// initialized notification included. Older servers ignore unknown
+	// headers and non-HTTP transports ignore the context entry.
+	notifyCtx := transport.WithExtraHeaders(ctx, map[string]string{
+		"MCP-Protocol-Version": result.ProtocolVersion,
+	})
+	if err := c.transport.Send(notifyCtx, notificationJSON); err != nil {
 		return fmt.Errorf("failed to send initialized notification: %w", err)
 	}
 
