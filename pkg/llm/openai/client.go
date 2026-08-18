@@ -612,6 +612,23 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 	return llmResp
 }
 
+// openAICacheReadMultiplier returns the fraction of the input rate that OpenAI
+// charges for a cached prompt token. The gpt-5 and o-series generations discount
+// cached input by 90%; the gpt-4 generation by 50%. Applying the older 0.5 to a
+// gpt-5 model overstates cost five-fold on the cached share, which on agentic
+// workloads is the great majority of all input.
+func openAICacheReadMultiplier(modelID string) float64 {
+	switch {
+	case strings.HasPrefix(modelID, "gpt-5"),
+		strings.HasPrefix(modelID, "o1"),
+		strings.HasPrefix(modelID, "o3"),
+		strings.HasPrefix(modelID, "o4"):
+		return 0.10
+	default:
+		return 0.50
+	}
+}
+
 // anthropicFallbackPricing returns published Anthropic rates for a model id
 // proxied through an OpenAI-compatible endpoint. Mirrors the bedrock client's
 // substring matching so a gateway-proxied Claude is never priced as a GPT.
@@ -685,7 +702,10 @@ func costOrEstimate(providerCostUSD float64, estimate func() float64) float64 {
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
 	// Cache multipliers of the selected rate card; OpenAI defaults, swapped to
 	// Anthropic's when the family matcher below selects Anthropic rates.
-	cacheWriteMult, cacheReadMult := 1.0, 0.5
+	// OpenAI discounts cached input by 90% from gpt-5/o-series onward and by 50%
+	// on the gpt-4 generation, so the read multiplier follows the family. Writes
+	// are never surcharged — caching is automatic, with no write to bill.
+	cacheWriteMult, cacheReadMult := 1.0, openAICacheReadMultiplier(c.model)
 	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
 	// to the provider-local rates below only for model ids it does not list.
 	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("openai", c.model)
