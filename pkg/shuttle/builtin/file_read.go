@@ -9,10 +9,16 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	gitignore "github.com/sabhiram/go-gitignore"
 
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -28,14 +34,29 @@ const (
 
 // FileReadTool provides safe file reading capabilities for agents.
 // Enables data grounding by reading actual file content rather than guessing.
+// paths accepts globs (including ** via directory walk) so one call surveys
+// many files; pattern turns the call into a project-wide search.
 //
-// DEPRECATED: Use workspace tool for session-scoped file operations (read, write, search, list)
-// or shell_execute for direct filesystem access (cat, ls, etc.). The workspace tool provides
-// superior functionality with session isolation, artifact indexing, and full-text search.
-// This tool remains for backwards compatibility but is not recommended for new agents.
+// Wildcard sweeps skip build artifacts: hidden directories, the project's
+// own .gitignore, and dbt's conventional machinery folders (target/,
+// dbt_packages/, logs/) — a project without a .gitignore still gets dbt's
+// hygiene. Explicitly named paths, and globs whose literal prefix already
+// points inside a skipped folder, bypass the filter: declared intent is
+// never blocked, only accidental sweeps inherit the hygiene.
 type FileReadTool struct {
 	baseDir string // Optional base directory for safety
+
+	ignoreOnce sync.Once
+	ignorer    *gitignore.GitIgnore // nil when the project has no .gitignore
 }
+
+// MaxMultiReadFiles caps glob expansion — a wider match must be narrowed.
+const MaxMultiReadFiles = 50
+
+// buildArtifactDirs are dbt's regenerated machinery folders — compiled and
+// run SQL, installed packages, logs. Wildcard sweeps skip them the way they
+// skip hidden directories; a literal path into one still reads.
+var buildArtifactDirs = map[string]bool{"target": true, "dbt_packages": true, "logs": true}
 
 // NewFileReadTool creates a new file read tool.
 // If baseDir is empty, reads from current directory (with safety checks).
@@ -53,30 +74,43 @@ func (t *FileReadTool) Name() string {
 }
 
 // Description returns the tool description.
-// Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
-// This fallback is used only when prompts are not configured.
 func (t *FileReadTool) Description() string {
-	return `⚠️ DEPRECATED: Use workspace (action=read, scope=artifact) or shell_execute (cat) instead.
-Reads text and binary files from the local filesystem. Max 10MB. Won't read sensitive system paths.`
+	return `Read files. paths accepts globs (models/**/*.sql), so one call can read many files; wildcards skip build artifacts (target/, dbt_packages/, logs/) — name such a path exactly to read it. pattern, acts as a project-wide search returning matching lines (path:line). Use this for all file reading and searching. Max 10MB per file.`
 }
 
 func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for reading files",
 		map[string]*shuttle.JSONSchema{
-			"path": shuttle.NewStringSchema("File path to read (required)."),
-			"encoding": shuttle.NewStringSchema("Output encoding: 'text' (default) or 'base64' for binary files").
+			"paths": {
+				Type:        "array",
+				Description: "File paths and/or globs to read (e.g. [\"dbt_project.yml\", \"models/**/*.sql\"]). Preferred over path.",
+				Items:       shuttle.NewStringSchema("file path or glob"),
+			},
+			"pattern": shuttle.NewStringSchema("Optional regex. When set, returns only matching lines as path:line: text (search mode) instead of full contents."),
+			"path":    shuttle.NewStringSchema("Single file path to read (legacy form; prefer paths)."),
+			"encoding": shuttle.NewStringSchema("Output encoding: 'text' (default) or 'base64' for binary files (single-path form only)").
 				WithEnum("text", "base64").
 				WithDefault("text"),
-			"max_lines":  shuttle.NewNumberSchema("Maximum lines to return for text files (default: 1000, 0 = unlimited)"),
-			"start_line": shuttle.NewNumberSchema("Start reading from this line number (1-based, default: 1)"),
+			"max_lines":  shuttle.NewNumberSchema("Maximum lines to return per text file (default: 1000, 0 = unlimited)"),
+			"start_line": shuttle.NewNumberSchema("Start reading from this line number (1-based, default: 1; single-path form only)"),
 		},
-		[]string{"path"},
+		[]string{},
 	)
 }
 
 func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	start := time.Now()
+
+	// Multi-file / search form: paths array or pattern present.
+	if rawPaths, ok := params["paths"].([]interface{}); ok && len(rawPaths) > 0 {
+		return t.executeMulti(rawPaths, params, start)
+	}
+	if pat, ok := params["pattern"].(string); ok && pat != "" {
+		if p, ok := params["path"].(string); ok && p != "" {
+			return t.executeMulti([]interface{}{p}, params, start)
+		}
+	}
 
 	// Extract parameters
 	path, ok := params["path"].(string)
@@ -85,8 +119,8 @@ func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "INVALID_PARAMS",
-				Message:    "path is required",
-				Suggestion: "Provide a file path (e.g., 'data/results.json' or 'npath_analysis_results.md')",
+				Message:    "paths (or path) is required",
+				Suggestion: "Provide paths: [\"models/**/*.sql\"] or a single path",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
@@ -283,4 +317,278 @@ func isSensitiveReadPath(path string) bool {
 	}
 
 	return false
+}
+
+// executeMulti serves the paths-array and pattern (search) forms.Each path may
+// be a literal file or a glob; expansion is capped at MaxMultiReadFiles. A
+// failed path becomes an error line in its block; the call fails only when
+// every path fails.
+func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]interface{}, start time.Time) (*shuttle.Result, error) {
+	maxLines := DefaultMaxLines
+	if m, ok := params["max_lines"].(float64); ok {
+		maxLines = int(m)
+	}
+
+	var re *regexp.Regexp
+	if pat, ok := params["pattern"].(string); ok && pat != "" {
+		var err error
+		re, err = regexp.Compile(pat)
+		if err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "INVALID_PARAMS",
+					Message: fmt.Sprintf("pattern does not compile: %v", err),
+				},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+	}
+
+	// Expand entries: literals pass through, globs expand. A glob that
+	// matches nothing is reported — in a survey, an empty folder is
+	// information, not noise. (Literal paths report absence per-file later.)
+	var files []string
+	var zeroMatch []string
+	seen := map[string]bool{}
+	for _, r := range rawPaths {
+		entry, _ := r.(string)
+		if entry == "" {
+			continue
+		}
+		expanded := t.expandEntry(entry)
+		if len(expanded) == 0 && strings.ContainsAny(entry, "*?[") {
+			zeroMatch = append(zeroMatch, entry)
+			continue
+		}
+		for _, f := range expanded {
+			if !seen[f] {
+				seen[f] = true
+				files = append(files, f)
+			}
+		}
+	}
+	if len(files) == 0 {
+		msg := "no files matched the given paths"
+		if len(zeroMatch) > 0 {
+			msg = fmt.Sprintf("no files matched: %s", strings.Join(zeroMatch, ", "))
+		}
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "FILE_NOT_FOUND",
+				Message:    msg,
+				Suggestion: "Check the paths/globs against the project tree (ls first if unsure)",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	if len(files) > MaxMultiReadFiles {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "TOO_MANY_FILES",
+				Message:    fmt.Sprintf("%d files matched (max %d)", len(files), MaxMultiReadFiles),
+				Suggestion: "Narrow the glob or split into multiple calls",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	sort.Strings(files)
+
+	var b strings.Builder
+	okCount := 0
+	matchCount := 0
+	for _, f := range files {
+		clean := f
+		if !filepath.IsAbs(clean) {
+			clean = filepath.Join(t.baseDir, clean)
+		}
+		clean = filepath.Clean(clean)
+		display := f
+
+		fail := func(msg string) {
+			b.WriteString(fmt.Sprintf("=== %s ===\nERROR: %s\n", display, msg))
+		}
+		if isSensitiveReadPath(clean) {
+			fail("sensitive location, not readable")
+			continue
+		}
+		info, err := os.Stat(clean)
+		if err != nil {
+			fail("not found")
+			continue
+		}
+		if info.IsDir() {
+			fail("is a directory")
+			continue
+		}
+		if info.Size() > MaxFileReadSize {
+			fail(fmt.Sprintf("too large (%d bytes, max %d)", info.Size(), MaxFileReadSize))
+			continue
+		}
+		data, err := os.ReadFile(clean)
+		if err != nil {
+			fail(fmt.Sprintf("read failed: %v", err))
+			continue
+		}
+		okCount++
+		lines := strings.Split(string(data), "\n")
+		if re != nil {
+			for i, line := range lines {
+				if re.MatchString(line) {
+					b.WriteString(fmt.Sprintf("%s:%d: %s\n", display, i+1, line))
+					matchCount++
+				}
+			}
+			continue
+		}
+		truncated := false
+		if maxLines > 0 && len(lines) > maxLines {
+			lines = lines[:maxLines]
+			truncated = true
+		}
+		b.WriteString(fmt.Sprintf("=== %s ===\n%s\n", display, strings.Join(lines, "\n")))
+		if truncated {
+			b.WriteString(fmt.Sprintf("[truncated at %d lines]\n", maxLines))
+		}
+	}
+
+	out := b.String()
+	for _, zm := range zeroMatch {
+		out += fmt.Sprintf("(no matches: %s)\n", zm)
+	}
+	if re != nil && matchCount == 0 && okCount > 0 {
+		out += fmt.Sprintf("no lines matched pattern in %d file(s)\n", okCount)
+	}
+	return &shuttle.Result{
+		Success:         okCount > 0,
+		Data:            out,
+		ExecutionTimeMs: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// expandEntry turns one paths entry into concrete files. Literal paths pass
+// through untouched (existence is judged later, per file). Globs expand via
+// filepath.Glob; a ** glob walks the directory before the ** and matches the
+// suffix pattern against the basename (or the relative path when the suffix
+// itself contains a slash) — covers the models/**/*.sql shape. Wildcard
+// results are filtered through the project's .gitignore and the hidden-dir
+// convention unless the entry's literal prefix already aims inside an
+// ignored folder (declared intent bypasses the filter).
+func (t *FileReadTool) expandEntry(entry string) []string {
+	hasGlob := strings.ContainsAny(entry, "*?[")
+	if !hasGlob {
+		return []string{entry}
+	}
+	abs := entry
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(t.baseDir, abs)
+	}
+
+	// Declared intent: the non-wildcard prefix of the pattern already points
+	// inside an ignored/hidden folder — the caller aimed there deliberately.
+	wildIdx := strings.IndexAny(abs, "*?[")
+	literalPrefix := filepath.Dir(abs[:wildIdx+1])
+	filterSweep := !t.sweepExcluded(literalPrefix)
+
+	keep := func(p string) bool { return !filterSweep || !t.sweepExcluded(p) }
+
+	if !strings.Contains(entry, "**") {
+		matches, _ := filepath.Glob(abs)
+		var out []string
+		for _, m := range matches {
+			if keep(m) {
+				out = append(out, m)
+			}
+		}
+		return trimBase(out, t.baseDir, filepath.IsAbs(entry))
+	}
+	idx := strings.Index(abs, "**")
+	root := filepath.Dir(abs[:idx+1]) // directory before the **
+	suffix := strings.TrimPrefix(abs[idx+2:], "/")
+	var out []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root && filterSweep && t.sweepExcluded(p) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !keep(p) {
+			return nil
+		}
+		var target string
+		if strings.Contains(suffix, "/") {
+			rel, rerr := filepath.Rel(root, p)
+			if rerr != nil {
+				return nil
+			}
+			target = rel
+		} else {
+			target = filepath.Base(p)
+		}
+		if okMatch, _ := filepath.Match(suffix, target); okMatch || suffix == "" {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return trimBase(out, t.baseDir, filepath.IsAbs(entry))
+}
+
+// projectIgnore lazily loads the project's .gitignore; nil when absent.
+func (t *FileReadTool) projectIgnore() *gitignore.GitIgnore {
+	t.ignoreOnce.Do(func() {
+		if gi, err := gitignore.CompileIgnoreFile(filepath.Join(t.baseDir, ".gitignore")); err == nil {
+			t.ignorer = gi
+		}
+	})
+	return t.ignorer
+}
+
+// sweepExcluded reports whether a path is off-limits to wildcard sweeps:
+// gitignored by the project, or inside a hidden (dot) directory. Paths
+// outside the project draw no opinion.
+func (t *FileReadTool) sweepExcluded(absPath string) bool {
+	rel, err := filepath.Rel(t.baseDir, absPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return false
+	}
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if len(seg) > 1 && strings.HasPrefix(seg, ".") {
+			return true
+		}
+		if buildArtifactDirs[seg] {
+			return true
+		}
+	}
+	if gi := t.projectIgnore(); gi != nil {
+		// Directory patterns ("target/") match only slash-terminated paths in
+		// the gitignore spec; test both forms so a bare directory path is
+		// judged the same as its contents.
+		if gi.MatchesPath(rel) || gi.MatchesPath(rel+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// trimBase renders matches relative to baseDir for display unless the caller
+// asked in absolute terms.
+func trimBase(paths []string, baseDir string, keepAbs bool) []string {
+	if keepAbs {
+		return paths
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if rel, err := filepath.Rel(baseDir, p); err == nil && !strings.HasPrefix(rel, "..") {
+			out = append(out, rel)
+		} else {
+			out = append(out, p)
+		}
+	}
+	return out
 }

@@ -393,7 +393,9 @@ func TestClient_ConvertResponse(t *testing.T) {
 }
 
 func TestClient_CalculateCost(t *testing.T) {
-	client := &Client{}
+	// Pricing arithmetic is exercised against a catalogued model; an empty
+	// modelID now reports zero by design (see the uncatalogued-model case).
+	client := &Client{modelID: "us.anthropic.claude-sonnet-5"}
 
 	tests := []struct {
 		name         string
@@ -429,7 +431,7 @@ func TestClient_CalculateCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cost := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			cost := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.InDelta(t, tt.expectedCost, cost, 0.0001)
 		})
 	}
@@ -497,20 +499,20 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			outputTokens: tokens,
 			wantCost:     18.0, // $3 + $15
 		},
-		// --- Unknown model falls back to Sonnet ---
+		// --- Uncatalogued model reports no cost rather than a guessed one ---
 		{
-			name:         "unknown model defaults to sonnet pricing",
+			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &Client{modelID: tt.modelID}
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.InDelta(t, tt.wantCost, got, 0.001,
 				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
 		})
@@ -597,13 +599,13 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// cache read:  500K * $5 * 0.10 / 1M = $0.25
 			wantCost: 31.50,
 		},
-		// --- Unknown model defaults to Sonnet ---
+		// --- Uncatalogued model reports no cost rather than a guessed one ---
 		{
-			name:         "unknown model defaults to sonnet",
+			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0,
+			wantCost:     0,
 		},
 	}
 

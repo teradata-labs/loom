@@ -494,11 +494,11 @@ Under `spec.memory.memory_compression`.
 
 | Profile | L1 token target | min_l1 | warning | critical | batch (N/W/C) | Use case |
 |---|---|---|---|---|---|---|
-| `balanced` | 6400 | 4 | 60% | 75% | 3/5/7 | General-purpose agents |
-| `data_intensive` | 4000 | 3 | 50% | 70% | 2/4/6 | SQL, large file operations |
-| `conversational` | 9600 | 6 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
+| `balanced` | 6400 | 4 | 60% | 90% | 3/5/7 | General-purpose agents |
+| `data_intensive` | 4000 | 3 | 45% | 80% | 2/4/6 | SQL, large file operations |
+| `conversational` | 9600 | 6 | 70% | 92% | 4/6/8 | Chat-heavy, minimal tool usage |
 
-The L1 token target is a reporting figure only; `warning` is the value that triggers compression.
+The L1 token target is a reporting figure only. `critical` is the high-water mark where relief begins; `warning` is the low-water mark it sheds down to — the gap is deliberate hysteresis per workload.
 
 ---
 

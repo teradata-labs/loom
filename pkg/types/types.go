@@ -10,6 +10,8 @@ package types
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,6 +111,17 @@ type Message struct {
 	// ToolCalls contains tool invocations (if role is assistant)
 	ToolCalls []ToolCall
 
+	// Thinking is the assistant's extended-thinking plain text (display and
+	// persistence — lands in the store's thinking_content). Never sent to
+	// the provider; the wire form is ThinkingBlocks.
+	Thinking string
+
+	// ThinkingBlocks carries the assistant's extended-thinking blocks for
+	// in-turn replay (tool-loop continuations). Opaque: signatures are
+	// provider-signed and never interpreted. Never persisted — the compile
+	// strips settled turns and the persist seam drops them entirely.
+	ThinkingBlocks []ThinkingBlock
+
 	// ToolUseID is the ID of the tool_use block this result corresponds to (if role is tool)
 	// This is used by LLM providers like Bedrock/Anthropic to match tool results to tool requests
 	ToolUseID string
@@ -192,6 +205,20 @@ type LLMResponse struct {
 	// Thinking contains the agent's internal reasoning process
 	// (for models that support extended thinking like Claude with thinking blocks)
 	Thinking string
+
+	// ThinkingBlocks carries the structured thinking blocks (with provider
+	// signatures) for verbatim in-turn replay; Thinking above remains the
+	// concatenated plain text for events and display.
+	ThinkingBlocks []ThinkingBlock
+}
+
+// ThinkingBlock is one extended-thinking block of an assistant response,
+// carried opaquely: Signature is provider-signed and never interpreted;
+// redacted blocks keep their encrypted payload in Thinking.
+type ThinkingBlock struct {
+	Type      string // "thinking" | "redacted_thinking"
+	Thinking  string
+	Signature string
 }
 
 // LLMProvider defines the interface for LLM providers.
@@ -289,6 +316,11 @@ type Session struct {
 
 	// Context holds session-specific context (database, table, etc.)
 	Context map[string]interface{}
+
+	// Tasks is the session's working checklist. In-memory only: never
+	// persisted, never a Message — context relief cannot reach it by
+	// construction. Lazily created by the task_list tool's first create.
+	Tasks *TaskList
 
 	// CreatedAt is when the session was created
 	CreatedAt time.Time
@@ -540,4 +572,155 @@ func SafeUint(n int) uint {
 		return 0
 	}
 	return uint(n)
+}
+
+// TaskItem is one checklist entry. Title and Criteria are write-once: the
+// only mutations TaskList exposes are status transitions. A wrong criterion
+// is cancelled (with reason) and re-created — there is deliberately no edit,
+// so criteria can only enter the list from a fresh read of the task text.
+type TaskItem struct {
+	ID       int
+	Title    string
+	Criteria string
+	Contract string // output contract for data deliverables; write-once like Criteria
+	Status   string // "pending" | "in_progress" | "done" | "cancelled"
+	Reason   string // required when Status == "cancelled"
+}
+
+// TaskList is the mu-guarded item set. Construct with NewTaskList.
+type TaskList struct {
+	mu     sync.Mutex
+	nextID int
+	items  []*TaskItem
+}
+
+// NewTaskList creates an empty list; IDs start at 1.
+func NewTaskList() *TaskList { return &TaskList{nextID: 1} }
+
+// Create appends items (status pending) and returns their assigned IDs.
+// Empty titles reject the whole batch — partial creation would leave the
+// model unsure which IDs exist.
+func (tl *TaskList) Create(items []TaskItem) ([]int, error) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	for i, it := range items {
+		if strings.TrimSpace(it.Title) == "" {
+			return nil, fmt.Errorf("item %d has an empty title — nothing created", i+1)
+		}
+	}
+	ids := make([]int, 0, len(items))
+	for _, it := range items {
+		tl.items = append(tl.items, &TaskItem{
+			ID:       tl.nextID,
+			Title:    strings.TrimSpace(it.Title),
+			Criteria: strings.TrimSpace(it.Criteria),
+			Contract: strings.TrimSpace(it.Contract),
+			Status:   "pending",
+		})
+		ids = append(ids, tl.nextID)
+		tl.nextID++
+	}
+	return ids, nil
+}
+
+// Update transitions one item's status. cancelled requires a non-empty
+// reason. done and cancelled are terminal: further transitions are rejected
+// so a finished mark can never be silently reopened-and-lost.
+func (tl *TaskList) Update(id int, status, reason string) error {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	var it *TaskItem
+	for _, x := range tl.items {
+		if x.ID == id {
+			it = x
+			break
+		}
+	}
+	if it == nil {
+		return fmt.Errorf("no task #%d", id)
+	}
+	switch status {
+	case "in_progress", "done":
+	case "cancelled":
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("cancelling #%d requires a reason", id)
+		}
+	default:
+		return fmt.Errorf("status must be in_progress, done or cancelled; got %q", status)
+	}
+	if it.Status == "done" || it.Status == "cancelled" {
+		return fmt.Errorf("#%d is %s — terminal; create a new task instead", id, it.Status)
+	}
+	it.Status = status
+	it.Reason = strings.TrimSpace(reason)
+	return nil
+}
+
+// Open reports whether any item is pending or in_progress — the agent's
+// completion gate.
+func (tl *TaskList) Open() bool {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	for _, it := range tl.items {
+		if it.Status == "pending" || it.Status == "in_progress" {
+			return true
+		}
+	}
+	return false
+}
+
+// Render produces the transient-tail block. in_progress items carry their
+// criteria verbatim and never truncate; pending items are title-only and
+// truncate first; done/cancelled collapse to counts. maxBytes bounds the
+// whole block. An empty list renders "".
+func (tl *TaskList) Render(maxBytes int) string {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	if len(tl.items) == 0 {
+		return ""
+	}
+	var inProg, pending []string
+	done, cancelled := 0, 0
+	for _, it := range tl.items {
+		switch it.Status {
+		case "in_progress":
+			line := fmt.Sprintf("#%d IN PROGRESS: %s", it.ID, it.Title)
+			if it.Criteria != "" {
+				line += " — criteria: " + it.Criteria
+			}
+			if it.Contract != "" {
+				line += " — output contract: " + it.Contract
+			}
+			inProg = append(inProg, line)
+		case "pending":
+			pending = append(pending, fmt.Sprintf("#%d pending: %s", it.ID, it.Title))
+		case "done":
+			done++
+		case "cancelled":
+			cancelled++
+		}
+	}
+	head := fmt.Sprintf("TASKS (%d done", done)
+	if cancelled > 0 {
+		head += fmt.Sprintf(", %d cancelled", cancelled)
+	}
+	head += ")"
+	lines := append([]string{head}, inProg...)
+	used := 0
+	for _, l := range lines {
+		used += len(l) + 1
+	}
+	shown := 0
+	for _, p := range pending {
+		if used+len(p)+1 > maxBytes {
+			break
+		}
+		lines = append(lines, p)
+		used += len(p) + 1
+		shown++
+	}
+	if shown < len(pending) {
+		lines = append(lines, fmt.Sprintf("(+%d more pending)", len(pending)-shown))
+	}
+	return strings.Join(lines, "\n")
 }

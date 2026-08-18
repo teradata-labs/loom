@@ -252,13 +252,17 @@ prompt:
       expected_output: "Follow classification workflow: TD_ColumnSummary -> TD_SimpleImputeTransform -> TD_ScaleTransform -> TD_TrainTestSplit -> TD_XGBoost -> TD_ClassificationEvaluator"
       explanation: "End-to-end ML pipeline using native functions with no data leaving Teradata"
 tools:
-  required_tools: []
+  required_tools:
+    - execute_sql
+    - explain_query
+    - get_syntax_help
   preferred_order:
     - execute_sql
     - explain_query
     - get_syntax_help
   excluded_tools: []
-  mcp_servers: []
+  mcp_servers:
+    - teradata
 pattern_refs:
   - teradata-data-prep
   - teradata-ml

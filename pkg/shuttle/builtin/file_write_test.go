@@ -302,3 +302,66 @@ func TestFileWriteTool_Modes(t *testing.T) {
 		}
 	})
 }
+
+// files batch writes every entry in one call with per-file report lines.
+func TestFileWriteTool_BatchWrite(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"files": []interface{}{
+			map[string]interface{}{"path": "models/a.sql", "content": "select 1"},
+			map[string]interface{}{"path": "models/b.sql", "content": "select 2"},
+		},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("batch write failed: %v %+v", err, res)
+	}
+	out := res.Data.(string)
+	if !strings.Contains(out, "created models/a.sql") || !strings.Contains(out, "created models/b.sql") {
+		t.Fatalf("per-file lines missing: %q", out)
+	}
+	for _, f := range []string{"a.sql", "b.sql"} {
+		if _, statErr := os.Stat(filepath.Join(dir, "models", f)); statErr != nil {
+			t.Fatalf("file %s not written: %v", f, statErr)
+		}
+	}
+}
+
+// A failing entry does not stop the rest; failures name their path.
+func TestFileWriteTool_BatchPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"files": []interface{}{
+			map[string]interface{}{"path": "/etc/evil.txt", "content": "x"},
+			map[string]interface{}{"path": "good.txt", "content": "y"},
+		},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("partial batch must succeed: %v %+v", err, res)
+	}
+	out := res.Data.(string)
+	if !strings.Contains(out, "FAILED /etc/evil.txt") || !strings.Contains(out, "created good.txt") {
+		t.Fatalf("expected mixed report: %q", out)
+	}
+}
+
+// Single-file form defaults to overwrite: writing an existing path succeeds.
+func TestFileWriteTool_DefaultOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path": "f.txt", "content": "new",
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("overwrite-by-default failed: %v %+v", err, res)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "new" {
+		t.Fatalf("content = %q, want new", got)
+	}
+}

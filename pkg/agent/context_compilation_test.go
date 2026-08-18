@@ -92,7 +92,12 @@ func TestCompile_OffloadStubForCurrentTurnOversizeResult(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(offloadStubFormat, "web_search", tokenFigure(len(big)), int64(42), "", previewOf(big))
+	meta, tabular := previewMeta(big)
+	format := offloadStubOpaqueFormat
+	if tabular {
+		format = offloadStubFormat
+	}
+	want := fmt.Sprintf(format, "web_search", tokenFigure(len(big)), int64(42), "", meta)
 	assert.Equal(t, want, rendered, "the §5.5 offload stub, byte-exact")
 }
 
@@ -127,7 +132,8 @@ func TestCompile_LegacyOversizePriorTurnRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "execute_sql", tokenFigure(len(big)), "", previewOf(big))
+	evMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "execute_sql", tokenFigure(len(big)), "", evMeta)
 	assert.Equal(t, want, rendered, "a legacy unbounded prior-turn row renders the evicted stub")
 }
 
@@ -155,7 +161,8 @@ func TestCompile_OffloadExemptToolRendersWholeCurrentTurn(t *testing.T) {
 	}
 	assert.Equal(t, exemptBig, rendered["c1"],
 		"an exempt tool's current-turn oversize result renders whole")
-	want := fmt.Sprintf(offloadStubFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", previewOf(plainBig))
+	plainMeta, _ := previewMeta(plainBig)
+	want := fmt.Sprintf(offloadStubOpaqueFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", plainMeta)
 	assert.Equal(t, want, rendered["c2"],
 		"a non-exempt tool in the same compile still renders the offload stub")
 }
@@ -175,7 +182,8 @@ func TestCompile_OffloadExemptPriorTurnStillRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	bigMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
 	assert.Equal(t, want, rendered,
 		"exemption is a render condition of the producing turn only — prior turns evict as usual")
 }
@@ -195,7 +203,8 @@ func TestCompile_OffloadExemptEvictedFlagStillRendersEvictedStub(t *testing.T) {
 			rendered = m.Content
 		}
 	}
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", previewOf(big))
+	bigMeta, _ := previewMeta(big)
+	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
 	assert.Equal(t, want, rendered,
 		"relief's evicted flag wins over exemption — the exempt set never blocks pressure release")
 }
@@ -281,12 +290,13 @@ func TestAgent_SetOffloadExemptTools_ForwardsToMemory(t *testing.T) {
 	(&Agent{}).SetOffloadExemptTools([]string{"reference_lookup"})
 }
 
-// TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the cache
-// breakpoint freezes BEFORE a current-turn query_tool_result call/result pair.
-// That pair is ephemeral (§4.3) and pruned when the turn settles; if it sat
-// inside the cached prefix, the next call's prefix would lose it and miss the
-// cache. This is the same freeze rule the offload stub gets — here with no
-// offload stub preceding the pair (the anomalous failed cross-turn query).
+// TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the frozen
+// fallback breakpoint sits BEFORE a current-turn query_tool_result call/result
+// pair. That pair is ephemeral (§4.3) and pruned when the turn settles, so the
+// prefix that survives settle must end before it — the lastStable marker is
+// what the next turn's first call falls back to. The pair itself additionally
+// sits under the till-NOW marker (§5.2 step 8 addendum): within the turn it is
+// append-only-stable, so caching up to the tip is read back until settle.
 func TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint(t *testing.T) {
 	sm := newCompileMemory(t)
 	// Turn 1 settled.
@@ -300,21 +310,22 @@ func TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint(t *testing.T) {
 		Content: "error: not_this_turn", Turn: 2})
 
 	out := sm.GetMessagesForLLM()
-	queryIdx, bpIdx := -1, -1
+	queryIdx, fallbackIdx := -1, -1
 	for i, m := range out {
 		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == "query_tool_result" {
 			queryIdx = i
 		}
-		if i >= 1 && m.CacheBreakpoint { // i>=1 skips the ROM breakpoint at idx 0
-			bpIdx = i
+		if i >= 1 && m.CacheBreakpoint && (queryIdx == -1 || i < queryIdx) { // i>=1 skips the ROM breakpoint at idx 0
+			fallbackIdx = i
 		}
 	}
 	require.NotEqual(t, -1, queryIdx, "the query_tool_result call is present")
-	require.NotEqual(t, -1, bpIdx, "a message cache breakpoint was placed")
-	assert.Less(t, bpIdx, queryIdx,
-		"the breakpoint freezes before the ephemeral query pair, keeping it out of the cached prefix")
-	assert.False(t, out[queryIdx].CacheBreakpoint, "the query call itself is never the breakpoint")
-	assert.False(t, out[queryIdx+1].CacheBreakpoint, "the query result is never the breakpoint")
+	require.NotEqual(t, -1, fallbackIdx, "a fallback breakpoint was placed before the pair")
+	assert.Less(t, fallbackIdx, queryIdx,
+		"the fallback breakpoint freezes before the ephemeral query pair — the prefix that survives settle ends there")
+	assert.False(t, out[queryIdx].CacheBreakpoint, "the query call itself is never a breakpoint")
+	assert.True(t, out[queryIdx+1].CacheBreakpoint,
+		"the till-NOW marker rides the tip — the pair is cached intra-turn and falls away at settle")
 }
 
 func TestCompile_EvictedFlagRendersEvictedStub(t *testing.T) {
@@ -747,4 +758,152 @@ func TestPressureMarks_PenaltyNeverGoesNegative(t *testing.T) {
 		"the recovery start mark must stay positive")
 	assert.LessOrEqual(t, sm.releaseMarkLocked(pressureRecoveryPenalty), sm.startMarkLocked(pressureRecoveryPenalty),
 		"the band must not invert under the penalty")
+}
+
+// --- §5.5: previewMeta — metadata-shaped stub previews -----------------------
+
+func TestPreviewMeta_TabularEnvelope(t *testing.T) {
+	content := `{"ok":true,"columns":["DataBaseName","TableName"],"rows":[["agentic_demo","t1"],["agentic_demo","t2"]],"row_count":2,"total_row_count":1004}`
+	meta, tabular := previewMeta(content)
+	assert.True(t, tabular, "the drain envelope is tabular — the sql door applies")
+	assert.Contains(t, meta, "columns: [DataBaseName, TableName]")
+	assert.Contains(t, meta, "rows: 2 of 1004", "partial payloads state N of M — the you-have-not-seen-this signal")
+	assert.Contains(t, meta, `sample: ["agentic_demo","t1"]`)
+}
+
+func TestPreviewMeta_UniformObjects(t *testing.T) {
+	content := `[{"b":1,"a":"x"},{"b":2,"a":"y"}]`
+	meta, tabular := previewMeta(content)
+	assert.True(t, tabular)
+	assert.Contains(t, meta, "columns: [a, b]", "object-array columns are sorted — byte-stable")
+	assert.Contains(t, meta, "rows: 2")
+}
+
+func TestPreviewMeta_JSONShape(t *testing.T) {
+	content := `{"jobs":[1,2,3],"status":"ok","meta":{"a":1,"b":2}}`
+	meta, tabular := previewMeta(content)
+	assert.False(t, tabular, "non-tabular JSON gets no sql door")
+	assert.Contains(t, meta, "shape: {jobs: [3 items], meta: {2 keys}, status: str}",
+		"sorted keys, kinds not values")
+}
+
+func TestPreviewMeta_OpaqueTextHeadAndTail(t *testing.T) {
+	content := strings.Repeat("log line about nothing\n", 100) + "FATAL: the actual conclusion"
+	meta, tabular := previewMeta(content)
+	assert.False(t, tabular)
+	assert.Contains(t, meta, "preview: log line")
+	assert.Contains(t, meta, "tail:", "conclusions live at the end of opaque text")
+	assert.Contains(t, meta, "the actual conclusion")
+}
+
+func TestPreviewMeta_Deterministic(t *testing.T) {
+	contents := []string{
+		`{"ok":true,"columns":["c"],"rows":[[1]],"total_row_count":50}`,
+		`{"z":1,"a":{"n":true},"list":[1,2]}`,
+		strings.Repeat("opaque ", 200),
+	}
+	for _, c := range contents {
+		m1, t1 := previewMeta(c)
+		m2, t2 := previewMeta(c)
+		assert.Equal(t, m1, m2, "previewMeta must be byte-stable across compiles (cache safety)")
+		assert.Equal(t, t1, t2)
+	}
+}
+
+// flakyCompressor fails its first failN calls, then returns out. Counts calls.
+type flakyCompressor struct {
+	out   string
+	failN int
+	calls int
+}
+
+func (f *flakyCompressor) CompressMessages(ctx context.Context, messages []Message) (string, error) {
+	f.calls++
+	if f.calls <= f.failN {
+		return "", fmt.Errorf("scripted compressor failure %d", f.calls)
+	}
+	return f.out, nil
+}
+func (f *flakyCompressor) IsEnabled() bool { return true }
+
+// reliefSingleTurnFixture builds a single-turn session whose pressure mass is
+// assistant TEXT (unevictable), so ReleasePressure must escalate to the
+// rung-0 fold of the current turn.
+func reliefSingleTurnFixture(t *testing.T) *SegmentedMemory {
+	t.Helper()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	const sessionID = "sess-single-turn"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetThreshold(6000)
+	sm.SetSessionStore(store, sessionID)
+
+	persist := func(role, content, toolUseID string, calls []ToolCall, turnStart bool) {
+		m := Message{Role: role, Content: content, ToolUseID: toolUseID, ToolCalls: calls}
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &m, turnStart))
+		sm.AddMessage(ctx, m)
+	}
+
+	persist("user", "TICKET: build the marts; payment_method_share = share of the source's transaction count", "", nil, true)
+	for i := 0; i < 5; i++ {
+		persist("assistant", strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120), "", nil, false)
+	}
+	persist("assistant", "", "", []ToolCall{{ID: "cLast", Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
+	persist("tool", "small result", "cLast", nil, false)
+	require.Equal(t, int64(1), sm.CurrentTurn())
+	return sm
+}
+
+// Invariant: a rung-0 fold of the current turn NEVER folds the turn's
+// user-role rows — the ticket survives in L1 verbatim while the assistant
+// prose around it folds into a real summary.
+func TestReleasePressure_NeverFoldsCurrentTurnUserRows(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	sm.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+
+	shed, _, _ := sm.ReleasePressure(context.Background(), 0)
+	require.True(t, shed, "pressure must shed via rung-0 fold")
+
+	msgs := sm.GetMessages()
+	foundTicket := false
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "payment_method_share = share of the source's transaction count") {
+			foundTicket = true
+		}
+	}
+	assert.True(t, foundTicket, "the ticket must survive the fold verbatim in L1")
+	assert.Contains(t, sm.summary.text, "summary of the analysis prose", "the fold itself must have committed")
+}
+
+// Invariant: with no working compressor there is NO fold — no heuristic
+// fallback, no "(unsummarized)" marker, no mutation.
+func TestReleasePressure_FoldAbortsWithoutSummary(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	fc := &flakyCompressor{failN: 99}
+	sm.SetCompressor(fc)
+
+	before := len(sm.GetMessages())
+	sm.ReleasePressure(context.Background(), 0)
+
+	assert.Equal(t, 3, fc.calls, "compressor must be retried exactly compressAttempts times")
+	assert.NotContains(t, sm.summary.text, "unsummarized", "the heuristic fallback must not exist")
+	assert.Equal(t, before, len(sm.GetMessages()), "an aborted fold mutates nothing")
+}
+
+// Invariant: a transient compressor failure is retried and the fold commits
+// on a later attempt.
+func TestReleasePressure_FoldRetriesThenSucceeds(t *testing.T) {
+	sm := reliefSingleTurnFixture(t)
+	fc := &flakyCompressor{failN: 2, out: "covers msg:1-99\nsummary after retry"}
+	sm.SetCompressor(fc)
+
+	shed, _, _ := sm.ReleasePressure(context.Background(), 0)
+	require.True(t, shed)
+	assert.Equal(t, 3, fc.calls, "two failures then the success")
+	assert.Contains(t, sm.summary.text, "summary after retry")
 }

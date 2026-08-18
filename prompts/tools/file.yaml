@@ -5,60 +5,49 @@ namespace: loom.file
 prompts:
   - id: file_read
     content: |
-      ⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (cat command).
-
-      Reads content from files on the local filesystem.
-      Use this tool to ground your responses in actual data rather than guessing.
-
-      Use this tool to:
-      - Read data files saved by previous workflow stages
-      - Verify file contents before summarizing
-      - Load configuration or results files
-      - Read markdown, JSON, XML, or other text files
-
-      Safety: Won't read sensitive system files. Max file size: 10MB.
-
-      RECOMMENDED ALTERNATIVES:
-      - workspace tool: action=read, scope=artifact (session-scoped, indexed, searchable)
-      - shell_execute: cat /path/to/file (direct filesystem access)
+      Read files. paths accepts globs (models/**/*.sql), so one call can read
+      many files. With pattern, acts as a project-wide search returning matching
+      lines (path:line). Use this for all file reading and searching.
+      Max 10MB per file; won't read sensitive system paths.
     tags:
       - tool
       - file
       - read
-      - deprecated
     metadata:
       version: "v1.0"
       description: "File reading tool (DEPRECATED)"
-      deprecated: true
       alternatives:
         - workspace
         - shell_execute
 
+  - id: edit_files
+    content: |
+      Change lines inside existing files. Each edit replaces one exact
+      occurrence of find with replace and fails loudly if find is absent or
+      ambiguous. Use for targeted fixes; use file_write for new or fully
+      reshaped files.
+    tags:
+      - tool
+      - file
+      - edit
+    metadata:
+      version: "v1.0"
+      description: "Exact-match in-place file edits"
+
   - id: file_write
     content: |
-      ⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (echo command).
-
-      Writes content to files on the local filesystem. Creates parent directories automatically.
-      Safe by default - won't overwrite system files.
-
-      Use this tool to:
-      - Save API responses to files
-      - Create data files from agent operations
-      - Store results for later processing
-      - Generate output files
-
-      RECOMMENDED ALTERNATIVES:
-      - workspace tool: action=write, scope=artifact (session-scoped, indexed, searchable)
-      - shell_execute: echo "content" > /path/to/file (direct filesystem access)
+      Write complete files: create or fully replace (replacing an existing file?
+      read it first). files carries every file that is ready — batch all
+      determined deliverables into one call. For line changes inside an existing
+      file use edit_files; never rewrite a large file to change a few lines.
+      Creates parent directories automatically; won't overwrite system files.
     tags:
       - tool
       - file
       - write
-      - deprecated
     metadata:
       version: "v1.0"
       description: "File writing tool (DEPRECATED)"
-      deprecated: true
       alternatives:
         - workspace
         - shell_execute

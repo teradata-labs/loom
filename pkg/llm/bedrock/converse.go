@@ -161,11 +161,14 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 						toolCall.Name = originalName
 					}
 
-					// Convert document.Interface to map[string]interface{}
+					// Decode the smithy document into the tool's arguments.
+					// json.Marshal on a document.Interface yields "{}" — the
+					// payload is reachable only through the smithy decoder, and
+					// marshalling it instead is how tool calls silently arrived
+					// with empty inputs.
 					if b.Value.Input != nil {
-						inputBytes, err := json.Marshal(b.Value.Input)
-						if err == nil {
-							_ = json.Unmarshal(inputBytes, &toolCall.Input)
+						if err := b.Value.Input.UnmarshalSmithyDocument(&toolCall.Input); err != nil {
+							return nil, fmt.Errorf("bedrock converse: decoding arguments for tool %q: %w", toolCall.Name, err)
 						}
 					}
 
@@ -181,7 +184,10 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 		usage.InputTokens = int(aws.ToInt32(output.Usage.InputTokens))
 		usage.OutputTokens = int(aws.ToInt32(output.Usage.OutputTokens))
 		usage.TotalTokens = int(aws.ToInt32(output.Usage.TotalTokens))
-		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+		usage.CacheReadInputTokens = int(aws.ToInt32(output.Usage.CacheReadInputTokens))
+		usage.CacheCreationInputTokens = int(aws.ToInt32(output.Usage.CacheWriteInputTokens))
+		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 	}
 
 	// Build response

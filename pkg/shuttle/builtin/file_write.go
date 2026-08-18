@@ -25,12 +25,8 @@ const (
 )
 
 // FileWriteTool provides safe file writing capabilities for agents.
-// Apple-style: Secure by default, creates directories automatically.
-//
-// DEPRECATED: Use workspace tool for session-scoped file operations (write, read, search, list)
-// or shell_execute for direct filesystem access (echo, tee, etc.). The workspace tool provides
-// superior functionality with session isolation, artifact indexing, and full-text search.
-// This tool remains for backwards compatibility but is not recommended for new agents.
+// Secure by default, creates directories automatically. files carries a
+// batch of complete files; whole-file replace is the default intent.
 type FileWriteTool struct {
 	baseDir string // Optional base directory for safety
 }
@@ -51,11 +47,8 @@ func (t *FileWriteTool) Name() string {
 }
 
 // Description returns the tool description.
-// Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
-// This fallback is used only when prompts are not configured.
 func (t *FileWriteTool) Description() string {
-	return `⚠️ DEPRECATED: Use workspace (action=write, scope=artifact) or shell_execute instead.
-Writes content to files on the local filesystem, creating parent directories automatically. Won't overwrite system files.`
+	return `Write complete files: create or fully replace (replacing an existing file? read it first). files carries every file that is ready — batch all determined deliverables into one call. For line changes inside an existing file use edit_files; never rewrite a large file to change a few lines. Creates parent directories automatically; won't overwrite system files.`
 }
 
 func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
@@ -63,19 +56,62 @@ func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for writing files",
 		map[string]*shuttle.JSONSchema{
-			"path": shuttle.NewStringSchema("File path to write (required)."),
-			"content": shuttle.NewStringSchema("Content to write to the file (required). Max 50KB per call - use append mode for larger content.").
+			"files": {
+				Type:        "array",
+				Description: "Files to write — batch every file that is ready into one call. Each entry is {path, content, mode?}.",
+				Items: &shuttle.JSONSchema{
+					Type: "object",
+					Properties: map[string]*shuttle.JSONSchema{
+						"path":    shuttle.NewStringSchema("File path to write."),
+						"content": shuttle.NewStringSchema("Complete file content. Max 50KB per file."),
+						"mode": shuttle.NewStringSchema("'overwrite' (default), 'create' (fail if exists), or 'append'").
+							WithEnum("create", "overwrite", "append"),
+					},
+					Required: []string{"path", "content"},
+				},
+			},
+			"path": shuttle.NewStringSchema("File path to write (single-file form; prefer files)."),
+			"content": shuttle.NewStringSchema("Content to write to the file (single-file form). Max 50KB per call - use append mode for larger content.").
 				WithLength(nil, &maxContentLen),
-			"mode": shuttle.NewStringSchema("Write mode: 'create' (fail if exists), 'overwrite', or 'append' (default: create)").
+			"mode": shuttle.NewStringSchema("Write mode: 'overwrite' (default), 'create' (fail if exists), or 'append'").
 				WithEnum("create", "overwrite", "append").
-				WithDefault("create"),
+				WithDefault("overwrite"),
 		},
-		[]string{"path", "content"},
+		[]string{},
 	)
 }
 
 func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	start := time.Now()
+
+	// Batch form: files applied in order, each reported on its own line; one
+	// failure does not stop the rest.
+	if rawFiles, ok := params["files"].([]interface{}); ok && len(rawFiles) > 0 {
+		lines := make([]string, 0, len(rawFiles))
+		failed := 0
+		for _, r := range rawFiles {
+			m, _ := r.(map[string]interface{})
+			p, _ := m["path"].(string)
+			c, cok := m["content"].(string)
+			mode, _ := m["mode"].(string)
+			if p == "" || !cok {
+				lines = append(lines, "FAILED: entry missing path or content")
+				failed++
+				continue
+			}
+			if line, err := t.writeOne(p, c, mode); err != nil {
+				lines = append(lines, fmt.Sprintf("FAILED %s: %v", p, err))
+				failed++
+			} else {
+				lines = append(lines, line)
+			}
+		}
+		return &shuttle.Result{
+			Success:         failed < len(rawFiles),
+			Data:            strings.Join(lines, "\n"),
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
 
 	// Extract parameters
 	path, ok := params["path"].(string)
@@ -128,8 +164,8 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 		}, nil
 	}
 
-	mode := "create"
-	if m, ok := params["mode"].(string); ok {
+	mode := "overwrite"
+	if m, ok := params["mode"].(string); ok && m != "" {
 		mode = m
 	}
 
@@ -229,6 +265,55 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 		},
 		ExecutionTimeMs: time.Since(start).Milliseconds(),
 	}, nil
+}
+
+// writeOne applies a single batch entry with the same semantics as the
+// single-file form: sensitive-path guard, 50KB cap, mode handling (default
+// overwrite), parent-directory creation. Returns a one-line report.
+func (t *FileWriteTool) writeOne(path, content, mode string) (string, error) {
+	if mode == "" {
+		mode = "overwrite"
+	}
+	if len(content) > MaxSafeContentSize {
+		return "", fmt.Errorf("content exceeds 50KB limit (%d bytes)", len(content))
+	}
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(t.baseDir, cleanPath)
+	}
+	if isSensitivePath(cleanPath) {
+		return "", fmt.Errorf("sensitive location, not writable")
+	}
+	_, statErr := os.Stat(cleanPath)
+	fileExists := statErr == nil
+	if fileExists && mode == "create" {
+		return "", fmt.Errorf("already exists (mode create)")
+	}
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0750); err != nil {
+		return "", fmt.Errorf("mkdir failed: %v", err)
+	}
+	switch mode {
+	case "append":
+		f, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return "", err
+		}
+		n, werr := f.WriteString(content)
+		_ = f.Close()
+		if werr != nil {
+			return "", werr
+		}
+		return fmt.Sprintf("appended %s (%d bytes)", path, n), nil
+	default: // create or overwrite
+		if err := os.WriteFile(cleanPath, []byte(content), 0600); err != nil {
+			return "", err
+		}
+		verb := "wrote"
+		if !fileExists {
+			verb = "created"
+		}
+		return fmt.Sprintf("%s %s (%d bytes)", verb, path, len(content)), nil
+	}
 }
 
 func (t *FileWriteTool) Backend() string {

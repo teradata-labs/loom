@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 // Global rate limiter shared across all Bedrock clients.
@@ -52,6 +53,13 @@ type Client struct {
 	// This is needed because Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
 	// but MCP tools use names like "filesystem:read_file"
 	toolNameMap map[string]string
+	// useConverse selects AWS's model-agnostic Converse API over the Anthropic
+	// Messages payload. Anthropic models take the native payload (it carries
+	// thinking blocks and cache_control, which Converse does not expose the same
+	// way); every other family — DeepSeek, Z.AI, Qwen, Mistral — only understands
+	// Converse, and answering them in Anthropic's schema silently loses tool
+	// arguments. Set by NewClientForModel, the single routing authority.
+	useConverse bool
 	// rateLimiter handles request rate limiting to prevent AWS throttling
 	rateLimiter *llm.RateLimiter
 }
@@ -84,6 +92,9 @@ type Config struct {
 	ModelID     string  // Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 	MaxTokens   int     // Default: 4096
 	Temperature float64 // Default: 1.0
+	// ThinkingLevel requests extended thinking ("", "none" = off). Adaptive
+	// (summarized) on 4.6+/5 model ids, budget tiers on older ones.
+	ThinkingLevel string
 
 	// Rate Limiting Configuration
 	RateLimiterConfig llm.RateLimiterConfig // Optional: rate limiting config (enables automatic throttle handling)
@@ -239,6 +250,12 @@ func (c *Client) Model() string {
 
 // Chat sends a conversation to Bedrock and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	// Non-Anthropic models speak Converse only; the Anthropic Messages payload
+	// below would return tool calls whose arguments never decode.
+	if c.useConverse {
+		return c.ChatConverse(ctx, messages, tools)
+	}
+
 	// Extract system messages and convert to Bedrock format
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
@@ -502,7 +519,8 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 		usage.OutputTokens = tokenCount
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens,
+		usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -765,7 +783,8 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			CostUSD:      c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens),
+			CostUSD: c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens,
+				resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
@@ -808,7 +827,12 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 
 // calculateCost estimates cost for Bedrock Claude models.
 // Pricing varies by model and region - these are approximate.
-func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
+//
+// Cache tiers: a cache write bills at 1.25x the input rate and a cache read at
+// 0.10x. Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so
+// the three buckets are additive (unlike the OpenAI-compatible shape, where
+// prompt_tokens includes them). Mirrors SDKClient.calculateCost.
+func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
 	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
 	// to substring matching only for model ids it does not list.
 	// IMPORTANT: in the fallback, check "opus-4-1" BEFORE "opus-4" because
@@ -817,6 +841,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
 	if !ok {
 		switch {
+		case strings.Contains(c.modelID, "claude-opus-5"):
+			// Claude Opus 5: $5 per 1M input, $25 per 1M output
+			inputPricePerMillion = 5.0
+			outputPricePerMillion = 25.0
+		case strings.Contains(c.modelID, "claude-sonnet-5"):
+			// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
+			inputPricePerMillion = 3.0
+			outputPricePerMillion = 15.0
 		case strings.Contains(c.modelID, "claude-opus-4-1"):
 			// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
 			inputPricePerMillion = 15.0
@@ -834,15 +866,23 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 			inputPricePerMillion = 3.0
 			outputPricePerMillion = 15.0
 		default:
-			// Default to Sonnet pricing for unknown models
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
+			// An uncatalogued model gets no invented rate. Guessing Sonnet's
+			// card here is how Opus-5 was under-billed for a whole campaign and
+			// Fable by 3.3x: a plausible number is worse than an obvious zero,
+			// because nobody audits a cost that looks reasonable. Report zero
+			// and say so — the token counts are still recorded, so the real
+			// figure can be computed once the model is catalogued.
+			zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
+				zap.String("model", c.modelID))
+			return 0
 		}
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	return inputCost + outputCost
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // bedrockResponse represents Bedrock's response format (Anthropic-compatible).
@@ -859,6 +899,10 @@ type bedrockResponse struct {
 type bedrockUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// Cache tiers are billed differently (write 1.25x, read 0.10x), so they
+	// must be parsed to cost the call correctly.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // bedrockStreamChunk represents a chunk from Bedrock's streaming response.

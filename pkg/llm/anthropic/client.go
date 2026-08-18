@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,24 +76,29 @@ func DefaultAnthropicRateLimiterConfig() llm.RateLimiterConfig {
 
 // Client implements the LLMProvider interface for Anthropic's Claude API.
 type Client struct {
-	apiKey      string
-	model       string
-	endpoint    string
-	httpClient  *http.Client
-	maxTokens   int
-	temperature float64
-	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
+	apiKey        string
+	model         string
+	endpoint      string
+	httpClient    *http.Client
+	maxTokens     int
+	temperature   float64
+	thinkingLevel string
+	rateLimiter   *llm.RateLimiter
+	toolNameMap   map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Anthropic client.
 type Config struct {
-	APIKey            string
-	Model             string // Default: claude-sonnet-4-5-20250929
-	Endpoint          string // Default: https://api.anthropic.com/v1/messages
-	Timeout           time.Duration
-	MaxTokens         int     // Default: 4096
-	Temperature       float64 // Default: 1.0
+	APIKey      string
+	Model       string // Default: claude-sonnet-4-5-20250929
+	Endpoint    string // Default: https://api.anthropic.com/v1/messages
+	Timeout     time.Duration
+	MaxTokens   int     // Default: 4096
+	Temperature float64 // Default: 1.0
+	// ThinkingLevel requests extended thinking ("", "none" = off). Non-off
+	// levels map to adaptive (display summarized) on 4.6+/5 models and to
+	// budget_tokens tiers (low 4k / medium+auto 16k / high 32k) on older ones.
+	ThinkingLevel     string
 	RateLimiterConfig llm.RateLimiterConfig
 }
 
@@ -131,12 +137,13 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:      config.APIKey,
-		model:       config.Model,
-		endpoint:    config.Endpoint,
-		maxTokens:   config.MaxTokens,
-		temperature: config.Temperature,
-		rateLimiter: rateLimiter,
+		apiKey:        config.APIKey,
+		model:         config.Model,
+		endpoint:      config.Endpoint,
+		maxTokens:     config.MaxTokens,
+		temperature:   config.Temperature,
+		thinkingLevel: config.ThinkingLevel,
+		rateLimiter:   rateLimiter,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -202,10 +209,12 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Build request
 	req := &MessagesRequest{
-		Model:       c.model,
-		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: c.temperature,
+		Model:        c.model,
+		Messages:     apiMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperature,
+		Thinking:     c.thinkingParam(),
+		OutputConfig: c.outputConfigParam(),
 	}
 
 	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
@@ -227,6 +236,69 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	return c.convertResponse(resp), nil
 }
 
+// thinkingParam returns the request's thinking field, or nil (omitted) when
+// thinking is off. 4.6+/5 models take adaptive with summarized display (the
+// display default, omitted, returns signature-only blocks with no text —
+// observed live); older models still take enabled+budget_tokens, where the
+// level tiers finally differ.
+func (c *Client) thinkingParam() map[string]interface{} {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return nil
+	}
+	m := strings.ToLower(c.model)
+	adaptive := false
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			adaptive = true
+			break
+		}
+	}
+	if adaptive {
+		return map[string]interface{}{"type": "adaptive", "display": "summarized"}
+	}
+	budget := 16384
+	switch c.thinkingLevel {
+	case "low":
+		budget = 4096
+	case "high":
+		budget = 32768
+	}
+	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}
+}
+
+// outputConfigParam returns the request's output_config, or nil (omitted).
+// On adaptive-thinking models the thinking level names the effort tier
+// (low|medium|high|xhigh|max — the API default is high; "auto" and empty
+// leave the field omitted). Older models have no effort knob and take the
+// budget tiers in thinkingParam instead.
+func (c *Client) outputConfigParam() map[string]interface{} {
+	if effort := effortForLevel(c.model, c.thinkingLevel); effort != "" {
+		return map[string]interface{}{"effort": effort}
+	}
+	return nil
+}
+
+// effortForLevel maps a thinking level to an effort tier for models that
+// accept output_config.effort; "" means omit the field.
+func effortForLevel(model, level string) string {
+	m := strings.ToLower(model)
+	adaptive := false
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			adaptive = true
+			break
+		}
+	}
+	if !adaptive {
+		return ""
+	}
+	switch strings.ToLower(level) {
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(level)
+	}
+	return ""
+}
+
 // convertMessages converts agent messages to Anthropic format.
 // Returns the system prompt blocks and the API messages. System messages are
 // extracted into the separate "system" field the Messages API requires — one
@@ -240,6 +312,14 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam, []Message) {
 	var systemBlocks []TextBlockParam
 	var apiMessages []Message
+
+	// Anthropic allows 4 cache_control blocks per request and this client
+	// spends one on the tool list, so at most 3 message markers pass through.
+	// The compile emits up to 4 (ROM, summary, lastStable, till-NOW); the cap
+	// drops the last — the till-NOW marker, whose value is harvested on the
+	// gateway path that has the spare slot.
+	const maxMessageMarkers = 3
+	marked := 0
 
 	markLast := func() {
 		if n := len(apiMessages); n > 0 {
@@ -258,8 +338,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 			// tokens don't count against the ITPM rate limit.
 			if msg.Content != "" {
 				block := TextBlockParam{Type: "text", Text: msg.Content}
-				if msg.CacheBreakpoint {
+				if msg.CacheBreakpoint && marked < maxMessageMarkers {
 					block.CacheControl = &CacheControl{Type: "ephemeral"}
+					marked++
 				}
 				systemBlocks = append(systemBlocks, block)
 			}
@@ -300,6 +381,17 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 
 		case "assistant":
 			var content []ContentBlock
+
+			// In-turn thinking replay: blocks ride back verbatim and FIRST
+			// (the response order). Empty text stays valid — MarshalJSON keeps
+			// the field present. Settled turns arrive already stripped.
+			for _, tb := range msg.ThinkingBlocks {
+				if tb.Type == "redacted_thinking" {
+					content = append(content, ContentBlock{Type: "redacted_thinking", Data: tb.Thinking})
+					continue
+				}
+				content = append(content, ContentBlock{Type: "thinking", Thinking: tb.Thinking, Signature: tb.Signature})
+			}
 
 			// Add text content if present
 			if msg.Content != "" {
@@ -349,8 +441,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		// before any current-turn ephemeral content (HLD §5.2 step 8). Marking
 		// anything later — e.g. the tip — buys cache writes that are never
 		// read back, because ephemeral content re-renders next call.
-		if msg.CacheBreakpoint && msg.Role != "system" {
+		if msg.CacheBreakpoint && msg.Role != "system" && marked < maxMessageMarkers {
 			markLast()
+			marked++
 		}
 	}
 
@@ -493,6 +586,15 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 		case "text":
 			llmResp.Content += block.Text
 
+		case "thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "thinking", Thinking: block.Thinking, Signature: block.Signature})
+			llmResp.Thinking += block.Thinking
+
+		case "redacted_thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "redacted_thinking", Thinking: block.Data})
+
 		case "tool_use":
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    block.ID,
@@ -525,6 +627,18 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 			// Claude Opus 4.5, 4.6, 4.7: $5/$25
 			inputPricePerM = 5.0
 			outputPricePerM = 25.0
+		case strings.Contains(c.model, "opus"):
+			// Any newer Opus (5+) not yet in the catalog: $5/$25, never the
+			// sonnet default — a missing catalog entry must not silently
+			// under-price Opus at sonnet rates.
+			inputPricePerM = 5.0
+			outputPricePerM = 25.0
+		case strings.Contains(c.model, "fable"):
+			// Claude Fable 5: $10/$50. Not the sonnet default — Fable is the
+			// most expensive family, so a missing catalog entry must never
+			// under-price it.
+			inputPricePerM = 10.0
+			outputPricePerM = 50.0
 		case strings.Contains(c.model, "haiku"):
 			// Claude Haiku 4.5: $1/$5
 			inputPricePerM = 1.0
@@ -555,11 +669,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	apiTools := c.convertTools(tools)
 
 	req := &MessagesRequest{
-		Model:       c.model,
-		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: c.temperature,
-		Stream:      true, // Enable streaming
+		Model:        c.model,
+		Messages:     apiMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperature,
+		Thinking:     c.thinkingParam(),
+		OutputConfig: c.outputConfigParam(),
+		Stream:       true, // Enable streaming
 	}
 
 	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
@@ -647,10 +763,19 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolCalls []llmtypes.ToolCall
 	// Track tool input JSON as it streams in (indexed by content block index)
 	toolInputBuffers := make(map[int]*strings.Builder)
+
+	// Streaming thinking assembly: blocks open at content_block_start and
+	// accumulate thinking_delta / signature_delta fragments by index.
+	thinkBlocks := make(map[int]*llmtypes.ThinkingBlock)
+	var thinkOrder []int
 	// Map content block index → toolCalls slice index for tool_use blocks
 	toolCallIndex := make(map[int]int)
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -678,6 +803,15 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					continue
 				}
 				switch event.Delta.Type {
+				case "thinking_delta":
+					// Accumulated only — thinking never reaches the token callback.
+					if blk, ok := thinkBlocks[event.Index]; ok {
+						blk.Thinking += event.Delta.Thinking
+					}
+				case "signature_delta":
+					if blk, ok := thinkBlocks[event.Index]; ok {
+						blk.Signature += event.Delta.Signature
+					}
 				case "text_delta":
 					if event.Delta.Text != "" {
 						token := event.Delta.Text
@@ -697,6 +831,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 
 			case "content_block_start":
+				if event.ContentBlock != nil &&
+					(event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking") {
+					blk := &llmtypes.ThinkingBlock{Type: event.ContentBlock.Type,
+						Thinking: event.ContentBlock.Thinking, Signature: event.ContentBlock.Signature}
+					if event.ContentBlock.Type == "redacted_thinking" {
+						blk.Thinking = event.ContentBlock.Data
+					}
+					thinkBlocks[event.Index] = blk
+					thinkOrder = append(thinkOrder, event.Index)
+				}
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 					// Start tracking a new tool call
 					idx := len(toolCalls)
@@ -768,6 +912,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
@@ -784,11 +931,25 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 
+	// Assemble streamed thinking in arrival order; plain text from the
+	// non-redacted blocks feeds Thinking (display/persistence).
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkOrder {
+		blk := thinkBlocks[idx]
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
 		Metadata: map[string]interface{}{
 			"model":       c.model,
 			"stop_reason": stopReason,

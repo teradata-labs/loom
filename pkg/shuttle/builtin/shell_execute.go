@@ -84,8 +84,8 @@ func (t *ShellExecuteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/shell_execute.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *ShellExecuteTool) Description() string {
-	return `Executes shell commands on the local system. Supports bash/sh on Unix and PowerShell/cmd on Windows.
-Use for automation, builds, tests, data processing, and system operations.
+	return `Executes shell commands on the local system — general-purpose. Supports bash/sh on Unix and PowerShell/cmd on Windows.
+Prefer file_read for reading and searching files, file_write/edit_files for changing them, and sql_query for data probes; use shell for everything else: dbt, builds, scripts, OS operations.
 Security: validates working directories, filters sensitive env vars, enforces timeouts.`
 }
 
@@ -230,8 +230,17 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
 		absLoomDataDir, _ := filepath.Abs(loomDataDir)
 
-		// Check if path is within LOOM_DATA_DIR or a whitelisted directory
+		// Check if path is within LOOM_DATA_DIR or a whitelisted directory.
+		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
+		// is honored exactly as this guard's Suggestion advertises — without
+		// it, an anchored workspace outside the data dir rejects every call.
 		isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+		if !isAllowed {
+			absSandboxDir, _ := filepath.Abs(config.GetLoomSandboxDir())
+			if absSandboxDir != "" && strings.HasPrefix(absWorkingDir, absSandboxDir) {
+				isAllowed = true
+			}
+		}
 		if !isAllowed {
 			// Whitelist /tmp for temporary file operations (common for agent workflows)
 			if runtime.GOOS != "windows" && strings.HasPrefix(absWorkingDir, "/tmp") {
@@ -524,8 +533,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				Retryable:  false,
 			},
 			Data: map[string]interface{}{
-				"stdout":      strings.Join(stdoutLines, "\n"),
-				"stderr":      strings.Join(stderrLines, "\n"),
+				"stdout":      compactShellOutput(strings.Join(stdoutLines, "\n")),
+				"stderr":      compactShellOutput(strings.Join(stderrLines, "\n")),
 				"exit_code":   -1,
 				"shell":       actualShellType,
 				"working_dir": cleanWorkingDir,
@@ -536,8 +545,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Build result
-	stdout := strings.Join(stdoutLines, "\n")
-	stderr := strings.Join(stderrLines, "\n")
+	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
+	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
 	success := exitCode == 0
 
 	result := &shuttle.Result{
@@ -809,4 +818,31 @@ func checkCommandTokenSize(command string) error {
 	}
 
 	return nil
+}
+
+// ansiEscape matches CSI/OSC terminal escape sequences — pure rendering bytes
+// that inflate build-tool output (dbt colorizes every line) without carrying
+// information.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
+
+const (
+	// shellOutputCap bounds one stream's bytes in the result.
+	shellOutputCap = 12 * 1024
+	// shellOutputHead / shellOutputTail split the cap: build tools put
+	// failures inline and the summary at the end, so the tail gets the bulk.
+	shellOutputHead = 4 * 1024
+	shellOutputTail = 8 * 1024
+)
+
+// compactShellOutput strips terminal escape sequences and, past the cap,
+// keeps the head and tail of the stream with an explicit elision marker.
+func compactShellOutput(s string) string {
+	s = ansiEscape.ReplaceAllString(s, "")
+	if len(s) <= shellOutputCap {
+		return s
+	}
+	elided := len(s) - shellOutputHead - shellOutputTail
+	return s[:shellOutputHead] +
+		fmt.Sprintf("\n[... %d bytes elided — rerun with a filter (grep/tail) to see the middle ...]\n", elided) +
+		s[len(s)-shellOutputTail:]
 }
