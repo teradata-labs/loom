@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -402,7 +403,12 @@ func TestPipeline_PartialResultsCostAndDuration(t *testing.T) {
 		},
 	})
 
-	ag := createMockAgent(t, "cost-agent", newMockLLMProvider("output"))
+	// A mock stage completes in microseconds and DurationMs truncates to 0,
+	// so the duration assertion below needs the stage to span a real
+	// millisecond boundary to test what it means to test.
+	slowLLM := newMockLLMProvider("output")
+	slowLLM.delay = 2 * time.Millisecond
+	ag := createMockAgent(t, "cost-agent", slowLLM)
 	orch.RegisterAgent("cost-agent", ag)
 
 	pattern := &loomv1.WorkflowPattern{
