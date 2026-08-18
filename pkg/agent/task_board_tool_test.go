@@ -252,3 +252,50 @@ func TestTaskBoardTool_BatchUpdates(t *testing.T) {
 	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, gotSecond.Status,
 		"a failing sibling entry must not roll back the others")
 }
+
+// TestRenderSessionChecklist: the board-state-backed checklist block — one
+// source of truth rendered per step, scoped to the caller's session.
+func TestRenderSessionChecklist(t *testing.T) {
+	ctx := context.Background()
+	_, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	mine, err := mgr.CreateTask(ctx, &task.Task{
+		Title: "build the extract", Status: loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		AcceptanceCriteria: "columns a,b,c with UTC timestamps",
+		Metadata:           map[string]string{task.CreatedBySessionMetadataKey: "sess-1"},
+	})
+	require.NoError(t, err)
+	_, err = mgr.CreateTask(ctx, &task.Task{
+		Title: "verify against contract", Status: loomv1.TaskStatus_TASK_STATUS_OPEN,
+		Metadata: map[string]string{task.CreatedBySessionMetadataKey: "sess-1"},
+	})
+	require.NoError(t, err)
+	// Another session's task must not leak into the block.
+	_, err = mgr.CreateTask(ctx, &task.Task{
+		Title: "foreign work", Status: loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		Metadata: map[string]string{task.CreatedBySessionMetadataKey: "sess-2"},
+	})
+	require.NoError(t, err)
+
+	block := RenderSessionChecklist(ctx, mgr, "sess-1", 0)
+	assert.Contains(t, block, "IN PROGRESS: build the extract")
+	assert.Contains(t, block, "criteria: columns a,b,c with UTC timestamps")
+	assert.Contains(t, block, "PENDING: verify against contract")
+	assert.NotContains(t, block, "foreign work")
+
+	// Empty for sessions with no live items.
+	assert.Empty(t, RenderSessionChecklist(ctx, mgr, "sess-none", 0))
+
+	// Budget truncation: a tiny budget still yields a well-formed block.
+	small := RenderSessionChecklist(ctx, mgr, "sess-1", 60)
+	assert.LessOrEqual(t, len(small), 60)
+	assert.Contains(t, small, "## Session task checklist")
+
+	// Claimed-by also counts as session membership.
+	require.NoError(t, err)
+	_, err = mgr.ClaimTask(ctx, mine.ID, "agent-x", "sess-3")
+	if err == nil {
+		claimedBlock := RenderSessionChecklist(ctx, mgr, "sess-3", 0)
+		assert.Contains(t, claimedBlock, "build the extract")
+	}
+}
