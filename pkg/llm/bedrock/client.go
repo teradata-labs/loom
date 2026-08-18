@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 // Global rate limiter shared across all Bedrock clients.
@@ -52,6 +53,13 @@ type Client struct {
 	// This is needed because Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
 	// but MCP tools use names like "filesystem:read_file"
 	toolNameMap map[string]string
+	// useConverse selects AWS's model-agnostic Converse API over the Anthropic
+	// Messages payload. Anthropic models take the native payload (it carries
+	// thinking blocks and cache_control, which Converse does not expose the same
+	// way); every other family — DeepSeek, Z.AI, Qwen, Mistral — only understands
+	// Converse, and answering them in Anthropic's schema silently loses tool
+	// arguments. Set by NewClientForModel, the single routing authority.
+	useConverse bool
 	// rateLimiter handles request rate limiting to prevent AWS throttling
 	rateLimiter *llm.RateLimiter
 }
@@ -242,6 +250,12 @@ func (c *Client) Model() string {
 
 // Chat sends a conversation to Bedrock and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	// Non-Anthropic models speak Converse only; the Anthropic Messages payload
+	// below would return tool calls whose arguments never decode.
+	if c.useConverse {
+		return c.ChatConverse(ctx, messages, tools)
+	}
+
 	// Extract system messages and convert to Bedrock format
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
@@ -852,9 +866,15 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 			inputPricePerMillion = 3.0
 			outputPricePerMillion = 15.0
 		default:
-			// Default to Sonnet pricing for unknown models
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
+			// An uncatalogued model gets no invented rate. Guessing Sonnet's
+			// card here is how Opus-5 was under-billed for a whole campaign and
+			// Fable by 3.3x: a plausible number is worse than an obvious zero,
+			// because nobody audits a cost that looks reasonable. Report zero
+			// and say so — the token counts are still recorded, so the real
+			// figure can be computed once the model is catalogued.
+			zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
+				zap.String("model", c.modelID))
+			return 0
 		}
 	}
 

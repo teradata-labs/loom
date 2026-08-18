@@ -642,8 +642,13 @@ func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, ca
 		inputPricePerMillion = 3.0
 		outputPricePerMillion = 15.0
 	default:
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
+		// No invented rate for an uncatalogued model — see the same guard in
+		// client.go. Fable-5 was billed at Sonnet's card for a whole trial
+		// because this branch answered confidently instead of admitting it did
+		// not know. Zero is visibly wrong; a plausible number is not.
+		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
+			zap.String("model", c.modelID))
+		return 0
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
