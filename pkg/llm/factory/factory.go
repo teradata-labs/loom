@@ -136,6 +136,7 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.HuggingFaceToken = loomconfig.ExpandEnvPlaceholders(config.HuggingFaceToken)
 	config.LiteLLMEndpoint = loomconfig.ExpandEnvPlaceholders(config.LiteLLMEndpoint)
 	config.LiteLLMAPIKey = loomconfig.ExpandEnvPlaceholders(config.LiteLLMAPIKey)
+	config.LiteLLMModel = loomconfig.ExpandEnvPlaceholders(config.LiteLLMModel)
 	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
 	// modified in place (shared-map mutation is a race if the caller holds the
 	// original and another goroutine concurrently reads it).

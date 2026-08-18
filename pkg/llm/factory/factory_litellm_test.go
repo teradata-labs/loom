@@ -136,17 +136,20 @@ func TestCreateLiteLLMProvider_MaxTokensOverride(t *testing.T) {
 func TestCreateLiteLLMProvider_ExpandsEnvPlaceholder(t *testing.T) {
 	t.Setenv("LITELLM_BASE_URL", "http://real-litellm:4000")
 	t.Setenv("LITELLM_API_KEY", "")
+	t.Setenv("LITELLM_MODEL", "expanded-model")
 	t.Setenv("LITELLM_TENANT", "tenant-123")
 
 	f := NewProviderFactory(FactoryConfig{
 		LiteLLMEndpoint:     "${LITELLM_BASE_URL}",
 		LiteLLMAPIKey:       "${LITELLM_API_KEY}", // unset → expands to ""
+		LiteLLMModel:        "${LITELLM_MODEL}",
 		LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${LITELLM_TENANT}"},
 	})
 
 	// After expansion, the endpoint should be the real URL, not the placeholder.
 	assert.Equal(t, "http://real-litellm:4000", f.config.LiteLLMEndpoint)
 	assert.Equal(t, "", f.config.LiteLLMAPIKey) // unset env var → empty
+	assert.Equal(t, "expanded-model", f.config.LiteLLMModel)
 	assert.Equal(t, "tenant-123", f.config.LiteLLMExtraHeaders["X-Tenant"])
 
 	raw, err := f.createLiteLLMProvider("")
