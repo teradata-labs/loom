@@ -749,6 +749,17 @@ func (ic *InstrumentedClient) Ping(ctx context.Context) error {
 	return ic.client.Ping(ctx)
 }
 
+// SetSamplingHandler delegates to the underlying client.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. 2026-07-28 servers never send
+// sampling/createMessage; configure MRTR (Config.MRTR) instead.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+func (ic *InstrumentedClient) SetSamplingHandler(handler SamplingHandler) {
+	ic.client.SetSamplingHandler(handler)
+}
+
 // UnsubscribeResource delegates to the underlying client.
 func (ic *InstrumentedClient) UnsubscribeResource(ctx context.Context, uri string) error {
 	return ic.client.UnsubscribeResource(ctx, uri)

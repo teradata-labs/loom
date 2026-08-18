@@ -15,10 +15,13 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"go.uber.org/zap"
 )
@@ -226,4 +229,59 @@ func TestEOFIsNormalShutdown(t *testing.T) {
 
 	// Direct EOF is what we handle in the receiveLoop
 	// Note: Wrapped errors would need to use %w format to match with errors.Is
+}
+
+// TestSamplingHandlerDispatch covers the frozen legacy sampling surface
+// (§9.2): a registered handler answers a legacy server's
+// sampling/createMessage, and without one the request is rejected
+// MethodNotFound — the exact pre-migration behavior, restored for importers
+// of the exported API (review finding 5, PR #327).
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+func TestSamplingHandlerDispatch(t *testing.T) {
+	ft := newScriptedTransport()
+	c := connectClient(t, ft, Config{ProtocolVersion: "legacy"})
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+	c.SetSamplingHandler(func(_ context.Context, params protocol.SamplingParams) (*protocol.SamplingResult, error) {
+		return &protocol.SamplingResult{
+			Role:    "assistant",
+			Content: protocol.Content{Type: "text", Text: "answered:" + params.SystemPrompt},
+			Model:   "test-model",
+		}, nil
+	})
+
+	// A legacy server sends a server-initiated sampling request; the client
+	// answers through transport.Send with a JSON-RPC response carrying the
+	// request's id, which the scripted transport records.
+	ft.inject([]byte(`{"jsonrpc":"2.0","id":777,"method":"sampling/createMessage","params":{"systemPrompt":"sp","maxTokens":5,"messages":[]}}`))
+
+	require.Eventually(t, func() bool {
+		for _, sent := range ft.sentResponses() {
+			var resp protocol.Response
+			if json.Unmarshal(sent, &resp) == nil && resp.ID != nil && resp.ID.String() == "777" {
+				return resp.Error == nil && len(resp.Result) > 0
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "registered handler must answer sampling/createMessage")
+}
+
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+func TestSamplingWithoutHandlerRejected(t *testing.T) {
+	ft := newScriptedTransport()
+	c := connectClient(t, ft, Config{ProtocolVersion: "legacy"})
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+	ft.inject([]byte(`{"jsonrpc":"2.0","id":778,"method":"sampling/createMessage","params":{"maxTokens":5,"messages":[]}}`))
+
+	require.Eventually(t, func() bool {
+		for _, sent := range ft.sentResponses() {
+			var resp protocol.Response
+			if json.Unmarshal(sent, &resp) == nil && resp.ID != nil && resp.ID.String() == "778" {
+				return resp.Error != nil && resp.Error.Code == protocol.MethodNotFound
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "without a handler, sampling must be rejected MethodNotFound")
 }

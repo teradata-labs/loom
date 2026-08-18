@@ -63,6 +63,8 @@ type Client struct {
 	toolsMu          sync.RWMutex
 
 	// Handlers
+	//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+	samplingHandler  SamplingHandler
 	progressHandlers map[string]ProgressHandler
 
 	// Notifications. subs holds active subscriptions/listen demux entries
@@ -111,6 +113,16 @@ type Config struct {
 	// Timeouts
 	RequestTimeout time.Duration // Default: 30s
 }
+
+// SamplingHandler is called when a legacy server requests LLM completion.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Server-initiated sampling exists only
+// on pre-2026 revisions; 2026-07-28 servers embed sampling in MRTR
+// inputRequests instead.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+type SamplingHandler func(ctx context.Context, params protocol.SamplingParams) (*protocol.SamplingResult, error)
 
 // ProgressHandler is called for progress updates
 type ProgressHandler func(progress, total float64)
@@ -592,14 +604,12 @@ func (c *Client) receiveLoop() {
 			continue
 		}
 
-		// Try to parse as response first
-		var resp protocol.Response
-		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
-			c.handleResponse(&resp)
-			continue
-		}
-
-		// Try to parse as request or notification
+		// Route by JSON-RPC shape: a message carrying a method member is a
+		// request (id) or notification (no id); only method-less messages
+		// are responses. Probing for a response first would misroute every
+		// id-bearing server-initiated request into the pending-response path
+		// and silently drop it — the server would never even get the
+		// MethodNotFound answer it is owed.
 		var req protocol.Request
 		if err := json.Unmarshal(data, &req); err == nil && req.Method != "" {
 			if req.ID == nil {
@@ -609,6 +619,12 @@ func (c *Client) receiveLoop() {
 				continue
 			}
 			c.handleRequest(&req)
+			continue
+		}
+
+		var resp protocol.Response
+		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
+			c.handleResponse(&resp)
 			continue
 		}
 
@@ -638,15 +654,31 @@ func (c *Client) handleResponse(resp *protocol.Response) {
 
 // handleRequest answers incoming server-initiated requests. Under the
 // 2026-07-28 revision servers must not send them (MRTR embeds their content
-// in input_required results instead), and the legacy sampling support was
-// dead code (no handler was ever registered), so every server-initiated
-// request is answered MethodNotFound.
+// in input_required results instead); the frozen legacy sampling path is
+// retained for pre-2026 connections whose owner registered a handler via
+// SetSamplingHandler. Everything else is answered MethodNotFound.
 func (c *Client) handleRequest(req *protocol.Request) {
+	var resp *protocol.Response
+
+	switch req.Method {
+	case "sampling/createMessage":
+		// Legacy server-initiated sampling can run an LLM call; it keeps the
+		// generous timeout it always had.
+		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
+		defer cancel()
+		var err error
+		resp, err = c.handleSamplingRequest(ctx, req)
+		if err != nil {
+			c.logger.Error("failed to handle request", zap.String("method", req.Method), zap.Error(err))
+			return
+		}
+	default:
+		resp = c.createErrorResponse(req.ID, protocol.MethodNotFound,
+			fmt.Sprintf("method not found: %s", req.Method), nil)
+	}
+
 	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
 	defer cancel()
-
-	resp := c.createErrorResponse(req.ID, protocol.MethodNotFound,
-		fmt.Sprintf("method not found: %s", req.Method), nil)
 
 	respJSON, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
@@ -656,6 +688,56 @@ func (c *Client) handleRequest(req *protocol.Request) {
 	if err := c.transport.Send(ctx, respJSON); err != nil {
 		c.logger.Error("failed to send response", zap.Error(err))
 	}
+}
+
+// handleSamplingRequest processes an incoming sampling request from a legacy
+// server, delegating to the registered SamplingHandler (or answering
+// MethodNotFound when none is registered, as before).
+//
+//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
+func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	c.mu.RLock()
+	handler := c.samplingHandler
+	c.mu.RUnlock()
+
+	if handler == nil {
+		return c.createErrorResponse(req.ID, protocol.MethodNotFound, "sampling not supported", nil), nil
+	}
+
+	var params protocol.SamplingParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return c.createErrorResponse(req.ID, protocol.InvalidParams, "invalid sampling params", err), nil
+	}
+
+	result, err := handler(ctx, params)
+	if err != nil {
+		return c.createErrorResponse(req.ID, protocol.InternalError, "sampling failed", err), nil
+	}
+
+	resultJSON, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		c.logger.Error("failed to marshal sampling result", zap.Error(marshalErr))
+		return c.createErrorResponse(req.ID, protocol.InternalError, "failed to marshal sampling result", marshalErr), nil
+	}
+	return &protocol.Response{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      req.ID,
+		Result:  resultJSON,
+	}, nil
+}
+
+// SetSamplingHandler registers a handler for legacy server-initiated
+// sampling requests.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. 2026-07-28 servers never send
+// sampling/createMessage; configure MRTR (Config.MRTR) instead.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+func (c *Client) SetSamplingHandler(handler SamplingHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.samplingHandler = handler
 }
 
 // nextRequestID generates next request ID

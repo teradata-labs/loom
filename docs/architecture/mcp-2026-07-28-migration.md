@@ -41,13 +41,13 @@ The table lists every component the revision touches and its disposition. All ro
 | Protocol version constant | `pkg/mcp/protocol/types.go:18` | Pinned `2024-11-05` | Registry landed alongside in `version.go`; the constant remains the legacy handshake default and is still asserted by tests **[verified]** |
 | Client handshake | `pkg/mcp/client/client.go` `Initialize` | Handshake removed in new revision | Retained for legacy mode; `Connect` negotiates (landed) |
 | Client session tracking | `pkg/mcp/transport/session.go` | `Mcp-Session-Id` removed | Retained for legacy mode; delete after window |
-| SSE resumption | `pkg/mcp/transport/resumption.go` | `Last-Event-ID` removed | **[verified]** Already unreachable today: events are buffered but `Last-Event-ID` appears nowhere in the repo and the server offers no GET stream to resume onto. Delete now (§9.1) |
+| SSE resumption | `pkg/mcp/transport/resumption.go` | `Last-Event-ID` removed | **[verified]** Already unreachable today: events are buffered but `Last-Event-ID` appears nowhere in the repo and the server offers no GET stream to resume onto. Unwire now; the exported `StreamResumption` type is frozen §9.2 surface (see §9.1 compatibility boundary) |
 | Legacy HTTP+SSE transport | `pkg/mcp/transport/http.go`; call sites `pkg/mcp/manager/manager.go:145`, `pkg/fabric/factory/factory.go:221` (config values `http`, `sse`) | Reclassified Deprecated (SEP-2596) | **[verified — missing from revision 1]** Freeze; remove after window (§9.2) |
 | Server session lifecycle | `pkg/mcp/transport/streamable_http_server.go` (`handlePost`, `httpSession`) | Sessions removed | Dual-mode during window; see §5.2 |
 | Standalone GET stream | `streamable_http_server.go` `ServeHTTP` | Replaced by `subscriptions/listen` | Already answers 405; add `subscriptions/listen` (§5.3) |
 | `ping` | server `handlePing`, client `Ping` | Removed | Legacy-only during window |
 | `logging/setLevel`, `LogNotification` | `pkg/mcp/protocol/types.go` | Removed; per-request `_meta` log level | **[verified]** Neither was ever implemented: `logging/setLevel` is handled nowhere and `LogNotification` is never constructed. §5.4 is new capability, not a replacement |
-| Sampling | client `handleSamplingRequest`, `SamplingParams`/`SamplingResult` | Deprecated | **[verified]** Handler plumbing is dead code — `SetSamplingHandler` has no callers, so the handler is always nil and `sampling/createMessage` is already always rejected. Delete plumbing now (§9.1); capability struct fields ride the window (§9.2) |
+| Sampling | client `handleSamplingRequest`, `SamplingParams`/`SamplingResult` | Deprecated | **[verified]** No in-repo callers of `SetSamplingHandler`, but the surface is exported: frozen §9.2 (see §9.1 compatibility boundary), functional for legacy connections, removal no earlier than 2027-07-28. Capability struct fields ride the same window |
 | Roots capability | `RootsCapability`; `SupportsRoots` config flag | Deprecated | Freeze, then delete (§9.2) |
 | `resources/subscribe` | `pkg/mcp/client/resources.go:98` | Replaced by `subscriptions/listen` | Migrate (§5.3) |
 | Weaver sessions | `pkg/mcp/server/bridge_tools.go` (`loom_create_session`, `session_id` parameters) | Handle model matches SEP-2567 | No structural change; documented as canonical (§6) |
@@ -178,7 +178,7 @@ A dropped `subscriptions/listen` stream is re-opened with backoff. There is no r
 
 The Streamable HTTP client sends `Mcp-Method` and `Mcp-Name` on every POST unconditionally. The headers are required by the new revision and harmless to old servers, so there is no need to gate them on negotiated mode. `Mcp-Name` carries the tool name on `tools/call` and is omitted otherwise per the specification. Tool parameters flagged for header transport are emitted via `x-mcp-header`.
 
-Session behavior in `streamable_http.go` becomes conditional: the client stores and echoes `Mcp-Session-Id` only when a server sets it (legacy servers), and never fabricates one. On a broken response stream in stateless mode, the in-flight request is failed back to the caller for re-issue as a new request carrying the same idempotency key (§7.5); `resumption.go` is deleted outright since it never had a read path (§9.1).
+Session behavior in `streamable_http.go` becomes conditional: the client stores and echoes `Mcp-Session-Id` only when a server sets it (legacy servers), and never fabricates one. On a broken response stream in stateless mode, the in-flight request is failed back to the caller for re-issue as a new request carrying the same idempotency key (§7.5); the resumption buffer is unwired from the transport since it never had a read path, and the exported `StreamResumption` type stays behind as frozen §9.2 surface (see the §9.1 compatibility boundary).
 
 ### 5.2 Server-side session removal
 
@@ -399,13 +399,15 @@ Server side: HTTP-exposed bridge deployments publish OAuth 2.0 Protected Resourc
 
 **[verified]** Revision 1 froze everything for twelve months. The verification pass showed several rows are unreachable code with no protocol path even in legacy mode; the lifecycle window protects spec-visible behavior, not dead code. The table is therefore split.
 
-### 9.1 Delete now (unreachable code, no observable behavior change)
+**Compatibility boundary (amended after PR #327 review, finding 5).** "Unreachable" is a repository-local property; it cannot be established for **exported** Go identifiers in a published v1 module, because external importers can reference them without appearing in any repo-local search. The delete-now rule therefore applies only to unexported code and internal wiring. Exported symbols — types, methods, config fields — receive the §9.2 treatment regardless of internal reachability: frozen with the `Deprecated:` marker (staticcheck-enforced), source- and behavior-compatible through the window, removal no earlier than 2027-07-28. Concretely: `SamplingHandler`/`SetSamplingHandler` (client + instrumented client), `SamplingParams`/`SamplingResult`/`ModelPreferences`/`ModelHint`/`LogNotification` (protocol), and `StreamResumption` (transport) are retained as frozen surface; the sampling dispatch behind them still works for legacy connections that register a handler, and `StreamResumption` remains unwired from the transport (its former write path was observable to nobody).
+
+### 9.1 Delete now (unreachable **unexported** code, no observable behavior change)
 
 | Feature | Loom code | Why it is safe now |
 |---|---|---|
-| SSE resumption | `resumption.go`; the event-buffering write paths in the streamable HTTP server | `Last-Event-ID` appears nowhere in the repo; the server offers no GET stream to resume onto. Write-only buffer |
-| Client sampling plumbing | `handleSamplingRequest`, `SetSamplingHandler`, `samplingHandler` field in `client.go`; `SamplingParams`/`SamplingResult` in `types.go` | `SetSamplingHandler` has no callers; the handler is permanently nil and `sampling/createMessage` is already always rejected. Post-deletion rejection (`MethodNotFound`) is equally conformant |
-| `LogNotification` construction paths | (none exist) | Never constructed; the type itself is retained only if §5.4 reuses it for the stateless `notifications/message` path, otherwise deleted with this row |
+| SSE resumption wiring | the event-buffering write paths inside the streamable HTTP transport/server | `Last-Event-ID` appears nowhere in the repo; the server offers no GET stream to resume onto. Write-only buffer. The exported `StreamResumption` type itself is §9.2 frozen surface, retained unwired |
+| Client sampling internals | none deletable — every sampling symbol in `client.go`/`types.go` is exported or backs an exported entry point | Originally slated for deletion on "no in-repo callers"; reclassified §9.2 per the compatibility boundary above, since repo-local searches cannot prove external unuse of exported API |
+| `LogNotification` construction paths | (none exist) | Never constructed inside Loom; the exported type is §9.2 frozen surface (§5.4's stateless `notifications/message` path does not reuse it) |
 | `LoggingCapability` advertisement | any capability advertisement in server setup | Advertised capability was never backed by an implementation; removing the advertisement corrects an existing misstatement rather than changing behavior |
 
 ### 9.2 Freeze now, remove after the window (spec-visible surface)
@@ -420,9 +422,11 @@ Nothing in this table is deleted before its date. Everything in it is frozen imm
 | `ping` | server handler, client method | Yes | 2027-07-28 |
 | Protocol sessions | `session.go`, `httpSession` machinery, client header echo | Yes | 2027-07-28 |
 | `resources/subscribe` | `resources.go:98` | Yes | 2027-07-28 |
-| `includeContext` `thisServer`/`allServers` | `SamplingParams.IncludeContext` values | Deleted with sampling plumbing (§9.1) | — |
+| `includeContext` `thisServer`/`allServers` | `SamplingParams.IncludeContext` values | Yes (rides the window with the frozen sampling types) | 2027-07-28 |
+| Sampling surface (exported) | `SamplingHandler`, `SetSamplingHandler` (client + instrumented client); `SamplingParams`/`SamplingResult`/`ModelPreferences`/`ModelHint`/`LogNotification` (protocol) | Yes | 2027-07-28 |
+| `StreamResumption` (exported, unwired) | `transport/resumption.go` | Yes | 2027-07-28 |
 
-Loom never depended on MCP sampling for its own inference (`pkg/llm` talks to providers directly), so the sampling deletion removes code without replacing it.
+Loom never depended on MCP sampling for its own inference (`pkg/llm` talks to providers directly), so freezing the sampling surface carries no cost beyond the retained code.
 
 ## 10. Workstream: Conformance and Testing
 

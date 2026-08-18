@@ -51,6 +51,7 @@ type scriptedTransport struct {
 	requestedInitVer  string // protocolVersion the client sent in InitializeParams
 	lastExtraHeaders  map[string]string
 	sentNotifications []protocol.Request // client-sent notifications (no id)
+	sentResponseRaw   [][]byte           // client-sent responses (answers to server-initiated requests)
 	callParams        []json.RawMessage  // raw params of every tools/call attempt
 	listenSupported   bool               // answer subscriptions/listen by holding the stream open
 	listenParams      []json.RawMessage  // raw params of every subscriptions/listen request
@@ -82,6 +83,15 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 		f.sentNotifications = append(f.sentNotifications, req)
 		f.mu.Unlock()
 		return nil // notifications are not answered
+	}
+
+	if req.Method == "" {
+		// A JSON-RPC response from the client (answer to a server-initiated
+		// request); record it and do not answer.
+		f.mu.Lock()
+		f.sentResponseRaw = append(f.sentResponseRaw, append([]byte(nil), message...))
+		f.mu.Unlock()
+		return nil
 	}
 
 	var resp protocol.Response
@@ -188,6 +198,12 @@ func (f *scriptedTransport) notificationsSent() []protocol.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]protocol.Request(nil), f.sentNotifications...)
+}
+
+func (f *scriptedTransport) sentResponses() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.sentResponseRaw...)
 }
 
 func (f *scriptedTransport) snapshot() (sawDiscover, sawInitialize bool, headers map[string]string) {

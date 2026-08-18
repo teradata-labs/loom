@@ -212,7 +212,65 @@ type PromptMessage struct {
 	Content interface{} `json:"content"` // Can be string or Content object
 }
 
+// SamplingParams contains parameters for sampling/createMessage.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Server-initiated sampling was replaced
+// by MRTR inputRequests (SEP-2322); the type is retained for source
+// compatibility with existing importers.
+type SamplingParams struct {
+	Messages       []PromptMessage        `json:"messages"`
+	ModelPrefs     *ModelPreferences      `json:"modelPreferences,omitempty"`
+	SystemPrompt   string                 `json:"systemPrompt,omitempty"`
+	IncludeContext string                 `json:"includeContext,omitempty"` // "none", "thisServer", "allServers"
+	Temperature    *float64               `json:"temperature,omitempty"`
+	MaxTokens      int                    `json:"maxTokens"`
+	StopSequences  []string               `json:"stopSequences,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// ModelPreferences specifies LLM selection preferences.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
+type ModelPreferences struct {
+	Hints                []ModelHint `json:"hints,omitempty"`
+	CostPriority         *float64    `json:"costPriority,omitempty"`         // 0-1
+	SpeedPriority        *float64    `json:"speedPriority,omitempty"`        // 0-1
+	IntelligencePriority *float64    `json:"intelligencePriority,omitempty"` // 0-1
+}
+
+// ModelHint suggests model preferences.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
+type ModelHint struct {
+	Name string `json:"name,omitempty"`
+}
+
+// SamplingResult is the response from sampling/createMessage.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
+type SamplingResult struct {
+	Role       string  `json:"role"` // "assistant"
+	Content    Content `json:"content"`
+	Model      string  `json:"model"`
+	StopReason string  `json:"stopReason,omitempty"` // "endTurn", "stopSequence", "maxTokens"
+}
+
 // Notification types
+
+// LogNotification sends log messages from server to client.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Never constructed inside Loom; retained
+// for source compatibility with existing importers.
+type LogNotification struct {
+	Level  string      `json:"level"` // "debug", "info", "warning", "error"
+	Logger string      `json:"logger,omitempty"`
+	Data   interface{} `json:"data"`
+}
 
 // ProgressNotification reports progress for a long-running operation
 type ProgressNotification struct {

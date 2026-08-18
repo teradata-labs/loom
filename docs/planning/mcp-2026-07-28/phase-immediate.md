@@ -49,11 +49,13 @@ The `sessions` table records no owner: `pkg/storage/sqlite/migrations/000001_ini
 
 All rows verified unreachable on 2026-08-17; deleting them changes no observable behavior.
 
+> **[amended 2026-08-18, PR #327 review finding 5]** "Unreachable" is repo-local and cannot cover external importers of exported Go API. Items 1 and 3 were executed as written and then partially reversed: the **exported** symbols (`StreamResumption`; `SamplingHandler`/`SetSamplingHandler` and the sampling/log types) are restored as frozen §9.2 surface with `Deprecated:` markers — functional, source-compatible, removal no earlier than 2027-07-28. Only the unexported wiring (the resumption buffer's transport write paths) stayed deleted. See the migration spec's §9.1 "compatibility boundary" note; do not re-execute the deletions below as written.
+
 ### Work items
 
-1. Delete `pkg/mcp/transport/resumption.go` and the event-buffering write paths in the streamable HTTP server (writes at the sites that populate it; grep `StreamResumption`/`AddEvent`). Delete its tests.
+1. Delete `pkg/mcp/transport/resumption.go` and the event-buffering write paths in the streamable HTTP server (writes at the sites that populate it; grep `StreamResumption`/`AddEvent`). Delete its tests. *(Amended: only the write paths stay deleted; the exported type and its tests are restored-frozen.)*
 2. `ServerConfig.EnableResumption` (`pkg/mcp/manager/config.go:65`) is user-visible YAML: keep the field parsed, make it a no-op, log one deprecation warning when set. Field removal happens at Phase 9.
-3. Delete client sampling plumbing: `handleSamplingRequest`, `SetSamplingHandler`, the `samplingHandler` field and the `sampling/createMessage` dispatch case in `pkg/mcp/client/client.go`; the delegation in `instrumented_client.go:709`; `SamplingParams`/`SamplingResult` (and `IncludeContext` values) in `pkg/mcp/protocol/types.go`; their tests. Keep `SamplingCapability`/`RootsCapability`/`LoggingCapability` **struct fields** on the capabilities types — they are wire format for legacy handshakes (§9.2).
+3. Delete client sampling plumbing: `handleSamplingRequest`, `SetSamplingHandler`, the `samplingHandler` field and the `sampling/createMessage` dispatch case in `pkg/mcp/client/client.go`; the delegation in `instrumented_client.go:709`; `SamplingParams`/`SamplingResult` (and `IncludeContext` values) in `pkg/mcp/protocol/types.go`; their tests. Keep `SamplingCapability`/`RootsCapability`/`LoggingCapability` **struct fields** on the capabilities types — they are wire format for legacy handshakes (§9.2). *(Amended: the exported sampling surface is restored-frozen and functional for legacy connections; nothing sampling-related is deleted before the window.)*
 4. Delete `LogNotification` (`types.go:250`) — never constructed. Phase 5 recreates a `notifications/message` type if §5.4 needs one; dead code does not wait for it.
 5. Remove any `LoggingCapability` advertisement from server setup if present (grep server constructors) — it was never backed by an implementation.
 
