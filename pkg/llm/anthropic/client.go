@@ -209,11 +209,12 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Build request
 	req := &MessagesRequest{
-		Model:       c.model,
-		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: c.temperature,
-		Thinking:    c.thinkingParam(),
+		Model:        c.model,
+		Messages:     apiMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperature,
+		Thinking:     c.thinkingParam(),
+		OutputConfig: c.outputConfigParam(),
 	}
 
 	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
@@ -263,6 +264,39 @@ func (c *Client) thinkingParam() map[string]interface{} {
 		budget = 32768
 	}
 	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}
+}
+
+// outputConfigParam returns the request's output_config, or nil (omitted).
+// On adaptive-thinking models the thinking level names the effort tier
+// (low|medium|high|xhigh|max — the API default is high; "auto" and empty
+// leave the field omitted). Older models have no effort knob and take the
+// budget tiers in thinkingParam instead.
+func (c *Client) outputConfigParam() map[string]interface{} {
+	if effort := effortForLevel(c.model, c.thinkingLevel); effort != "" {
+		return map[string]interface{}{"effort": effort}
+	}
+	return nil
+}
+
+// effortForLevel maps a thinking level to an effort tier for models that
+// accept output_config.effort; "" means omit the field.
+func effortForLevel(model, level string) string {
+	m := strings.ToLower(model)
+	adaptive := false
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			adaptive = true
+			break
+		}
+	}
+	if !adaptive {
+		return ""
+	}
+	switch strings.ToLower(level) {
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(level)
+	}
+	return ""
 }
 
 // convertMessages converts agent messages to Anthropic format.
@@ -635,12 +669,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	apiTools := c.convertTools(tools)
 
 	req := &MessagesRequest{
-		Model:       c.model,
-		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: c.temperature,
-		Thinking:    c.thinkingParam(),
-		Stream:      true, // Enable streaming
+		Model:        c.model,
+		Messages:     apiMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperature,
+		Thinking:     c.thinkingParam(),
+		OutputConfig: c.outputConfigParam(),
+		Stream:       true, // Enable streaming
 	}
 
 	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)

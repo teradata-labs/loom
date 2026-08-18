@@ -162,3 +162,25 @@ func TestConvertMessagesToSDK_SystemBlocksCarryTheirOwnMarker(t *testing.T) {
 			"system block %d cache_control present=%v, want %v", i, marked, wantMarked)
 	}
 }
+
+// Effort rides output_config on adaptive-thinking models and only there:
+// the level names the tier, auto/empty omit the field, older models take
+// the budget tiers instead and never send effort.
+func TestSDKClientOutputConfigEffort(t *testing.T) {
+	cases := []struct {
+		model, level, want string
+	}{
+		{"us.anthropic.claude-opus-5", "xhigh", "xhigh"},
+		{"us.anthropic.claude-sonnet-5", "high", "high"},
+		{"us.anthropic.claude-opus-5", "auto", ""},
+		{"us.anthropic.claude-opus-5", "", ""},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "high", ""},
+	}
+	for _, tc := range cases {
+		c := &SDKClient{modelID: tc.model, thinkingLevel: tc.level}
+		got := string(c.outputConfig().Effort)
+		if got != tc.want {
+			t.Errorf("%s/%s: effort=%q want %q", tc.model, tc.level, got, tc.want)
+		}
+	}
+}

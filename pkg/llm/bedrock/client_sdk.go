@@ -228,11 +228,12 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 
 	// Build message params
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(c.modelID),
-		Messages:    sdkMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: anthropic.Float(c.temperature),
-		Thinking:    c.thinkingConfig(),
+		Model:        anthropic.Model(c.modelID),
+		Messages:     sdkMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  anthropic.Float(c.temperature),
+		Thinking:     c.thinkingConfig(),
+		OutputConfig: c.outputConfig(),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.
@@ -328,6 +329,36 @@ func (c *SDKClient) thinkingConfig() anthropic.ThinkingConfigParamUnion {
 		budget = 32768
 	}
 	return anthropic.ThinkingConfigParamOfEnabled(budget)
+}
+
+// outputConfig maps the thinking level to output_config.effort on
+// adaptive-thinking models (low|medium|high|xhigh|max; "auto"/empty omit
+// the field and take the API default, high). Zero value = field omitted.
+func (c *SDKClient) outputConfig() anthropic.OutputConfigParam {
+	m := strings.ToLower(c.modelID)
+	adaptive := false
+	for _, marker := range []string{"sonnet-5", "opus-5", "fable-5", "-4-6", "-4-7", "-4-8"} {
+		if strings.Contains(m, marker) {
+			adaptive = true
+			break
+		}
+	}
+	if !adaptive {
+		return anthropic.OutputConfigParam{}
+	}
+	switch strings.ToLower(c.thinkingLevel) {
+	case "low":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow}
+	case "medium":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
+	case "high":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortHigh}
+	case "xhigh":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortXhigh}
+	case "max":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMax}
+	}
+	return anthropic.OutputConfigParam{}
 }
 
 func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
@@ -637,11 +668,12 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build message params
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(c.modelID),
-		Messages:    sdkMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: anthropic.Float(c.temperature),
-		Thinking:    c.thinkingConfig(),
+		Model:        anthropic.Model(c.modelID),
+		Messages:     sdkMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  anthropic.Float(c.temperature),
+		Thinking:     c.thinkingConfig(),
+		OutputConfig: c.outputConfig(),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.

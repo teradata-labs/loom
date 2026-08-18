@@ -51,6 +51,9 @@ type MessagesRequest struct {
 	// Thinking requests extended thinking: {"type":"adaptive","display":"summarized"}
 	// on 4.6+/5 models, {"type":"enabled","budget_tokens":N} on older ones.
 	Thinking map[string]interface{} `json:"thinking,omitempty"`
+	// OutputConfig carries effort on adaptive-thinking models (5-family / 4.6+);
+	// omitted elsewhere.
+	OutputConfig map[string]interface{} `json:"output_config,omitempty"`
 }
 
 // MessagesResponse represents a response from the Anthropic Messages API.
