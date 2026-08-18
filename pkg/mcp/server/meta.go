@@ -160,14 +160,21 @@ func (s *MCPServer) handleDiscover(_ context.Context, _ json.RawMessage, _ json.
 			}
 		}
 	}
-	infoJSON, err := json.Marshal(s.info)
-	if err != nil {
-		return nil, err
-	}
-	return protocol.DiscoverResult{
+	// resultType, ttlMs, and cacheScope are required members of a conforming
+	// DiscoverResult. The result is server metadata, not tenant data, but
+	// cacheScope stays "private" by the same default-caution §7.2 applies to
+	// list results: an intermediary must opt in to cross-context caching,
+	// never get it by default. ttlMs matches the core-tools freshness hint.
+	result := protocol.DiscoverResult{
+		ResultType:        protocol.ResultTypeComplete,
 		SupportedVersions: []string{protocol.Version20260728, protocol.Version20241105},
 		Capabilities:      caps,
 		Instructions:      s.instructions,
-		Meta:              map[string]json.RawMessage{protocol.MetaServerInfo: infoJSON},
-	}, nil
+		TTLMs:             300000,
+		CacheScope:        "private",
+	}
+	if err := result.SetServerInfo(s.info); err != nil {
+		return nil, err
+	}
+	return result, nil
 }

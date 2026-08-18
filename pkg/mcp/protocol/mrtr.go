@@ -67,6 +67,18 @@ func (e *InputRequiredError) Error() string {
 	return fmt.Sprintf("caller input required (%d requests)", len(e.Requests))
 }
 
+// RequestStatePtr adapts the producer-side state to the wire field, which
+// tracks presence: a pausing handler that supplies no state emits no
+// requestState member at all (emitting a present-but-empty one would bind
+// the client to echo a value that means nothing to this server).
+func (e *InputRequiredError) RequestStatePtr() *string {
+	if e.RequestState == "" {
+		return nil
+	}
+	s := e.RequestState
+	return &s
+}
+
 // RetryInput is the MRTR payload a client attaches when retrying the
 // original request: its answers plus the echoed opaque state.
 type RetryInput struct {

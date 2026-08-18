@@ -75,7 +75,7 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 			interim := protocol.InputRequiredResult{
 				ResultType:    protocol.ResultTypeInputRequired,
 				InputRequests: inputReq.Requests,
-				RequestState:  inputReq.RequestState,
+				RequestState:  inputReq.RequestStatePtr(),
 			}
 			if stamped, stampErr := s.stampResult(interim); stampErr == nil {
 				return marshalResponse(req.ID, stamped, nil)

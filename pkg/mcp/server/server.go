@@ -233,7 +233,7 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 			result := protocol.InputRequiredResult{
 				ResultType:    protocol.ResultTypeInputRequired,
 				InputRequests: inputReq.Requests,
-				RequestState:  inputReq.RequestState,
+				RequestState:  inputReq.RequestStatePtr(),
 			}
 			if stamped, stampErr := s.stampResult(result); stampErr == nil {
 				return marshalResponse(req.ID, stamped, nil)
