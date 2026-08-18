@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -66,7 +67,7 @@ Actions:
 1. decompose - Break a goal into a dependency DAG of subtasks using LLM
 2. ready - Get the "ready front": tasks with all dependencies satisfied
 3. claim - Atomically claim a task to work on
-4. update - Update task notes, approach, or status
+4. update - Update task notes, approach, status, or write-once acceptance criteria; pass updates as an array to batch transitions (finish one task and start the next in one call)
 5. close - Mark a task as done with a reason
 6. create - Create a single task manually
 7. list - List tasks with filtering
@@ -128,6 +129,26 @@ func (t *TaskBoardTool) InputSchema() *shuttle.JSONSchema {
 			"status": {
 				Type:        "string",
 				Description: "(update/list) Task status: open, in_progress, blocked, done, deferred, cancelled",
+			},
+			"acceptance_criteria": {
+				Type:        "string",
+				Description: "(create/update) Verifiable completion conditions — copy them from the task text verbatim where exactness matters. Write-once: settable at create or while still empty, then immutable; cancel (close with reason) and re-create to change them.",
+			},
+			"updates": {
+				Type:        "array",
+				Description: "(update) Batch transitions applied independently in one call — e.g. mark the current task done and claim the next. Each entry is one update; per-entry results are reported.",
+				Items: &shuttle.JSONSchema{
+					Type: "object",
+					Properties: map[string]*shuttle.JSONSchema{
+						"task_id":             {Type: "string", Description: "Task ID (required)"},
+						"status":              {Type: "string", Description: "open, in_progress, blocked, done, deferred, cancelled"},
+						"notes":               {Type: "string", Description: "Appended to task notes"},
+						"description":         {Type: "string", Description: "Replaces description"},
+						"approach":            {Type: "string", Description: "Replaces approach"},
+						"acceptance_criteria": {Type: "string", Description: "Write-once; only while still empty"},
+					},
+					Required: []string{"task_id"},
+				},
 			},
 			"priority": {
 				Type:        "string",
@@ -305,14 +326,76 @@ func (t *TaskBoardTool) executeClaim(ctx context.Context, input map[string]inter
 }
 
 func (t *TaskBoardTool) executeUpdate(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
+	// Batch form: apply each entry independently and report per-entry
+	// outcomes, so completing the current task and starting the next is one
+	// call and one partial failure does not roll back the rest.
+	if rawUpdates, ok := input["updates"].([]interface{}); ok && len(rawUpdates) > 0 {
+		results := make([]map[string]interface{}, 0, len(rawUpdates))
+		for i, raw := range rawUpdates {
+			entry, isMap := raw.(map[string]interface{})
+			if !isMap {
+				results = append(results, map[string]interface{}{
+					"index": i, "error": "INVALID_PARAMETER: each update must be an object",
+				})
+				continue
+			}
+			updated, applyErr := t.applyTaskUpdate(ctx, entry)
+			if applyErr != nil {
+				results = append(results, map[string]interface{}{
+					"index": i, "task_id": getStr(entry, "task_id"), "error": applyErr.Error(),
+				})
+				continue
+			}
+			results = append(results, map[string]interface{}{
+				"index": i, "task": taskDetailMap(updated),
+			})
+		}
+		return jsonResult(map[string]interface{}{
+			"action":  "update",
+			"batch":   true,
+			"results": results,
+		})
+	}
+
+	updated, err := t.applyTaskUpdate(ctx, input)
+	if err != nil {
+		return errorResult(updateErrorCode(err), err.Error()), nil
+	}
+
+	return jsonResult(map[string]interface{}{
+		"action": "update",
+		"task":   taskDetailMap(updated),
+	})
+}
+
+// errCriteriaLocked marks the write-once acceptance-criteria violation so
+// the error code survives the shared apply path.
+type criteriaLockedError struct{ taskID string }
+
+func (e *criteriaLockedError) Error() string {
+	return "acceptance_criteria are write-once and already set on task " + e.taskID +
+		": cancel the task (close with a reason) and re-create it with corrected criteria"
+}
+
+func updateErrorCode(err error) string {
+	var locked *criteriaLockedError
+	if errors.As(err, &locked) {
+		return "ACCEPTANCE_CRITERIA_LOCKED"
+	}
+	return "UPDATE_ERROR"
+}
+
+// applyTaskUpdate performs one task update (shared by the single and batch
+// forms of the update action).
+func (t *TaskBoardTool) applyTaskUpdate(ctx context.Context, input map[string]interface{}) (*task.Task, error) {
 	taskID := getStr(input, "task_id")
 	if taskID == "" {
-		return errorResult("INVALID_PARAMETER", "task_id is required for update"), nil
+		return nil, fmt.Errorf("task_id is required for update")
 	}
 
 	existing, err := t.manager.GetTask(ctx, taskID)
 	if err != nil {
-		return errorResult("NOT_FOUND", err.Error()), nil
+		return nil, err
 	}
 
 	// Append to notes (don't overwrite).
@@ -329,6 +412,15 @@ func (t *TaskBoardTool) executeUpdate(ctx context.Context, input map[string]inte
 	if approach := getStr(input, "approach"); approach != "" {
 		existing.Approach = approach
 	}
+	// Acceptance criteria are write-once: they define "done" and silently
+	// moving the goalposts mid-task defeats their purpose. Settable while
+	// empty; afterwards the only path is cancel + re-create.
+	if criteria := getStr(input, "acceptance_criteria"); criteria != "" {
+		if existing.AcceptanceCriteria != "" && existing.AcceptanceCriteria != criteria {
+			return nil, &criteriaLockedError{taskID: taskID}
+		}
+		existing.AcceptanceCriteria = criteria
+	}
 	if s := getStr(input, "status"); s != "" {
 		newStatus := parseTaskStatus(s)
 		if newStatus != loomv1.TaskStatus_TASK_STATUS_UNSPECIFIED {
@@ -336,15 +428,7 @@ func (t *TaskBoardTool) executeUpdate(ctx context.Context, input map[string]inte
 		}
 	}
 
-	updated, err := t.manager.UpdateTask(ctx, existing, nil)
-	if err != nil {
-		return errorResult("UPDATE_ERROR", err.Error()), nil
-	}
-
-	return jsonResult(map[string]interface{}{
-		"action": "update",
-		"task":   taskDetailMap(updated),
-	})
+	return t.manager.UpdateTask(ctx, existing, nil)
 }
 
 func (t *TaskBoardTool) executeClose(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
@@ -381,18 +465,21 @@ func (t *TaskBoardTool) executeCreate(ctx context.Context, input map[string]inte
 	}
 
 	tk := &task.Task{
-		Title:           title,
-		Description:     getStr(input, "description"),
-		Objective:       getStr(input, "objective"),
-		Approach:        getStr(input, "approach"),
-		Category:        task.ParseCategory(getStr(input, "category")),
-		Priority:        task.ParsePriority(getStr(input, "priority")),
-		EstimatedEffort: getStr(input, "estimated_effort"),
-		Tags:            getStrSlice(input, "tags"),
-		Status:          loomv1.TaskStatus_TASK_STATUS_OPEN,
-		OwnerAgentID:    t.agentID,
-		BoardID:         boardID,
-		ParentID:        getStr(input, "parent_id"),
+		Title:       title,
+		Description: getStr(input, "description"),
+		Objective:   getStr(input, "objective"),
+		Approach:    getStr(input, "approach"),
+		// Write-once: settable here (or on first update while empty), then
+		// immutable — cancel and re-create to change criteria.
+		AcceptanceCriteria: getStr(input, "acceptance_criteria"),
+		Category:           task.ParseCategory(getStr(input, "category")),
+		Priority:           task.ParsePriority(getStr(input, "priority")),
+		EstimatedEffort:    getStr(input, "estimated_effort"),
+		Tags:               getStrSlice(input, "tags"),
+		Status:             loomv1.TaskStatus_TASK_STATUS_OPEN,
+		OwnerAgentID:       t.agentID,
+		BoardID:            boardID,
+		ParentID:           getStr(input, "parent_id"),
 	}
 	// Attribute the task to the conversation that created it (metadata, not a
 	// claim — pre-claiming would make the later ready → claim step fail).

@@ -171,3 +171,84 @@ func TestTaskBoardTool_CreateStampsCreatedBySession(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, claimRes.Success, "task created with session metadata must remain claimable: %+v", claimRes.Error)
 }
+
+// TestTaskBoardTool_AcceptanceCriteriaWriteOnce: criteria define "done";
+// they are settable at create or while empty, then immutable — the only
+// path to different criteria is cancel + re-create.
+func TestTaskBoardTool_AcceptanceCriteriaWriteOnce(t *testing.T) {
+	ctx := context.Background()
+	tool, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	// Set at create via the tool.
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"action": "create", "title": "with criteria",
+		"acceptance_criteria": "output has columns a,b,c",
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+
+	// Set-while-empty via update works.
+	blank, err := mgr.CreateTask(ctx, &task.Task{Title: "no criteria yet", Status: loomv1.TaskStatus_TASK_STATUS_OPEN})
+	require.NoError(t, err)
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"action": "update", "task_id": blank.ID,
+		"acceptance_criteria": "rows sorted by ts",
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success, "setting criteria while empty must succeed: %+v", res.Error)
+
+	// Changing them afterwards is refused with the dedicated code.
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"action": "update", "task_id": blank.ID,
+		"acceptance_criteria": "different goalposts",
+	})
+	require.NoError(t, err)
+	require.False(t, res.Success)
+	assert.Equal(t, "ACCEPTANCE_CRITERIA_LOCKED", res.Error.Code)
+
+	// Original criteria survived; re-sending the identical value is a no-op,
+	// not an error (idempotent retries).
+	got, err := mgr.GetTask(ctx, blank.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "rows sorted by ts", got.AcceptanceCriteria)
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"action": "update", "task_id": blank.ID,
+		"acceptance_criteria": "rows sorted by ts",
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Success)
+}
+
+// TestTaskBoardTool_BatchUpdates: completing the current task and starting
+// the next is one call; entries apply independently and report per-entry
+// outcomes.
+func TestTaskBoardTool_BatchUpdates(t *testing.T) {
+	ctx := context.Background()
+	tool, mgr := newTaskBoardToolWithMgr(t, nil)
+
+	first, err := mgr.CreateTask(ctx, &task.Task{Title: "current", Status: loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS})
+	require.NoError(t, err)
+	second, err := mgr.CreateTask(ctx, &task.Task{Title: "next", Status: loomv1.TaskStatus_TASK_STATUS_OPEN})
+	require.NoError(t, err)
+
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"action": "update",
+		"updates": []interface{}{
+			map[string]interface{}{"task_id": first.ID, "status": "done", "notes": "criteria verified"},
+			map[string]interface{}{"task_id": second.ID, "status": "in_progress"},
+			map[string]interface{}{"task_id": "no-such-task", "status": "done"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success, "batch itself succeeds; entries report individually: %+v", res.Error)
+
+	gotFirst, err := mgr.GetTask(ctx, first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, gotFirst.Status)
+	assert.Contains(t, gotFirst.Notes, "criteria verified")
+
+	gotSecond, err := mgr.GetTask(ctx, second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, gotSecond.Status,
+		"a failing sibling entry must not roll back the others")
+}
