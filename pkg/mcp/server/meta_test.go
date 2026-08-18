@@ -71,12 +71,14 @@ func TestServerDiscoverAdvertisesImplementedRevisions(t *testing.T) {
 	require.Nil(t, rpcErr)
 
 	var versions []string
-	require.NoError(t, json.Unmarshal(result["protocolVersions"], &versions))
+	require.NoError(t, json.Unmarshal(result["supportedVersions"], &versions))
 	assert.Equal(t, []string{protocol.Version20260728, protocol.Version20241105}, versions,
 		"only implemented revisions may be advertised")
 
+	var meta map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(result["_meta"], &meta))
 	var info protocol.Implementation
-	require.NoError(t, json.Unmarshal(result["serverInfo"], &info))
+	require.NoError(t, json.Unmarshal(meta[protocol.MetaServerInfo], &info))
 	assert.Equal(t, "loom-mcp", info.Name)
 }
 

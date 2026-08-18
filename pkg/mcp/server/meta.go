@@ -150,10 +150,24 @@ func (s *MCPServer) handleDiscover(_ context.Context, _ json.RawMessage, _ json.
 	s.mu.RLock()
 	caps := s.capabilities
 	s.mu.RUnlock()
+	// Extensions ride capabilities.extensions and identity rides _meta, per
+	// the official schema.
+	if len(s.extensions) > 0 && caps.Extensions == nil {
+		caps.Extensions = make(map[string]json.RawMessage, len(s.extensions))
+		for k, v := range s.extensions {
+			if raw, err := json.Marshal(v); err == nil {
+				caps.Extensions[k] = raw
+			}
+		}
+	}
+	infoJSON, err := json.Marshal(s.info)
+	if err != nil {
+		return nil, err
+	}
 	return protocol.DiscoverResult{
-		ProtocolVersions: []string{protocol.Version20260728, protocol.Version20241105},
-		Capabilities:     caps,
-		ServerInfo:       s.info,
-		Extensions:       s.extensions,
+		SupportedVersions: []string{protocol.Version20260728, protocol.Version20241105},
+		Capabilities:      caps,
+		Instructions:      s.instructions,
+		Meta:              map[string]json.RawMessage{protocol.MetaServerInfo: infoJSON},
 	}, nil
 }
