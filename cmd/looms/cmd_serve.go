@@ -660,7 +660,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            key,
-			Model:             cfg.LiteLLMModel,
+			Model:             loomconfig.ExpandEnvPlaceholders(cfg.LiteLLMModel),
 			ExtraHeaders:      expandEnvMap(cfg.LiteLLMExtraHeaders),
 			MaxTokens:         cfg.MaxTokens,
 			Temperature:       cfg.Temperature,
@@ -928,6 +928,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.LiteLLMModel
 		}
+		model = loomconfig.ExpandEnvPlaceholders(model)
 		// Endpoint and API key are frequently injected via environment
 		// variables (e.g. avmo-tera-cloud runtime pods set LITELLM_BASE_URL /
 		// LITELLM_API_KEY) rather than the config file, and Viper's

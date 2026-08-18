@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### LiteLLM Health Checks
 - Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
 
 #### OTLP Tracing Improvements
 - In-process parent-linkage test added to the OTLP test suite.
