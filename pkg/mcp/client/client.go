@@ -155,8 +155,21 @@ func NewClient(config Config) *Client {
 	return c
 }
 
-// Initialize performs the MCP handshake
+// Initialize performs the legacy MCP handshake, requesting the newest
+// handshake-based revision this client speaks; the server answers with that
+// revision or the latest one it supports instead. Connect calls
+// initializeWithVersion directly when negotiation or a pin selected a
+// specific legacy revision.
 func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementation) error {
+	return c.initializeWithVersion(ctx, clientInfo, protocol.LatestLegacyVersion)
+}
+
+// initializeWithVersion performs the legacy MCP handshake requesting a
+// specific protocol revision. Discovered and pinned legacy versions flow in
+// here so the handshake asks for the revision that was actually selected —
+// always sending the oldest revision would negotiate 2024-11-05 against any
+// dual-revision server and then fail an explicit newer pin.
+func (c *Client) initializeWithVersion(ctx context.Context, clientInfo protocol.Implementation, requestVersion string) error {
 	c.mu.Lock()
 	if c.initialized {
 		c.mu.Unlock()
@@ -184,7 +197,7 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 
 	// Create initialize request
 	params := protocol.InitializeParams{
-		ProtocolVersion: protocol.ProtocolVersion,
+		ProtocolVersion: requestVersion,
 		Capabilities:    caps,
 		ClientInfo:      clientInfo,
 	}

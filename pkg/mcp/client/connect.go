@@ -100,10 +100,11 @@ func (c *Client) connectAuto(ctx context.Context, clientInfo protocol.Implementa
 
 	if !protocol.IsStatelessVersion(version) {
 		// The server implements discover but the best common revision still
-		// uses the handshake. Run it so both sides agree on lifecycle.
+		// uses the handshake. Run it requesting exactly the revision discover
+		// selected so both sides agree on lifecycle.
 		c.logger.Debug("negotiated legacy revision via discover; running initialize handshake",
 			zap.String("version", version))
-		return c.Initialize(ctx, clientInfo)
+		return c.initializeWithVersion(ctx, clientInfo, version)
 	}
 
 	c.enterStatelessMode(version, disc)
@@ -118,7 +119,10 @@ func (c *Client) connectPinned(ctx context.Context, clientInfo protocol.Implemen
 	}
 
 	if !protocol.IsStatelessVersion(pin) {
-		if err := c.Initialize(ctx, clientInfo); err != nil {
+		// The handshake must request the pinned revision itself: requesting
+		// any other version invites a dual-revision server to negotiate it,
+		// which would then fail the pin check below for no real reason.
+		if err := c.initializeWithVersion(ctx, clientInfo, pin); err != nil {
 			return err
 		}
 		if got := c.NegotiatedVersion(); got != pin {

@@ -37,7 +37,8 @@ type scriptedTransport struct {
 	// Behavior
 	discoverErr       error                    // transport-level error for server/discover
 	discoverResult    *protocol.DiscoverResult // nil → JSON-RPC MethodNotFound
-	initializeVersion string                   // "" → 2024-11-05
+	initializeVersion string                   // "" → 2024-11-05 (unless initializeEcho)
+	initializeEcho    bool                     // echo the requested protocolVersion (dual-revision server)
 	tools             []protocol.Tool
 	callResult        json.RawMessage   // result payload for tools/call
 	callResults       []json.RawMessage // per-attempt results; overrides callResult when set
@@ -46,6 +47,7 @@ type scriptedTransport struct {
 	// Recording
 	sawDiscover      bool
 	sawInitialize    bool
+	requestedInitVer string // protocolVersion the client sent in InitializeParams
 	lastExtraHeaders map[string]string
 	callParams       []json.RawMessage // raw params of every tools/call attempt
 	listenSupported  bool              // answer subscriptions/listen by holding the stream open
@@ -96,11 +98,17 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 		}
 		resp.Result, _ = json.Marshal(dres)
 	case "initialize":
+		var initParams protocol.InitializeParams
+		_ = json.Unmarshal(req.Params, &initParams)
 		f.mu.Lock()
 		f.sawInitialize = true
+		f.requestedInitVer = initParams.ProtocolVersion
 		version := f.initializeVersion
+		echo := f.initializeEcho
 		f.mu.Unlock()
-		if version == "" {
+		if echo {
+			version = initParams.ProtocolVersion
+		} else if version == "" {
 			version = protocol.Version20241105
 		}
 		result := protocol.InitializeResult{
@@ -364,4 +372,55 @@ func TestCallToolMirrorsHeaderParams(t *testing.T) {
 	assert.Equal(t, "us-west1", headers["Mcp-Param-Region"])
 	assert.Equal(t, protocol.Version20260728, headers["MCP-Protocol-Version"],
 		"stateless requests must carry the negotiated version header")
+}
+
+func (f *scriptedTransport) requestedInitVersion() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requestedInitVer
+}
+
+// TestConnectPinLegacyRequestsPinnedRevision is review finding 4's scenario:
+// a dual-revision server (echoes any requested handshake version) with an
+// explicit 2025-03-26 pin. The handshake must request the pinned revision —
+// requesting 2024-11-05 would negotiate 2024-11-05 and fail the pin check.
+func TestConnectPinLegacyRequestsPinnedRevision(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.initializeEcho = true
+	c := connectClient(t, ft, Config{ProtocolVersion: protocol.Version20250326})
+
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	assert.Equal(t, protocol.Version20250326, ft.requestedInitVersion(),
+		"InitializeParams must carry the pinned revision")
+	assert.Equal(t, protocol.Version20250326, c.NegotiatedVersion())
+	assert.False(t, c.IsStateless())
+}
+
+// TestConnectFallbackRequestsLatestLegacy: with no pin and no discover
+// support, the handshake asks for the newest legacy revision this client
+// speaks, per legacy negotiation (client requests its latest; server answers
+// with that or its own latest).
+func TestConnectFallbackRequestsLatestLegacy(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.initializeEcho = true
+	c := connectClient(t, ft, Config{})
+
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	assert.Equal(t, protocol.LatestLegacyVersion, ft.requestedInitVersion())
+	assert.Equal(t, protocol.LatestLegacyVersion, c.NegotiatedVersion())
+}
+
+// TestConnectDiscoverNegotiatedLegacyRequestsThatRevision: when discover
+// selects a pre-stateless mutual revision, the follow-up handshake requests
+// exactly that revision rather than a hardcoded one.
+func TestConnectDiscoverNegotiatedLegacyRequestsThatRevision(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.discoverResult = discoverResultOffering(protocol.Version20250618)
+	ft.initializeEcho = true
+	c := connectClient(t, ft, Config{})
+
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	assert.False(t, c.IsStateless())
+	assert.Equal(t, protocol.Version20250618, ft.requestedInitVersion())
+	assert.Equal(t, protocol.Version20250618, c.NegotiatedVersion())
 }

@@ -33,6 +33,13 @@ const (
 // server offers a choice.
 const PreferredVersion = Version20260728
 
+// LatestLegacyVersion is the newest handshake-based (pre-stateless) revision
+// this implementation can speak. The initialize handshake requests it when no
+// narrower revision was pinned or discovered: legacy negotiation has the
+// client ask for the latest version it supports, and the server answers with
+// that version or the latest one it can speak instead.
+const LatestLegacyVersion = Version20251125
+
 // supportedVersions lists every revision this implementation can speak, in
 // descending preference order. Revisions before 2026-07-28 use the
 // initialize handshake and protocol-level sessions; 2026-07-28 and later are
