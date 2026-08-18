@@ -616,7 +616,7 @@ backup:
 
 # Build the loom-runtime Docker image for the local platform (single-arch, fast).
 # For multi-arch CI builds use `just build-runtime-multiarch`.
-build-runtime tag="1.0.0":
+build-runtime tag=`cat VERSION`:
     docker build \
         --build-arg VERSION=$(cat VERSION) \
         --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
@@ -627,7 +627,7 @@ build-runtime tag="1.0.0":
 # Build multi-arch loom-runtime image (linux/amd64 + linux/arm64) via Docker Buildx.
 # Requires a buildx builder with QEMU support. The multi-platform image is written
 # to an OCI archive because the Docker image store cannot load a manifest list.
-build-runtime-multiarch tag="1.0.0":
+build-runtime-multiarch tag=`cat VERSION`:
     docker buildx build \
         --platform linux/amd64,linux/arm64 \
         --build-arg VERSION=$(cat VERSION) \

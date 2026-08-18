@@ -66,6 +66,17 @@ func TestAgentAllowsSpawnRequiresExplicitBuiltin(t *testing.T) {
 	assert.False(t, srv.agentAllowsSpawn("missing"))
 }
 
+func TestAgentAllowsSpawnProgrammaticOptInWithoutRegistry(t *testing.T) {
+	server := NewMultiAgentServer(nil, nil)
+	assert.False(t, server.agentAllowsSpawn("embedded-agent"))
+
+	server.SetAgentSpawnEnabled("embedded-agent", true)
+	assert.True(t, server.agentAllowsSpawn("embedded-agent"))
+
+	server.SetAgentSpawnEnabled("embedded-agent", false)
+	assert.False(t, server.agentAllowsSpawn("embedded-agent"))
+}
+
 // parentSession creates the parent session a spawn hangs off, which the store
 // requires before a child session can reference it.
 func parentSession(t *testing.T, srv *MultiAgentServer) string {

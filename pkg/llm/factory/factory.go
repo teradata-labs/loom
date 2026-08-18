@@ -18,6 +18,7 @@ import (
 	"os"
 	"time"
 
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
@@ -118,30 +119,30 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	// Expand ${VAR} references in all credential/endpoint fields so the
 	// factory code paths that check `if field == ""` see the resolved value
 	// (matching the behavior of cmd_serve.go's createProviderWithRateLimit).
-	config.AnthropicAPIKey = os.ExpandEnv(config.AnthropicAPIKey)
-	config.BedrockRegion = os.ExpandEnv(config.BedrockRegion)
-	config.BedrockAccessKeyID = os.ExpandEnv(config.BedrockAccessKeyID)
-	config.BedrockSecretAccessKey = os.ExpandEnv(config.BedrockSecretAccessKey)
-	config.BedrockSessionToken = os.ExpandEnv(config.BedrockSessionToken)
-	config.BedrockBearerToken = os.ExpandEnv(config.BedrockBearerToken)
-	config.OllamaEndpoint = os.ExpandEnv(config.OllamaEndpoint)
-	config.OpenAIAPIKey = os.ExpandEnv(config.OpenAIAPIKey)
-	config.AzureOpenAIEndpoint = os.ExpandEnv(config.AzureOpenAIEndpoint)
-	config.AzureOpenAIDeploymentID = os.ExpandEnv(config.AzureOpenAIDeploymentID)
-	config.AzureOpenAIAPIKey = os.ExpandEnv(config.AzureOpenAIAPIKey)
-	config.AzureOpenAIEntraToken = os.ExpandEnv(config.AzureOpenAIEntraToken)
-	config.MistralAPIKey = os.ExpandEnv(config.MistralAPIKey)
-	config.GeminiAPIKey = os.ExpandEnv(config.GeminiAPIKey)
-	config.HuggingFaceToken = os.ExpandEnv(config.HuggingFaceToken)
-	config.LiteLLMEndpoint = os.ExpandEnv(config.LiteLLMEndpoint)
-	config.LiteLLMAPIKey = os.ExpandEnv(config.LiteLLMAPIKey)
+	config.AnthropicAPIKey = loomconfig.ExpandEnvPlaceholders(config.AnthropicAPIKey)
+	config.BedrockRegion = loomconfig.ExpandEnvPlaceholders(config.BedrockRegion)
+	config.BedrockAccessKeyID = loomconfig.ExpandEnvPlaceholders(config.BedrockAccessKeyID)
+	config.BedrockSecretAccessKey = loomconfig.ExpandEnvPlaceholders(config.BedrockSecretAccessKey)
+	config.BedrockSessionToken = loomconfig.ExpandEnvPlaceholders(config.BedrockSessionToken)
+	config.BedrockBearerToken = loomconfig.ExpandEnvPlaceholders(config.BedrockBearerToken)
+	config.OllamaEndpoint = loomconfig.ExpandEnvPlaceholders(config.OllamaEndpoint)
+	config.OpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.OpenAIAPIKey)
+	config.AzureOpenAIEndpoint = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEndpoint)
+	config.AzureOpenAIDeploymentID = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIDeploymentID)
+	config.AzureOpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIAPIKey)
+	config.AzureOpenAIEntraToken = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEntraToken)
+	config.MistralAPIKey = loomconfig.ExpandEnvPlaceholders(config.MistralAPIKey)
+	config.GeminiAPIKey = loomconfig.ExpandEnvPlaceholders(config.GeminiAPIKey)
+	config.HuggingFaceToken = loomconfig.ExpandEnvPlaceholders(config.HuggingFaceToken)
+	config.LiteLLMEndpoint = loomconfig.ExpandEnvPlaceholders(config.LiteLLMEndpoint)
+	config.LiteLLMAPIKey = loomconfig.ExpandEnvPlaceholders(config.LiteLLMAPIKey)
 	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
 	// modified in place (shared-map mutation is a race if the caller holds the
 	// original and another goroutine concurrently reads it).
 	if len(config.LiteLLMExtraHeaders) > 0 {
 		expanded := make(map[string]string, len(config.LiteLLMExtraHeaders))
 		for key, value := range config.LiteLLMExtraHeaders {
-			expanded[key] = os.ExpandEnv(value)
+			expanded[key] = loomconfig.ExpandEnvPlaceholders(value)
 		}
 		config.LiteLLMExtraHeaders = expanded
 	}

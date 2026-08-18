@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 )
 
 // SpanFilterConfig controls which spans are forwarded to the OTLP backend.
@@ -38,8 +40,8 @@ type OTelConfig struct {
 	//   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — signal-specific, used verbatim.
 	//   OTEL_EXPORTER_OTLP_ENDPOINT        — OTel-spec base URL; /v1/traces is appended.
 	//   LOOM_OTLP_ENDPOINT                 — Loom-specific fallback, used verbatim.
-	// Values may contain ${VAR} placeholders expanded by os.ExpandEnv. A literal
-	// '$' in a value must be written as '$$' to avoid unintended expansion.
+	// Values may contain ${VAR} placeholders. Bare dollar signs are preserved;
+	// write $$ to emit one literal dollar sign.
 	// Example (Opik local):  http://localhost:5173/api/v1/private/otel/v1/traces
 	// Example (Jaeger):      http://jaeger:4318/v1/traces
 	Endpoint string
@@ -85,7 +87,7 @@ type OTelConfig struct {
 //   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: signal-specific; used verbatim.
 //   - OTEL_EXPORTER_OTLP_ENDPOINT: base URL per spec; /v1/traces is appended.
 //   - LOOM_OTLP_ENDPOINT: Loom-specific fallback; used verbatim.
-func resolveOTLPEndpointEnv() string {
+func ResolveOTLPEndpointEnv() string {
 	if v := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
 		return v
 	}
@@ -98,12 +100,20 @@ func resolveOTLPEndpointEnv() string {
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = resolveOTLPEndpointEnv()
+		cfg.Endpoint = ResolveOTLPEndpointEnv()
 	}
+	cfg.Endpoint = loomconfig.ExpandEnvPlaceholders(cfg.Endpoint)
 	if len(cfg.Headers) == 0 {
 		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
+	}
+	if len(cfg.Headers) > 0 {
+		headers := make(map[string]string, len(cfg.Headers))
+		for key, value := range cfg.Headers {
+			headers[key] = loomconfig.ExpandEnvPlaceholders(value)
+		}
+		cfg.Headers = headers
 	}
 	if !cfg.Insecure {
 		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"

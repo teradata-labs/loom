@@ -50,6 +50,7 @@ func TestNewManager(t *testing.T) {
 
 func TestManager_AddServerExpandsStreamableHTTPEnvironment(t *testing.T) {
 	received := make(chan http.Header, 2)
+	decodeErrors := make(chan error, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case received <- r.Header.Clone():
@@ -58,7 +59,11 @@ func TestManager_AddServerExpandsStreamableHTTPEnvironment(t *testing.T) {
 		var request struct {
 			ID json.RawMessage `json:"id"`
 		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			decodeErrors <- err
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
 		if len(request.ID) == 0 {
 			w.WriteHeader(http.StatusAccepted)
 			return
@@ -88,6 +93,11 @@ func TestManager_AddServerExpandsStreamableHTTPEnvironment(t *testing.T) {
 		URL:       "${MCP_TEST_URL}",
 		Headers:   map[string]string{"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
 	}))
+	select {
+	case decodeErr := <-decodeErrors:
+		require.NoError(t, decodeErr)
+	default:
+	}
 	defer func() { _ = manager.RemoveServer("remote") }()
 
 	headers := <-received
@@ -544,7 +554,7 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 }
 
 func TestExpandEnvHeaders(t *testing.T) {
-	t.Setenv("MCP_TOKEN", "secret-value")
+	t.Setenv("MCP_TOKEN", "secret$value")
 
 	tests := []struct {
 		name   string
@@ -569,12 +579,22 @@ func TestExpandEnvHeaders(t *testing.T) {
 		{
 			name:   "placeholder expanded",
 			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
-			expect: map[string]string{"Authorization": "Bearer secret-value"},
+			expect: map[string]string{"Authorization": "Bearer secret$value"},
 		},
 		{
-			name:   "unset placeholder becomes empty",
+			name:   "unset placeholder is preserved",
 			input:  map[string]string{"X-Key": "${UNSET_VAR_12345}"},
-			expect: map[string]string{"X-Key": ""},
+			expect: map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+		},
+		{
+			name:   "literal dollar is preserved",
+			input:  map[string]string{"Authorization": "Bearer sk-ab$Cd9xyz"},
+			expect: map[string]string{"Authorization": "Bearer sk-ab$Cd9xyz"},
+		},
+		{
+			name:   "resolved value is not expanded recursively",
+			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
+			expect: map[string]string{"Authorization": "Bearer secret$value"},
 		},
 	}
 

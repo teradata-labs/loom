@@ -315,13 +315,9 @@ func TestNewHTTPServerWithCORS(t *testing.T) {
 	assert.Equal(t, []string{"https://custom.com"}, httpServer.corsConfig.AllowedOrigins)
 }
 
-// TestSSEStreamWrapperSendUsesProtoJSON guards against regressing to
-// encoding/json for WeaveProgress SSE frames. SSE clients (e.g. the
-// AgentRuntime UI's parseLoomWeaveProgress) expect proto-JSON: camelCase
-// field names and string enum values. Plain encoding/json instead emits the
-// struct's snake_case json tags and raw numeric enums, which those clients
-// silently ignore, producing an empty response.
-func TestSSEStreamWrapperSendUsesProtoJSON(t *testing.T) {
+// TestSSEStreamWrapperSendPreservesLegacyJSON pins the documented SSE contract
+// used by existing clients: snake_case fields and numeric enum values.
+func TestSSEStreamWrapperSendPreservesLegacyJSON(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapper := &sseStreamWrapper{
 		ctx:     nil, //nolint:staticcheck // test-only stream wrapper, no context needed
@@ -340,14 +336,10 @@ func TestSSEStreamWrapperSendUsesProtoJSON(t *testing.T) {
 	require.NoError(t, wrapper.Send(progress))
 
 	body := rr.Body.String()
-	assert.Contains(t, body, `"stage":"EXECUTION_STAGE_COMPLETED"`)
-	assert.Contains(t, body, `"isTokenStream":true`)
-	assert.Contains(t, body, `"partialContent":"hello world"`)
-	assert.Contains(t, body, `"tokenCount":2`)
-
-	// snake_case field names must NOT appear on the wire.
-	assert.NotContains(t, body, "is_token_stream")
-	assert.NotContains(t, body, "partial_content")
+	assert.Contains(t, body, `"stage":7`)
+	assert.Contains(t, body, `"is_token_stream":true`)
+	assert.Contains(t, body, `"partial_content":"hello world"`)
+	assert.Contains(t, body, `"token_count":2`)
 }
 
 // TestSSEStreamWrapperWriteHeartbeat guards the idle-connection keepalive:

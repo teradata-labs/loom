@@ -552,24 +552,23 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 
 	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
 	// injected, force observability on. See applyOTLPEnvOverride for full details.
-	applyOTLPEnvOverride(&config.Observability, logger)
+	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
-			if config.Observability.HawkEndpoint != "" {
+			if config.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if config.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"
 			}
 		}
 
-		// applyOTLPEnvOverride already ran above and set OTLPEndpoint/Headers/
-		// Insecure when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is present; derive
-		// the mode switch from whether the endpoint was set.
-		if config.Observability.OTLPEndpoint != "" {
+		if otlpEnv != "" {
 			if mode != "otel" {
-				logOTLPModeOverride(logger, mode, config.Observability.OTLPEndpoint)
+				logOTLPModeOverride(logger, mode, otlpEnv)
 				mode = "otel"
 			}
 		}
@@ -635,6 +634,9 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 				Privacy: observability.PrivacyConfig{
 					RedactCredentials: true,
 					RedactPII:         true,
+				},
+				SpanFilter: observability.SpanFilterConfig{
+					IncludePrefixes: config.Observability.OTLPIncludeSpans,
 				},
 			})
 			if err != nil {

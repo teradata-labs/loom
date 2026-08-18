@@ -106,6 +106,12 @@ func TestRegisterYAMLBuiltinTools_NoneMode_HonoursYAMLAutoTools(t *testing.T) {
 		"non-auto-registered tool must be honoured")
 }
 
+func TestBuiltinToolsToSuppressNoneModePreservesSpawnOptIn(t *testing.T) {
+	withViperMinimalMode(t, false, true)
+	assert.NotContains(t, builtinToolsToSuppress(), "manage_ephemeral_agents",
+		"tools.none must not suppress the per-session tool explicitly enabled in YAML")
+}
+
 // TestRegisterYAMLBuiltinTools_OtherMechanismTools_AlwaysSkipped pins the
 // (B) semantic for tools.none: tools wired through their own subsystems
 // (memory/swap, communication, presentation, etc.) cannot be constructed by

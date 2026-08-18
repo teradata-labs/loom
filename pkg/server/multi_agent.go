@@ -105,6 +105,9 @@ type MultiAgentServer struct {
 
 	// Agent registry for workflow execution
 	registry *agent.Registry
+	// spawnEnabled is the explicit opt-in path for programmatic embedders that
+	// do not configure an agent registry.
+	spawnEnabled map[string]bool
 
 	// Workflow scheduler for cron-based execution
 	scheduler *scheduler.Scheduler
@@ -259,9 +262,10 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store agent.SessionStor
 		modelRegistry:                     factory.NewModelRegistry(), // Initialize with all models
 		progressMultiplexers:              make(map[string]*metaagent.ProgressMultiplexer),
 		pendingQuestions:                  make(map[string]*metaagent.Question),
-		clarificationChannelSendTimeoutMs: 100,                                       // Default 100ms, can be configured via SetClarificationConfig()
-		workflowStore:                     NewWorkflowStore(),                        // Initialize workflow execution store
-		registry:                          nil,                                       // Set via SetAgentRegistry()
+		clarificationChannelSendTimeoutMs: 100,                // Default 100ms, can be configured via SetClarificationConfig()
+		workflowStore:                     NewWorkflowStore(), // Initialize workflow execution store
+		registry:                          nil,                // Set via SetAgentRegistry()
+		spawnEnabled:                      make(map[string]bool),
 		workflowSubAgents:                 make(map[string]*workflowSubAgentContext), // Initialize workflow sub-agent tracking
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
@@ -526,6 +530,12 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 // "manage_ephemeral_agents" in tools.builtin. This gates server-side
 // injection so spawning is an opt-in capability, not a default for all agents.
 func (s *MultiAgentServer) agentAllowsSpawn(agentID string) bool {
+	s.mu.RLock()
+	programmaticOptIn := s.spawnEnabled[agentID]
+	s.mu.RUnlock()
+	if programmaticOptIn {
+		return true
+	}
 	if s.registry == nil {
 		return false
 	}
@@ -544,6 +554,19 @@ func (s *MultiAgentServer) agentAllowsSpawn(agentID string) bool {
 		}
 	}
 	return false
+}
+
+// SetAgentSpawnEnabled explicitly controls ephemeral-agent spawning for an
+// agent in programmatic servers that do not load YAML through AgentRegistry.
+// Registry-backed servers should opt in with tools.builtin instead.
+func (s *MultiAgentServer) SetAgentSpawnEnabled(agentID string, enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if enabled {
+		s.spawnEnabled[agentID] = true
+	} else {
+		delete(s.spawnEnabled, agentID)
+	}
 }
 
 // findAgentBySession iterates all agents to find which one owns the given session.

@@ -86,6 +86,12 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
+	httpTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		httpTransport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	} else {
+		httpTransport = httpTransport.Clone()
+	}
 
 	if config.EnableResumption {
 		logger.Warn("enable_resumption is deprecated and has no effect: SSE resumption was removed by MCP 2026-07-28 and never had a read path in this client")
@@ -179,13 +185,12 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Adopt a session ID whenever a legacy server mints one and none is held.
-	// Captures Mcp-Session-Id regardless of enable_sessions — per the MCP spec,
-	// if the server issues a session ID on initialize the client MUST echo it on
-	// every subsequent request; session-based servers like Atlassian's remote MCP
-	// reject follow-up notifications without it. The enable_sessions flag still
-	// controls proactive session termination on Close.
-	if t.enableSessions && !t.sessionMgr.HasSession() {
+	// Capture Mcp-Session-Id whenever the server issues one and no session is
+	// held yet. Per the MCP spec, if the server issues a session ID the client
+	// MUST echo it on every subsequent request; session-based servers such as
+	// Atlassian's remote MCP reject follow-up notifications without it.
+	// The enable_sessions flag controls proactive session termination on Close.
+	if !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -509,15 +514,11 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		return err
 	}
 
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
-
 	// Add custom headers
 	for k, v := range t.headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Mcp-Session-Id", t.sessionMgr.GetSessionID())
 
 	resp, err := t.client.Do(req)
 	if err != nil {

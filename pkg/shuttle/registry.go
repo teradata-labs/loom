@@ -128,7 +128,15 @@ func (r *Registry) ListByBackend(backend string) []Tool {
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	canonicalName := name
+	if tool, ok := r.tools[name]; ok {
+		canonicalName = tool.Name()
+	}
+	for key, tool := range r.tools {
+		if key == name || tool.Name() == canonicalName {
+			delete(r.tools, key)
+		}
+	}
 }
 
 // RegisterAlias registers an existing tool under an additional alias name.

@@ -50,6 +50,24 @@ func TestNewAutoSelectTracerFromEnvSelectsOTel(t *testing.T) {
 	}
 }
 
+func TestNewAutoSelectTracerFromEnvSelectsOTelFromBaseEndpoint(t *testing.T) {
+	t.Setenv("LOOM_TRACER_MODE", "auto")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+	t.Setenv("LOOM_OTLP_INSECURE", "true")
+
+	tracer, err := NewAutoSelectTracerFromEnv(zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAutoSelectTracerFromEnv: %v", err)
+	}
+	otelTracer, ok := tracer.(*OTelTracer)
+	if !ok {
+		t.Fatalf("tracer type = %T, want *OTelTracer", tracer)
+	}
+	if err := otelTracer.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
 // TestAutoSelectTracer_EmbeddedMemory verifies embedded memory storage works via auto-selection
 func TestAutoSelectTracer_EmbeddedMemory(t *testing.T) {
 	logger, _ := zap.NewDevelopment()

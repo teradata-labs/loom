@@ -18,11 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
@@ -168,7 +168,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		// Expand ${VAR} references in URL and header values so tokens and endpoints
 		// stored as env vars at deploy time resolve at pod startup.
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
-			Endpoint:         os.ExpandEnv(config.URL),
+			Endpoint:         loomconfig.ExpandEnvPlaceholders(config.URL),
 			Headers:          expandEnvHeaders(config.Headers),
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
@@ -179,7 +179,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		// Expands ${VAR} references and forwards headers.
 		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
-			Endpoint: os.ExpandEnv(config.URL),
+			Endpoint: loomconfig.ExpandEnvPlaceholders(config.URL),
 			Headers:  expandEnvHeaders(config.Headers),
 			Logger:   m.logger.With(zap.String("server", name)),
 		})
@@ -397,7 +397,7 @@ func (m *Manager) ServerNames() []string {
 }
 
 // expandEnvHeaders returns a copy of the header map with every value run through
-// os.ExpandEnv so that ${VAR} and $VAR references resolve to the actual pod
+// the shared safe expander so ${VAR} references resolve to the actual pod
 // environment variable values at startup time. This enables tera-cloud to write
 // env var references (e.g. ${MCP_MYSERVER_AUTHORIZATION}) into looms.yaml instead
 // of baking literal bearer tokens into the artifact, which would become stale when
@@ -408,7 +408,7 @@ func expandEnvHeaders(headers map[string]string) map[string]string {
 	}
 	expanded := make(map[string]string, len(headers))
 	for k, v := range headers {
-		expanded[k] = os.ExpandEnv(v)
+		expanded[k] = loomconfig.ExpandEnvPlaceholders(v)
 	}
 	return expanded
 }
@@ -416,13 +416,9 @@ func expandEnvHeaders(headers map[string]string) map[string]string {
 func unresolvedEnvVariables(endpoint string, headers map[string]string) []string {
 	missing := make(map[string]struct{})
 	check := func(value string) {
-		_ = os.Expand(value, func(variable string) string {
-			resolved, ok := os.LookupEnv(variable)
-			if !ok {
-				missing[variable] = struct{}{}
-			}
-			return resolved
-		})
+		for _, variable := range loomconfig.UnresolvedEnvPlaceholders(value) {
+			missing[variable] = struct{}{}
+		}
 	}
 	check(endpoint)
 	for _, value := range headers {
@@ -432,7 +428,7 @@ func unresolvedEnvVariables(endpoint string, headers map[string]string) []string
 	for variable := range missing {
 		variables = append(variables, variable)
 	}
-	sort.Strings(variables)
+	slices.Sort(variables)
 	return variables
 }
 

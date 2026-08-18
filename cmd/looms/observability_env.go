@@ -20,8 +20,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// applyOTLPEnvOverride inspects the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-// environment variable and, when set, force-enables observability and
+// applyOTLPEnvOverride inspects the standard and Loom OTLP endpoint
+// environment variables and, when one is set, force-enables observability and
 // overrides the endpoint/headers/insecure fields from env vars.
 //
 // This lets the platform (AgentOpsCore) enable and redirect traces at
@@ -30,13 +30,13 @@ import (
 //
 // Returns the effective OTLP endpoint string (empty when the env var is unset).
 func applyOTLPEnvOverride(obs *ObservabilityConfig, logger *zap.Logger) string {
-	otlpEnv := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	otlpEnv := observability.ResolveOTLPEndpointEnv()
 	if otlpEnv == "" {
 		return ""
 	}
 
 	if !obs.Enabled {
-		logger.Info("Enabling observability (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)")
+		logger.Info("Enabling observability (OTLP endpoint environment variable is set)")
 		obs.Enabled = true
 	}
 
@@ -44,7 +44,7 @@ func applyOTLPEnvOverride(obs *ObservabilityConfig, logger *zap.Logger) string {
 	// the collector without rebuilding the agent artifact.
 	obs.OTLPEndpoint = otlpEnv
 
-	if raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"); raw != "" {
+	if raw := firstConfiguredEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 		obs.OTLPHeaders = observability.ParseHeadersEnv(raw)
 	}
 
@@ -58,19 +58,16 @@ func applyOTLPEnvOverride(obs *ObservabilityConfig, logger *zap.Logger) string {
 // logOTLPModeOverride emits an Info log when the observability mode is being
 // changed to "otel" because of the OTLP env-var injection.
 func logOTLPModeOverride(logger *zap.Logger, originalMode, otlpEndpoint string) {
-	logger.Info("Overriding observability mode to otel (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set)",
+	logger.Info("Overriding observability mode to otel (OTLP endpoint environment variable is set)",
 		zap.String("original_mode", originalMode),
 		zap.String("otlp_endpoint", otlpEndpoint))
 }
 
-// expandOTLPConfig expands ${VAR} placeholders in the OTLP endpoint and headers
-// so the platform can write placeholders in looms.yaml and supply real values
-// via pod env vars (same pattern as MCP auth headers).
-//
-// Note: a literal '$' in a value must be written as '$$' to avoid expansion.
-func expandOTLPConfig(obs *ObservabilityConfig) {
-	obs.OTLPEndpoint = os.ExpandEnv(obs.OTLPEndpoint)
-	for k, v := range obs.OTLPHeaders {
-		obs.OTLPHeaders[k] = os.ExpandEnv(v)
+func firstConfiguredEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
 	}
+	return ""
 }

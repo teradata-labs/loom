@@ -648,7 +648,7 @@ func TestResolveOTLPEndpointEnv(t *testing.T) {
 	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://col:4318/v1/traces")
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")
-		got := resolveOTLPEndpointEnv()
+		got := ResolveOTLPEndpointEnv()
 		if got != "http://col:4318/v1/traces" {
 			t.Errorf("expected traces-specific endpoint verbatim, got %q", got)
 		}
@@ -657,7 +657,7 @@ func TestResolveOTLPEndpointEnv(t *testing.T) {
 	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT base URL appends /v1/traces", func(t *testing.T) {
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317")
-		got := resolveOTLPEndpointEnv()
+		got := ResolveOTLPEndpointEnv()
 		if got != "http://col:4317/v1/traces" {
 			t.Errorf("expected base URL + /v1/traces, got %q", got)
 		}
@@ -666,7 +666,7 @@ func TestResolveOTLPEndpointEnv(t *testing.T) {
 	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT trailing slash is normalised", func(t *testing.T) {
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317/")
-		got := resolveOTLPEndpointEnv()
+		got := ResolveOTLPEndpointEnv()
 		if got != "http://col:4317/v1/traces" {
 			t.Errorf("trailing slash not stripped, got %q", got)
 		}
@@ -676,7 +676,7 @@ func TestResolveOTLPEndpointEnv(t *testing.T) {
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 		t.Setenv("LOOM_OTLP_ENDPOINT", "http://loom-col:4318/v1/traces")
-		got := resolveOTLPEndpointEnv()
+		got := ResolveOTLPEndpointEnv()
 		if got != "http://loom-col:4318/v1/traces" {
 			t.Errorf("expected LOOM_OTLP_ENDPOINT fallback, got %q", got)
 		}

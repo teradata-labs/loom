@@ -301,7 +301,7 @@ func TestClient_ConvertMessages(t *testing.T) {
 			},
 		},
 		{
-			name: "tool result message",
+			name: "orphaned tool result is dropped",
 			messages: []types.Message{
 				{
 					Role:      "tool",
@@ -309,13 +309,7 @@ func TestClient_ConvertMessages(t *testing.T) {
 					ToolUseID: "call_123",
 				},
 			},
-			want: []ChatMessage{
-				{
-					Role:       "tool",
-					Content:    "Temperature is 72F",
-					ToolCallID: "call_123",
-				},
-			},
+			want: []ChatMessage{},
 		},
 		{
 			name: "conversation with multiple message types",
@@ -376,6 +370,29 @@ func TestClient_ConvertMessages(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientConvertMessagesDropsOrphanedToolResults(t *testing.T) {
+	client := NewClient(Config{APIKey: "test"})
+	messages := []types.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []types.ToolCall{
+				{ID: "", Name: "broken", Input: map[string]interface{}{}},
+				{ID: "valid-call", Name: "working", Input: map[string]interface{}{}},
+			},
+		},
+		{Role: "tool", ToolUseID: "", Content: "orphaned result"},
+		{Role: "tool", ToolUseID: "unknown-call", Content: "unpaired result"},
+		{Role: "tool", ToolUseID: "valid-call", Content: "paired result"},
+	}
+
+	got := client.convertMessages(messages)
+	require.Len(t, got, 2)
+	require.Len(t, got[0].ToolCalls, 1)
+	assert.Equal(t, "valid-call", got[0].ToolCalls[0].ID)
+	assert.Equal(t, "tool", got[1].Role)
+	assert.Equal(t, "valid-call", got[1].ToolCallID)
 }
 
 func TestClient_ConvertTools(t *testing.T) {

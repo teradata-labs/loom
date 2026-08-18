@@ -179,6 +179,25 @@ func TestRegistry_Unregister(t *testing.T) {
 	}
 }
 
+func TestRegistryUnregisterRemovesAliases(t *testing.T) {
+	registry := NewRegistry()
+	tool := &mockTool{name: "server:query"}
+	registry.Register(tool)
+	registry.RegisterAlias("query", tool)
+
+	registry.Unregister("server:query")
+
+	if _, canonicalExists := registry.Get("server:query"); canonicalExists {
+		t.Fatal("canonical tool still registered")
+	}
+	if _, aliasExists := registry.Get("query"); aliasExists {
+		t.Fatal("tool alias still registered")
+	}
+	if tools := registry.ListTools(); len(tools) != 0 {
+		t.Fatalf("expected empty registry, got %d tools", len(tools))
+	}
+}
+
 func TestRegistry_Count(t *testing.T) {
 	reg := NewRegistry()
 
