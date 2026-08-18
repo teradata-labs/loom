@@ -201,3 +201,22 @@ func TestSSEContentTypeWithParameters(t *testing.T) {
 	require.NoError(t, json.Unmarshal(receiveWithTimeout(t, tr, 5*time.Second), &resp))
 	assert.Equal(t, int64(4), resp.ID)
 }
+
+// TestNotificationAcknowledgmentWithoutContentType: per the transport spec a
+// server answers an accepted notification POST with 202 and no body — and
+// therefore no Content-Type. Send must treat that as success rather than
+// rejecting an "unexpected Content-Type".
+func TestNotificationAcknowledgmentWithoutContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
+	require.NoError(t, err)
+	defer func() { _ = tr.Close() }()
+
+	require.NoError(t, tr.Send(context.Background(),
+		[]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)),
+		"a bodiless 202 acknowledgment must be accepted")
+}

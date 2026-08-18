@@ -197,6 +197,14 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		}
 	}
 
+	// Notification acknowledgments (202/204) carry no body and no content
+	// type; falling through to the Content-Type switch would reject them as
+	// unexpected.
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+		t.logger.Debug("Notification accepted")
+		return nil
+	}
+
 	// Handle response based on Content-Type. Parse the media type properly:
 	// servers legitimately send parameters such as
 	// "text/event-stream; charset=utf-8".
