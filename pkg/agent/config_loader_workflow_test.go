@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/validation"
 )
 
 // TestLoadWorkflowAgents_WeaverFormat tests loading a weaver-generated workflow
@@ -360,4 +361,430 @@ spec:
 			assert.Nil(t, configs)
 		})
 	}
+}
+
+// TestLoadWorkflowAgents_CanonicalPatternContract pins the registry loader's
+// accepted spec.type vocabulary to validation.CanonicalWorkflowPatternTypes.
+// Every canonical pattern type must both pass pkg/validation and load through
+// LoadWorkflowAgents with all referenced agents registered, so a vocabulary
+// or schema split between the validator and the loader (the fork-join bug,
+// #307) fails here instead of surfacing as silently skipped workflows.
+func TestLoadWorkflowAgents_CanonicalPatternContract(t *testing.T) {
+	type contractCase struct {
+		yaml       string
+		wantAgents []string
+	}
+
+	cases := map[string]contractCase{
+		"debate": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-debate
+  description: Canonical debate spec
+spec:
+  type: debate
+  topic: 'Monolith or microservices?'
+  agent_ids:
+    - architect
+    - pragmatist
+  rounds: 1
+  moderator_agent_id: moderator
+`,
+			wantAgents: []string{"architect", "pragmatist", "moderator"},
+		},
+		"fork-join": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-fork-join
+  description: Canonical fork-join spec
+spec:
+  type: fork-join
+  prompt: 'Research the target: {{input}}'
+  agent_ids:
+    - researcher-a
+    - researcher-b
+  merge_strategy: concatenate
+`,
+			wantAgents: []string{"researcher-a", "researcher-b"},
+		},
+		"pipeline": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-pipeline
+  description: Canonical pipeline spec
+spec:
+  type: pipeline
+  initial_prompt: '{{input}}'
+  stages:
+    - agent_id: spec-writer
+      prompt_template: 'Write the spec: {{input}}'
+    - agent_id: implementer
+      prompt_template: 'Implement: {{previous_output}}'
+`,
+			wantAgents: []string{"spec-writer", "implementer"},
+		},
+		"parallel": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-parallel
+  description: Canonical parallel spec
+spec:
+  type: parallel
+  tasks:
+    - agent_id: task-a
+      prompt: 'Do task A'
+    - agent_id: task-b
+      prompt: 'Do task B'
+  merge_strategy: concatenate
+`,
+			wantAgents: []string{"task-a", "task-b"},
+		},
+		"conditional": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-conditional
+  description: Canonical conditional spec with nested branch patterns
+spec:
+  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: 'Is this a bug report? {{input}}'
+  branches:
+    bug:
+      type: pipeline
+      initial_prompt: '{{input}}'
+      stages:
+        - agent_id: bug-triager
+          prompt_template: 'Triage: {{input}}'
+    feature:
+      type: fork-join
+      prompt: 'Assess: {{input}}'
+      agent_ids:
+        - feature-assessor
+  default_branch:
+    type: fork-join
+    prompt: 'Fallback: {{input}}'
+    agent_ids:
+      - generalist
+  retry_policy:
+    max_retries: 2
+`,
+			wantAgents: []string{"classifier", "bug-triager", "feature-assessor", "generalist"},
+		},
+		"iterative": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-iterative
+  description: Canonical iterative spec wrapping a base pipeline
+spec:
+  type: iterative
+  max_iterations: 2
+  pipeline:
+    initial_prompt: '{{input}}'
+    stages:
+      - agent_id: drafter
+        prompt_template: 'Draft: {{input}}'
+      - agent_id: reviewer
+        prompt_template: 'Review: {{previous_output}}'
+`,
+			wantAgents: []string{"drafter", "reviewer"},
+		},
+		"swarm": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-swarm
+  description: Canonical swarm spec
+spec:
+  type: swarm
+  question: 'Best approach for {{input}}?'
+  agent_ids:
+    - voter-a
+    - voter-b
+    - voter-c
+  strategy: majority
+  judge_agent_id: judge
+  retry_policy:
+    max_retries: 1
+`,
+			wantAgents: []string{"voter-a", "voter-b", "voter-c", "judge"},
+		},
+	}
+
+	// The table must cover the canonical vocabulary exactly: adding a type to
+	// validation.CanonicalWorkflowPatternTypes without teaching the loader
+	// (and this table) about it fails here.
+	canonical := validation.CanonicalWorkflowPatternTypes()
+	tableTypes := make([]string, 0, len(cases))
+	for typ := range cases {
+		tableTypes = append(tableTypes, typ)
+	}
+	require.ElementsMatch(t, canonical, tableTypes,
+		"contract table out of sync with validation.CanonicalWorkflowPatternTypes — add a spec for the new pattern type")
+
+	for _, patternType := range canonical {
+		t.Run(patternType, func(t *testing.T) {
+			tc := cases[patternType]
+			workflowName := "contract-" + patternType
+
+			// The canonical validator accepts the spec.
+			result := validation.ValidateYAMLContent(tc.yaml, workflowName+".yaml")
+			require.True(t, result.Valid, "validator rejected canonical %s spec: %+v", patternType, result.Errors)
+
+			// The registry loader loads the same spec and registers every
+			// referenced agent.
+			workflowPath := filepath.Join(t.TempDir(), workflowName+".yaml")
+			require.NoError(t, os.WriteFile(workflowPath, []byte(tc.yaml), 0600))
+
+			configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+			require.NoError(t, err, "registry loader rejected canonical %s workflow", patternType)
+
+			var coordinator *loomv1.AgentConfig
+			var subAgents []string
+			for _, config := range configs {
+				if config.Metadata["role"] == "coordinator" {
+					coordinator = config
+					continue
+				}
+				subAgents = append(subAgents, config.Name)
+			}
+
+			require.NotNil(t, coordinator, "no coordinator generated for %s", patternType)
+			assert.Equal(t, workflowName, coordinator.Name)
+			assert.Equal(t, patternType, coordinator.Metadata["pattern"])
+
+			wantSubAgents := make([]string, 0, len(tc.wantAgents))
+			for _, agentID := range tc.wantAgents {
+				wantSubAgents = append(wantSubAgents, workflowName+":"+agentID)
+			}
+			assert.ElementsMatch(t, wantSubAgents, subAgents)
+		})
+	}
+}
+
+// TestLoadWorkflowAgents_ConditionalNestedPatterns exercises recursive agent
+// collection: a conditional branch holding another conditional, and an agent
+// shared across branches that must register exactly once.
+func TestLoadWorkflowAgents_ConditionalNestedPatterns(t *testing.T) {
+	workflowYAML := `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: nested-conditional
+spec:
+  type: conditional
+  condition_agent_id: router
+  condition_prompt: 'Route: {{input}}'
+  branches:
+    simple:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+        - escalation
+    complex:
+      type: conditional
+      condition_agent_id: sub-router
+      condition_prompt: 'Sub-route: {{input}}'
+      branches:
+        deep:
+          type: pipeline
+          initial_prompt: '{{input}}'
+          stages:
+            - agent_id: specialist
+              prompt_template: 'Deep dive: {{input}}'
+            - agent_id: escalation
+              prompt_template: 'Escalate: {{previous_output}}'
+`
+
+	workflowPath := filepath.Join(t.TempDir(), "nested-conditional.yaml")
+	require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+	configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+	require.NoError(t, err)
+
+	var subAgents []string
+	for _, config := range configs {
+		if config.Metadata["role"] != "coordinator" {
+			subAgents = append(subAgents, config.Name)
+		}
+	}
+
+	// escalation appears in two branches but registers once.
+	assert.ElementsMatch(t, []string{
+		"nested-conditional:router",
+		"nested-conditional:sub-router",
+		"nested-conditional:specialist",
+		"nested-conditional:escalation",
+		"nested-conditional:handler",
+	}, subAgents)
+}
+
+// TestLoadWorkflowAgents_ConditionalRejectsMalformedSpecs covers the strict
+// errors for canonical conditional workflows.
+func TestLoadWorkflowAgents_ConditionalRejectsMalformedSpecs(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		wantErr string
+	}{
+		{
+			name: "missing condition_agent_id",
+			spec: `  type: conditional
+  condition_prompt: 'Classify: {{input}}'
+  branches:
+    ok:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+`,
+			wantErr: "conditional workflow requires non-empty 'condition_agent_id'",
+		},
+		{
+			name: "missing condition_prompt",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  branches:
+    ok:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+`,
+			wantErr: "conditional workflow requires non-empty 'condition_prompt'",
+		},
+		{
+			name: "missing branches",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: 'Classify: {{input}}'
+`,
+			wantErr: "conditional workflow requires 'spec.branches' map",
+		},
+		{
+			name: "branch is not an object",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: 'Classify: {{input}}'
+  branches:
+    broken: just-a-string
+`,
+			wantErr: `conditional branch "broken" must be an object with a 'type' field`,
+		},
+		{
+			name: "branch missing type",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: 'Classify: {{input}}'
+  branches:
+    untyped:
+      agent_id: orphan
+`,
+			wantErr: `conditional branch "untyped": workflow pattern spec missing 'type' field`,
+		},
+		{
+			name: "default_branch is not an object",
+			spec: `  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: 'Classify: {{input}}'
+  branches:
+    ok:
+      type: fork-join
+      prompt: 'Handle: {{input}}'
+      agent_ids:
+        - handler
+  default_branch: nope
+`,
+			wantErr: "conditional default_branch must be an object with a 'type' field",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflowYAML := `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: invalid-conditional
+spec:
+` + tt.spec
+
+			workflowPath := filepath.Join(t.TempDir(), "invalid-conditional.yaml")
+			require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+			configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, configs)
+		})
+	}
+}
+
+// TestLoadWorkflowAgents_ShippedOrchestrationExamples loads every shipped
+// orchestration example through the registry loader. Before the canonical
+// pattern-type work, several of these (swarm, conditional) validated but were
+// silently skipped by the registry at startup.
+func TestLoadWorkflowAgents_ShippedOrchestrationExamples(t *testing.T) {
+	examplesDir := filepath.Join("..", "..", "examples", "reference", "workflows", "orchestration-patterns")
+
+	var files []string
+	err := filepath.WalkDir(examplesDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".yaml" {
+			files = append(files, path)
+		}
+		return nil
+	})
+	require.NoError(t, err, "examples directory missing (update the path)")
+	require.NotEmpty(t, files)
+
+	for _, file := range files {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			configs, err := LoadWorkflowAgents(file, &mockLLMProvider{})
+			require.NoError(t, err, "shipped example failed to load in the registry: %s", file)
+
+			var coordinator *loomv1.AgentConfig
+			subAgents := 0
+			for _, config := range configs {
+				if config.Metadata["role"] == "coordinator" {
+					coordinator = config
+					continue
+				}
+				subAgents++
+			}
+			require.NotNil(t, coordinator, "no coordinator generated for %s", file)
+			assert.Greater(t, subAgents, 0, "no sub-agents registered for %s", file)
+		})
+	}
+}
+
+// TestLoadWorkflowAgents_LoaderOnlySpellingsRejected locks out spec.type
+// spellings that only the registry loader ever accepted. They were never
+// valid for the validator or the canonical converter, so accepting them here
+// reintroduces the vocabulary split fixed for fork_join in #307.
+func TestLoadWorkflowAgents_LoaderOnlySpellingsRejected(t *testing.T) {
+	workflowYAML := `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: loader-only-spelling
+spec:
+  type: iterative_pipeline
+  stages:
+    - agent_id: stage-agent
+      prompt_template: 'Run: {{input}}'
+`
+
+	workflowPath := filepath.Join(t.TempDir(), "loader-only-spelling.yaml")
+	require.NoError(t, os.WriteFile(workflowPath, []byte(workflowYAML), 0600))
+
+	configs, err := LoadWorkflowAgents(workflowPath, &mockLLMProvider{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported workflow pattern type: iterative_pipeline")
+	assert.Nil(t, configs)
 }

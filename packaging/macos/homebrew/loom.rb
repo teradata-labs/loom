@@ -1,22 +1,22 @@
 class Loom < Formula
   desc "LLM agent framework with natural language agent creation"
   homepage "https://github.com/teradata-labs/loom"
-  version "1.3.0"
+  version "1.4.0"
   license "Apache-2.0"
 
   # sha256 placeholders are stamped with real hashes by
   # .github/workflows/publish-homebrew.yml at release time.
   resource "loom-patterns" do
-    url "https://github.com/teradata-labs/loom/archive/refs/tags/v1.3.0.tar.gz"
+    url "https://github.com/teradata-labs/loom/archive/refs/tags/v1.4.0.tar.gz"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/teradata-labs/loom/releases/download/v1.3.0/loom-darwin-arm64.tar.gz"
+      url "https://github.com/teradata-labs/loom/releases/download/v1.4.0/loom-darwin-arm64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/teradata-labs/loom/releases/download/v1.3.0/loom-darwin-amd64.tar.gz"
+      url "https://github.com/teradata-labs/loom/releases/download/v1.4.0/loom-darwin-amd64.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end

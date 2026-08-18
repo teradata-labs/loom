@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -1410,83 +1411,11 @@ func loadOrchestrationWorkflow(path string, data map[string]interface{}, llmProv
 		return nil, fmt.Errorf("orchestration workflow missing 'spec.type' (or use spec.entrypoint for agent-reference workflows)")
 	}
 
-	// Extract agent IDs based on pattern type
-	var agentIDs []string
-	switch patternType {
-	case "debate":
-		if ids, ok := spec["agent_ids"].([]interface{}); ok {
-			for _, id := range ids {
-				if idStr, ok := id.(string); ok {
-					agentIDs = append(agentIDs, idStr)
-				}
-			}
-		}
-		// Include optional moderator
-		if moderator, ok := spec["moderator_agent_id"].(string); ok && moderator != "" {
-			agentIDs = append(agentIDs, moderator)
-		}
-
-	case "fork-join":
-		if ids, ok := spec["agent_ids"].([]interface{}); ok {
-			for _, id := range ids {
-				if idStr, ok := id.(string); ok {
-					agentIDs = append(agentIDs, idStr)
-				}
-			}
-		}
-
-	case "parallel":
-		tasks, ok := spec["tasks"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("parallel workflow requires 'spec.tasks' array")
-		}
-
-		seen := make(map[string]bool)
-		for i, task := range tasks {
-			taskMap, ok := task.(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("parallel workflow task %d must be an object", i)
-			}
-
-			agentID, ok := taskMap["agent_id"].(string)
-			if !ok || strings.TrimSpace(agentID) == "" {
-				return nil, fmt.Errorf("parallel workflow task %d missing non-empty 'agent_id'", i)
-			}
-
-			if !seen[agentID] {
-				agentIDs = append(agentIDs, agentID)
-				seen[agentID] = true
-			}
-		}
-
-	case "pipeline", "iterative_pipeline":
-		if stages, ok := spec["stages"].([]interface{}); ok {
-			seen := make(map[string]bool)
-			for _, stage := range stages {
-				if stageMap, ok := stage.(map[string]interface{}); ok {
-					if agentID, ok := stageMap["agent_id"].(string); ok && !seen[agentID] {
-						agentIDs = append(agentIDs, agentID)
-						seen[agentID] = true
-					}
-				}
-			}
-		}
-
-	case "conditional":
-		if branches, ok := spec["branches"].(map[string]interface{}); ok {
-			seen := make(map[string]bool)
-			for _, branch := range branches {
-				if branchMap, ok := branch.(map[string]interface{}); ok {
-					if agentID, ok := branchMap["agent_id"].(string); ok && !seen[agentID] {
-						agentIDs = append(agentIDs, agentID)
-						seen[agentID] = true
-					}
-				}
-			}
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupported workflow pattern type: %s", patternType)
+	// Collect every agent ID the workflow references, recursing into nested
+	// patterns (conditional branches, iterative base pipelines).
+	agentIDs, err := workflowAgentIDs(spec)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(agentIDs) == 0 {
@@ -1572,6 +1501,152 @@ Sub-agents: %s`,
 	}
 
 	return configs, nil
+}
+
+// workflowAgentIDs extracts the ordered, de-duplicated set of agent IDs a
+// canonical orchestration workflow references, recursing into nested patterns
+// (conditional branches and default_branch, the iterative base pipeline). The
+// accepted spec.type vocabulary is exactly the canonical hyphenated set shared
+// with pkg/validation and pkg/orchestration — pinned by the loader contract
+// test so it cannot drift from the validator again.
+func workflowAgentIDs(spec map[string]interface{}) ([]string, error) {
+	c := &workflowAgentCollector{seen: make(map[string]bool)}
+	if err := c.collect(spec); err != nil {
+		return nil, err
+	}
+	return c.ids, nil
+}
+
+// workflowAgentCollector accumulates agent IDs in first-seen order across a
+// (possibly nested) workflow spec.
+type workflowAgentCollector struct {
+	seen map[string]bool
+	ids  []string
+}
+
+func (c *workflowAgentCollector) add(id string) {
+	if strings.TrimSpace(id) == "" || c.seen[id] {
+		return
+	}
+	c.seen[id] = true
+	c.ids = append(c.ids, id)
+}
+
+func (c *workflowAgentCollector) addList(raw interface{}) {
+	items, _ := raw.([]interface{})
+	for _, item := range items {
+		if id, ok := item.(string); ok {
+			c.add(id)
+		}
+	}
+}
+
+func (c *workflowAgentCollector) addPipelineStages(spec map[string]interface{}) {
+	stages, _ := spec["stages"].([]interface{})
+	for _, stage := range stages {
+		if stageMap, ok := stage.(map[string]interface{}); ok {
+			if agentID, ok := stageMap["agent_id"].(string); ok {
+				c.add(agentID)
+			}
+		}
+	}
+}
+
+func (c *workflowAgentCollector) collect(spec map[string]interface{}) error {
+	patternType, _ := spec["type"].(string)
+	if patternType == "" {
+		return fmt.Errorf("workflow pattern spec missing 'type' field")
+	}
+
+	switch patternType {
+	case "debate":
+		c.addList(spec["agent_ids"])
+		if moderator, ok := spec["moderator_agent_id"].(string); ok {
+			c.add(moderator)
+		}
+
+	case "fork-join":
+		c.addList(spec["agent_ids"])
+
+	case "swarm":
+		c.addList(spec["agent_ids"])
+		if judge, ok := spec["judge_agent_id"].(string); ok {
+			c.add(judge)
+		}
+
+	case "parallel":
+		tasks, ok := spec["tasks"].([]interface{})
+		if !ok {
+			return fmt.Errorf("parallel workflow requires 'spec.tasks' array")
+		}
+		for i, task := range tasks {
+			taskMap, ok := task.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("parallel workflow task %d must be an object", i)
+			}
+			agentID, ok := taskMap["agent_id"].(string)
+			if !ok || strings.TrimSpace(agentID) == "" {
+				return fmt.Errorf("parallel workflow task %d missing non-empty 'agent_id'", i)
+			}
+			c.add(agentID)
+		}
+
+	case "pipeline":
+		c.addPipelineStages(spec)
+
+	case "iterative":
+		pipelineSpec, ok := spec["pipeline"].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("iterative workflow requires 'spec.pipeline' object")
+		}
+		c.addPipelineStages(pipelineSpec)
+
+	case "conditional":
+		// convertConditionalPattern requires both fields; rejecting them here
+		// keeps the registry from registering a workflow that can never run.
+		conditionAgent, ok := spec["condition_agent_id"].(string)
+		if !ok || strings.TrimSpace(conditionAgent) == "" {
+			return fmt.Errorf("conditional workflow requires non-empty 'condition_agent_id'")
+		}
+		c.add(conditionAgent)
+		if prompt, ok := spec["condition_prompt"].(string); !ok || strings.TrimSpace(prompt) == "" {
+			return fmt.Errorf("conditional workflow requires non-empty 'condition_prompt'")
+		}
+		branches, ok := spec["branches"].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("conditional workflow requires 'spec.branches' map")
+		}
+		// Branches are nested workflow patterns; iterate in sorted order so
+		// sub-agent registration order is deterministic across runs.
+		branchNames := make([]string, 0, len(branches))
+		for name := range branches {
+			branchNames = append(branchNames, name)
+		}
+		sort.Strings(branchNames)
+		for _, name := range branchNames {
+			branchSpec, ok := branches[name].(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("conditional branch %q must be an object with a 'type' field", name)
+			}
+			if err := c.collect(branchSpec); err != nil {
+				return fmt.Errorf("conditional branch %q: %w", name, err)
+			}
+		}
+		if defaultRaw, hasDefault := spec["default_branch"]; hasDefault {
+			defaultSpec, ok := defaultRaw.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("conditional default_branch must be an object with a 'type' field")
+			}
+			if err := c.collect(defaultSpec); err != nil {
+				return fmt.Errorf("conditional default_branch: %w", err)
+			}
+		}
+
+	default:
+		return fmt.Errorf("unsupported workflow pattern type: %s", patternType)
+	}
+
+	return nil
 }
 
 // loadWeaverWorkflow parses weaver-generated workflows (agent config with embedded workflow section)

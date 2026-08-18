@@ -33,10 +33,11 @@ To verify releases, see the verification instructions in each release note.
 
 ## Current Release
 
-**Latest**: [v1.3.0](v1.3.0.md)
+**Latest**: [v1.4.0](v1.4.0.md)
 
 ## Past Releases
 
+- **v1.3.0** (2026-06-01) - Graph memory, task kanban, skills expansion - See [v1.3.0.md](v1.3.0.md)
 - **v1.1.0** (2026-02-02) - GPG signing, SLSA provenance - See [v1.1.0.md](v1.1.0.md)
 - **v1.0.2** (2026-01-15) - Package distribution fixes - See CHANGELOG.md
 - **v1.0.1** (2026-01-14) - Database migration fixes - See CHANGELOG.md

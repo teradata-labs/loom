@@ -12,6 +12,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/types"
+	"github.com/teradata-labs/loom/pkg/validation"
 	"gopkg.in/yaml.v3"
 )
 
@@ -164,7 +165,7 @@ func validateWorkflowStructure(config *WorkflowConfig) error {
 	}
 
 	// Validate pattern type
-	validTypes := []string{"debate", "fork-join", "pipeline", "parallel", "conditional", "iterative", "swarm"}
+	validTypes := validation.CanonicalWorkflowPatternTypes()
 	isValid := false
 	for _, validType := range validTypes {
 		if patternType == validType {
