@@ -196,3 +196,31 @@ func TestNoHandlerDoesNotAdvertiseElicitation(t *testing.T) {
 	require.NoError(t, json.Unmarshal(metaOf(t, ft.callParams[0])[protocol.MetaClientCapabilities], &caps))
 	assert.Nil(t, caps.Elicitation)
 }
+
+// TestMRTREmptyRequestStateEchoedVerbatim (review finding 11, PR #327): a
+// present-but-empty requestState is schema-valid ("at least one of
+// inputRequests or requestState") and the client MUST echo the exact value —
+// treating "" as absent would drop a field the server chose to send.
+func TestMRTREmptyRequestStateEchoedVerbatim(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.callResults = []json.RawMessage{
+		json.RawMessage(`{"resultType":"input_required","requestState":""}`),
+		json.RawMessage(completeResult),
+	}
+	calls := 0
+	c := mrtrClient(t, ft, Config{MRTR: MRTRConfig{Handler: acceptHandler(t, &calls)}})
+
+	_, err := c.CallTool(context.Background(), "do_thing", map[string]interface{}{})
+	require.NoError(t, err)
+
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	require.Len(t, ft.callParams, 2, "empty requestState alone must still drive a retry")
+	var retry map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(ft.callParams[1], &retry))
+	stateRaw, present := retry["requestState"]
+	require.True(t, present, "present-but-empty requestState must be echoed, not dropped")
+	var state string
+	require.NoError(t, json.Unmarshal(stateRaw, &state))
+	assert.Equal(t, "", state)
+}

@@ -40,11 +40,16 @@ type InputResponses map[string]json.RawMessage
 
 // InputRequiredResult is the interim result a server returns when it needs
 // caller input before completing (resultType "input_required"). The
-// specification requires at least one of InputRequests or RequestState.
+// specification requires at least one of InputRequests or RequestState to be
+// present.
 type InputRequiredResult struct {
 	ResultType    string        `json:"resultType"`
 	InputRequests InputRequests `json:"inputRequests,omitempty"`
-	RequestState  string        `json:"requestState,omitempty"`
+	// RequestState is the server's opaque state blob. Presence is tracked
+	// independently of value: the schema permits an empty string, which the
+	// client must echo back exactly, while an absent field must stay absent
+	// on the retry.
+	RequestState *string `json:"requestState,omitempty"`
 }
 
 // ParseInputRequired decodes an input_required interim result.
@@ -56,7 +61,7 @@ func ParseInputRequired(result json.RawMessage) (*InputRequiredResult, error) {
 	if irr.ResultType != ResultTypeInputRequired {
 		return nil, fmt.Errorf("result is not input_required (resultType %q)", irr.ResultType)
 	}
-	if len(irr.InputRequests) == 0 && irr.RequestState == "" {
+	if len(irr.InputRequests) == 0 && irr.RequestState == nil {
 		return nil, fmt.Errorf("input_required result carries neither inputRequests nor requestState")
 	}
 	return &irr, nil
@@ -64,10 +69,12 @@ func ParseInputRequired(result json.RawMessage) (*InputRequiredResult, error) {
 
 // AttachRetryInput builds the params for an MRTR retry: the original params
 // plus inputResponses and, when the server supplied one, the exact
-// requestState echoed back. It is always applied to the original params, so
-// each round carries only the latest round's state, as the specification
-// requires. requestState is omitted entirely when the server sent none.
-func AttachRetryInput(originalParams json.RawMessage, responses InputResponses, requestState string) (json.RawMessage, error) {
+// requestState echoed back — including a present-but-empty state, which the
+// specification says must be echoed verbatim. It is always applied to the
+// original params, so each round carries only the latest round's state, as
+// the specification requires. requestState is omitted entirely when the
+// server sent none (nil).
+func AttachRetryInput(originalParams json.RawMessage, responses InputResponses, requestState *string) (json.RawMessage, error) {
 	obj := map[string]json.RawMessage{}
 	if len(originalParams) > 0 && string(originalParams) != "null" {
 		if err := json.Unmarshal(originalParams, &obj); err != nil {
@@ -81,8 +88,8 @@ func AttachRetryInput(originalParams json.RawMessage, responses InputResponses, 
 		}
 		obj["inputResponses"] = respJSON
 	}
-	if requestState != "" {
-		stateJSON, err := json.Marshal(requestState)
+	if requestState != nil {
+		stateJSON, err := json.Marshal(*requestState)
 		if err != nil {
 			return nil, err
 		}
