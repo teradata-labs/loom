@@ -49,11 +49,64 @@ tools:
 - `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
 - `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
 
+## [1.4.0] - 2026-08-12
+
+### Breaking Changes
+
+- **Skills and patterns move from push to pull (#278)** — the per-turn skill discovery-and-activation push and the pattern injection channel are removed. Skills load on demand via the new `manage_skills` builtin (`list`/`load`); patterns load via `load_pattern`. The findings channel and the `record_finding` tool are removed. `maxL1Tokens` no longer triggers compaction (compaction is budget-based; the field remains validated config).
+- **Context machinery rewritten around compile-per-call (#288)** — rendering decisions (full/stub/offload/eviction/summary fold) are made at every LLM call. Large tool results offload at one 16 KiB threshold (16384 bytes) as a pure render condition of compilation; results render as a verbatim string or JSON, never Go map syntax. Advertised tools, error/SQL-result/shared-memory stores are per-session.
+- **User-turn timestamps left the message body (#306)** — stored user `Content` no longer carries a `[Mon 2006-01-02 15:04 MST] ` prefix; clients see the user's words verbatim. Arrival stamps render into the compiled LLM view only (from the durable `Timestamp`), and graph-memory extraction anchors on `Timestamp` instead of scanning content.
+- **`DeleteSession` semantics (#146)** — returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory.
+- **Go 1.26 toolchain (#271)** — required for source builds.
+- **10 new database migrations** (`000014`–`000023`: analytics views, RLS infrastructure and JWT-sub honoring, tool-outcome policy/admission columns, context compilation, human-request store) apply automatically on first start of the upgraded server. Back up databases before upgrading.
+
 ### Added
 
+#### Context Compilation (#288, #297)
+- Compile-per-call context: arrival appends messages in full; a single compilation algorithm decides at every LLM call what renders full, what renders as an offload/eviction stub, and when conversation folds into the summary. One 16 KiB threshold, proactive relief.
+- Configurable offload-exempt tool set (`SetOffloadExemptTools`) so chosen tools' results never render as stubs. No tools are exempt by default.
+
+#### Human-in-the-Loop: Approval Gates & Tool Admission (#269, #300)
+- Declarative approval gates for pipeline/iterative workflows: `PipelineStage.hitl_gate` fires deterministically after stage output validates, with durable checkpoint/resume — no LLM decides whether to ask.
+- Tool-admission hook library: config-built bindings (`gated-allowlist` / `denylist` / `audit` / `ask`) with dot-path matchers over call params are evaluated against every tool call before execution (unmatched calls pass through); most-restrictive verdict wins; a config that fails to compile aborts serve startup rather than running ungoverned (fail-closed).
+- `ask` verdicts hold the turn on a human-request store (SQLite + PostgreSQL) with expiry; admission decisions are audited on tool outcomes.
+
+#### Context & Skill Management (#278)
+- `manage_skills` builtin (`list`/`load`): a load activates the skill for the session, registers its required tools for same-turn use, and delivers the skill body into the conversation. Bound skills render name+description once into the system prompt at session creation.
+- Budget-based compaction using the LLM compressor when a prompt registry is configured (preserves decisions/approvals with scope, open commitments, reload pointers); heuristic summarizer remains the fallback.
+
+#### OTLP Tracing (#255)
+- `OTelTracer` exports spans to any OTLP/HTTP backend (Opik, Jaeger, Tempo); Loom span attributes translate to OTel `gen_ai.*` semantic conventions; `mode: otel` in observability config plus auto-select from `OTEL_EXPORTER_OTLP_TRACES_*` env vars; credential and PII redaction default-on for exported spans. OTLP/gRPC is not implemented.
+
+#### Multimodal User Turns (#249)
+- `ChatWithContentBlocks`: user turns carry text + image content blocks end-to-end (agent → provider), with the canonical text preserved on the stored turn.
+
+#### Replay/Import Arrival Time (#308)
+- `WeaveRequest.occurred_at`: replayed or imported conversations anchor every persisted row (user turn, assistant reply, tool rows) at their historical time. Gated by `server.allow_time_override` (default off); future-dated values rejected.
+
+#### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
 - New `Session` fields returned by `ListSessions`: `agent_name`, `ended_at`, `metadata_status`, `artifact_count`.
+
+#### Other
+- OpenAI client: `ExtraHeaders` config forwarded on requests (#265)
+- Release pipeline publishes the homepage (`web/` → gh-pages) with a version-stamp check (#275)
+
+### Fixed
+- **Temporal grounding leak (#306)** — timestamps no longer leak into user-visible message bodies; per-turn grounding moves to the compiled view (see Breaking Changes)
+- **Bedrock** — SDK tool mappings isolated per request (concurrent-session corruption) (#301); canonical provider identity (#302)
+- **Workflow loading** — parallel workflow tasks load from the canonical schema (#298); canonical fork-join pattern type accepted (#307); all canonical pattern types load in the registry (#310)
+- **Security** — SQL result table names sanitized at every use (#267); Snyk triage: Go 1.26 toolchain, artifact path containment, postMessage origin guard (#271); session metadata path containment provable to CodeQL (#277); tainted path values guarded directly with `filepath.IsLocal` (#309)
+- **TUI** — no hardcoded default model shown at startup (#240); readline keys (ctrl+a/e/k/u/w) freed in chat input (#241)
+- **Quickstart** — Bedrock API-key auth + non-exhaustive model picker (#239)
+- **CI** — unit-test de-flake: SSE happy path, live web-search calls removed (#242)
+- **Packaging** — Homebrew tap publishing repaired (broken since v1.0.1; publishers now dispatched explicitly) (#272); repo templates are the single source of truth for Homebrew formulas (#274)
+
+### Changed
+- `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
+- buf remote plugin versions pinned to the committed codegen (#296)
+- Dependency updates: Go toolchain 1.26, golang.org/x/crypto, excelize, and CI action bumps (Dependabot)
 
 ## [1.3.0] - 2026-06-01
 
