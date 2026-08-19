@@ -45,7 +45,7 @@ All from official sources:
 |---|---|---|
 | Go SDK conformance everything-server | **2026-07-28** (stateless HTTP + stdio); sessionful legacy with `-stateless=false` | `go install github.com/modelcontextprotocol/go-sdk/conformance/everything-server@v1.7.0` then `everything-server -http localhost:8971` |
 | `@modelcontextprotocol/server-everything` (npm, TypeScript) | legacy 2025-11-25 | `npx -y @modelcontextprotocol/server-everything stdio` |
-| Loom's own `looms` / `loom-mcp` | per branch | `looms serve` |
+| Loom's own `looms` + `loom-mcp --transport=http` | **dual-era**: 2026-07-28 stateless AND legacy 2024-11-05 handshake on one endpoint (verified, see below) | `looms serve` then `loom-mcp --transport=http --http-addr=127.0.0.1:8765 --grpc-addr=localhost:60051` |
 
 As of 2026-08-19 the Go SDK is the only official SDK with a 2026-07-28 runtime; the TypeScript SDK tops out at 2025-11-25, which makes its servers exactly the legacy peers the fallback ladder needs.
 
@@ -94,6 +94,39 @@ CONNECTED in 1.31s
 
 The sessionful mode of the Go SDK server (`-stateless=false`) also negotiates down to `2025-11-25` via the handshake — a live check that the fallback requests the newest legacy revision instead of silently under-negotiating.
 
+**Sessionful streamable HTTP against the TypeScript server** — the real-wire test of the 400-fallback rule and legacy session capture. The server rejects the pre-initialize `server/discover` probe with HTTP 400 and a non-modern JSON-RPC body (`-32000 "Bad Request: Server not initialized"`, id null); the client classifies that as a legacy signal, runs the handshake, adopts the minted `Mcp-Session-Id`, and echoes it on every later request — this server enforces sessions strictly, so the tool call succeeding proves the echo:
+
+```text
+$ npx -y @modelcontextprotocol/server-everything streamableHttp   # listens on :3001
+$ loom-mcp-probe -url http://localhost:3001/mcp -call echo -args '{"message":"session test"}'
+CONNECTED in 6ms
+  negotiated : 2025-11-25
+  era        : legacy (initialize handshake)
+  serverInfo : mcp-servers/everything 2.0.0
+  tools      : 13 (echo, get-annotated-message, get-env, …)
+  call echo → "Echo: session test"
+```
+
+**Dogfood: Loom's own dual-era endpoint** (`loom-mcp --transport=http` bridging a running `looms`). One endpoint serves both eras:
+
+```text
+$ loom-mcp-probe -url http://127.0.0.1:8765/ -call loom_list_agents -watch 3
+CONNECTED in 3ms
+  negotiated : 2026-07-28
+  era        : stateless (2026-07-28 core)
+  serverInfo : loom-mcp 1.4.0
+  tools      : 55 (loom_activate_skill, loom_answer_clarification, loom_build, …)
+  call loom_list_agents → "{\"agents\":[{\"id\":\"…\",\"name\":\"guide\",\"status\":\"running\",…"
+  watch      : subscription 4 open for 3s
+    notif #1 : notifications/subscriptions/acknowledged
+
+$ loom-mcp-probe -url http://127.0.0.1:8765/ -pin legacy
+CONNECTED in 3ms
+  negotiated : 2024-11-05
+  era        : legacy (initialize handshake)
+  serverInfo : loom-mcp 1.4.0
+```
+
 ## Limitations
 
 - The MRTR driver answers **elicitations only**, with one canned object for all of them; sampling and roots input requests fail the exchange by design.
@@ -104,3 +137,5 @@ The sessionful mode of the Go SDK server (`-stateless=false`) also negotiates do
 
 - The Go SDK conformance server's `test_elicitation` tool still uses the legacy server-initiated `Session.Elicit` API, which the SDK itself rejects on 2026-07-28 sessions ("return an InputRequests map instead"); use the `test_input_required_result_*` tools for MRTR.
 - The same server exits with status 1 after a cancelled `subscriptions/listen` over stdio (a bare stdin EOF exits 0). Loom's teardown is unaffected; the probe logs the exit as a warning.
+- The Go SDK server is dual-era even with `-stateless=true`: it still answers the `initialize` handshake, so a `legacy` pin against it connects at `2025-11-25` rather than failing. In sessionful mode it answers `server/discover` with `-32022` listing its legacy versions — a recognized modern error body, which correctly never triggers fallback under a stateless pin.
+- The TypeScript SDK server on streamable HTTP rejects every pre-initialize request with HTTP 400 and JSON-RPC `-32000` (id null) — the reason the fallback rule inspects 400 bodies instead of treating 400 as fatal.
