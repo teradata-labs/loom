@@ -1669,20 +1669,6 @@ func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType 
 	return fmt.Sprintf("Error in %s: %s", category, errorType)
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes
-// (message.preview / response.preview). Capping prevents unbounded trace payload sizes
-// and avoids leaking full conversation content into observability backends.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // Chat processes a user message and returns a response.
 // This is the main entry point for conversational interaction.
 func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) (*Response, error) {
@@ -1759,6 +1745,19 @@ func hasTextBlock(blocks []ContentBlock) bool {
 		}
 	}
 	return false
+}
+
+// maxPreviewLen is the maximum number of runes recorded in span preview attributes
+// to avoid bloating OTLP traces with large message bodies.
+const maxPreviewLen = 200
+
+// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
+func truncatePreview(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxPreviewLen {
+		return s
+	}
+	return string(runes[:maxPreviewLen]) + "…"
 }
 
 // chat runs the full conversation lifecycle — span setup, user-message
@@ -2991,7 +2990,7 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 
 	// Execute with circuit breaker if enabled
 	if a.circuitBreakers != nil {
-		breaker := a.circuitBreakers.GetBreaker(toolName)
+		breaker := a.circuitBreakers.GetBreaker(a.executor.CanonicalToolName(toolName))
 		cbErr := breaker.Execute(func() error {
 			result, err = a.executor.Execute(ctxWithAgent, toolName, input)
 			return err

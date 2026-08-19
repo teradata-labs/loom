@@ -96,6 +96,48 @@ func TestRegistry_ListTools(t *testing.T) {
 	}
 }
 
+// TestRegistry_ListTools_DedupesAliasedTool is a regression test: when the
+// same Tool instance is reachable under two registry keys (its canonical,
+// server-qualified name plus an alias registered via RegisterAlias for
+// unprefixed lookups), ListTools must return it only once. Otherwise the
+// tool's fixed Name() would appear twice in the schema sent to the LLM API,
+// which providers like Anthropic/Claude reject with "Tool names must be
+// unique".
+func TestRegistry_ListTools_DedupesAliasedTool(t *testing.T) {
+	reg := NewRegistry()
+
+	qualified := &mockTool{name: "mcp-server:base_readQuery", description: "read query"}
+	reg.Register(qualified)
+	reg.RegisterAlias("base_readQuery", qualified)
+	reg.Register(&mockTool{name: "tool2", description: "desc2"})
+
+	tools := reg.ListTools()
+	if len(tools) != 2 {
+		t.Fatalf("Expected 2 unique tools (by Name()), got %d", len(tools))
+	}
+
+	seen := make(map[string]int)
+	for _, tool := range tools {
+		seen[tool.Name()]++
+	}
+	if seen["mcp-server:base_readQuery"] != 1 {
+		t.Errorf("Expected aliased tool to appear exactly once, got %d", seen["mcp-server:base_readQuery"])
+	}
+}
+
+func TestRegistry_ListByBackend_DedupesAliasedTool(t *testing.T) {
+	reg := NewRegistry()
+
+	qualified := &mockTool{name: "mcp-server:base_readQuery", description: "read query", backend: "mcp"}
+	reg.Register(qualified)
+	reg.RegisterAlias("base_readQuery", qualified)
+
+	tools := reg.ListByBackend("mcp")
+	if len(tools) != 1 {
+		t.Fatalf("Expected 1 unique tool (by Name()), got %d", len(tools))
+	}
+}
+
 func TestRegistry_ListByBackend(t *testing.T) {
 	reg := NewRegistry()
 
@@ -134,6 +176,25 @@ func TestRegistry_Unregister(t *testing.T) {
 
 	if _, ok := reg.Get("test"); ok {
 		t.Error("Expected tool to be unregistered")
+	}
+}
+
+func TestRegistryUnregisterRemovesAliases(t *testing.T) {
+	registry := NewRegistry()
+	tool := &mockTool{name: "server:query"}
+	registry.Register(tool)
+	registry.RegisterAlias("query", tool)
+
+	registry.Unregister("server:query")
+
+	if _, canonicalExists := registry.Get("server:query"); canonicalExists {
+		t.Fatal("canonical tool still registered")
+	}
+	if _, aliasExists := registry.Get("query"); aliasExists {
+		t.Fatal("tool alias still registered")
+	}
+	if tools := registry.ListTools(); len(tools) != 0 {
+		t.Fatalf("expected empty registry, got %d tools", len(tools))
 	}
 }
 

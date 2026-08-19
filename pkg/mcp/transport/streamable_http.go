@@ -17,6 +17,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,10 +49,9 @@ type StreamableHTTPTransport struct {
 	errors   chan error
 
 	// Lifecycle
-	mu      sync.Mutex
-	closed  bool
-	started bool
-	logger  *zap.Logger
+	mu     sync.Mutex
+	closed bool
+	logger *zap.Logger
 
 	// Stream management
 	activeStreams sync.WaitGroup
@@ -85,10 +85,16 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
+	httpTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		httpTransport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	} else {
+		httpTransport = httpTransport.Clone()
+	}
 
 	t := &StreamableHTTPTransport{
 		endpoint:         config.Endpoint,
-		client:           &http.Client{},
+		client:           &http.Client{Transport: httpTransport},
 		sessionMgr:       NewSessionManager(),
 		resumption:       NewStreamResumption(100),
 		messages:         make(chan []byte, 100),
@@ -113,8 +119,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		t.mu.Unlock()
 		return fmt.Errorf("transport closed")
 	}
-	started := t.started
-	t.started = true
 	t.mu.Unlock()
 
 	// Build POST request
@@ -154,8 +158,18 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Extract session ID from response (on first request)
-	if !started && t.enableSessions {
+	// Extract a server-issued session ID whenever no active session is stored.
+	//
+	// Capture the server-issued Mcp-Session-Id whenever one is present,
+	// regardless of the enable_sessions config flag. Per the MCP streamable-http
+	// spec, if the server returns a session ID on initialize, the client MUST
+	// echo it on every subsequent request (including the initialized
+	// notification). Session-based servers such as Atlassian's remote MCP
+	// otherwise reject the follow-up notification with HTTP 400
+	// ("Request must be an initialize request if no session ID is provided").
+	// The enable_sessions flag still controls proactive session termination on
+	// Close (see below).
+	if !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -169,8 +183,18 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	contentType := resp.Header.Get("Content-Type")
 	t.logger.Debug("Received HTTP response",
 		zap.String("content-type", contentType),
-		zap.Int("status", resp.StatusCode),
-		zap.Bool("started", started))
+		zap.Int("status", resp.StatusCode))
+
+	// A POST carrying a notification or response may be acknowledged with 202
+	// and no JSON-RPC body. A request with an id must receive a JSON/SSE result.
+	if resp.StatusCode == http.StatusAccepted {
+		if isJSONRPCRequest(message) {
+			return fmt.Errorf("unexpected 202 Accepted for JSON-RPC request")
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		t.logger.Debug("Request acknowledged (202 Accepted), no body to read")
+		return nil
+	}
 
 	switch contentType {
 	case "text/event-stream":
@@ -217,6 +241,14 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	}
 }
 
+func isJSONRPCRequest(message []byte) bool {
+	var envelope struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(message, &envelope) == nil && envelope.Method != "" && len(envelope.ID) > 0
+}
+
 // Receive implements Transport by receiving the next message.
 func (t *StreamableHTTPTransport) Receive(ctx context.Context) ([]byte, error) {
 	select {
@@ -248,8 +280,9 @@ func (t *StreamableHTTPTransport) Close() error {
 	// Wait for streams to finish
 	t.activeStreams.Wait()
 
-	// Terminate session if enabled
-	if t.enableSessions && t.sessionMgr.HasSession() {
+	// A server-issued session must always be terminated, even when proactive
+	// session management was disabled in the client configuration.
+	if t.sessionMgr.HasSession() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = t.terminateSession(ctx) // Best effort
@@ -368,6 +401,7 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		return err
 	}
 
+	// Add custom headers
 	for k, v := range t.headers {
 		req.Header.Set(k, v)
 	}

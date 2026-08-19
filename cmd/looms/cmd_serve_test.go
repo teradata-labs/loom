@@ -14,12 +14,112 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"go.uber.org/zap"
 )
+
+func TestResolveBedrockCredentialsProfileIgnoresAmbientCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "ambient-access")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "ambient-session")
+
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(LLMConfig{BedrockProfile: "selected-profile"})
+	require.Empty(t, accessKeyID)
+	require.Empty(t, secretAccessKey)
+	require.Empty(t, sessionToken)
+}
+
+func TestResolveBedrockCredentialsPreservesExplicitCredentials(t *testing.T) {
+	t.Setenv("BEDROCK_ACCESS", "explicit$access")
+	t.Setenv("AWS_SESSION_TOKEN", "ambient-session")
+
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(LLMConfig{
+		BedrockAccessKeyID:     "${BEDROCK_ACCESS}",
+		BedrockSecretAccessKey: "explicit-secret",
+	})
+	require.Equal(t, "explicit$access", accessKeyID)
+	require.Equal(t, "explicit-secret", secretAccessKey)
+	require.Empty(t, sessionToken)
+}
+
+func TestServeLiteLLMConstructorsExpandEnvironment(t *testing.T) {
+	receivedHeaders := make(chan http.Header, 2)
+	receivedModels := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		receivedHeaders <- r.Header.Clone()
+		receivedModels <- request.Model
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("SERVE_LITELLM_URL", server.URL)
+	t.Setenv("SERVE_LITELLM_TOKEN", "expanded-token")
+	t.Setenv("SERVE_LITELLM_MODEL", "expanded-model")
+
+	tests := []struct {
+		name   string
+		create func() (interface{}, error)
+	}{
+		{
+			name: "static server config",
+			create: func() (interface{}, error) {
+				return createProviderWithRateLimit(LLMConfig{
+					Provider:            "litellm",
+					LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
+					LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
+					LiteLLMModel:        "${SERVE_LITELLM_MODEL}",
+					RateLimit:           LLMRateLimitConfig{Disabled: true},
+				}, zap.NewNop())
+			},
+		},
+		{
+			name: "proto agent config",
+			create: func() (interface{}, error) {
+				return createLLMProviderFromProtoConfig(
+					&loomv1.LLMConfig{Provider: "litellm"},
+					&Config{LLM: LLMConfig{
+						LiteLLMEndpoint:     "${SERVE_LITELLM_URL}",
+						LiteLLMExtraHeaders: map[string]string{"X-Tenant": "${SERVE_LITELLM_TOKEN}"},
+						LiteLLMModel:        "${SERVE_LITELLM_MODEL}",
+					}},
+					zap.NewNop(),
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := tt.create()
+			require.NoError(t, err)
+			client, ok := raw.(*litellm.Client)
+			require.True(t, ok)
+			response, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, "ok", response.Content)
+			assert.Equal(t, "expanded-token", (<-receivedHeaders).Get("X-Tenant"))
+			assert.Equal(t, "expanded-model", <-receivedModels)
+		})
+	}
+}
 
 func TestInitializeMCPManager(t *testing.T) {
 	// Skip these tests - they require real MCP server binaries and are integration tests

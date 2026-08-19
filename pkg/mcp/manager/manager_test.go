@@ -15,6 +15,9 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -42,6 +45,62 @@ func TestNewManager(t *testing.T) {
 	assert.NotNil(t, mgr.logger)
 	assert.NotNil(t, mgr.clients)
 	assert.False(t, mgr.started)
+}
+
+func TestManager_AddServerExpandsStreamableHTTPEnvironment(t *testing.T) {
+	received := make(chan http.Header, 2)
+	decodeErrors := make(chan error, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- r.Header.Clone():
+		default:
+		}
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			decodeErrors <- err
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if len(request.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      json.RawMessage(request.ID),
+			"result": map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]interface{}{},
+				"serverInfo":      map[string]string{"name": "test", "version": "1.0.0"},
+			},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("MCP_TEST_URL", server.URL)
+	t.Setenv("MCP_TEST_TOKEN", "expanded-token")
+
+	manager, err := NewManager(Config{
+		ClientInfo: ClientInfo{Name: "test-client", Version: "1.0.0"},
+	}, zap.NewNop())
+	require.NoError(t, err)
+	require.NoError(t, manager.AddServer(context.Background(), "remote", ServerConfig{
+		Enabled:   true,
+		Transport: "streamable-http",
+		URL:       "${MCP_TEST_URL}",
+		Headers:   map[string]string{"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+	}))
+	select {
+	case decodeErr := <-decodeErrors:
+		require.NoError(t, decodeErr)
+	default:
+	}
+	defer func() { _ = manager.RemoveServer("remote") }()
+
+	headers := <-received
+	assert.Equal(t, "Bearer expanded-token", headers.Get("Authorization"))
 }
 
 func TestNewManager_InvalidConfig(t *testing.T) {
@@ -444,4 +503,70 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 	health := mgr.HealthCheck(ctx)
 	assert.True(t, health["fs1"])
 	assert.True(t, health["fs2"])
+}
+
+func TestExpandEnvHeaders(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "secret$value")
+
+	tests := []struct {
+		name   string
+		input  map[string]string
+		expect map[string]string
+	}{
+		{
+			name:   "nil map",
+			input:  nil,
+			expect: nil,
+		},
+		{
+			name:   "empty map",
+			input:  map[string]string{},
+			expect: map[string]string{},
+		},
+		{
+			name:   "no placeholders",
+			input:  map[string]string{"Content-Type": "application/json"},
+			expect: map[string]string{"Content-Type": "application/json"},
+		},
+		{
+			name:   "placeholder expanded",
+			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
+			expect: map[string]string{"Authorization": "Bearer secret$value"},
+		},
+		{
+			name:   "unset placeholder is preserved",
+			input:  map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+			expect: map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+		},
+		{
+			name:   "literal dollar is preserved",
+			input:  map[string]string{"Authorization": "Bearer sk-ab$Cd9xyz"},
+			expect: map[string]string{"Authorization": "Bearer sk-ab$Cd9xyz"},
+		},
+		{
+			name:   "resolved value is not expanded recursively",
+			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
+			expect: map[string]string{"Authorization": "Bearer secret$value"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := expandEnvHeaders(tc.input)
+			assert.Equal(t, tc.expect, result)
+		})
+	}
+}
+
+func TestUnresolvedEnvVariables(t *testing.T) {
+	t.Setenv("MCP_SET", "configured")
+	missing := unresolvedEnvVariables(
+		"${MCP_ENDPOINT_MISSING}",
+		map[string]string{
+			"Authorization": "Bearer ${MCP_TOKEN_MISSING}",
+			"X-Configured":  "${MCP_SET}",
+			"X-Duplicate":   "${MCP_ENDPOINT_MISSING}",
+		},
+	)
+	assert.Equal(t, []string{"MCP_ENDPOINT_MISSING", "MCP_TOKEN_MISSING"}, missing)
 }

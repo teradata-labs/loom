@@ -18,6 +18,7 @@ import (
 	"os"
 	"time"
 
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
@@ -105,9 +106,46 @@ type FactoryConfig struct {
 // so that per-provider creation can consult the built-in catalog for the
 // model-specific MaxOutputTokens. A non-zero MaxTokens is treated as an
 // explicit user override and honored as-is.
+//
+// Config values may contain ${VAR} env-var placeholders (used by
+// avmo-tera-cloud runtime pods that write looms.yaml with placeholders and
+// supply real values via pod env vars). These are expanded eagerly so that
+// every factory-created provider sees the resolved value.
 func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	if config.Temperature == 0 {
 		config.Temperature = 1.0
+	}
+
+	// Expand ${VAR} references in all credential/endpoint fields so the
+	// factory code paths that check `if field == ""` see the resolved value
+	// (matching the behavior of cmd_serve.go's createProviderWithRateLimit).
+	config.AnthropicAPIKey = loomconfig.ExpandEnvPlaceholders(config.AnthropicAPIKey)
+	config.BedrockRegion = loomconfig.ExpandEnvPlaceholders(config.BedrockRegion)
+	config.BedrockAccessKeyID = loomconfig.ExpandEnvPlaceholders(config.BedrockAccessKeyID)
+	config.BedrockSecretAccessKey = loomconfig.ExpandEnvPlaceholders(config.BedrockSecretAccessKey)
+	config.BedrockSessionToken = loomconfig.ExpandEnvPlaceholders(config.BedrockSessionToken)
+	config.BedrockBearerToken = loomconfig.ExpandEnvPlaceholders(config.BedrockBearerToken)
+	config.OllamaEndpoint = loomconfig.ExpandEnvPlaceholders(config.OllamaEndpoint)
+	config.OpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.OpenAIAPIKey)
+	config.AzureOpenAIEndpoint = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEndpoint)
+	config.AzureOpenAIDeploymentID = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIDeploymentID)
+	config.AzureOpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIAPIKey)
+	config.AzureOpenAIEntraToken = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEntraToken)
+	config.MistralAPIKey = loomconfig.ExpandEnvPlaceholders(config.MistralAPIKey)
+	config.GeminiAPIKey = loomconfig.ExpandEnvPlaceholders(config.GeminiAPIKey)
+	config.HuggingFaceToken = loomconfig.ExpandEnvPlaceholders(config.HuggingFaceToken)
+	config.LiteLLMEndpoint = loomconfig.ExpandEnvPlaceholders(config.LiteLLMEndpoint)
+	config.LiteLLMAPIKey = loomconfig.ExpandEnvPlaceholders(config.LiteLLMAPIKey)
+	config.LiteLLMModel = loomconfig.ExpandEnvPlaceholders(config.LiteLLMModel)
+	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
+	// modified in place (shared-map mutation is a race if the caller holds the
+	// original and another goroutine concurrently reads it).
+	if len(config.LiteLLMExtraHeaders) > 0 {
+		expanded := make(map[string]string, len(config.LiteLLMExtraHeaders))
+		for key, value := range config.LiteLLMExtraHeaders {
+			expanded[key] = loomconfig.ExpandEnvPlaceholders(value)
+		}
+		config.LiteLLMExtraHeaders = expanded
 	}
 
 	return &ProviderFactory{
@@ -404,8 +442,9 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 		endpoint = os.Getenv("LITELLM_ENDPOINT")
 	}
 	if endpoint == "" {
-		endpoint = os.Getenv("LITELLM_BASE_URL")
+		endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 	}
+	// endpoint is optional — litellm.NewClient defaults to http://litellm:4000/v1/chat/completions
 
 	apiKey := f.config.LiteLLMAPIKey
 	if apiKey == "" {
@@ -415,6 +454,7 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 	if model == "" {
 		model = f.config.LiteLLMModel
 	}
+	// model is optional — litellm.NewClient defaults to anthropic/claude-sonnet-4-5-20250929
 
 	return litellm.NewClient(litellm.Config{
 		Endpoint:     endpoint,

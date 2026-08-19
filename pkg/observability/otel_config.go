@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 )
 
 // SpanFilterConfig controls which spans are forwarded to the OTLP backend.
@@ -34,22 +36,26 @@ type SpanFilterConfig struct {
 // then Loom-specific fallback env vars.
 type OTelConfig struct {
 	// Endpoint is the full OTLP HTTP URL including path.
-	// Env: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or LOOM_OTLP_ENDPOINT
+	// Resolved from env in priority order:
+	//   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — signal-specific, used verbatim.
+	//   OTEL_EXPORTER_OTLP_ENDPOINT        — OTel-spec base URL; /v1/traces is appended.
+	//   LOOM_OTLP_ENDPOINT                 — Loom-specific fallback, used verbatim.
+	// Values may contain ${VAR} placeholders. Bare dollar signs are preserved;
+	// write $$ to emit one literal dollar sign.
 	// Example (Opik local):  http://localhost:5173/api/v1/private/otel/v1/traces
 	// Example (Jaeger):      http://jaeger:4318/v1/traces
 	Endpoint string
 
 	// Headers are sent with every OTLP HTTP request (e.g. Authorization: Bearer <key>).
-	// Env: OTEL_EXPORTER_OTLP_TRACES_HEADERS (format: "key=val,key2=val2")
+	// Resolved from env in priority order:
+	//   OTEL_EXPORTER_OTLP_TRACES_HEADERS — signal-specific (format: "key=val,key2=val2").
+	//   OTEL_EXPORTER_OTLP_HEADERS        — OTel-spec base headers var, same format.
+	//   LOOM_OTLP_HEADERS                 — Loom-specific fallback.
+	// Values may contain ${VAR} placeholders; use '$$' for a literal '$'.
 	Headers map[string]string
 
-	// Insecure forces plain HTTP transport for the OTLP exporter (i.e. the
-	// connection uses http:// even if the endpoint URL starts with https://).
-	// This is NOT equivalent to disabling TLS certificate verification.
-	// Use for local development against plain-HTTP collectors (Jaeger, Opik
-	// running on localhost).  For https:// endpoints with self-signed certs,
-	// use a custom TLS config instead.
-	// Env: LOOM_OTLP_INSECURE
+	// Insecure selects plaintext HTTP transport. Use for local dev only.
+	// Env: LOOM_OTLP_INSECURE=true
 	Insecure bool
 
 	// ServiceName populates the resource attribute service.name.
@@ -81,7 +87,7 @@ type OTelConfig struct {
 //   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: signal-specific; used verbatim.
 //   - OTEL_EXPORTER_OTLP_ENDPOINT: base URL per spec; /v1/traces is appended.
 //   - LOOM_OTLP_ENDPOINT: Loom-specific fallback; used verbatim.
-func resolveOTLPEndpointEnv() string {
+func ResolveOTLPEndpointEnv() string {
 	if v := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
 		return v
 	}
@@ -94,12 +100,20 @@ func resolveOTLPEndpointEnv() string {
 // resolveOTelConfig fills zero-value fields from environment variables.
 func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = resolveOTLPEndpointEnv()
+		cfg.Endpoint = ResolveOTLPEndpointEnv()
 	}
+	cfg.Endpoint = loomconfig.ExpandEnvPlaceholders(cfg.Endpoint)
 	if len(cfg.Headers) == 0 {
 		if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
 			cfg.Headers = parseHeadersEnv(raw)
 		}
+	}
+	if len(cfg.Headers) > 0 {
+		headers := make(map[string]string, len(cfg.Headers))
+		for key, value := range cfg.Headers {
+			headers[key] = loomconfig.ExpandEnvPlaceholders(value)
+		}
+		cfg.Headers = headers
 	}
 	if !cfg.Insecure {
 		cfg.Insecure = os.Getenv("LOOM_OTLP_INSECURE") == "true"
@@ -126,7 +140,12 @@ func resolveOTelConfig(cfg OTelConfig) OTelConfig {
 	return cfg
 }
 
-// parseHeadersEnv parses "key=val,key2=val2" into a map.
+// ParseHeadersEnv parses a comma-separated "key=value" string into a map.
+// This is the format used by OTEL_EXPORTER_OTLP_TRACES_HEADERS.
+func ParseHeadersEnv(raw string) map[string]string {
+	return parseHeadersEnv(raw)
+}
+
 func parseHeadersEnv(raw string) map[string]string {
 	out := make(map[string]string)
 	for _, pair := range strings.Split(raw, ",") {

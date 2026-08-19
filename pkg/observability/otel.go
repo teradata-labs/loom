@@ -124,14 +124,11 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 				loomSpan.ResourceAttributes[k] = v
 			}
 		}
-		// Prefer the live in-process OTel span so SDK propagation assigns the
-		// same SDK-generated trace/span IDs to the child — not the UUID-derived
-		// ones that would create a dangling remote parent.  Fall back to the
-		// UUID-derived remote context only when no live span is registered (i.e.
-		// the parent was created by a different process / tracer instance).
+		// Prefer the live SDK span. Synthetic context is only valid when the
+		// parent originated outside this tracer and is not active locally.
 		if raw, ok := t.activeSpans.Load(parent.SpanID); ok {
-			if parentOTelSpan, ok := raw.(oteltrace.Span); ok {
-				otelCtx = oteltrace.ContextWithSpan(ctx, parentOTelSpan)
+			if activeParent, ok := raw.(oteltrace.Span); ok {
+				otelCtx = oteltrace.ContextWithSpan(ctx, activeParent)
 			}
 		} else if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
 			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
@@ -255,6 +252,21 @@ func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span
 	}
+
+	redacted := *span
+	redacted.Attributes = make(map[string]interface{}, len(span.Attributes))
+	for k, v := range span.Attributes {
+		redacted.Attributes[k] = v
+	}
+	redacted.Events = make([]Event, len(span.Events))
+	for i, event := range span.Events {
+		redacted.Events[i] = event
+		redacted.Events[i].Attributes = make(map[string]interface{}, len(event.Attributes))
+		for k, v := range event.Attributes {
+			redacted.Events[i].Attributes[k] = v
+		}
+	}
+	span = &redacted
 
 	allowed := make(map[string]bool, len(cfg.AllowedAttributes))
 	for _, k := range cfg.AllowedAttributes {

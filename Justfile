@@ -600,6 +600,40 @@ backup:
     fi
 
 # =============================================================================
+# Runtime Image (teradata/loom-runtime)
+# =============================================================================
+
+# Build the loom-runtime Docker image for the local platform (single-arch, fast).
+# For multi-arch CI builds use `just build-runtime-multiarch`.
+build-runtime tag=`cat VERSION`:
+    docker build \
+        --build-arg VERSION=$(cat VERSION) \
+        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+        -t teradata/loom-runtime:{{tag}} \
+        -f docker/Dockerfile.runtime \
+        .
+
+# Build multi-arch loom-runtime image (linux/amd64 + linux/arm64) via Docker Buildx.
+# Requires a buildx builder with QEMU support. The multi-platform image is written
+# to an OCI archive because the Docker image store cannot load a manifest list.
+build-runtime-multiarch tag=`cat VERSION`:
+    docker buildx build \
+        --platform linux/amd64,linux/arm64 \
+        --build-arg VERSION=$(cat VERSION) \
+        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+        -t teradata/loom-runtime:{{tag}} \
+        -f docker/Dockerfile.runtime \
+        --output type=oci,dest=loom-runtime-{{tag}}.tar \
+        .
+
+# Build and load loom-runtime image into ALL nodes of a minikube cluster.
+# Uses docker build + minikube image load (vs minikube image build) so the image
+# is distributed to every node — required for multi-node clusters.
+build-runtime-minikube tag="1.0.0" profile="agentops-cluster":
+    just build-runtime {{tag}}
+    minikube image load teradata/loom-runtime:{{tag}} -p {{profile}}
+
+# =============================================================================
 # Benchmark (AKS publication-grade)
 # =============================================================================
 

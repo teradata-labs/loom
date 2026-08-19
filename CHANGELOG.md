@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
+
+#### Tool Alias Resolution & Registry Dedup
+- Tool aliases (e.g. short names defined in agent YAML) are now resolved to the canonical tool name before lookup, preventing duplicate registrations.
+- Registry dedup ensures the same tool cannot be registered twice under different aliases.
+
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
+#### OTLP Tracing Improvements
+- In-process parent-linkage test added to the OTLP test suite.
+
+### Changed
+
+#### **BREAKING: `manage_ephemeral_agents` is now opt-in**
+Previously, `manage_ephemeral_agents` was automatically injected into every `Weave`/`StreamWeave` session, giving all agents the ability to spawn sub-agents. It is now injected only when the agent's YAML config explicitly lists it under `tools.builtin`:
+
+```yaml
+tools:
+  builtin:
+    - manage_ephemeral_agents
+```
+
+**Migration:** Any deployment that relies on sub-agent spawning must add `manage_ephemeral_agents` to `tools.builtin` in the coordinator agent's YAML config. Agents that do not spawn sub-agents are unaffected. This change prevents unintended sub-agent spawning for agents that never needed it.
+
+- `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
+- `DeleteSession` now returns success for a session that exists only in the persistent store (previously `NotFound`), so clients can clean up sessions already evicted from memory. Clients keying off the response code should note this semantics change.
+
 ## [1.4.0] - 2026-08-12
 
 ### Breaking Changes
