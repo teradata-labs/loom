@@ -285,3 +285,45 @@ func TestSamplingWithoutHandlerRejected(t *testing.T) {
 		return false
 	}, 2*time.Second, 10*time.Millisecond, "without a handler, sampling must be rejected MethodNotFound")
 }
+
+// TestLateResponseAfterTimeoutDoesNotPanic reproduces the round-3 review
+// finding on PR #327: a request whose context expires tears down its pending
+// entry while a late server response, which grabbed the channel reference
+// under the read lock just before the delete, sends into it afterwards.
+// Closing the channel in that teardown made the late send panic
+// ("send on closed channel" — a select default does not protect a send on a
+// CLOSED channel). The stress loop drives the two paths into the window;
+// on the old code it panics within a few hundred iterations under -race.
+func TestLateResponseAfterTimeoutDoesNotPanic(t *testing.T) {
+	ft := &mockTransport{
+		// Swallow every request: the "server" never answers through the
+		// transport; the test injects late responses directly.
+		sendFunc:    func(context.Context, []byte) error { return nil },
+		receiveFunc: func(ctx context.Context) ([]byte, error) { <-ctx.Done(); return nil, ctx.Err() },
+	}
+	c := NewClient(Config{Transport: ft})
+	defer func() { _ = c.Close() }()
+
+	for i := 0; i < 2000; i++ {
+		req := &protocol.Request{
+			JSONRPC: protocol.JSONRPCVersion,
+			ID:      c.nextRequestID(),
+			Method:  "tools/list",
+			Params:  json.RawMessage(`{}`),
+		}
+		resp := &protocol.Response{JSONRPC: protocol.JSONRPCVersion, ID: req.ID, Result: json.RawMessage(`{}`)}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			_, _ = c.dispatchAndWait(ctx, req)
+			close(done)
+		}()
+
+		// Cancel the request and immediately deliver the "late" response:
+		// the teardown and the delivery race for the pending channel.
+		cancel()
+		c.handleResponse(resp)
+		<-done
+	}
+}

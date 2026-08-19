@@ -188,9 +188,12 @@ func (h *HTTPTransport) Close() error {
 
 	h.logger.Info("closing HTTP/SSE transport")
 
-	// Close channels
-	close(h.events)
-	close(h.errors)
+	// The channels are deliberately never closed: the SSE subscription
+	// callback sends into h.events from the sse library's goroutine, which
+	// Close does not wait for, so closing here races an in-flight event into
+	// a send-on-closed-channel panic. Receive callers are select-guarded by
+	// their contexts (the client's receive loop exits via its own cancelled
+	// context before the transport closes) and need no closure signal.
 
 	return nil
 }

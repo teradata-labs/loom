@@ -299,9 +299,12 @@ func (t *StreamableHTTPTransport) Close() error {
 		_ = t.terminateSession(ctx) // Best effort
 	}
 
-	// Close channels
-	close(t.messages)
-	close(t.errors)
+	// The message channels are deliberately never closed: Send delivers into
+	// t.messages on the caller's goroutine (JSON responses and error bodies),
+	// which activeStreams does not track, so closing here races an in-flight
+	// request into a send-on-closed-channel panic. Receivers are all
+	// select-guarded by their contexts and need no closure signal; the
+	// channels are collected with the transport.
 
 	return nil
 }

@@ -526,11 +526,16 @@ func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*p
 	c.pending[reqIDStr] = respChan
 	c.pendingMu.Unlock()
 
+	// The channel is deliberately never closed. handleResponse takes its
+	// reference under the read lock and sends after releasing it, so a close
+	// here races a late server response into a send-on-closed-channel panic
+	// (a select default does not protect a send on a closed channel). Without
+	// the close, a late response lands in the orphaned channel's buffer and
+	// is collected with it; the only receiver has already returned.
 	defer func() {
 		c.pendingMu.Lock()
 		delete(c.pending, reqIDStr)
 		c.pendingMu.Unlock()
-		close(respChan)
 	}()
 
 	reqJSON, err := json.Marshal(req)

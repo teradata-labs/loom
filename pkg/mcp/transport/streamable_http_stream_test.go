@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,4 +220,38 @@ func TestNotificationAcknowledgmentWithoutContentType(t *testing.T) {
 	require.NoError(t, tr.Send(context.Background(),
 		[]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)),
 		"a bodiless 202 acknowledgment must be accepted")
+}
+
+// TestCloseDoesNotRaceInFlightSends guards the same defect class as the
+// client's late-response race (round-3 finding, PR #327): Send delivers JSON
+// responses into the transport's message channel on the caller's goroutine,
+// which Close does not wait for — closing the channel there could panic an
+// in-flight request with "send on closed channel". The channels are now
+// never closed; this hammers concurrent Sends against Close under -race.
+func TestCloseDoesNotRaceInFlightSends(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	for i := 0; i < 30; i++ {
+		tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				// The transport may already be closed mid-loop; only the
+				// absence of a panic matters here.
+				_ = tr.Send(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+			}()
+		}
+		_ = tr.Close()
+		wg.Wait()
+	}
 }
