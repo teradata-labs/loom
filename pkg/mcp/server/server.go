@@ -298,6 +298,17 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 		}
 	}()
 
+	// Connection-scoped subscription state: on stdio all messages share one
+	// channel, so subscriptions/listen registrations, duplicate detection,
+	// and notifications/cancelled routing belong to this connection. The
+	// era gate keeps untagged legacy notifications lawful: they flow only
+	// after a legacy client identified itself via the initialize handshake —
+	// under the modern era the server MUST NOT send notification types the
+	// client has not requested through a subscription.
+	conn := newStdioConn()
+	defer conn.cancelAll()
+	legacyEra := false
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -312,6 +323,26 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 			return fmt.Errorf("receive error: %w", err)
 
 		case msg := <-msgCh:
+			peek := peekServeMessage(msg)
+			switch {
+			case peek.method == "initialize":
+				legacyEra = true
+			case peek.method == protocol.MethodSubscriptionsListen && peek.hasID:
+				if resp := s.startStdioSubscription(ctx, t, conn, msg); resp != nil {
+					if err := t.Send(ctx, resp); err != nil {
+						s.logger.Error("send error", zap.Error(err))
+						return fmt.Errorf("send error: %w", err)
+					}
+				}
+				continue
+			case peek.method == protocol.NotificationCancelled && !peek.hasID:
+				if conn.cancel(peek.cancelsID) {
+					continue // consumed: ended a live subscription
+				}
+				// Unknown cancellation target: fall through; HandleMessage
+				// ignores unrecognized notifications.
+			}
+
 			resp, err := s.HandleMessage(ctx, msg)
 			if err != nil {
 				s.logger.Error("handle error", zap.Error(err))
@@ -326,6 +357,10 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 			}
 
 		case notif := <-s.notifyCh:
+			if !legacyEra {
+				s.logger.Debug("dropping untagged legacy notification: no legacy handshake on this connection")
+				continue
+			}
 			if err := t.Send(ctx, notif); err != nil {
 				s.logger.Error("notification send error", zap.Error(err))
 				return fmt.Errorf("notification send error: %w", err)
