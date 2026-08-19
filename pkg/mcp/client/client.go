@@ -73,6 +73,11 @@ type Client struct {
 	subs          map[string]*subscriptionEntry
 	subsMu        sync.RWMutex
 
+	// requestTimeout bounds the server/discover negotiation probe (see
+	// Config.RequestTimeout). Ordinary requests are bounded by the caller's
+	// context instead — tool calls and MRTR rounds legitimately run long.
+	requestTimeout time.Duration
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -110,8 +115,14 @@ type Config struct {
 	// it also advertises the elicitation capability so servers may elicit.
 	MRTR MRTRConfig
 
-	// Timeouts
-	RequestTimeout time.Duration // Default: 30s
+	// RequestTimeout bounds the server/discover negotiation probe (default
+	// 30s). The stdio backward-compatibility rule needs a bounded wait: a
+	// legacy server may not answer the probe at all, and the fallback
+	// handshake must still find the caller's context alive. Ordinary
+	// requests are deliberately not bounded by this value — tool calls and
+	// MRTR elicitation rounds legitimately outlive any fixed timeout — and
+	// use the per-call context instead.
+	RequestTimeout time.Duration
 }
 
 // SamplingHandler is called when a legacy server requests LLM completion.
@@ -150,6 +161,7 @@ func NewClient(config Config) *Client {
 		logger:           config.Logger,
 		versionPin:       config.ProtocolVersion,
 		mrtr:             config.MRTR,
+		requestTimeout:   config.RequestTimeout,
 		ctx:              ctx,
 		cancel:           cancel,
 		pending:          make(map[string]chan *protocol.Response),

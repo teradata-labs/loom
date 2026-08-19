@@ -113,7 +113,7 @@ Source 1 is an invariant handlers can satisfy locally. Source 2 cannot be satisf
     │                   │                                                     │
     │     ────────────────────────────── else — legacy server ────────────────────────────────────
     │                   │                                                     │
-    │                   │◀─────────────────── JSON-RPC error: MethodNotFound ─┤
+    │                   │◀─────────────────── non-modern error, or no answer ─┤
     │                   │                                                     │
     │               ┌───────────────────┐                                     │
     │               │ Client falls back │                                     │
@@ -134,10 +134,10 @@ Source 1 is an invariant handlers can satisfy locally. Source 2 cannot be satisf
 
 ### 4.1 Manager migration
 
-`pkg/mcp/manager/manager.go:170` switches from `mcpClient.Initialize(startCtx, clientInfo)` to `mcpClient.Connect(startCtx, clientInfo)`. `Connect` already falls back to `Initialize` on `MethodNotFound`, so this is safe against every conformant server the manager talks to today. Two hardening items accompany the switch:
+`pkg/mcp/manager/manager.go:170` switches from `mcpClient.Initialize(startCtx, clientInfo)` to `mcpClient.Connect(startCtx, clientInfo)`. `Connect` falls back to `Initialize` on the era signals the binding pages define, so this is safe against every conformant server the manager talks to today. Two hardening items accompany the switch:
 
 - **Per-server revision pin.** The manager's server config gains an optional `protocol_version` override that forces a specific revision (or forces the legacy handshake). When an upstream's stateless implementation misbehaves, operators pin it back without waiting for a Loom release.
-- **Wider fallback trigger.** `Connect` currently falls back only on JSON-RPC `MethodNotFound`. A legacy server behind a strict gateway may answer the `server/discover` probe with HTTP 404, 405, or 501 instead. Those transport-level statuses also trigger the initialize fallback; other statuses (401, 5xx transients) remain hard errors so real failures are not masked.
+- **Fallback triggers [amended per PR #327 review rounds 1–2].** The probe classifies a server as legacy on: any JSON-RPC error other than the recognized modern codes (`-32020`/`-32021`/`-32022`) — the stdio rule is explicit that fallback MUST NOT be keyed to one specific code, since legacy servers answer pre-initialize requests with implementation-defined errors, commonly `-32601` or `-32602`; a bare HTTP 404, 405, or 501 from a server or gateway predating the modern endpoint; an HTTP 400 whose body is not a recognized modern JSON-RPC error (strict legacy session servers reject pre-initialize POSTs this way); or, on stdio only, no answer within the bounded probe window (`client.Config.RequestTimeout`, default 30s) — a silent legacy server must not exhaust the caller's context before the handshake runs. Recognized modern error bodies never fall back, and HTTP 401/403/5xx and HTTP probe timeouts stay hard errors so auth failures and outages are not masked as "legacy server".
 
 The manager gains a per-server log line recording the negotiated revision so operators can see which upstreams have moved.
 

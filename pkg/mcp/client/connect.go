@@ -22,11 +22,20 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
 )
+
+// errProbeTimeout marks a server/discover probe that produced no answer
+// within the client's bounded probe window while the caller's context was
+// still alive. On transports without per-request status signals (stdio) the
+// specification classifies this silence as a legacy server; on Streamable
+// HTTP it stays a hard error, since status codes — not timeouts — carry the
+// era signal there.
+var errProbeTimeout = errors.New("server/discover probe timed out without a response")
 
 // InputRequiredNotSupportedError is returned when a server answers with an
 // MRTR interim result (resultType "input_required") and this client has no
@@ -46,13 +55,17 @@ func (e *InputRequiredNotSupportedError) Error() string {
 // callers that must force the legacy handshake.
 //
 // The probe order follows the 2026-07-28 specification: server/discover is
-// mandatory on new servers and safe against old ones, which answer
-// MethodNotFound (or, for HTTP servers predating the modern endpoint, a bare
-// 404/405/501). On a successful discover, the client enters stateless mode
-// for 2026-07-28+ revisions, stamping protocol version, client capabilities,
-// and client identity into params._meta on every request. When the server
-// only offers pre-2026 revisions, or does not implement discover at all,
-// Connect falls back to the initialize handshake.
+// mandatory on new servers and safe against old ones, which answer with an
+// implementation-defined JSON-RPC error (commonly MethodNotFound or
+// InvalidParams — the fallback is deliberately not keyed to one code, per
+// the stdio backward-compatibility rule), stay silent past the bounded probe
+// timeout (stdio only), or — for HTTP servers predating the modern endpoint —
+// return a bare 404/405/501 or a 400 without a modern error body. On a
+// successful discover, the client enters stateless mode for 2026-07-28+
+// revisions, stamping protocol version, client capabilities, and client
+// identity into params._meta on every request. When the server only offers
+// pre-2026 revisions, or does not implement discover at all, Connect falls
+// back to the initialize handshake.
 //
 // Config.ProtocolVersion overrides negotiation: "legacy" skips the probe and
 // runs the handshake directly; an explicit revision requires the server to
@@ -79,12 +92,17 @@ func (c *Client) Connect(ctx context.Context, clientInfo protocol.Implementation
 }
 
 // connectAuto probes server/discover and negotiates the best mutual revision,
-// falling back to the initialize handshake for pre-discover servers.
+// falling back to the initialize handshake for pre-discover servers. A probe
+// timeout counts as a legacy signal only off Streamable HTTP: the stdio
+// backward-compatibility rule says a server that does not respond within a
+// reasonable timeout is legacy, while on HTTP the era signal is carried by
+// status codes and a hung POST stays a hard error.
 func (c *Client) connectAuto(ctx context.Context, clientInfo protocol.Implementation) error {
 	disc, err := c.discover(ctx)
 	if err != nil {
-		if isLegacyServerSignal(err) {
-			c.logger.Debug("server/discover not implemented; falling back to initialize handshake",
+		timedOutLegacy := errors.Is(err, errProbeTimeout) && !c.transportCarriesHeaders()
+		if isLegacyServerSignal(err) || timedOutLegacy {
+			c.logger.Debug("server/discover answered as a pre-2026 server; falling back to initialize handshake",
 				zap.Error(err))
 			return c.Initialize(ctx, clientInfo)
 		}
@@ -147,21 +165,35 @@ func (c *Client) connectPinned(ctx context.Context, clientInfo protocol.Implemen
 }
 
 // isLegacyServerSignal reports whether a failed server/discover probe
-// indicates a pre-2026 server rather than a genuine failure. Conformant
-// legacy servers answer MethodNotFound at the JSON-RPC layer; HTTP servers
-// predating the modern endpoint (or strict gateways in front of them) may
-// instead answer with a bare 404, 405, or 501. A 400 falls back only when
-// its body is not a recognized modern JSON-RPC error, per the transport
-// specification's backward-compatibility rule — strict legacy session
-// servers reject any pre-initialize request with a bare 400 ("session
-// required"), while modern servers put UnsupportedProtocolVersionError or
-// HeaderMismatch in the body (routable bodies never even reach here: the
-// transport delivers them as typed protocol errors). Auth failures and
-// server errors are never treated as a legacy signal.
+// indicates a pre-2026 server rather than a genuine failure.
+//
+// At the JSON-RPC layer, any error other than the recognized modern codes is
+// a legacy signal. The stdio backward-compatibility rule is explicit that
+// the fallback MUST NOT be keyed to one specific error code: legacy servers
+// answer unknown pre-initialize requests with implementation-defined errors
+// (commonly -32601 MethodNotFound or -32602 InvalidParams, e.g. "initialize
+// first"). Conversely a recognized modern error — UnsupportedProtocolVersion,
+// HeaderMismatch, MissingRequiredClientCapability — identifies a modern
+// server, and the client must not fall back over it.
+//
+// At the HTTP layer, servers predating the modern endpoint (or strict
+// gateways in front of them) answer with a bare 404, 405, or 501. A 400
+// falls back only when its body is not a recognized modern JSON-RPC error —
+// strict legacy session servers reject any pre-initialize request with a
+// bare 400 ("session required"), while modern servers put
+// UnsupportedProtocolVersionError or HeaderMismatch in the body (routable
+// bodies never even reach here: the transport delivers them as typed
+// protocol errors). Auth failures and server errors are never treated as a
+// legacy signal.
 func isLegacyServerSignal(err error) bool {
 	var rpcErr *protocol.Error
-	if errors.As(err, &rpcErr) && rpcErr.Code == protocol.MethodNotFound {
-		return true
+	if errors.As(err, &rpcErr) {
+		switch rpcErr.Code {
+		case protocol.HeaderMismatch, protocol.MissingRequiredClientCapability, protocol.UnsupportedProtocolVersion:
+			return false // recognized modern errors: a modern server answered
+		default:
+			return true
+		}
 	}
 	var httpErr *transport.HTTPStatusError
 	if errors.As(err, &httpErr) {
@@ -226,6 +258,12 @@ func (c *Client) enterStatelessMode(version string, disc *protocol.DiscoverResul
 // client's preferred revision, and the MCP-Protocol-Version header must match
 // the version in _meta — conforming servers reject a mismatch (or a missing
 // body field) with HeaderMismatch.
+//
+// The wait is bounded by the client's probe timeout, independent of the
+// caller's context: a legacy server may never answer the probe at all, and
+// the fallback handshake needs the caller's context still alive when the
+// probe gives up. A probe that produces nothing within the window while the
+// caller's context is still live returns errProbeTimeout.
 func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error) {
 	c.mu.RLock()
 	info := c.clientInfo
@@ -243,12 +281,17 @@ func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error)
 		Params:  params,
 	}
 
-	ctx = transport.WithExtraHeaders(ctx, map[string]string{
+	probeCtx, cancel := context.WithTimeout(ctx, c.probeTimeout())
+	defer cancel()
+	probeCtx = transport.WithExtraHeaders(probeCtx, map[string]string{
 		"MCP-Protocol-Version": protocol.PreferredVersion,
 	})
 
-	resp, err := c.sendRequest(ctx, req)
+	resp, err := c.sendRequest(probeCtx, req)
 	if err != nil {
+		if probeCtx.Err() != nil && ctx.Err() == nil {
+			return nil, fmt.Errorf("%w after %s", errProbeTimeout, c.probeTimeout())
+		}
 		return nil, err
 	}
 
@@ -260,6 +303,15 @@ func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error)
 		return nil, fmt.Errorf("server/discover returned no supported versions")
 	}
 	return &result, nil
+}
+
+// probeTimeout is the bounded wait for the server/discover probe,
+// configured via Config.RequestTimeout.
+func (c *Client) probeTimeout() time.Duration {
+	if c.requestTimeout > 0 {
+		return c.requestTimeout
+	}
+	return 30 * time.Second
 }
 
 // IsStateless reports whether the client negotiated a 2026-07-28+ revision.

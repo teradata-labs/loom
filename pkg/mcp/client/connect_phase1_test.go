@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,8 @@ type scriptedTransport struct {
 
 	// Behavior
 	discoverErr       error                    // transport-level error for server/discover
+	discoverRPCErr    *protocol.Error          // JSON-RPC error answer for server/discover (overrides discoverResult)
+	discoverSilent    bool                     // swallow the probe entirely (legacy server that never answers)
 	discoverResult    *protocol.DiscoverResult // nil → JSON-RPC MethodNotFound
 	initializeVersion string                   // "" → 2024-11-05 (unless initializeEcho)
 	initializeEcho    bool                     // echo the requested protocolVersion (dual-revision server)
@@ -102,10 +105,17 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 	case "server/discover":
 		f.mu.Lock()
 		f.sawDiscover = true
-		derr, dres := f.discoverErr, f.discoverResult
+		derr, drpc, dres, silent := f.discoverErr, f.discoverRPCErr, f.discoverResult, f.discoverSilent
 		f.mu.Unlock()
+		if silent {
+			return nil // never answers: the probe must give up on its own
+		}
 		if derr != nil {
 			return derr
+		}
+		if drpc != nil {
+			resp.Error = drpc
+			break
 		}
 		if dres == nil {
 			resp.Error = protocol.NewError(protocol.MethodNotFound, "method not found", nil)
@@ -579,4 +589,100 @@ func TestConnectDoesNotFallBackOnModernErrorBody(t *testing.T) {
 	require.Error(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
 	_, sawInit, _ := ft.snapshot()
 	assert.False(t, sawInit, "a modern error body must not trigger legacy fallback")
+}
+
+// TestConnectFallsBackOnAnyNonModernRPCError (round-2 review blocker,
+// PR #327): the stdio backward-compatibility rule is explicit that the
+// fallback MUST NOT be keyed to one specific error code — legacy servers
+// answer unknown pre-initialize requests with implementation-defined errors,
+// commonly -32601 or -32602 ("initialize first"). Any JSON-RPC error other
+// than the recognized modern codes must fall back to the handshake.
+func TestConnectFallsBackOnAnyNonModernRPCError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		msg  string
+	}{
+		{"invalid params", protocol.InvalidParams, "initialize first"},
+		{"method not found", protocol.MethodNotFound, "method not found"},
+		{"implementation-defined server error", -32000, "unknown request before initialize"},
+		{"internal error", protocol.InternalError, "boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ft := newScriptedTransport()
+			ft.discoverRPCErr = protocol.NewError(tc.code, tc.msg, nil)
+			c := connectClient(t, ft, Config{})
+
+			require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}),
+				"code %d must fall back to initialize", tc.code)
+			assert.False(t, c.IsStateless())
+			_, sawInit, _ := ft.snapshot()
+			assert.True(t, sawInit)
+		})
+	}
+}
+
+// TestConnectDoesNotFallBackOnModernRPCErrors: the recognized modern codes
+// identify a modern server answering the probe; falling back to the legacy
+// handshake over them would be wrong (the spec says to retry with an
+// advertised version instead — with no mutual modern version, that is a
+// hard error, never a silent downgrade).
+func TestConnectDoesNotFallBackOnModernRPCErrors(t *testing.T) {
+	for _, code := range []int{protocol.UnsupportedProtocolVersion, protocol.HeaderMismatch, protocol.MissingRequiredClientCapability} {
+		ft := newScriptedTransport()
+		ft.discoverRPCErr = protocol.NewError(code, "modern rejection", nil)
+		c := connectClient(t, ft, Config{})
+
+		require.Error(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}), "code %d", code)
+		_, sawInit, _ := ft.snapshot()
+		assert.False(t, sawInit, "code %d identifies a modern server; no fallback", code)
+	}
+}
+
+// TestConnectFallsBackWhenSilentServerTimesOutOnStdio (round-2 review
+// blocker, PR #327): a legacy stdio server may not answer the probe at all.
+// The probe waits at most Config.RequestTimeout — previously defaulted but
+// never applied — and classifies the silence as a legacy server, leaving
+// the caller's context alive for the fallback handshake.
+func TestConnectFallsBackWhenSilentServerTimesOutOnStdio(t *testing.T) {
+	ft := newScriptedTransport() // carriesHeaders unset → stdio-like
+	ft.discoverSilent = true
+	c := connectClient(t, ft, Config{RequestTimeout: 150 * time.Millisecond})
+
+	start := time.Now()
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	assert.False(t, c.IsStateless())
+	_, sawInit, _ := ft.snapshot()
+	assert.True(t, sawInit, "silent probe must fall back to initialize")
+	assert.Less(t, time.Since(start), 5*time.Second, "the probe wait must be bounded by RequestTimeout")
+}
+
+// TestConnectSilentProbeIsHardErrorOnStreamableHTTP: the timeout-as-legacy
+// classification is the stdio rule; on Streamable HTTP the era signal is
+// carried by status codes, and a hung POST must stay a hard error rather
+// than masking an outage as a legacy server.
+func TestConnectSilentProbeIsHardErrorOnStreamableHTTP(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.carriesHeaders = true
+	ft.discoverSilent = true
+	c := connectClient(t, ft, Config{RequestTimeout: 150 * time.Millisecond})
+
+	require.Error(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+	_, sawInit, _ := ft.snapshot()
+	assert.False(t, sawInit, "an HTTP probe timeout must not silently fall back")
+}
+
+// TestConnectExhaustedCallerContextDoesNotFallBack: when the caller's own
+// context expires (not the probe's bounded window), there is no time left
+// for a handshake and the cancellation is not a legacy signal.
+func TestConnectExhaustedCallerContextDoesNotFallBack(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.discoverSilent = true
+	c := connectClient(t, ft, Config{RequestTimeout: 10 * time.Second})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	require.Error(t, c.Connect(ctx, protocol.Implementation{Name: "loom"}))
+	_, sawInit, _ := ft.snapshot()
+	assert.False(t, sawInit, "caller-context expiry is not a legacy signal")
 }
