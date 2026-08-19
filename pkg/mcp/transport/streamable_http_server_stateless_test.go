@@ -94,7 +94,9 @@ func TestStatelessRequestIgnoresStaleSessionHeader(t *testing.T) {
 	_, ts, calls := newStatelessTestServer(t)
 
 	resp := postJSON(t, ts.URL, statelessBody(2, "tools/list"), map[string]string{
-		"Mcp-Session-Id": "stale-or-unknown-session",
+		"Mcp-Method":           "tools/list",
+		"MCP-Protocol-Version": protocol.Version20260728,
+		"Mcp-Session-Id":       "stale-or-unknown-session",
 	})
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "stateless requests must not 404 on unknown sessions")
 	assert.Equal(t, 1, *calls)
@@ -138,12 +140,15 @@ func TestProtocolVersionHeaderMismatchRejected(t *testing.T) {
 	assert.Zero(t, *calls)
 }
 
-func TestStatelessMissingHeadersTolerated(t *testing.T) {
+func TestStatelessMissingHeadersRejected(t *testing.T) {
+	// Review finding 1 (PR #328): the required standard headers are exactly
+	// that — a stateless request without MCP-Protocol-Version and Mcp-Method
+	// is rejected 400 with HeaderMismatch, never executed.
 	_, ts, calls := newStatelessTestServer(t)
 
 	resp := postJSON(t, ts.URL, statelessBody(5, "tools/list"), nil)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "missing headers tolerated during the window")
-	assert.Equal(t, 1, *calls)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 0, *calls, "a request failing header validation must not reach the handler")
 }
 
 func TestStatelessNotificationAccepted(t *testing.T) {
@@ -176,4 +181,181 @@ func TestLegacyPathsUnchangedByDualMode(t *testing.T) {
 	resp = postJSON(t, ts.URL, initBody, nil)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.NotEmpty(t, resp.Header.Get("Mcp-Session-Id"), "legacy initialize mints a session")
+}
+
+func statelessHeaders(method string) map[string]string {
+	return map[string]string{
+		"Mcp-Method":           method,
+		"MCP-Protocol-Version": protocol.Version20260728,
+	}
+}
+
+// TestStatelessAdmissionIsExactVersion (review finding 1, PR #328): admission
+// must not be an open-ended date comparison — a future revision this server
+// never implemented is rejected with UnsupportedProtocolVersion listing the
+// supported set, so the client can retry with a mutual revision.
+func TestStatelessAdmissionIsExactVersion(t *testing.T) {
+	_, ts, calls := newStatelessTestServer(t)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": 7, "method": "tools/list",
+		"params": map[string]interface{}{
+			"_meta": map[string]interface{}{protocol.MetaProtocolVersion: "2027-01-01"},
+		},
+	})
+	resp := postJSON(t, ts.URL, body, map[string]string{
+		"Mcp-Method":           "tools/list",
+		"MCP-Protocol-Version": "2027-01-01",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 0, *calls)
+
+	var rpc struct {
+		Error struct {
+			Code int `json:"code"`
+			Data struct {
+				Supported []string `json:"supported"`
+				Requested string   `json:"requested"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rpc))
+	assert.Equal(t, protocol.UnsupportedProtocolVersion, rpc.Error.Code)
+	assert.Equal(t, []string{protocol.Version20260728}, rpc.Error.Data.Supported)
+	assert.Equal(t, "2027-01-01", rpc.Error.Data.Requested)
+}
+
+// TestLegacyBodyWithModernHeaderRejected: a legacy-shaped body under a modern
+// MCP-Protocol-Version header must not slip into legacy dispatch — it is a
+// header/body disagreement.
+func TestLegacyBodyWithModernHeaderRejected(t *testing.T) {
+	_, ts, calls := newStatelessTestServer(t)
+
+	legacyBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": map[string]interface{}{},
+	})
+	resp := postJSON(t, ts.URL, legacyBody, map[string]string{
+		"MCP-Protocol-Version": protocol.Version20260728,
+		"Mcp-Method":           "tools/list",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 0, *calls)
+}
+
+// TestMcpNameRequiredAndDecoded: tools/call, prompts/get, and resources/read
+// require an Mcp-Name header matching the body value, after Base64-sentinel
+// decoding.
+func TestMcpNameRequiredAndDecoded(t *testing.T) {
+	_, ts, calls := newStatelessTestServer(t)
+
+	callBody := func(id int) []byte {
+		body, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]interface{}{
+				"_meta": map[string]interface{}{protocol.MetaProtocolVersion: protocol.Version20260728},
+				"name":  "höllo tool", // not header-safe: must travel sentinel-encoded
+			},
+		})
+		return body
+	}
+
+	// Missing Mcp-Name → rejected.
+	h := statelessHeaders("tools/call")
+	resp := postJSON(t, ts.URL, callBody(9), h)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	// Correctly encoded Mcp-Name → decoded, matched, executed.
+	h["Mcp-Name"] = protocol.EncodeHeaderValue("höllo tool")
+	resp = postJSON(t, ts.URL, callBody(10), h)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Mismatched Mcp-Name → rejected.
+	h["Mcp-Name"] = "other-tool"
+	before := *calls
+	resp = postJSON(t, ts.URL, callBody(11), h)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, before, *calls)
+}
+
+// TestMalformedMcpParamRejected: an Mcp-Param header with an invalid Base64
+// sentinel payload contains invalid characters per the specification and is
+// rejected; well-formed unrecognized params are ignored (no tool served here
+// declares x-mcp-header annotations).
+func TestMalformedMcpParamRejected(t *testing.T) {
+	_, ts, _ := newStatelessTestServer(t)
+
+	h := statelessHeaders("tools/list")
+	h["Mcp-Param-Region"] = "=?base64?!!!not-base64!!!?="
+	resp := postJSON(t, ts.URL, statelessBody(12, "tools/list"), h)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	h["Mcp-Param-Region"] = "us-west1" // well-formed, unrecognized → ignored
+	resp = postJSON(t, ts.URL, statelessBody(13, "tools/list"), h)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestUnknownMethodIs404 (review finding 14, PR #328): a modern request for a
+// method this server does not implement answers HTTP 404 with the JSON-RPC
+// MethodNotFound body, distinguishing it from a legacy server without the
+// modern endpoint.
+func TestUnknownMethodIs404(t *testing.T) {
+	srv, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
+		Handler: func(ctx context.Context, msg []byte) ([]byte, error) {
+			var req protocol.Request
+			_ = json.Unmarshal(msg, &req)
+			resp, _ := json.Marshal(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": protocol.MethodNotFound, "message": "method not found"},
+			})
+			return resp, nil
+		},
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	resp := postJSON(t, ts.URL, statelessBody(14, "no/such/method"), statelessHeaders("no/such/method"))
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	var rpc struct {
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rpc))
+	assert.Equal(t, protocol.MethodNotFound, rpc.Error.Code)
+}
+
+// TestOriginValidation (review finding 2, PR #328): a present-but-invalid
+// Origin is rejected 403 before any body or session processing; absent
+// Origins (non-browser clients) and loopback origins pass by default, and a
+// configured allowlist replaces the default policy.
+func TestOriginValidation(t *testing.T) {
+	_, ts, calls := newStatelessTestServer(t)
+
+	h := statelessHeaders("tools/list")
+	h["Origin"] = "https://evil.example.com"
+	resp := postJSON(t, ts.URL, statelessBody(15, "tools/list"), h)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, 0, *calls, "disallowed origins must not reach the handler")
+
+	h["Origin"] = "http://localhost:3000"
+	resp = postJSON(t, ts.URL, statelessBody(16, "tools/list"), h)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	srvAllow, err := NewStreamableHTTPServer(StreamableHTTPServerConfig{
+		Handler:        func(ctx context.Context, msg []byte) ([]byte, error) { return nil, nil },
+		AllowedOrigins: []string{"https://app.example.com"},
+	})
+	require.NoError(t, err)
+	tsAllow := httptest.NewServer(srvAllow)
+	t.Cleanup(tsAllow.Close)
+
+	h2 := statelessHeaders("tools/list")
+	h2["Origin"] = "https://app.example.com"
+	resp = postJSON(t, tsAllow.URL, statelessBody(17, "tools/list"), h2)
+	assert.NotEqual(t, http.StatusForbidden, resp.StatusCode)
+
+	h2["Origin"] = "http://localhost:3000" // not in the explicit allowlist
+	resp = postJSON(t, tsAllow.URL, statelessBody(18, "tools/list"), h2)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }

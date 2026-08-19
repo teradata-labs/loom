@@ -243,3 +243,19 @@ func isHeaderToken(s string) bool {
 	}
 	return true
 }
+
+// DecodeHeaderValue reverses EncodeHeaderValue: a Base64-sentinel value
+// (=?base64?...?=) is decoded to its original UTF-8 string; anything else is
+// returned as-is. Servers MUST decode encoded Mcp-Name and Mcp-Param values
+// before comparing them to request-body values during server validation.
+func DecodeHeaderValue(s string) (string, error) {
+	if !matchesSentinel(s) {
+		return s, nil
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(s, base64SentinelPrefix), base64SentinelSuffix)
+	decoded, err := base64.StdEncoding.DecodeString(inner)
+	if err != nil {
+		return "", fmt.Errorf("invalid Base64 sentinel header value: %w", err)
+	}
+	return string(decoded), nil
+}

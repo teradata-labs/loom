@@ -106,6 +106,15 @@ func statelessMatrixBody(id int, method string) string {
 		id, method, protocol.MetaProtocolVersion, protocol.Version20260728)
 }
 
+// statelessMatrixHeaders carries the standard headers the transport requires
+// on every modern request (review finding 1: they are not optional).
+func statelessMatrixHeaders(method string) map[string]string {
+	return map[string]string{
+		"Mcp-Method":           method,
+		"MCP-Protocol-Version": protocol.Version20260728,
+	}
+}
+
 // X1: a legacy sessionful client and a stateless client interleave many
 // requests against one server; neither mode bleeds into the other.
 func TestMatrixMixedModeInterleave(t *testing.T) {
@@ -126,7 +135,7 @@ func TestMatrixMixedModeInterleave(t *testing.T) {
 
 		// Stateless request bypasses sessions; result carries the envelope
 		// and never a session header.
-		stateless := post(t, ts.URL, statelessMatrixBody(200+i, "tools/list"), nil)
+		stateless := post(t, ts.URL, statelessMatrixBody(200+i, "tools/list"), statelessMatrixHeaders("tools/list"))
 		require.Equal(t, http.StatusOK, stateless.status, "stateless round %d", i)
 		assert.Contains(t, string(stateless.body["result"]), `"resultType":"complete"`, "stateless round %d", i)
 		assert.Empty(t, stateless.header.Get("Mcp-Session-Id"), "stateless round %d", i)
@@ -152,7 +161,7 @@ func TestMatrixJanitorExpiryRecovery(t *testing.T) {
 	}, 5*time.Second, 250*time.Millisecond, "janitor must expire the idle session")
 
 	// Stateless traffic never noticed.
-	stateless := post(t, ts.URL, statelessMatrixBody(3, "tools/list"), nil)
+	stateless := post(t, ts.URL, statelessMatrixBody(3, "tools/list"), statelessMatrixHeaders("tools/list"))
 	assert.Equal(t, http.StatusOK, stateless.status)
 
 	// Legacy recovery: re-initialize mints a fresh session.
@@ -173,8 +182,9 @@ func TestMatrixDeprecatedMethodSplit(t *testing.T) {
 	require.Equal(t, http.StatusOK, legacyPing.status)
 	assert.NotContains(t, legacyPing.body, "error")
 
-	statelessPing := post(t, ts.URL, statelessMatrixBody(2, "ping"), nil)
-	require.Equal(t, http.StatusOK, statelessPing.status)
+	statelessPing := post(t, ts.URL, statelessMatrixBody(2, "ping"), statelessMatrixHeaders("ping"))
+	require.Equal(t, http.StatusNotFound, statelessPing.status,
+		"modern unknown methods answer HTTP 404 with the MethodNotFound body (review finding 14)")
 	var rpcErr struct {
 		Code int `json:"code"`
 	}
@@ -183,11 +193,14 @@ func TestMatrixDeprecatedMethodSplit(t *testing.T) {
 
 	// resources/subscribe was never a server method here; MethodNotFound in
 	// both modes (its replacement is subscriptions/listen).
-	for _, body := range []string{legacyBody(3, "resources/subscribe"), statelessMatrixBody(4, "resources/subscribe")} {
-		r := post(t, ts.URL, body, nil)
-		require.NoError(t, json.Unmarshal(r.body["error"], &rpcErr))
-		assert.Equal(t, protocol.MethodNotFound, rpcErr.Code)
-	}
+	legacySub := post(t, ts.URL, legacyBody(3, "resources/subscribe"), nil)
+	require.NoError(t, json.Unmarshal(legacySub.body["error"], &rpcErr))
+	assert.Equal(t, protocol.MethodNotFound, rpcErr.Code)
+
+	statelessSub := post(t, ts.URL, statelessMatrixBody(4, "resources/subscribe"), statelessMatrixHeaders("resources/subscribe"))
+	require.Equal(t, http.StatusNotFound, statelessSub.status)
+	require.NoError(t, json.Unmarshal(statelessSub.body["error"], &rpcErr))
+	assert.Equal(t, protocol.MethodNotFound, rpcErr.Code)
 }
 
 // X4: server/discover is idempotent and byte-identical across repeated calls
@@ -208,7 +221,7 @@ func TestMatrixDiscoverIdempotent(t *testing.T) {
 			assert.Equal(t, unstampedFirst, string(un.body["result"]), "unstamped discover call %d", i)
 		}
 
-		st := post(t, ts.URL, statelessMatrixBody(30+i, "server/discover"), nil)
+		st := post(t, ts.URL, statelessMatrixBody(30+i, "server/discover"), statelessMatrixHeaders("server/discover"))
 		require.Equal(t, http.StatusOK, st.status)
 		if stampedFirst == "" {
 			stampedFirst = string(st.body["result"])
