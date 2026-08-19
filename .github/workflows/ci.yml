@@ -12,6 +12,12 @@ permissions:
   checks: write
   security-events: write  # Required for SARIF upload to code scanning
 
+env:
+  # Authenticates buf's BSR traffic (module downloads and remote plugin
+  # execution) when the BUF_TOKEN repository secret exists; empty is ignored
+  # by buf and requests stay anonymous (rate-limited).
+  BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+
 jobs:
   # ============================================================================
   # Job 1: Proto Linting & Breaking Change Detection
@@ -25,6 +31,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0  # Fetch all history for breaking change detection
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -76,6 +85,9 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -139,6 +151,9 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -253,6 +268,9 @@ jobs:
           go-version: '1.26'
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
@@ -332,6 +350,9 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
@@ -405,6 +426,9 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0

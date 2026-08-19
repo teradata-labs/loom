@@ -1,0 +1,26 @@
+name: Cache buf modules
+description: >-
+  Keeps buf's module cache warm across runs so BSR dependency downloads
+  happen only on a cold cache instead of on every job. Anonymous BSR
+  requests from shared runner IPs are rate-limited and intermittently fail
+  with "permission_denied: 403 Forbidden"; caching removes the module-download
+  traffic entirely. Remote plugin execution during `buf generate` still
+  contacts the BSR per run — the workflow-level BUF_TOKEN env (activated by
+  creating a `BUF_TOKEN` repository secret) authenticates that remainder.
+  Must run after actions/checkout (local action, and the cache key hashes
+  buf.lock).
+
+runs:
+  using: composite
+  steps:
+    - name: Pin buf cache location
+      shell: bash
+      run: echo "BUF_CACHE_DIR=${{ runner.temp }}/buf-module-cache" >> "$GITHUB_ENV"
+
+    - name: Restore buf module cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/buf-module-cache
+        key: buf-modules-${{ runner.os }}-${{ hashFiles('buf.lock', 'buf.gen.yaml') }}
+        restore-keys: |
+          buf-modules-${{ runner.os }}-
