@@ -89,12 +89,14 @@ func (s *MCPServer) handleSubscriptionsListenStream(ctx context.Context, req *pr
 		ch:     make(chan []byte, subscriptionBuffer),
 	}
 
-	subKey := string(idJSON)
+	// The registry key is server-unique, never the client's JSON-RPC id:
+	// JSON-RPC ids are client-scoped, so two independent HTTP clients both
+	// using id 1 are legitimate concurrent subscriptions, not a conflict.
+	// The client-facing subscription identity stays the request id, tagged
+	// per stream in _meta — streams never mix, so no client observes another
+	// client's id.
+	subKey := fmt.Sprintf("sub-%d", s.subSeq.Add(1))
 	s.subsMu.Lock()
-	if _, exists := s.subscriptions[subKey]; exists {
-		s.subsMu.Unlock()
-		return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest, "duplicate subscription id", nil))
-	}
 	s.subscriptions[subKey] = sub
 	s.subsMu.Unlock()
 	defer func() {

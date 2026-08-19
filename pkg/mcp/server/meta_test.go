@@ -192,3 +192,35 @@ func TestRequestMetaExposedToHandlers(t *testing.T) {
 	require.NotNil(t, seen.ClientInfo)
 	assert.Equal(t, "loom", seen.ClientInfo.Name)
 }
+
+// TestStampResultNilShapes (review finding 9, PR #328): JSON null unmarshals
+// into a nil map without error, so a nil result and a handler-set
+// "_meta": null both used to panic on assignment. Both are valid successful
+// results and must stamp.
+func TestStampResultNilShapes(t *testing.T) {
+	s := NewMCPServer("loom-mcp", "1.4.0", nil)
+
+	out, err := s.stampResult(nil)
+	if err != nil {
+		t.Fatalf("nil result must stamp: %v", err)
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatal(err)
+	}
+	if string(probe["resultType"]) != `"complete"` {
+		t.Fatalf("nil result not defaulted to complete: %s", out)
+	}
+
+	out, err = s.stampResult(map[string]interface{}{"_meta": nil, "ok": true})
+	if err != nil {
+		t.Fatalf("_meta:null must stamp: %v", err)
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(probe["_meta"], &meta); err != nil || meta == nil {
+		t.Fatalf("_meta not rebuilt: %s", out)
+	}
+}

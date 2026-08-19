@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -51,6 +52,7 @@ type MCPServer struct {
 	// by the listen request's JSON-RPC id.
 	subscriptions map[string]*serverSubscription
 	subsMu        sync.RWMutex
+	subSeq        atomic.Int64 // server-unique subscription registry keys
 
 	// CacheableResult fields (2026-07-28, SEP-2549) stamped on list/read
 	// results. cacheScope defaults to "private" because bridge tool lists

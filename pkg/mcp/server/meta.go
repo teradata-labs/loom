@@ -123,12 +123,20 @@ func (s *MCPServer) stampResult(result interface{}) (json.RawMessage, error) {
 		// Non-object results have no envelope to stamp; pass through.
 		return raw, nil
 	}
+	if obj == nil {
+		// JSON null unmarshals into a nil map without error; a nil result is
+		// a valid (empty) result and must stamp, not panic on assignment.
+		obj = map[string]json.RawMessage{}
+	}
 	if _, ok := obj["resultType"]; !ok {
 		obj["resultType"] = json.RawMessage(`"` + protocol.ResultTypeComplete + `"`)
 	}
 	meta := map[string]json.RawMessage{}
 	if rawMeta, ok := obj["_meta"]; ok {
 		_ = json.Unmarshal(rawMeta, &meta)
+		if meta == nil { // handler set "_meta": null
+			meta = map[string]json.RawMessage{}
+		}
 	}
 	infoJSON, err := json.Marshal(s.info)
 	if err != nil {

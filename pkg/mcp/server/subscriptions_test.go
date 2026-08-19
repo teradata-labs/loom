@@ -140,3 +140,37 @@ func TestSubscriptionsListenSynchronousPathAnswersMethodNotFound(t *testing.T) {
 	require.NotNil(t, resp.Error)
 	assert.Equal(t, protocol.MethodNotFound, resp.Error.Code)
 }
+
+// TestSubscriptionIDsDoNotCollideAcrossClients (review finding 10, PR #328):
+// JSON-RPC ids are client-scoped — two independent clients both opening a
+// subscription with id 1 are concurrent subscriptions, not a duplicate.
+func TestSubscriptionIDsDoNotCollideAcrossClients(t *testing.T) {
+	s := NewMCPServer("loom-mcp", "1.4.0", nil)
+
+	openOne := func() (*captureSSEWriter, context.CancelFunc, chan struct{}) {
+		w := &captureSSEWriter{}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = s.HandleMessageStream(ctx, listenRequest(1, `{"toolsListChanged":true}`), w)
+		}()
+		return w, cancel, done
+	}
+
+	w1, cancel1, done1 := openOne()
+	w2, cancel2, done2 := openOne()
+	defer func() { cancel1(); cancel2(); <-done1; <-done2 }()
+
+	// Both streams must be acknowledged — the second must NOT be rejected as
+	// a duplicate of the first client's id.
+	require.Eventually(t, func() bool { return len(w1.snapshot()) >= 1 }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return len(w2.snapshot()) >= 1 }, 2*time.Second, 5*time.Millisecond)
+	assert.Contains(t, w1.snapshot()[0], protocol.NotificationSubscriptionAcknowledged)
+	assert.Contains(t, w2.snapshot()[0], protocol.NotificationSubscriptionAcknowledged)
+
+	// A published change reaches both independent subscriptions.
+	s.NotifyToolsListChanged()
+	require.Eventually(t, func() bool { return len(w1.snapshot()) >= 2 }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return len(w2.snapshot()) >= 2 }, 2*time.Second, 5*time.Millisecond)
+}
