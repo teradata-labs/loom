@@ -63,3 +63,32 @@ func TestBuildProtectedResourceMetadata(t *testing.T) {
 		assert.Contains(t, string(payload), "https://abcd1234.supabase.co/auth/v1")
 	})
 }
+
+// TestResolveEdgeAudience (review finding 6, PR #328): accepted tokens must
+// be bound to the advertised MCP resource; inconsistent configuration fails
+// startup instead of validating against the wrong identity.
+func TestResolveEdgeAudience(t *testing.T) {
+	cases := []struct {
+		name               string
+		audience, resource string
+		want               string
+		wantErr            bool
+	}{
+		{"defaults without PRM", "", "", "authenticated", false},
+		{"explicit audience without PRM", "my-aud", "", "my-aud", false},
+		{"PRM binds the audience", "", "https://mcp.example.com/mcp", "https://mcp.example.com/mcp", false},
+		{"matching explicit audience", "https://mcp.example.com/mcp", "https://mcp.example.com/mcp", "https://mcp.example.com/mcp", false},
+		{"mismatch fails startup", "authenticated", "https://mcp.example.com/mcp", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveEdgeAudience(tc.audience, tc.resource)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

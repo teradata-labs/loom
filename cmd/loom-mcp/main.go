@@ -299,9 +299,12 @@ func buildEdgeAuthenticator(logger *zap.Logger) (auth *loomserver.Authenticator,
 	ref := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF")
 	jwksURL := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_JWKS_URL")
 	issuer := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_ISSUER")
-	audience := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_AUDIENCE")
-	if audience == "" {
-		audience = "authenticated"
+	audience, err := resolveEdgeAudience(
+		os.Getenv("LOOM_SERVER_AUTH_SUPABASE_AUDIENCE"),
+		os.Getenv("LOOM_MCP_RESOURCE_URL"),
+	)
+	if err != nil {
+		logger.Fatal("inconsistent auth/PRM configuration", zap.Error(err))
 	}
 	if ref != "" {
 		if jwksURL == "" {
@@ -461,5 +464,29 @@ func parseLogLevel(logLevel string) zapcore.Level {
 		return zap.ErrorLevel
 	default:
 		return zap.InfoLevel
+	}
+}
+
+// resolveEdgeAudience binds JWT audience validation to the advertised MCP
+// resource (review finding 6, PR #328). The MCP authorization specification
+// requires a resource server to accept only tokens issued for it
+// specifically: when PRM advertises LOOM_MCP_RESOURCE_URL, the audience IS
+// that canonical resource identifier. An explicit audience override must
+// agree with it — a mismatch means tokens minted for one identity would be
+// validated against another, so startup fails instead of guessing. Without
+// PRM (no advertised resource), the explicit audience or Supabase's
+// "authenticated" default applies as before.
+func resolveEdgeAudience(explicitAudience, resourceURL string) (string, error) {
+	switch {
+	case resourceURL == "" && explicitAudience == "":
+		return "authenticated", nil
+	case resourceURL == "":
+		return explicitAudience, nil
+	case explicitAudience == "" || explicitAudience == resourceURL:
+		return resourceURL, nil
+	default:
+		return "", fmt.Errorf(
+			"LOOM_SERVER_AUTH_SUPABASE_AUDIENCE (%q) must equal the PRM resource LOOM_MCP_RESOURCE_URL (%q); tokens must be issued for the advertised resource",
+			explicitAudience, resourceURL)
 	}
 }

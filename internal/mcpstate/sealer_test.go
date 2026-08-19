@@ -87,3 +87,48 @@ func TestSealerReplicaEquivalence(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"hop":"replica"}`, string(data))
 }
+
+// TestSealerRotationKeyring (review finding 13, PR #328 — decision D2):
+// state sealed before a key rotation stays unsealable through its TTL when
+// the old secret rides the ring; a secret absent from the ring is rejected.
+func TestSealerRotationKeyring(t *testing.T) {
+	oldSealer, err := NewSealer([]byte("old-secret-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := oldSealer.Seal("user-a", []byte(`{"step":1}`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotated deployment: new current key, old key retained in the ring.
+	rotated, err := NewSealerWithPrevious([]byte("new-secret-material"), []byte("old-secret-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := rotated.Unseal("user-a", state)
+	if err != nil {
+		t.Fatalf("pre-rotation state must unseal during the retention horizon: %v", err)
+	}
+	if string(data) != `{"step":1}` {
+		t.Fatalf("payload mismatch: %s", data)
+	}
+
+	// New state seals with the NEW key: the old sealer must reject it.
+	newState, err := rotated.Seal("user-a", []byte(`{"step":2}`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldSealer.Unseal("user-a", newState); err == nil {
+		t.Fatal("old sealer must not open state sealed by the rotated key")
+	}
+
+	// A ring without the old key rejects pre-rotation state.
+	fresh, err := NewSealer([]byte("new-secret-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Unseal("user-a", state); err == nil {
+		t.Fatal("rotated-out keys must be rejected once dropped from the ring")
+	}
+}

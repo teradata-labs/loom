@@ -50,35 +50,70 @@ const DefaultTTL = 10 * time.Minute
 // distinguish tamper from expiry from wrong-principal.
 var ErrInvalidState = errors.New("invalid or expired request state")
 
-// Sealer seals and unseals requestState blobs.
+// Sealer seals and unseals requestState blobs. It holds a keyring (decision
+// D2): sealing always uses the current key, while unsealing accepts any key
+// in the ring, identified by the blob's key-ID prefix — so a rotation keeps
+// previously sealed state (an MRTR retry straddling the rotation, or a
+// rolling deploy) valid until its own TTL expires rather than rejecting it
+// immediately.
 type Sealer struct {
-	keyID []byte
-	aead  cipher.AEAD
+	currentID []byte
+	current   cipher.AEAD
+	ring      map[string]cipher.AEAD // keyID → AEAD, current included
 }
 
 // NewSealer derives the sealing key from deployment secret material
 // (LOOM_SERVER_AUTH_SUPABASE_JWT_SECRET, or LOOM_MCP_STATE_SECRET on
-// JWKS-only deployments — see the Phase 4 brief).
+// JWKS-only deployments — see the Phase 4 brief). The ring holds only the
+// current key; use NewSealerWithPrevious during rotations.
 func NewSealer(secret []byte) (*Sealer, error) {
+	return NewSealerWithPrevious(secret)
+}
+
+// NewSealerWithPrevious derives the current sealing key from secret and adds
+// one ring entry per previous secret (deployment convention:
+// LOOM_MCP_STATE_SECRET_PREVIOUS, comma-separated, retained through the
+// sealed-state TTL horizon after a rotation). Sealing uses only the current
+// key; previous keys only unseal.
+func NewSealerWithPrevious(secret []byte, previous ...[]byte) (*Sealer, error) {
 	if len(secret) == 0 {
 		return nil, fmt.Errorf("sealing requires non-empty secret material")
 	}
+	currentID, currentAEAD, err := deriveKey(secret)
+	if err != nil {
+		return nil, err
+	}
+	ring := map[string]cipher.AEAD{string(currentID): currentAEAD}
+	for _, prev := range previous {
+		if len(prev) == 0 {
+			continue
+		}
+		id, aead, err := deriveKey(prev)
+		if err != nil {
+			return nil, fmt.Errorf("derive previous sealing key: %w", err)
+		}
+		ring[string(id)] = aead
+	}
+	return &Sealer{currentID: currentID, current: currentAEAD, ring: ring}, nil
+}
+
+// deriveKey turns secret material into an AEAD plus its non-secret key-ID
+// fingerprint.
+func deriveKey(secret []byte) ([]byte, cipher.AEAD, error) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(hkdf.New(sha256.New, secret, nil, []byte(hkdfInfo)), key); err != nil {
-		return nil, fmt.Errorf("derive sealing key: %w", err)
+		return nil, nil, fmt.Errorf("derive sealing key: %w", err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	// The key ID identifies which derived key sealed a blob; it is a
-	// non-secret fingerprint of the key itself.
 	sum := sha256.Sum256(key)
-	return &Sealer{keyID: sum[:keyIDLen], aead: aead}, nil
+	return sum[:keyIDLen], aead, nil
 }
 
 // sealedPayload is the authenticated plaintext.
@@ -102,14 +137,14 @@ func (s *Sealer) Seal(principal string, data []byte, ttl time.Duration) (string,
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, s.aead.NonceSize())
+	nonce := make([]byte, s.current.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	blob := make([]byte, 0, keyIDLen+len(nonce)+len(plain)+s.aead.Overhead())
-	blob = append(blob, s.keyID...)
+	blob := make([]byte, 0, keyIDLen+len(nonce)+len(plain)+s.current.Overhead())
+	blob = append(blob, s.currentID...)
 	blob = append(blob, nonce...)
-	blob = s.aead.Seal(blob, nonce, plain, s.keyID)
+	blob = s.current.Seal(blob, nonce, plain, s.currentID)
 	return base64.RawURLEncoding.EncodeToString(blob), nil
 }
 
@@ -119,16 +154,17 @@ func (s *Sealer) Unseal(principal, state string) ([]byte, error) {
 	if err != nil {
 		return nil, ErrInvalidState
 	}
-	minLen := keyIDLen + s.aead.NonceSize()
+	keyID := blob[:min(keyIDLen, len(blob))]
+	aead, known := s.ring[string(keyID)]
+	if !known {
+		return nil, ErrInvalidState // unknown or rotated-out key
+	}
+	minLen := keyIDLen + aead.NonceSize()
 	if len(blob) < minLen {
 		return nil, ErrInvalidState
 	}
-	keyID := blob[:keyIDLen]
-	if string(keyID) != string(s.keyID) {
-		return nil, ErrInvalidState // unknown or rotated-out key
-	}
 	nonce := blob[keyIDLen:minLen]
-	plain, err := s.aead.Open(nil, nonce, blob[minLen:], keyID)
+	plain, err := aead.Open(nil, nonce, blob[minLen:], keyID)
 	if err != nil {
 		return nil, ErrInvalidState
 	}
