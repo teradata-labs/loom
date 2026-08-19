@@ -40,6 +40,22 @@ import (
 // stream loss (migration spec §7.5).
 const weaveDedupeTTL = 10 * time.Minute
 
+// weaveDedupeMaxKeyLen bounds accepted idempotency keys: the client mints
+// UUIDs (36 bytes); anything an order of magnitude beyond that is abuse, and
+// unbounded keys make the map a memory-amplification vector.
+const weaveDedupeMaxKeyLen = 256
+
+// weaveDedupeMaxEntries bounds the registry. On overflow — after evicting
+// expired and then oldest completed entries — new keys are not admitted and
+// their weaves run without dedupe, which is the at-least-once semantics the
+// specification prescribes for key-less requests anyway: availability is
+// never sacrificed to bookkeeping.
+const weaveDedupeMaxEntries = 4096
+
+// weaveDedupeSweepEvery amortizes expiry: instead of scanning the whole map
+// on every admission (O(N) per begin), a full sweep runs at most this often.
+const weaveDedupeSweepEvery = time.Minute
+
 // weaveDedupeEntry is one logical weave identified by (caller, key). The
 // first arrival owns execution; duplicates wait on done and read the result.
 // Join semantics are terminal-result-only by design: replaying progress
@@ -63,36 +79,84 @@ func (e *weaveDedupeEntry) finish(resp *loomv1.WeaveResponse, err error) {
 }
 
 // weaveDeduper tracks in-flight and recently completed weaves per
-// (caller identity, idempotency key).
+// (caller identity, idempotency key), with bounded admission.
 type weaveDeduper struct {
-	mu      sync.Mutex
-	entries map[string]*weaveDedupeEntry
+	mu        sync.Mutex
+	entries   map[string]*weaveDedupeEntry
+	lastSweep time.Time
 }
 
 func newWeaveDeduper() *weaveDeduper {
-	return &weaveDeduper{entries: make(map[string]*weaveDedupeEntry)}
+	return &weaveDeduper{entries: make(map[string]*weaveDedupeEntry), lastSweep: time.Now()}
 }
 
-// begin registers interest in a logical weave. isOwner is true for the first
-// arrival, which must call finish (typically deferred) exactly once; joiners
-// wait on the returned entry. Expired completed entries are swept lazily.
-func (d *weaveDeduper) begin(scopeKey string) (entry *weaveDedupeEntry, isOwner bool) {
+// begin registers interest in a logical weave. admitted is false when the
+// key is not deduplicable (oversized, or the registry is full of in-flight
+// runs): the caller executes without dedupe — at-least-once, exactly as a
+// key-less request. isOwner is true for the first admitted arrival, which
+// must call finish exactly once; joiners wait on the returned entry.
+func (d *weaveDeduper) begin(scopeKey string) (entry *weaveDedupeEntry, isOwner, admitted bool) {
+	if len(scopeKey) > weaveDedupeMaxKeyLen {
+		return nil, false, false
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	nowNano := time.Now().UnixNano()
+	now := time.Now()
+	if now.Sub(d.lastSweep) >= weaveDedupeSweepEvery {
+		d.sweepLocked(now.UnixNano())
+	}
+
+	if existing, ok := d.entries[scopeKey]; ok {
+		// A completed entry past its TTL must not be joined just because
+		// the amortized sweep has not run yet: expiry is per-entry O(1).
+		if exp := existing.expiresAtNano.Load(); exp != 0 && now.UnixNano() > exp {
+			delete(d.entries, scopeKey)
+		} else {
+			return existing, false, true
+		}
+	}
+
+	if len(d.entries) >= weaveDedupeMaxEntries {
+		d.sweepLocked(now.UnixNano())
+		if len(d.entries) >= weaveDedupeMaxEntries {
+			d.evictOldestCompletedLocked()
+		}
+		if len(d.entries) >= weaveDedupeMaxEntries {
+			return nil, false, false
+		}
+	}
+
+	entry = &weaveDedupeEntry{done: make(chan struct{})}
+	d.entries[scopeKey] = entry
+	return entry, true, true
+}
+
+// sweepLocked removes expired completed entries; the caller holds d.mu.
+func (d *weaveDeduper) sweepLocked(nowNano int64) {
 	for k, e := range d.entries {
 		if exp := e.expiresAtNano.Load(); exp != 0 && nowNano > exp {
 			delete(d.entries, k)
 		}
 	}
+	d.lastSweep = time.Now()
+}
 
-	if existing, ok := d.entries[scopeKey]; ok {
-		return existing, false
+// evictOldestCompletedLocked frees one slot by dropping the completed entry
+// closest to expiry; in-flight entries are never evicted (a joiner may be
+// waiting on them). The caller holds d.mu.
+func (d *weaveDeduper) evictOldestCompletedLocked() {
+	var oldestKey string
+	var oldestExp int64
+	for k, e := range d.entries {
+		if exp := e.expiresAtNano.Load(); exp != 0 && (oldestExp == 0 || exp < oldestExp) {
+			oldestKey, oldestExp = k, exp
+		}
 	}
-	entry = &weaveDedupeEntry{done: make(chan struct{})}
-	d.entries[scopeKey] = entry
-	return entry, true
+	if oldestKey != "" {
+		delete(d.entries, oldestKey)
+	}
 }
 
 // dedupeScope builds the map key: the idempotency key is scoped per caller

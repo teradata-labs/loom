@@ -18,6 +18,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,18 +117,50 @@ func TestWeaveNoKeyMeansNoDedupe(t *testing.T) {
 func TestWeaveDeduperExpiry(t *testing.T) {
 	d := newWeaveDeduper()
 
-	entry, owner := d.begin("scope")
+	entry, owner, _ := d.begin("scope")
 	require.True(t, owner)
 	entry.finish(&loomv1.WeaveResponse{Text: "done"}, nil)
 
 	// Within TTL: joined.
-	_, owner = d.begin("scope")
+	_, owner, _ = d.begin("scope")
 	assert.False(t, owner)
 
 	// Force expiry: a fresh begin becomes owner again.
 	d.mu.Lock()
 	d.entries["scope"].expiresAtNano.Store(time.Now().Add(-time.Second).UnixNano())
 	d.mu.Unlock()
-	_, owner = d.begin("scope")
+	_, owner, _ = d.begin("scope")
 	assert.True(t, owner, "expired entries are swept lazily")
+}
+
+// TestDedupeBoundedAdmission (review finding 12, PR #328): oversized keys
+// and a saturated registry are not admitted — the weave runs without dedupe
+// (at-least-once) instead of growing the map without bound.
+func TestDedupeBoundedAdmission(t *testing.T) {
+	d := newWeaveDeduper()
+
+	_, _, admitted := d.begin(strings.Repeat("k", weaveDedupeMaxKeyLen+1))
+	assert.False(t, admitted, "oversized keys are not deduplicable")
+
+	// Fill the registry with in-flight entries (never evictable).
+	for i := 0; i < weaveDedupeMaxEntries; i++ {
+		_, isOwner, ok := d.begin(fmt.Sprintf("user\x00key-%d", i))
+		require.True(t, ok)
+		require.True(t, isOwner)
+	}
+	_, _, admitted = d.begin("user\x00one-more")
+	assert.False(t, admitted, "a registry full of in-flight runs must refuse admission, not evict joinable entries")
+
+	// Completing one entry frees a slot via completed-eviction.
+	entry, isOwner, ok := d.begin("user\x00key-0")
+	require.True(t, ok)
+	require.False(t, isOwner)
+	_ = entry
+	d.mu.Lock()
+	d.entries["user\x00key-0"].finish(nil, nil)
+	d.mu.Unlock()
+
+	_, isOwner, admitted = d.begin("user\x00after-completion")
+	assert.True(t, admitted, "eviction of a completed entry must free a slot")
+	assert.True(t, isOwner)
 }

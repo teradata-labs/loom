@@ -404,6 +404,19 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// reissueSafeMethods lists the stateless methods that are idempotent by
+// nature and therefore safe to re-issue after a lost response stream even
+// without an idempotency key.
+var reissueSafeMethods = map[string]bool{
+	"server/discover":          true,
+	"tools/list":               true,
+	"prompts/list":             true,
+	"prompts/get":              true,
+	"resources/list":           true,
+	"resources/read":           true,
+	"resources/templates/list": true,
+}
+
 // sendRequest sends a request and waits for its final response, driving the
 // revision-level behaviors that operate on whole logical calls: _meta
 // stamping, idempotency keys, and one re-issue after a lost response stream
@@ -441,6 +454,13 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		idemKey = uuid.NewString()
 	}
 
+	// A lost response stream is re-issued only when the retry cannot execute
+	// the operation twice: reads are idempotent by nature, and tools/call
+	// carries the idempotency key a dedupe-aware server joins on. Everything
+	// else — session/UI/artifact mutations through RawRequest included —
+	// surfaces CodeStreamLost to the caller, who owns the retry decision.
+	canReissue := idemKey != "" || reissueSafeMethods[req.Method]
+
 	baseParams := req.Params
 	curParams := baseParams // replaced by MRTR retries (original + latest round's input)
 	reissued := false
@@ -474,7 +494,7 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		resp, err := c.dispatchAndWait(ctx, attemptReq)
 		if err != nil {
 			var rpcErr *protocol.Error
-			if stateless && !reissued && errors.As(err, &rpcErr) && rpcErr.Code == transport.CodeStreamLost {
+			if stateless && canReissue && !reissued && errors.As(err, &rpcErr) && rpcErr.Code == transport.CodeStreamLost {
 				// Spec-mandated recovery: re-issue as a new request with a
 				// new ID. The unchanged idempotency key lets the server join
 				// the retry to the original run instead of executing twice.

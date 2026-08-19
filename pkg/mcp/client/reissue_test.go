@@ -132,3 +132,33 @@ func TestStampMetaKeyPreservesExistingMeta(t *testing.T) {
 	require.NoError(t, json.Unmarshal(meta[protocol.MetaIdempotencyKey], &key))
 	assert.Equal(t, "k-123", key)
 }
+
+// TestReissueGatedOnIdempotency (review finding 7, PR #328): a lost response
+// stream is re-issued only when the retry cannot execute the operation
+// twice — reads, or tools/call under its idempotency key. Arbitrary methods
+// (RawRequest mutations) surface CodeStreamLost to the caller instead of
+// silently executing twice.
+func TestReissueGatedOnIdempotency(t *testing.T) {
+	ft := newScriptedTransport()
+	ft.discoverResult = statelessDiscoverResult()
+	ft.streamLostOn = map[string]int{"session/mutate": 1}
+	c := connectClient(t, ft, Config{})
+	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom"}))
+
+	// Non-idempotent, key-less method: the stream loss surfaces, no retry.
+	_, err := c.RawRequest(context.Background(), "session/mutate", json.RawMessage(`{}`))
+	require.Error(t, err)
+	var rpcErr *protocol.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, transport.CodeStreamLost, rpcErr.Code)
+	ft.mu.Lock()
+	assert.Empty(t, ft.attempts, "the mutation must not have been re-issued")
+	ft.mu.Unlock()
+
+	// Idempotent read: re-issued transparently.
+	ft.mu.Lock()
+	ft.streamLostOn["tools/list"] = 1
+	ft.mu.Unlock()
+	_, err = c.ListTools(context.Background())
+	require.NoError(t, err, "idempotent reads are safe to re-issue")
+}

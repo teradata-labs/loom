@@ -47,6 +47,7 @@ type scriptedTransport struct {
 	callResult        json.RawMessage   // result payload for tools/call
 	callResults       []json.RawMessage // per-attempt results; overrides callResult when set
 	callStreamLost    int               // answer this many leading tools/call attempts with CodeStreamLost
+	streamLostOn      map[string]int    // per-method leading CodeStreamLost answers (any method)
 
 	// Recording
 	sawDiscover       bool
@@ -54,6 +55,7 @@ type scriptedTransport struct {
 	requestedInitVer  string // protocolVersion the client sent in InitializeParams
 	lastExtraHeaders  map[string]string
 	sentNotifications []protocol.Request // client-sent notifications (no id)
+	attempts          []string           // default-case request methods that executed
 	sentResponseRaw   [][]byte           // client-sent responses (answers to server-initiated requests)
 	callParams        []json.RawMessage  // raw params of every tools/call attempt
 	listenSupported   bool               // answer subscriptions/listen by holding the stream open
@@ -177,7 +179,16 @@ func (f *scriptedTransport) Send(ctx context.Context, message []byte) error {
 		}
 		f.mu.Unlock()
 	default:
-		resp.Error = protocol.NewError(protocol.MethodNotFound, "method not found", nil)
+		f.mu.Lock()
+		if n := f.streamLostOn[req.Method]; n > 0 {
+			f.streamLostOn[req.Method] = n - 1
+			f.mu.Unlock()
+			resp.Error = protocol.NewError(transport.CodeStreamLost, "response stream lost before completion; re-issue the request", nil)
+			break
+		}
+		f.attempts = append(f.attempts, req.Method)
+		f.mu.Unlock()
+		resp.Result = json.RawMessage(`{"resultType":"complete","ok":true}`)
 	}
 
 	data, _ := json.Marshal(resp)

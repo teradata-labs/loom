@@ -780,11 +780,16 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// Idempotency dedupe (MCP 2026-07-28, D1): a re-issued request carrying
 	// the same key joins the original run instead of executing the turn twice.
 	if key := incomingIdempotencyKey(ctx); key != "" {
-		entry, isOwner := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(ctx), key))
-		if !isOwner {
+		entry, isOwner, admitted := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(ctx), key))
+		switch {
+		case !admitted:
+			// Not deduplicable (oversized key or registry saturated): run
+			// without dedupe — at-least-once, as for key-less requests.
+		case !isOwner:
 			return awaitDedupeResult(ctx, entry)
+		default:
+			defer func() { entry.finish(weaveResp, weaveErr) }()
 		}
-		defer func() { entry.finish(weaveResp, weaveErr) }()
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -962,25 +967,29 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// deleted. dedupeFinal is set at the completion site below.
 	var dedupeFinal *loomv1.WeaveResponse
 	if key := incomingIdempotencyKey(stream.Context()); key != "" {
-		entry, isOwner := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(stream.Context()), key))
-		if !isOwner {
+		entry, isOwner, admitted := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(stream.Context()), key))
+		switch {
+		case !admitted:
+			// Not deduplicable: run without dedupe (at-least-once).
+		case !isOwner:
 			joined, joinErr := awaitDedupeResult(stream.Context(), entry)
 			if joinErr != nil {
 				return joinErr
 			}
 			return stream.Send(completedProgressFromResponse(joined))
+		default:
+			defer func() {
+				// Delivery failure is not an execution failure: once the run
+				// completed (dedupeFinal set), its result stays joinable by
+				// the re-issued request even when this stream's final Send
+				// failed — that failure is exactly why a re-issue is coming.
+				if dedupeFinal != nil {
+					entry.finish(dedupeFinal, nil)
+					return
+				}
+				entry.finish(nil, weaveErr)
+			}()
 		}
-		defer func() {
-			// Delivery failure is not an execution failure: once the run
-			// completed (dedupeFinal set), its result stays joinable by the
-			// re-issued request even when this stream's final Send failed —
-			// that failure is exactly why a re-issue is coming.
-			if dedupeFinal != nil {
-				entry.finish(dedupeFinal, nil)
-				return
-			}
-			entry.finish(nil, weaveErr)
-		}()
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
