@@ -118,6 +118,20 @@ type MultiAgentServer struct {
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
 	workflowSubAgentsMu sync.RWMutex
 
+	// backgroundWorkerWG tracks every detached background goroutine that logs
+	// through s.logger: the queue monitor, workflow coordinator/sub-agent
+	// notification handlers, broadcast handlers, spawned-agent monitors and
+	// message loops, and MCP tool re-indexers. Workers start only through
+	// goWorker, which refuses admission once backgroundWorkerShutdown is set —
+	// that makes ShutdownBackgroundWorkers' join a stable barrier instead of a
+	// point a racing request could register a worker behind. Whoever owns the
+	// logger's sink (a test's zaptest logger, process shutdown) must call
+	// ShutdownBackgroundWorkers before tearing the sink down or the exit logs
+	// race it.
+	backgroundWorkerWG       sync.WaitGroup
+	backgroundWorkerMu       sync.Mutex // orders WG.Add against backgroundWorkerShutdown
+	backgroundWorkerShutdown bool       // set once by ShutdownBackgroundWorkers; closes admission
+
 	// Spawned sub-agent tracking for lifecycle management
 	spawnedAgents   map[string]*spawnedAgentContext // sessionID → spawned agent context
 	spawnedAgentsMu sync.RWMutex
@@ -1395,7 +1409,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
 
-	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+	s.goWorker("coordinator-notification-handler", func() {
 		defer func() {
 			s.logger.Info("Coordinator notification handler stopped",
 				zap.String("coordinator", coordinatorID))
@@ -1484,7 +1498,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				}
 			}
 		}
-	}()
+	})
 
 	// Spawn each sub-agent in a background goroutine with long-lived context
 	for _, subAgentID := range subAgentIDs {
@@ -1560,7 +1574,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgent.SetWorkflowCommunicationContext(commCtx)
 
 		// Start sub-agent with notification channel (pass subAgentKey for deregistration)
-		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		s.goWorker("workflow-sub-agent", func() {
+			s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		})
 
 		// AUTO-SUBSCRIBE SUB-AGENT: Subscribe sub-agent to workflow topic for pub-sub communication
 		// This allows sub-agents to receive broadcasts from coordinator and other sub-agents
@@ -1588,7 +1604,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.String("subscription_id", subID.ID))
 
 				// Start broadcast notification handler for sub-agent
-				go s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				s.goWorker("sub-agent-broadcast-handler", func() {
+					s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				})
 			}
 		}
 	}
@@ -1631,8 +1649,10 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			s.workflowSubAgentsMu.Unlock()
 
 			// Start broadcast notification goroutine
-			go s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
-				coordinatorAgent, sessionID, coordinatorID)
+			s.goWorker("coordinator-broadcast-handler", func() {
+				s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
+					coordinatorAgent, sessionID, coordinatorID)
+			})
 		}
 	}
 
@@ -1971,6 +1991,93 @@ done:
 	}
 }
 
+// goWorker starts fn as a tracked background worker goroutine. Every detached
+// goroutine that logs through s.logger must start here so that
+// ShutdownBackgroundWorkers can join it before the logger's sink is torn
+// down. Once shutdown has begun, admission is closed: goWorker returns false
+// and fn never runs — otherwise a request racing shutdown could register a
+// worker after the join had already completed. name identifies the worker in
+// the refusal log.
+func (s *MultiAgentServer) goWorker(name string, fn func()) bool {
+	s.backgroundWorkerMu.Lock()
+	if s.backgroundWorkerShutdown {
+		s.backgroundWorkerMu.Unlock()
+		s.logger.Debug("Background worker refused: shutdown in progress",
+			zap.String("worker", name))
+		return false
+	}
+	s.backgroundWorkerWG.Add(1)
+	s.backgroundWorkerMu.Unlock()
+
+	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+		defer s.backgroundWorkerWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// ShutdownBackgroundWorkers closes worker admission, cancels every tracked
+// background worker context, and blocks until all workers have exited or ctx
+// is done, returning ctx.Err() in the latter case. Workers log on the way
+// out, so call this before tearing down the logger's sink (a test's zaptest
+// logger, process shutdown) — a sink that is gone first is a data race
+// (observed as zaptest writes after test completion).
+//
+// Cancellation covers the workflow worker contexts (message + broadcast) and
+// the spawned-agent contexts (monitor + loop); MCP re-indexers self-expire
+// within 10s. Contexts owned by the caller — the queue monitor's, from
+// StartMessageQueueMonitor — must be cancelled before calling, or the join
+// blocks on them until ctx expires. Admission stays closed afterwards: the
+// server cannot start background workers again.
+func (s *MultiAgentServer) ShutdownBackgroundWorkers(ctx context.Context) error {
+	s.backgroundWorkerMu.Lock()
+	s.backgroundWorkerShutdown = true
+	s.backgroundWorkerMu.Unlock()
+
+	s.cancelBackgroundWorkers()
+
+	done := make(chan struct{})
+	go func() {
+		s.backgroundWorkerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// cancelBackgroundWorkers cancels every tracked workflow worker context
+// (message + broadcast) and every spawned-agent context (monitor + loop)
+// without waiting. ShutdownBackgroundWorkers pairs this with the WaitGroup
+// join; when the queue monitor runs, its shutdown sweep already cancels the
+// workflow workers.
+func (s *MultiAgentServer) cancelBackgroundWorkers() {
+	s.workflowSubAgentsMu.Lock()
+	for _, wctx := range s.workflowSubAgents {
+		if wctx.cancelFunc != nil {
+			wctx.cancelFunc()
+		}
+		if wctx.broadcastCancelFunc != nil {
+			wctx.broadcastCancelFunc()
+		}
+	}
+	s.workflowSubAgentsMu.Unlock()
+
+	s.spawnedAgentsMu.Lock()
+	for _, sp := range s.spawnedAgents {
+		if sp.loopCancelFunc != nil {
+			sp.loopCancelFunc()
+		}
+		if sp.cancelFunc != nil {
+			sp.cancelFunc()
+		}
+	}
+	s.spawnedAgentsMu.Unlock()
+}
+
 // StartMessageQueueMonitor starts a background goroutine that monitors the message queue
 // and notifies workflow sub-agents when they have pending messages (event-driven, not polling).
 func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
@@ -1981,7 +2088,7 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 
 	s.logger.Info("Starting message queue monitor for event-driven agent notifications")
 
-	go func() {
+	s.goWorker("message-queue-monitor", func() {
 		ticker := time.NewTicker(1 * time.Second) // Check queue every second (cheap, no LLM calls)
 		defer ticker.Stop()
 
@@ -2068,7 +2175,7 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
@@ -2170,7 +2277,11 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	}
 
 	// Start sub-agent goroutine
-	go s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	if !s.goWorker("auto-spawned-workflow-sub-agent", func() {
+		s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	}) {
+		return fmt.Errorf("server is shutting down; refusing to auto-spawn workflow sub-agent %s", agentID)
+	}
 
 	return nil
 }

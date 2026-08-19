@@ -22,6 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -137,6 +138,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Extract response content
 	var contentText string
+	var thinkingText string
 	var toolCalls []llmtypes.ToolCall
 
 	if output.Output != nil {
@@ -148,25 +150,20 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 				case *bedrocktypes.ContentBlockMemberText:
 					contentText += b.Value
 
+				case *bedrocktypes.ContentBlockMemberReasoningContent:
+					thinkingText += reasoningContentText(b.Value)
+
 				case *bedrocktypes.ContentBlockMemberToolUse:
 					// Extract tool call
 					toolCall := llmtypes.ToolCall{
 						ID:    aws.ToString(b.Value.ToolUseId),
 						Name:  aws.ToString(b.Value.Name),
-						Input: make(map[string]interface{}),
+						Input: toolUseInputToMap(b.Value.Input),
 					}
 
 					// Map sanitized name back to original name
 					if originalName, found := c.toolNameMap[toolCall.Name]; found {
 						toolCall.Name = originalName
-					}
-
-					// Convert document.Interface to map[string]interface{}
-					if b.Value.Input != nil {
-						inputBytes, err := json.Marshal(b.Value.Input)
-						if err == nil {
-							_ = json.Unmarshal(inputBytes, &toolCall.Input)
-						}
 					}
 
 					toolCalls = append(toolCalls, toolCall)
@@ -187,6 +184,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 	// Build response
 	response := &llmtypes.LLMResponse{
 		Content:    contentText,
+		Thinking:   thinkingText,
 		ToolCalls:  toolCalls,
 		StopReason: string(output.StopReason),
 		Usage:      usage,
@@ -203,4 +201,44 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 	}
 
 	return response, nil
+}
+
+// toolUseInputToMap converts a Converse toolUse input document into the
+// map form the rest of the stack expects.
+//
+// The document's concrete response type keeps its value in an unexported
+// field and implements MarshalSmithyDocument, not json.Marshaler — so a
+// plain json.Marshal(doc) serializes an empty struct ("{}") and silently
+// drops every tool argument. Models then see each call rejected for
+// missing required parameters and re-issue it turn after turn (observed
+// live with DeepSeek/Qwen on Bedrock Converse: an endless manage_skills
+// retry loop). MarshalSmithyDocument is the correct accessor for the raw
+// JSON. A nil document or a non-object input degrades to an empty map,
+// and the tool's own validation reports the missing arguments.
+func toolUseInputToMap(doc document.Interface) map[string]interface{} {
+	input := make(map[string]interface{})
+	if doc == nil {
+		return input
+	}
+	raw, err := doc.MarshalSmithyDocument()
+	if err != nil {
+		return input
+	}
+	_ = json.Unmarshal(raw, &input)
+	return input
+}
+
+// reasoningContentText extracts the model's reasoning text from a Converse
+// reasoningContent block. Reasoning models on Bedrock (DeepSeek, Qwen, ...)
+// interleave these with text/toolUse blocks; before this they were silently
+// dropped, so a reasoning-heavy turn could surface as an empty response.
+// The text maps to LLMResponse.Thinking — never Content — reasoning is not
+// part of the user-facing answer and must not enter the replayed
+// conversation. Redacted reasoning (encrypted bytes) has no readable text
+// and is skipped.
+func reasoningContentText(rc bedrocktypes.ReasoningContentBlock) string {
+	if r, ok := rc.(*bedrocktypes.ReasoningContentBlockMemberReasoningText); ok {
+		return aws.ToString(r.Value.Text)
+	}
+	return ""
 }

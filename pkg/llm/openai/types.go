@@ -47,6 +47,11 @@ type ChatMessage struct {
 	Name       string      `json:"name,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"` // For tool role messages
+
+	// ReasoningContent carries the reasoning trace that reasoning models
+	// (DeepSeek, Qwen, ...) return through OpenAI-compatible gateways such as
+	// LiteLLM. Response-only: omitempty keeps it off outgoing requests.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // ToolCall represents a function call from the assistant.

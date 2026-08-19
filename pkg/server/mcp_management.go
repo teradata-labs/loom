@@ -263,7 +263,7 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 
 	// Re-index tool registry so new MCP tools are discoverable via tool_search
 	if s.toolRegistry != nil && req.AutoStart && req.Enabled {
-		go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+		s.goWorker("mcp-tool-reindex", func() {
 			indexCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
@@ -279,7 +279,7 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 					zap.Int32("total_tools", resp.TotalCount),
 					zap.Int32("mcp_tools", resp.McpCount))
 			}
-		}()
+		})
 	}
 
 	return &loomv1.AddMCPServerResponse{
@@ -454,7 +454,7 @@ func (s *MultiAgentServer) DeleteMCPServer(ctx context.Context, req *loomv1.Dele
 
 	// Re-index tool registry so deleted MCP tools are removed from search
 	if s.toolRegistry != nil {
-		go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+		s.goWorker("mcp-tool-reindex", func() {
 			indexCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
@@ -470,7 +470,7 @@ func (s *MultiAgentServer) DeleteMCPServer(ctx context.Context, req *loomv1.Dele
 					zap.Int32("total_tools", resp.TotalCount),
 					zap.Int32("mcp_tools", resp.McpCount))
 			}
-		}()
+		})
 	}
 
 	return &loomv1.DeleteMCPServerResponse{

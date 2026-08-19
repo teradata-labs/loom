@@ -505,6 +505,11 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 			}
 		}
 
+		// Reasoning models surface their trace in reasoning_content; map it to
+		// Thinking (never Content) so it is observable without polluting the
+		// user-facing answer or the replayed conversation.
+		llmResp.Thinking = choice.Message.ReasoningContent
+
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
 			// Parse arguments JSON string back to map
