@@ -547,8 +547,12 @@ func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*p
 		zap.String("method", req.Method),
 		zap.String("id", reqIDStr))
 
+	// The error is returned to the caller, who knows its severity — a failed
+	// server/discover probe is a routine legacy-fallback signal, not an
+	// incident. Logging it at Error here double-reported every healthy legacy
+	// connect as a stack-traced failure.
 	if err := c.transport.Send(ctx, reqJSON); err != nil {
-		c.logger.Error("Failed to send request via transport",
+		c.logger.Debug("failed to send request via transport",
 			zap.String("method", req.Method),
 			zap.Error(err))
 		return nil, fmt.Errorf("failed to send request: %w", err)
