@@ -90,6 +90,12 @@ func TestInteropSDKClientAgainstLoomServer(t *testing.T) {
 	require.Len(t, tools.Tools, 1)
 	assert.Equal(t, "echo", tools.Tools[0].Name)
 
+	// The CacheableResult freshness fields (2026-07-28, SEP-2549) must
+	// survive the official SDK's decoding — this is the assertion the
+	// comment above promises.
+	assert.Greater(t, tools.GetTTLMs(), 0, "ttlMs must survive SDK decoding")
+	assert.Equal(t, "private", tools.GetCacheScope(), "cacheScope must survive SDK decoding")
+
 	result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name:      "echo",
 		Arguments: map[string]any{"text": "interop"},
@@ -129,7 +135,10 @@ func TestInteropLoomClientAgainstSDKServer(t *testing.T) {
 
 	require.NoError(t, c.Connect(ctx, protocol.Implementation{Name: "loom", Version: "1.4.0"}),
 		"Loom's client must connect to the SDK's stateless server")
-	t.Logf("negotiated revision %q (stateless=%v)", c.NegotiatedVersion(), c.IsStateless())
+	// Modern negotiation is the point of this suite: assert it, don't log it.
+	assert.Equal(t, protocol.Version20260728, c.NegotiatedVersion(),
+		"negotiation against the official stateless server must land on 2026-07-28")
+	assert.True(t, c.IsStateless())
 
 	tools, err := c.ListTools(ctx)
 	require.NoError(t, err)

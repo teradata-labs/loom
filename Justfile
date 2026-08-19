@@ -402,7 +402,7 @@ dev-full: build-server
 interop:
     go test -tags "fts5 interop" -race -run Interop ./pkg/mcp/conformance/
 
-check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security
+check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security interop
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests
