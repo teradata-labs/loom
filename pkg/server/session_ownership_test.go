@@ -123,3 +123,72 @@ func TestUnstampedSessionRemainsAccessible(t *testing.T) {
 	_, err := srv.GetSession(ctxFor("user-b"), &loomv1.GetSessionRequest{SessionId: unstampedID})
 	assert.NoError(t, err)
 }
+
+// TestEnforcedOwnershipModeDeniesWildcards (review finding 3, PR #328):
+// with enforcement on — any authenticated deployment — a blank caller
+// identity sees nothing, and an unowned legacy session is not
+// world-readable. The permissive single-tenant behavior survives only as
+// the explicit non-enforced mode.
+func TestEnforcedOwnershipModeDeniesWildcards(t *testing.T) {
+	srv, ag, sessionID := newOwnershipServer(t)
+
+	unownedID := GenerateSessionID()
+	ag.CreateSession(context.Background(), unownedID, "") // UserID == ""
+
+	// Permissive mode (default): historical wildcards hold.
+	assert.True(t, srv.sessionAccessibleBy("", mustGetSession(t, ag, sessionID)))
+	assert.True(t, srv.sessionAccessibleBy("user-b", mustGetSession(t, ag, unownedID)))
+
+	srv.SetEnforceSessionOwnership(true)
+
+	// Anonymous callers see nothing.
+	assert.False(t, srv.sessionAccessibleBy("", mustGetSession(t, ag, sessionID)))
+	// Unowned sessions are not wildcards.
+	assert.False(t, srv.sessionAccessibleBy("user-b", mustGetSession(t, ag, unownedID)))
+	assert.False(t, srv.sessionAccessibleBy("user-b", mustGetSession(t, ag, sessionID)))
+	// Exact owner still matches.
+	assert.True(t, srv.sessionAccessibleBy("user-a", mustGetSession(t, ag, sessionID)))
+}
+
+func mustGetSession(t *testing.T, ag *agent.Agent, id string) *agent.Session {
+	t.Helper()
+	session, ok := ag.GetSession(id)
+	require.True(t, ok)
+	return session
+}
+
+// TestWeaveForeignSessionIsNotFound (review finding 4, PR #328): a foreign
+// session_id on Weave must surface as not-found — never fall through to the
+// explicit or default agent, which would resume or shadow the session.
+func TestWeaveForeignSessionIsNotFound(t *testing.T) {
+	srv, _, sessionID := newOwnershipServer(t)
+
+	_, err := srv.Weave(ctxFor("user-b"), &loomv1.WeaveRequest{
+		Query:     "hello",
+		SessionId: sessionID,
+	})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err), "foreign session must be indistinguishable from missing")
+
+	// With an explicit agent_id the outcome must be identical: the bypass
+	// the review flagged was exactly agent_id skipping the ownership lookup.
+	_, err = srv.Weave(ctxFor("user-b"), &loomv1.WeaveRequest{
+		Query:     "hello",
+		SessionId: sessionID,
+		AgentId:   "agent-1",
+	})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// TestSessionsStampedAtCreation (review finding 3, PR #328): every session
+// creation path stamps ownership from the authenticated context — not just
+// the CreateSession RPC.
+func TestSessionsStampedAtCreation(t *testing.T) {
+	_, ag, _ := newOwnershipServer(t)
+
+	id := GenerateSessionID()
+	session := ag.CreateSession(ctxFor("user-c"), id, "")
+	assert.Equal(t, "user-c", session.UserID,
+		"sessions created through the agent path must carry the context identity")
+}

@@ -47,6 +47,11 @@ import (
 // MultiAgentServer implements the LoomService gRPC server with support for multiple agents.
 // It routes requests to the appropriate agent based on agent_id in the request.
 type MultiAgentServer struct {
+	// enforceOwnership selects the tenancy mode for session access: true on
+	// authenticated deployments (blank identities are never wildcards),
+	// false for explicit single-tenant compatibility.
+	enforceOwnership bool
+
 	loomv1.UnimplementedLoomServiceServer
 
 	agents       map[string]*agent.Agent
@@ -528,7 +533,7 @@ func (s *MultiAgentServer) findAgentBySession(sessionID, callerUserID string) (*
 
 	for agentID, ag := range s.agents {
 		if session, ok := ag.GetSession(sessionID); ok {
-			if !sessionAccessibleBy(callerUserID, session) {
+			if !s.sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			return ag, agentID, true
@@ -537,14 +542,49 @@ func (s *MultiAgentServer) findAgentBySession(sessionID, callerUserID string) (*
 	return nil, "", false
 }
 
+// findSessionOwner locates the agent holding sessionID regardless of owner,
+// reporting existence and accessibility separately so callers can
+// distinguish does-not-exist (safe to create) from exists-but-foreign
+// (must not be resumed, re-created, or fallen through to another agent).
+func (s *MultiAgentServer) findSessionOwner(sessionID, callerUserID string) (ag *agent.Agent, agentID string, exists, accessible bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for id, candidate := range s.agents {
+		if session, ok := candidate.GetSession(sessionID); ok {
+			if !s.sessionAccessibleBy(callerUserID, session) {
+				return nil, "", true, false
+			}
+			return candidate, id, true, true
+		}
+	}
+	return nil, "", false, false
+}
+
 // sessionAccessibleBy is the per-user isolation predicate shared by every
-// session-scoped RPC. It denies only when both the caller and the session
-// carry a non-empty user ID that differ: sessions created before ownership
-// stamping existed (UserID == "") stay reachable so upgrades do not strand
-// live sessions, and identity-less callers (single-tenant deployments) see
-// everything, matching the pre-isolation behavior they rely on.
-func sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
+// session-scoped RPC.
+//
+// With ownership enforcement on (multi-tenant deployments: any deployment
+// that authenticates callers), a blank identity is never a wildcard: an
+// anonymous caller sees nothing and an unowned legacy session is not
+// world-readable — cross-user access requires an exact owner match.
+//
+// Without enforcement (explicit single-tenant compatibility, the default
+// for unauthenticated local deployments), the historical permissive
+// behavior holds: identity-less callers see everything and pre-stamping
+// sessions (UserID == "") stay reachable so upgrades do not strand them.
+func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
+	if s.enforceOwnership {
+		return callerUserID != "" && session.UserID == callerUserID
+	}
 	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
+}
+
+// SetEnforceSessionOwnership selects the tenancy mode: pass true on
+// deployments that authenticate callers so blank identities stop acting as
+// ownership wildcards. Single-tenant compatibility is the explicit false.
+func (s *MultiAgentServer) SetEnforceSessionOwnership(enforce bool) {
+	s.enforceOwnership = enforce
 }
 
 // AddAgent adds a new agent to the server at runtime
@@ -760,9 +800,22 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	var ag *agent.Agent
 	var agentID string
 
-	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId, postgres.UserIDFromContext(ctx)); ok {
-			ag, agentID = found, foundID
+	// An existing session is resolved and authorized before ANY agent
+	// selection: an inaccessible session must surface as not-found — never
+	// fall through to the explicit or default agent, which would resume a
+	// foreign session under whatever agent happens to hold it next.
+	if req.SessionId != "" {
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(req.SessionId, postgres.UserIDFromContext(ctx))
+		if exists {
+			if !accessible {
+				return nil, status.Error(codes.NotFound, "session not found")
+			}
+			ag, agentID = ownerAg, ownerID
+			if req.AgentId != "" {
+				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
+					return nil, status.Error(codes.FailedPrecondition, "session belongs to a different agent")
+				}
+			}
 			if s.logger != nil {
 				s.logger.Info("Weave: routed to agent by session ownership",
 					zap.String("session_id", req.SessionId),
@@ -917,7 +970,17 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			}
 			return stream.Send(completedProgressFromResponse(joined))
 		}
-		defer func() { entry.finish(dedupeFinal, weaveErr) }()
+		defer func() {
+			// Delivery failure is not an execution failure: once the run
+			// completed (dedupeFinal set), its result stays joinable by the
+			// re-issued request even when this stream's final Send failed —
+			// that failure is exactly why a re-issue is coming.
+			if dedupeFinal != nil {
+				entry.finish(dedupeFinal, nil)
+				return
+			}
+			entry.finish(nil, weaveErr)
+		}()
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -931,9 +994,21 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	var ag *agent.Agent
 	var resolvedAgentID string
 
-	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId, postgres.UserIDFromContext(stream.Context())); ok {
-			ag, resolvedAgentID = found, foundID
+	// An existing session is resolved and authorized before ANY agent
+	// selection — an inaccessible session is not-found, never a fallback to
+	// the explicit or default agent (see Weave).
+	if req.SessionId != "" {
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(req.SessionId, postgres.UserIDFromContext(stream.Context()))
+		if exists {
+			if !accessible {
+				return status.Error(codes.NotFound, "session not found")
+			}
+			ag, resolvedAgentID = ownerAg, ownerID
+			if req.AgentId != "" {
+				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
+					return status.Error(codes.FailedPrecondition, "session belongs to a different agent")
+				}
+			}
 			if s.logger != nil {
 				s.logger.Info("StreamWeave: routed to agent by session ownership",
 					zap.String("session_id", req.SessionId),
@@ -2935,7 +3010,7 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 		session, ok := ag.GetSession(req.SessionId)
 		if ok {
 			// Wrong-owner is indistinguishable from not-found.
-			if !sessionAccessibleBy(callerUserID, session) {
+			if !s.sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			return ConvertSession(session), nil
@@ -2961,7 +3036,7 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
 		for _, sess := range sessions {
-			if !sessionAccessibleBy(callerUserID, sess) {
+			if !s.sessionAccessibleBy(callerUserID, sess) {
 				continue
 			}
 			memSessions = append(memSessions, sess)
@@ -2999,7 +3074,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if !ok {
 			continue
 		}
-		if !sessionAccessibleBy(callerUserID, session) {
+		if !s.sessionAccessibleBy(callerUserID, session) {
 			continue
 		}
 		deleteAgent = ag
@@ -3017,7 +3092,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if stored == nil {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
-		if !sessionAccessibleBy(callerUserID, stored) {
+		if !s.sessionAccessibleBy(callerUserID, stored) {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
 	} else if deleteAgent == nil {
@@ -3075,7 +3150,7 @@ func (s *MultiAgentServer) GetConversationHistory(ctx context.Context, req *loom
 	for _, ag := range s.agents {
 		session, ok := ag.GetSession(req.SessionId)
 		if ok {
-			if !sessionAccessibleBy(callerUserID, session) {
+			if !s.sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			// Reload messages from database to ensure IDs are populated
@@ -4483,7 +4558,7 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 	sessionExists := false
 	for _, ag := range s.agents {
 		if session, ok := ag.GetSession(req.SessionId); ok {
-			if !sessionAccessibleBy(callerUserID, session) {
+			if !s.sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			sessionExists = true

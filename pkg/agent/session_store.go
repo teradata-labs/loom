@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,6 +49,38 @@ func storeUserID(ctx context.Context) string {
 		return u
 	}
 	return types.DefaultUserID
+}
+
+// ownsSession reports whether the context identity owns sessionID. Child
+// reads and writes are guarded through the owned parent: predicating on
+// session_id alone would let any caller who learns an ID read or write
+// another user's conversation. An unowned session is indistinguishable from
+// a missing one by design.
+func (s *SessionStore) ownsSession(ctx context.Context, sessionID string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT 1 FROM sessions WHERE id = ? AND user_id = ?", sessionID, storeUserID(ctx)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// requireOwnedSession is ownsSession for write paths: the not-owned case is
+// an error naming the session as not found (never revealing foreign
+// existence).
+func (s *SessionStore) requireOwnedSession(ctx context.Context, sessionID string) error {
+	owned, err := s.ownsSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("session ownership check: %w", err)
+	}
+	if !owned {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	return nil
 }
 
 // SessionStore provides persistent storage for sessions, messages, and tool executions.
@@ -471,9 +504,15 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		parentSessionID = session.ParentSessionID
 	}
 
+	// The authenticated context is authoritative for ownership: a caller
+	// cannot claim another owner by presetting session.UserID. The struct
+	// field is only the fallback for identity-less internal flows.
 	owner := session.UserID
+	if u := types.UserIDFromContext(ctx); u != "" {
+		owner = u
+	}
 	if owner == "" {
-		owner = storeUserID(ctx)
+		owner = types.DefaultUserID
 	}
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -594,6 +633,10 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("role", msg.Role)
 
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -709,6 +752,12 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.load_messages")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
+
+	if owned, err := s.ownsSession(ctx, sessionID); err != nil {
+		return nil, err
+	} else if !owned {
+		return nil, nil // unowned reads as missing by design
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -830,6 +879,12 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.list_messages_by_seq_range")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
+
+	if owned, err := s.ownsSession(ctx, sessionID); err != nil {
+		return nil, err
+	} else if !owned {
+		return nil, nil // unowned reads as missing by design
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1086,6 +1141,12 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 
+	if owned, err := s.ownsSession(ctx, sessionID); err != nil {
+		return nil, err
+	} else if !owned {
+		return nil, nil // unowned reads as missing by design
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1212,6 +1273,10 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("tool_name", exec.ToolName)
 
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1297,11 +1362,19 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	s.mu.Lock()
 	// CASCADE delete will remove messages, tool executions, and artifacts.
 	// The owner predicate makes cross-user deletion a silent no-op.
-	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ? AND user_id = ?", sessionID, storeUserID(ctx))
+	res, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ? AND user_id = ?", sessionID, storeUserID(ctx))
 	if err != nil {
 		s.mu.Unlock()
 		span.RecordError(err)
 		return fmt.Errorf("failed to delete session: %w", err)
+	}
+	// Filesystem cleanup and hooks fire only when an owned row was actually
+	// deleted — otherwise a caller who merely knows a foreign session ID
+	// would erase its artifact directory as a side effect of a no-op.
+	if n, raErr := res.RowsAffected(); raErr == nil && n == 0 {
+		s.mu.Unlock()
+		span.SetAttribute("deleted", "false")
+		return nil
 	}
 
 	// Copy hooks to avoid holding lock during callback execution
@@ -1368,6 +1441,10 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 // MarkEvicted sets evicted=1 on the given rows in one transaction (relief
 // operation; HLD §5.2). Flags are write-once — no code path clears them.
 func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
 	if len(seqs) == 0 {
 		return nil
 	}
@@ -1406,6 +1483,10 @@ func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs 
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("version", fmt.Sprintf("%d", n))
+
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
 
 	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
 	if err != nil {
@@ -1469,6 +1550,10 @@ func (s *SessionStore) SaveMemorySnapshot(ctx context.Context, sessionID, snapsh
 	span.SetAttribute("snapshot_type", snapshotType)
 	span.SetAttribute("token_count", fmt.Sprintf("%d", tokenCount))
 
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1512,6 +1597,12 @@ func (s *SessionStore) LoadMemorySnapshots(ctx context.Context, sessionID string
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("snapshot_type", snapshotType)
+
+	if owned, err := s.ownsSession(ctx, sessionID); err != nil {
+		return nil, err
+	} else if !owned {
+		return nil, nil // unowned reads as missing by design
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()

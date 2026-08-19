@@ -138,3 +138,85 @@ func TestSQLiteLoadAgentSessionsFiltered(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"agent-sess-a"}, idsA)
 }
+
+// TestSQLiteChildDataGuardedByOwnedParent (review finding 5, PR #328):
+// message reads and writes must be guarded through the owned parent —
+// predicating on session_id alone would let any caller who learns an ID
+// read or write another user's conversation.
+func TestSQLiteChildDataGuardedByOwnedParent(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA := userCtx("user-a")
+	ctxB := userCtx("user-b")
+
+	require.NoError(t, store.SaveSession(ctxA, ownedSession("sess-child")))
+	require.NoError(t, store.SaveMessage(ctxA, "sess-child", &Message{Role: "user", Content: "mine"}, true))
+
+	// Foreign write: rejected as not-found (never revealing existence).
+	err := store.SaveMessage(ctxB, "sess-child", &Message{Role: "user", Content: "intruder"}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// Foreign read: empty, indistinguishable from a missing session.
+	msgs, err := store.LoadMessages(ctxB, "sess-child")
+	require.NoError(t, err)
+	assert.Empty(t, msgs)
+
+	// Owner still reads their own conversation.
+	msgs, err = store.LoadMessages(ctxA, "sess-child")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "mine", msgs[0].Content)
+
+	// Foreign tool-execution and snapshot writes are rejected the same way.
+	require.Error(t, store.SaveToolExecution(ctxB, "sess-child", ToolExecution{ToolName: "x"}))
+	require.Error(t, store.SaveMemorySnapshot(ctxB, "sess-child", "summary", "s", 1))
+}
+
+// TestSQLiteDeleteForeignSessionHasNoSideEffects (review finding 5, PR #328):
+// deleting a foreign session is a complete no-op — no cleanup hooks, no
+// filesystem removal — because the owner-predicated DELETE affected no row.
+func TestSQLiteDeleteForeignSessionHasNoSideEffects(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA := userCtx("user-a")
+	ctxB := userCtx("user-b")
+
+	require.NoError(t, store.SaveSession(ctxA, ownedSession("sess-del")))
+
+	hookCalls := 0
+	store.RegisterCleanupHook(func(ctx context.Context, sessionID string) {
+		hookCalls++
+	})
+
+	// Foreign delete: silent no-op, hooks must not fire.
+	require.NoError(t, store.DeleteSession(ctxB, "sess-del"))
+	assert.Zero(t, hookCalls, "cleanup hooks must not fire for a no-op delete")
+
+	// The owner's session is intact.
+	loaded, err := store.LoadSession(ctxA, "sess-del")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+
+	// The owner's delete fires hooks exactly once.
+	require.NoError(t, store.DeleteSession(ctxA, "sess-del"))
+	assert.Equal(t, 1, hookCalls)
+}
+
+// TestSQLiteSaveSessionContextIsAuthoritative (review finding 5, PR #328):
+// a caller cannot claim another owner by presetting session.UserID — the
+// authenticated context wins.
+func TestSQLiteSaveSessionContextIsAuthoritative(t *testing.T) {
+	store := newOwnershipTestStore(t)
+
+	forged := ownedSession("sess-forged")
+	forged.UserID = "victim"
+	require.NoError(t, store.SaveSession(userCtx("attacker"), forged))
+
+	// The row belongs to the authenticated caller, not the claimed victim.
+	loaded, err := store.LoadSession(userCtx("attacker"), "sess-forged")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+
+	fromVictim, err := store.LoadSession(userCtx("victim"), "sess-forged")
+	require.Error(t, err, "the claimed owner must not receive the attacker's session")
+	_ = fromVictim
+}
