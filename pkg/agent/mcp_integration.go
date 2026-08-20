@@ -109,6 +109,9 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 		)
 	}
 
+	// Surface the server's usage guidance alongside its tools (issue #336).
+	a.attachMCPServerInstructions(config.Name, config.Client.Instructions())
+
 	// Warn about tool count bloat
 	totalTools := a.ToolCount()
 	if totalTools > 100 {
@@ -197,6 +200,11 @@ func (a *Agent) RegisterMCPServer(ctx context.Context, mcpMgr *manager.Manager, 
 			zap.String("tool", tool.Name))
 	}
 
+	// Surface the server's usage guidance alongside its tools (issue #336).
+	if len(toolsToRegister) > 0 {
+		a.attachMCPServerInstructions(serverName, client.Instructions())
+	}
+
 	totalTools := a.ToolCount()
 	logger.Info("Registered server tools",
 		zap.String("server", serverName),
@@ -236,6 +244,9 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 			mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
 			shuttleTool := mcpAdapter
 			a.RegisterTool(shuttleTool)
+
+			// Surface the server's usage guidance alongside its tool (issue #336).
+			a.attachMCPServerInstructions(serverName, client.Instructions())
 
 			logger.Info("Registered MCP tool",
 				zap.String("server", serverName),

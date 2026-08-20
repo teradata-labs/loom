@@ -1220,6 +1220,14 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// other agent — nothing outside weave attaches a workflow context.
 	basePrompt += a.workflowCommPromptSupplement()
 
+	// Append usage guidance from MCP servers whose tools this agent
+	// registered (InitializeResult.instructions). The server owns its usage
+	// contract; rendering it here means the guidance ships with the server,
+	// not with per-agent prompt engineering. Session-stable: servers are
+	// registered at agent construction, and instructions are fixed for the
+	// life of a connection.
+	basePrompt += a.mcpInstructionsPromptSupplement()
+
 	return basePrompt
 }
 
