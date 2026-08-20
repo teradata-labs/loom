@@ -218,6 +218,11 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Call MCP tool with camelCase parameters
 	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, camelCaseParams)
+	if err != nil {
+		// Park-and-wake (issue #343): a failure that links a resource parks
+		// here and retries when the resource updates; otherwise unchanged.
+		mcpResultInterface, err = a.awaitLinkedResource(ctx, camelCaseParams, err)
+	}
 	executionTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
