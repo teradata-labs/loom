@@ -148,6 +148,14 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 		})
 	case protocol.MethodSubscriptionsListen:
 		switch s.watchMode {
+		case "stall-headers":
+			// Stall before sending ANY response headers: the transport's
+			// http.Client has no deadline of its own, so only the probe's
+			// pre-ack watchdog can catch this.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Second):
+			}
 		case "no-ack":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
@@ -298,6 +306,18 @@ func TestProbeWatchNoAckIsError(t *testing.T) {
 	}, io.Discard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "acknowledgment")
+}
+
+func TestProbeWatchHeaderStallIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true, watchMode: "stall-headers"})
+	start := time.Now()
+	_, err := run(context.Background(), options{
+		URL: srv.URL, WatchSec: 5, Timeout: 500 * time.Millisecond,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "acknowledgment")
+	assert.Less(t, time.Since(start), 3*time.Second,
+		"the pre-ack watchdog must fire on -timeout, not wait out the stalled server")
 }
 
 func TestProbeWatchEarlyCloseIsError(t *testing.T) {

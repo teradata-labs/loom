@@ -249,27 +249,42 @@ func runWatch(ctx context.Context, c *client.Client, opts options, rep *report, 
 	}
 	subCtx, subCancel := context.WithCancel(ctx)
 	defer subCancel()
+
+	// -timeout bounds everything before the acknowledgment — including the
+	// transport's wait for HTTP response headers inside Subscribe, which no
+	// other deadline covers (the transport's http.Client has none) — without
+	// capping the hold itself, which runs on the -watch clock. The watchdog
+	// cancels the subscription context, so a server that stalls before
+	// sending headers fails here instead of hanging forever.
+	ackWatchdog := time.AfterFunc(opts.Timeout, subCancel)
+	defer ackWatchdog.Stop()
+	noAck := func(detail error) error {
+		if subCtx.Err() != nil && ctx.Err() == nil {
+			return fmt.Errorf("no subscription acknowledgment within %s: %v", opts.Timeout, detail)
+		}
+		return detail
+	}
 	sub, err := c.Subscribe(subCtx, protocol.NotificationFilter{
 		ToolsListChanged:     true,
 		ResourcesListChanged: true,
 	})
 	if err != nil {
-		return fmt.Errorf("subscriptions/listen: %w", err)
+		return noAck(fmt.Errorf("subscriptions/listen: %w", err))
 	}
 
 	// The acknowledgment is the first item on the channel; without it within
 	// the operation timeout the subscription was never established.
-	ackTimer := time.After(opts.Timeout)
 	select {
 	case n, ok := <-sub.Notifications:
 		if !ok {
-			return fmt.Errorf("subscription ended before acknowledgment: %v", endState(sub.Err()))
+			return noAck(fmt.Errorf("subscription ended before acknowledgment: %v", endState(sub.Err())))
 		}
 		if n.Method != protocol.NotificationSubscriptionAcknowledged {
 			return fmt.Errorf("first subscription message was %s, not the acknowledgment", n.Method)
 		}
-	case <-ackTimer:
-		return fmt.Errorf("no subscription acknowledgment within %s", opts.Timeout)
+		ackWatchdog.Stop()
+	case <-subCtx.Done():
+		return noAck(fmt.Errorf("subscription context ended: %v", subCtx.Err()))
 	}
 	pr.f("  watch      : subscription %s acknowledged, holding for %ds\n", sub.ID, opts.WatchSec)
 

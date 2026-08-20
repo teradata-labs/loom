@@ -11,7 +11,7 @@ Use it to verify a server before wiring it into an agent config, to reproduce in
 ```bash
 just mcp-probe -url http://localhost:8971 -call test_simple_text -watch 5
 # or without just:
-go run -tags fts5 ./cmd/loom-mcp-probe -cmd "npx -y @modelcontextprotocol/server-everything stdio" \
+go run -tags fts5 ./cmd/loom-mcp-probe -cmd npx -arg -y -arg @modelcontextprotocol/server-everything -arg stdio \
     -call echo -args '{"message":"hello"}'
 ```
 
@@ -84,7 +84,8 @@ $ loom-mcp-probe -url http://localhost:8971 -call test_input_required_result_req
 **Legacy fallback against a real 2025-era server (TypeScript SDK):**
 
 ```text
-$ loom-mcp-probe -cmd "npx -y @modelcontextprotocol/server-everything stdio" -call echo -args '{"message":"hello from loom client"}'
+$ loom-mcp-probe -cmd npx -arg -y -arg @modelcontextprotocol/server-everything -arg stdio \
+    -call echo -args '{"message":"hello from loom client"}'
 CONNECTED in 1.31s
   negotiated : 2025-11-25
   era        : legacy (initialize handshake)
