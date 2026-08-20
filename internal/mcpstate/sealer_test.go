@@ -15,6 +15,7 @@ package mcpstate
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,5 +131,28 @@ func TestSealerRotationKeyring(t *testing.T) {
 	}
 	if _, err := fresh.Unseal("user-a", state); err == nil {
 		t.Fatal("rotated-out keys must be rejected once dropped from the ring")
+	}
+}
+
+// TestSealRejectsOversizedData (CodeQL alert 671): the plaintext bound keeps
+// the ciphertext-allocation arithmetic overflow-free and refuses state blobs
+// that could never be legitimate.
+func TestSealRejectsOversizedData(t *testing.T) {
+	s, err := NewSealer([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Seal("user", make([]byte, MaxDataLen+1), 0); err == nil {
+		t.Fatal("oversized data must be rejected before allocation")
+	}
+	// Data is a json.RawMessage: the at-the-bound case must be valid JSON.
+	atBound := []byte(`"` + strings.Repeat("a", MaxDataLen-2) + `"`)
+	if _, err := s.Seal("user", atBound, 0); err != nil {
+		t.Fatalf("data at the bound must seal: %v", err)
+	}
+	// The principal is inside the sealed payload too: a payload-sized
+	// principal must not slip past the data bound.
+	if _, err := s.Seal(strings.Repeat("p", maxSealedPlaintextLen), atBound, 0); err == nil {
+		t.Fatal("oversized principal must be rejected before allocation")
 	}
 }

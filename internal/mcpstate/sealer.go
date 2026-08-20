@@ -46,6 +46,18 @@ const keyIDLen = 4
 // DefaultTTL bounds replay of sealed state.
 const DefaultTTL = 10 * time.Minute
 
+// MaxDataLen bounds the plaintext a single requestState may carry (1 MiB).
+// State approaching the transport's whole-request cap is a defect.
+const MaxDataLen = 1 << 20
+
+// maxSealedPlaintextLen bounds the full marshaled payload — data, principal,
+// and JSON envelope — immediately before the ciphertext allocation, keeping
+// the size arithmetic there provably below any integer-overflow horizon
+// (CodeQL go/allocation-size-overflow, alert 671). The slack over MaxDataLen
+// covers the envelope and a sane principal; principals are identity strings,
+// not payloads.
+const maxSealedPlaintextLen = MaxDataLen + 4096
+
 // ErrInvalidState is returned for every unseal failure. Callers must not
 // distinguish tamper from expiry from wrong-principal.
 var ErrInvalidState = errors.New("invalid or expired request state")
@@ -124,8 +136,12 @@ type sealedPayload struct {
 }
 
 // Seal produces an opaque requestState string bound to the principal and
-// valid for ttl (DefaultTTL when ttl <= 0).
+// valid for ttl (DefaultTTL when ttl <= 0). Data larger than MaxDataLen is
+// rejected.
 func (s *Sealer) Seal(principal string, data []byte, ttl time.Duration) (string, error) {
+	if len(data) > MaxDataLen {
+		return "", fmt.Errorf("request state data exceeds %d bytes", MaxDataLen)
+	}
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
@@ -136,6 +152,9 @@ func (s *Sealer) Seal(principal string, data []byte, ttl time.Duration) (string,
 	})
 	if err != nil {
 		return "", err
+	}
+	if len(plain) > maxSealedPlaintextLen {
+		return "", fmt.Errorf("sealed payload exceeds %d bytes", maxSealedPlaintextLen)
 	}
 	nonce := make([]byte, s.current.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
