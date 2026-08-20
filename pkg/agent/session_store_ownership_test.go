@@ -220,3 +220,97 @@ func TestSQLiteSaveSessionContextIsAuthoritative(t *testing.T) {
 	require.Error(t, err, "the claimed owner must not receive the attacker's session")
 	_ = fromVictim
 }
+
+// setupTwoUserCorpus stores one session per user, each with a distinctive
+// searchable message, and returns the two identity contexts.
+func setupTwoUserCorpus(t *testing.T, store *SessionStore) (ctxA, ctxB context.Context) {
+	t.Helper()
+	ctxA, ctxB = userCtx("user-a"), userCtx("user-b")
+	sa := ownedSession("sess-a")
+	sa.AgentID = "agent-x"
+	sb := ownedSession("sess-b")
+	sb.AgentID = "agent-x"
+	require.NoError(t, store.SaveSession(ctxA, sa))
+	require.NoError(t, store.SaveSession(ctxB, sb))
+	require.NoError(t, store.SaveMessage(ctxA, "sess-a", &Message{Role: "user", Content: "alpha secret ledger"}, true))
+	require.NoError(t, store.SaveMessage(ctxB, "sess-b", &Message{Role: "user", Content: "beta secret ledger"}, true))
+	return ctxA, ctxB
+}
+
+func TestSQLiteSearchMessagesScopedToOwner(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA, ctxB := setupTwoUserCorpus(t, store)
+
+	// All-sessions search returns only the caller's rows.
+	got, err := store.SearchMessages(ctxA, "", "secret ledger", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Content, "alpha")
+
+	// Naming the foreign session explicitly yields nothing.
+	got, err = store.SearchMessages(ctxB, "sess-a", "secret ledger", 10)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestSQLiteSearchMessagesByAgentScopedToOwner(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	_, ctxB := setupTwoUserCorpus(t, store)
+
+	// Both users share agent-x; each search sees only its own corpus.
+	got, err := store.SearchMessagesByAgent(ctxB, "agent-x", "secret ledger", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Content, "beta")
+}
+
+func TestSQLiteLoadMessagesForAgentScopedToOwner(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA, _ := setupTwoUserCorpus(t, store)
+
+	got, err := store.LoadMessagesForAgent(ctxA, "agent-x")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Content, "alpha")
+}
+
+func TestSQLiteGetStatsScopedToOwner(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA, _ := setupTwoUserCorpus(t, store)
+	require.NoError(t, store.SaveMessage(ctxA, "sess-a", &Message{Role: "assistant", Content: "more"}, false))
+
+	stats, err := store.GetStats(ctxA)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.SessionCount, "stats must count only the caller's sessions")
+	assert.Equal(t, 2, stats.MessageCount, "stats must count only the caller's messages")
+}
+
+func TestSQLiteHostileParentLinkageDoesNotLeak(t *testing.T) {
+	store := newOwnershipTestStore(t)
+	ctxA, ctxB := userCtx("user-a"), userCtx("user-b")
+
+	// Victim's coordinator session with a shared-context message.
+	parent := ownedSession("victim-parent")
+	parent.AgentID = "coordinator"
+	require.NoError(t, store.SaveSession(ctxA, parent))
+	msg := &Message{Role: "assistant", Content: "victim coordinator state", SessionContext: types.SessionContextCoordinator}
+	require.NoError(t, store.SaveMessage(ctxA, "victim-parent", msg, true))
+
+	// Attacker links their own child to the victim's session.
+	child := ownedSession("attacker-child")
+	child.ParentSessionID = "victim-parent"
+	require.NoError(t, store.SaveSession(ctxB, child))
+
+	got, err := store.LoadMessagesFromParentSession(ctxB, "attacker-child")
+	require.NoError(t, err)
+	assert.Empty(t, got, "foreign parent must read as parentless, never leak its messages")
+
+	// The legitimate owner's parent flow still works.
+	ownChild := ownedSession("own-child")
+	ownChild.ParentSessionID = "victim-parent"
+	require.NoError(t, store.SaveSession(ctxA, ownChild))
+	got, err = store.LoadMessagesFromParentSession(ctxA, "own-child")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Content, "victim coordinator state")
+}

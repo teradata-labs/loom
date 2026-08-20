@@ -781,14 +781,17 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	// are never loaded into memory at all; the summary stands in for them.
 	// Replay order is the seq (messages.id), which also removes the old
 	// equal-timestamp nondeterminism of timestamp ordering.
+	// The owner predicate is defense in depth: callers guard first, but this
+	// helper must not become a cross-user read if a future caller forgets.
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
+		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
 		ORDER BY id ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, sessionID)
+	rows, err := s.db.QueryContext(ctx, query, sessionID, storeUserID(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
@@ -833,8 +836,9 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		if agentID.Valid {
 			msg.AgentID = agentID.String
 		}
-		// SQLite backend is single-tenant; set default UserID
-		msg.UserID = "default-user"
+		// Messages carry no user_id column in SQLite; the owner predicate
+		// above guarantees these rows belong to the context identity.
+		msg.UserID = storeUserID(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
@@ -1032,21 +1036,27 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		       m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd,
 		       m.evicted, m.turn, m.session_id
 		FROM messages m
-		WHERE m.folded = 0 AND ((
+		WHERE m.folded = 0
+		-- Every returned message must live in a session the caller owns: the
+		-- branch subqueries scope the agent's own sessions, but a hostile
+		-- parent_session_id link could otherwise pull a foreign parent's rows.
+		AND m.session_id IN (SELECT id FROM sessions WHERE user_id = ?)
+		AND ((
 			-- Messages from sessions owned by this agent (all contexts)
-			m.session_id IN (SELECT id FROM sessions WHERE agent_id = ?)
+			m.session_id IN (SELECT id FROM sessions WHERE agent_id = ? AND user_id = ?)
 		) OR (
 			-- Messages from parent sessions (coordinator and shared only)
 			m.session_id IN (
 				SELECT parent_session_id FROM sessions
-				WHERE agent_id = ? AND parent_session_id IS NOT NULL
+				WHERE agent_id = ? AND parent_session_id IS NOT NULL AND user_id = ?
 			)
 			AND m.session_context IN ('coordinator', 'shared')
 		))
 		ORDER BY m.timestamp ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, agentID, agentID)
+	uid := storeUserID(ctx)
+	rows, err := s.db.QueryContext(ctx, query, uid, agentID, uid, agentID, uid)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent messages: %w", err)
@@ -1150,9 +1160,17 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// First, get the parent_session_id
+	// First, get the parent_session_id. The parent must belong to the same
+	// owner: parent_session_id is caller-supplied at save time, so a hostile
+	// child linked to a foreign parent must read as parentless, not leak the
+	// parent's conversation (mirrors the postgres store).
 	var parentSessionID sql.NullString
-	err := s.db.QueryRowContext(ctx, "SELECT parent_session_id FROM sessions WHERE id = ?", sessionID).
+	err := s.db.QueryRowContext(ctx, `
+		SELECT c.parent_session_id FROM sessions c
+		WHERE c.id = ? AND c.user_id = ?
+		AND (c.parent_session_id IS NULL OR EXISTS (
+			SELECT 1 FROM sessions p WHERE p.id = c.parent_session_id AND p.user_id = c.user_id
+		))`, sessionID, storeUserID(ctx)).
 		Scan(&parentSessionID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1171,17 +1189,19 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	span.SetAttribute("parent_session_id", parentSessionID.String)
 	span.SetAttribute("has_parent", "true")
 
-	// Load messages from parent session that are relevant to sub-agents
+	// Load messages from parent session that are relevant to sub-agents. The
+	// owner predicate repeats here as defense in depth on the read itself.
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json,
 		       session_context, agent_id, timestamp, token_count, cost_usd, evicted, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
+		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
 		ORDER BY timestamp ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, parentSessionID.String)
+	rows, err := s.db.QueryContext(ctx, query, parentSessionID.String, storeUserID(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query parent messages: %w", err)
@@ -1682,36 +1702,45 @@ func (s *SessionStore) GetStats(ctx context.Context) (*Stats, error) {
 
 	stats := &Stats{}
 
+	// Every aggregate is scoped to the caller's own sessions: stats are a
+	// per-tenant view, and global counts/costs would leak another user's
+	// activity volume (the postgres twin scopes the same way).
+	uid := storeUserID(ctx)
+
 	// Count sessions
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&stats.SessionCount)
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE user_id = ?", uid).Scan(&stats.SessionCount)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
 
 	// Count messages
-	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages").Scan(&stats.MessageCount)
+	err = s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)", uid).
+		Scan(&stats.MessageCount)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
 
 	// Count tool executions
-	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tool_executions").Scan(&stats.ToolExecutionCount)
+	err = s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tool_executions WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)", uid).
+		Scan(&stats.ToolExecutionCount)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
 
 	// Sum costs
-	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions").Scan(&stats.TotalCostUSD)
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions WHERE user_id = ?", uid).Scan(&stats.TotalCostUSD)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
 
 	// Sum tokens
-	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_tokens), 0) FROM sessions").Scan(&stats.TotalTokens)
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(total_tokens), 0) FROM sessions WHERE user_id = ?", uid).Scan(&stats.TotalTokens)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -1804,18 +1833,22 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 	var rows *sql.Rows
 	var err error
 
+	// Both branches scope results to sessions the caller owns: the FTS5 index
+	// spans every user's messages, so an unscoped MATCH is a cross-user read.
+	uid := storeUserID(ctx)
 	if sessionID == "" {
-		// Search across ALL sessions when sessionID is empty
+		// Search across ALL sessions owned by the caller when sessionID is empty
 		sqlQuery = `
 			SELECT m.role, m.content, m.tool_calls_json,
 			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
-			WHERE messages_fts5.content MATCH ?
+			JOIN sessions sess ON m.session_id = sess.id
+			WHERE sess.user_id = ? AND messages_fts5.content MATCH ?
 			ORDER BY bm25(messages_fts5)
 			LIMIT ?
 		`
-		rows, err = s.db.QueryContext(ctx, sqlQuery, fts5Query, limit)
+		rows, err = s.db.QueryContext(ctx, sqlQuery, uid, fts5Query, limit)
 	} else {
 		// Search within specific session
 		sqlQuery = `
@@ -1823,11 +1856,12 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
-			WHERE messages_fts5.session_id = ? AND messages_fts5.content MATCH ?
+			JOIN sessions sess ON m.session_id = sess.id
+			WHERE messages_fts5.session_id = ? AND sess.user_id = ? AND messages_fts5.content MATCH ?
 			ORDER BY bm25(messages_fts5)
 			LIMIT ?
 		`
-		rows, err = s.db.QueryContext(ctx, sqlQuery, sessionID, fts5Query, limit)
+		rows, err = s.db.QueryContext(ctx, sqlQuery, sessionID, uid, fts5Query, limit)
 	}
 	if err != nil {
 		span.RecordError(err)
@@ -1920,20 +1954,20 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// FTS5 MATCH query with BM25 ranking, filtered by agent_id
-	// Joins messages_fts5 with messages and sessions to filter by agent
+	// FTS5 MATCH query with BM25 ranking, filtered by agent_id and scoped to
+	// the caller's own sessions (the index spans every user's messages).
 	sqlQuery := `
 		SELECT m.role, m.content, m.tool_calls_json,
 		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
 		FROM messages_fts5
 		JOIN messages m ON messages_fts5.message_id = m.id
 		JOIN sessions s ON m.session_id = s.id
-		WHERE s.agent_id = ? AND messages_fts5.content MATCH ?
+		WHERE s.agent_id = ? AND s.user_id = ? AND messages_fts5.content MATCH ?
 		ORDER BY bm25(messages_fts5)
 		LIMIT ?
 	`
 
-	rows, err := s.db.QueryContext(ctx, sqlQuery, agentID, fts5Query, limit)
+	rows, err := s.db.QueryContext(ctx, sqlQuery, agentID, storeUserID(ctx), fts5Query, limit)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("agent-scoped FTS5 search failed: %w", err)
