@@ -37,6 +37,7 @@ type waitTransport struct {
 	mu          sync.Mutex
 	callResults []json.RawMessage // per tools/call attempt, in order
 	callCount   int
+	callParams  []json.RawMessage
 	listenIDs   []json.RawMessage
 	responses   chan []byte
 }
@@ -78,6 +79,7 @@ func (f *waitTransport) Send(_ context.Context, message []byte) error {
 		f.mu.Lock()
 		i := f.callCount
 		f.callCount++
+		f.callParams = append(f.callParams, append(json.RawMessage(nil), req.Params...))
 		f.mu.Unlock()
 		if i >= len(f.callResults) {
 			return fmt.Errorf("unscripted tools/call attempt %d", i)
@@ -127,6 +129,19 @@ func (f *waitTransport) listenID(t *testing.T) string {
 	}
 	t.Fatal("no subscriptions/listen arrived")
 	return ""
+}
+
+func (f *waitTransport) lastCallParams() map[string]interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.callParams) == 0 {
+		return nil
+	}
+	var p struct {
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+	_ = json.Unmarshal(f.callParams[len(f.callParams)-1], &p)
+	return p.Arguments
 }
 
 func (f *waitTransport) calls() int {
@@ -236,4 +251,69 @@ func TestParkTimeoutSurfacesError(t *testing.T) {
 	require.NotNil(t, res.Error)
 	assert.Contains(t, res.Error.Message, "budget full")
 	assert.Equal(t, 1, ft.calls(), "no blind retries without an update")
+}
+
+// TestAutoReleaseOnConversationEnd: a successful call whose result carries a
+// session_handle is tracked by the ctx collector and released best-effort
+// when the conversation ends — the runtime-owned lifecycle of issue #345.
+func TestAutoReleaseOnConversationEnd(t *testing.T) {
+	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"session_handle":"tdsh_test123","target":"default"}`},
+	}})
+	released, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransport(mint, released)
+	adapter := waitAdapter(t, ft)
+
+	ctx, collector := WithHandleCollector(context.Background())
+	res, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	require.Equal(t, 1, collector.Count(), "minted handle must be tracked")
+
+	collector.ReleaseAll(nil)
+	assert.Equal(t, 0, collector.Count())
+	assert.Equal(t, 2, ft.calls(), "release call must reach the wire")
+	// The second call carried the tracked handle.
+	last := ft.lastCallParams()
+	assert.Equal(t, "tdsh_test123", last["release_handle"])
+}
+
+// TestAutoReleaseSkipsExplicitlyReleased: an agent that releases its own
+// handle is not double-released at conversation end.
+func TestAutoReleaseSkipsExplicitlyReleased(t *testing.T) {
+	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"session_handle":"tdsh_selfclean"}`},
+	}})
+	released, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransport(mint, released)
+	adapter := waitAdapter(t, ft)
+
+	ctx, collector := WithHandleCollector(context.Background())
+	_, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	_, err = adapter.Execute(ctx, map[string]interface{}{"release_handle": "tdsh_selfclean"})
+	require.NoError(t, err)
+
+	require.Equal(t, 0, collector.Count(), "explicit release must untrack the handle")
+	collector.ReleaseAll(nil)
+	assert.Equal(t, 2, ft.calls(), "no extra release call")
+}
+
+// TestNoCollectorNoTracking: without a collector in ctx (workflow paths),
+// behavior is unchanged.
+func TestNoCollectorNoTracking(t *testing.T) {
+	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"session_handle":"tdsh_untracked"}`},
+	}})
+	ft := newWaitTransport(mint)
+	adapter := waitAdapter(t, ft)
+
+	res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	assert.Equal(t, 1, ft.calls())
 }
