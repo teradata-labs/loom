@@ -2,7 +2,7 @@
 
 **Status**: ✅ Implemented (`cmd/loom-mcp-probe`, wire-level tests included)
 
-`loom-mcp-probe` connects Loom's MCP client to a **real** MCP server — streamable HTTP or stdio — and reports what actually negotiated: protocol revision, era, server identity, tools, an optional tool call, an optional MRTR elicitation exchange, and an optional `subscriptions/listen` watch. It exercises the exact negotiation, fallback, MRTR, and transport code paths the manager uses in production. No fakes anywhere.
+`loom-mcp-probe` connects Loom's MCP client to a **real** MCP server — streamable HTTP or stdio — and reports what actually negotiated: protocol revision, era, server identity, tools, an optional tool call, an optional MRTR elicitation exchange, and an optional `subscriptions/listen` watch. The probe binary runs the shipped client and transports unmodified — the exact negotiation, fallback, MRTR, and transport code paths the manager uses in production — against real servers. (Its automated tests are the exception: they drive the same `run()` against scripted wire-level HTTP fixtures.)
 
 Use it to verify a server before wiring it into an agent config, to reproduce interop problems, or to watch what era/revision a fleet server actually speaks.
 
@@ -20,22 +20,24 @@ go run -tags fts5 ./cmd/loom-mcp-probe -cmd "npx -y @modelcontextprotocol/server
 | Flag | Meaning |
 |---|---|
 | `-url` | streamable HTTP endpoint (mutually exclusive with `-cmd`) |
-| `-cmd` | stdio server command line, space-separated |
+| `-cmd` | stdio server executable — the path is taken verbatim (spaces survive); pass arguments via `-arg` |
+| `-arg` | one argument for the `-cmd` executable; repeatable, order-preserving |
+| `-headers-env` | name of an env var holding a JSON object of HTTP headers (auth tokens ride the environment, never argv) |
 | `-pin` | `protocol_version` pin: `auto` (default), `legacy`, or an exact revision such as `2026-07-28` |
 | `-call` | tool to invoke |
 | `-args` | JSON arguments object for `-call` (default `{}`) |
 | `-answer` | JSON object accepted for **every** elicitation; enables the MRTR driver. Unset = the client's fail-fast default on `input_required` |
 | `-watch` | seconds to hold a `subscriptions/listen` stream (stateless connections only) |
-| `-timeout` | negotiation-probe/request timeout in ms (default 15000) |
+| `-timeout` | per-operation timeout in ms (default 15000): bounds connect (incl. the negotiation probe), `tools/list`, `tools/call` with its MRTR rounds, and the subscription acknowledgment. The `-watch` hold runs on its own clock |
 | `-v` | debug logging |
 
-The probe exits non-zero on any failure, so it can gate scripts.
+The probe exits non-zero on any failure, so it can gate scripts. For `-watch` that guarantee is strict: a legacy connection, a missing acknowledgment, or a subscription that ends — even gracefully — before the requested window all fail the probe.
 
 ## What each mode exercises
 
 - **Auto negotiation**: the `server/discover` probe with the full fallback ladder — non-modern JSON-RPC errors, bare HTTP 404/405/501, 400 without a modern error body, and (stdio only) probe silence within the bounded timeout.
 - **`-answer`**: the Multi Round-Trip Requests loop (2026-07-28, SEP-2322). A server's `input_required` interim result is answered by accepting every elicitation with the `-answer` object — a canned human standing in for the manager's HITL adapter — and the original call is retried with `inputResponses` plus the exact echoed `requestState`. Non-elicitation input requests (sampling, roots) are refused so the exchange fails loudly rather than fabricating a model response.
-- **`-watch`**: a live `subscriptions/listen` stream (acknowledgment, demultiplexed change notifications, client-side cancellation — closing the SSE stream on HTTP, `notifications/cancelled` on stdio).
+- **`-watch`**: a live `subscriptions/listen` stream — the acknowledgment is required before the hold starts, change notifications are demultiplexed during it, and the clean end is client-side cancellation at the deadline (closing the SSE stream on HTTP, `notifications/cancelled` on stdio). Anything short of that sequence is a probe failure.
 
 ## Known-good real servers
 
@@ -45,13 +47,13 @@ All from official sources:
 |---|---|---|
 | Go SDK conformance everything-server | **2026-07-28** (stateless HTTP + stdio); sessionful legacy with `-stateless=false` | `go install github.com/modelcontextprotocol/go-sdk/conformance/everything-server@v1.7.0` then `everything-server -http localhost:8971` |
 | `@modelcontextprotocol/server-everything` (npm, TypeScript) | legacy 2025-11-25 | `npx -y @modelcontextprotocol/server-everything stdio` |
-| Loom's own `looms` + `loom-mcp --transport=http` | **dual-era**: 2026-07-28 stateless AND legacy 2024-11-05 handshake on one endpoint (verified, see below) | `looms serve` then `loom-mcp --transport=http --http-addr=127.0.0.1:8765 --grpc-addr=localhost:60051` |
+| Loom's own `looms` + `loom-mcp --transport=http` | 🚧 **dual-era pending PR #328** (server-side 2026-07-28); on `main` today this endpoint is legacy-only. The transcript below was captured against the #328 branch | `looms serve` then `loom-mcp --transport=http --http-addr=127.0.0.1:8765 --grpc-addr=localhost:60051` |
 
 As of 2026-08-19 the Go SDK is the only official SDK with a 2026-07-28 runtime; the TypeScript SDK tops out at 2025-11-25, which makes its servers exactly the legacy peers the fallback ladder needs.
 
 ## Example sessions
 
-Real transcripts against the official Go SDK conformance server and the npm TypeScript server (2026-08-19).
+Real transcripts against the official Go SDK conformance server and the npm TypeScript server (2026-08-19), shown in the probe's current output format (the acknowledgment is consumed by the watch gate rather than listed as a notification).
 
 **Stateless 2026-07-28 over streamable HTTP, with a live subscription:**
 
@@ -63,9 +65,8 @@ CONNECTED in 6ms
   serverInfo : mcp-conformance-test-server 1.0.0
   tools      : 28 (json_schema_2020_12_tool, test_audio_content, test_elicitation, …)
   call test_simple_text → "This is a simple text response for testing."
-  watch      : subscription 4 open for 4s
-    notif #1 : notifications/subscriptions/acknowledged
-    notif #2 : notifications/resources/updated
+  watch      : subscription 4 acknowledged, holding for 4s
+    notif #1 : notifications/resources/updated
 ```
 
 **MRTR elicitation round-trip, including the server-verified `requestState` echo:**
@@ -107,7 +108,7 @@ CONNECTED in 6ms
   call echo → "Echo: session test"
 ```
 
-**Dogfood: Loom's own dual-era endpoint** (`loom-mcp --transport=http` bridging a running `looms`). One endpoint serves both eras:
+**Dogfood: Loom's own dual-era endpoint** (`loom-mcp --transport=http` bridging a running `looms`). 🚧 This behavior is PR #328's server side, and the session below was captured against that branch — on `main` the endpoint is legacy-only until #328 merges. One endpoint serves both eras:
 
 ```text
 $ loom-mcp-probe -url http://127.0.0.1:8765/ -call loom_list_agents -watch 3
@@ -117,8 +118,7 @@ CONNECTED in 3ms
   serverInfo : loom-mcp 1.4.0
   tools      : 55 (loom_activate_skill, loom_answer_clarification, loom_build, …)
   call loom_list_agents → "{\"agents\":[{\"id\":\"…\",\"name\":\"guide\",\"status\":\"running\",…"
-  watch      : subscription 4 open for 3s
-    notif #1 : notifications/subscriptions/acknowledged
+  watch      : subscription 4 acknowledged, holding for 3s
 
 $ loom-mcp-probe -url http://127.0.0.1:8765/ -pin legacy
 CONNECTED in 3ms
@@ -131,7 +131,8 @@ CONNECTED in 3ms
 
 - The MRTR driver answers **elicitations only**, with one canned object for all of them; sampling and roots input requests fail the exchange by design.
 - `-watch` requires a stateless (2026-07-28) connection; `subscriptions/listen` does not exist on legacy revisions.
-- This is a probe, not a conformance suite: it reports what happened on one connection. The dual-revision conformance matrix and official-SDK interop CI live in `pkg/mcp/conformance` (migration spec §10).
+- This is a probe, not a conformance suite: it reports what happened on one connection. The dual-revision conformance matrix and official-SDK interop suite (migration spec §10) ride PR #328; on `main` today `pkg/mcp/conformance` holds the legacy tests only.
+- Authenticated HTTP endpoints need `-headers-env`: the manager passes configured headers from agent config, and the probe reads the same shape from the named environment variable.
 
 ## Field notes from real servers
 

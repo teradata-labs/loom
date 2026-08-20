@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,19 +35,27 @@ import (
 // (discover rejected, initialize handshake served). elicitFirst makes the
 // first tools/call answer input_required so the probe's MRTR driver runs.
 type scriptedHTTPServer struct {
-	t           *testing.T
 	statelessOK bool
 	elicitFirst bool
+	watchMode   string // "": listen → MethodNotFound; "no-ack": SSE opens, no ack; "ack-then-close": ack then immediate close
 
 	mu         sync.Mutex
 	callParams []json.RawMessage // raw params of each tools/call attempt
 }
 
+// handler runs on the HTTP server goroutine, where FailNow is illegal — any
+// internal problem becomes an HTTP 500 the client-side assertions surface.
 func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
-	require.NoError(s.t, err)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var req protocol.Request
-	require.NoError(s.t, json.Unmarshal(body, &req))
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if req.ID == nil { // notification (e.g. notifications/initialized)
 		w.WriteHeader(http.StatusAccepted)
@@ -55,9 +64,15 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 
 	writeResult := func(result interface{}) {
 		raw, err := json.Marshal(result)
-		require.NoError(s.t, err)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		resp, err := json.Marshal(protocol.Response{JSONRPC: protocol.JSONRPCVersion, ID: req.ID, Result: raw})
-		require.NoError(s.t, err)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(resp)
 	}
@@ -66,7 +81,10 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 			JSONRPC: protocol.JSONRPCVersion, ID: req.ID,
 			Error: protocol.NewError(code, msg, nil),
 		})
-		require.NoError(s.t, err)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(resp)
 	}
@@ -84,7 +102,10 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 			TTLMs:             0,
 			CacheScope:        "private",
 		}
-		require.NoError(s.t, res.SetServerInfo(protocol.Implementation{Name: "scripted-http", Version: "1.0"}))
+		if err := res.SetServerInfo(protocol.Implementation{Name: "scripted-http", Version: "1.0"}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		writeResult(res)
 	case "initialize":
 		writeResult(protocol.InitializeResult{
@@ -125,6 +146,34 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 			"resultType": protocol.ResultTypeComplete,
 			"content":    []map[string]interface{}{{"type": "text", "text": "hello from scripted server"}},
 		})
+	case protocol.MethodSubscriptionsListen:
+		switch s.watchMode {
+		case "no-ack":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			// Hold the stream open without ever acknowledging.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Second):
+			}
+		case "ack-then-close":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			idJSON, _ := json.Marshal(req.ID)
+			ack, _ := json.Marshal(map[string]interface{}{
+				"jsonrpc": protocol.JSONRPCVersion,
+				"method":  protocol.NotificationSubscriptionAcknowledged,
+				"params": map[string]interface{}{
+					"_meta": map[string]json.RawMessage{protocol.MetaSubscriptionID: idJSON},
+				},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", ack)
+			w.(http.Flusher).Flush()
+			// Returning here closes the stream immediately after the ack.
+		default:
+			writeError(protocol.MethodNotFound, "subscriptions unsupported")
+		}
 	default:
 		writeError(protocol.MethodNotFound, "method not found")
 	}
@@ -132,7 +181,6 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 
 func startScripted(t *testing.T, s *scriptedHTTPServer) *httptest.Server {
 	t.Helper()
-	s.t = t
 	srv := httptest.NewServer(http.HandlerFunc(s.handler))
 	t.Cleanup(srv.Close)
 	return srv
@@ -221,6 +269,68 @@ func TestProbeRejectsNonElicitationInputRequests(t *testing.T) {
 func TestProbeBadAnswerJSON(t *testing.T) {
 	_, err := buildMRTRHandler(`not-json`, &report{}, printer{w: io.Discard})
 	require.Error(t, err)
+}
+
+// Round-1 blocker: -watch must never exit 0 without a healthy, acknowledged
+// subscription held for the full window. Four escape paths, four regressions.
+func TestProbeWatchOnLegacyIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: false})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, WatchSec: 1, Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy")
+}
+
+func TestProbeWatchMethodNotFoundIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true}) // watchMode "": listen → MethodNotFound
+	_, err := run(context.Background(), options{
+		URL: srv.URL, WatchSec: 1, Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subscription")
+}
+
+func TestProbeWatchNoAckIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true, watchMode: "no-ack"})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, WatchSec: 5, Timeout: 500 * time.Millisecond,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "acknowledgment")
+}
+
+func TestProbeWatchEarlyCloseIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true, watchMode: "ack-then-close"})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, WatchSec: 3, Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "before the watch window")
+}
+
+func TestProbeWhitespaceCmdIsError(t *testing.T) {
+	_, err := run(context.Background(), options{Cmd: "   ", Timeout: time.Second}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-cmd")
+}
+
+func TestHeadersFromEnv(t *testing.T) {
+	t.Setenv("PROBE_H_OK", `{"Authorization":"Bearer fake-test-token"}`)
+	h, err := headersFromEnv("PROBE_H_OK")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer fake-test-token", h["Authorization"])
+
+	_, err = headersFromEnv("PROBE_H_MISSING")
+	require.Error(t, err)
+
+	t.Setenv("PROBE_H_BAD", `not-json`)
+	_, err = headersFromEnv("PROBE_H_BAD")
+	require.Error(t, err)
+
+	h, err = headersFromEnv("")
+	require.NoError(t, err)
+	assert.Nil(t, h)
 }
 
 func TestHelpers(t *testing.T) {
