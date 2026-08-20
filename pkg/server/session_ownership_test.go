@@ -18,6 +18,8 @@ package server
 
 import (
 	"context"
+	"github.com/teradata-labs/loom/pkg/observability"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -191,4 +193,46 @@ func TestSessionsStampedAtCreation(t *testing.T) {
 	session := ag.CreateSession(ctxFor("user-c"), id, "")
 	assert.Equal(t, "user-c", session.UserID,
 		"sessions created through the agent path must carry the context identity")
+}
+
+// Round-3 finding 1: a session that lives only in the store (post-restart,
+// evicted, not yet loaded) must still gate Weave authorization. Before the
+// store fallback, findSessionOwner saw only memory, so an attacker could
+// mint a fresh in-memory session under a persisted foreign id — squatting it
+// and locking the real owner out.
+func TestWeaveStoreOnlySessionCannotBeSquatted(t *testing.T) {
+	store, err := agent.NewSessionStore(filepath.Join(t.TempDir(), "sessions.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ag := createTestAgent()
+	srv := NewMultiAgentServer(map[string]*agent.Agent{"agent-1": ag}, store)
+	srv.SetEnforceSessionOwnership(true)
+
+	// The victim's session exists only in the store, as after a restart.
+	// Stored sessions record the agent's config name (what
+	// GetOrCreateSessionWithAgent stamps), not the registry map key.
+	victimCtx := ctxFor("victim")
+	stored := &agent.Session{ID: "squat-target", AgentID: ag.GetName(), Context: map[string]interface{}{}}
+	require.NoError(t, store.SaveSession(victimCtx, stored))
+
+	// The attacker must get NotFound — and, critically, no in-memory session
+	// may be created under the victim's id.
+	_, err = srv.Weave(ctxFor("attacker"), &loomv1.WeaveRequest{Query: "hi", SessionId: "squat-target"})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	_, squatted := ag.GetSession("squat-target")
+	assert.False(t, squatted, "a foreign store-only session must never be re-minted in memory")
+
+	// The owner resumes their own store-only session.
+	_, err = srv.Weave(victimCtx, &loomv1.WeaveRequest{Query: "hi", SessionId: "squat-target"})
+	require.NoError(t, err, "owner must be able to resume a store-only session")
+
+	// A store session bound to an unregistered agent must not silently
+	// resume under a different agent.
+	ghost := &agent.Session{ID: "ghost-sess", AgentID: "agent-gone", Context: map[string]interface{}{}}
+	require.NoError(t, store.SaveSession(victimCtx, ghost))
+	_, err = srv.Weave(victimCtx, &loomv1.WeaveRequest{Query: "hi", SessionId: "ghost-sess"})
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }

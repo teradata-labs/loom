@@ -51,6 +51,23 @@ func storeUserID(ctx context.Context) string {
 	return types.DefaultUserID
 }
 
+// SessionExists reports whether any session row has this id, regardless of
+// owner (see SessionStorage: an authorization primitive for resume gates,
+// not a data read — no session data is returned).
+func (s *SessionStore) SessionExists(ctx context.Context, sessionID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var one int
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check session existence: %w", err)
+	}
+	return true, nil
+}
+
 // ownsSession reports whether the context identity owns sessionID. Child
 // reads and writes are guarded through the owned parent: predicating on
 // session_id alone would let any caller who learns an ID read or write

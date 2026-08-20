@@ -175,7 +175,7 @@ func TestDedupeReleasesCancellationOutcomes(t *testing.T) {
 	entry, isOwner, admitted := d.begin(scope)
 	require.True(t, admitted)
 	require.True(t, isOwner)
-	d.finishAndRelease(scope, entry, nil, context.Canceled)
+	d.finishAndRelease(context.Background(), scope, entry, nil, context.Canceled)
 
 	// A joiner that was already waiting still observes the error.
 	_, err := awaitDedupeResult(context.Background(), entry)
@@ -185,12 +185,12 @@ func TestDedupeReleasesCancellationOutcomes(t *testing.T) {
 	entry2, isOwner2, admitted2 := d.begin(scope)
 	require.True(t, admitted2)
 	assert.True(t, isOwner2, "re-issue after a canceled run must re-execute, not join the cached cancellation")
-	d.finishAndRelease(scope, entry2, &loomv1.WeaveResponse{Text: "ok"}, nil)
+	d.finishAndRelease(context.Background(), scope, entry2, &loomv1.WeaveResponse{Text: "ok"}, nil)
 
 	// gRPC-shaped cancellations release too.
 	scope2 := dedupeScope("user-a", "key-2")
 	e3, _, _ := d.begin(scope2)
-	d.finishAndRelease(scope2, e3, nil, status.Error(codes.DeadlineExceeded, "deadline"))
+	d.finishAndRelease(context.Background(), scope2, e3, nil, status.Error(codes.DeadlineExceeded, "deadline"))
 	_, own4, _ := d.begin(scope2)
 	assert.True(t, own4)
 }
@@ -200,7 +200,7 @@ func TestDedupeKeepsDeterministicErrorsJoinable(t *testing.T) {
 	scope := dedupeScope("user-a", "key-1")
 
 	entry, _, _ := d.begin(scope)
-	d.finishAndRelease(scope, entry, nil, status.Error(codes.InvalidArgument, "bad query"))
+	d.finishAndRelease(context.Background(), scope, entry, nil, status.Error(codes.InvalidArgument, "bad query"))
 
 	// A deterministic failure is a durable outcome: the re-issue joins it
 	// instead of burning a second run on the same doomed input.
@@ -209,4 +209,30 @@ func TestDedupeKeepsDeterministicErrorsJoinable(t *testing.T) {
 	require.False(t, isOwner)
 	_, err := awaitDedupeResult(context.Background(), joined)
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+// Round-3 finding 2: intermediate layers launder cancellations —
+// %v-flattened Internal wraps, Unavailable send failures — so the release
+// decision also consults the request context: a dead context is never a
+// durable outcome.
+func TestDedupeReleasesLaunderedCancellation(t *testing.T) {
+	d := newWeaveDeduper()
+	scope := dedupeScope("user-a", "key-1")
+
+	deadCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	laundered := status.Errorf(codes.Internal, "agent execution failed: %v", context.Canceled)
+
+	entry, _, _ := d.begin(scope)
+	d.finishAndRelease(deadCtx, scope, entry, nil, laundered)
+
+	_, isOwner, admitted := d.begin(scope)
+	require.True(t, admitted)
+	assert.True(t, isOwner, "a laundered cancellation with a dead request context must be released, not cached")
+}
+
+func TestWrapAgentErrorPreservesCancellationCodes(t *testing.T) {
+	assert.Equal(t, codes.Canceled, status.Code(wrapAgentError(fmt.Errorf("chat: %w", context.Canceled))))
+	assert.Equal(t, codes.DeadlineExceeded, status.Code(wrapAgentError(fmt.Errorf("chat: %w", context.DeadlineExceeded))))
+	assert.Equal(t, codes.Internal, status.Code(wrapAgentError(fmt.Errorf("llm rejected the request"))))
 }

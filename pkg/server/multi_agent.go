@@ -546,17 +546,49 @@ func (s *MultiAgentServer) findAgentBySession(sessionID, callerUserID string) (*
 // reporting existence and accessibility separately so callers can
 // distinguish does-not-exist (safe to create) from exists-but-foreign
 // (must not be resumed, re-created, or fallen through to another agent).
-func (s *MultiAgentServer) findSessionOwner(sessionID, callerUserID string) (ag *agent.Agent, agentID string, exists, accessible bool) {
+//
+// Sessions that live only in the store — after a restart, after memory
+// eviction, or not yet loaded by this process — count (round-3 finding 1):
+// gating on memory alone would let whoever asks first mint a fresh
+// in-memory session under a persisted id and squat it. The owner-scoped
+// load resumes the caller's own session; when it misses, an unscoped
+// existence probe distinguishes foreign (deny) from absent (safe to
+// create), and store errors fail closed as inaccessible.
+func (s *MultiAgentServer) findSessionOwner(ctx context.Context, sessionID, callerUserID string) (ag *agent.Agent, agentID string, exists, accessible bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	for id, candidate := range s.agents {
 		if session, ok := candidate.GetSession(sessionID); ok {
-			if !s.sessionAccessibleBy(callerUserID, session) {
+			ok := s.sessionAccessibleBy(callerUserID, session)
+			s.mu.RUnlock()
+			if !ok {
 				return nil, "", true, false
 			}
 			return candidate, id, true, true
 		}
+	}
+	s.mu.RUnlock()
+
+	if s.sessionStore == nil {
+		return nil, "", false, false
+	}
+	if stored, err := s.sessionStore.LoadSession(ctx, sessionID); err == nil && stored != nil {
+		// The load is owner-scoped, so a hit is the caller's own persisted
+		// session; route to its recorded agent when that agent is registered.
+		// Stored sessions record the agent's config name, so resolution goes
+		// through getAgent (GUID, registry, or name), never a raw map read.
+		if stored.AgentID == "" {
+			return nil, "", true, true // unbound session: caller's own, route by request
+		}
+		ownerAg, resolvedID, aerr := s.getAgent(stored.AgentID)
+		if aerr != nil {
+			return nil, stored.AgentID, true, true // owned, but its agent is not registered
+		}
+		return ownerAg, resolvedID, true, true
+	}
+	existsUnscoped, err := s.sessionStore.SessionExists(ctx, sessionID)
+	if err != nil || existsUnscoped {
+		// Foreign, or unverifiable (fail closed): never creatable.
+		return nil, "", true, false
 	}
 	return nil, "", false, false
 }
@@ -791,7 +823,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		default:
 			// finishAndRelease: a canceled/deadline outcome is released, not
 			// cached — the re-issue must re-execute, not join the failure.
-			defer func() { s.weaveDedupe.finishAndRelease(scope, entry, weaveResp, weaveErr) }()
+			defer func() { s.weaveDedupe.finishAndRelease(ctx, scope, entry, weaveResp, weaveErr) }()
 		}
 	}
 
@@ -813,13 +845,18 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// fall through to the explicit or default agent, which would resume a
 	// foreign session under whatever agent happens to hold it next.
 	if req.SessionId != "" {
-		ownerAg, ownerID, exists, accessible := s.findSessionOwner(req.SessionId, postgres.UserIDFromContext(ctx))
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(ctx, req.SessionId, postgres.UserIDFromContext(ctx))
 		if exists {
 			if !accessible {
 				return nil, status.Error(codes.NotFound, "session not found")
 			}
+			// A stored session bound to an agent this process no longer
+			// registers must not silently resume under a different agent.
+			if ownerAg == nil && ownerID != "" {
+				return nil, status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
+			}
 			ag, agentID = ownerAg, ownerID
-			if req.AgentId != "" {
+			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
 					return nil, status.Error(codes.FailedPrecondition, "session belongs to a different agent")
 				}
@@ -912,7 +949,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			tracer.EndSpan(span)
 			s.RecordTraceSpan(span)
 		}
-		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
+		return nil, wrapAgentError(err)
 	}
 
 	// End trace span and record it to the local store for GetTrace retrieval
@@ -988,13 +1025,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				// the re-issued request even when this stream's final Send
 				// failed — that failure is exactly why a re-issue is coming.
 				if dedupeFinal != nil {
-					s.weaveDedupe.finishAndRelease(scope, entry, dedupeFinal, nil)
+					s.weaveDedupe.finishAndRelease(stream.Context(), scope, entry, dedupeFinal, nil)
 					return
 				}
 				// A canceled/deadline outcome (the owner's stream died
 				// mid-run) is released, not cached: the re-issue must
 				// re-execute, not join a 10-minute cached cancellation.
-				s.weaveDedupe.finishAndRelease(scope, entry, nil, weaveErr)
+				s.weaveDedupe.finishAndRelease(stream.Context(), scope, entry, nil, weaveErr)
 			}()
 		}
 	}
@@ -1014,13 +1051,18 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// selection — an inaccessible session is not-found, never a fallback to
 	// the explicit or default agent (see Weave).
 	if req.SessionId != "" {
-		ownerAg, ownerID, exists, accessible := s.findSessionOwner(req.SessionId, postgres.UserIDFromContext(stream.Context()))
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(stream.Context(), req.SessionId, postgres.UserIDFromContext(stream.Context()))
 		if exists {
 			if !accessible {
 				return status.Error(codes.NotFound, "session not found")
 			}
+			// A stored session bound to an agent this process no longer
+			// registers must not silently resume under a different agent.
+			if ownerAg == nil && ownerID != "" {
+				return status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
+			}
 			ag, resolvedAgentID = ownerAg, ownerID
-			if req.AgentId != "" {
+			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
 					return status.Error(codes.FailedPrecondition, "session belongs to a different agent")
 				}
@@ -1201,7 +1243,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			failedProgress.Message = "Agent completed with errors"
 		}
 		_ = stream.Send(failedProgress)
-		return status.Errorf(codes.Internal, "agent execution failed: %v", finalResult.err)
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result, cost, and context state

@@ -166,6 +166,11 @@ func (s *MCPServer) startStdioSubscription(ctx context.Context, t transport.Tran
 
 	listenID := req.ID.String()
 	go func() {
+		// cancel is routed through conn.listens for client-initiated ends;
+		// self-termination paths (overflow, send failure) must release the
+		// child context too or it accumulates on the Serve context across
+		// overflow/re-subscribe cycles (round-3 finding 3).
+		defer cancel()
 		defer func() {
 			s.subsMu.Lock()
 			delete(s.subscriptions, subKey)

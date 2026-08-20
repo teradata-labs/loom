@@ -26,6 +26,14 @@ type SessionStorage interface {
 	DeleteSession(ctx context.Context, sessionID string) error
 	LoadAgentSessions(ctx context.Context, agentID string) ([]string, error)
 
+	// SessionExists reports whether any session row has this id, regardless
+	// of owner. It is an authorization primitive, not a data read: resume
+	// gates use it to distinguish exists-but-foreign (must deny) from absent
+	// (safe to create) — an owner-scoped read cannot tell those apart, and
+	// treating foreign as absent would let a caller squat another user's
+	// session id with a fresh session under their own identity.
+	SessionExists(ctx context.Context, sessionID string) (bool, error)
+
 	// Messages
 	//
 	// SaveMessage derives the row's turn at insert (HLD §4.5): the turnStart

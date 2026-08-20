@@ -87,8 +87,14 @@ func (e *weaveDedupeEntry) finish(resp *loomv1.WeaveResponse, err error) {
 // stream-loss casualty D1 exists to recover from, so the entry is released
 // first and the re-issued request re-executes instead of joining a cached
 // failure. Joiners already waiting still receive the error through done.
-func (d *weaveDeduper) finishAndRelease(scopeKey string, entry *weaveDedupeEntry, resp *loomv1.WeaveResponse, err error) {
-	if resp == nil && isTransientOutcome(err) {
+//
+// The request context is consulted as well as the error shape (round-3
+// finding 2): intermediate layers can launder a cancellation into another
+// code — an %v-wrapped Internal, a mid-stream Send failure surfacing as
+// Unavailable — but a dead request context means the outcome was never
+// delivered and is not durable, whatever the error looks like.
+func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, entry *weaveDedupeEntry, resp *loomv1.WeaveResponse, err error) {
+	if resp == nil && (isTransientOutcome(err) || ctx.Err() != nil) {
 		d.mu.Lock()
 		// Guard against releasing a successor entry that reused the key
 		// after this one was already swept or evicted.
@@ -98,6 +104,21 @@ func (d *weaveDeduper) finishAndRelease(scopeKey string, entry *weaveDedupeEntry
 		d.mu.Unlock()
 	}
 	entry.finish(resp, err)
+}
+
+// wrapAgentError maps an agent execution failure to its gRPC status.
+// Cancellation and deadline keep their own codes: correct for callers, and
+// the dedupe release classifies on them — flattening them into Internal via
+// %v would cache a caller disconnect as a durable outcome for the full TTL
+// (round-3 finding 2). Everything else is Internal.
+func wrapAgentError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return status.Errorf(codes.Canceled, "agent execution canceled: %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Errorf(codes.DeadlineExceeded, "agent execution deadline exceeded: %v", err)
+	}
+	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
 }
 
 // isTransientOutcome reports whether err reflects an interrupted run
