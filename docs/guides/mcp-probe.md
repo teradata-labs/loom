@@ -47,7 +47,7 @@ All from official sources:
 |---|---|---|
 | Go SDK conformance everything-server | **2026-07-28** (stateless HTTP + stdio); sessionful legacy with `-stateless=false` | `go install github.com/modelcontextprotocol/go-sdk/conformance/everything-server@v1.7.0` then `everything-server -http localhost:8971` |
 | `@modelcontextprotocol/server-everything` (npm, TypeScript) | legacy 2025-11-25 | `npx -y @modelcontextprotocol/server-everything stdio` |
-| Loom's own `looms` + `loom-mcp --transport=http` | 🚧 **dual-era pending PR #328** (server-side 2026-07-28); on `main` today this endpoint is legacy-only. The transcript below was captured against the #328 branch | `looms serve` then `loom-mcp --transport=http --http-addr=127.0.0.1:8765 --grpc-addr=localhost:60051` |
+| Loom's own `looms` + `loom-mcp --transport=http` | **dual-era**: 2026-07-28 stateless AND legacy 2024-11-05 handshake on one endpoint (server side landed in PR #328; transcript below) | `looms serve` then `loom-mcp --transport=http --http-addr=127.0.0.1:8765 --grpc-addr=localhost:60051` |
 
 As of 2026-08-19 the Go SDK is the only official SDK with a 2026-07-28 runtime; the TypeScript SDK tops out at 2025-11-25, which makes its servers exactly the legacy peers the fallback ladder needs.
 
@@ -108,7 +108,7 @@ CONNECTED in 6ms
   call echo → "Echo: session test"
 ```
 
-**Dogfood: Loom's own dual-era endpoint** (`loom-mcp --transport=http` bridging a running `looms`). 🚧 This behavior is PR #328's server side, and the session below was captured against that branch — on `main` the endpoint is legacy-only until #328 merges. One endpoint serves both eras:
+**Dogfood: Loom's own dual-era endpoint** (`loom-mcp --transport=http` bridging a running `looms`; server side landed in PR #328). One endpoint serves both eras:
 
 ```text
 $ loom-mcp-probe -url http://127.0.0.1:8765/ -call loom_list_agents -watch 3
@@ -131,7 +131,7 @@ CONNECTED in 3ms
 
 - The MRTR driver answers **elicitations only**, with one canned object for all of them; sampling and roots input requests fail the exchange by design.
 - `-watch` requires a stateless (2026-07-28) connection; `subscriptions/listen` does not exist on legacy revisions.
-- This is a probe, not a conformance suite: it reports what happened on one connection. The dual-revision conformance matrix and official-SDK interop suite (migration spec §10) ride PR #328; on `main` today `pkg/mcp/conformance` holds the legacy tests only.
+- This is a probe, not a conformance suite: it reports what happened on one connection. The dual-revision conformance matrix and official-SDK interop suite live in `pkg/mcp/conformance` (migration spec §10, landed in PR #328).
 - Authenticated HTTP endpoints need `-headers-env`: the manager passes configured headers from agent config, and the probe reads the same shape from the named environment variable.
 
 ## Field notes from real servers
