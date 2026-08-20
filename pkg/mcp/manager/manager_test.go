@@ -166,6 +166,8 @@ func TestManager_GetClient_NonExistent(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "server not found")
+	assert.ErrorIs(t, err, ErrServerNotFound,
+		"GetClient must wrap the sentinel so callers can errors.Is it (issue #334)")
 }
 
 func TestManager_GetServerConfig(t *testing.T) {

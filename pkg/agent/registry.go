@@ -2706,5 +2706,17 @@ type mcpManagerAdapter struct {
 }
 
 func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	return a.mgr.GetClient(serverName)
+	c, err := a.mgr.GetClient(serverName)
+	if err != nil {
+		// Distinguish "server was removed from configuration" (a stale tool
+		// index entry the executor should evict, issue #334) from "server is
+		// configured but not currently connected" (transient — keep it).
+		if errors.Is(err, manager.ErrServerNotFound) {
+			if _, cfgErr := a.mgr.GetServerConfig(serverName); cfgErr != nil {
+				return nil, fmt.Errorf("%w: %s", shuttle.ErrMCPServerNotFound, serverName)
+			}
+		}
+		return nil, err
+	}
+	return c, nil
 }

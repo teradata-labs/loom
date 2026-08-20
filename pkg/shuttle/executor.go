@@ -16,6 +16,7 @@ package shuttle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -32,6 +33,20 @@ import (
 type ToolRegistry interface {
 	Search(ctx context.Context, req *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error)
 }
+
+// ToolEvictor is an optional extension of ToolRegistry: registries that
+// implement it get stale entries removed when dynamic registration proves
+// them dead (their MCP server no longer exists), so the same stale tool is
+// never served twice (issue #334).
+type ToolEvictor interface {
+	EvictTool(ctx context.Context, toolID string) error
+}
+
+// ErrMCPServerNotFound reports that an MCP tool's server does not exist —
+// not configured at all, as opposed to configured but temporarily
+// unreachable. MCPManager implementations wrap this sentinel so the executor
+// can evict the tool's index entry instead of retrying it forever.
+var ErrMCPServerNotFound = errors.New("MCP server not found")
 
 // MCPManager is an interface for getting MCP clients.
 // This avoids import cycles with pkg/mcp/manager.
@@ -633,6 +648,16 @@ func (e *Executor) registerMCPTool(ctx context.Context, toolInfo *loomv1.Indexed
 	// Get MCP client for the server
 	client, err := e.mcpManager.GetClient(toolInfo.McpServer)
 	if err != nil {
+		// A server that does not exist (vs. temporarily unreachable) means
+		// the index entry is stale: evict it so it is never served again
+		// (issue #334). Transient failures keep the entry.
+		if errors.Is(err, ErrMCPServerNotFound) {
+			if evictor, ok := e.toolRegistry.(ToolEvictor); ok {
+				if evictErr := evictor.EvictTool(ctx, toolInfo.Id); evictErr == nil {
+					return nil, fmt.Errorf("failed to get MCP client for server %s: %w (stale tool index entry %s evicted)", toolInfo.McpServer, err, toolInfo.Id)
+				}
+			}
+		}
 		return nil, fmt.Errorf("failed to get MCP client for server %s: %w", toolInfo.McpServer, err)
 	}
 

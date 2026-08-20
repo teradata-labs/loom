@@ -16,6 +16,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -25,6 +26,12 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
 )
+
+// ErrServerNotFound reports that a server name is unknown to the manager —
+// either never configured or not currently connected, depending on the call.
+// Callers use errors.Is to distinguish a missing server from transport or
+// protocol failures (e.g. to evict stale tool-index entries, issue #334).
+var ErrServerNotFound = errors.New("server not found")
 
 // Manager orchestrates multiple MCP server connections.
 type Manager struct {
@@ -303,7 +310,7 @@ func (m *Manager) StopServer(name string) error {
 
 	client, exists := m.clients[name]
 	if !exists {
-		return fmt.Errorf("server not found: %s", name)
+		return fmt.Errorf("%w: %s", ErrServerNotFound, name)
 	}
 
 	// The watcher must be gone before its client closes; otherwise it keeps
@@ -355,7 +362,7 @@ func (m *Manager) GetClient(serverName string) (*client.Client, error) {
 
 	client, exists := m.clients[serverName]
 	if !exists {
-		return nil, fmt.Errorf("server not found: %s", serverName)
+		return nil, fmt.Errorf("%w: %s", ErrServerNotFound, serverName)
 	}
 
 	return client, nil
@@ -426,7 +433,7 @@ func (m *Manager) HealthCheck(ctx context.Context) map[string]bool {
 func (m *Manager) GetServerConfig(serverName string) (ServerConfig, error) {
 	config, exists := m.config.Servers[serverName]
 	if !exists {
-		return ServerConfig{}, fmt.Errorf("server not found: %s", serverName)
+		return ServerConfig{}, fmt.Errorf("%w: %s", ErrServerNotFound, serverName)
 	}
 	return config, nil
 }

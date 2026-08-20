@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -1453,17 +1454,30 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Create MCP indexer if MCP manager is available
 		var indexers []toolregistry.Indexer
 		indexers = append(indexers, builtinIndexer)
+		// Search results only surface MCP tools whose server currently
+		// exists; with no manager, no MCP tool is servable at all (#334).
+		liveMCPServers := func() []string { return nil }
 		if mcpManager != nil {
-			mcpIndexer := toolregistry.NewMCPIndexer(mcpManager.GetManager(), tracer)
+			mgr := mcpManager.GetManager()
+			mcpIndexer := toolregistry.NewMCPIndexer(mgr, tracer)
 			indexers = append(indexers, mcpIndexer)
+			liveMCPServers = func() []string {
+				servers := mgr.ListServers()
+				names := make([]string, 0, len(servers))
+				for _, s := range servers {
+					names = append(names, s.Name)
+				}
+				return names
+			}
 		}
 
 		var err error
 		toolRegistry, err = toolregistry.New(toolregistry.Config{
-			DBPath:   toolDBPath,
-			LLM:      llmProvider,
-			Tracer:   tracer,
-			Indexers: indexers,
+			DBPath:         toolDBPath,
+			LLM:            llmProvider,
+			Tracer:         tracer,
+			Indexers:       indexers,
+			LiveMCPServers: liveMCPServers,
 		})
 		if err != nil {
 			logger.Warn("Failed to create tool registry", zap.Error(err))
@@ -3785,7 +3799,19 @@ type mcpManagerAdapter struct {
 }
 
 func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	return a.mgr.GetClient(serverName)
+	c, err := a.mgr.GetClient(serverName)
+	if err != nil {
+		// Distinguish "server was removed from configuration" (a stale tool
+		// index entry the executor should evict, issue #334) from "server is
+		// configured but not currently connected" (transient — keep it).
+		if errors.Is(err, manager.ErrServerNotFound) {
+			if _, cfgErr := a.mgr.GetServerConfig(serverName); cfgErr != nil {
+				return nil, fmt.Errorf("%w: %s", shuttle.ErrMCPServerNotFound, serverName)
+			}
+		}
+		return nil, err
+	}
+	return c, nil
 }
 
 // copyDir recursively copies a directory tree from src to dst.
