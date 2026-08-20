@@ -1492,6 +1492,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					zap.Int32("builtin_tools", resp.BuiltinCount),
 					zap.Int32("mcp_tools", resp.McpCount),
 					zap.Int32("total_tools", resp.TotalCount),
+					zap.Int32("pruned_stale_tools", resp.PrunedCount),
 					zap.Int64("duration_ms", resp.DurationMs))
 			}
 		}

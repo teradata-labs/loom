@@ -589,7 +589,7 @@ func (r *Registry) ftsSearch(ctx context.Context, query string, expandedTerms []
 	// Restrict MCP tools to live servers so stale index rows are never
 	// surfaced to agents (issue #334).
 	livenessSQL, livenessArgs := r.mcpLivenessClause("t")
-	sql += livenessSQL
+	sql += livenessSQL // #nosec G202 -- clause contains only literal "?" placeholders, values are parameterized
 	args = append(args, livenessArgs...)
 
 	sql += " ORDER BY score LIMIT ?"
@@ -889,7 +889,7 @@ func (r *Registry) GetToolsByCapability(ctx context.Context, capability string, 
 
 	// Restrict MCP tools to live servers (issue #334).
 	livenessSQL, livenessArgs := r.mcpLivenessClause("")
-	sql += livenessSQL
+	sql += livenessSQL // #nosec G202 -- clause contains only literal "?" placeholders, values are parameterized
 	args = append(args, livenessArgs...)
 
 	sql += " LIMIT ?"
