@@ -87,17 +87,35 @@ type RetryInput struct {
 }
 
 // ParseRetryInput extracts inputResponses and requestState from a retried
-// request's params; both zero when this is not an MRTR retry.
-func ParseRetryInput(params json.RawMessage) RetryInput {
+// request's params; both zero when this is not an MRTR retry. An absent
+// member is not a retry and parses clean, but a present-and-malformed member
+// is a client error the server must answer with InvalidParams — silently
+// zeroing it would make the retry indistinguishable from an initial call and
+// re-elicit the same input until MaxRounds.
+func ParseRetryInput(params json.RawMessage) (RetryInput, error) {
 	if len(params) == 0 {
-		return RetryInput{}
+		return RetryInput{}, nil
 	}
-	var probe struct {
-		InputResponses InputResponses `json:"inputResponses"`
-		RequestState   string         `json:"requestState"`
+	var raw struct {
+		InputResponses json.RawMessage `json:"inputResponses"`
+		RequestState   json.RawMessage `json:"requestState"`
 	}
-	_ = json.Unmarshal(params, &probe)
-	return RetryInput{Responses: probe.InputResponses, RequestState: probe.RequestState}
+	if err := json.Unmarshal(params, &raw); err != nil {
+		// Non-object params are the owning method's problem, not MRTR's.
+		return RetryInput{}, nil
+	}
+	var out RetryInput
+	if len(raw.InputResponses) > 0 && string(raw.InputResponses) != "null" {
+		if err := json.Unmarshal(raw.InputResponses, &out.Responses); err != nil {
+			return RetryInput{}, fmt.Errorf("malformed inputResponses: %w", err)
+		}
+	}
+	if len(raw.RequestState) > 0 && string(raw.RequestState) != "null" {
+		if err := json.Unmarshal(raw.RequestState, &out.RequestState); err != nil {
+			return RetryInput{}, fmt.Errorf("malformed requestState: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // ParseInputRequired decodes an input_required interim result.

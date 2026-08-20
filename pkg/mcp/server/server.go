@@ -180,12 +180,18 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	}
 
 	if err := protocol.ValidateRequest(&req); err != nil {
-		return marshalResponse(nil, nil, protocol.NewError(protocol.InvalidRequest, err.Error(), nil))
+		// Unmarshal already succeeded, so the id is detectable and JSON-RPC
+		// 2.0 requires echoing it (null breaks correlation for multiplexing
+		// clients); ValidateRequest never faults the id itself.
+		return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest, err.Error(), nil))
 	}
 
 	// Extract the 2026-07-28 per-request _meta identity into the context;
 	// handlers and observability read from there, never from params.
 	ctx = withRequestMeta(ctx, req.Params)
+	if resp, done := rejectMalformedRetry(ctx, &req); done {
+		return resp, nil
+	}
 
 	s.logger.Debug("handling request", zap.String("method", req.Method), zap.Any("id", req.ID))
 	start := time.Now()

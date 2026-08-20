@@ -34,6 +34,11 @@ type RequestMeta struct {
 	LogLevel        string
 	IdempotencyKey  string
 
+	// RetryInputErr is set when the retry members were present but malformed;
+	// dispatch answers it with InvalidParams before any handler runs, so a
+	// broken retry fails fast instead of silently re-eliciting as an initial
+	// call until MaxRounds.
+	RetryInputErr error
 	// RetryInput carries a client's MRTR retry payload (inputResponses +
 	// echoed requestState); zero when the request is not a retry. Handlers
 	// read it here instead of parsing params themselves.
@@ -104,8 +109,27 @@ func parseRequestMeta(params json.RawMessage) *RequestMeta {
 	if raw, ok := probe.Meta[protocol.MetaIdempotencyKey]; ok {
 		_ = json.Unmarshal(raw, &meta.IdempotencyKey)
 	}
-	meta.RetryInput = protocol.ParseRetryInput(params)
+	meta.RetryInput, meta.RetryInputErr = protocol.ParseRetryInput(params)
 	return meta
+}
+
+// rejectMalformedRetry answers a request whose MRTR retry members were
+// present but malformed with InvalidParams before any handler runs. done is
+// true when the request was consumed (resp is nil for notifications).
+func rejectMalformedRetry(ctx context.Context, req *protocol.Request) (resp []byte, done bool) {
+	meta := RequestMetaFromContext(ctx)
+	if meta == nil || meta.RetryInputErr == nil {
+		return nil, false
+	}
+	if req.ID == nil {
+		return nil, true
+	}
+	out, err := marshalResponse(req.ID, nil,
+		protocol.NewError(protocol.InvalidParams, meta.RetryInputErr.Error(), nil))
+	if err != nil {
+		return nil, true
+	}
+	return out, true
 }
 
 // stampResult injects the revision-level result envelope for stateless

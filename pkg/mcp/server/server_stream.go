@@ -41,6 +41,9 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 	// The streaming path bypasses HandleMessage, so it extracts _meta itself;
 	// the fallback path re-extracts inside HandleMessage, which is harmless.
 	ctx = withRequestMeta(ctx, req.Params)
+	if resp, done := rejectMalformedRetry(ctx, &req); done {
+		return resp, nil
+	}
 
 	// subscriptions/listen (2026-07-28) holds this response stream open and
 	// delivers opted-in change notifications; it exists only on the
@@ -71,7 +74,14 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 		// MRTR pause on the streaming path: the interim result is the final
 		// event of this stream; the client answers and retries the call.
 		var inputReq *protocol.InputRequiredError
-		if errors.As(err, &inputReq) && RequestMetaFromContext(ctx).Stateless() {
+		if errors.As(err, &inputReq) {
+			if !RequestMetaFromContext(ctx).Stateless() {
+				// Legacy clients cannot drive MRTR: mirror the synchronous
+				// path's explicit -32600 rather than downgrading the pause to
+				// an opaque isError blob carrying an internal error string.
+				return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest,
+					"this operation requires interactive input, which needs an MCP 2026-07-28 (MRTR-capable) client", nil))
+			}
 			interim := protocol.InputRequiredResult{
 				ResultType:    protocol.ResultTypeInputRequired,
 				InputRequests: inputReq.Requests,
