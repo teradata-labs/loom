@@ -174,3 +174,72 @@ func TestSubscriptionIDsDoNotCollideAcrossClients(t *testing.T) {
 	require.Eventually(t, func() bool { return len(w1.snapshot()) >= 2 }, 2*time.Second, 5*time.Millisecond)
 	require.Eventually(t, func() bool { return len(w2.snapshot()) >= 2 }, 2*time.Second, 5*time.Millisecond)
 }
+
+// stallingSSEWriter lets the ack through, then parks every write on gate,
+// simulating a consumer too slow to drain its subscription.
+type stallingSSEWriter struct {
+	gate    chan struct{}
+	stalled chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	n       int
+}
+
+func (b *stallingSSEWriter) WriteEvent([]byte) error {
+	b.mu.Lock()
+	b.n++
+	first := b.n == 1
+	b.mu.Unlock()
+	if first {
+		return nil // the acknowledgment
+	}
+	b.once.Do(func() { close(b.stalled) })
+	<-b.gate
+	return nil
+}
+
+// Round-2 finding 5: a dropped notification is an invisible gap. Overflow
+// must terminate the stream so the client re-subscribes and refetches
+// instead of serving stale data until ttlMs expiry.
+func TestSubscriptionOverflowClosesStream(t *testing.T) {
+	s := NewMCPServer("loom-mcp", "1.4.0", nil)
+	w := &stallingSSEWriter{gate: make(chan struct{}), stalled: make(chan struct{})}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		final, err := s.HandleMessageStream(context.Background(), listenRequest(1, `{"toolsListChanged":true}`), w)
+		assert.NoError(t, err)
+		assert.Nil(t, final)
+	}()
+
+	// Wait for the subscription to register (the ack has been written by
+	// then), park the pump on a slow write, then saturate the buffer and one
+	// more.
+	require.Eventually(t, func() bool {
+		s.subsMu.RLock()
+		defer s.subsMu.RUnlock()
+		return len(s.subscriptions) == 1
+	}, 2*time.Second, 5*time.Millisecond)
+	s.NotifyToolsListChanged()
+	select {
+	case <-w.stalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump never attempted delivery")
+	}
+	for i := 0; i < subscriptionBuffer+1; i++ {
+		s.NotifyToolsListChanged()
+	}
+
+	// Release the consumer: the stream must end rather than resume silently.
+	close(w.gate)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("overflowed subscription stream did not close")
+	}
+	s.subsMu.RLock()
+	remaining := len(s.subscriptions)
+	s.subsMu.RUnlock()
+	assert.Zero(t, remaining, "overflowed subscription must be unregistered")
+}

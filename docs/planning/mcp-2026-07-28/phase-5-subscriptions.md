@@ -11,7 +11,7 @@ Server-initiated list-change notifications get their first HTTP delivery path; t
 ## Pinned decisions
 
 - **[proposed] Subscription registry lives in `MCPServer`,** not the transport: `subscriptions map[string]*subscription{id, types, ch}` guarded by the existing mutex. The `subscriptions/listen` handler registers, then the streaming path (`HandleMessageStream`) holds the request open and forwards from the subscription channel. The transport stays dumb.
-- **[proposed] Per-subscriber buffered channel (64), drop-oldest on overflow with a Warn.** Dropping is spec-acceptable: recovery is refetch-on-reconnect, and `ttlMs` makes refetch cheap. No redelivery machinery (that was resumption).
+- **[adopted, revised in review round 2] Per-subscriber buffered channel (64); overflow terminates the subscription.** A silently dropped notification is a gap the client cannot see, so it would serve stale data until `ttlMs` expiry; terminating (HTTP: stream close; stdio: server-initiated `notifications/cancelled`) makes the documented recovery — re-subscribe and refetch, which `ttlMs` keeps cheap — actually trigger. No redelivery machinery (that was resumption).
 - **[proposed] `notifyCh` is replaced, not bridged:** publishers call `s.publish(notificationType, payload)` which fans out to matching subscribers AND the legacy `Serve()` stdio path. The 16-slot `notifyCh` and its drop-when-full path are deleted.
 - **Client `Subscribe` is one long-lived POST** re-opened with exponential backoff (1s..30s, jitter); on every (re)open the client refetches lists for its subscribed types before processing new events — that ordering closes the notification gap.
 
@@ -30,7 +30,7 @@ Server-initiated list-change notifications get their first HTTP delivery path; t
 | 1 | Subscriber opted into `toolsListChanged` only | Server publishes tools + resources changes | Receives only tools events, tagged with its subscriptionId |
 | 2 | Two subscribers, different type sets | One publish each type | Each receives exactly its own |
 | 3 | Subscriber stream closed by client | Next publish | No send to dead stream; registry entry removed; no goroutine leak (assert goroutine count) |
-| 4 | Slow subscriber, >64 pending | Publishes continue | Oldest dropped, Warn logged, server never blocks |
+| 4 | Slow subscriber, >64 pending | Publishes continue | Subscription terminated (stream close / `notifications/cancelled`), Warn logged, server never blocks |
 | 5 | Client `Subscribe`, server restarts | Backoff reconnect | Re-subscribes; refetches list first; a change published during the gap is reflected in the refetched list |
 | 6 | Lazy skill load (TER-263) | Load lands | `toolsListChanged` published; next `tools/list` includes the tool and correct `ttlMs` |
 | 7 | Streaming `loom_weave` while a listen stream is open | Weave runs | Progress events on the weave's own stream, not the listen stream |

@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
@@ -34,9 +35,11 @@ import (
 )
 
 // subscriptionBuffer bounds per-subscriber pending notifications. Overflow
-// drops the notification (with a warning): recovery is refetch-on-reconnect,
-// and ttlMs freshness hints make refetching cheap — redelivery machinery
-// would be rebuilding the resumption the revision deleted.
+// terminates the subscription: a silently dropped notification is a gap the
+// client cannot see, so it would serve stale data until ttlMs expiry instead
+// of engaging the documented recovery (re-subscribe and refetch, which ttlMs
+// freshness hints keep cheap). Redelivery machinery would be rebuilding the
+// resumption the revision deleted.
 const subscriptionBuffer = 64
 
 // serverSubscription is one active listen stream's registration.
@@ -44,6 +47,16 @@ type serverSubscription struct {
 	id     json.RawMessage // the listen request's JSON-RPC id, echoed in _meta
 	filter protocol.NotificationFilter
 	ch     chan []byte
+	// overflow is closed (once) when a publish would drop: the pump ends the
+	// subscription so the client learns a gap occurred and refetches.
+	overflow     chan struct{}
+	overflowOnce sync.Once
+}
+
+// markOverflowed signals the pump to terminate the subscription; idempotent
+// because concurrent publishers may overflow the same subscriber.
+func (sub *serverSubscription) markOverflowed() {
+	sub.overflowOnce.Do(func() { close(sub.overflow) })
 }
 
 // wantsNotification reports whether the subscription's filter opted into the
@@ -84,9 +97,10 @@ func (s *MCPServer) handleSubscriptionsListenStream(ctx context.Context, req *pr
 	}
 
 	sub := &serverSubscription{
-		id:     idJSON,
-		filter: params.Notifications, // every requested type is honored
-		ch:     make(chan []byte, subscriptionBuffer),
+		id:       idJSON,
+		filter:   params.Notifications, // every requested type is honored
+		ch:       make(chan []byte, subscriptionBuffer),
+		overflow: make(chan struct{}),
 	}
 
 	// The registry key is server-unique, never the client's JSON-RPC id:
@@ -126,6 +140,13 @@ func (s *MCPServer) handleSubscriptionsListenStream(ctx context.Context, req *pr
 			// one, but the peer is already gone.
 			s.logger.Debug("subscription closed by client", zap.String("subscription_id", subKey))
 			return nil, nil
+		case <-sub.overflow:
+			// A publish would have dropped: close the stream so the client
+			// sees the gap and re-subscribes/refetches instead of serving
+			// stale data until ttlMs expiry.
+			s.logger.Warn("subscription overflowed; closing stream for client refetch",
+				zap.String("subscription_id", subKey))
+			return nil, nil
 		case notif := <-sub.ch:
 			if err := w.WriteEvent(notif); err != nil {
 				s.logger.Debug("subscription stream write failed; closing",
@@ -161,7 +182,11 @@ func (s *MCPServer) publishNotification(method, uri string, extraParams map[stri
 		select {
 		case sub.ch <- notif:
 		default:
-			s.logger.Warn("subscription notification dropped: consumer too slow",
+			// A full buffer means an invisible gap: terminate the
+			// subscription so the client refetches, rather than silently
+			// serving it stale data until ttlMs expiry.
+			sub.markOverflowed()
+			s.logger.Warn("subscription overflowed: terminating for client refetch",
 				zap.String("subscription_id", string(sub.id)), zap.String("method", method))
 		}
 	}

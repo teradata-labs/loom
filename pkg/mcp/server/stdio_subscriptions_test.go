@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,4 +176,49 @@ func TestStdioLegacyEraStillDeliversUntagged(t *testing.T) {
 	assert.Contains(t, string(notif["method"]), protocol.NotificationToolsListChanged)
 	assert.NotContains(t, string(notif["params"]), protocol.MetaSubscriptionID,
 		"legacy delivery is untagged")
+}
+
+// Round-2 finding 5, stdio binding: the connection outlives the subscription,
+// so the gap signal is a server-initiated notifications/cancelled for the
+// listen id — after which the id is reusable for the refetch re-subscribe.
+func TestStdioSubscriptionOverflowSendsCancelled(t *testing.T) {
+	s := NewMCPServer("loom-mcp", "1.4.0", nil)
+	h := newStdioHarness(t, s)
+
+	h.send(stdioListenLine(5))
+	ack := h.next()
+	require.Contains(t, string(ack["method"]), protocol.NotificationSubscriptionAcknowledged)
+
+	// Flood without draining: the pipe (unbuffered) and the harness line
+	// buffer park the pump mid-send, the subscription buffer fills, and the
+	// next publish overflows.
+	for i := 0; i < subscriptionBuffer+50; i++ {
+		s.NotifyToolsListChanged()
+	}
+
+	// Drain until the cancellation surfaces.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case line, ok := <-h.lines:
+			require.True(t, ok, "server output closed before cancellation")
+			if strings.Contains(string(line), protocol.NotificationCancelled) {
+				assert.Contains(t, string(line), "overflowed")
+				goto resubscribe
+			}
+		case <-deadline:
+			t.Fatal("no notifications/cancelled after overflow")
+		}
+	}
+
+resubscribe:
+	// The listen id must be reusable once the pump cleaned up.
+	require.Eventually(t, func() bool {
+		s.subsMu.RLock()
+		defer s.subsMu.RUnlock()
+		return len(s.subscriptions) == 0
+	}, 2*time.Second, 5*time.Millisecond, "overflowed subscription must be unregistered")
+	h.send(stdioListenLine(5))
+	ack2 := h.next()
+	assert.Contains(t, string(ack2["method"]), protocol.NotificationSubscriptionAcknowledged)
 }

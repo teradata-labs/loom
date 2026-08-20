@@ -146,9 +146,10 @@ func (s *MCPServer) startStdioSubscription(ctx context.Context, t transport.Tran
 	}
 
 	sub := &serverSubscription{
-		id:     idJSON,
-		filter: params.Notifications,
-		ch:     make(chan []byte, subscriptionBuffer),
+		id:       idJSON,
+		filter:   params.Notifications,
+		ch:       make(chan []byte, subscriptionBuffer),
+		overflow: make(chan struct{}),
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
@@ -192,6 +193,21 @@ func (s *MCPServer) startStdioSubscription(ctx context.Context, t transport.Tran
 				// shutdown; the stdio binding sends no response on
 				// client-initiated cancellation.
 				s.logger.Debug("stdio subscription closed", zap.String("subscription_id", listenID))
+				return
+			case <-sub.overflow:
+				// The connection stays up on stdio, so the gap signal is a
+				// server-initiated notifications/cancelled for this listen
+				// id: the client re-subscribes and refetches.
+				cancelled, err := marshalNotification(protocol.NotificationCancelled, map[string]interface{}{
+					"_meta":     map[string]json.RawMessage{protocol.MetaSubscriptionID: idJSON},
+					"requestId": json.RawMessage(idJSON),
+					"reason":    "notification buffer overflowed; re-subscribe and refetch",
+				})
+				if err == nil {
+					_ = t.Send(subCtx, cancelled)
+				}
+				s.logger.Warn("stdio subscription overflowed; cancelled for client refetch",
+					zap.String("subscription_id", listenID))
 				return
 			case notif := <-sub.ch:
 				if err := t.Send(subCtx, notif); err != nil {
