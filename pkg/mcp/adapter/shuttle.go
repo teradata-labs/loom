@@ -324,6 +324,10 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// only size logic, so no second bound may cut the payload upstream here.
 	data := convertMCPContent(mcpResult.Content)
 
+	// Session-handle lifecycle (issue #345): collect minted handles for
+	// end-of-conversation auto-release; drop ones the agent released itself.
+	trackSessionHandles(ctx, a, params, data)
+
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
 		cacheKey := a.buildSchemaCacheKey(restoredParams)
