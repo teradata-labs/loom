@@ -373,6 +373,53 @@ type judgeServerSetter interface {
 	SetJudgeServer(js *server.JudgeServer)
 }
 
+// registrySubsystemSink is the subset of *agent.Registry that receives the
+// server-level subsystems. Extracted so wireRegistrySubsystems is unit-testable
+// with a spy.
+type registrySubsystemSink interface {
+	SetTaskManager(manager *task.Manager, decomposer *task.Decomposer)
+	SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder)
+	SetSuppressedBuiltinTools(names []string)
+}
+
+// wireRegistrySubsystems injects the server-level subsystems (task manager,
+// graph-memory store, tool-surface policy) into the agent registry so that
+// registry-built agents — gRPC-created, config-hot-reloaded, or benchmark
+// --isolate temp agents — receive them.
+//
+// This MUST run independently of whether a provider pool is configured. These
+// injections previously lived inside the `providerPool != nil` branch of the
+// serve wiring, so a single-provider server silently gave every registry-built
+// agent a nil graph-memory store (no extraction, no cross-session recall), a
+// nil task manager, and no tool-surface policy. The per-agent YAML flags
+// (memory.graph_memory.enabled, memory.task_board.enabled) still gate behavior;
+// these calls only make the subsystems reachable.
+func wireRegistrySubsystems(
+	reg registrySubsystemSink,
+	taskManager *task.Manager,
+	taskDecomposer *task.Decomposer,
+	graphMemoryStore memory.GraphMemoryStore,
+	memoryEmbedder memory.Embedder,
+	suppressed []string,
+	logger *zap.Logger,
+) {
+	if taskManager != nil {
+		reg.SetTaskManager(taskManager, taskDecomposer)
+		logger.Info("Task manager injected into agent registry",
+			zap.Bool("decomposer_present", taskDecomposer != nil))
+	}
+	if graphMemoryStore != nil {
+		reg.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
+		logger.Info("Graph memory store injected into agent registry",
+			zap.Bool("embedder_present", memoryEmbedder != nil))
+	}
+	if len(suppressed) > 0 {
+		reg.SetSuppressedBuiltinTools(suppressed)
+		logger.Info("Suppressed builtin tools propagated to agent registry",
+			zap.Strings("tools", suppressed))
+	}
+}
+
 // buildProviderPool constructs a named provider pool from the server configuration.
 // Each entry in cfg.Providers is created by instantiating a per-entry ProviderFactory
 // buildRateLimiterConfig converts the YAML-sourced LLMRateLimitConfig into the
@@ -2373,36 +2420,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("Provider pool injected into agent registry",
 				zap.Int("providers", len(providerPool)))
 		}
-		// Inject the task subsystem so registry-built agents reach Phase D
-		// (skills-overhaul task emission) and the sticky-while-open-tasks
-		// eviction checker. The per-agent memory.task_board.enabled flag
-		// still controls task_board tool surfacing; emission is always-on.
-		if registry != nil && taskManager != nil {
-			registry.SetTaskManager(taskManager, taskDecomposer)
-			logger.Info("Task manager injected into agent registry",
-				zap.Bool("decomposer_present", taskDecomposer != nil))
-		}
-		// Inject the graph memory subsystem so registry-built agents
-		// (gRPC-created or config-hot-reloaded) get the extractor. The
-		// per-agent memory.graph_memory.enabled flag in YAML can still
-		// opt out for a specific agent; the suppressed-tools list below
-		// controls tool surfacing independently.
-		if registry != nil && graphMemoryStore != nil {
-			registry.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
-			logger.Info("Graph memory store injected into agent registry",
-				zap.Bool("embedder_present", memoryEmbedder != nil))
-		}
-		// Push the server-level tool-surface policy into the registry so
-		// gRPC-created agents see the same hidden-tools list as the
-		// statically-loaded ones. See builtinToolsToSuppress().
-		if registry != nil {
-			suppressed := builtinToolsToSuppress()
-			if len(suppressed) > 0 {
-				registry.SetSuppressedBuiltinTools(suppressed)
-				logger.Info("Suppressed builtin tools propagated to agent registry",
-					zap.Strings("tools", suppressed))
-			}
-		}
+		// NOTE: the task-manager, graph-memory, and tool-surface registry
+		// injections were moved OUT of this pool-gated branch to an
+		// unconditional block after the if/else — they must run whenever a
+		// registry exists, not only when a provider pool is configured.
 		// Wire the eval store for ABTest result persistence.
 		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
 			evalDBPath := config.Database.Path
@@ -2425,6 +2446,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			jss.SetJudgeServer(judgeServer)
 			logger.Info("Judge server wired into loom service for ABTest judge_id resolution")
 		}
+	}
+
+	// Inject server subsystems into the agent registry UNCONDITIONALLY (not gated
+	// on a provider pool) so registry-built agents on a single-provider server
+	// still receive the graph-memory store, task manager, and tool-surface
+	// policy. See wireRegistrySubsystems for the regression this guards.
+	if registry != nil {
+		wireRegistrySubsystems(registry, taskManager, taskDecomposer,
+			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), logger)
 	}
 
 	// Set agent registry for workflow execution
