@@ -26,13 +26,16 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/types"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // weaveDedupeTTL bounds how long a completed result is replayable. Ten
@@ -76,6 +79,41 @@ func (e *weaveDedupeEntry) finish(resp *loomv1.WeaveResponse, err error) {
 	e.err = err
 	e.expiresAtNano.Store(time.Now().Add(weaveDedupeTTL).UnixNano())
 	close(e.done)
+}
+
+// finishAndRelease resolves an owned entry. Durable outcomes — a response, or
+// a deterministic execution error — stay cached for the TTL so a re-issue
+// joins them. A cancellation or deadline outcome is not durable: it is the
+// stream-loss casualty D1 exists to recover from, so the entry is released
+// first and the re-issued request re-executes instead of joining a cached
+// failure. Joiners already waiting still receive the error through done.
+func (d *weaveDeduper) finishAndRelease(scopeKey string, entry *weaveDedupeEntry, resp *loomv1.WeaveResponse, err error) {
+	if resp == nil && isTransientOutcome(err) {
+		d.mu.Lock()
+		// Guard against releasing a successor entry that reused the key
+		// after this one was already swept or evicted.
+		if d.entries[scopeKey] == entry {
+			delete(d.entries, scopeKey)
+		}
+		d.mu.Unlock()
+	}
+	entry.finish(resp, err)
+}
+
+// isTransientOutcome reports whether err reflects an interrupted run
+// (caller disconnect, deadline) rather than a deterministic result.
+func isTransientOutcome(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Canceled, codes.DeadlineExceeded:
+		return true
+	}
+	return false
 }
 
 // weaveDeduper tracks in-flight and recently completed weaves per

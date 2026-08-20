@@ -780,7 +780,8 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// Idempotency dedupe (MCP 2026-07-28, D1): a re-issued request carrying
 	// the same key joins the original run instead of executing the turn twice.
 	if key := incomingIdempotencyKey(ctx); key != "" {
-		entry, isOwner, admitted := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(ctx), key))
+		scope := dedupeScope(postgres.UserIDFromContext(ctx), key)
+		entry, isOwner, admitted := s.weaveDedupe.begin(scope)
 		switch {
 		case !admitted:
 			// Not deduplicable (oversized key or registry saturated): run
@@ -788,7 +789,9 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		case !isOwner:
 			return awaitDedupeResult(ctx, entry)
 		default:
-			defer func() { entry.finish(weaveResp, weaveErr) }()
+			// finishAndRelease: a canceled/deadline outcome is released, not
+			// cached — the re-issue must re-execute, not join the failure.
+			defer func() { s.weaveDedupe.finishAndRelease(scope, entry, weaveResp, weaveErr) }()
 		}
 	}
 
@@ -967,7 +970,8 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// deleted. dedupeFinal is set at the completion site below.
 	var dedupeFinal *loomv1.WeaveResponse
 	if key := incomingIdempotencyKey(stream.Context()); key != "" {
-		entry, isOwner, admitted := s.weaveDedupe.begin(dedupeScope(postgres.UserIDFromContext(stream.Context()), key))
+		scope := dedupeScope(postgres.UserIDFromContext(stream.Context()), key)
+		entry, isOwner, admitted := s.weaveDedupe.begin(scope)
 		switch {
 		case !admitted:
 			// Not deduplicable: run without dedupe (at-least-once).
@@ -984,10 +988,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				// the re-issued request even when this stream's final Send
 				// failed — that failure is exactly why a re-issue is coming.
 				if dedupeFinal != nil {
-					entry.finish(dedupeFinal, nil)
+					s.weaveDedupe.finishAndRelease(scope, entry, dedupeFinal, nil)
 					return
 				}
-				entry.finish(nil, weaveErr)
+				// A canceled/deadline outcome (the owner's stream died
+				// mid-run) is released, not cached: the re-issue must
+				// re-execute, not join a 10-minute cached cancellation.
+				s.weaveDedupe.finishAndRelease(scope, entry, nil, weaveErr)
 			}()
 		}
 	}

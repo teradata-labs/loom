@@ -30,7 +30,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
 	"github.com/teradata-labs/loom/pkg/types"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func keyedCtx(user, key string) context.Context {
@@ -163,4 +165,48 @@ func TestDedupeBoundedAdmission(t *testing.T) {
 	_, isOwner, admitted = d.begin("user\x00after-completion")
 	assert.True(t, admitted, "eviction of a completed entry must free a slot")
 	assert.True(t, isOwner)
+}
+
+func TestDedupeReleasesCancellationOutcomes(t *testing.T) {
+	d := newWeaveDeduper()
+	scope := dedupeScope("user-a", "key-1")
+
+	// Owner's stream dies mid-run: the cancellation must not be cached.
+	entry, isOwner, admitted := d.begin(scope)
+	require.True(t, admitted)
+	require.True(t, isOwner)
+	d.finishAndRelease(scope, entry, nil, context.Canceled)
+
+	// A joiner that was already waiting still observes the error.
+	_, err := awaitDedupeResult(context.Background(), entry)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// The re-issue re-executes: it becomes a fresh owner, never a joiner.
+	entry2, isOwner2, admitted2 := d.begin(scope)
+	require.True(t, admitted2)
+	assert.True(t, isOwner2, "re-issue after a canceled run must re-execute, not join the cached cancellation")
+	d.finishAndRelease(scope, entry2, &loomv1.WeaveResponse{Text: "ok"}, nil)
+
+	// gRPC-shaped cancellations release too.
+	scope2 := dedupeScope("user-a", "key-2")
+	e3, _, _ := d.begin(scope2)
+	d.finishAndRelease(scope2, e3, nil, status.Error(codes.DeadlineExceeded, "deadline"))
+	_, own4, _ := d.begin(scope2)
+	assert.True(t, own4)
+}
+
+func TestDedupeKeepsDeterministicErrorsJoinable(t *testing.T) {
+	d := newWeaveDeduper()
+	scope := dedupeScope("user-a", "key-1")
+
+	entry, _, _ := d.begin(scope)
+	d.finishAndRelease(scope, entry, nil, status.Error(codes.InvalidArgument, "bad query"))
+
+	// A deterministic failure is a durable outcome: the re-issue joins it
+	// instead of burning a second run on the same doomed input.
+	joined, isOwner, admitted := d.begin(scope)
+	require.True(t, admitted)
+	require.False(t, isOwner)
+	_, err := awaitDedupeResult(context.Background(), joined)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 }
