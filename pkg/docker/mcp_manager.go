@@ -193,10 +193,10 @@ func (msm *MCPServerManager) StartMCPServer(
 		Version: "1.0.0",
 	}
 
-	if err := mcpClient.Initialize(initCtx, clientInfo); err != nil {
-		// #nosec G104 -- best-effort cleanup on initialization failure
+	if err := mcpClient.Connect(initCtx, clientInfo); err != nil {
+		// #nosec G104 -- best-effort cleanup on connection failure
 		_ = trans.Close()
-		return fmt.Errorf("failed to initialize MCP server: %w", err)
+		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
 	// Store managed server
@@ -381,8 +381,16 @@ func (msm *MCPServerManager) HealthCheck(ctx context.Context, serverName string)
 		return fmt.Errorf("MCP server %s not found", serverName)
 	}
 
-	// Ping the server
-	if err := server.client.Ping(ctx); err != nil {
+	// Probe the server: protocol ping on legacy connections, a lightweight
+	// tools/list on stateless ones (ping does not exist under 2026-07-28).
+	var probeErr error
+	if server.client.IsStateless() {
+		_, probeErr = server.client.ListTools(ctx)
+	} else {
+		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
+		probeErr = server.client.Ping(ctx)
+	}
+	if err := probeErr; err != nil {
 		msm.mu.Lock()
 		server.healthy = false
 		msm.mu.Unlock()

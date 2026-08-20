@@ -47,6 +47,11 @@ import (
 // MultiAgentServer implements the LoomService gRPC server with support for multiple agents.
 // It routes requests to the appropriate agent based on agent_id in the request.
 type MultiAgentServer struct {
+	// enforceOwnership selects the tenancy mode for session access: true on
+	// authenticated deployments (blank identities are never wildcards),
+	// false for explicit single-tenant compatibility.
+	enforceOwnership bool
+
 	loomv1.UnimplementedLoomServiceServer
 
 	agents       map[string]*agent.Agent
@@ -118,12 +123,27 @@ type MultiAgentServer struct {
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
 	workflowSubAgentsMu sync.RWMutex
 
+	// backgroundWorkerWG tracks every detached background goroutine that logs
+	// through s.logger: the queue monitor, workflow coordinator/sub-agent
+	// notification handlers, broadcast handlers, spawned-agent monitors and
+	// message loops, and MCP tool re-indexers. Workers start only through
+	// goWorker, which refuses admission once backgroundWorkerShutdown is set —
+	// that makes ShutdownBackgroundWorkers' join a stable barrier instead of a
+	// point a racing request could register a worker behind. Whoever owns the
+	// logger's sink (a test's zaptest logger, process shutdown) must call
+	// ShutdownBackgroundWorkers before tearing the sink down or the exit logs
+	// race it.
+	backgroundWorkerWG       sync.WaitGroup
+	backgroundWorkerMu       sync.Mutex // orders WG.Add against backgroundWorkerShutdown
+	backgroundWorkerShutdown bool       // set once by ShutdownBackgroundWorkers; closes admission
+
 	// Spawned sub-agent tracking for lifecycle management
 	spawnedAgents   map[string]*spawnedAgentContext // sessionID → spawned agent context
 	spawnedAgentsMu sync.RWMutex
 
 	// LLM concurrency control to prevent rate limiting
 	llmSemaphore        chan struct{} // Semaphore to limit concurrent LLM calls
+	weaveDedupe         *weaveDeduper // Idempotency-key dedupe for Weave/StreamWeave (MCP 2026-07-28, D1)
 	llmConcurrencyLimit int           // Max concurrent LLM calls (configurable)
 
 	// Agent lifecycle state tracking (created_at, status, config, etc.)
@@ -246,6 +266,7 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store agent.SessionStor
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
 		llmSemaphore:                      make(chan struct{}, defaultLLMConcurrency),
+		weaveDedupe:                       newWeaveDeduper(),
 		agentStates:                       make(map[string]*agentState),
 		traceStoreLocal:                   newTraceStore(1 * time.Hour), // Eagerly initialize trace store for GetTrace RPC
 	}
@@ -503,17 +524,99 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 
 // findAgentBySession iterates all agents to find which one owns the given session.
 // Returns the agent, its ID, and true if found. This is the same pattern used by
-// GetSession(), DeleteSession(), and GetConversationHistory().
-func (s *MultiAgentServer) findAgentBySession(sessionID string) (*agent.Agent, string, bool) {
+// GetSession(), DeleteSession(), and GetConversationHistory(). Sessions owned
+// by a different user are invisible to the caller: wrong-owner lookups behave
+// exactly like lookups of a session that does not exist.
+func (s *MultiAgentServer) findAgentBySession(sessionID, callerUserID string) (*agent.Agent, string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for agentID, ag := range s.agents {
-		if _, ok := ag.GetSession(sessionID); ok {
+		if session, ok := ag.GetSession(sessionID); ok {
+			if !s.sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			return ag, agentID, true
 		}
 	}
 	return nil, "", false
+}
+
+// findSessionOwner locates the agent holding sessionID regardless of owner,
+// reporting existence and accessibility separately so callers can
+// distinguish does-not-exist (safe to create) from exists-but-foreign
+// (must not be resumed, re-created, or fallen through to another agent).
+//
+// Sessions that live only in the store — after a restart, after memory
+// eviction, or not yet loaded by this process — count (round-3 finding 1):
+// gating on memory alone would let whoever asks first mint a fresh
+// in-memory session under a persisted id and squat it. The owner-scoped
+// load resumes the caller's own session; when it misses, an unscoped
+// existence probe distinguishes foreign (deny) from absent (safe to
+// create), and store errors fail closed as inaccessible.
+func (s *MultiAgentServer) findSessionOwner(ctx context.Context, sessionID, callerUserID string) (ag *agent.Agent, agentID string, exists, accessible bool) {
+	s.mu.RLock()
+	for id, candidate := range s.agents {
+		if session, ok := candidate.GetSession(sessionID); ok {
+			ok := s.sessionAccessibleBy(callerUserID, session)
+			s.mu.RUnlock()
+			if !ok {
+				return nil, "", true, false
+			}
+			return candidate, id, true, true
+		}
+	}
+	s.mu.RUnlock()
+
+	if s.sessionStore == nil {
+		return nil, "", false, false
+	}
+	if stored, err := s.sessionStore.LoadSession(ctx, sessionID); err == nil && stored != nil {
+		// The load is owner-scoped, so a hit is the caller's own persisted
+		// session; route to its recorded agent when that agent is registered.
+		// Stored sessions record the agent's config name, so resolution goes
+		// through getAgent (GUID, registry, or name), never a raw map read.
+		if stored.AgentID == "" {
+			return nil, "", true, true // unbound session: caller's own, route by request
+		}
+		ownerAg, resolvedID, aerr := s.getAgent(stored.AgentID)
+		if aerr != nil {
+			return nil, stored.AgentID, true, true // owned, but its agent is not registered
+		}
+		return ownerAg, resolvedID, true, true
+	}
+	existsUnscoped, err := s.sessionStore.SessionExists(ctx, sessionID)
+	if err != nil || existsUnscoped {
+		// Foreign, or unverifiable (fail closed): never creatable.
+		return nil, "", true, false
+	}
+	return nil, "", false, false
+}
+
+// sessionAccessibleBy is the per-user isolation predicate shared by every
+// session-scoped RPC.
+//
+// With ownership enforcement on (multi-tenant deployments: any deployment
+// that authenticates callers), a blank identity is never a wildcard: an
+// anonymous caller sees nothing and an unowned legacy session is not
+// world-readable — cross-user access requires an exact owner match.
+//
+// Without enforcement (explicit single-tenant compatibility, the default
+// for unauthenticated local deployments), the historical permissive
+// behavior holds: identity-less callers see everything and pre-stamping
+// sessions (UserID == "") stay reachable so upgrades do not strand them.
+func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
+	if s.enforceOwnership {
+		return callerUserID != "" && session.UserID == callerUserID
+	}
+	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
+}
+
+// SetEnforceSessionOwnership selects the tenancy mode: pass true on
+// deployments that authenticate callers so blank identities stop acting as
+// ownership wildcards. Single-tenant compatibility is the explicit false.
+func (s *MultiAgentServer) SetEnforceSessionOwnership(enforce bool) {
+	s.enforceOwnership = enforce
 }
 
 // AddAgent adds a new agent to the server at runtime
@@ -701,9 +804,27 @@ func (s *MultiAgentServer) ListAgents(ctx context.Context, req *loomv1.ListAgent
 }
 
 // Weave executes a user query using the specified agent.
-func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.WeaveResponse, error) {
+func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) (weaveResp *loomv1.WeaveResponse, weaveErr error) {
 	if req.Query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+
+	// Idempotency dedupe (MCP 2026-07-28, D1): a re-issued request carrying
+	// the same key joins the original run instead of executing the turn twice.
+	if key := incomingIdempotencyKey(ctx); key != "" {
+		scope := dedupeScope(postgres.UserIDFromContext(ctx), key)
+		entry, isOwner, admitted := s.weaveDedupe.begin(scope)
+		switch {
+		case !admitted:
+			// Not deduplicable (oversized key or registry saturated): run
+			// without dedupe — at-least-once, as for key-less requests.
+		case !isOwner:
+			return awaitDedupeResult(ctx, entry)
+		default:
+			// finishAndRelease: a canceled/deadline outcome is released, not
+			// cached — the re-issue must re-execute, not join the failure.
+			defer func() { s.weaveDedupe.finishAndRelease(ctx, scope, entry, weaveResp, weaveErr) }()
+		}
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -719,9 +840,27 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	var ag *agent.Agent
 	var agentID string
 
-	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
-			ag, agentID = found, foundID
+	// An existing session is resolved and authorized before ANY agent
+	// selection: an inaccessible session must surface as not-found — never
+	// fall through to the explicit or default agent, which would resume a
+	// foreign session under whatever agent happens to hold it next.
+	if req.SessionId != "" {
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(ctx, req.SessionId, postgres.UserIDFromContext(ctx))
+		if exists {
+			if !accessible {
+				return nil, status.Error(codes.NotFound, "session not found")
+			}
+			// A stored session bound to an agent this process no longer
+			// registers must not silently resume under a different agent.
+			if ownerAg == nil && ownerID != "" {
+				return nil, status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
+			}
+			ag, agentID = ownerAg, ownerID
+			if req.AgentId != "" && ag != nil {
+				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
+					return nil, status.Error(codes.FailedPrecondition, "session belongs to a different agent")
+				}
+			}
 			if s.logger != nil {
 				s.logger.Info("Weave: routed to agent by session ownership",
 					zap.String("session_id", req.SessionId),
@@ -810,7 +949,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			tracer.EndSpan(span)
 			s.RecordTraceSpan(span)
 		}
-		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
+		return nil, wrapAgentError(err)
 	}
 
 	// End trace span and record it to the local store for GetTrace retrieval
@@ -856,10 +995,45 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 }
 
 // StreamWeave streams agent execution progress.
-func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) error {
+func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) (weaveErr error) {
 	// Validate query
 	if req.Query == "" {
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
+	}
+
+	// Idempotency dedupe (MCP 2026-07-28, D1): duplicates join the original
+	// run and receive only its terminal result as one COMPLETED event —
+	// progress replay would be rebuilding the stream resumption the revision
+	// deleted. dedupeFinal is set at the completion site below.
+	var dedupeFinal *loomv1.WeaveResponse
+	if key := incomingIdempotencyKey(stream.Context()); key != "" {
+		scope := dedupeScope(postgres.UserIDFromContext(stream.Context()), key)
+		entry, isOwner, admitted := s.weaveDedupe.begin(scope)
+		switch {
+		case !admitted:
+			// Not deduplicable: run without dedupe (at-least-once).
+		case !isOwner:
+			joined, joinErr := awaitDedupeResult(stream.Context(), entry)
+			if joinErr != nil {
+				return joinErr
+			}
+			return stream.Send(completedProgressFromResponse(joined))
+		default:
+			defer func() {
+				// Delivery failure is not an execution failure: once the run
+				// completed (dedupeFinal set), its result stays joinable by
+				// the re-issued request even when this stream's final Send
+				// failed — that failure is exactly why a re-issue is coming.
+				if dedupeFinal != nil {
+					s.weaveDedupe.finishAndRelease(stream.Context(), scope, entry, dedupeFinal, nil)
+					return
+				}
+				// A canceled/deadline outcome (the owner's stream died
+				// mid-run) is released, not cached: the re-issue must
+				// re-execute, not join a 10-minute cached cancellation.
+				s.weaveDedupe.finishAndRelease(stream.Context(), scope, entry, nil, weaveErr)
+			}()
+		}
 	}
 
 	// Replay/import support: validate occurred_at and thread it through the
@@ -873,9 +1047,26 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	var ag *agent.Agent
 	var resolvedAgentID string
 
-	if req.AgentId == "" && req.SessionId != "" {
-		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
-			ag, resolvedAgentID = found, foundID
+	// An existing session is resolved and authorized before ANY agent
+	// selection — an inaccessible session is not-found, never a fallback to
+	// the explicit or default agent (see Weave).
+	if req.SessionId != "" {
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(stream.Context(), req.SessionId, postgres.UserIDFromContext(stream.Context()))
+		if exists {
+			if !accessible {
+				return status.Error(codes.NotFound, "session not found")
+			}
+			// A stored session bound to an agent this process no longer
+			// registers must not silently resume under a different agent.
+			if ownerAg == nil && ownerID != "" {
+				return status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
+			}
+			ag, resolvedAgentID = ownerAg, ownerID
+			if req.AgentId != "" && ag != nil {
+				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
+					return status.Error(codes.FailedPrecondition, "session belongs to a different agent")
+				}
+			}
 			if s.logger != nil {
 				s.logger.Info("StreamWeave: routed to agent by session ownership",
 					zap.String("session_id", req.SessionId),
@@ -1052,7 +1243,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			failedProgress.Message = "Agent completed with errors"
 		}
 		_ = stream.Send(failedProgress)
-		return status.Errorf(codes.Internal, "agent execution failed: %v", finalResult.err)
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result, cost, and context state
@@ -1093,6 +1284,15 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 		},
+	}
+
+	// Record the terminal result for idempotency joiners (D1 dedupe).
+	dedupeFinal = &loomv1.WeaveResponse{
+		Text:         sanitizeUTF8(resp.Content),
+		SessionId:    sessionID,
+		AgentId:      resolvedAgentID,
+		ContextState: contextState,
+		Cost:         completionProgress.Cost,
 	}
 
 	return stream.Send(completionProgress)
@@ -1395,7 +1595,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
 
-	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+	s.goWorker("coordinator-notification-handler", func() {
 		defer func() {
 			s.logger.Info("Coordinator notification handler stopped",
 				zap.String("coordinator", coordinatorID))
@@ -1484,7 +1684,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				}
 			}
 		}
-	}()
+	})
 
 	// Spawn each sub-agent in a background goroutine with long-lived context
 	for _, subAgentID := range subAgentIDs {
@@ -1560,7 +1760,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgent.SetWorkflowCommunicationContext(commCtx)
 
 		// Start sub-agent with notification channel (pass subAgentKey for deregistration)
-		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		s.goWorker("workflow-sub-agent", func() {
+			s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+		})
 
 		// AUTO-SUBSCRIBE SUB-AGENT: Subscribe sub-agent to workflow topic for pub-sub communication
 		// This allows sub-agents to receive broadcasts from coordinator and other sub-agents
@@ -1588,7 +1790,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.String("subscription_id", subID.ID))
 
 				// Start broadcast notification handler for sub-agent
-				go s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				s.goWorker("sub-agent-broadcast-handler", func() {
+					s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+				})
 			}
 		}
 	}
@@ -1631,8 +1835,10 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			s.workflowSubAgentsMu.Unlock()
 
 			// Start broadcast notification goroutine
-			go s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
-				coordinatorAgent, sessionID, coordinatorID)
+			s.goWorker("coordinator-broadcast-handler", func() {
+				s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
+					coordinatorAgent, sessionID, coordinatorID)
+			})
 		}
 	}
 
@@ -1971,6 +2177,93 @@ done:
 	}
 }
 
+// goWorker starts fn as a tracked background worker goroutine. Every detached
+// goroutine that logs through s.logger must start here so that
+// ShutdownBackgroundWorkers can join it before the logger's sink is torn
+// down. Once shutdown has begun, admission is closed: goWorker returns false
+// and fn never runs — otherwise a request racing shutdown could register a
+// worker after the join had already completed. name identifies the worker in
+// the refusal log.
+func (s *MultiAgentServer) goWorker(name string, fn func()) bool {
+	s.backgroundWorkerMu.Lock()
+	if s.backgroundWorkerShutdown {
+		s.backgroundWorkerMu.Unlock()
+		s.logger.Debug("Background worker refused: shutdown in progress",
+			zap.String("worker", name))
+		return false
+	}
+	s.backgroundWorkerWG.Add(1)
+	s.backgroundWorkerMu.Unlock()
+
+	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
+		defer s.backgroundWorkerWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// ShutdownBackgroundWorkers closes worker admission, cancels every tracked
+// background worker context, and blocks until all workers have exited or ctx
+// is done, returning ctx.Err() in the latter case. Workers log on the way
+// out, so call this before tearing down the logger's sink (a test's zaptest
+// logger, process shutdown) — a sink that is gone first is a data race
+// (observed as zaptest writes after test completion).
+//
+// Cancellation covers the workflow worker contexts (message + broadcast) and
+// the spawned-agent contexts (monitor + loop); MCP re-indexers self-expire
+// within 10s. Contexts owned by the caller — the queue monitor's, from
+// StartMessageQueueMonitor — must be cancelled before calling, or the join
+// blocks on them until ctx expires. Admission stays closed afterwards: the
+// server cannot start background workers again.
+func (s *MultiAgentServer) ShutdownBackgroundWorkers(ctx context.Context) error {
+	s.backgroundWorkerMu.Lock()
+	s.backgroundWorkerShutdown = true
+	s.backgroundWorkerMu.Unlock()
+
+	s.cancelBackgroundWorkers()
+
+	done := make(chan struct{})
+	go func() {
+		s.backgroundWorkerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// cancelBackgroundWorkers cancels every tracked workflow worker context
+// (message + broadcast) and every spawned-agent context (monitor + loop)
+// without waiting. ShutdownBackgroundWorkers pairs this with the WaitGroup
+// join; when the queue monitor runs, its shutdown sweep already cancels the
+// workflow workers.
+func (s *MultiAgentServer) cancelBackgroundWorkers() {
+	s.workflowSubAgentsMu.Lock()
+	for _, wctx := range s.workflowSubAgents {
+		if wctx.cancelFunc != nil {
+			wctx.cancelFunc()
+		}
+		if wctx.broadcastCancelFunc != nil {
+			wctx.broadcastCancelFunc()
+		}
+	}
+	s.workflowSubAgentsMu.Unlock()
+
+	s.spawnedAgentsMu.Lock()
+	for _, sp := range s.spawnedAgents {
+		if sp.loopCancelFunc != nil {
+			sp.loopCancelFunc()
+		}
+		if sp.cancelFunc != nil {
+			sp.cancelFunc()
+		}
+	}
+	s.spawnedAgentsMu.Unlock()
+}
+
 // StartMessageQueueMonitor starts a background goroutine that monitors the message queue
 // and notifies workflow sub-agents when they have pending messages (event-driven, not polling).
 func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
@@ -1981,7 +2274,7 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 
 	s.logger.Info("Starting message queue monitor for event-driven agent notifications")
 
-	go func() {
+	s.goWorker("message-queue-monitor", func() {
 		ticker := time.NewTicker(1 * time.Second) // Check queue every second (cheap, no LLM calls)
 		defer ticker.Stop()
 
@@ -2068,7 +2361,7 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
@@ -2170,7 +2463,11 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	}
 
 	// Start sub-agent goroutine
-	go s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	if !s.goWorker("auto-spawned-workflow-sub-agent", func() {
+		s.runWorkflowSubAgent(subAgentCtx, subAgent, agentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+	}) {
+		return fmt.Errorf("server is shutting down; refusing to auto-spawn workflow sub-agent %s", agentID)
+	}
 
 	return nil
 }
@@ -2770,10 +3067,8 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 	for _, ag := range s.agents {
 		session, ok := ag.GetSession(req.SessionId)
 		if ok {
-			// Enforce per-user isolation: if both the caller and the session have a
-			// non-empty user ID that differ, treat as not found to prevent cross-tenant
-			// access via the in-memory cache.
-			if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+			// Wrong-owner is indistinguishable from not-found.
+			if !s.sessionAccessibleBy(callerUserID, session) {
 				continue
 			}
 			return ConvertSession(session), nil
@@ -2799,9 +3094,7 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
 		for _, sess := range sessions {
-			// Enforce per-user isolation: skip sessions owned by a different user
-			// when both caller and session have a non-empty user ID.
-			if callerUserID != "" && sess.UserID != "" && sess.UserID != callerUserID {
+			if !s.sessionAccessibleBy(callerUserID, sess) {
 				continue
 			}
 			memSessions = append(memSessions, sess)
@@ -2839,7 +3132,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if !ok {
 			continue
 		}
-		if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+		if !s.sessionAccessibleBy(callerUserID, session) {
 			continue
 		}
 		deleteAgent = ag
@@ -2857,7 +3150,7 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		if stored == nil {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
-		if callerUserID != "" && stored.UserID != "" && stored.UserID != callerUserID {
+		if !s.sessionAccessibleBy(callerUserID, stored) {
 			return nil, status.Error(codes.NotFound, "session not found")
 		}
 	} else if deleteAgent == nil {
@@ -2903,13 +3196,21 @@ func (s *MultiAgentServer) GetConversationHistory(ctx context.Context, req *loom
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	// Wrong-owner is indistinguishable from not-found; the store re-filters on
+	// Postgres (RLS) and the SQLite store predicates by ctx identity, so this
+	// in-memory check is the first gate, not the only one.
+	callerUserID := postgres.UserIDFromContext(ctx)
+
 	// Try to find the session in any agent to verify it exists
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for _, ag := range s.agents {
-		_, ok := ag.GetSession(req.SessionId)
+		session, ok := ag.GetSession(req.SessionId)
 		if ok {
+			if !s.sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			// Reload messages from database to ensure IDs are populated
 			// (in-memory messages don't have database IDs until reloaded)
 			messages, err := s.sessionStore.LoadMessages(ctx, req.SessionId)
@@ -4308,11 +4609,16 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 		zap.String("session_id", req.SessionId),
 		zap.String("agent_id", req.AgentId))
 
-	// Verify session exists
+	// Verify session exists and is visible to the caller (wrong-owner is
+	// indistinguishable from not-found).
+	callerUserID := postgres.UserIDFromContext(ctx)
 	s.mu.RLock()
 	sessionExists := false
 	for _, ag := range s.agents {
-		if _, ok := ag.GetSession(req.SessionId); ok {
+		if session, ok := ag.GetSession(req.SessionId); ok {
+			if !s.sessionAccessibleBy(callerUserID, session) {
+				continue
+			}
 			sessionExists = true
 			break
 		}

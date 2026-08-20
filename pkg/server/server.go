@@ -142,7 +142,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	// Execute agent chat
 	resp, err := s.agent.Chat(ctx, sessionID, req.Query)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
+		return nil, wrapAgentError(err)
 	}
 
 	// Build context state snapshot (after response, reflects post-conversation state)

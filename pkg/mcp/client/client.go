@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
@@ -41,21 +42,41 @@ type Client struct {
 	serverInfo         protocol.Implementation
 	serverCapabilities protocol.ServerCapabilities
 
+	// Negotiated revision state (see connect.go). statelessMode is true when
+	// the server speaks a 2026-07-28+ revision; requests then carry protocol
+	// version, client capabilities, and client identity in params._meta
+	// instead of relying on the initialize handshake.
+	statelessMode bool
+	clientInfo    protocol.Implementation
+	versionPin    string
+	mrtr          MRTRConfig
+
 	// Request tracking
 	nextID    int64
 	pending   map[string]chan *protocol.Response
 	pendingMu sync.RWMutex
 
-	// Tool cache
-	tools   map[string]protocol.Tool
-	toolsMu sync.RWMutex
+	// Tool cache. toolHeaderParams holds the validated x-mcp-header
+	// annotations per tool, refreshed together with tools by ListTools.
+	tools            map[string]protocol.Tool
+	toolHeaderParams map[string][]protocol.HeaderParam
+	toolsMu          sync.RWMutex
 
 	// Handlers
+	//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
 	samplingHandler  SamplingHandler
 	progressHandlers map[string]ProgressHandler
 
-	// Notifications
+	// Notifications. subs holds active subscriptions/listen demux entries
+	// keyed by subscription ID; untagged notifications go to notifications.
 	notifications chan Notification
+	subs          map[string]*subscriptionEntry
+	subsMu        sync.RWMutex
+
+	// requestTimeout bounds the server/discover negotiation probe (see
+	// Config.RequestTimeout). Ordinary requests are bounded by the caller's
+	// context instead — tool calls and MRTR rounds legitimately run long.
+	requestTimeout time.Duration
 
 	// Lifecycle
 	ctx    context.Context
@@ -74,15 +95,44 @@ type Config struct {
 	Name    string
 	Version string
 
-	// Capabilities
+	// Capabilities.
+	//
+	// Deprecated: SupportsSampling and SupportsRoots are frozen legacy MCP
+	// surface (docs/architecture/mcp-2026-07-28-migration.md §9.2); removal
+	// no earlier than 2027-07-28. Sampling and Roots are Deprecated by
+	// SEP-2577 and were never wired to behavior in this client.
 	SupportsSampling bool
 	SupportsRoots    bool
 
-	// Timeouts
-	RequestTimeout time.Duration // Default: 30s
+	// ProtocolVersion pins the revision Connect negotiates. Empty or "auto"
+	// negotiates normally; "legacy" forces the initialize handshake without
+	// probing server/discover; an explicit revision (e.g. "2026-07-28")
+	// requires the server to speak exactly that revision.
+	ProtocolVersion string
+
+	// MRTR configures Multi Round-Trip Request handling (2026-07-28). When
+	// Handler is set, the client answers input_required results and retries;
+	// it also advertises the elicitation capability so servers may elicit.
+	MRTR MRTRConfig
+
+	// RequestTimeout bounds the server/discover negotiation probe (default
+	// 30s). The stdio backward-compatibility rule needs a bounded wait: a
+	// legacy server may not answer the probe at all, and the fallback
+	// handshake must still find the caller's context alive. Ordinary
+	// requests are deliberately not bounded by this value — tool calls and
+	// MRTR elicitation rounds legitimately outlive any fixed timeout — and
+	// use the per-call context instead.
+	RequestTimeout time.Duration
 }
 
-// SamplingHandler is called when server requests LLM completion
+// SamplingHandler is called when a legacy server requests LLM completion.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Server-initiated sampling exists only
+// on pre-2026 revisions; 2026-07-28 servers embed sampling in MRTR
+// inputRequests instead.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
 type SamplingHandler func(ctx context.Context, params protocol.SamplingParams) (*protocol.SamplingResult, error)
 
 // ProgressHandler is called for progress updates
@@ -109,12 +159,17 @@ func NewClient(config Config) *Client {
 	c := &Client{
 		transport:        config.Transport,
 		logger:           config.Logger,
+		versionPin:       config.ProtocolVersion,
+		mrtr:             config.MRTR,
+		requestTimeout:   config.RequestTimeout,
 		ctx:              ctx,
 		cancel:           cancel,
 		pending:          make(map[string]chan *protocol.Response),
 		tools:            make(map[string]protocol.Tool),
+		toolHeaderParams: make(map[string][]protocol.HeaderParam),
 		progressHandlers: make(map[string]ProgressHandler),
 		notifications:    make(chan Notification, 100),
+		subs:             make(map[string]*subscriptionEntry),
 	}
 
 	// Start message receiver
@@ -124,8 +179,21 @@ func NewClient(config Config) *Client {
 	return c
 }
 
-// Initialize performs the MCP handshake
+// Initialize performs the legacy MCP handshake, requesting the newest
+// handshake-based revision this client speaks; the server answers with that
+// revision or the latest one it supports instead. Connect calls
+// initializeWithVersion directly when negotiation or a pin selected a
+// specific legacy revision.
 func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementation) error {
+	return c.initializeWithVersion(ctx, clientInfo, protocol.LatestLegacyVersion)
+}
+
+// initializeWithVersion performs the legacy MCP handshake requesting a
+// specific protocol revision. Discovered and pinned legacy versions flow in
+// here so the handshake asks for the revision that was actually selected —
+// always sending the oldest revision would negotiate 2024-11-05 against any
+// dual-revision server and then fail an explicit newer pin.
+func (c *Client) initializeWithVersion(ctx context.Context, clientInfo protocol.Implementation, requestVersion string) error {
 	c.mu.Lock()
 	if c.initialized {
 		c.mu.Unlock()
@@ -153,7 +221,7 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 
 	// Create initialize request
 	params := protocol.InitializeParams{
-		ProtocolVersion: protocol.ProtocolVersion,
+		ProtocolVersion: requestVersion,
 		Capabilities:    caps,
 		ClientInfo:      clientInfo,
 	}
@@ -187,10 +255,12 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		return fmt.Errorf("failed to parse initialize result: %w", err)
 	}
 
-	// Verify protocol version
-	if result.ProtocolVersion != protocol.ProtocolVersion {
-		return fmt.Errorf("protocol version mismatch: client=%s server=%s",
-			protocol.ProtocolVersion, result.ProtocolVersion)
+	// Verify the server answered with a revision this client can speak. The
+	// previous strict equality check broke against any server negotiating a
+	// different (including newer, backwards-compatible) handshake revision.
+	if !protocol.IsSupportedVersion(result.ProtocolVersion) {
+		return fmt.Errorf("unsupported protocol version from server: %s (client supports up to %s)",
+			result.ProtocolVersion, protocol.PreferredVersion)
 	}
 
 	// Store server info
@@ -225,7 +295,14 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 
 	c.logger.Debug("Sending initialized notification")
 
-	if err := c.transport.Send(ctx, notificationJSON); err != nil {
+	// The version is negotiated by this point, and 2025-06-18+ requires the
+	// MCP-Protocol-Version header on every subsequent HTTP request — the
+	// initialized notification included. Older servers ignore unknown
+	// headers and non-HTTP transports ignore the context entry.
+	notifyCtx := transport.WithExtraHeaders(ctx, map[string]string{
+		"MCP-Protocol-Version": result.ProtocolVersion,
+	})
+	if err := c.transport.Send(notifyCtx, notificationJSON); err != nil {
 		return fmt.Errorf("failed to send initialized notification: %w", err)
 	}
 
@@ -234,7 +311,12 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 	return nil
 }
 
-// Ping sends a ping to check connection health
+// Ping sends a ping to check connection health.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The method does not exist under the
+// 2026-07-28 revision; health on stateless HTTP connections is a transport
+// property.
 func (c *Client) Ping(ctx context.Context) error {
 	req := &protocol.Request{
 		JSONRPC: protocol.JSONRPCVersion,
@@ -268,6 +350,32 @@ func (c *Client) IsInitialized() bool {
 	return c.initialized
 }
 
+// RawRequest sends an arbitrary JSON-RPC request through the client's full
+// request pipeline — _meta stamping, idempotency keys, stream-loss re-issue,
+// and MRTR driving — and returns the raw result. Intended for conformance
+// testing and protocol extensions; typed methods cover the core surface.
+func (c *Client) RawRequest(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	req := &protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      c.nextRequestID(),
+		Method:  method,
+		Params:  params,
+	}
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+// NegotiatedVersion returns the protocol revision agreed with the server, or
+// the empty string before Connect/Initialize completes.
+func (c *Client) NegotiatedVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion
+}
+
 // Close closes the client connection
 func (c *Client) Close() error {
 	c.mu.Lock()
@@ -296,7 +404,24 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// sendRequest sends a request and waits for response
+// reissueSafeMethods lists the stateless methods that are idempotent by
+// nature and therefore safe to re-issue after a lost response stream even
+// without an idempotency key.
+var reissueSafeMethods = map[string]bool{
+	"server/discover":          true,
+	"tools/list":               true,
+	"prompts/list":             true,
+	"prompts/get":              true,
+	"resources/list":           true,
+	"resources/read":           true,
+	"resources/templates/list": true,
+}
+
+// sendRequest sends a request and waits for its final response, driving the
+// revision-level behaviors that operate on whole logical calls: _meta
+// stamping, idempotency keys, and one re-issue after a lost response stream
+// (the 2026-07-28 recovery for broken streams, safe because the re-issue
+// carries the same idempotency key a dedupe-aware server can join on).
 func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	// Validate request
 	if err := protocol.ValidateRequest(req); err != nil {
@@ -308,7 +433,130 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		req.ID = c.nextRequestID()
 	}
 
-	// Create response channel
+	c.mu.RLock()
+	stateless := c.statelessMode
+	version := c.protocolVersion
+	info := c.clientInfo
+	c.mu.RUnlock()
+
+	// The MCP-Protocol-Version header is required on every POST by the
+	// 2026-07-28 transport and defined since 2025-06-18; it must match the
+	// version stamped in _meta. Older servers ignore unknown headers, and
+	// non-HTTP transports ignore the context entry.
+	if version != "" {
+		ctx = transport.WithExtraHeaders(ctx, map[string]string{"MCP-Protocol-Version": version})
+	}
+
+	// The idempotency key names this logical call across re-issues; it is
+	// minted once here and stamped identically on every attempt.
+	idemKey := ""
+	if stateless && req.Method == "tools/call" {
+		idemKey = uuid.NewString()
+	}
+
+	// A lost response stream is re-issued only when the retry cannot execute
+	// the operation twice: reads are idempotent by nature, and tools/call
+	// carries the idempotency key a dedupe-aware server joins on. Everything
+	// else — session/UI/artifact mutations through RawRequest included —
+	// surfaces CodeStreamLost to the caller, who owns the retry decision.
+	canReissue := idemKey != "" || reissueSafeMethods[req.Method]
+
+	baseParams := req.Params
+	curParams := baseParams // replaced by MRTR retries (original + latest round's input)
+	reissued := false
+	rounds := 0
+
+	for {
+		params := curParams
+		if stateless {
+			// Every request carries protocol version, client capabilities,
+			// and client identity in params._meta under the stateless core.
+			stamped, stampErr := protocol.StampMeta(params, version, info, c.clientCapabilities())
+			if stampErr != nil {
+				return nil, fmt.Errorf("failed to stamp _meta: %w", stampErr)
+			}
+			if idemKey != "" {
+				stamped, stampErr = protocol.StampMetaKey(stamped, protocol.MetaIdempotencyKey, idemKey)
+				if stampErr != nil {
+					return nil, fmt.Errorf("failed to stamp idempotency key: %w", stampErr)
+				}
+			}
+			params = stamped
+		}
+
+		attemptReq := &protocol.Request{
+			JSONRPC: req.JSONRPC,
+			ID:      req.ID,
+			Method:  req.Method,
+			Params:  params,
+		}
+
+		resp, err := c.dispatchAndWait(ctx, attemptReq)
+		if err != nil {
+			var rpcErr *protocol.Error
+			if stateless && canReissue && !reissued && errors.As(err, &rpcErr) && rpcErr.Code == transport.CodeStreamLost {
+				// Spec-mandated recovery: re-issue as a new request with a
+				// new ID. The unchanged idempotency key lets the server join
+				// the retry to the original run instead of executing twice.
+				reissued = true
+				req.ID = c.nextRequestID()
+				c.logger.Warn("response stream lost; re-issuing request",
+					zap.String("method", req.Method),
+					zap.String("idempotency_key", idemKey))
+				continue
+			}
+			return nil, err
+		}
+
+		// Under the stateless revision every result carries a resultType
+		// envelope. Handling interim MRTR results here — the one choke point
+		// all request paths share — prevents any caller from decoding an
+		// input_required interim result as if it were the final one.
+		if stateless {
+			env := protocol.ParseResultEnvelope(resp.Result)
+			if env.ResultType == protocol.ResultTypeInputRequired {
+				if c.mrtr.Handler == nil {
+					return nil, &InputRequiredNotSupportedError{Method: req.Method}
+				}
+				rounds++
+				if rounds > c.mrtr.maxRounds() {
+					return nil, &MRTRRoundsExceededError{Method: req.Method, Rounds: rounds - 1}
+				}
+				irr, err := protocol.ParseInputRequired(resp.Result)
+				if err != nil {
+					return nil, err
+				}
+				var responses protocol.InputResponses
+				if len(irr.InputRequests) > 0 {
+					// The handler gathers the requested input (elicitation via
+					// the approval gate); without inputRequests the server only
+					// wants an immediate retry echoing its state.
+					responses, err = c.mrtr.Handler(ctx, irr.InputRequests)
+					if err != nil {
+						return nil, fmt.Errorf("MRTR input handler failed for %s: %w", req.Method, err)
+					}
+				}
+				// Each round rebuilds from the original params so only the
+				// latest round's responses and requestState are carried.
+				curParams, err = protocol.AttachRetryInput(baseParams, responses, irr.RequestState)
+				if err != nil {
+					return nil, fmt.Errorf("failed to build MRTR retry params: %w", err)
+				}
+				req.ID = c.nextRequestID()
+				c.logger.Debug("MRTR retry",
+					zap.String("method", req.Method),
+					zap.Int("round", rounds),
+					zap.Int("input_requests", len(irr.InputRequests)))
+				continue
+			}
+		}
+		return resp, nil
+	}
+}
+
+// dispatchAndWait performs one wire attempt: register the pending request,
+// send, and wait for its response or context cancellation.
+func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	respChan := make(chan *protocol.Response, 1)
 	reqIDStr := req.ID.String()
 
@@ -316,15 +564,18 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 	c.pending[reqIDStr] = respChan
 	c.pendingMu.Unlock()
 
-	// Cleanup
+	// The channel is deliberately never closed. handleResponse takes its
+	// reference under the read lock and sends after releasing it, so a close
+	// here races a late server response into a send-on-closed-channel panic
+	// (a select default does not protect a send on a closed channel). Without
+	// the close, a late response lands in the orphaned channel's buffer and
+	// is collected with it; the only receiver has already returned.
 	defer func() {
 		c.pendingMu.Lock()
 		delete(c.pending, reqIDStr)
 		c.pendingMu.Unlock()
-		close(respChan)
 	}()
 
-	// Serialize request
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -334,7 +585,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		zap.String("method", req.Method),
 		zap.String("id", reqIDStr))
 
-	// Send request
 	if err := c.transport.Send(ctx, reqJSON); err != nil {
 		c.logger.Error("Failed to send request via transport",
 			zap.String("method", req.Method),
@@ -346,7 +596,6 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		zap.String("method", req.Method),
 		zap.String("id", reqIDStr))
 
-	// Wait for response with timeout
 	select {
 	case <-ctx.Done():
 		c.logger.Debug("Context cancelled while waiting for response",
@@ -361,6 +610,18 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		}
 		return resp, nil
 	}
+}
+
+// clientCapabilities builds the capabilities stamped into _meta on every
+// stateless request. Elicitation is advertised only when an MRTR handler can
+// actually answer it — servers must not issue inputRequests the client has
+// not declared support for.
+func (c *Client) clientCapabilities() protocol.ClientCapabilities {
+	caps := protocol.ClientCapabilities{}
+	if c.mrtr.Handler != nil {
+		caps.Elicitation = &protocol.ElicitationCapability{}
+	}
+	return caps
 }
 
 // receiveLoop receives messages from transport
@@ -398,17 +659,27 @@ func (c *Client) receiveLoop() {
 			continue
 		}
 
-		// Try to parse as response first
-		var resp protocol.Response
-		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
-			c.handleResponse(&resp)
+		// Route by JSON-RPC shape: a message carrying a method member is a
+		// request (id) or notification (no id); only method-less messages
+		// are responses. Probing for a response first would misroute every
+		// id-bearing server-initiated request into the pending-response path
+		// and silently drop it — the server would never even get the
+		// MethodNotFound answer it is owed.
+		var req protocol.Request
+		if err := json.Unmarshal(data, &req); err == nil && req.Method != "" {
+			if req.ID == nil {
+				// Notifications (no id) are dispatched, never answered —
+				// answering one with an error response violates JSON-RPC.
+				c.dispatchNotification(req.Method, req.Params)
+				continue
+			}
+			c.handleRequest(&req)
 			continue
 		}
 
-		// Try to parse as request (for sampling, etc.)
-		var req protocol.Request
-		if err := json.Unmarshal(data, &req); err == nil && req.Method != "" {
-			c.handleRequest(&req)
+		var resp protocol.Response
+		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
+			c.handleResponse(&resp)
 			continue
 		}
 
@@ -436,28 +707,34 @@ func (c *Client) handleResponse(resp *protocol.Response) {
 	}
 }
 
-// handleRequest handles incoming requests from server (sampling, etc.)
+// handleRequest answers incoming server-initiated requests. Under the
+// 2026-07-28 revision servers must not send them (MRTR embeds their content
+// in input_required results instead); the frozen legacy sampling path is
+// retained for pre-2026 connections whose owner registered a handler via
+// SetSamplingHandler. Everything else is answered MethodNotFound.
 func (c *Client) handleRequest(req *protocol.Request) {
-	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
-	defer cancel()
-
 	var resp *protocol.Response
-	var err error
 
 	switch req.Method {
 	case "sampling/createMessage":
+		// Legacy server-initiated sampling can run an LLM call; it keeps the
+		// generous timeout it always had.
+		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
+		defer cancel()
+		var err error
 		resp, err = c.handleSamplingRequest(ctx, req)
+		if err != nil {
+			c.logger.Error("failed to handle request", zap.String("method", req.Method), zap.Error(err))
+			return
+		}
 	default:
 		resp = c.createErrorResponse(req.ID, protocol.MethodNotFound,
 			fmt.Sprintf("method not found: %s", req.Method), nil)
 	}
 
-	if err != nil {
-		c.logger.Error("failed to handle request", zap.String("method", req.Method), zap.Error(err))
-		return
-	}
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+	defer cancel()
 
-	// Send response
 	respJSON, marshalErr := json.Marshal(resp)
 	if marshalErr != nil {
 		c.logger.Error("failed to marshal response", zap.String("method", req.Method), zap.Error(marshalErr))
@@ -468,7 +745,11 @@ func (c *Client) handleRequest(req *protocol.Request) {
 	}
 }
 
-// handleSamplingRequest processes incoming sampling request from server
+// handleSamplingRequest processes an incoming sampling request from a legacy
+// server, delegating to the registered SamplingHandler (or answering
+// MethodNotFound when none is registered, as before).
+//
+//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	c.mu.RLock()
 	handler := c.samplingHandler
@@ -478,19 +759,16 @@ func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Reques
 		return c.createErrorResponse(req.ID, protocol.MethodNotFound, "sampling not supported", nil), nil
 	}
 
-	// Parse params
 	var params protocol.SamplingParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return c.createErrorResponse(req.ID, protocol.InvalidParams, "invalid sampling params", err), nil
 	}
 
-	// Call handler
 	result, err := handler(ctx, params)
 	if err != nil {
 		return c.createErrorResponse(req.ID, protocol.InternalError, "sampling failed", err), nil
 	}
 
-	// Create response
 	resultJSON, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
 		c.logger.Error("failed to marshal sampling result", zap.Error(marshalErr))
@@ -503,7 +781,14 @@ func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Reques
 	}, nil
 }
 
-// SetSamplingHandler registers a handler for sampling requests
+// SetSamplingHandler registers a handler for legacy server-initiated
+// sampling requests.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. 2026-07-28 servers never send
+// sampling/createMessage; configure MRTR (Config.MRTR) instead.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
 func (c *Client) SetSamplingHandler(handler SamplingHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

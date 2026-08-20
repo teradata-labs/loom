@@ -407,8 +407,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	}
 
 	session := &Session{
-		ID:              sessionID,
-		AgentID:         agentID,
+		ID:      sessionID,
+		AgentID: agentID,
+		// Ownership is stamped at creation from the authenticated context so
+		// every RPC path (Chat, Weave, StreamWeave, workflows) produces owned
+		// sessions; empty on identity-less single-tenant deployments.
+		UserID:          types.UserIDFromContext(ctx),
 		ParentSessionID: parentSessionID,
 		Messages:        []Message{},
 		Context:         make(map[string]interface{}),

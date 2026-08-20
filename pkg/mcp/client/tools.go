@@ -20,6 +20,8 @@ import (
 	"fmt"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/mcp/transport"
+	"go.uber.org/zap"
 )
 
 // ListTools returns all available tools from the server
@@ -44,15 +46,48 @@ func (c *Client) ListTools(ctx context.Context) ([]protocol.Tool, error) {
 		return nil, fmt.Errorf("failed to parse tools/list result: %w", err)
 	}
 
+	// x-mcp-header handling (SEP-2243) is scoped by the specification:
+	// clients using the Streamable HTTP transport MUST reject tool
+	// definitions with invalid annotations — rejection means excluding the
+	// tool from tools/list, so one malformed definition cannot block the
+	// rest — while clients on other transports (e.g. stdio) MAY ignore the
+	// annotations entirely, and must not hide tools over them. The
+	// annotation also only exists under the 2026-07-28 revision, so
+	// legacy-negotiated connections ignore it on every transport. The
+	// validated annotations are cached for CallTool to mirror into
+	// Mcp-Param-* headers; when enforcement is off the cache stays empty
+	// and nothing is mirrored.
+	enforceHeaderAnnotations := c.IsStateless() && c.transportCarriesHeaders()
+
+	valid := make([]protocol.Tool, 0, len(result.Tools))
+	headerParams := make(map[string][]protocol.HeaderParam)
+	for _, tool := range result.Tools {
+		if !enforceHeaderAnnotations {
+			valid = append(valid, tool)
+			continue
+		}
+		hp, err := protocol.ToolHeaderParams(tool)
+		if err != nil {
+			c.logger.Warn("rejecting tool with invalid x-mcp-header annotation",
+				zap.String("tool", tool.Name), zap.Error(err))
+			continue
+		}
+		valid = append(valid, tool)
+		if len(hp) > 0 {
+			headerParams[tool.Name] = hp
+		}
+	}
+
 	// Update cache
 	c.toolsMu.Lock()
 	c.tools = make(map[string]protocol.Tool)
-	for _, tool := range result.Tools {
+	for _, tool := range valid {
 		c.tools[tool.Name] = tool
 	}
+	c.toolHeaderParams = headerParams
 	c.toolsMu.Unlock()
 
-	return result.Tools, nil
+	return valid, nil
 }
 
 // CallTool invokes a tool with given arguments
@@ -67,6 +102,21 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments map[string
 	// Validate arguments against schema
 	if err := protocol.ValidateToolArguments(tool, arguments); err != nil {
 		return nil, fmt.Errorf("invalid arguments for tool %s: %w", name, err)
+	}
+
+	// Mirror x-mcp-header-annotated parameters into Mcp-Param-* headers
+	// (SEP-2243). The annotations were validated and cached by ListTools.
+	c.toolsMu.RLock()
+	hps := c.toolHeaderParams[name]
+	c.toolsMu.RUnlock()
+	if len(hps) > 0 {
+		hdrs, err := protocol.HeaderValuesForCall(hps, arguments)
+		if err != nil {
+			return nil, fmt.Errorf("invalid header parameter for tool %s: %w", name, err)
+		}
+		if len(hdrs) > 0 {
+			ctx = transport.WithExtraHeaders(ctx, hdrs)
+		}
 	}
 
 	// Create params

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -46,6 +47,20 @@ type MCPServer struct {
 	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
 	notifyCh           chan []byte                  // Buffered channel for outgoing notifications
 	toolProvider       ToolProvider                 // Registered via WithToolProvider; used for streaming dispatch
+
+	// subscriptions/listen registry (2026-07-28): active listen streams keyed
+	// by the listen request's JSON-RPC id.
+	subscriptions map[string]*serverSubscription
+	subsMu        sync.RWMutex
+	subSeq        atomic.Int64 // server-unique subscription registry keys
+
+	// CacheableResult fields (2026-07-28, SEP-2549) stamped on list/read
+	// results. cacheScope defaults to "private" because bridge tool lists
+	// vary by identity (visibility); an intermediary caching one tenant's
+	// list for another would be a cross-tenant leak, so "public" is an
+	// explicit provider opt-in.
+	listTTLMs  int64
+	cacheScope string
 }
 
 // Option configures an MCPServer.
@@ -56,7 +71,7 @@ func WithToolProvider(p ToolProvider) Option {
 	return func(s *MCPServer) {
 		s.capabilities.Tools = &protocol.ToolsCapability{}
 		s.toolProvider = p
-		s.RegisterHandler("tools/list", newToolsListHandler(p))
+		s.RegisterHandler("tools/list", newToolsListHandler(s, p))
 		s.RegisterHandler("tools/call", newToolsCallHandler(p))
 	}
 }
@@ -68,8 +83,33 @@ func WithResourceProvider(p ResourceProvider) Option {
 		s.capabilities.Resources = &protocol.ResourcesCapability{
 			ListChanged: true,
 		}
-		s.RegisterHandler("resources/list", newResourcesListHandler(p))
-		s.RegisterHandler("resources/read", newResourcesReadHandler(p))
+		s.RegisterHandler("resources/list", newResourcesListHandler(s, p))
+		s.RegisterHandler("resources/read", newResourcesReadHandler(s, p))
+	}
+}
+
+// DefaultListTTLMs is the conservative freshness hint stamped on list/read
+// results when no override is configured: short enough that a changing tool
+// set (TER-263 lazy skill loading) is picked up quickly.
+const DefaultListTTLMs = 15000
+
+// WithListTTL overrides the ttlMs freshness hint on list/read results.
+// Deployments whose tool set is static (no lazy skill loading) should set a
+// long TTL — byte-stable lists raise downstream prompt-cache hit rates.
+func WithListTTL(d time.Duration) Option {
+	return func(s *MCPServer) {
+		if ms := d.Milliseconds(); ms > 0 {
+			s.listTTLMs = ms
+		}
+	}
+}
+
+// WithPublicCacheScope marks this server's list/read results as cacheable by
+// shared intermediaries. Only for genuinely tenant-independent servers: a
+// provider whose lists vary by identity must never set this.
+func WithPublicCacheScope() Option {
+	return func(s *MCPServer) {
+		s.cacheScope = "public"
 	}
 }
 
@@ -100,15 +140,21 @@ func NewMCPServer(name, version string, logger *zap.Logger, opts ...Option) *MCP
 			Name:    name,
 			Version: version,
 		},
-		handlers: make(map[string]MethodHandler),
-		logger:   logger,
-		notifyCh: make(chan []byte, 16),
+		handlers:      make(map[string]MethodHandler),
+		logger:        logger,
+		notifyCh:      make(chan []byte, 16),
+		subscriptions: make(map[string]*serverSubscription),
+		listTTLMs:     DefaultListTTLMs,
+		cacheScope:    "private",
 	}
 
-	// Register built-in handlers
+	// Register built-in handlers. initialize/ping serve the legacy handshake
+	// family through the deprecation window; server/discover is the mandatory
+	// RPC of the 2026-07-28 revision.
 	s.RegisterHandler("initialize", s.handleInitialize)
 	s.RegisterHandler("notifications/initialized", s.handleNotificationsInitialized)
 	s.RegisterHandler("ping", s.handlePing)
+	s.RegisterHandler("server/discover", s.handleDiscover)
 
 	// Apply options
 	for _, opt := range opts {
@@ -134,7 +180,17 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	}
 
 	if err := protocol.ValidateRequest(&req); err != nil {
-		return marshalResponse(nil, nil, protocol.NewError(protocol.InvalidRequest, err.Error(), nil))
+		// Unmarshal already succeeded, so the id is detectable and JSON-RPC
+		// 2.0 requires echoing it (null breaks correlation for multiplexing
+		// clients); ValidateRequest never faults the id itself.
+		return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest, err.Error(), nil))
+	}
+
+	// Extract the 2026-07-28 per-request _meta identity into the context;
+	// handlers and observability read from there, never from params.
+	ctx = withRequestMeta(ctx, req.Params)
+	if resp, done := rejectMalformedRetry(ctx, &req); done {
+		return resp, nil
 	}
 
 	s.logger.Debug("handling request", zap.String("method", req.Method), zap.Any("id", req.ID))
@@ -167,16 +223,38 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	duration := time.Since(start)
 
 	if err != nil {
+		if req.ID == nil {
+			// Notification - don't send error response
+			s.logger.Warn("handler error on notification", zap.String("method", req.Method), zap.Error(err))
+			return nil, nil
+		}
+		// MRTR (2026-07-28): a handler pausing for caller input is not a
+		// failure — it becomes an input_required interim result for
+		// stateless clients. Legacy clients cannot drive MRTR, so they get
+		// a plain error instead of an interim result they would misread.
+		var inputReq *protocol.InputRequiredError
+		if errors.As(err, &inputReq) {
+			if !RequestMetaFromContext(ctx).Stateless() {
+				return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest,
+					"this operation requires interactive input, which needs an MCP 2026-07-28 (MRTR-capable) client", nil))
+			}
+			result := protocol.InputRequiredResult{
+				ResultType:    protocol.ResultTypeInputRequired,
+				InputRequests: inputReq.Requests,
+				RequestState:  inputReq.RequestStatePtr(),
+			}
+			if stamped, stampErr := s.stampResult(result); stampErr == nil {
+				return marshalResponse(req.ID, stamped, nil)
+			}
+			return marshalResponse(req.ID, result, nil)
+		}
+
 		// Handler returned an error
 		s.logger.Warn("handler error",
 			zap.String("method", req.Method),
 			zap.Duration("duration", duration),
 			zap.Error(err),
 		)
-		if req.ID == nil {
-			// Notification - don't send error response
-			return nil, nil
-		}
 		// Preserve original JSON-RPC error code if the handler returned a *protocol.Error
 		var rpcErr *protocol.Error
 		if errors.As(err, &rpcErr) {
@@ -193,6 +271,14 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 	if req.ID == nil {
 		// Notification - no response
 		return nil, nil
+	}
+
+	// Stateless results carry the revision-level envelope (resultType +
+	// serverInfo _meta); error responses and legacy results are untouched.
+	if RequestMetaFromContext(ctx).Stateless() {
+		if stamped, stampErr := s.stampResult(result); stampErr == nil {
+			return marshalResponse(req.ID, stamped, nil)
+		}
 	}
 
 	return marshalResponse(req.ID, result, nil)
@@ -218,6 +304,17 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 		}
 	}()
 
+	// Connection-scoped subscription state: on stdio all messages share one
+	// channel, so subscriptions/listen registrations, duplicate detection,
+	// and notifications/cancelled routing belong to this connection. The
+	// era gate keeps untagged legacy notifications lawful: they flow only
+	// after a legacy client identified itself via the initialize handshake —
+	// under the modern era the server MUST NOT send notification types the
+	// client has not requested through a subscription.
+	conn := newStdioConn()
+	defer conn.cancelAll()
+	legacyEra := false
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,6 +329,26 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 			return fmt.Errorf("receive error: %w", err)
 
 		case msg := <-msgCh:
+			peek := peekServeMessage(msg)
+			switch {
+			case peek.method == "initialize":
+				legacyEra = true
+			case peek.method == protocol.MethodSubscriptionsListen && peek.hasID:
+				if resp := s.startStdioSubscription(ctx, t, conn, msg); resp != nil {
+					if err := t.Send(ctx, resp); err != nil {
+						s.logger.Error("send error", zap.Error(err))
+						return fmt.Errorf("send error: %w", err)
+					}
+				}
+				continue
+			case peek.method == protocol.NotificationCancelled && !peek.hasID:
+				if conn.cancel(peek.cancelsID) {
+					continue // consumed: ended a live subscription
+				}
+				// Unknown cancellation target: fall through; HandleMessage
+				// ignores unrecognized notifications.
+			}
+
 			resp, err := s.HandleMessage(ctx, msg)
 			if err != nil {
 				s.logger.Error("handle error", zap.Error(err))
@@ -246,6 +363,10 @@ func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 			}
 
 		case notif := <-s.notifyCh:
+			if !legacyEra {
+				s.logger.Debug("dropping untagged legacy notification: no legacy handshake on this connection")
+				continue
+			}
 			if err := t.Send(ctx, notif); err != nil {
 				s.logger.Error("notification send error", zap.Error(err))
 				return fmt.Errorf("notification send error: %w", err)
@@ -306,7 +427,17 @@ func (s *MCPServer) handleNotificationsInitialized(_ context.Context, _ json.Raw
 }
 
 // handlePing handles the ping request.
-func (s *MCPServer) handlePing(_ context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The method does not exist under the
+// 2026-07-28 revision; migration Phase 2 answers MethodNotFound when the
+// request carries stateless _meta.
+func (s *MCPServer) handlePing(ctx context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
+	// The method does not exist under the stateless revision.
+	if RequestMetaFromContext(ctx).Stateless() {
+		return nil, protocol.NewError(protocol.MethodNotFound,
+			"ping does not exist in MCP 2026-07-28; connection health is a transport property", nil)
+	}
 	return struct{}{}, nil
 }
 
@@ -328,17 +459,7 @@ func (s *MCPServer) ClientCapabilities() *protocol.ClientCapabilities {
 // The notification is sent asynchronously via the Serve() select loop.
 // If the channel is full the notification is dropped with a warning log.
 func (s *MCPServer) NotifyResourceListChanged() {
-	notif, err := marshalNotification("notifications/resources/list_changed", nil)
-	if err != nil {
-		s.logger.Error("failed to marshal resource list changed notification", zap.Error(err))
-		return
-	}
-	select {
-	case s.notifyCh <- notif:
-		s.logger.Debug("enqueued resources/list_changed notification")
-	default:
-		s.logger.Warn("notification channel full, dropping resources/list_changed")
-	}
+	s.publishNotification(protocol.NotificationResourcesListChanged, "", nil)
 }
 
 // marshalNotification creates a JSON-RPC notification (no id field).

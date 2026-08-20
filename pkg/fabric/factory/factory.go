@@ -218,6 +218,7 @@ func createMCPClientFromConfig(config *loomv1.MCPConnection) (mcp.MCPClient, err
 		if config.Url == "" {
 			return nil, fmt.Errorf("URL is required for HTTP/SSE transport")
 		}
+		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.Url,
 			Logger:   zap.NewNop(),
@@ -236,14 +237,15 @@ func createMCPClientFromConfig(config *loomv1.MCPConnection) (mcp.MCPClient, err
 		Logger:    zap.NewNop(),
 	})
 
-	// Initialize connection with client implementation info
+	// Connect with client implementation info (negotiates the protocol
+	// revision, falling back to the initialize handshake for pre-2026 servers)
 	ctx := context.Background()
 	clientImpl := protocol.Implementation{
 		Name:    "loom-factory",
 		Version: "0.2.0",
 	}
-	if err := mcpClient.Initialize(ctx, clientImpl); err != nil {
-		return nil, fmt.Errorf("failed to initialize MCP client: %w", err)
+	if err := mcpClient.Connect(ctx, clientImpl); err != nil {
+		return nil, fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	return mcpClient, nil

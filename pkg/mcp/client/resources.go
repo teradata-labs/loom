@@ -75,7 +75,11 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*protocol.ReadRe
 	return &result, nil
 }
 
-// SubscribeResource subscribes to resource changes
+// SubscribeResource subscribes to resource changes.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The 2026-07-28 revision replaces
+// resources/subscribe with subscriptions/listen.
 func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 	// Check if server supports subscriptions
 	c.mu.RLock()

@@ -257,46 +257,6 @@ func TestGetPromptResult_MarshalJSON(t *testing.T) {
 	assert.Equal(t, "user", unmarshaled.Messages[0].Role)
 }
 
-func TestSamplingParams_MarshalJSON(t *testing.T) {
-	costPriority := 0.5
-	speedPriority := 0.5
-
-	params := SamplingParams{
-		Messages: []PromptMessage{
-			{
-				Role: "user",
-				Content: Content{
-					Type: "text",
-					Text: "Hello",
-				},
-			},
-		},
-		ModelPrefs: &ModelPreferences{
-			Hints: []ModelHint{
-				{
-					Name: "claude-3-5-sonnet",
-				},
-			},
-			CostPriority:  &costPriority,
-			SpeedPriority: &speedPriority,
-		},
-		SystemPrompt: "You are a helpful assistant",
-		MaxTokens:    1000,
-	}
-
-	data, err := json.Marshal(params)
-	require.NoError(t, err)
-
-	var unmarshaled SamplingParams
-	err = json.Unmarshal(data, &unmarshaled)
-	require.NoError(t, err)
-
-	assert.Len(t, unmarshaled.Messages, 1)
-	assert.NotNil(t, unmarshaled.ModelPrefs)
-	assert.Equal(t, params.SystemPrompt, unmarshaled.SystemPrompt)
-	assert.Equal(t, params.MaxTokens, unmarshaled.MaxTokens)
-}
-
 func TestProtocolVersionConstant(t *testing.T) {
 	assert.Equal(t, "2024-11-05", ProtocolVersion)
 }
@@ -398,4 +358,49 @@ func TestReadResourceResult(t *testing.T) {
 	assert.Len(t, unmarshaled.Contents, 1)
 	assert.Equal(t, "file:///tmp/test.txt", unmarshaled.Contents[0].URI)
 	assert.Equal(t, "Resource content", unmarshaled.Contents[0].Text)
+}
+
+// TestSamplingParams_MarshalJSON exercises the frozen legacy sampling types
+// (§9.2): the exported surface stays source- and shape-compatible through
+// the deprecation window.
+//
+//nolint:staticcheck // frozen legacy surface retained through the 2026-07-28 deprecation window
+func TestSamplingParams_MarshalJSON(t *testing.T) {
+	costPriority := 0.5
+	speedPriority := 0.5
+
+	params := SamplingParams{
+		Messages: []PromptMessage{
+			{
+				Role: "user",
+				Content: Content{
+					Type: "text",
+					Text: "Hello",
+				},
+			},
+		},
+		ModelPrefs: &ModelPreferences{
+			Hints: []ModelHint{
+				{
+					Name: "claude-3-5-sonnet",
+				},
+			},
+			CostPriority:  &costPriority,
+			SpeedPriority: &speedPriority,
+		},
+		SystemPrompt: "You are a helpful assistant",
+		MaxTokens:    1000,
+	}
+
+	data, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	var unmarshaled SamplingParams
+	err = json.Unmarshal(data, &unmarshaled)
+	require.NoError(t, err)
+
+	assert.Len(t, unmarshaled.Messages, 1)
+	assert.NotNil(t, unmarshaled.ModelPrefs)
+	assert.Equal(t, params.SystemPrompt, unmarshaled.SystemPrompt)
+	assert.Equal(t, params.MaxTokens, unmarshaled.MaxTokens)
 }

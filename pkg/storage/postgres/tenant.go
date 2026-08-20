@@ -18,26 +18,26 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-)
 
-// userIDKey is the context key for user ID used in RLS isolation.
-type userIDKey struct{}
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/teradata-labs/loom/pkg/types"
+)
 
 // ContextWithUserID returns a new context with the given user ID attached.
 // When a user ID is present, execInTx will SET LOCAL app.current_user_id
 // within each transaction to activate row-level security policies.
+//
+// The key lives in pkg/types so the SQLite store (pkg/agent) can read the
+// same identity without an import cycle; this delegation keeps the existing
+// postgres API stable.
 func ContextWithUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, userIDKey{}, userID)
+	return types.ContextWithUserID(ctx, userID)
 }
 
 // UserIDFromContext extracts the user ID from the context, if present.
 // Returns empty string if no user ID is set.
 func UserIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(userIDKey{}).(string); ok {
-		return v
-	}
-	return ""
+	return types.UserIDFromContext(ctx)
 }
 
 // execInTx executes fn within a database transaction. If a user ID is

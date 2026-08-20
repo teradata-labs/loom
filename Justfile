@@ -396,7 +396,13 @@ dev-full: build-server
 # generate-weaver must run before vet/lint/test — CI generates embedded/weaver.yaml
 # from the .tmpl at the start of every job, and our //go:embed weaver.yaml
 # directive will otherwise fail on a clean workspace.
-check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security
+# Run the MCP SDK interop suite (Phase 8): the official Go SDK as the
+# counterpart peer in both directions. Separate tag so the core suite never
+# depends on SDK behavior.
+interop:
+    go test -tags "fts5 interop" -race -run Interop ./pkg/mcp/conformance/
+
+check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security interop
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests

@@ -40,6 +40,7 @@ type fakeStreamingProvider struct {
 	streaming     map[string]bool
 	progressSteps []float64
 	finalText     string
+	streamErr     error
 	callToolUsed  bool
 	streamUsed    bool
 }
@@ -55,6 +56,9 @@ func (p *fakeStreamingProvider) SupportsStreaming(name string) bool { return p.s
 
 func (p *fakeStreamingProvider) CallToolStream(_ context.Context, _ string, _ map[string]interface{}, _ string, emit ProgressEmitter) (*protocol.CallToolResult, error) {
 	p.streamUsed = true
+	if p.streamErr != nil {
+		return nil, p.streamErr
+	}
 	for _, s := range p.progressSteps {
 		_ = emit.EmitProgress(s, 100)
 	}
@@ -163,4 +167,110 @@ func TestHandleMessageStream_NonToolCallFallsBack(t *testing.T) {
 
 	assert.Empty(t, w.events)
 	assert.Contains(t, string(final), "method not found")
+}
+
+// Round-2 finding 3: a legacy client hitting an MRTR pause on the streaming
+// path must get the same explicit -32600 the synchronous path returns — not
+// an isError result carrying a raw internal error string.
+func TestHandleMessageStream_LegacyMRTRPauseIsExplicitError(t *testing.T) {
+	p := &fakeStreamingProvider{
+		streaming: map[string]bool{"loom_weave": true},
+		streamErr: &protocol.InputRequiredError{
+			Requests: protocol.InputRequests{
+				"q1": {Method: "elicitation/create", Params: json.RawMessage(`{"message":"which db?"}`)},
+			},
+			RequestState: "sealed",
+		},
+	}
+	srv := newStreamTestServer(t, p)
+	w := &captureSSE{}
+
+	// No _meta.protocolVersion: a legacy-era request.
+	msg := []byte(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"loom_weave","arguments":{}}}`)
+	final, err := srv.HandleMessageStream(context.Background(), msg, w)
+	require.NoError(t, err)
+
+	var resp struct {
+		ID     int64           `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(final, &resp))
+	assert.Equal(t, int64(9), resp.ID)
+	assert.Nil(t, resp.Result, "legacy MRTR pause must not be downgraded to a result")
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, protocol.InvalidRequest, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "MRTR-capable")
+}
+
+// Round-2 finding 4: a retry whose inputResponses/requestState members are
+// present but malformed must fail fast as InvalidParams on both dispatch
+// paths — never parse as a zero RetryInput that silently re-elicits.
+func TestMalformedRetryInputIsInvalidParams(t *testing.T) {
+	srv := newStreamTestServer(t, &fakeStreamingProvider{streaming: map[string]bool{"loom_weave": true}})
+
+	badRetry := `{"name":"loom_weave","arguments":{},"inputResponses":42,` +
+		`"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`
+
+	// Synchronous path.
+	out, err := srv.HandleMessage(context.Background(),
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+badRetry+`}`))
+	require.NoError(t, err)
+	var resp struct {
+		ID    int64 `json:"id"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, protocol.InvalidParams, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "inputResponses")
+	assert.Equal(t, int64(1), resp.ID)
+
+	// Streaming path: rejected before the tool runs.
+	p2 := &fakeStreamingProvider{streaming: map[string]bool{"loom_weave": true}}
+	srv2 := newStreamTestServer(t, p2)
+	out, err = srv2.HandleMessageStream(context.Background(),
+		[]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":`+badRetry+`}`), &captureSSE{})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(out, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, protocol.InvalidParams, resp.Error.Code)
+	assert.False(t, p2.streamUsed, "malformed retry must be rejected before the handler runs")
+
+	// A well-formed retry still dispatches.
+	goodRetry := `{"name":"loom_weave","arguments":{},"inputResponses":{"q1":"postgres"},"requestState":"sealed",` +
+		`"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`
+	out, err = srv.HandleMessage(context.Background(),
+		[]byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":`+goodRetry+`}`))
+	require.NoError(t, err)
+	var ok struct {
+		Result json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(out, &ok))
+	assert.NotNil(t, ok.Result)
+}
+
+// Round-2 finding 6: ValidateRequest failures happen after unmarshal, so the
+// request id is detectable and JSON-RPC 2.0 requires echoing it.
+func TestValidateRequestErrorEchoesID(t *testing.T) {
+	srv := newStreamTestServer(t, &fakeStreamingProvider{})
+	out, err := srv.HandleMessage(context.Background(),
+		[]byte(`{"jsonrpc":"1.0","id":7,"method":"ping"}`))
+	require.NoError(t, err)
+	var resp struct {
+		ID    json.RawMessage `json:"id"`
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, protocol.InvalidRequest, resp.Error.Code)
+	assert.JSONEq(t, `7`, string(resp.ID), "error must correlate to the request id, not null")
 }
