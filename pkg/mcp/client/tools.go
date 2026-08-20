@@ -152,11 +152,10 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments map[string
 
 	// Check if tool returned error
 	if result.IsError {
-		// Extract error message from content
-		if len(result.Content) > 0 && result.Content[0].Type == "text" {
-			return nil, fmt.Errorf("tool error: %s", result.Content[0].Text)
-		}
-		return nil, fmt.Errorf("tool returned error")
+		// Preserve the full result: error content may carry more than the
+		// message — e.g. a resource_link marking a watchable retry condition
+		// (issue #343). The rendered message is unchanged.
+		return nil, &ToolResultError{Result: &result}
 	}
 
 	return &result, nil
@@ -188,4 +187,43 @@ func (c *Client) getTool(ctx context.Context, name string) (protocol.Tool, error
 	}
 
 	return tool, nil
+}
+
+// ToolResultError is a tool-level failure (CallToolResult.isError) that
+// preserves the full result, so callers can inspect error content beyond the
+// message — notably a resource_link marking a watchable retry condition
+// (issue #343). Error() renders exactly what the historical flattened error
+// did, so string-matching callers and analytics see no change.
+type ToolResultError struct {
+	Result *protocol.CallToolResult
+}
+
+func (e *ToolResultError) Error() string {
+	if e.Result != nil && len(e.Result.Content) > 0 && e.Result.Content[0].Type == "text" {
+		return fmt.Sprintf("tool error: %s", e.Result.Content[0].Text)
+	}
+	return "tool returned error"
+}
+
+// RetryResourceURI returns the URI of a resource the failed result links as
+// its retry condition: the first resource_link (or embedded resource
+// reference) in the error content. Empty when the result links nothing —
+// the convention is opt-in per server, per error.
+func (e *ToolResultError) RetryResourceURI() string {
+	if e.Result == nil {
+		return ""
+	}
+	for _, c := range e.Result.Content {
+		switch c.Type {
+		case "resource_link":
+			if c.URI != "" {
+				return c.URI
+			}
+		case "resource":
+			if c.Resource != nil && c.Resource.URI != "" {
+				return c.Resource.URI
+			}
+		}
+	}
+	return ""
 }
