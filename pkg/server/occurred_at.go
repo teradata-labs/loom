@@ -48,3 +48,26 @@ func applyOccurredAt(ctx context.Context, req *loomv1.WeaveRequest, allow bool) 
 	}
 	return agent.WithOccurredAt(ctx, t), nil
 }
+
+// applyReplayAssistant validates WeaveRequest.replay_assistant_message and,
+// when present and allowed, threads it through the context so
+// runConversationLoop substitutes it for the provider call — recording the
+// text verbatim as the assistant turn while still running the full memory
+// pipeline (context compilation, compression, extraction, salience). See
+// agent.WithScriptedResponse.
+//
+// Generation-free replay lets a caller supply the assistant's side of the
+// conversation, so — like occurred_at — it is opt-in per server and gated by
+// the same server.allow_time_override switch; requests carrying the field are
+// rejected with FAILED_PRECONDITION unless allow is true.
+func applyReplayAssistant(ctx context.Context, req *loomv1.WeaveRequest, allow bool) (context.Context, error) {
+	msg := req.GetReplayAssistantMessage()
+	if msg == "" {
+		return ctx, nil
+	}
+	if !allow {
+		return nil, status.Error(codes.FailedPrecondition,
+			"replay_assistant_message override is disabled on this server (set server.allow_time_override: true to accept generation-free conversation replay)")
+	}
+	return agent.WithScriptedResponse(ctx, msg), nil
+}

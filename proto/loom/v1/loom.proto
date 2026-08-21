@@ -694,6 +694,22 @@ message WeaveRequest {
   // clock-skew allowance (INVALID_ARGUMENT). Live conversations should leave
   // it unset.
   google.protobuf.Timestamp occurred_at = 11;
+
+  // Generation-free replay: when set, the agent does NOT call the LLM to
+  // generate a response. Instead it records this text verbatim as the
+  // assistant's turn and runs the full turn pipeline exactly as a live turn
+  // would — context compilation, memory compression (relief/fold),
+  // graph-memory extraction, and salience updates. Only generation is skipped.
+  //
+  // This replays a pre-written conversation turn-by-turn while preserving the
+  // ground-truth assistant content (never inventing the assistant's side), so
+  // the memory system is exercised under realistic accumulation. It is used by
+  // the LongMemEval conversation-replay harness and is typically paired with
+  // occurred_at to anchor each turn at its historical time.
+  //
+  // Gated by the same server.allow_time_override switch as occurred_at
+  // (FAILED_PRECONDITION when disabled). Live conversations leave it unset.
+  string replay_assistant_message = 12;
 }
 
 // WeaveResponse contains the execution result.

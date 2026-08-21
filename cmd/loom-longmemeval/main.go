@@ -141,14 +141,22 @@ func runCmd() *cobra.Command {
 The server's agent configuration determines how memory works —
 graph memory, context window, LLM provider, etc.
 
-Three benchmark modes:
+Four benchmark modes:
 
   multi-session:
     Creates a separate agent session per haystack conversation, ending
     each one before starting the next. Messages are persisted to the DB
     and become FTS5-searchable. The question is asked in a fresh session —
     the agent must use graph_memory + conversation_memory to recall across
-    prior sessions. Most faithful simulation of real-world Loom usage.
+    prior sessions. Each session is fed as one blob message.
+
+  conversation:
+    Replays every haystack turn, in order, into ONE continuous session —
+    user turns as user messages and the pre-written assistant turns
+    recorded verbatim (generation-free), never regenerated. Drives the
+    memory pipeline as a live chat would: salience accumulates across turns
+    and context compression fires as the thread grows. Most faithful
+    simulation of real-world Loom usage. Requires server.allow_time_override.
 
   ingest (default):
     Feeds all conversation sessions through the agent in a single session
@@ -170,7 +178,7 @@ Three benchmark modes:
 	cmd.Flags().IntVar(&limit, "limit", 0, "Max entries to process (0 = all)")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Start from entry N (0-indexed)")
 	cmd.Flags().StringVar(&questionTypes, "types", "", "Comma-separated question types to include (empty = all)")
-	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest (default), multi-session, or context-stuffing")
+	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest (default), multi-session, conversation, or context-stuffing")
 	cmd.Flags().BoolVar(&isolate, "isolate", true, "Create a fresh agent per entry for graph memory isolation (default: true)")
 	cmd.Flags().BoolVar(&useOccurredAt, "occurred-at", true, "Send haystack/question dates as WeaveRequest.occurred_at so memories anchor at historical dates (requires server.allow_time_override: true)")
 
