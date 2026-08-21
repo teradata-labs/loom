@@ -205,6 +205,52 @@ func (e *ToolResultError) Error() string {
 	return "tool returned error"
 }
 
+// BackpressureHint is the machine-readable park-and-wake contract a server
+// may embed in a tool error's payload (JSON in the first text content block):
+//
+//	{"code": "session_handle_budget_full", "message": "…",
+//	 "retryable": true, "retry_after_s": 42,
+//	 "wait_param": "wait_s", "max_wait_s": 300}
+//
+// retryable marks capacity backpressure: the identical call, re-issued after
+// a wait, is expected to succeed once load drains or a slot frees — flow
+// control, not a fault, so a runtime freezes the calling conversation and
+// re-invokes instead of surfacing the error to a model. retry_after_s is the
+// server's worst-case estimate of when (capacity may free sooner). wait_param
+// names a tool argument that parks the retry server-side for up to max_wait_s
+// seconds, waking on freed capacity instead of polling.
+type BackpressureHint struct {
+	Code        string
+	RetryAfterS int64
+	WaitParam   string
+	MaxWaitS    int64
+}
+
+// Backpressure parses the contract from the failed result. Nil when the
+// error does not declare retryable: true — task-level failures (SQL errors,
+// timeouts, deadlocks) never carry the contract and must reach the model.
+func (e *ToolResultError) Backpressure() *BackpressureHint {
+	if e.Result == nil || len(e.Result.Content) == 0 || e.Result.Content[0].Type != "text" {
+		return nil
+	}
+	var payload struct {
+		Code        string `json:"code"`
+		Retryable   bool   `json:"retryable"`
+		RetryAfterS int64  `json:"retry_after_s"`
+		WaitParam   string `json:"wait_param"`
+		MaxWaitS    int64  `json:"max_wait_s"`
+	}
+	if err := json.Unmarshal([]byte(e.Result.Content[0].Text), &payload); err != nil || !payload.Retryable {
+		return nil
+	}
+	return &BackpressureHint{
+		Code:        payload.Code,
+		RetryAfterS: payload.RetryAfterS,
+		WaitParam:   payload.WaitParam,
+		MaxWaitS:    payload.MaxWaitS,
+	}
+}
+
 // RetryResourceURI returns the URI of a resource the failed result links as
 // its retry condition: the first resource_link in the error content. Empty
 // when the result links nothing — the convention is opt-in per server, per
