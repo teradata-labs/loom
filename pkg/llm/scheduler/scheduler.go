@@ -30,6 +30,10 @@ type Config struct {
 	UtilizationTarget float64
 	// StarvationAge promotes a waiter one class after this long. 0 = 60s.
 	StarvationAge time.Duration
+	// InteractiveHeadroom in [0,1): fraction of the budget batch admission
+	// cannot touch, kept free for the interactive band. 0 = default 0.15;
+	// negative = no headroom (batch may reserve the full budget).
+	InteractiveHeadroom float64
 	// Logger for scheduler events. nil = no-op.
 	Logger *zap.Logger
 }
@@ -37,9 +41,10 @@ type Config struct {
 const (
 	// DefaultTokensPerMinute is deliberately conservative; provider
 	// telemetry calibrates upward immediately on the first response.
-	DefaultTokensPerMinute int64 = 40000
-	defaultUtilization           = 0.8
-	defaultStarvationAge         = 60 * time.Second
+	DefaultTokensPerMinute     int64 = 40000
+	defaultUtilization               = 0.8
+	defaultStarvationAge             = 60 * time.Second
+	defaultInteractiveHeadroom       = 0.15
 	// aimdIncreaseStep is the additive per-clean-interval budget increase
 	// for signal-free providers, as a fraction of the current ceiling.
 	aimdIncreaseStep = 0.05
@@ -56,6 +61,9 @@ type Request struct {
 	AgentName string
 	// Class is the request's priority class. Unspecified = NEW.
 	Class loomv1.SlotPriorityClass
+	// Origin bands the request: INTERACTIVE (a human is waiting on this
+	// single turn) outranks BATCH entirely. Unspecified = BATCH.
+	Origin loomv1.SlotOrigin
 	// ReservationTokens is the quota this call will be charged at admission
 	// by reservation-accounting providers: prompt estimate + max_tokens.
 	// <= 0 reserves a nominal 1 so accounting never divides by zero.
@@ -79,6 +87,7 @@ func (g *Grant) Release(actualTokens int64) {
 // waiter is one parked request.
 type waiter struct {
 	req      Request
+	origin   loomv1.SlotOrigin
 	class    loomv1.SlotPriorityClass
 	since    time.Time
 	promoted int32
@@ -103,8 +112,9 @@ type Scheduler struct {
 	reservedOut   int64 // reservations of grants currently outstanding
 	nextWake      time.Time
 	starvationAge time.Duration
-	// queues indexed by priority class (NEW..RESOURCE_HOLDER); FIFO within.
-	queues map[loomv1.SlotPriorityClass][]*waiter
+	headroom      float64
+	// queues indexed by band then priority class; FIFO within a class.
+	queues map[loomv1.SlotOrigin]map[loomv1.SlotPriorityClass][]*waiter
 
 	grantsTotal     int64
 	promotionsTotal int64
@@ -124,6 +134,12 @@ func New(scope string, cfg Config) *Scheduler {
 	if cfg.StarvationAge <= 0 {
 		cfg.StarvationAge = defaultStarvationAge
 	}
+	switch {
+	case cfg.InteractiveHeadroom < 0:
+		cfg.InteractiveHeadroom = 0 // explicitly disabled
+	case cfg.InteractiveHeadroom == 0 || cfg.InteractiveHeadroom >= 1:
+		cfg.InteractiveHeadroom = defaultInteractiveHeadroom
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = zap.NewNop()
 	}
@@ -134,8 +150,12 @@ func New(scope string, cfg Config) *Scheduler {
 		utilization:   cfg.UtilizationTarget,
 		windowStart:   time.Now(),
 		starvationAge: cfg.StarvationAge,
-		queues:        map[loomv1.SlotPriorityClass][]*waiter{},
-		stopCh:        make(chan struct{}),
+		headroom:      cfg.InteractiveHeadroom,
+		queues: map[loomv1.SlotOrigin]map[loomv1.SlotPriorityClass][]*waiter{
+			loomv1.SlotOrigin_SLOT_ORIGIN_BATCH:       {},
+			loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE: {},
+		},
+		stopCh: make(chan struct{}),
 	}
 	go s.tick()
 	return s
@@ -149,13 +169,15 @@ func (s *Scheduler) Close() {
 		close(s.stopCh)
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		for class, q := range s.queues {
-			for _, w := range q {
-				if !w.cancelled {
-					w.ready <- &Grant{s: s, reservation: w.req.ReservationTokens}
+		for _, band := range s.queues {
+			for class, q := range band {
+				for _, w := range q {
+					if !w.cancelled {
+						w.ready <- &Grant{s: s, reservation: w.req.ReservationTokens}
+					}
 				}
+				band[class] = nil
 			}
-			s.queues[class] = nil
 		}
 	})
 }
@@ -171,24 +193,29 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	if class == loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_UNSPECIFIED {
 		class = loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW
 	}
+	origin := req.Origin
+	if origin == loomv1.SlotOrigin_SLOT_ORIGIN_UNSPECIFIED {
+		origin = loomv1.SlotOrigin_SLOT_ORIGIN_BATCH
+	}
 
 	s.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
-	if s.canGrantLocked(req.ReservationTokens) && s.queuesEmptyAtOrAboveLocked(class) {
+	if s.canGrantLocked(origin, req.ReservationTokens) && s.queuesEmptyAtOrAboveLocked(origin, class) {
 		g := s.grantLocked(req.ReservationTokens)
 		s.mu.Unlock()
 		return g, nil
 	}
 	w := &waiter{
-		req:   req,
-		class: class,
-		since: time.Now(),
-		ready: make(chan *Grant, 1),
+		req:    req,
+		origin: origin,
+		class:  class,
+		since:  time.Now(),
+		ready:  make(chan *Grant, 1),
 	}
-	s.queues[class] = append(s.queues[class], w)
+	s.queues[origin][class] = append(s.queues[origin][class], w)
 	s.mu.Unlock()
 
 	select {
@@ -274,9 +301,12 @@ func (s *Scheduler) ObserveThrottle(retryAfter time.Duration) {
 		zap.Duration("retry_after", retryAfter))
 }
 
-// ObserveSuccess applies the AIMD additive increase, bounded by ceiling
-// (pass 0 for unbounded growth on truly signal-free providers).
-func (s *Scheduler) ObserveSuccess(ceiling int64) {
+// ObserveSuccess applies the AIMD additive increase. This is the
+// provider-agnostic fallback: a client whose provider states no ratelimit
+// telemetry at all calls this on every clean response, and the ceiling
+// grows additively until a throttle halves it — TCP congestion control
+// without ECN. Header calibration, when it ever arrives, outranks AIMD.
+func (s *Scheduler) ObserveSuccess() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.calibrated {
@@ -286,11 +316,7 @@ func (s *Scheduler) ObserveSuccess(ceiling int64) {
 	if step < 1 {
 		step = 1
 	}
-	next := s.effectiveTPM + step
-	if ceiling > 0 && next > ceiling {
-		next = ceiling
-	}
-	s.effectiveTPM = next
+	s.effectiveTPM += step
 	s.dispatchLocked()
 }
 
@@ -299,10 +325,12 @@ func (s *Scheduler) State() *loomv1.SlotState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	parked := 0
-	for _, q := range s.queues {
-		for _, w := range q {
-			if !w.cancelled {
-				parked++
+	for _, band := range s.queues {
+		for _, q := range band {
+			for _, w := range q {
+				if !w.cancelled {
+					parked++
+				}
 			}
 		}
 	}
@@ -322,17 +350,20 @@ func (s *Scheduler) Waiters() []*loomv1.SlotWaiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []*loomv1.SlotWaiter
-	for _, class := range dispatchOrder {
-		for _, w := range s.queues[class] {
-			if w.cancelled {
-				continue
+	for _, band := range bandOrder {
+		for _, class := range dispatchOrder {
+			for _, w := range s.queues[band][class] {
+				if w.cancelled {
+					continue
+				}
+				out = append(out, &loomv1.SlotWaiter{
+					ConversationId: w.req.ConversationID,
+					AgentName:      w.req.AgentName,
+					Class:          w.class,
+					Origin:         w.origin,
+					Promotions:     w.promoted,
+				})
 			}
-			out = append(out, &loomv1.SlotWaiter{
-				ConversationId: w.req.ConversationID,
-				AgentName:      w.req.AgentName,
-				Class:          w.class,
-				Promotions:     w.promoted,
-			})
 		}
 	}
 	return out
@@ -357,12 +388,19 @@ func (s *Scheduler) rolloverLocked() {
 	}
 }
 
-func (s *Scheduler) canGrantLocked(reservation int64) bool {
+// canGrantLocked applies the band's budget: interactive may use the full
+// budget; batch is capped below the interactive headroom so an arriving
+// human never waits behind a fully batch-reserved window.
+func (s *Scheduler) canGrantLocked(origin loomv1.SlotOrigin, reservation int64) bool {
 	s.rolloverLocked()
 	if !s.nextWake.IsZero() && time.Now().Before(s.nextWake) {
 		return false // provider told us to wait (Retry-After / reset)
 	}
-	return s.windowUsed+s.reservedOut+reservation <= s.budgetLocked()
+	budget := s.budgetLocked()
+	if origin != loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
+		budget = int64(float64(budget) * (1 - s.headroom))
+	}
+	return s.windowUsed+s.reservedOut+reservation <= budget
 }
 
 func (s *Scheduler) grantLocked(reservation int64) *Grant {
@@ -371,47 +409,68 @@ func (s *Scheduler) grantLocked(reservation int64) *Grant {
 	return &Grant{s: s, reservation: reservation}
 }
 
-// queuesEmptyAtOrAboveLocked reports whether no waiter of the given class or
-// higher is parked — a newly arriving request must not overtake them.
-func (s *Scheduler) queuesEmptyAtOrAboveLocked(class loomv1.SlotPriorityClass) bool {
-	for _, c := range dispatchOrder {
-		if c < class {
+// queuesEmptyAtOrAboveLocked reports whether no waiter that outranks the
+// given (origin, class) is parked — a newly arriving request must not
+// overtake them. Any interactive waiter outranks every batch arrival.
+func (s *Scheduler) queuesEmptyAtOrAboveLocked(origin loomv1.SlotOrigin, class loomv1.SlotPriorityClass) bool {
+	for _, band := range bandOrder {
+		if bandRank(band) < bandRank(origin) {
 			continue
 		}
-		for _, w := range s.queues[c] {
-			if !w.cancelled {
-				return false
+		for _, c := range dispatchOrder {
+			if band == origin && c < class {
+				continue
+			}
+			for _, w := range s.queues[band][c] {
+				if !w.cancelled {
+					return false
+				}
 			}
 		}
 	}
 	return true
 }
 
-// dispatchLocked grants as many parked waiters as the budget allows, highest
-// class first, FIFO within a class. Each waiter is woken with its own grant —
-// one completion wakes bounded work, so no herd re-forms.
+var bandOrder = []loomv1.SlotOrigin{
+	loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE,
+	loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
+}
+
+func bandRank(o loomv1.SlotOrigin) int {
+	if o == loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
+		return 1
+	}
+	return 0
+}
+
+// dispatchLocked grants as many parked waiters as the budget allows:
+// interactive band first (full budget), then batch (headroom-capped budget);
+// highest class first within a band, FIFO within a class. Each waiter is
+// woken with its own grant — one completion wakes bounded work, no herd.
 func (s *Scheduler) dispatchLocked() {
-	for _, class := range dispatchOrder {
-		q := s.queues[class]
-		var remaining []*waiter
-		for i, w := range q {
-			if w.cancelled {
-				continue
+	for _, band := range bandOrder {
+		for _, class := range dispatchOrder {
+			q := s.queues[band][class]
+			var remaining []*waiter
+			for i, w := range q {
+				if w.cancelled {
+					continue
+				}
+				if !s.canGrantLocked(band, w.req.ReservationTokens) {
+					remaining = append(remaining, q[i:]...)
+					break
+				}
+				w.ready <- s.grantLocked(w.req.ReservationTokens)
 			}
-			if !s.canGrantLocked(w.req.ReservationTokens) {
-				remaining = append(remaining, q[i:]...)
-				break
+			// Filter any cancelled stragglers retained by the break above.
+			filtered := remaining[:0]
+			for _, w := range remaining {
+				if !w.cancelled {
+					filtered = append(filtered, w)
+				}
 			}
-			w.ready <- s.grantLocked(w.req.ReservationTokens)
+			s.queues[band][class] = filtered
 		}
-		// Filter any cancelled stragglers retained by the break above.
-		filtered := remaining[:0]
-		for _, w := range remaining {
-			if !w.cancelled {
-				filtered = append(filtered, w)
-			}
-		}
-		s.queues[class] = filtered
 	}
 }
 
@@ -432,30 +491,35 @@ func (s *Scheduler) tick() {
 	}
 }
 
-// ageLocked promotes waiters older than starvationAge one class (liveness:
-// any waiter reaches the top class in at most 2 * starvationAge).
+// ageLocked promotes waiters older than starvationAge one class within
+// their band (liveness: top class of the band in at most 2 * starvationAge).
+// Aging NEVER crosses bands: saturated batch must not flood the interactive
+// lane by seniority — the batch band's liveness comes from its own budget
+// share, not from promotion into the human lane.
 func (s *Scheduler) ageLocked() {
-	promote := func(from, to loomv1.SlotPriorityClass) {
-		var keep []*waiter
-		for _, w := range s.queues[from] {
-			if w.cancelled {
-				continue
+	for _, band := range bandOrder {
+		promote := func(from, to loomv1.SlotPriorityClass) {
+			var keep []*waiter
+			for _, w := range s.queues[band][from] {
+				if w.cancelled {
+					continue
+				}
+				if time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1) {
+					w.promoted++
+					w.class = to
+					s.promotionsTotal++
+					s.queues[band][to] = append(s.queues[band][to], w)
+					continue
+				}
+				keep = append(keep, w)
 			}
-			if time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1) {
-				w.promoted++
-				w.class = to
-				s.promotionsTotal++
-				s.queues[to] = append(s.queues[to], w)
-				continue
-			}
-			keep = append(keep, w)
+			s.queues[band][from] = keep
 		}
-		s.queues[from] = keep
+		promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT,
+			loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER)
+		promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW,
+			loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT)
 	}
-	promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT,
-		loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER)
-	promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW,
-		loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT)
 }
 
 // SetConfig replaces the runtime-tunable knobs. Zero values leave the

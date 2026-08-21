@@ -25,6 +25,7 @@ type recordingObserver struct {
 	remaining int64
 	reset     time.Duration
 	throttles []time.Duration
+	successes int
 }
 
 func (r *recordingObserver) UpdateFromHeaders(limit, remaining int64, reset time.Duration) {
@@ -37,6 +38,12 @@ func (r *recordingObserver) ObserveThrottle(retryAfter time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.throttles = append(r.throttles, retryAfter)
+}
+
+func (r *recordingObserver) ObserveSuccess() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.successes++
 }
 
 // Every response's ratelimit headers must reach the CapacityObserver, and a

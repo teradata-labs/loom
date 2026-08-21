@@ -32,6 +32,24 @@ enum SlotPriorityClass {
   SLOT_PRIORITY_CLASS_RESOURCE_HOLDER = 3;
 }
 
+// SlotOrigin bands slot requests by who is waiting on the answer. The
+// interactive band outranks the batch band entirely: a human blocked on a
+// response experiences latency directly, while batch work only cares about
+// throughput. Within a band, SlotPriorityClass orders requests. Aging never
+// promotes across bands.
+enum SlotOrigin {
+  SLOT_ORIGIN_UNSPECIFIED = 0;
+  // Fleet/background work: workflows, task-board executions, sub-agent
+  // fan-outs, scheduled runs.
+  SLOT_ORIGIN_BATCH = 1;
+  // A human is waiting. Edge-triggered, per turn: the caller stamps
+  // INTERACTIVE only on the calls of the single conversation-loop turn that
+  // answers a human action (a chat message on an attached session, a HITL
+  // response), then reverts to BATCH. A conversation is never interactive
+  // for its lifetime — only for the loop a human is provably waiting on.
+  SLOT_ORIGIN_INTERACTIVE = 2;
+}
+
 // LLMSchedulerConfig configures one provider-scope scheduler. Zero values
 // mean "derive": from provider response telemetry where available, from the
 // scope's rate-limit configuration otherwise.
@@ -60,6 +78,12 @@ message LLMSchedulerConfig {
 
   // Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
   float utilization_target = 6;
+
+  // Fraction of the budget reserved for the interactive band, [0, 1).
+  // Batch admission is capped at budget * (1 - interactive_headroom) so an
+  // arriving human never waits behind a fully batch-reserved window.
+  // 0 = default 0.15.
+  float interactive_headroom = 7;
 }
 
 // SlotState is the observable state of one scheduler scope.
@@ -103,6 +127,7 @@ message SlotWaiter {
   google.protobuf.Timestamp waiting_since = 4;
   // Number of aging promotions applied to this waiter so far.
   int32 promotions = 5;
+  SlotOrigin origin = 6;
 }
 
 message GetSlotStateRequest {

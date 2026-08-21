@@ -178,7 +178,11 @@ func (c *Client) observeCapacity(resp *http.Response) {
 	reset := headerSeconds(resp.Header, "x-ratelimit-reset-tokens")
 	if limit > 0 {
 		c.capacity.UpdateFromHeaders(limit, remaining, reset)
+		return
 	}
+	// No usable telemetry on a clean response: drive the AIMD fallback so
+	// header-less deployments (proxies, gateways) still calibrate.
+	c.capacity.ObserveSuccess()
 }
 
 func headerInt64(h http.Header, key string) int64 {

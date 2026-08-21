@@ -87,6 +87,67 @@ func (SlotPriorityClass) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_llm_scheduler_proto_rawDescGZIP(), []int{0}
 }
 
+// SlotOrigin bands slot requests by who is waiting on the answer. The
+// interactive band outranks the batch band entirely: a human blocked on a
+// response experiences latency directly, while batch work only cares about
+// throughput. Within a band, SlotPriorityClass orders requests. Aging never
+// promotes across bands.
+type SlotOrigin int32
+
+const (
+	SlotOrigin_SLOT_ORIGIN_UNSPECIFIED SlotOrigin = 0
+	// Fleet/background work: workflows, task-board executions, sub-agent
+	// fan-outs, scheduled runs.
+	SlotOrigin_SLOT_ORIGIN_BATCH SlotOrigin = 1
+	// A human is waiting. Edge-triggered, per turn: the caller stamps
+	// INTERACTIVE only on the calls of the single conversation-loop turn that
+	// answers a human action (a chat message on an attached session, a HITL
+	// response), then reverts to BATCH. A conversation is never interactive
+	// for its lifetime — only for the loop a human is provably waiting on.
+	SlotOrigin_SLOT_ORIGIN_INTERACTIVE SlotOrigin = 2
+)
+
+// Enum value maps for SlotOrigin.
+var (
+	SlotOrigin_name = map[int32]string{
+		0: "SLOT_ORIGIN_UNSPECIFIED",
+		1: "SLOT_ORIGIN_BATCH",
+		2: "SLOT_ORIGIN_INTERACTIVE",
+	}
+	SlotOrigin_value = map[string]int32{
+		"SLOT_ORIGIN_UNSPECIFIED": 0,
+		"SLOT_ORIGIN_BATCH":       1,
+		"SLOT_ORIGIN_INTERACTIVE": 2,
+	}
+)
+
+func (x SlotOrigin) Enum() *SlotOrigin {
+	p := new(SlotOrigin)
+	*p = x
+	return p
+}
+
+func (x SlotOrigin) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SlotOrigin) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_llm_scheduler_proto_enumTypes[1].Descriptor()
+}
+
+func (SlotOrigin) Type() protoreflect.EnumType {
+	return &file_loom_v1_llm_scheduler_proto_enumTypes[1]
+}
+
+func (x SlotOrigin) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SlotOrigin.Descriptor instead.
+func (SlotOrigin) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_llm_scheduler_proto_rawDescGZIP(), []int{1}
+}
+
 // LLMSchedulerConfig configures one provider-scope scheduler. Zero values
 // mean "derive": from provider response telemetry where available, from the
 // scope's rate-limit configuration otherwise.
@@ -111,8 +172,13 @@ type LLMSchedulerConfig struct {
 	StarvationAgeS int32 `protobuf:"varint,5,opt,name=starvation_age_s,json=starvationAgeS,proto3" json:"starvation_age_s,omitempty"`
 	// Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
 	UtilizationTarget float32 `protobuf:"fixed32,6,opt,name=utilization_target,json=utilizationTarget,proto3" json:"utilization_target,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Fraction of the budget reserved for the interactive band, [0, 1).
+	// Batch admission is capped at budget * (1 - interactive_headroom) so an
+	// arriving human never waits behind a fully batch-reserved window.
+	// 0 = default 0.15.
+	InteractiveHeadroom float32 `protobuf:"fixed32,7,opt,name=interactive_headroom,json=interactiveHeadroom,proto3" json:"interactive_headroom,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *LLMSchedulerConfig) Reset() {
@@ -183,6 +249,13 @@ func (x *LLMSchedulerConfig) GetStarvationAgeS() int32 {
 func (x *LLMSchedulerConfig) GetUtilizationTarget() float32 {
 	if x != nil {
 		return x.UtilizationTarget
+	}
+	return 0
+}
+
+func (x *LLMSchedulerConfig) GetInteractiveHeadroom() float32 {
+	if x != nil {
+		return x.InteractiveHeadroom
 	}
 	return 0
 }
@@ -316,7 +389,8 @@ type SlotWaiter struct {
 	Class          SlotPriorityClass      `protobuf:"varint,3,opt,name=class,proto3,enum=loom.v1.SlotPriorityClass" json:"class,omitempty"`
 	WaitingSince   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=waiting_since,json=waitingSince,proto3" json:"waiting_since,omitempty"`
 	// Number of aging promotions applied to this waiter so far.
-	Promotions    int32 `protobuf:"varint,5,opt,name=promotions,proto3" json:"promotions,omitempty"`
+	Promotions    int32      `protobuf:"varint,5,opt,name=promotions,proto3" json:"promotions,omitempty"`
+	Origin        SlotOrigin `protobuf:"varint,6,opt,name=origin,proto3,enum=loom.v1.SlotOrigin" json:"origin,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -384,6 +458,13 @@ func (x *SlotWaiter) GetPromotions() int32 {
 		return x.Promotions
 	}
 	return 0
+}
+
+func (x *SlotWaiter) GetOrigin() SlotOrigin {
+	if x != nil {
+		return x.Origin
+	}
+	return SlotOrigin_SLOT_ORIGIN_UNSPECIFIED
 }
 
 type GetSlotStateRequest struct {
@@ -663,14 +744,15 @@ var File_loom_v1_llm_scheduler_proto protoreflect.FileDescriptor
 
 const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\n" +
-	"\x1bloom/v1/llm_scheduler.proto\x12\aloom.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb8\x02\n" +
+	"\x1bloom/v1/llm_scheduler.proto\x12\aloom.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xeb\x02\n" +
 	"\x12LLMSchedulerConfig\x12*\n" +
 	"\x11tokens_per_minute\x18\x01 \x01(\x03R\x0ftokensPerMinute\x12=\n" +
 	"\x1breservation_tokens_per_call\x18\x02 \x01(\x05R\x18reservationTokensPerCall\x128\n" +
 	"\x18max_active_conversations\x18\x03 \x01(\x05R\x16maxActiveConversations\x12$\n" +
 	"\x0emax_door_queue\x18\x04 \x01(\x05R\fmaxDoorQueue\x12(\n" +
 	"\x10starvation_age_s\x18\x05 \x01(\x05R\x0estarvationAgeS\x12-\n" +
-	"\x12utilization_target\x18\x06 \x01(\x02R\x11utilizationTarget\"\xad\x03\n" +
+	"\x12utilization_target\x18\x06 \x01(\x02R\x11utilizationTarget\x121\n" +
+	"\x14interactive_headroom\x18\a \x01(\x02R\x13interactiveHeadroom\"\xad\x03\n" +
 	"\tSlotState\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x121\n" +
 	"\x14active_conversations\x18\x02 \x01(\x05R\x13activeConversations\x12'\n" +
@@ -680,7 +762,7 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x1breserved_tokens_outstanding\x18\x06 \x01(\x03R\x19reservedTokensOutstanding\x127\n" +
 	"\tnext_wake\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bnextWake\x12!\n" +
 	"\fgrants_total\x18\b \x01(\x03R\vgrantsTotal\x12)\n" +
-	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\"\xe7\x01\n" +
+	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\"\x94\x02\n" +
 	"\n" +
 	"SlotWaiter\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +
@@ -690,7 +772,8 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\rwaiting_since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\fwaitingSince\x12\x1e\n" +
 	"\n" +
 	"promotions\x18\x05 \x01(\x05R\n" +
-	"promotions\"+\n" +
+	"promotions\x12+\n" +
+	"\x06origin\x18\x06 \x01(\x0e2\x13.loom.v1.SlotOriginR\x06origin\"+\n" +
 	"\x13GetSlotStateRequest\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\"B\n" +
 	"\x14GetSlotStateResponse\x12*\n" +
@@ -708,7 +791,12 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x1fSLOT_PRIORITY_CLASS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17SLOT_PRIORITY_CLASS_NEW\x10\x01\x12!\n" +
 	"\x1dSLOT_PRIORITY_CLASS_IN_FLIGHT\x10\x02\x12'\n" +
-	"#SLOT_PRIORITY_CLASS_RESOURCE_HOLDER\x10\x032\x8b\x02\n" +
+	"#SLOT_PRIORITY_CLASS_RESOURCE_HOLDER\x10\x03*]\n" +
+	"\n" +
+	"SlotOrigin\x12\x1b\n" +
+	"\x17SLOT_ORIGIN_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11SLOT_ORIGIN_BATCH\x10\x01\x12\x1b\n" +
+	"\x17SLOT_ORIGIN_INTERACTIVE\x10\x022\x8b\x02\n" +
 	"\x13LLMSchedulerService\x12K\n" +
 	"\fGetSlotState\x12\x1c.loom.v1.GetSlotStateRequest\x1a\x1d.loom.v1.GetSlotStateResponse\x12H\n" +
 	"\vListWaiters\x12\x1b.loom.v1.ListWaitersRequest\x1a\x1c.loom.v1.ListWaitersResponse\x12]\n" +
@@ -726,40 +814,42 @@ func file_loom_v1_llm_scheduler_proto_rawDescGZIP() []byte {
 	return file_loom_v1_llm_scheduler_proto_rawDescData
 }
 
-var file_loom_v1_llm_scheduler_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_loom_v1_llm_scheduler_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_loom_v1_llm_scheduler_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_loom_v1_llm_scheduler_proto_goTypes = []any{
 	(SlotPriorityClass)(0),             // 0: loom.v1.SlotPriorityClass
-	(*LLMSchedulerConfig)(nil),         // 1: loom.v1.LLMSchedulerConfig
-	(*SlotState)(nil),                  // 2: loom.v1.SlotState
-	(*SlotWaiter)(nil),                 // 3: loom.v1.SlotWaiter
-	(*GetSlotStateRequest)(nil),        // 4: loom.v1.GetSlotStateRequest
-	(*GetSlotStateResponse)(nil),       // 5: loom.v1.GetSlotStateResponse
-	(*ListWaitersRequest)(nil),         // 6: loom.v1.ListWaitersRequest
-	(*ListWaitersResponse)(nil),        // 7: loom.v1.ListWaitersResponse
-	(*SetSchedulerConfigRequest)(nil),  // 8: loom.v1.SetSchedulerConfigRequest
-	(*SetSchedulerConfigResponse)(nil), // 9: loom.v1.SetSchedulerConfigResponse
-	(*timestamppb.Timestamp)(nil),      // 10: google.protobuf.Timestamp
+	(SlotOrigin)(0),                    // 1: loom.v1.SlotOrigin
+	(*LLMSchedulerConfig)(nil),         // 2: loom.v1.LLMSchedulerConfig
+	(*SlotState)(nil),                  // 3: loom.v1.SlotState
+	(*SlotWaiter)(nil),                 // 4: loom.v1.SlotWaiter
+	(*GetSlotStateRequest)(nil),        // 5: loom.v1.GetSlotStateRequest
+	(*GetSlotStateResponse)(nil),       // 6: loom.v1.GetSlotStateResponse
+	(*ListWaitersRequest)(nil),         // 7: loom.v1.ListWaitersRequest
+	(*ListWaitersResponse)(nil),        // 8: loom.v1.ListWaitersResponse
+	(*SetSchedulerConfigRequest)(nil),  // 9: loom.v1.SetSchedulerConfigRequest
+	(*SetSchedulerConfigResponse)(nil), // 10: loom.v1.SetSchedulerConfigResponse
+	(*timestamppb.Timestamp)(nil),      // 11: google.protobuf.Timestamp
 }
 var file_loom_v1_llm_scheduler_proto_depIdxs = []int32{
-	10, // 0: loom.v1.SlotState.next_wake:type_name -> google.protobuf.Timestamp
+	11, // 0: loom.v1.SlotState.next_wake:type_name -> google.protobuf.Timestamp
 	0,  // 1: loom.v1.SlotWaiter.class:type_name -> loom.v1.SlotPriorityClass
-	10, // 2: loom.v1.SlotWaiter.waiting_since:type_name -> google.protobuf.Timestamp
-	2,  // 3: loom.v1.GetSlotStateResponse.states:type_name -> loom.v1.SlotState
-	3,  // 4: loom.v1.ListWaitersResponse.waiters:type_name -> loom.v1.SlotWaiter
-	1,  // 5: loom.v1.SetSchedulerConfigRequest.config:type_name -> loom.v1.LLMSchedulerConfig
-	2,  // 6: loom.v1.SetSchedulerConfigResponse.state:type_name -> loom.v1.SlotState
-	4,  // 7: loom.v1.LLMSchedulerService.GetSlotState:input_type -> loom.v1.GetSlotStateRequest
-	6,  // 8: loom.v1.LLMSchedulerService.ListWaiters:input_type -> loom.v1.ListWaitersRequest
-	8,  // 9: loom.v1.LLMSchedulerService.SetSchedulerConfig:input_type -> loom.v1.SetSchedulerConfigRequest
-	5,  // 10: loom.v1.LLMSchedulerService.GetSlotState:output_type -> loom.v1.GetSlotStateResponse
-	7,  // 11: loom.v1.LLMSchedulerService.ListWaiters:output_type -> loom.v1.ListWaitersResponse
-	9,  // 12: loom.v1.LLMSchedulerService.SetSchedulerConfig:output_type -> loom.v1.SetSchedulerConfigResponse
-	10, // [10:13] is the sub-list for method output_type
-	7,  // [7:10] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	11, // 2: loom.v1.SlotWaiter.waiting_since:type_name -> google.protobuf.Timestamp
+	1,  // 3: loom.v1.SlotWaiter.origin:type_name -> loom.v1.SlotOrigin
+	3,  // 4: loom.v1.GetSlotStateResponse.states:type_name -> loom.v1.SlotState
+	4,  // 5: loom.v1.ListWaitersResponse.waiters:type_name -> loom.v1.SlotWaiter
+	2,  // 6: loom.v1.SetSchedulerConfigRequest.config:type_name -> loom.v1.LLMSchedulerConfig
+	3,  // 7: loom.v1.SetSchedulerConfigResponse.state:type_name -> loom.v1.SlotState
+	5,  // 8: loom.v1.LLMSchedulerService.GetSlotState:input_type -> loom.v1.GetSlotStateRequest
+	7,  // 9: loom.v1.LLMSchedulerService.ListWaiters:input_type -> loom.v1.ListWaitersRequest
+	9,  // 10: loom.v1.LLMSchedulerService.SetSchedulerConfig:input_type -> loom.v1.SetSchedulerConfigRequest
+	6,  // 11: loom.v1.LLMSchedulerService.GetSlotState:output_type -> loom.v1.GetSlotStateResponse
+	8,  // 12: loom.v1.LLMSchedulerService.ListWaiters:output_type -> loom.v1.ListWaitersResponse
+	10, // 13: loom.v1.LLMSchedulerService.SetSchedulerConfig:output_type -> loom.v1.SetSchedulerConfigResponse
+	11, // [11:14] is the sub-list for method output_type
+	8,  // [8:11] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_llm_scheduler_proto_init() }
@@ -772,7 +862,7 @@ func file_loom_v1_llm_scheduler_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_llm_scheduler_proto_rawDesc), len(file_loom_v1_llm_scheduler_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
