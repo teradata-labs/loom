@@ -219,9 +219,18 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// Call MCP tool with camelCase parameters
 	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, camelCaseParams)
 	if err != nil {
-		// Park-and-wake (issue #343): a failure that links a resource parks
-		// here and retries when the resource updates; otherwise unchanged.
-		mcpResultInterface, err = a.awaitLinkedResource(ctx, camelCaseParams, err)
+		if isBackpressure(err) {
+			// Backpressure freeze (issue #354): capacity flow control never
+			// reaches the model — the call re-invokes, parked server-side
+			// via the error's wait_param when named, until capacity frees
+			// or the conversation's deadline expires.
+			mcpResultInterface, err = a.awaitBackpressure(ctx, camelCaseParams, err)
+		} else {
+			// Park-and-wake (issue #343): a failure that links a resource
+			// parks here and retries when the resource updates; otherwise
+			// unchanged.
+			mcpResultInterface, err = a.awaitLinkedResource(ctx, camelCaseParams, err)
+		}
 	}
 	executionTime := time.Since(startTime).Milliseconds()
 
