@@ -78,3 +78,19 @@ func TestScopeFor(t *testing.T) {
 	assert.Equal(t, "x|y", ScopeFor("x", "y", scopedStub{scope: ""}),
 		"an empty ScopeProvider answer falls back too")
 }
+
+type wrappingStub struct{ inner any }
+
+func (w wrappingStub) SchedulerScope() string {
+	if sp, ok := w.inner.(ScopeProvider); ok {
+		return sp.SchedulerScope()
+	}
+	return ""
+}
+
+// A wrapper that forwards an EMPTY scope (its inner provider names none)
+// must fall back to name|model — the split-brain regression guard.
+func TestScopeForWrapperForwardingEmptyFallsBack(t *testing.T) {
+	assert.Equal(t, "azure-openai|gpt-4o", ScopeFor("azure-openai", "gpt-4o", wrappingStub{inner: struct{}{}}))
+	assert.Equal(t, "real|scope", ScopeFor("azure-openai", "gpt-4o", wrappingStub{inner: scopedStub{scope: "real|scope"}}))
+}
