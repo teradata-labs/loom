@@ -939,3 +939,10 @@ var _ llmtypes.LLMProvider = (*Client)(nil)
 
 // Ensure Client implements StreamingLLMProvider interface.
 var _ llmtypes.StreamingLLMProvider = (*Client)(nil)
+
+// SchedulerScope names this client's quota boundary for the LLM slot
+// scheduler: the same (endpoint, deployment) scope its rate limiter and
+// capacity telemetry use.
+func (c *Client) SchedulerScope() string {
+	return "azure-openai|" + c.endpoint + "|" + c.deploymentID
+}

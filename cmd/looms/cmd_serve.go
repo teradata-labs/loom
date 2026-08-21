@@ -49,6 +49,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -864,7 +865,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if azEntraToken == "" {
 			azEntraToken = os.Getenv("AZURE_OPENAI_ENTRA_TOKEN")
 		}
-		return azureopenai.NewClient(azureopenai.Config{
+		cfg := azureopenai.Config{
 			Endpoint:          azEndpoint,
 			DeploymentID:      deploymentID,
 			APIKey:            azAPIKey,
@@ -873,7 +874,13 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Temperature:       temperature,
 			Timeout:           timeout,
 			RateLimiterConfig: rlCfg,
-		})
+		}
+		if llmscheduler.Enabled() {
+			// Feed provider ratelimit telemetry into this scope's scheduler.
+			cfg.CapacityObserver = llmscheduler.Default().For(
+				"azure-openai|"+azEndpoint+"|"+deploymentID, llmscheduler.Config{})
+		}
+		return azureopenai.NewClient(cfg)
 
 	case "mistral":
 		model := protoConfig.Model
@@ -2247,6 +2254,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	// the explicit single-tenant compatibility mode.
 	loomService.SetEnforceSessionOwnership(config.Server.Auth.Enabled)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
+
+	// LLM slot scheduler: enablement is config-driven; the observability/
+	// admin surface registers unconditionally (empty until schedulers exist).
+	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+	if config.LLM.SchedulerEnabled {
+		logger.Info("LLM slot scheduler enabled")
+	}
+	loomv1.RegisterLLMSchedulerServiceServer(grpcServer, llmscheduler.NewService(llmscheduler.Default()))
 
 	// Register TaskService for gRPC task management and TUI streaming.
 	// Bus wired later via SetBus (two-phase init, bus not yet created).

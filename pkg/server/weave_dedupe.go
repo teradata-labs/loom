@@ -267,3 +267,21 @@ func completedProgressFromResponse(resp *loomv1.WeaveResponse) *loomv1.WeaveProg
 		Cost:           resp.Cost,
 	}
 }
+
+// SlotOriginMetadataKey is the gRPC metadata key the CLI uses to report
+// this turn's scheduling band: "interactive" when a human at a terminal is
+// waiting on the response, anything else (or absence) is batch.
+const SlotOriginMetadataKey = "loom-slot-origin"
+
+// slotOriginFromMetadata reads the turn's origin from incoming metadata.
+func slotOriginFromMetadata(ctx context.Context) loomv1.SlotOrigin {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return loomv1.SlotOrigin_SLOT_ORIGIN_BATCH
+	}
+	vals := md.Get(SlotOriginMetadataKey)
+	if len(vals) > 0 && vals[0] == "interactive" {
+		return loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE
+	}
+	return loomv1.SlotOrigin_SLOT_ORIGIN_BATCH
+}

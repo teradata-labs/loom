@@ -315,6 +315,11 @@ type LLMConfig struct {
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
 
+	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
+	// admission where waiting is a state, not an error
+	// (docs/architecture/llm-slot-scheduler.md). Default off.
+	SchedulerEnabled bool `mapstructure:"scheduler_enabled"`
+
 	// Ollama-specific
 	OllamaEndpoint string `mapstructure:"ollama_endpoint"`
 	OllamaModel    string `mapstructure:"ollama_model"`
@@ -1125,6 +1130,7 @@ func setDefaults() {
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
+	viper.SetDefault("llm.scheduler_enabled", false)
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile

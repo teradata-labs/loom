@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -34,6 +35,26 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 	// retry loop alike since every path fans out from here.
 	a.dumpContext(ctx, messages, tools)
 
+	// Slot scheduling: every LLM call — streaming, retry, and direct alike —
+	// acquires a capacity slot here. Waiting for a slot can only end with a
+	// grant or the caller's own context expiring; it is never a scheduler
+	// timeout (docs/architecture/llm-slot-scheduler.md). A nil grant means
+	// scheduling is disabled or the turn carries no SlotInfo.
+	grant, err := scheduler.AcquireForCall(ctx, a.schedulerScope(), a.estimateReservation(messages))
+	if err != nil {
+		return nil, err
+	}
+	var resp *LLMResponse
+	if grant != nil {
+		defer func() {
+			var actual int64
+			if resp != nil {
+				actual = int64(resp.Usage.TotalTokens)
+			}
+			grant.Release(actual)
+		}()
+	}
+
 	// Check if provider supports streaming and we have a progress callback
 	supportsStreaming := llmtypes.SupportsStreaming(a.llm)
 	progressCallback := ctx.ProgressCallback()
@@ -41,13 +62,17 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 
 	// If using streaming, bypass retry logic (streaming already handles errors)
 	if useStreaming {
-		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
+		var serr error
+		resp, serr = a.chatWithStreaming(ctx, messages, tools, progressCallback)
+		return resp, serr
 	}
 
 	// Non-streaming path with retry logic
 	// If retry is disabled, call LLM directly
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		return a.llm.Chat(ctx, messages, tools)
+		var derr error
+		resp, derr = a.llm.Chat(ctx, messages, tools)
+		return resp, derr
 	}
 
 	var lastErr error
@@ -64,7 +89,8 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 					zap.Duration("total_retry_time", delay),
 				)
 			}
-			return response, nil
+			resp = response
+			return resp, nil
 		}
 
 		// A positively-identified context-too-long refusal is returned
@@ -205,4 +231,30 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	}
 
 	return resp, nil
+}
+
+// schedulerScope derives the quota scope of this agent's LLM provider for
+// the slot scheduler: the provider's own boundary when it exposes one,
+// otherwise name|model.
+func (a *Agent) schedulerScope() string {
+	return scheduler.ScopeFor(a.llm.Name(), a.llm.Model(), a.llm)
+}
+
+// estimateReservation mirrors reservation-accounting providers, which debit
+// prompt-estimate + max_tokens at admission: a cheap chars/4 prompt estimate
+// plus the configured completion budget.
+func (a *Agent) estimateReservation(messages []Message) int64 {
+	var chars int
+	for _, m := range messages {
+		chars += len(m.Content)
+	}
+	out := int64(a.config.ReservedOutputTokens)
+	if out <= 0 {
+		out = 4096 // provider-default max_tokens when unconfigured
+	}
+	est := int64(chars/4) + out
+	if est < 1 {
+		est = 1
+	}
+	return est
 }
