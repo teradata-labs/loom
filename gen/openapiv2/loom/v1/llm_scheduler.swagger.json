@@ -1,0 +1,202 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "loom/v1/llm_scheduler.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "LLMSchedulerService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {},
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1GetSlotStateResponse": {
+      "type": "object",
+      "properties": {
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SlotState"
+          }
+        }
+      }
+    },
+    "v1LLMSchedulerConfig": {
+      "type": "object",
+      "properties": {
+        "tokensPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Enforced tokens-per-minute for the scope. 0 = calibrate from provider\nresponse headers, falling back to the scope's rate_limit configuration."
+        },
+        "reservationTokensPerCall": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Token reservation charged per call at grant time, mirroring providers\nthat debit prompt-estimate + max_tokens at admission (Azure/OpenAI).\n0 = derive from the requesting agent's max_tokens."
+        },
+        "maxActiveConversations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Ceiling on concurrently active (admitted, not parked) conversations.\n0 = derive from measured capacity; see the design doc for the formula."
+        },
+        "maxDoorQueue": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Door-queue depth beyond which new conversations are rejected with\nRESOURCE_EXHAUSTED instead of queued."
+        },
+        "starvationAgeS": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Seconds after which a waiting slot request is promoted one priority\nclass. Bounds starvation: any waiter reaches the top class in at most\n2 * starvation_age_s."
+        },
+        "utilizationTarget": {
+          "type": "number",
+          "format": "float",
+          "description": "Target utilization of measured capacity, (0, 1]. 0 = default 0.8."
+        }
+      },
+      "description": "LLMSchedulerConfig configures one provider-scope scheduler. Zero values\nmean \"derive\": from provider response telemetry where available, from the\nscope's rate-limit configuration otherwise."
+    },
+    "v1ListWaitersResponse": {
+      "type": "object",
+      "properties": {
+        "waiters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SlotWaiter"
+          }
+        }
+      }
+    },
+    "v1SetSchedulerConfigResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/v1SlotState"
+        }
+      }
+    },
+    "v1SlotPriorityClass": {
+      "type": "string",
+      "enum": [
+        "SLOT_PRIORITY_CLASS_UNSPECIFIED",
+        "SLOT_PRIORITY_CLASS_NEW",
+        "SLOT_PRIORITY_CLASS_IN_FLIGHT",
+        "SLOT_PRIORITY_CLASS_RESOURCE_HOLDER"
+      ],
+      "default": "SLOT_PRIORITY_CLASS_UNSPECIFIED",
+      "description": "SlotPriorityClass orders slot requests. Higher classes are served first;\naging promotes a starved waiter one class (liveness, not throughput).\n\n - SLOT_PRIORITY_CLASS_NEW: First LLM call of a conversation: admitted as churn allows.\n - SLOT_PRIORITY_CLASS_IN_FLIGHT: Conversation mid-task: run-to-completion bias — finishing releases every\nresource the conversation holds.\n - SLOT_PRIORITY_CLASS_RESOURCE_HOLDER: Conversation holding an external scarce resource (database session\nhandle, MCP slot): priority inheritance — it is blocking other agents\nthat are burning LLM budget trying to acquire what it holds."
+    },
+    "v1SlotState": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "description": "The provider quota scope this scheduler protects."
+        },
+        "activeConversations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Conversations currently holding at least one grant or eligible to\nrequest one."
+        },
+        "parkedRequests": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Slot requests currently parked waiting for capacity."
+        },
+        "doorQueueDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Conversations queued at the admission door."
+        },
+        "effectiveTokensPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Effective tokens-per-minute after provider-telemetry calibration (or\nAIMD for signal-free providers). This is the enforced number."
+        },
+        "reservedTokensOutstanding": {
+          "type": "string",
+          "format": "int64",
+          "description": "Sum of reservations for grants currently outstanding."
+        },
+        "nextWake": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Earliest scheduled wake (from Retry-After / window reset), if any."
+        },
+        "grantsTotal": {
+          "type": "string",
+          "format": "int64",
+          "description": "Grants issued and completed since scheduler start."
+        },
+        "promotionsTotal": {
+          "type": "string",
+          "format": "int64",
+          "description": "Aging promotions since scheduler start (a rising rate means the scope is\nsaturated enough that liveness protection is doing real work)."
+        }
+      },
+      "description": "SlotState is the observable state of one scheduler scope."
+    },
+    "v1SlotWaiter": {
+      "type": "object",
+      "properties": {
+        "conversationId": {
+          "type": "string"
+        },
+        "agentName": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/definitions/v1SlotPriorityClass"
+        },
+        "waitingSince": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "promotions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of aging promotions applied to this waiter so far."
+        }
+      },
+      "description": "SlotWaiter describes one parked slot request."
+    }
+  }
+}

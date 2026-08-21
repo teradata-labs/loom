@@ -1,0 +1,146 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// The LLM slot scheduler ends LLM starvation: waiting for capacity is a
+// state, not an error. One scheduler exists per provider quota scope (the
+// same scope keys the shared rate limiters use, e.g.
+// "azure-openai|<endpoint>|<deployment>"). Design:
+// docs/architecture/llm-slot-scheduler.md.
+
+// SlotPriorityClass orders slot requests. Higher classes are served first;
+// aging promotes a starved waiter one class (liveness, not throughput).
+enum SlotPriorityClass {
+  SLOT_PRIORITY_CLASS_UNSPECIFIED = 0;
+  // First LLM call of a conversation: admitted as churn allows.
+  SLOT_PRIORITY_CLASS_NEW = 1;
+  // Conversation mid-task: run-to-completion bias — finishing releases every
+  // resource the conversation holds.
+  SLOT_PRIORITY_CLASS_IN_FLIGHT = 2;
+  // Conversation holding an external scarce resource (database session
+  // handle, MCP slot): priority inheritance — it is blocking other agents
+  // that are burning LLM budget trying to acquire what it holds.
+  SLOT_PRIORITY_CLASS_RESOURCE_HOLDER = 3;
+}
+
+// LLMSchedulerConfig configures one provider-scope scheduler. Zero values
+// mean "derive": from provider response telemetry where available, from the
+// scope's rate-limit configuration otherwise.
+message LLMSchedulerConfig {
+  // Enforced tokens-per-minute for the scope. 0 = calibrate from provider
+  // response headers, falling back to the scope's rate_limit configuration.
+  int64 tokens_per_minute = 1;
+
+  // Token reservation charged per call at grant time, mirroring providers
+  // that debit prompt-estimate + max_tokens at admission (Azure/OpenAI).
+  // 0 = derive from the requesting agent's max_tokens.
+  int32 reservation_tokens_per_call = 2;
+
+  // Ceiling on concurrently active (admitted, not parked) conversations.
+  // 0 = derive from measured capacity; see the design doc for the formula.
+  int32 max_active_conversations = 3;
+
+  // Door-queue depth beyond which new conversations are rejected with
+  // RESOURCE_EXHAUSTED instead of queued.
+  int32 max_door_queue = 4;
+
+  // Seconds after which a waiting slot request is promoted one priority
+  // class. Bounds starvation: any waiter reaches the top class in at most
+  // 2 * starvation_age_s.
+  int32 starvation_age_s = 5;
+
+  // Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
+  float utilization_target = 6;
+}
+
+// SlotState is the observable state of one scheduler scope.
+message SlotState {
+  // The provider quota scope this scheduler protects.
+  string scope = 1;
+
+  // Conversations currently holding at least one grant or eligible to
+  // request one.
+  int32 active_conversations = 2;
+
+  // Slot requests currently parked waiting for capacity.
+  int32 parked_requests = 3;
+
+  // Conversations queued at the admission door.
+  int32 door_queue_depth = 4;
+
+  // Effective tokens-per-minute after provider-telemetry calibration (or
+  // AIMD for signal-free providers). This is the enforced number.
+  int64 effective_tokens_per_minute = 5;
+
+  // Sum of reservations for grants currently outstanding.
+  int64 reserved_tokens_outstanding = 6;
+
+  // Earliest scheduled wake (from Retry-After / window reset), if any.
+  google.protobuf.Timestamp next_wake = 7;
+
+  // Grants issued and completed since scheduler start.
+  int64 grants_total = 8;
+
+  // Aging promotions since scheduler start (a rising rate means the scope is
+  // saturated enough that liveness protection is doing real work).
+  int64 promotions_total = 9;
+}
+
+// SlotWaiter describes one parked slot request.
+message SlotWaiter {
+  string conversation_id = 1;
+  string agent_name = 2;
+  SlotPriorityClass class = 3;
+  google.protobuf.Timestamp waiting_since = 4;
+  // Number of aging promotions applied to this waiter so far.
+  int32 promotions = 5;
+}
+
+message GetSlotStateRequest {
+  // Empty = all scopes.
+  string scope = 1;
+}
+
+message GetSlotStateResponse {
+  repeated SlotState states = 1;
+}
+
+message ListWaitersRequest {
+  string scope = 1;
+}
+
+message ListWaitersResponse {
+  repeated SlotWaiter waiters = 1;
+}
+
+message SetSchedulerConfigRequest {
+  string scope = 1;
+  LLMSchedulerConfig config = 2;
+}
+
+message SetSchedulerConfigResponse {
+  SlotState state = 1;
+}
+
+// LLMSchedulerService is the observability and admin surface of the slot
+// schedulers. Slot request/grant itself is in-process (the conversation
+// loop), never RPC.
+service LLMSchedulerService {
+  // GetSlotState returns the live state of one scope, or all scopes.
+  rpc GetSlotState(GetSlotStateRequest) returns (GetSlotStateResponse);
+
+  // ListWaiters returns the parked slot requests of a scope.
+  rpc ListWaiters(ListWaitersRequest) returns (ListWaitersResponse);
+
+  // SetSchedulerConfig replaces a scope's configuration at runtime.
+  rpc SetSchedulerConfig(SetSchedulerConfigRequest) returns (SetSchedulerConfigResponse);
+}

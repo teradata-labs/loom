@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,7 @@ type Client struct {
 
 	// Rate limiter
 	rateLimiter *llm.RateLimiter
+	capacity    llm.CapacityObserver
 
 	// Tool name mapping: sanitized name → original name
 	// Azure OpenAI requires tool names to match ^[a-zA-Z0-9_.\-]+$
@@ -88,6 +90,10 @@ type Config struct {
 	Temperature       float64       // Default: 1.0
 	Timeout           time.Duration // Default: 60s
 	RateLimiterConfig llm.RateLimiterConfig
+	// CapacityObserver, when set, receives ratelimit telemetry harvested
+	// from every response (headers on success, Retry-After on 429). The LLM
+	// slot scheduler is the intended consumer. nil is legal.
+	CapacityObserver llm.CapacityObserver
 }
 
 // NewClient creates a new Azure OpenAI client.
@@ -147,10 +153,52 @@ func NewClient(config Config) (*Client, error) {
 		temperature:  config.Temperature,
 		modelName:    modelName,
 		rateLimiter:  rateLimiter,
+		capacity:     config.CapacityObserver,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
 	}, nil
+}
+
+// observeCapacity harvests ratelimit telemetry from a response and forwards
+// it to the configured CapacityObserver. Azure states, on every response:
+// x-ratelimit-limit-tokens, x-ratelimit-remaining-tokens (per-minute
+// window), x-ratelimit-reset-tokens (seconds to window reset), and
+// Retry-After (seconds) on 429.
+func (c *Client) observeCapacity(resp *http.Response) {
+	if c.capacity == nil || resp == nil {
+		return
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		c.capacity.ObserveThrottle(headerSeconds(resp.Header, "Retry-After"))
+		return
+	}
+	limit := headerInt64(resp.Header, "x-ratelimit-limit-tokens")
+	remaining := headerInt64(resp.Header, "x-ratelimit-remaining-tokens")
+	reset := headerSeconds(resp.Header, "x-ratelimit-reset-tokens")
+	if limit > 0 {
+		c.capacity.UpdateFromHeaders(limit, remaining, reset)
+	}
+}
+
+func headerInt64(h http.Header, key string) int64 {
+	v := h.Get(key)
+	if v == "" {
+		return -1
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func headerSeconds(h http.Header, key string) time.Duration {
+	n := headerInt64(h, key)
+	if n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 // Name returns the provider name.
@@ -246,6 +294,7 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 		if err != nil {
 			return nil, err
 		}
+		c.observeCapacity(resp)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
@@ -711,6 +760,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		if err != nil {
 			return nil, err
 		}
+		c.observeCapacity(resp)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
