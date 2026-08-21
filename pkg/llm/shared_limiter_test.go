@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,16 +95,16 @@ func TestCredentialScope(t *testing.T) {
 	a := CredentialScope("sk-fake-key-alpha")
 	b := CredentialScope("sk-fake-key-beta")
 	if a == b {
-		t.Fatalf("distinct credentials must fingerprint differently: %q", a)
+		t.Fatalf("distinct credentials must intern differently: %q", a)
 	}
 	if a != CredentialScope("sk-fake-key-alpha") {
-		t.Fatal("fingerprint must be stable")
+		t.Fatal("interned id must be stable within the process")
 	}
 	if CredentialScope("") != "nokey" {
 		t.Fatal("empty credential must share the ambient scope")
 	}
-	if len(a) != 8 {
-		t.Fatalf("fingerprint must be short and non-reversible, got %q", a)
+	if strings.Contains(a, "alpha") || strings.Contains(a, "sk-") {
+		t.Fatalf("token must not derive from the secret: %q", a)
 	}
 	cfg := RateLimiterConfig{}
 	if SharedRateLimiter("p|"+a+"|m", cfg) == SharedRateLimiter("p|"+b+"|m", cfg) {

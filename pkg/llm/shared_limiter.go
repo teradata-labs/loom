@@ -1,8 +1,6 @@
 package llm
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sync"
 
@@ -70,16 +68,36 @@ func SharedRateLimiter(scope string, config RateLimiterConfig) *RateLimiter {
 	return rl
 }
 
-// CredentialScope returns a short non-reversible fingerprint of an API
-// credential for use inside a rate-limiter scope string. Providers whose
+// CredentialScope returns a stable, non-derived identity token for an API
+// credential, for use inside a rate-limiter scope string. Providers whose
 // quotas attach to the credential (Anthropic, OpenAI, Gemini) include it so
 // two clients with different keys — different upstream quotas — never share
-// one bucket. Empty credentials (ambient/env auth) fingerprint identically,
-// preserving sharing for the common single-key process.
+// one bucket. The token is an interned sequential id ("key1", "key2", …):
+// nothing is ever hashed or otherwise derived from the secret, so no
+// fingerprint of it appears in scope strings, log fields, or map keys beyond
+// the process-private interning table. Limiters are process-scoped, so
+// process-lifetime stability is all the identity needs. Empty credentials
+// (ambient/env auth) share the "nokey" scope, preserving sharing for the
+// common single-key process.
 func CredentialScope(credential string) string {
 	if credential == "" {
 		return "nokey"
 	}
-	sum := sha256.Sum256([]byte(credential))
-	return hex.EncodeToString(sum[:4])
+	credentialIDs.mu.Lock()
+	defer credentialIDs.mu.Unlock()
+	if id, ok := credentialIDs.m[credential]; ok {
+		return id
+	}
+	credentialIDs.seq++
+	id := fmt.Sprintf("key%d", credentialIDs.seq)
+	credentialIDs.m[credential] = id
+	return id
 }
+
+// credentialIDs interns credentials to opaque sequential ids. Bounded by the
+// number of distinct credentials configured in the process.
+var credentialIDs = struct {
+	mu  sync.Mutex
+	m   map[string]string
+	seq int
+}{m: map[string]string{}}
