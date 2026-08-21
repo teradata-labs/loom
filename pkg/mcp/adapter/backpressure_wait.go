@@ -32,10 +32,13 @@ import (
 // until capacity frees or the conversation's own deadline expires. The model
 // just sees a tool call that took longer.
 const (
-	// defaultBackpressureBudget bounds the total freeze when the caller's
-	// context carries no deadline. Agent conversations normally do (the
-	// caller's timeout becomes the ctx deadline) and the budget is always
-	// clipped to it when present.
+	// defaultBackpressureBudget bounds the total freeze ONLY when the
+	// caller's context carries no deadline. When a deadline exists the
+	// freeze rides it entirely: a parked call is making progress — it holds
+	// a queue position — so nothing shorter than the conversation's own
+	// deadline may cut it loose. (az512f measured the alternative: capping
+	// the freeze at 15 min under a 40-min deadline surfaced 44 budget-full
+	// errors whose slots would have freed minutes later.)
 	defaultBackpressureBudget = 15 * time.Minute
 	// backpressureDeadlineMargin is reserved from the ctx deadline so the
 	// final outcome can still travel back to the loop before ctx death.
@@ -46,6 +49,16 @@ const (
 	backpressurePollFloor = time.Second
 	backpressurePollCeil  = 30 * time.Second
 )
+
+// backpressureBudget is how long a frozen call may wait in total: the
+// caller's own deadline (minus a margin for the outcome to travel back)
+// when one exists, else the conservative default.
+func backpressureBudget(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline) - backpressureDeadlineMargin
+	}
+	return defaultBackpressureBudget
+}
 
 // isBackpressure reports whether a tool-call failure carries the
 // machine-readable backpressure contract.
@@ -74,12 +87,7 @@ func (a *MCPToolAdapter) awaitBackpressure(ctx context.Context, params map[strin
 		return nil, callErr
 	}
 
-	budget := defaultBackpressureBudget
-	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline) - backpressureDeadlineMargin; remaining < budget {
-			budget = remaining
-		}
-	}
+	budget := backpressureBudget(ctx)
 	if budget <= 0 {
 		return nil, callErr
 	}
