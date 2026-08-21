@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
@@ -66,4 +68,18 @@ func SharedRateLimiter(scope string, config RateLimiterConfig) *RateLimiter {
 			zap.Int("limiters_for_scope", n))
 	}
 	return rl
+}
+
+// CredentialScope returns a short non-reversible fingerprint of an API
+// credential for use inside a rate-limiter scope string. Providers whose
+// quotas attach to the credential (Anthropic, OpenAI, Gemini) include it so
+// two clients with different keys — different upstream quotas — never share
+// one bucket. Empty credentials (ambient/env auth) fingerprint identically,
+// preserving sharing for the common single-key process.
+func CredentialScope(credential string) string {
+	if credential == "" {
+		return "nokey"
+	}
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:4])
 }

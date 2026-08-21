@@ -81,7 +81,7 @@ func NewClient(config Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = llm.SharedRateLimiter("gemini|"+config.Model, config.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("gemini|"+llm.CredentialScope(config.APIKey)+"|"+config.Model, config.RateLimiterConfig)
 	}
 
 	return &Client{

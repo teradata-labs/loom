@@ -113,7 +113,7 @@ func NewClient(config Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = llm.SharedRateLimiter("openai|"+config.Endpoint+"|"+config.Model, config.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("openai|"+llm.CredentialScope(config.APIKey)+"|"+config.Endpoint+"|"+config.Model, config.RateLimiterConfig)
 	}
 
 	return &Client{

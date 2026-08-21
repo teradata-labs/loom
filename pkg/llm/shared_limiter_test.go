@@ -86,3 +86,27 @@ func TestNormalizeRateLimiterConfigBackfillsZeroFields(t *testing.T) {
 	assert.Equal(t, int64(1_200_000), custom.TokensPerMinute)
 	assert.Equal(t, time.Minute, custom.QueueTimeout)
 }
+
+// Per-key-quota providers include a credential fingerprint in their scope:
+// different keys are different upstream quotas and must not share a bucket,
+// while the empty (ambient) credential keeps the common single-key sharing.
+func TestCredentialScope(t *testing.T) {
+	a := CredentialScope("sk-fake-key-alpha")
+	b := CredentialScope("sk-fake-key-beta")
+	if a == b {
+		t.Fatalf("distinct credentials must fingerprint differently: %q", a)
+	}
+	if a != CredentialScope("sk-fake-key-alpha") {
+		t.Fatal("fingerprint must be stable")
+	}
+	if CredentialScope("") != "nokey" {
+		t.Fatal("empty credential must share the ambient scope")
+	}
+	if len(a) != 8 {
+		t.Fatalf("fingerprint must be short and non-reversible, got %q", a)
+	}
+	cfg := RateLimiterConfig{}
+	if SharedRateLimiter("p|"+a+"|m", cfg) == SharedRateLimiter("p|"+b+"|m", cfg) {
+		t.Fatal("different credentials on one provider/model must not share a limiter")
+	}
+}

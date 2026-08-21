@@ -120,7 +120,7 @@ func NewClient(config Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = llm.SharedRateLimiter("anthropic|"+config.Model, mergedRateLimiterConfig(config.RateLimiterConfig))
+		rateLimiter = llm.SharedRateLimiter("anthropic|"+llm.CredentialScope(config.APIKey)+"|"+config.Model, mergedRateLimiterConfig(config.RateLimiterConfig))
 	}
 
 	return &Client{
