@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1048,7 +1049,24 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// CLI's own report (gRPC metadata "loom-slot-origin"): "interactive"
 	// means a human at a terminal is waiting on this single turn. The stamp
 	// is per-request — edge-triggered, never a conversation-lifetime mark.
-	ctx = llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), 0)
+	turnOrigin := slotOriginFromMetadata(ctx)
+	ctx = llmscheduler.WithSlotInfo(ctx, turnOrigin, 0)
+
+	// Door admission: batch turns queue at the front door when the active
+	// ceiling is reached — starving at the door is free, starving mid-task
+	// wastes held resources. Interactive turns bypass (the scheduler's
+	// interactive headroom protects their capacity). A full door queue is
+	// backpressure, not silence.
+	if turnOrigin != loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
+		releaseDoor, doorErr := llmscheduler.Door().Enter(ctx)
+		if doorErr != nil {
+			if errors.Is(doorErr, llmscheduler.ErrDoorFull) {
+				return status.Error(codes.ResourceExhausted, "server at capacity: conversation door queue full, retry later")
+			}
+			return doorErr
+		}
+		defer releaseDoor()
+	}
 
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
