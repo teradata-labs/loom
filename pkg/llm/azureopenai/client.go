@@ -223,40 +223,49 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Authentication: Use api-key OR Authorization header
-	if c.apiKey != "" {
-		// Option 1: API key authentication
-		httpReq.Header.Set("api-key", c.apiKey)
-	} else {
-		// Option 2: Microsoft Entra ID token
-		httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
+	// sendOnce builds and sends a fresh request. It must construct a new
+	// http.Request per attempt (a consumed body cannot be re-sent), and it
+	// surfaces HTTP 429 as an ERROR: httpClient.Do returns nil error for any
+	// HTTP status, so without this the rate limiter's executeWithRetry never
+	// saw throttling and 429s went straight to the caller un-retried.
+	sendOnce := func(ctx context.Context) (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		// Authentication: Use api-key OR Authorization header
+		if c.apiKey != "" {
+			httpReq.Header.Set("api-key", c.apiKey)
+		} else {
+			httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
+		}
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+		}
+		return resp, nil
 	}
 
 	// Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
+		result, err := c.rateLimiter.Do(ctx, sendOnce)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		result, err := sendOnce(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
+		httpResp = result.(*http.Response)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -678,36 +687,47 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("api-key", c.apiKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
+	// sendOnce builds and sends a fresh request per attempt (a consumed body
+	// cannot be re-sent) and surfaces HTTP 429 as an ERROR so the rate
+	// limiter's retry actually sees throttling — httpClient.Do returns nil
+	// error for any HTTP status.
+	sendOnce := func(ctx context.Context) (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" {
+			httpReq.Header.Set("api-key", c.apiKey)
+		} else {
+			httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
+		}
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+		}
+		return resp, nil
 	}
 
 	// Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
+		result, err := c.rateLimiter.Do(ctx, sendOnce)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		result, err := sendOnce(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
+		httpResp = result.(*http.Response)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
