@@ -22,6 +22,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
+	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
@@ -1042,6 +1043,12 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	if err != nil {
 		return err
 	}
+
+	// Slot scheduling: install this turn's SlotInfo. Origin comes from the
+	// CLI's own report (gRPC metadata "loom-slot-origin"): "interactive"
+	// means a human at a terminal is waiting on this single turn. The stamp
+	// is per-request — edge-triggered, never a conversation-lifetime mark.
+	ctx = llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), 0)
 
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
