@@ -18,7 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,10 +167,17 @@ func (r *Runner) Run(ctx context.Context, entries []Entry, resultCh chan<- Entry
 	var completed atomic.Int64
 	total := len(entries)
 
+	// A server without allow_time_override rejects EVERY entry identically:
+	// abort the run on the first such rejection instead of burning one futile
+	// temp-agent create/weave/delete cycle per entry (500 on a full set).
+	runCtx, abort := context.WithCancel(ctx)
+	defer abort()
+	var abortErr atomic.Pointer[string]
+
 loop:
 	for i, entry := range entries {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			break loop
 		case sem <- struct{}{}:
 		}
@@ -178,7 +187,14 @@ loop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			result := r.runEntry(ctx, e)
+			result := r.runEntry(runCtx, e)
+			if strings.Contains(result.Error, "allow_time_override") {
+				msg := "server rejects occurred_at (server.allow_time_override is not enabled); aborting the run — enable it in looms.yaml or pass --occurred-at=false"
+				if abortErr.CompareAndSwap(nil, &msg) {
+					r.logger.Error(msg, zap.String("first_failed_entry", e.QuestionID))
+					abort()
+				}
+			}
 			done := completed.Add(1)
 			r.logger.Info("entry completed",
 				zap.String("question_id", e.QuestionID),
@@ -197,6 +213,9 @@ loop:
 	}
 
 	wg.Wait()
+	if msg := abortErr.Load(); msg != nil {
+		return errors.New(*msg)
+	}
 	return ctx.Err()
 }
 

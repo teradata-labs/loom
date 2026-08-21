@@ -6,8 +6,13 @@ Adapted from https://github.com/xiaowu0162/LongMemEval/blob/main/src/evaluation/
 Changes from upstream:
   - Added gpt-5.1 to model_zoo (gpt-4o retired Feb 2026)
   - Default metric model changed to gpt-5.1
-  - Added 'bedrock' backend (boto3 converse; credentials/region from the AWS
-    default chain, region override via AWS_REGION) and 'azure' backend
+  - Judge reply budget is 64 tokens (upstream: max_tokens=10). With the
+    upstream substring check ('yes' in response) a verbose judge has more
+    room to emit an incidental "yes"; disclosed here, kept for parity with
+    published runs.
+  - Added 'bedrock' backend (boto3 converse; credentials AND region from the
+    AWS default chain — AWS_REGION/AWS_DEFAULT_REGION/profile — with
+    us-west-2 only as the last-resort default) and 'azure' backend
     (AzureOpenAI; needs AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and
     AZURE_OPENAI_DEPLOYMENT_ID). Judge prompts are unchanged from the paper.
 """
@@ -123,7 +128,9 @@ if __name__ == '__main__':
         import boto3
         bedrock_client = boto3.client(
             'bedrock-runtime',
-            region_name=os.getenv('AWS_REGION', 'us-west-2'),
+            # Respect the full default chain (env, profile, SSO); only fall
+            # back to us-west-2 when nothing in the chain names a region.
+            region_name=os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION') or boto3.session.Session().region_name or 'us-west-2',
         )
     else:
         metric_client = OpenAI(api_key="EMPTY", base_url="http://localhost:8001/v1")
