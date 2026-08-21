@@ -110,7 +110,11 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 	}
 
 	// Surface the server's usage guidance alongside its tools (issue #336).
-	a.attachMCPServerInstructions(config.Name, config.Client.Instructions())
+	// Gated on at least one registered tool, matching RegisterMCPServer:
+	// guidance for a server that contributed nothing is prompt noise.
+	if len(tools) > 0 {
+		a.attachMCPServerInstructions(config.Name, config.Client.Instructions())
+	}
 
 	// Warn about tool count bloat
 	totalTools := a.ToolCount()

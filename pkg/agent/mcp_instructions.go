@@ -15,6 +15,7 @@ package agent
 
 import (
 	"fmt"
+	"go.uber.org/zap"
 	"sort"
 	"strings"
 )
@@ -33,6 +34,23 @@ func (a *Agent) attachMCPServerInstructions(serverName, instructions string) {
 		return
 	}
 
+	// The string is server-controlled and lands in the ROM prompt slot,
+	// which pressure relief never sheds: unbounded input would let one
+	// hostile or buggy server starve every session's context permanently.
+	// The cap is generous — real-world instructions are well under 2 KiB.
+	trimmed := strings.TrimSpace(instructions)
+	if len(trimmed) > maxMCPInstructionsBytes {
+		zap.L().Warn("MCP server instructions truncated",
+			zap.String("server", serverName),
+			zap.Int("bytes", len(trimmed)),
+			zap.Int("cap", maxMCPInstructionsBytes))
+		trimmed = trimmed[:maxMCPInstructionsBytes] + "\n[instructions truncated by loom: size cap]"
+	}
+	// Escape line-start markdown headers so one server cannot fabricate a
+	// section attributed to another server (or to loom's own supplements);
+	// the rendered header below is the only unescaped one per server.
+	trimmed = escapeLineStartHeaders(trimmed)
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -42,7 +60,25 @@ func (a *Agent) attachMCPServerInstructions(serverName, instructions string) {
 	if _, exists := a.mcpServerInstructions[serverName]; exists {
 		return
 	}
-	a.mcpServerInstructions[serverName] = strings.TrimSpace(instructions)
+	a.mcpServerInstructions[serverName] = trimmed
+}
+
+// maxMCPInstructionsBytes bounds one server's instructions contribution to
+// the system prompt (ROM is unsheddable; see attachMCPServerInstructions).
+const maxMCPInstructionsBytes = 8 * 1024
+
+// escapeLineStartHeaders backslash-escapes markdown ATX headers at line
+// starts so server-supplied text cannot spoof section headers. The body text
+// stays readable to the LLM; only the header syntax is neutralized.
+func escapeLineStartHeaders(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		t := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(t, "#") {
+			lines[i] = "\\" + strings.TrimLeft(line, " ")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // mcpInstructionsPromptSupplement renders the usage guidance of every MCP
