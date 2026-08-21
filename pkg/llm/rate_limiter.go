@@ -133,9 +133,11 @@ type RateLimiterMetrics struct {
 	LastThrottleTime   time.Time
 }
 
-// NewRateLimiter creates a new rate limiter.
-// Zero-value fields in config are backfilled from DefaultRateLimiterConfig().
-func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
+// normalizeRateLimiterConfig backfills zero-value fields from
+// DefaultRateLimiterConfig(). SharedRateLimiter keys its map on the
+// normalized form, so an explicit value equal to the default shares the
+// default's limiter.
+func normalizeRateLimiterConfig(config RateLimiterConfig) RateLimiterConfig {
 	defaults := DefaultRateLimiterConfig()
 
 	if config.Logger == nil {
@@ -162,6 +164,13 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 	if config.QueueTimeout == 0 {
 		config.QueueTimeout = defaults.QueueTimeout
 	}
+	return config
+}
+
+// NewRateLimiter creates a new rate limiter.
+// Zero-value fields in config are backfilled from DefaultRateLimiterConfig().
+func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
+	config = normalizeRateLimiterConfig(config)
 
 	// Compute queue capacity with overflow-safe bounds check.
 	// We compute using int64 and clamp to a sane maximum to avoid overflow
