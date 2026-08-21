@@ -160,3 +160,27 @@ func TestBackpressureBudgetExhausted(t *testing.T) {
 	assert.Less(t, time.Since(start), 3*time.Second, "must give up before the context dies")
 	assert.GreaterOrEqual(t, ft.calls(), 2, "at least one frozen re-invoke happened")
 }
+
+// TestBackpressureBudgetRidesDeadline: the freeze budget is the caller's
+// deadline when one exists — even one longer than the no-deadline default —
+// and the default only applies without a deadline (az512f regression: a
+// 15-min cap under a 40-min deadline surfaced 44 avoidable errors).
+func TestBackpressureBudgetRidesDeadline(t *testing.T) {
+	assert.Equal(t, defaultBackpressureBudget, backpressureBudget(context.Background()))
+
+	long, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	defer cancel()
+	got := backpressureBudget(long)
+	assert.Greater(t, got, 35*time.Minute, "a 40m deadline must yield a ~40m budget, not the 15m default")
+
+	short, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	got = backpressureBudget(short)
+	assert.Less(t, got, 5*time.Second)
+	assert.Greater(t, got, 2*time.Second)
+
+	dead, cancel3 := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel3()
+	time.Sleep(2 * time.Millisecond)
+	assert.LessOrEqual(t, backpressureBudget(dead), time.Duration(0))
+}

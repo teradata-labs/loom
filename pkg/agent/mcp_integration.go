@@ -38,6 +38,10 @@ type MCPServerConfig struct {
 	// AutoClose determines if the client should be closed when agent is done
 	// Default: false (client lifecycle managed externally)
 	AutoClose bool
+
+	// Logger receives registration events and is handed to every tool
+	// adapter (backpressure freezes, resource-wait parks). Nil = no-op.
+	Logger *zap.Logger
 }
 
 // RegisterMCPTools connects to an MCP server and registers all its tools with the agent.
@@ -75,12 +79,12 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 		return fmt.Errorf("MCP client must be initialized before registering tools (call client.Initialize first)")
 	}
 
-	// Get logger (use agent's tracer logger if available, otherwise create new one)
-	logger := zap.NewNop()
-	if a.tracer != nil {
-		// Tracer might have a logger we can use
-		// For now, just use nop logger
-		logger = zap.NewNop()
+	logger := config.Logger
+	if logger == nil {
+		// Fall back to the process-global logger, not a nop: adapter
+		// lifecycle events (park entry/exit, session-handle release
+		// attempts and skips) must stay visible in production logs.
+		logger = zap.L()
 	}
 
 	logger.Info("registering MCP tools",
@@ -98,9 +102,7 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 	tools := make([]shuttle.Tool, len(mcpTools))
 	for i, mcpTool := range mcpTools {
 		mcpAdapter := adapter.NewMCPToolAdapter(config.Client, mcpTool, config.Name)
-		// Adapter lifecycle events (park entry/exit, session-handle release
-		// attempts and skips) must be visible in production logs.
-		mcpAdapter.SetLogger(zap.L())
+		mcpAdapter.SetLogger(logger)
 		tools[i] = mcpAdapter
 	}
 
@@ -182,7 +184,7 @@ func (a *Agent) RegisterMCPServer(ctx context.Context, mcpMgr *manager.Manager, 
 		return fmt.Errorf("failed to get server config: %w", err)
 	}
 
-	logger := zap.NewNop()
+	logger := mcpMgr.Logger()
 	logger.Info("Registering MCP server tools", zap.String("server", serverName))
 
 	// List all available tools
@@ -202,7 +204,7 @@ func (a *Agent) RegisterMCPServer(ctx context.Context, mcpMgr *manager.Manager, 
 	// Register filtered tools. Results ride whole (HLD §4).
 	for _, tool := range toolsToRegister {
 		mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
-		mcpAdapter.SetLogger(zap.L())
+		mcpAdapter.SetLogger(logger)
 		a.RegisterTool(mcpAdapter)
 		logger.Debug("registered MCP tool",
 			zap.String("server", serverName),
@@ -239,7 +241,7 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 		return fmt.Errorf("server %s not found: %w", serverName, err)
 	}
 
-	logger := zap.NewNop()
+	logger := mcpMgr.Logger()
 
 	// Get tool definition
 	tools, err := client.ListTools(ctx)
@@ -251,7 +253,7 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 	for _, tool := range tools {
 		if tool.Name == toolName {
 			mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
-			mcpAdapter.SetLogger(zap.L())
+			mcpAdapter.SetLogger(logger)
 			shuttleTool := mcpAdapter
 			a.RegisterTool(shuttleTool)
 
