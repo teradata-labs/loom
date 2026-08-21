@@ -246,8 +246,9 @@ build-mcp: proto
     @echo "✅ MCP binary: bin/loom-mcp"
 
 # Probe a real MCP server with Loom's client (negotiation, tools, MRTR, subscriptions)
+[positional-arguments]
 mcp-probe *ARGS:
-    GOWORK=off go run -tags fts5 ./cmd/loom-mcp-probe {{ARGS}}
+    GOWORK=off go run -tags fts5 ./cmd/loom-mcp-probe "$@"
 
 # Build all variants (server, tui, standalone, mcp)
 build-all: build-server build-tui build-standalone build-mcp

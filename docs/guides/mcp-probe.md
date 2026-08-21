@@ -133,6 +133,8 @@ CONNECTED in 3ms
 - The MRTR driver answers **elicitations only**, with one canned object for all of them; sampling and roots input requests fail the exchange by design.
 - `-watch` requires a stateless (2026-07-28) connection; `subscriptions/listen` does not exist on legacy revisions.
 - This is a probe, not a conformance suite: it reports what happened on one connection. The dual-revision conformance matrix and official-SDK interop suite live in `pkg/mcp/conformance` (migration spec §10, landed in PR #328).
+- On stdio, a child process that stops draining stdin while a watch is being cancelled can wedge the final teardown write (a pre-existing transport limitation — `Send` checks the context only before writing). Unattended stdio gates should wrap the probe in an outer `timeout(1)` as a belt; the HTTP path has no such edge.
+- Flags that cannot take effect under the chosen mode are rejected up front (`-args`/`-answer` without `-call`, `-arg` with `-url`, `-headers-env` with `-cmd`, negative `-watch`): a silently ignored flag would be a gate that verified nothing.
 - Authenticated HTTP endpoints need `-headers-env`: the manager passes configured headers from agent config, and the probe reads the same shape from the named environment variable.
 
 ## Field notes from real servers

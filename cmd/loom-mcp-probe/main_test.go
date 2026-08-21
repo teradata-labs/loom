@@ -38,6 +38,7 @@ type scriptedHTTPServer struct {
 	statelessOK bool
 	elicitFirst bool
 	watchMode   string // "": listen → MethodNotFound; "no-ack": SSE opens, no ack; "ack-then-close": ack then immediate close
+	callIsError bool   // tools/call answers isError:true
 
 	mu         sync.Mutex
 	callParams []json.RawMessage // raw params of each tools/call attempt
@@ -139,6 +140,14 @@ func (s *scriptedHTTPServer) handler(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 				"requestState": "sealed-round-1",
+			})
+			return
+		}
+		if s.callIsError {
+			writeResult(map[string]interface{}{
+				"resultType": protocol.ResultTypeComplete,
+				"isError":    true,
+				"content":    []map[string]interface{}{{"type": "text", "text": "tool exploded"}},
 			})
 			return
 		}
@@ -263,9 +272,6 @@ func TestProbeMRTRElicitation(t *testing.T) {
 }
 
 func TestProbeRejectsNonElicitationInputRequests(t *testing.T) {
-	_, err := buildMRTRHandler(`{"x":1}`, &report{}, printer{w: io.Discard})
-	require.NoError(t, err)
-
 	h, err := buildMRTRHandler(`{"x":1}`, &report{}, printer{w: io.Discard})
 	require.NoError(t, err)
 	_, err = h(context.Background(), protocol.InputRequests{
@@ -351,6 +357,42 @@ func TestHeadersFromEnv(t *testing.T) {
 	h, err = headersFromEnv("")
 	require.NoError(t, err)
 	assert.Nil(t, h)
+}
+
+// The gate-script pitch: every path that verifies nothing must exit non-zero.
+func TestProbeIsErrorResultFailsProbe(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true, callIsError: true})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, Call: "greet", Args: "{}", Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err, "an isError:true tool result must fail the probe")
+	assert.Contains(t, err.Error(), "greet")
+}
+
+func TestProbeBadArgsJSONFailsBeforeTransport(t *testing.T) {
+	_, err := run(context.Background(), options{
+		URL: "http://127.0.0.1:1", Call: "greet", Args: "not-json", Timeout: time.Second,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-args")
+}
+
+func TestProbeInputRequiredWithoutAnswerFailsFast(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true, elicitFirst: true})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, Call: "greet", Args: "{}", Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err, "input_required with no -answer must fail, not silently pass")
+}
+
+func TestProbeAnswerOnLegacyConnectionIsError(t *testing.T) {
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: false})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, Call: "greet", Args: "{}", Answer: `{"x":1}`, Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy")
+	assert.Contains(t, err.Error(), "MRTR")
 }
 
 func TestHelpers(t *testing.T) {

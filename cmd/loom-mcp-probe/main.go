@@ -27,7 +27,7 @@
 //	loom-mcp-probe -cmd npx -arg -y -arg @modelcontextprotocol/server-everything \
 //	    -arg stdio -call echo -args '{"message":"hello"}'
 //	loom-mcp-probe -url http://localhost:9090/mcp -pin legacy
-//	loom-mcp-probe -url http://localhost:8971 -call test_elicitation \
+//	loom-mcp-probe -url http://localhost:8971 -call test_input_required_result_elicitation \
 //	    -args '{"message":"pick a username"}' -answer '{"username":"loom"}'
 //
 // With -answer set, the probe drives Multi Round-Trip Requests (MRTR,
@@ -119,6 +119,24 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	// A silently ignored flag is a gate that verified nothing: every flag
+	// that cannot take effect under this flag combination is an error.
+	for _, bad := range []struct {
+		cond bool
+		msg  string
+	}{
+		{opts.WatchSec < 0, "-watch must be >= 0"},
+		{opts.Call == "" && opts.Args != "{}", "-args requires -call"},
+		{opts.Call == "" && opts.Answer != "", "-answer requires -call"},
+		{opts.URL != "" && len(opts.CmdArgs) > 0, "-arg applies only to -cmd (stdio)"},
+		{opts.Cmd != "" && opts.HeadersEnv != "", "-headers-env applies only to -url (HTTP)"},
+	} {
+		if bad.cond {
+			fmt.Fprintln(os.Stderr, bad.msg)
+			flag.Usage()
+			os.Exit(2)
+		}
+	}
 
 	rep, err := run(context.Background(), opts, os.Stdout)
 	if err != nil {
@@ -189,6 +207,13 @@ func run(ctx context.Context, opts options, out io.Writer) (*report, error) {
 	pr.f("  negotiated : %s\n", rep.Negotiated)
 	pr.f("  era        : %s\n", era(rep.Stateless))
 	pr.f("  serverInfo : %s %s\n", rep.ServerInfo.Name, rep.ServerInfo.Version)
+
+	// -answer promises an MRTR exercise, and MRTR exists only on stateless
+	// (2026-07-28) connections: after a legacy fallback the driver is
+	// unreachable, so exiting 0 would gate nothing. Mirror the -watch rule.
+	if opts.Answer != "" && !c.IsStateless() {
+		return rep, fmt.Errorf("-answer requested, but the connection is legacy (%s): MRTR is 2026-07-28 only", c.NegotiatedVersion())
+	}
 
 	listCtx, cancelList := context.WithTimeout(ctx, opts.Timeout)
 	tools, err := c.ListTools(listCtx)
