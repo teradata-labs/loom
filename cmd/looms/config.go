@@ -320,6 +320,14 @@ type LLMConfig struct {
 	// (docs/architecture/llm-slot-scheduler.md). Default off.
 	SchedulerEnabled bool `mapstructure:"scheduler_enabled"`
 
+	// MaxActiveConversations caps concurrently active batch conversation
+	// turns; excess queues FIFO at the door. 0 = unlimited (gate off).
+	MaxActiveConversations int `mapstructure:"max_active_conversations"`
+
+	// MaxDoorQueue caps the door queue; beyond it new batch turns are
+	// rejected with RESOURCE_EXHAUSTED. 0 = unbounded queueing.
+	MaxDoorQueue int `mapstructure:"max_door_queue"`
+
 	// Ollama-specific
 	OllamaEndpoint string `mapstructure:"ollama_endpoint"`
 	OllamaModel    string `mapstructure:"ollama_model"`
@@ -1133,6 +1141,8 @@ func setDefaults() {
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
 	viper.SetDefault("llm.scheduler_enabled", false)
+	viper.SetDefault("llm.max_active_conversations", 0)
+	viper.SetDefault("llm.max_door_queue", 0)
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile

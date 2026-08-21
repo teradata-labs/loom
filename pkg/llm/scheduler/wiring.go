@@ -7,6 +7,7 @@ package scheduler
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -162,4 +163,26 @@ func ObserveSuccessForScope(scope string) {
 		return
 	}
 	defaultRegistry.For(scope, Config{}).ObserveSuccess()
+}
+
+// defaultDoor is the process-wide conversation-turn gate. Disabled until
+// looms configures it (SetDoorLimits).
+var (
+	doorMu      sync.Mutex
+	defaultDoor = NewDoorGate(0, 0)
+)
+
+// Door returns the process-wide door gate.
+func Door() *DoorGate {
+	doorMu.Lock()
+	defer doorMu.Unlock()
+	return defaultDoor
+}
+
+// SetDoorLimits configures the process-wide door gate. maxActive <= 0
+// disables gating.
+func SetDoorLimits(maxActive, maxQueue int) {
+	doorMu.Lock()
+	defer doorMu.Unlock()
+	defaultDoor = NewDoorGate(maxActive, maxQueue)
 }
