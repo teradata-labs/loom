@@ -18,18 +18,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 )
 
 // newToolsListHandler creates a handler for tools/list.
-func newToolsListHandler(provider ToolProvider) MethodHandler {
+func newToolsListHandler(s *MCPServer, provider ToolProvider) MethodHandler {
 	return func(ctx context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
 		tools, err := provider.ListTools(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list tools: %w", err)
 		}
-		return protocol.ToolListResult{Tools: tools}, nil
+		// Deterministic ordering (2026-07-28): byte-stable serialization
+		// raises downstream prompt-cache hit rates; authored order is stable
+		// within one build but not across code changes or skill-load
+		// interleavings.
+		sorted := make([]protocol.Tool, len(tools))
+		copy(sorted, tools)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+		return protocol.ToolListResult{
+			Tools:      sorted,
+			TTLMs:      s.listTTLMs,
+			CacheScope: s.cacheScope,
+		}, nil
 	}
 }
 
@@ -61,18 +73,25 @@ func newToolsCallHandler(provider ToolProvider) MethodHandler {
 }
 
 // newResourcesListHandler creates a handler for resources/list.
-func newResourcesListHandler(provider ResourceProvider) MethodHandler {
+func newResourcesListHandler(s *MCPServer, provider ResourceProvider) MethodHandler {
 	return func(ctx context.Context, _ json.RawMessage, _ json.RawMessage) (interface{}, error) {
 		resources, err := provider.ListResources(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list resources: %w", err)
 		}
-		return protocol.ResourceListResult{Resources: resources}, nil
+		sorted := make([]protocol.Resource, len(resources))
+		copy(sorted, resources)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].URI < sorted[j].URI })
+		return protocol.ResourceListResult{
+			Resources:  sorted,
+			TTLMs:      s.listTTLMs,
+			CacheScope: s.cacheScope,
+		}, nil
 	}
 }
 
 // newResourcesReadHandler creates a handler for resources/read.
-func newResourcesReadHandler(provider ResourceProvider) MethodHandler {
+func newResourcesReadHandler(s *MCPServer, provider ResourceProvider) MethodHandler {
 	return func(ctx context.Context, _ json.RawMessage, params json.RawMessage) (interface{}, error) {
 		var readParams protocol.ReadResourceParams
 		if err := json.Unmarshal(params, &readParams); err != nil {
@@ -86,6 +105,10 @@ func newResourcesReadHandler(provider ResourceProvider) MethodHandler {
 		result, err := provider.ReadResource(ctx, readParams.URI)
 		if err != nil {
 			return nil, fmt.Errorf("read resource %q: %w", readParams.URI, err)
+		}
+		if result != nil {
+			result.TTLMs = s.listTTLMs
+			result.CacheScope = s.cacheScope
 		}
 
 		return result, nil

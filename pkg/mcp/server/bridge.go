@@ -29,10 +29,12 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -290,7 +292,19 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 	}
 
 	b.logger.Debug("calling tool", zap.String("tool", name))
-	return handler(ctx, args)
+	return handler(forwardIdempotencyKey(ctx), args)
+}
+
+// forwardIdempotencyKey carries the client's com.teradata.loom/idempotencyKey
+// (extracted from _meta by the server middleware) to looms as gRPC metadata,
+// where weave dedupe joins a re-issued request to its original run (MCP
+// 2026-07-28 migration, decision D1). The bridge is stateless; dedupe lives
+// with the state owner so it holds across bridge replicas.
+func forwardIdempotencyKey(ctx context.Context) context.Context {
+	if meta := RequestMetaFromContext(ctx); meta != nil && meta.IdempotencyKey != "" {
+		return metadata.AppendToOutgoingContext(ctx, types.IdempotencyKeyMetadataKey, meta.IdempotencyKey)
+	}
+	return ctx
 }
 
 // SupportsStreaming implements StreamingToolProvider. loom_weave streams agent
@@ -307,6 +321,7 @@ func (b *LoomBridge) CallToolStream(ctx context.Context, name string, args map[s
 	if !b.toolAllowed(name) {
 		return nil, fmt.Errorf("tool %q is not permitted on this endpoint", name)
 	}
+	ctx = forwardIdempotencyKey(ctx)
 	switch name {
 	case "loom_weave":
 		return b.handleWeaveStream(ctx, args, emit)

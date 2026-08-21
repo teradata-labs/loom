@@ -337,6 +337,22 @@ func TestServerConfig_Validate_DefaultTransport(t *testing.T) {
 	assert.Equal(t, "stdio", config.Transport)
 }
 
+func TestServerConfig_Validate_ProtocolVersionPin(t *testing.T) {
+	base := ServerConfig{Enabled: true, Transport: "stdio", Command: "npx"}
+
+	for _, pin := range []string{"", "auto", "legacy", "2026-07-28", "2024-11-05"} {
+		cfg := base
+		cfg.ProtocolVersion = pin
+		assert.NoError(t, cfg.Validate(), "pin %q should be valid", pin)
+	}
+
+	for _, pin := range []string{"bogus", "2031-01-01", "LEGACY"} {
+		cfg := base
+		cfg.ProtocolVersion = pin
+		assert.Error(t, cfg.Validate(), "pin %q should be rejected", pin)
+	}
+}
+
 func TestToolFilter_CombinedScenarios(t *testing.T) {
 	tests := []struct {
 		name         string

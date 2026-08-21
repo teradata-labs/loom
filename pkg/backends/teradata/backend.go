@@ -160,13 +160,14 @@ func NewBackend(ctx context.Context, cfg Config) (*Backend, error) {
 		Version:   "0.1.1",
 	})
 
-	// Initialize the MCP client (connects to server)
+	// Connect the MCP client (negotiates the protocol revision, falling back
+	// to the initialize handshake for pre-2026 servers)
 	clientInfo := protocol.Implementation{
 		Name:    "loom-teradata-backend",
 		Version: "0.1.1",
 	}
-	if err := mcpClient.Initialize(ctx, clientInfo); err != nil {
-		return nil, fmt.Errorf("failed to initialize MCP client: %w", err)
+	if err := mcpClient.Connect(ctx, clientInfo); err != nil {
+		return nil, fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	// Create MCPBackend wrapper

@@ -2212,6 +2212,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		grpcServer = grpc.NewServer(serverOpts...)
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
+	// Authenticated deployments are multi-tenant: blank identities must not
+	// act as session-ownership wildcards. Unauthenticated deployments keep
+	// the explicit single-tenant compatibility mode.
+	loomService.SetEnforceSessionOwnership(config.Server.Auth.Enabled)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
 	// Register TaskService for gRPC task management and TUI streaming.

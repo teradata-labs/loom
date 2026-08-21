@@ -286,6 +286,7 @@ func TestMCPClient_Ping_Integration(t *testing.T) {
 	defer func() { _ = mcpClient.Close() }()
 
 	// Ping the server
+	//nolint:staticcheck // frozen legacy surface keeps test coverage through the 2026-07-28 deprecation window
 	err := mcpClient.Ping(ctx)
 	assert.NoError(t, err)
 }

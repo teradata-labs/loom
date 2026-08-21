@@ -27,7 +27,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"go.uber.org/zap"
+
+	"net/url"
+	"sort"
 )
 
 // DefaultSessionTTL is the recommended session TTL for production use (30 minutes).
@@ -78,14 +82,16 @@ type StreamingMCPHandler interface {
 //   - JSON responses for single messages
 //   - Automatic session cleanup with configurable TTL
 type StreamableHTTPServer struct {
-	handler       MCPHandler
-	streamHandler StreamingMCPHandler
-	sessions      map[string]*httpSession
-	mu            sync.RWMutex
-	logger        *zap.Logger
-	sessionTTL    time.Duration
-	stopCleanup   chan struct{}
-	cleanupOnce   sync.Once
+	handler        MCPHandler
+	streamHandler  StreamingMCPHandler
+	sessions       map[string]*httpSession
+	mu             sync.RWMutex
+	logger         *zap.Logger
+	sessionTTL     time.Duration
+	stopCleanup    chan struct{}
+	cleanupOnce    sync.Once
+	allowedOrigins []string
+	statelessVers  map[string]bool // exact stateless revisions this server admits
 }
 
 type httpSession struct {
@@ -102,6 +108,24 @@ type StreamableHTTPServerConfig struct {
 	StreamHandler StreamingMCPHandler
 	Logger        *zap.Logger
 	SessionTTL    time.Duration // TTL for idle sessions; 0 disables cleanup, default 30 minutes
+
+	// AllowedOrigins lists Origin header values permitted on incoming
+	// connections, compared case-insensitively as exact values; the entry
+	// "*" permits any origin. Requests without an Origin header (non-browser
+	// clients) are always admitted. When empty, only loopback origins
+	// (http/https on localhost, 127.0.0.1, or [::1], any port) are permitted
+	// — the Streamable HTTP specification requires Origin validation on all
+	// incoming connections to prevent DNS-rebinding attacks, with HTTP 403
+	// for a present-but-invalid Origin.
+	AllowedOrigins []string
+
+	// SupportedStatelessVersions lists the exact stateless (2026-07-28+)
+	// protocol revisions this server admits; a request declaring any other
+	// modern revision is rejected with 400 and UnsupportedProtocolVersion
+	// (-32022) listing this set, as the specification requires. Defaults to
+	// {2026-07-28}. Admission is exact-match — an open-ended comparison
+	// would execute revisions this server has never implemented.
+	SupportedStatelessVersions []string
 }
 
 // NewStreamableHTTPServer creates a new MCP streamable HTTP server handler.
@@ -120,13 +144,23 @@ func NewStreamableHTTPServer(config StreamableHTTPServerConfig) (*StreamableHTTP
 		ttl = 0
 	}
 
+	statelessVers := make(map[string]bool)
+	if len(config.SupportedStatelessVersions) == 0 {
+		statelessVers[protocol.Version20260728] = true
+	}
+	for _, v := range config.SupportedStatelessVersions {
+		statelessVers[v] = true
+	}
+
 	s := &StreamableHTTPServer{
-		handler:       config.Handler,
-		streamHandler: config.StreamHandler,
-		sessions:      make(map[string]*httpSession),
-		logger:        config.Logger,
-		sessionTTL:    ttl,
-		stopCleanup:   make(chan struct{}),
+		handler:        config.Handler,
+		streamHandler:  config.StreamHandler,
+		sessions:       make(map[string]*httpSession),
+		logger:         config.Logger,
+		sessionTTL:     ttl,
+		stopCleanup:    make(chan struct{}),
+		allowedOrigins: config.AllowedOrigins,
+		statelessVers:  statelessVers,
 	}
 
 	if ttl > 0 {
@@ -138,6 +172,17 @@ func NewStreamableHTTPServer(config StreamableHTTPServerConfig) (*StreamableHTTP
 
 // ServeHTTP implements http.Handler for the MCP endpoint.
 func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Origin validation runs before any body or session processing: the
+	// specification requires validating Origin on all incoming connections
+	// and answering a present-but-invalid one with HTTP 403 (DNS-rebinding
+	// defense). The response body MAY be an id-less JSON-RPC error.
+	if origin := r.Header.Get("Origin"); origin != "" && !s.originAllowed(origin) {
+		s.logger.Warn("rejected request from disallowed origin", zap.String("origin", origin))
+		s.writeJSONRPCError(w, http.StatusForbidden, nil, protocol.InvalidRequest,
+			"origin not allowed")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodPost:
 		s.handlePost(w, r)
@@ -179,6 +224,19 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 
 	if len(body) == 0 {
 		http.Error(w, "Empty request body", http.StatusBadRequest)
+		return
+	}
+
+	// Dual-mode admission (MCP 2026-07-28): a request declaring a stateless
+	// revision — in params._meta or in the MCP-Protocol-Version header —
+	// takes the stateless path, which validates the declaration strictly
+	// and bypasses the session layer entirely (no lookup, no minting, no
+	// session response header; any stale Mcp-Session-Id is ignored).
+	// Routing on either signal closes the bypass where a legacy-shaped body
+	// under modern headers would slip past validation into legacy dispatch.
+	peek := peekStatelessRequest(body)
+	if protocol.IsStatelessVersion(peek.version) || protocol.IsStatelessVersion(r.Header.Get("MCP-Protocol-Version")) {
+		s.handleStatelessPost(w, r, body, peek)
 		return
 	}
 
@@ -248,6 +306,233 @@ func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request
 // acceptsEventStream reports whether the request's Accept header opts into SSE.
 func acceptsEventStream(accept string) bool {
 	return strings.Contains(accept, "text/event-stream")
+}
+
+// statelessPeek carries the body fields dual-mode admission and header
+// validation need, extracted in a single parse.
+type statelessPeek struct {
+	id      json.RawMessage
+	method  string
+	version string
+	name    string // params.name (tools/call, prompts/get)
+	uri     string // params.uri (resources/read)
+}
+
+func peekStatelessRequest(body []byte) statelessPeek {
+	var p struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+			Name string                     `json:"name"`
+			URI  string                     `json:"uri"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return statelessPeek{}
+	}
+	peek := statelessPeek{id: p.ID, method: p.Method, name: p.Params.Name, uri: p.Params.URI}
+	if raw, ok := p.Params.Meta[protocol.MetaProtocolVersion]; ok {
+		_ = json.Unmarshal(raw, &peek.version)
+	}
+	return peek
+}
+
+// mcpNameSource returns the body value the Mcp-Name header mirrors for the
+// given method, and whether the method requires the header at all.
+func (p statelessPeek) mcpNameSource() (value string, required bool) {
+	switch p.method {
+	case "tools/call", "prompts/get":
+		return p.name, true
+	case "resources/read":
+		return p.uri, true
+	}
+	return "", false
+}
+
+// originAllowed implements the trusted-Origin policy: exact case-insensitive
+// match against the configured allowlist ("*" admits any), defaulting to
+// loopback origins only. Absent Origin headers are handled by the caller.
+func (s *StreamableHTTPServer) originAllowed(origin string) bool {
+	if len(s.allowedOrigins) > 0 {
+		for _, allowed := range s.allowedOrigins {
+			if allowed == "*" || strings.EqualFold(allowed, origin) {
+				return true
+			}
+		}
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// handleStatelessPost admits a modern (2026-07-28+) request. Admission is
+// strict, per the transport's Server Validation rules: the declared revision
+// must be one this server implements exactly (open-ended acceptance would
+// execute revisions never implemented here), and on requests the required
+// standard headers must be present and agree with the body — a missing or
+// mismatched MCP-Protocol-Version, Mcp-Method, or (where applicable)
+// Mcp-Name is a 400 with HeaderMismatch (-32020). Notification POSTs carry
+// no header requirements in this revision.
+func (s *StreamableHTTPServer) handleStatelessPost(w http.ResponseWriter, r *http.Request, body []byte, peek statelessPeek) {
+	headerVersion := r.Header.Get("MCP-Protocol-Version")
+	isRequest := len(peek.id) > 0 && string(peek.id) != "null"
+
+	// A legacy-shaped body (no stateless _meta) routed here by a modern
+	// header is a header/body disagreement, not an unknown version.
+	if peek.version == "" {
+		s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+			fmt.Sprintf("MCP-Protocol-Version header %q does not match _meta protocol version %q", headerVersion, peek.version))
+		return
+	}
+
+	// Exact version support: unknown or unimplemented revisions — including
+	// futures this build has never seen — are rejected with the supported
+	// set, so the client can retry with a mutual revision.
+	if !s.statelessVers[peek.version] {
+		supported := make([]string, 0, len(s.statelessVers))
+		for v := range s.statelessVers {
+			supported = append(supported, v)
+		}
+		sort.Strings(supported)
+		s.writeJSONRPCErrorData(w, http.StatusBadRequest, peek.id, protocol.UnsupportedProtocolVersion,
+			fmt.Sprintf("unsupported protocol version %q", peek.version),
+			map[string]interface{}{"supported": supported, "requested": peek.version})
+		return
+	}
+
+	// Header requirements apply to requests; the revision defines no header
+	// requirements for notification POSTs.
+	if isRequest {
+		if headerVersion != peek.version {
+			s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+				fmt.Sprintf("MCP-Protocol-Version header %q does not match _meta protocol version %q", headerVersion, peek.version))
+			return
+		}
+		if hdr := r.Header.Get("Mcp-Method"); hdr == "" || hdr != peek.method {
+			s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+				fmt.Sprintf("Mcp-Method header %q does not match body method %q", hdr, peek.method))
+			return
+		}
+		if source, required := peek.mcpNameSource(); required {
+			decoded, err := protocol.DecodeHeaderValue(r.Header.Get("Mcp-Name"))
+			if err != nil || r.Header.Get("Mcp-Name") == "" || decoded != source {
+				s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+					fmt.Sprintf("Mcp-Name header does not match the body value for %s", peek.method))
+				return
+			}
+		}
+		// Mcp-Param-* headers mirror x-mcp-header-annotated tool arguments.
+		// None of this server's tools declare such annotations, so no
+		// Mcp-Param header is recognized here and they are ignored per the
+		// forwarding rule — but a malformed Base64 sentinel is still a
+		// header that "contains invalid characters" and is rejected.
+		for name, vals := range r.Header {
+			if !strings.HasPrefix(http.CanonicalHeaderKey(name), "Mcp-Param-") {
+				continue
+			}
+			for _, v := range vals {
+				if _, err := protocol.DecodeHeaderValue(v); err != nil {
+					s.writeJSONRPCError(w, http.StatusBadRequest, peek.id, protocol.HeaderMismatch,
+						fmt.Sprintf("header %s carries an invalid encoded value", name))
+					return
+				}
+			}
+		}
+	}
+
+	// POST-response SSE only for methods that actually stream: the SSE path
+	// commits HTTP 200 before the handler runs, which would defeat the
+	// status mapping below for everything else (unknown methods must be 404).
+	streamable := peek.method == "tools/call" || peek.method == protocol.MethodSubscriptionsListen
+	if isRequest && streamable && s.streamHandler != nil && acceptsEventStream(r.Header.Get("Accept")) {
+		if flusher, ok := w.(http.Flusher); ok {
+			s.handleStreamingPost(w, r, flusher, body)
+			return
+		}
+	}
+
+	resp, err := s.handler(r.Context(), body)
+	if err != nil {
+		s.logger.Error("handler error", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if resp == nil {
+		// Notification - accepted but no content
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statelessResponseStatus(resp))
+	_, _ = w.Write(resp)
+}
+
+// statelessResponseStatus maps handler-produced JSON-RPC errors to the HTTP
+// status the transport requires on the modern path: unknown method is
+// 404 + MethodNotFound; version and header failures are 400. Everything
+// else — results and ordinary errors — is 200.
+func statelessResponseStatus(resp []byte) int {
+	var probe struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &probe); err != nil || probe.Error == nil {
+		return http.StatusOK
+	}
+	switch probe.Error.Code {
+	case protocol.MethodNotFound:
+		return http.StatusNotFound
+	case protocol.HeaderMismatch, protocol.MissingRequiredClientCapability, protocol.UnsupportedProtocolVersion:
+		return http.StatusBadRequest
+	}
+	return http.StatusOK
+}
+
+// writeJSONRPCErrorData is writeJSONRPCError with a data member — the
+// UnsupportedProtocolVersion error carries its supported/requested lists.
+func (s *StreamableHTTPServer) writeJSONRPCErrorData(w http.ResponseWriter, status int, id json.RawMessage, code int, message string, data interface{}) {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]interface{}{"code": code, "message": message, "data": data},
+	})
+	if err != nil {
+		http.Error(w, message, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// writeJSONRPCError answers with an HTTP error status carrying a JSON-RPC
+// error body, as the 2026-07-28 transport requires for header-validation
+// failures.
+func (s *StreamableHTTPServer) writeJSONRPCError(w http.ResponseWriter, status int, id json.RawMessage, code int, message string) {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]interface{}{"code": code, "message": message},
+	})
+	if err != nil {
+		http.Error(w, message, status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // handleStreamingPost answers a POST as Server-Sent Events. It writes the SSE

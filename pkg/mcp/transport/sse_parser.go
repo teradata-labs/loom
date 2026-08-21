@@ -22,6 +22,12 @@ import (
 	"strings"
 )
 
+// SSEEvent is one parsed Server-Sent Events message.
+type SSEEvent struct {
+	ID   string // SSE event ID (informational; resumption was removed by MCP 2026-07-28)
+	Data []byte // JSON-RPC message
+}
+
 // SSEParser parses Server-Sent Events from an HTTP response body.
 type SSEParser struct {
 	reader *bufio.Reader
