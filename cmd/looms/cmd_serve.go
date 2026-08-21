@@ -988,6 +988,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	artifacts.SetSessionMetadataEnabled(config.Artifacts.SessionMetadataEnabled)
 
+	// LLM slot scheduler enablement must precede EVERY LLM client
+	// construction: clients attach their CapacityObserver at build time,
+	// and agents are loaded well before gRPC service registration.
+	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
 
@@ -2255,10 +2260,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService.SetEnforceSessionOwnership(config.Server.Auth.Enabled)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
-	// LLM slot scheduler: enablement is config-driven; the observability/
-	// admin surface registers unconditionally (empty until schedulers exist).
-	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+	// LLM slot scheduler observability/admin surface (enablement happened at
+	// startup, before client construction).
 	if config.LLM.SchedulerEnabled {
+		llmscheduler.Default().SetLogger(logger)
 		logger.Info("LLM slot scheduler enabled")
 	}
 	loomv1.RegisterLLMSchedulerServiceServer(grpcServer, llmscheduler.NewService(llmscheduler.Default()))
