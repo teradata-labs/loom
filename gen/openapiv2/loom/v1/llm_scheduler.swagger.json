@@ -89,6 +89,11 @@
           "type": "number",
           "format": "float",
           "description": "Target utilization of measured capacity, (0, 1]. 0 = default 0.8."
+        },
+        "interactiveHeadroom": {
+          "type": "number",
+          "format": "float",
+          "description": "Fraction of the budget reserved for the interactive band, [0, 1).\nBatch admission is capped at budget * (1 - interactive_headroom) so an\narriving human never waits behind a fully batch-reserved window.\n0 = default 0.15."
         }
       },
       "description": "LLMSchedulerConfig configures one provider-scope scheduler. Zero values\nmean \"derive\": from provider response telemetry where available, from the\nscope's rate-limit configuration otherwise."
@@ -112,6 +117,16 @@
           "$ref": "#/definitions/v1SlotState"
         }
       }
+    },
+    "v1SlotOrigin": {
+      "type": "string",
+      "enum": [
+        "SLOT_ORIGIN_UNSPECIFIED",
+        "SLOT_ORIGIN_BATCH",
+        "SLOT_ORIGIN_INTERACTIVE"
+      ],
+      "default": "SLOT_ORIGIN_UNSPECIFIED",
+      "description": "SlotOrigin bands slot requests by who is waiting on the answer. The\ninteractive band outranks the batch band entirely: a human blocked on a\nresponse experiences latency directly, while batch work only cares about\nthroughput. Within a band, SlotPriorityClass orders requests. Aging never\npromotes across bands.\n\n - SLOT_ORIGIN_BATCH: Fleet/background work: workflows, task-board executions, sub-agent\nfan-outs, scheduled runs.\n - SLOT_ORIGIN_INTERACTIVE: A human is waiting. Edge-triggered, per turn: the caller stamps\nINTERACTIVE only on the calls of the single conversation-loop turn that\nanswers a human action (a chat message on an attached session, a HITL\nresponse), then reverts to BATCH. A conversation is never interactive\nfor its lifetime — only for the loop a human is provably waiting on."
     },
     "v1SlotPriorityClass": {
       "type": "string",
@@ -194,6 +209,9 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of aging promotions applied to this waiter so far."
+        },
+        "origin": {
+          "$ref": "#/definitions/v1SlotOrigin"
         }
       },
       "description": "SlotWaiter describes one parked slot request."

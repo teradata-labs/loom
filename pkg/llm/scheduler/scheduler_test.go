@@ -48,7 +48,7 @@ func TestAcquireGrantsWithinBudget(t *testing.T) {
 func TestWaitingIsAStateNotAnError(t *testing.T) {
 	// Budget is 800 (1000 * 0.8 utilization); one 600-token reservation at a
 	// time fits, two do not — the second must park, then wake on release.
-	s := newTest(t, Config{TokensPerMinute: 1000})
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
 	first, err := s.Acquire(context.Background(), Request{ReservationTokens: 600, Class: classNew})
 	require.NoError(t, err)
 
@@ -75,7 +75,7 @@ func TestWaitingIsAStateNotAnError(t *testing.T) {
 }
 
 func TestAcquireHonorsCallerContextOnly(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000})
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
 	defer hog.Release(0)
@@ -89,7 +89,7 @@ func TestAcquireHonorsCallerContextOnly(t *testing.T) {
 }
 
 func TestPriorityOrderAcrossClasses(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour})
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
 
@@ -128,7 +128,7 @@ func TestPriorityOrderAcrossClasses(t *testing.T) {
 }
 
 func TestNewArrivalCannotOvertakeParkedHigherClass(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour})
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
 
@@ -188,7 +188,7 @@ func TestNewArrivalCannotOvertakeParkedHigherClass(t *testing.T) {
 }
 
 func TestAgingPromotesStarvedWaiters(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 1500 * time.Millisecond})
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 1500 * time.Millisecond, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
 	defer hog.Release(0)
@@ -212,7 +212,7 @@ func TestAgingPromotesStarvedWaiters(t *testing.T) {
 }
 
 func TestReservationTrueUpFreesBudget(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000})
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
 	// Reserve the whole budget, but the call actually used almost nothing.
 	g, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
@@ -227,7 +227,7 @@ func TestReservationTrueUpFreesBudget(t *testing.T) {
 }
 
 func TestUpdateFromHeadersCalibrates(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 100})
+	s := newTest(t, Config{TokensPerMinute: 100, InteractiveHeadroom: -1})
 	s.UpdateFromHeaders(1_500_000, 745_399, 30*time.Second)
 	st := s.State()
 	assert.Equal(t, int64(1_500_000), st.EffectiveTokensPerMinute)
@@ -244,20 +244,20 @@ func TestUpdateFromHeadersCalibrates(t *testing.T) {
 }
 
 func TestAIMD(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 1000})
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
 	s.ObserveThrottle(0)
 	assert.Equal(t, int64(500), s.State().EffectiveTokensPerMinute, "throttle halves the ceiling")
-	s.ObserveSuccess(2000)
+	s.ObserveSuccess()
 	assert.Equal(t, int64(525), s.State().EffectiveTokensPerMinute, "clean interval adds 5%")
 
 	// Header calibration outranks AIMD growth.
 	s.UpdateFromHeaders(1_000_000, -1, 0)
-	s.ObserveSuccess(2_000_000)
+	s.ObserveSuccess()
 	assert.Equal(t, int64(1_000_000), s.State().EffectiveTokensPerMinute)
 }
 
 func TestConcurrentAcquireReleaseRace(t *testing.T) {
-	s := newTest(t, Config{TokensPerMinute: 60_000, StarvationAge: 100 * time.Millisecond})
+	s := newTest(t, Config{TokensPerMinute: 60_000, StarvationAge: 100 * time.Millisecond, InteractiveHeadroom: -1})
 	const n = 64
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -288,7 +288,7 @@ func TestConcurrentAcquireReleaseRace(t *testing.T) {
 }
 
 func TestCloseWakesParkedWaiters(t *testing.T) {
-	s := New("test|close", Config{TokensPerMinute: 1000})
+	s := New("test|close", Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
 	require.NoError(t, err)
 	defer hog.Release(0)

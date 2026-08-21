@@ -19,4 +19,9 @@ type CapacityObserver interface {
 	// ObserveThrottle reports a throttle response (HTTP 429 or provider
 	// equivalent) and the provider-suggested retry delay (0 if absent).
 	ObserveThrottle(retryAfter time.Duration)
+	// ObserveSuccess reports a clean response that carried NO usable
+	// ratelimit telemetry. Providers with no headers at all (Bedrock,
+	// Ollama, some proxies) drive the scheduler's AIMD fallback through
+	// this: additive growth on clean traffic, halving on throttles.
+	ObserveSuccess()
 }
