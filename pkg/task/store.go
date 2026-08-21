@@ -19,10 +19,17 @@ package task
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
+
+// ErrAcceptanceCriteriaLocked is returned (wrapped) by SetAcceptanceCriteria
+// when the task already has different, non-empty acceptance criteria.
+// Criteria are write-once: they define "done", and silently moving the
+// goalposts mid-task defeats their purpose.
+var ErrAcceptanceCriteriaLocked = errors.New("acceptance criteria are write-once and already set")
 
 // CreatedBySessionMetadataKey is the task-metadata key recording the
 // conversation session that created a task (agent tool create/decompose and
@@ -55,6 +62,14 @@ type TaskStore interface {
 	// tasks match. Empty skillName or sessionID returns an empty slice.
 	ListBySkillRun(ctx context.Context, skillName, sessionID string) ([]*Task, error)
 	UpdateTask(ctx context.Context, task *Task, fields []string) (*Task, error)
+	// SetAcceptanceCriteria atomically sets a task's write-once acceptance
+	// criteria with the guard enforced in the store (single conditional
+	// UPDATE, no read-then-write window). It succeeds when the criteria are
+	// still empty or already equal to the given value (idempotent retries),
+	// and returns an error wrapping ErrAcceptanceCriteriaLocked when
+	// different non-empty criteria are already set. criteria must be
+	// non-empty.
+	SetAcceptanceCriteria(ctx context.Context, taskID, criteria string) (*Task, error)
 	DeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, opts ListTasksOpts) ([]*Task, int, error)
 
@@ -173,6 +188,21 @@ type ListTasksOpts struct {
 	Query           string // full-text search
 	Limit           int
 	Offset          int
+
+	// SessionID filters to a session's working set: tasks claimed by the
+	// session (claimed_by_session) or created in it (the
+	// CreatedBySessionMetadataKey metadata attribution). Empty = no filter.
+	SessionID string
+
+	// Statuses filters to tasks whose status is any of the given values.
+	// Empty = no filter. When both Status and Statuses are set, both apply
+	// (AND), which matches nothing unless Status is also listed.
+	Statuses []loomv1.TaskStatus
+
+	// NewestFirst orders results by created_at DESC instead of the default
+	// (priority ASC, created_at ASC). Windowed consumers that must keep the
+	// most recent tasks when the window truncates set this.
+	NewestFirst bool
 }
 
 // ReadyFrontOpts configures ready front queries.

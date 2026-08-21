@@ -273,6 +273,41 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 	return t, nil
 }
 
+// SetAcceptanceCriteria atomically sets a task's write-once acceptance
+// criteria. The guard lives in the UPDATE itself (no read-then-write
+// window): the write succeeds only while the stored criteria are empty or
+// already equal to the given value (idempotent retries). When different
+// non-empty criteria exist, an error wrapping task.ErrAcceptanceCriteriaLocked
+// is returned.
+func (s *TaskStore) SetAcceptanceCriteria(ctx context.Context, taskID, criteria string) (*task.Task, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.set_acceptance_criteria")
+	defer s.tracer.EndSpan(span)
+
+	if criteria == "" {
+		return nil, fmt.Errorf("set acceptance criteria: criteria must not be empty")
+	}
+
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET acceptance_criteria = ?, updated_at = datetime(?)
+		WHERE id = ? AND deleted_at IS NULL
+		  AND (acceptance_criteria = '' OR acceptance_criteria = ?)`,
+		criteria, now.Format(time.RFC3339), taskID, criteria,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("set acceptance criteria: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		// Disambiguate "locked" from "no such task".
+		if _, gerr := s.GetTask(ctx, taskID); gerr != nil {
+			return nil, fmt.Errorf("set acceptance criteria: task %s not found: %w", taskID, gerr)
+		}
+		return nil, fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
+	}
+	return s.GetTask(ctx, taskID)
+}
+
 func (s *TaskStore) DeleteTask(ctx context.Context, id string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.delete")
 	defer s.tracer.EndSpan(span)
@@ -322,6 +357,26 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		conditions = append(conditions, "t.parent_id = ?")
 		args = append(args, opts.ParentID)
 	}
+	if opts.SessionID != "" {
+		// Session working set = claimed by the session OR created in it
+		// (metadata attribution). This build's SQLite lacks the JSON1
+		// functions, so the metadata match is a LIKE against the compact
+		// encoding/json serialization every store writer produces:
+		// `"created_by_session":"<sid>"`. The leading quote anchors the key
+		// (a longer key ending in the same suffix cannot match), values are
+		// JSON-escaped by the same encoder on both sides, and LIKE
+		// metacharacters in the session id are escaped. Parameterized.
+		conditions = append(conditions, `(t.claimed_by_session = ? OR t.metadata_json LIKE ? ESCAPE '\')`)
+		args = append(args, opts.SessionID, "%"+escapeLike(createdBySessionJSONFragment(opts.SessionID))+"%")
+	}
+	if len(opts.Statuses) > 0 {
+		placeholders := make([]string, len(opts.Statuses))
+		for i, st := range opts.Statuses {
+			placeholders[i] = "?"
+			args = append(args, int32(st))
+		}
+		conditions = append(conditions, "t.status IN ("+strings.Join(placeholders, ",")+")")
+	}
 
 	where := strings.Join(conditions, " AND ")
 
@@ -341,6 +396,13 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		return nil, 0, fmt.Errorf("count tasks: %w", err)
 	}
 
+	// created_at is stored at second precision; rowid breaks ties in true
+	// insertion order so newest-first windows stay deterministic.
+	orderBy := " ORDER BY t.priority ASC, t.created_at ASC"
+	if opts.NewestFirst {
+		orderBy = " ORDER BY t.created_at DESC, t.rowid DESC"
+	}
+
 	// Fetch page — dynamic WHERE built from validated enum values; all user data via ? params
 	query := `SELECT id, title, description, objective, approach, acceptance_criteria, notes,
 			status, priority, category, tags_json,
@@ -350,7 +412,7 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 			created_at, updated_at, claimed_at, closed_at, close_reason,
 			COALESCE(skill_idempotency_key,'')
 		FROM tasks t WHERE ` + where + // #nosec G202 -- where is built from validated enum conditions with ? placeholders
-		` ORDER BY t.priority ASC, t.created_at ASC`
+		orderBy
 
 	limit := opts.Limit
 	if limit <= 0 {
@@ -933,4 +995,23 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// createdBySessionJSONFragment renders the exact substring encoding/json
+// produces inside metadata_json for {CreatedBySessionMetadataKey: sid}. All
+// metadata writes in the task stores go through json.Marshal of a
+// map[string]string, which emits compact `"key":"value"` pairs with this
+// escaping, so a substring match on the fragment is exact.
+func createdBySessionJSONFragment(sessionID string) string {
+	key, _ := json.Marshal(task.CreatedBySessionMetadataKey)
+	val, _ := json.Marshal(sessionID)
+	return string(key) + ":" + string(val)
+}
+
+// escapeLike escapes LIKE metacharacters (%, _) and the escape character
+// itself (\) for use with `LIKE ? ESCAPE '\'`.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	return strings.ReplaceAll(s, `_`, `\_`)
 }

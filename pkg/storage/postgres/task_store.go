@@ -275,6 +275,52 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 	return t, nil
 }
 
+// SetAcceptanceCriteria atomically sets a task's write-once acceptance
+// criteria. The guard lives in the UPDATE itself: the write succeeds only
+// while the stored criteria are empty or already equal to the given value
+// (idempotent retries). When different non-empty criteria exist, an error
+// wrapping task.ErrAcceptanceCriteriaLocked is returned.
+func (s *TaskStore) SetAcceptanceCriteria(ctx context.Context, taskID, criteria string) (*task.Task, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.set_acceptance_criteria")
+	defer s.tracer.EndSpan(span)
+
+	if criteria == "" {
+		return nil, fmt.Errorf("set acceptance criteria: criteria must not be empty")
+	}
+
+	now := time.Now().UTC()
+	var result *task.Task
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET acceptance_criteria = $1, updated_at = $2
+			WHERE id = $3 AND deleted_at IS NULL
+			  AND (acceptance_criteria = '' OR acceptance_criteria = $1)`,
+			criteria, now, taskID,
+		)
+		if err != nil {
+			return fmt.Errorf("set acceptance criteria: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			// Disambiguate "locked" from "no such task".
+			var existingID string
+			gerr := tx.QueryRow(ctx,
+				`SELECT id FROM tasks WHERE id = $1 AND deleted_at IS NULL`, taskID,
+			).Scan(&existingID)
+			if gerr != nil {
+				return fmt.Errorf("set acceptance criteria: task %s not found: %w", taskID, gerr)
+			}
+			return fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
+		}
+		row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, taskID)
+		result, err = pgScanTask(row)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *TaskStore) DeleteTask(ctx context.Context, id string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg.task.delete")
 	defer s.tracer.EndSpan(span)
@@ -336,6 +382,23 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		args = append(args, opts.Query)
 		argN++
 	}
+	if opts.SessionID != "" {
+		// Session working set = claimed by the session OR created in it
+		// (CreatedBySessionMetadataKey metadata attribution, JSONB).
+		conditions = append(conditions, fmt.Sprintf(
+			"(t.claimed_by_session = $%d OR t.metadata_json ->> $%d = $%d)", argN, argN+1, argN))
+		args = append(args, opts.SessionID, task.CreatedBySessionMetadataKey)
+		argN += 2
+	}
+	if len(opts.Statuses) > 0 {
+		placeholders := make([]string, len(opts.Statuses))
+		for i, st := range opts.Statuses {
+			placeholders[i] = fmt.Sprintf("$%d", argN)
+			args = append(args, int32(st))
+			argN++
+		}
+		conditions = append(conditions, "t.status IN ("+strings.Join(placeholders, ",")+")")
+	}
 
 	where := strings.Join(conditions, " AND ")
 
@@ -358,9 +421,14 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		copy(fetchArgs, args)
 		fetchArgs = append(fetchArgs, limit, opts.Offset)
 
+		orderBy := "t.priority ASC, t.created_at ASC"
+		if opts.NewestFirst {
+			orderBy = "t.created_at DESC"
+		}
+
 		query := fmt.Sprintf(`SELECT %s FROM tasks t WHERE %s
-			ORDER BY t.priority ASC, t.created_at ASC
-			LIMIT $%d OFFSET $%d`, taskColumns, where, argN, argN+1)
+			ORDER BY %s
+			LIMIT $%d OFFSET $%d`, taskColumns, where, orderBy, argN, argN+1)
 
 		rows, err := tx.Query(ctx, query, fetchArgs...)
 		if err != nil {
