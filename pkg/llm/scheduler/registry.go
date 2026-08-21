@@ -49,6 +49,17 @@ func (r *Registry) For(scope string, cfg Config) *Scheduler {
 	return s
 }
 
+// SetLogger replaces the logger used for schedulers created after this
+// call (the default registry is built before looms has a logger).
+func (r *Registry) SetLogger(l *zap.Logger) {
+	if l == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = l
+}
+
 // Get returns the scope's scheduler if it exists.
 func (r *Registry) Get(scope string) (*Scheduler, bool) {
 	r.mu.Lock()
