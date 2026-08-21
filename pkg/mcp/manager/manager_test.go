@@ -16,6 +16,7 @@ package manager
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +200,51 @@ func TestManager_GetServerConfig(t *testing.T) {
 	_, err = mgr.GetServerConfig("nonexistent")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "server not found")
+}
+
+// TestManager_GetServerConfig_ConcurrentWithAddRemove is a -race regression:
+// GetServerConfig used to read m.config.Servers without holding m.mu while
+// AddServer/RemoveServer mutate the map under the write lock.
+func TestManager_GetServerConfig_ConcurrentWithAddRemove(t *testing.T) {
+	mgr, err := NewManager(Config{
+		Servers:    map[string]ServerConfig{},
+		ClientInfo: ClientInfo{Name: "test", Version: "0.1.0"},
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	// A disabled server is never started, so AddServer only mutates the
+	// config map — exactly the write the unlocked read raced with.
+	cfg := ServerConfig{Enabled: false, Transport: "stdio", Command: "echo"}
+
+	const iterations = 500
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = mgr.AddServer(ctx, "racer", cfg)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = mgr.RemoveServer("racer")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			// Both outcomes are valid mid-race; the assertion is the race
+			// detector staying quiet.
+			if config, err := mgr.GetServerConfig("racer"); err == nil {
+				assert.False(t, config.Enabled)
+			}
+		}
+	}()
+
+	wg.Wait()
 }
 
 func TestManager_Stop_NotStarted(t *testing.T) {

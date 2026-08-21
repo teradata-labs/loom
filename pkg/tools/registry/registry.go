@@ -29,6 +29,7 @@ import (
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 )
 
 // Registry manages the tool index and provides search capabilities.
@@ -36,6 +37,7 @@ type Registry struct {
 	db             *sql.DB
 	llm            types.LLMProvider
 	tracer         observability.Tracer
+	logger         *zap.Logger
 	mu             sync.RWMutex
 	indexers       []Indexer
 	liveMCPServers func() []string
@@ -98,7 +100,8 @@ type Config struct {
 	DBPath   string            // Path to SQLite database
 	LLM      types.LLMProvider // LLM provider for search assistance
 	Tracer   observability.Tracer
-	Indexers []Indexer // Tool source indexers
+	Logger   *zap.Logger // Structured logger for prune/evict audit trails; nil uses a no-op logger
+	Indexers []Indexer   // Tool source indexers
 
 	// LiveMCPServers, when set, returns the names of the MCP servers that
 	// currently exist; search results are then restricted to MCP tools from
@@ -113,6 +116,9 @@ func New(cfg Config) (*Registry, error) {
 	if cfg.Tracer == nil {
 		cfg.Tracer = observability.NewNoOpTracer()
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
 
 	// Open SQLite database with FTS5 support
 	db, err := sql.Open("sqlite3", cfg.DBPath)
@@ -124,6 +130,7 @@ func New(cfg Config) (*Registry, error) {
 		db:             db,
 		llm:            cfg.LLM,
 		tracer:         cfg.Tracer,
+		logger:         cfg.Logger,
 		indexers:       cfg.Indexers,
 		liveMCPServers: cfg.LiveMCPServers,
 	}
@@ -132,6 +139,19 @@ func New(cfg Config) (*Registry, error) {
 	if err := r.initSchema(); err != nil {
 		_ = db.Close() // Best-effort cleanup; initSchema error takes priority
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	// Rebuild the FTS index from the content table, once per open. Databases
+	// written by earlier builds were populated via INSERT OR REPLACE, whose
+	// implicit DELETE does not fire the tools_ad trigger (recursive_triggers
+	// is off by default), leaving ghost FTS postings behind; a later DELETE
+	// could free the max rowid, which SQLite then reuses for a new tool,
+	// attaching the ghost postings to the wrong tool (wrong search results and
+	// a failing FTS5 integrity-check). The rebuild is idempotent and cheap at
+	// open time, and repairs any such database in place.
+	if _, err := db.Exec(`INSERT INTO tools_fts(tools_fts) VALUES('rebuild')`); err != nil {
+		_ = db.Close() // Best-effort cleanup; rebuild error takes priority
+		return nil, fmt.Errorf("failed to rebuild FTS index: %w", err)
 	}
 
 	return r, nil
@@ -316,10 +336,11 @@ func (r *Registry) pruneStaleRows(ctx context.Context, source loomv1.ToolSource,
 		for _, s := range outcome.KnownScopes {
 			known[s] = true
 		}
-		n, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
+		deleted, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
 			return !known[scope]
 		})
-		pruned += n
+		pruned += len(deleted)
+		r.logPruned("server removed from configuration", source, deleted)
 		if err != nil {
 			errs = append(errs, &loomv1.IndexError{
 				Source:       source,
@@ -335,10 +356,11 @@ func (r *Registry) pruneStaleRows(ctx context.Context, source loomv1.ToolSource,
 		for _, s := range outcome.CompleteScopes {
 			complete[s] = true
 		}
-		n, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
+		deleted, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
 			return complete[scope] && !keepByScope[scope][id]
 		})
-		pruned += n
+		pruned += len(deleted)
+		r.logPruned("tool no longer reported by its server", source, deleted)
 		if err != nil {
 			errs = append(errs, &loomv1.IndexError{
 				Source:       source,
@@ -350,39 +372,70 @@ func (r *Registry) pruneStaleRows(ctx context.Context, source loomv1.ToolSource,
 	return pruned, errs
 }
 
+// logPruned records exactly which index rows a prune removed, so a tool that
+// disappears from search is traceable to the reconciliation decision that
+// deleted it. No-op when nothing was deleted.
+func (r *Registry) logPruned(reason string, source loomv1.ToolSource, deleted []prunedRow) {
+	if len(deleted) == 0 {
+		return
+	}
+	ids := make([]string, len(deleted))
+	scopeSet := make(map[string]bool, len(deleted))
+	scopes := make([]string, 0, len(deleted))
+	for i, row := range deleted {
+		ids[i] = row.id
+		if !scopeSet[row.scope] {
+			scopeSet[row.scope] = true
+			scopes = append(scopes, row.scope)
+		}
+	}
+	r.logger.Info("Pruned stale tool index entries",
+		zap.String("reason", reason),
+		zap.String("source", source.String()),
+		zap.Strings("tool_ids", ids),
+		zap.Strings("mcp_servers", scopes))
+}
+
+// prunedRow identifies one deleted index row: its tool ID and its scope (the
+// tools.mcp_server value, "" for sources that don't partition by server).
+type prunedRow struct {
+	id    string
+	scope string
+}
+
 // deleteRowsWhere deletes every row of the given source for which stale
-// returns true, evaluated over (scope, id). The candidate set is read first
-// and deleted by ID, so the work stays clear of SQLite bind-variable limits
-// regardless of tool count. Caller holds r.mu.
-func (r *Registry) deleteRowsWhere(ctx context.Context, source loomv1.ToolSource, stale func(scope, id string) bool) (int, error) {
+// returns true, evaluated over (scope, id), and returns the rows it deleted.
+// The candidate set is read first and deleted by ID, so the work stays clear
+// of SQLite bind-variable limits regardless of tool count. Caller holds r.mu.
+func (r *Registry) deleteRowsWhere(ctx context.Context, source loomv1.ToolSource, stale func(scope, id string) bool) ([]prunedRow, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, COALESCE(mcp_server, '') FROM tools WHERE source = ?`, int(source))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	var staleIDs []string
+	var staleRows []prunedRow
 	for rows.Next() {
 		var id, scope string
 		if err := rows.Scan(&id, &scope); err != nil {
 			continue
 		}
 		if stale(scope, id) {
-			staleIDs = append(staleIDs, id)
+			staleRows = append(staleRows, prunedRow{id: id, scope: scope})
 		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return 0, err
+		return nil, err
 	}
 	_ = rows.Close()
 
-	deleted := 0
-	for _, id := range staleIDs {
-		if _, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, id); err != nil {
+	var deleted []prunedRow
+	for _, row := range staleRows {
+		if _, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, row.id); err != nil {
 			return deleted, err
 		}
-		deleted++
+		deleted = append(deleted, row)
 	}
 	return deleted, nil
 }
@@ -394,8 +447,14 @@ func (r *Registry) EvictTool(ctx context.Context, toolID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	_, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, toolID)
-	return err
+	res, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, toolID)
+	if err != nil {
+		return err
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+		r.logger.Info("Evicted stale tool index entry", zap.String("tool_id", toolID))
+	}
+	return nil
 }
 
 // RegisterTool registers or updates a single tool in the database.
@@ -408,6 +467,14 @@ func (r *Registry) RegisterTool(ctx context.Context, tool *loomv1.IndexedTool) e
 }
 
 // upsertTool inserts or updates a tool in the database.
+//
+// The upsert MUST be INSERT ... ON CONFLICT DO UPDATE, never INSERT OR
+// REPLACE: OR REPLACE resolves the conflict by deleting the existing row and
+// inserting a new one with a fresh rowid, and that implicit DELETE does not
+// fire the tools_ad trigger (recursive_triggers is off by default), leaving
+// ghost postings in the external-content tools_fts index. ON CONFLICT DO
+// UPDATE keeps the rowid stable, so the tools_au UPDATE trigger keeps the FTS
+// index in sync. The conflict target is the table's primary key, tools(id).
 func (r *Registry) upsertTool(ctx context.Context, tool *loomv1.IndexedTool) error {
 	capabilities, _ := json.Marshal(tool.Capabilities)
 	keywords, _ := json.Marshal(tool.Keywords)
@@ -415,10 +482,24 @@ func (r *Registry) upsertTool(ctx context.Context, tool *loomv1.IndexedTool) err
 	rateLimit, _ := json.Marshal(tool.RateLimit)
 
 	_, err := r.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO tools (
+		INSERT INTO tools (
 			id, name, description, source, mcp_server, input_schema, output_schema,
 			capabilities, keywords, examples, indexed_at, version, requires_approval, rate_limit
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			description = excluded.description,
+			source = excluded.source,
+			mcp_server = excluded.mcp_server,
+			input_schema = excluded.input_schema,
+			output_schema = excluded.output_schema,
+			capabilities = excluded.capabilities,
+			keywords = excluded.keywords,
+			examples = excluded.examples,
+			indexed_at = excluded.indexed_at,
+			version = excluded.version,
+			requires_approval = excluded.requires_approval,
+			rate_limit = excluded.rate_limit
 	`,
 		tool.Id, tool.Name, tool.Description, tool.Source, tool.McpServer,
 		tool.InputSchema, tool.OutputSchema, string(capabilities), string(keywords),

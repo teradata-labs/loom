@@ -429,8 +429,13 @@ func (m *Manager) HealthCheck(ctx context.Context) map[string]bool {
 	return results
 }
 
-// GetServerConfig returns the configuration for a server.
+// GetServerConfig returns the configuration for a server. The read must hold
+// m.mu: AddServer/RemoveServer mutate m.config.Servers under the write lock,
+// so an unlocked read here is a data race.
 func (m *Manager) GetServerConfig(serverName string) (ServerConfig, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	config, exists := m.config.Servers[serverName]
 	if !exists {
 		return ServerConfig{}, fmt.Errorf("%w: %s", ErrServerNotFound, serverName)

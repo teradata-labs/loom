@@ -16,7 +16,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -1462,12 +1461,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			mcpIndexer := toolregistry.NewMCPIndexer(mgr, tracer)
 			indexers = append(indexers, mcpIndexer)
 			liveMCPServers = func() []string {
-				servers := mgr.ListServers()
-				names := make([]string, 0, len(servers))
-				for _, s := range servers {
-					names = append(names, s.Name)
-				}
-				return names
+				return enabledMCPServerNames(mgr, logger)
 			}
 		}
 
@@ -1476,6 +1470,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			DBPath:         toolDBPath,
 			LLM:            llmProvider,
 			Tracer:         tracer,
+			Logger:         logger,
 			Indexers:       indexers,
 			LiveMCPServers: liveMCPServers,
 		})
@@ -2039,7 +2034,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					// Enable dynamic tool registration for discovered MCP tools
 					var mcpMgrAdapter shuttle.MCPManager
 					if mcpManager != nil {
-						mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+						mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 					}
 					ag.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 					logger.Info("    Enabled dynamic tool registration")
@@ -3281,7 +3276,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Enable dynamic tool registration for discovered MCP tools
 				var mcpMgrAdapter shuttle.MCPManager
 				if mcpManager != nil {
-					mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+					mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 				}
 				newAgent.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 				logger.Info("  Enabled dynamic tool registration")
@@ -3792,27 +3787,27 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 	}, nil
 }
 
-// mcpManagerAdapter adapts *manager.Manager to shuttle.MCPManager interface.
-// This is needed because manager.Manager.GetClient returns (*client.Client, error)
-// but the interface requires (interface{}, error) for generic handling.
-type mcpManagerAdapter struct {
-	mgr *manager.Manager
-}
-
-func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	c, err := a.mgr.GetClient(serverName)
-	if err != nil {
-		// Distinguish "server was removed from configuration" (a stale tool
-		// index entry the executor should evict, issue #334) from "server is
-		// configured but not currently connected" (transient — keep it).
-		if errors.Is(err, manager.ErrServerNotFound) {
-			if _, cfgErr := a.mgr.GetServerConfig(serverName); cfgErr != nil {
-				return nil, fmt.Errorf("%w: %s", shuttle.ErrMCPServerNotFound, serverName)
-			}
+// enabledMCPServerNames returns the names of the manager's servers that are
+// enabled in configuration, connected or not. Disabled servers are excluded:
+// their stale index rows would pass the search liveness filter, yet their
+// tools can never execute, so surfacing them only misleads agents (#334).
+// Skipped servers are logged so filtered-out tools stay traceable.
+func enabledMCPServerNames(mgr *manager.Manager, logger *zap.Logger) []string {
+	servers := mgr.ListServers()
+	names := make([]string, 0, len(servers))
+	var skipped []string
+	for _, s := range servers {
+		if !s.Enabled {
+			skipped = append(skipped, s.Name)
+			continue
 		}
-		return nil, err
+		names = append(names, s.Name)
 	}
-	return c, nil
+	if len(skipped) > 0 && logger != nil {
+		logger.Debug("Excluding disabled MCP servers from tool search",
+			zap.Strings("disabled_servers", skipped))
+	}
+	return names
 }
 
 // copyDir recursively copies a directory tree from src to dst.

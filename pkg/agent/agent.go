@@ -150,6 +150,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Create executor with tool registry
 	// Note: Pass instrumented executor via SetExecutor() if you want tool tracing
 	a.executor = shuttle.NewExecutor(a.tools)
+	// Route executor housekeeping logs (e.g. failed stale-index evictions)
+	// through the process logger; zap.L() is a no-op unless the host installed
+	// one via zap.ReplaceGlobals (cmd_serve does).
+	a.executor.SetLogger(zap.L())
 
 	// Set permission checker on executor if provided
 	if a.permissionChecker != nil {
