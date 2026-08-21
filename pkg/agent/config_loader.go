@@ -55,6 +55,19 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	var rateLimit *loomv1.LLMRateLimitConfig
+	if y.RateLimit != nil {
+		rateLimit = &loomv1.LLMRateLimitConfig{
+			Disabled:            y.RateLimit.Disabled,
+			RequestsPerSecond:   y.RateLimit.RequestsPerSecond,
+			TokensPerMinute:     y.RateLimit.TokensPerMinute,
+			BurstCapacity:       y.RateLimit.BurstCapacity,
+			MinDelayMs:          y.RateLimit.MinDelayMs,
+			MaxRetries:          y.RateLimit.MaxRetries,
+			RetryBackoffMs:      y.RateLimit.RetryBackoffMs,
+			QueueTimeoutSeconds: y.RateLimit.QueueTimeoutSeconds,
+		}
+	}
 	return &loomv1.LLMConfig{
 		Provider:             y.Provider,
 		Model:                y.Model,
@@ -65,6 +78,7 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		TopK:                 topK,
 		MaxContextTokens:     maxContextTokens,
 		ReservedOutputTokens: reservedOutputTokens,
+		RateLimit:            rateLimit,
 	}, nil
 }
 
@@ -73,6 +87,19 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	if pb == nil || pb.Provider == "" {
 		return nil
+	}
+	var rateLimit *LLMRateLimitYAML
+	if pb.RateLimit != nil {
+		rateLimit = &LLMRateLimitYAML{
+			Disabled:            pb.RateLimit.Disabled,
+			RequestsPerSecond:   pb.RateLimit.RequestsPerSecond,
+			TokensPerMinute:     pb.RateLimit.TokensPerMinute,
+			BurstCapacity:       pb.RateLimit.BurstCapacity,
+			MinDelayMs:          pb.RateLimit.MinDelayMs,
+			MaxRetries:          pb.RateLimit.MaxRetries,
+			RetryBackoffMs:      pb.RateLimit.RetryBackoffMs,
+			QueueTimeoutSeconds: pb.RateLimit.QueueTimeoutSeconds,
+		}
 	}
 	return &LLMConfigYAML{
 		Provider:             pb.Provider,
@@ -84,6 +111,7 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		TopK:                 int(pb.TopK),
 		MaxContextTokens:     int(pb.MaxContextTokens),
 		ReservedOutputTokens: int(pb.ReservedOutputTokens),
+		RateLimit:            rateLimit,
 	}
 }
 
@@ -148,15 +176,30 @@ type K8sStyleAgentConfig struct {
 
 // LLMConfigYAML represents LLM configuration in YAML
 type LLMConfigYAML struct {
-	Provider             string   `yaml:"provider"`
-	Model                string   `yaml:"model"`
-	Temperature          float64  `yaml:"temperature"`
-	MaxTokens            int      `yaml:"max_tokens"`
-	StopSequences        []string `yaml:"stop_sequences"`
-	TopP                 float64  `yaml:"top_p"`
-	TopK                 int      `yaml:"top_k"`
-	MaxContextTokens     int      `yaml:"max_context_tokens"`
-	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+	Provider             string            `yaml:"provider"`
+	Model                string            `yaml:"model"`
+	Temperature          float64           `yaml:"temperature"`
+	MaxTokens            int               `yaml:"max_tokens"`
+	StopSequences        []string          `yaml:"stop_sequences"`
+	TopP                 float64           `yaml:"top_p"`
+	TopK                 int               `yaml:"top_k"`
+	MaxContextTokens     int               `yaml:"max_context_tokens"`
+	ReservedOutputTokens int               `yaml:"reserved_output_tokens"`
+	RateLimit            *LLMRateLimitYAML `yaml:"rate_limit"`
+}
+
+// LLMRateLimitYAML mirrors proto LLMRateLimitConfig for agent YAML files.
+// Before this existed, a spec.llm.rate_limit block was silently dropped by
+// the loader — the proto field was never populated from YAML (issue #348).
+type LLMRateLimitYAML struct {
+	Disabled            bool    `yaml:"disabled"`
+	RequestsPerSecond   float64 `yaml:"requests_per_second"`
+	TokensPerMinute     int64   `yaml:"tokens_per_minute"`
+	BurstCapacity       int32   `yaml:"burst_capacity"`
+	MinDelayMs          int32   `yaml:"min_delay_ms"`
+	MaxRetries          int32   `yaml:"max_retries"`
+	RetryBackoffMs      int32   `yaml:"retry_backoff_ms"`
+	QueueTimeoutSeconds int32   `yaml:"queue_timeout_seconds"`
 }
 
 // ToolsConfigYAML represents tools configuration in YAML
