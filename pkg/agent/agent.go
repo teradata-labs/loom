@@ -3162,6 +3162,13 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
 		return
 	}
+	// The recall path had zero observability: every gate below returned
+	// silently, which is how a fleet ran with recall dead and nobody knew
+	// (az512h). One span, outcome always set.
+	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
+	defer a.tracer.EndSpan(span)
+	outcome := "unknown"
+	defer func() { span.SetAttribute("recall.outcome", outcome) }()
 
 	// Wait for any in-flight extractions to finish before querying.
 	// This ensures recently ingested content is available for recall.
@@ -3169,6 +3176,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	budget := a.graphMemoryTokenBudget()
 	if budget <= 0 {
+		outcome = "no_budget"
 		return
 	}
 
@@ -3182,6 +3190,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		}
 	}
 	if userMessage == "" {
+		outcome = "no_user_message"
 		return
 	}
 
@@ -3190,8 +3199,10 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// becomes something like "first issue with new car after first service".
 	searchQuery := a.extractSearchQuery(ctx, userMessage)
 	if searchQuery == "" {
+		outcome = "no_query"
 		return
 	}
+	span.SetAttribute("recall.query", searchQuery)
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
@@ -3240,15 +3251,19 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		}
 	}
 
+	span.SetAttribute("recall.candidates", len(candidates))
 	if len(candidates) == 0 {
+		outcome = "no_candidates"
 		return
 	}
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
 	if len(relevant) == 0 {
+		outcome = "rerank_none"
 		return
 	}
+	span.SetAttribute("recall.injected", len(relevant))
 
 	var sb strings.Builder
 	sb.WriteString("Relevant memories from past conversations:\n\n")
@@ -3270,6 +3285,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		Role:    "system",
 		Content: "[Graph Memory Context]\n" + sb.String(),
 	})
+	outcome = "injected"
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -3363,7 +3379,6 @@ func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidat
 	// Build numbered list of candidates.
 	var sb strings.Builder
 	sb.WriteString("User message:\n")
-	sb.WriteString(userMessage)
 	if len(userMessage) > 500 {
 		sb.WriteString(userMessage[:500])
 	} else {
@@ -3437,14 +3452,65 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) stri
 		{Role: "user", Content: prompt},
 	}, nil)
 	if err != nil {
-		return ""
+		// Under fleet load this side-call starves: az512h measured it timing
+		// out for all 512 agents at a saturated token pipe, silently
+		// disabling recall for the whole run. Degrade to a keyword query —
+		// OR-joined content words are what the distillation would produce.
+		return keywordSearchQuery(userMessage)
 	}
 
 	query := strings.TrimSpace(resp.Content)
 	if idx := strings.IndexByte(query, '\n'); idx > 0 {
 		query = query[:idx]
 	}
+	if query == "" {
+		return keywordSearchQuery(userMessage)
+	}
 	return query
+}
+
+// searchQueryStopwords are filler words dropped by keywordSearchQuery; what
+// remains are the content words worth matching against memory.
+var searchQueryStopwords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "from": true,
+	"that": true, "this": true, "then": true, "them": true, "your": true,
+	"you": true, "are": true, "was": true, "were": true, "have": true,
+	"has": true, "had": true, "not": true, "but": true, "all": true,
+	"any": true, "can": true, "will": true, "must": true, "should": true,
+	"please": true, "call": true, "first": true, "only": true, "also": true,
+	"into": true, "onto": true, "each": true, "every": true, "when": true,
+	"what": true, "how": true, "which": true, "who": true, "why": true,
+}
+
+// keywordSearchQuery is the LLM-free fallback for memory recall: the user
+// message's distinct content words (lowercased barewords, length >= 3, minus
+// stopwords), capped at twelve. The store OR-joins and sanitizes them for
+// FTS5, so this can never be a MATCH syntax error.
+func keywordSearchQuery(userMessage string) string {
+	seen := make(map[string]bool)
+	var words []string
+	var cur strings.Builder
+	flush := func() {
+		w := cur.String()
+		cur.Reset()
+		if len(words) >= 12 || len(w) < 3 || searchQueryStopwords[w] || seen[w] {
+			return
+		}
+		seen[w] = true
+		words = append(words, w)
+	}
+	for _, r := range strings.ToLower(userMessage) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			cur.WriteRune(r)
+		} else {
+			flush()
+		}
+		if len(words) >= 12 {
+			break
+		}
+	}
+	flush()
+	return strings.Join(words, " ")
 }
 
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {

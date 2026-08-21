@@ -1116,17 +1116,49 @@ func toFTS5OrQuery(query string) string {
 	if query == "" {
 		return query
 	}
-	// Pass through if already using FTS5 operators.
+	// Pass through if already using FTS5 operators — but only with balanced
+	// quotes; an unbalanced quote is a guaranteed MATCH parse error.
 	for _, op := range []string{" OR ", " AND ", " NOT ", " NEAR ", `"`} {
 		if strings.Contains(query, op) {
-			return query
+			if strings.Count(query, `"`)%2 == 0 {
+				return query
+			}
+			break
 		}
 	}
-	words := strings.Fields(query)
-	if len(words) <= 1 {
-		return query
+	// Everything else is tokenized to bareword terms. FTS5 treats most
+	// punctuation (apostrophes, commas, colons, '?') as syntax, and this
+	// string typically comes from an LLM or a raw user message; fed into
+	// MATCH unsanitized, one stray character is a parse error that callers
+	// swallow as zero results (the az512h fleet run measured exactly that:
+	// recall silently dead for 512 agents). Barewords cannot error.
+	terms := fts5Barewords(query)
+	if len(terms) == 0 {
+		return ""
 	}
-	return strings.Join(words, " OR ")
+	return strings.Join(terms, " OR ")
+}
+
+// fts5Barewords lowercases text and extracts alphanumeric/underscore tokens
+// of length >= 2 — the only characters FTS5 never interprets as syntax.
+func fts5Barewords(s string) []string {
+	var terms []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() >= 2 {
+			terms = append(terms, cur.String())
+		}
+		cur.Reset()
+	}
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			cur.WriteRune(r)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return terms
 }
 
 // =============================================================================
