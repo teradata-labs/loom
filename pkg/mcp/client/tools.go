@@ -206,23 +206,18 @@ func (e *ToolResultError) Error() string {
 }
 
 // RetryResourceURI returns the URI of a resource the failed result links as
-// its retry condition: the first resource_link (or embedded resource
-// reference) in the error content. Empty when the result links nothing —
-// the convention is opt-in per server, per error.
+// its retry condition: the first resource_link in the error content. Empty
+// when the result links nothing — the convention is opt-in per server, per
+// error, and only resource_link content declares it. An embedded plain
+// resource in error content is payload (e.g. diagnostic data), not a
+// watchable retry condition, and never triggers a park.
 func (e *ToolResultError) RetryResourceURI() string {
 	if e.Result == nil {
 		return ""
 	}
 	for _, c := range e.Result.Content {
-		switch c.Type {
-		case "resource_link":
-			if c.URI != "" {
-				return c.URI
-			}
-		case "resource":
-			if c.Resource != nil && c.Resource.URI != "" {
-				return c.Resource.URI
-			}
+		if c.Type == "resource_link" && c.URI != "" {
+			return c.URI
 		}
 	}
 	return ""

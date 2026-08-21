@@ -97,7 +97,11 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 	// threshold at compile/persist is the only size bound (HLD §4).
 	tools := make([]shuttle.Tool, len(mcpTools))
 	for i, mcpTool := range mcpTools {
-		tools[i] = adapter.NewMCPToolAdapter(config.Client, mcpTool, config.Name)
+		mcpAdapter := adapter.NewMCPToolAdapter(config.Client, mcpTool, config.Name)
+		// Adapter lifecycle events (park entry/exit, session-handle release
+		// attempts and skips) must be visible in production logs.
+		mcpAdapter.SetLogger(zap.L())
+		tools[i] = mcpAdapter
 	}
 
 	// Register each tool
@@ -198,6 +202,7 @@ func (a *Agent) RegisterMCPServer(ctx context.Context, mcpMgr *manager.Manager, 
 	// Register filtered tools. Results ride whole (HLD §4).
 	for _, tool := range toolsToRegister {
 		mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
+		mcpAdapter.SetLogger(zap.L())
 		a.RegisterTool(mcpAdapter)
 		logger.Debug("registered MCP tool",
 			zap.String("server", serverName),
@@ -246,6 +251,7 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 	for _, tool := range tools {
 		if tool.Name == toolName {
 			mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
+			mcpAdapter.SetLogger(zap.L())
 			shuttleTool := mcpAdapter
 			a.RegisterTool(shuttleTool)
 
