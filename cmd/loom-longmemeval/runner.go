@@ -18,7 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // RunMode determines how conversation history is processed.
@@ -60,6 +63,13 @@ type RunConfig struct {
 	Concurrency int
 	Verbose     bool
 	Isolate     bool // create a fresh agent per entry for graph memory isolation
+
+	// UseOccurredAt sends each haystack session's date (and the question date)
+	// as WeaveRequest.occurred_at. Without it, the server anchors temporal
+	// grounding and graph-memory extraction to the arrival time (the run day),
+	// which contradicts the historical dates inside the replayed conversations.
+	// Requires server.allow_time_override: true on the target server.
+	UseOccurredAt bool
 }
 
 // EntryResult holds the result of evaluating a single entry.
@@ -157,10 +167,17 @@ func (r *Runner) Run(ctx context.Context, entries []Entry, resultCh chan<- Entry
 	var completed atomic.Int64
 	total := len(entries)
 
+	// A server without allow_time_override rejects EVERY entry identically:
+	// abort the run on the first such rejection instead of burning one futile
+	// temp-agent create/weave/delete cycle per entry (500 on a full set).
+	runCtx, abort := context.WithCancel(ctx)
+	defer abort()
+	var abortErr atomic.Pointer[string]
+
 loop:
 	for i, entry := range entries {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			break loop
 		case sem <- struct{}{}:
 		}
@@ -170,7 +187,14 @@ loop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			result := r.runEntry(ctx, e)
+			result := r.runEntry(runCtx, e)
+			if strings.Contains(result.Error, "allow_time_override") {
+				msg := "server rejects occurred_at (server.allow_time_override is not enabled); aborting the run — enable it in looms.yaml or pass --occurred-at=false"
+				if abortErr.CompareAndSwap(nil, &msg) {
+					r.logger.Error(msg, zap.String("first_failed_entry", e.QuestionID))
+					abort()
+				}
+			}
 			done := completed.Add(1)
 			r.logger.Info("entry completed",
 				zap.String("question_id", e.QuestionID),
@@ -189,6 +213,9 @@ loop:
 	}
 
 	wg.Wait()
+	if msg := abortErr.Load(); msg != nil {
+		return errors.New(*msg)
+	}
 	return ctx.Err()
 }
 
@@ -230,13 +257,26 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		agentID = tempAgentID
 	}
 
+	// The question turn anchors at the entry's question date, matching the
+	// "Current date:" line in the prompt.
+	var questionAt time.Time
+	if r.config.UseOccurredAt {
+		t, err := ParseDate(entry.QuestionDate)
+		if err != nil {
+			result.Error = fmt.Sprintf("parse question date %q: %v", entry.QuestionDate, err)
+			result.Duration = time.Since(start)
+			return result
+		}
+		questionAt = t
+	}
+
 	switch r.config.Mode {
 	case ModeIngest:
-		result = r.runIngestWith(ctx, entry, sessions, result, agentID)
+		result = r.runIngestWith(ctx, entry, sessions, result, agentID, questionAt)
 	case ModeMultiSession:
-		result = r.runMultiSessionWith(ctx, entry, sessions, result, agentID)
+		result = r.runMultiSessionWith(ctx, entry, sessions, result, agentID, questionAt)
 	case ModeContextStuffing:
-		result = r.runContextStuffingWith(ctx, entry, sessions, result, agentID)
+		result = r.runContextStuffingWith(ctx, entry, sessions, result, agentID, questionAt)
 	default:
 		result.Error = fmt.Sprintf("unknown mode: %s", r.config.Mode)
 	}
@@ -275,14 +315,33 @@ func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 	}
 }
 
-// weave sends a Weave RPC and accumulates token usage into result.
-func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, result *EntryResult) (*loomv1.WeaveResponse, error) {
+// buildWeaveRequest constructs a Weave request, attaching occurred_at when
+// a non-zero time is given so replayed turns anchor at their historical date.
+func buildWeaveRequest(sessionID, query, agentID string, occurredAt time.Time) *loomv1.WeaveRequest {
 	req := &loomv1.WeaveRequest{
 		Query:          query,
 		SessionId:      sessionID,
 		TimeoutSeconds: 120,
 		AgentId:        agentID,
 	}
+	if !occurredAt.IsZero() {
+		req.OccurredAt = timestamppb.New(occurredAt)
+	}
+	return req
+}
+
+// sessionOccurredAt returns the haystack session's date as the occurred_at
+// override, or the zero time when the override is disabled.
+func (r *Runner) sessionOccurredAt(s SessionWithDate) time.Time {
+	if r.config.UseOccurredAt {
+		return s.ParsedAt
+	}
+	return time.Time{}
+}
+
+// weave sends a Weave RPC and accumulates token usage into result.
+func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, occurredAt time.Time, result *EntryResult) (*loomv1.WeaveResponse, error) {
+	req := buildWeaveRequest(sessionID, query, agentID, occurredAt)
 
 	resp, err := r.client.Weave(ctx, req)
 	if err != nil {
@@ -321,7 +380,7 @@ func (r *Runner) deleteSession(ctx context.Context, sessionID string) {
 // runIngestWith processes an entry by feeding sessions through Weave, then querying.
 // All turns happen in a single session so the conversation history accumulates,
 // compression triggers, and the agent can search back through everything.
-func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string) EntryResult {
+func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string, questionAt time.Time) EntryResult {
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
@@ -337,7 +396,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 			i+1, sess.Date, FormatSession(sess),
 		)
 
-		_, err = r.weave(ctx, sessionID, ingestMsg, agentID, &result)
+		_, err = r.weave(ctx, sessionID, ingestMsg, agentID, r.sessionOccurredAt(sess), &result)
 		if err != nil {
 			result.Error = fmt.Sprintf("ingest session %d: %v", i, err)
 			return result
@@ -354,7 +413,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 		entry.QuestionDate, entry.Question,
 	)
 
-	resp, err := r.weave(ctx, sessionID, questionMsg, agentID, &result)
+	resp, err := r.weave(ctx, sessionID, questionMsg, agentID, questionAt, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result
@@ -368,7 +427,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 // haystack session. Each session is ingested, then ended so its messages are
 // persisted to the DB and become FTS5-searchable. The question is asked in a
 // fresh session — the agent must use graph_memory + conversation_memory to recall.
-func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string) EntryResult {
+func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string, questionAt time.Time) EntryResult {
 	// Phase 1: Ingest each haystack session in its own agent session.
 	for i, sess := range sessions {
 		sessName := fmt.Sprintf("lme-%s-s%d", entry.QuestionID, i+1)
@@ -386,7 +445,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 			sess.Date, FormatSession(sess),
 		)
 
-		_, err = r.weave(ctx, sessionID, ingestMsg, agentID, &result)
+		_, err = r.weave(ctx, sessionID, ingestMsg, agentID, r.sessionOccurredAt(sess), &result)
 		if err != nil {
 			result.Error = fmt.Sprintf("ingest session %d: %v", i, err)
 			return result
@@ -412,7 +471,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		entry.QuestionDate, entry.Question,
 	)
 
-	resp, err := r.weave(ctx, questionSessionID, questionMsg, agentID, &result)
+	resp, err := r.weave(ctx, questionSessionID, questionMsg, agentID, questionAt, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result
@@ -423,7 +482,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 }
 
 // runContextStuffingWith processes an entry by stuffing all sessions into one Weave call.
-func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string) EntryResult {
+func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string, questionAt time.Time) EntryResult {
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-cs", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
@@ -443,7 +502,7 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 		allSessions, entry.QuestionDate, entry.Question,
 	)
 
-	resp, err := r.weave(ctx, sessionID, prompt, agentID, &result)
+	resp, err := r.weave(ctx, sessionID, prompt, agentID, questionAt, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result
