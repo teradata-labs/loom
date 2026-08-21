@@ -281,6 +281,67 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	return closed, nil
 }
 
+// CancelTask marks a task as CANCELLED with a reason. Like CloseTask it is a
+// terminal transition: it stamps closed_at, releases any claim
+// (assignee/session/claimed_at), unblocks dependents that were waiting on
+// this task, and settles the parent when every child is now terminal. Unlike
+// CloseTask it publishes task.updated (not task.completed) and creates no
+// completion memory — cancellation is not an accomplishment.
+func (m *Manager) CancelTask(ctx context.Context, taskID, reason string) (*Task, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.cancel")
+	defer m.tracer.EndSpan(span)
+
+	existing, err := m.store.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	oldStatus := StatusName(existing.Status)
+	oldAssignee := existing.AssigneeAgentID
+	oldSession := existing.ClaimedBySession
+
+	now := time.Now().UTC()
+	existing.Status = loomv1.TaskStatus_TASK_STATUS_CANCELLED
+	existing.CloseReason = reason
+	existing.ClosedAt = &now
+	existing.AssigneeAgentID = ""
+	existing.ClaimedBySession = ""
+	existing.ClaimedAt = nil
+
+	cancelled, err := m.store.UpdateTask(ctx, existing, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	m.recordHistory(ctx, taskID, "cancelled", oldStatus, StatusName(cancelled.Status), oldAssignee, oldSession)
+	m.publishEvent(ctx, TopicTaskUpdated, cancelled, "")
+
+	// CANCELLED is terminal: tasks blocked on this one can proceed.
+	m.tryUnblockDependents(ctx, taskID)
+
+	// Settle the parent if this was the last non-terminal child.
+	if cancelled.ParentID != "" {
+		m.tryAutoCompleteParent(ctx, cancelled.ParentID)
+	}
+
+	return cancelled, nil
+}
+
+// SetAcceptanceCriteria atomically sets a task's write-once acceptance
+// criteria (store-enforced guard, see TaskStore.SetAcceptanceCriteria) and
+// publishes a task.updated event on success. Returns an error wrapping
+// ErrAcceptanceCriteriaLocked when different criteria are already set.
+func (m *Manager) SetAcceptanceCriteria(ctx context.Context, taskID, criteria string) (*Task, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.set_acceptance_criteria")
+	defer m.tracer.EndSpan(span)
+
+	updated, err := m.store.SetAcceptanceCriteria(ctx, taskID, criteria)
+	if err != nil {
+		return nil, err
+	}
+	m.publishEvent(ctx, TopicTaskUpdated, updated, "")
+	return updated, nil
+}
+
 // TransitionTask changes task status with validation.
 func (m *Manager) TransitionTask(ctx context.Context, taskID string, newStatus loomv1.TaskStatus) (*Task, error) {
 	ctx, span := m.tracer.StartSpan(ctx, "task_manager.transition")
