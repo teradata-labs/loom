@@ -128,10 +128,25 @@ func buildParamNameMap(inputSchema map[string]interface{}) map[string]string {
 		return nil
 	}
 	m := make(map[string]string)
+	ambiguous := map[string]bool{}
 	for original := range props {
-		if visible := toSnakeCase(original); visible != original {
-			m[visible] = original
+		visible := toSnakeCase(original)
+		if visible == original {
+			// An identity property claims its own name: a differently-cased
+			// sibling that collapses to it must not shadow it.
+			ambiguous[visible] = true
+			delete(m, visible)
+			continue
 		}
+		if _, taken := m[visible]; taken || ambiguous[visible] {
+			// Two original properties collapse to one visible name
+			// (e.g. tableName + table_name). Renaming would be a
+			// nondeterministic guess; ambiguous names pass through as-is.
+			ambiguous[visible] = true
+			delete(m, visible)
+			continue
+		}
+		m[visible] = original
 	}
 	if len(m) == 0 {
 		return nil

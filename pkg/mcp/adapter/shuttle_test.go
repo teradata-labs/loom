@@ -727,6 +727,28 @@ func TestRestoreParameterNames(t *testing.T) {
 		assert.Equal(t, map[string]interface{}{"databaseName": "demo", "sql": "SELECT 1"}, out)
 	})
 
+	t.Run("colliding property names are never guessed", func(t *testing.T) {
+		// tableName and table_name both present as table_name; renaming would
+		// be a nondeterministic guess between two real schema properties, so
+		// the ambiguous name must pass through unchanged — deterministically.
+		collidingTool := protocol.Tool{Name: "t", InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"tableName":  map[string]interface{}{"type": "string"},
+				"table_name": map[string]interface{}{"type": "string"},
+				"rowCount":   map[string]interface{}{"type": "integer"},
+			},
+		}}
+		a := NewMCPToolAdapter(nil, collidingTool, "s")
+		out := a.restoreParameterNames(map[string]interface{}{
+			"table_name": "t1",
+			"row_count":  3,
+		})
+		assert.Equal(t, "t1", out["table_name"], "ambiguous name must not be renamed")
+		assert.NotContains(t, out, "tableName")
+		assert.Equal(t, 3, out["rowCount"], "unambiguous sibling still restores")
+	})
+
 	t.Run("snake_case server params pass through untouched (issue #339)", func(t *testing.T) {
 		a := NewMCPToolAdapter(nil, snakeTool, "s")
 		params := map[string]interface{}{
