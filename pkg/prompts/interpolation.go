@@ -88,10 +88,15 @@ func escapeValue(value interface{}) string {
 // Implements multiple escaping strategies for production use:
 //   - Control character removal
 //   - XML/HTML entity escaping
-//   - Unicode normalization
 //   - Prompt injection pattern detection
-//   - Edge backtick stripping, so remnants cannot reassemble a ``` fence
-//     across value/template boundaries
+//   - Edge backtick/tilde stripping, so remnants cannot reassemble a
+//     ``` or ~~~ fence across value/template boundaries
+//
+// Ordering invariant: every character-DELETING step runs before the fence
+// capping in step 5, and steps 6-8 only join fields with single spaces or
+// trim edges — nothing after step 5 may transform characters (e.g. a future
+// Unicode normalization would map U+1FEF to a backtick and silently
+// resurrect the fence-injection bug).
 func escapeString(s string) string {
 	// 1. Remove null bytes and invalid UTF-8
 	s = strings.ReplaceAll(s, "\x00", "")
@@ -130,15 +135,18 @@ func escapeString(s string) string {
 	// 7. Trim leading/trailing whitespace
 	s = strings.TrimSpace(s)
 
-	// 8. Strip backticks (and any space interleaved with them) from the edges.
-	// sanitizePromptInjection caps interior backtick runs below fence length,
-	// but a remnant run at the value's edge can merge with backticks in the
-	// surrounding template or an adjacent interpolated value and reassemble a
-	// ``` fence: interpolating "`````" twice, adjacently, used to yield "````".
-	// With clean edges and short interior runs, no concatenation of escaped
-	// values with template text can form a fence the template did not already
-	// contain. Interior backticks (e.g. "a``b") are preserved.
-	s = strings.TrimFunc(s, func(r rune) bool { return r == '`' || r == ' ' })
+	// 8. Strip fence runes — backticks and tildes — (and any space interleaved
+	// with them) from the edges. sanitizePromptInjection caps interior runs
+	// below fence length, but a remnant run at the value's edge can merge
+	// with fence runes in the surrounding template or an adjacent
+	// interpolated value and reassemble a ``` or ~~~ fence: interpolating
+	// "`````" twice, adjacently, used to yield "````". With clean edges and
+	// short interior runs, no concatenation of escaped values with template
+	// text can form a fence the template did not already contain. Interior
+	// occurrences (e.g. "a``b", "x~~y") are preserved. Documented cost: a
+	// value legitimately ending in inline code ("use `+"`ls`"+`") loses its edge
+	// backtick and renders unbalanced.
+	s = strings.TrimFunc(s, func(r rune) bool { return r == '`' || r == '~' || r == ' ' })
 
 	return s
 }
@@ -147,7 +155,8 @@ func escapeString(s string) string {
 func sanitizePromptInjection(s string) string {
 	// Remove common prompt injection delimiters and commands
 	injectionPatterns := []string{
-		"```",              // Code blocks
+		"```",              // Code blocks (backtick fence)
+		"~~~",              // Code blocks (tilde fence, CommonMark)
 		"###",              // Headers
 		"---",              // Separators
 		"System:",          // System prompts

@@ -53,6 +53,8 @@ func FuzzPromptInterpolation(f *testing.F) {
 	f.Add("``{{.a}}", "`")
 	f.Add("``{{.a}}`", "```")
 	f.Add("{{.a}}x{{.b}}", "``")
+	f.Add("{{.a}}{{.a}}", "~~~~~") // tilde fences are CommonMark fences too
+	f.Add("~~{{.a}}", "~")
 
 	reWellFormed := regexp.MustCompile(`\{\{\.(\w+)\}\}`)
 
@@ -114,6 +116,7 @@ func FuzzPromptInterpolation(f *testing.F) {
 		//     dangerous pattern, whatever the raw value held.
 		dangerousPatterns := []string{
 			"```",
+			"~~~",
 			"System:",
 			"Assistant:",
 			"Human:",
@@ -241,6 +244,7 @@ func FuzzEscapeString(f *testing.F) {
 		// Property 5: Dangerous patterns removed/escaped
 		dangerousPatterns := []string{
 			"```",
+			"~~~",
 			"System:",
 			"Assistant:",
 			"Human:",
