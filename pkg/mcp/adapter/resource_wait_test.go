@@ -35,15 +35,33 @@ import (
 // inject the acknowledgment and resources/updated notifications.
 type waitTransport struct {
 	mu          sync.Mutex
-	callResults []json.RawMessage // per tools/call attempt, in order
+	toolSchema  map[string]interface{} // InputSchema served by tools/list
+	callResults []json.RawMessage      // per tools/call attempt, in order
 	callCount   int
 	callParams  []json.RawMessage
 	listenIDs   []json.RawMessage
 	responses   chan []byte
+	// callHook, when set, overrides the scripted results: it receives the
+	// call's arguments and returns the result plus whether to respond at
+	// all — false leaves the request hanging (a hung server).
+	callHook func(args map[string]interface{}) (json.RawMessage, bool)
 }
 
 func newWaitTransport(callResults ...json.RawMessage) *waitTransport {
-	return &waitTransport{callResults: callResults, responses: make(chan []byte, 16)}
+	return &waitTransport{
+		toolSchema:  map[string]interface{}{"type": "object"},
+		callResults: callResults,
+		responses:   make(chan []byte, 16),
+	}
+}
+
+// newWaitTransportWithSchema scripts a server whose single tool declares the
+// given InputSchema — the schema drives both client-side call validation and
+// the adapter's session-handle convention gating.
+func newWaitTransportWithSchema(schema map[string]interface{}, callResults ...json.RawMessage) *waitTransport {
+	ft := newWaitTransport(callResults...)
+	ft.toolSchema = schema
+	return ft
 }
 
 func (f *waitTransport) inject(data []byte) { f.responses <- data }
@@ -70,17 +88,33 @@ func (f *waitTransport) Send(_ context.Context, message []byte) error {
 		}
 		resp.Result, _ = json.Marshal(res)
 	case "tools/list":
+		f.mu.Lock()
+		schema := f.toolSchema
+		f.mu.Unlock()
 		resp.Result, _ = json.Marshal(protocol.ToolListResult{Tools: []protocol.Tool{{
 			Name:        "connect",
 			Description: "test tool",
-			InputSchema: map[string]interface{}{"type": "object"},
+			InputSchema: schema,
 		}}})
 	case "tools/call":
+		var p struct {
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
 		f.mu.Lock()
 		i := f.callCount
 		f.callCount++
 		f.callParams = append(f.callParams, append(json.RawMessage(nil), req.Params...))
+		hook := f.callHook
 		f.mu.Unlock()
+		if hook != nil {
+			result, respond := hook(p.Arguments)
+			if !respond {
+				return nil // hung server: never answers this call
+			}
+			resp.Result = result
+			break
+		}
 		if i >= len(f.callResults) {
 			return fmt.Errorf("unscripted tools/call attempt %d", i)
 		}
@@ -131,17 +165,24 @@ func (f *waitTransport) listenID(t *testing.T) string {
 	return ""
 }
 
-func (f *waitTransport) lastCallParams() map[string]interface{} {
+func (f *waitTransport) argsOfCall(i int) map[string]interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.callParams) == 0 {
+	if i < 0 || i >= len(f.callParams) {
 		return nil
 	}
 	var p struct {
 		Arguments map[string]interface{} `json:"arguments"`
 	}
-	_ = json.Unmarshal(f.callParams[len(f.callParams)-1], &p)
+	_ = json.Unmarshal(f.callParams[i], &p)
 	return p.Arguments
+}
+
+func (f *waitTransport) lastCallParams() map[string]interface{} {
+	f.mu.Lock()
+	n := len(f.callParams)
+	f.mu.Unlock()
+	return f.argsOfCall(n - 1)
 }
 
 func (f *waitTransport) calls() int {
@@ -175,22 +216,37 @@ func notifJSON(method, subID string) []byte {
 		method, protocol.MetaSubscriptionID, subID))
 }
 
+// ackJSON builds a subscriptions/listen acknowledgment echoing the honored
+// subset, as the 2026-07-28 revision requires. No honored URIs means the
+// server declined every resource subscription.
+func ackJSON(subID string, honoredURIs ...string) []byte {
+	params := map[string]interface{}{
+		"_meta":         map[string]json.RawMessage{protocol.MetaSubscriptionID: json.RawMessage(subID)},
+		"notifications": protocol.NotificationFilter{ResourceSubscriptions: honoredURIs},
+	}
+	paramsJSON, _ := json.Marshal(params)
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s}`,
+		protocol.NotificationSubscriptionAcknowledged, paramsJSON))
+}
+
 func waitAdapter(t *testing.T, ft *waitTransport) *MCPToolAdapter {
 	t.Helper()
 	c := client.NewClient(client.Config{Transport: ft})
 	t.Cleanup(func() { _ = c.Close() })
 	require.NoError(t, c.Connect(context.Background(), protocol.Implementation{Name: "loom", Version: "test"}))
 	require.True(t, c.IsStateless())
-	return NewMCPToolAdapter(c, protocol.Tool{Name: "connect", InputSchema: map[string]interface{}{"type": "object"}}, "waitfake")
+	return NewMCPToolAdapter(c, protocol.Tool{Name: "connect", InputSchema: ft.toolSchema}, "waitfake")
 }
 
-// TestParkAndWake: a failed call that links a resource parks, is woken by
+// TestParkAndWake: a failed call that links a resource parks, probes once
+// when the acknowledgment lands (still failing), is woken by
 // notifications/resources/updated, retries, and succeeds — one Execute call,
-// two wire attempts, zero agent-visible retries (issue #343).
+// three wire attempts, zero agent-visible retries (issue #343).
 func TestParkAndWake(t *testing.T) {
 	uri := "test://slots"
 	ft := newWaitTransport(
 		errorResultWithLink("budget full", uri),
+		errorResultWithLink("budget full", uri), // post-ack probe: still failing
 		successResult("connected"),
 	)
 	adapter := waitAdapter(t, ft)
@@ -206,7 +262,7 @@ func TestParkAndWake(t *testing.T) {
 	}()
 
 	subID := ft.listenID(t)
-	ft.inject(notifJSON(protocol.NotificationSubscriptionAcknowledged, subID))
+	ft.inject(ackJSON(subID, uri))
 	ft.inject(notifJSON(protocol.NotificationResourceUpdated, subID))
 
 	select {
@@ -216,7 +272,81 @@ func TestParkAndWake(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Execute did not return after resource update")
 	}
-	assert.Equal(t, 2, ft.calls(), "exactly one retry")
+	assert.Equal(t, 3, ft.calls(), "post-ack probe plus one notification-driven retry")
+}
+
+// TestPostAckRetryCoversMissedUpdate: the resource update fires server-side
+// BEFORE the subscription registers, so no resources/updated notification is
+// ever delivered. The acknowledgment proves registration, and the one
+// optimistic post-ack retry covers the raced update — the probe succeeds
+// without waiting out the budget.
+func TestPostAckRetryCoversMissedUpdate(t *testing.T) {
+	uri := "test://slots"
+	ft := newWaitTransport(
+		errorResultWithLink("budget full", uri),
+		successResult("connected"), // the update already happened: retry succeeds
+	)
+	adapter := waitAdapter(t, ft)
+
+	type outcome struct {
+		res *shuttle.Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+		done <- outcome{res, err}
+	}()
+
+	subID := ft.listenID(t)
+	ft.inject(ackJSON(subID, uri)) // ack only — no update notification, ever
+
+	select {
+	case o := <-done:
+		require.NoError(t, o.err)
+		require.True(t, o.res.Success, "post-ack retry must cover the missed update: %+v", o.res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after the acknowledgment")
+	}
+	assert.Less(t, time.Since(start), 5*time.Second, "must not wait out the 60s budget")
+	assert.Equal(t, 2, ft.calls(), "exactly the post-ack retry")
+}
+
+// TestAckDeclineFailsFast: a spec-following server that declines the
+// resource subscription (acknowledgment echoes an honored subset without our
+// URI) guarantees no wake will come — the original error surfaces
+// immediately instead of stalling out the full budget.
+func TestAckDeclineFailsFast(t *testing.T) {
+	uri := "test://slots"
+	ft := newWaitTransport(errorResultWithLink("budget full", uri))
+	adapter := waitAdapter(t, ft)
+
+	type outcome struct {
+		res *shuttle.Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+		done <- outcome{res, err}
+	}()
+
+	subID := ft.listenID(t)
+	ft.inject(ackJSON(subID)) // honored subset is empty: subscription declined
+
+	select {
+	case o := <-done:
+		require.NoError(t, o.err)
+		assert.False(t, o.res.Success)
+		require.NotNil(t, o.res.Error)
+		assert.Contains(t, o.res.Error.Message, "budget full")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not fail fast on a declined subscription")
+	}
+	assert.Less(t, time.Since(start), 5*time.Second, "declined subscription must not stall the budget")
+	assert.Equal(t, 1, ft.calls(), "no retry without a honored subscription")
 }
 
 // TestNoLinkNoPark: a plain error (no linked resource) surfaces immediately
@@ -237,6 +367,31 @@ func TestNoLinkNoPark(t *testing.T) {
 	assert.Empty(t, ft.listenIDs, "no subscription for unlinked errors")
 }
 
+// TestEmbeddedResourceNoPark: an error whose content embeds a plain resource
+// (payload, e.g. diagnostic data) is NOT the park convention — only
+// resource_link declares a watchable retry condition. The error surfaces
+// immediately with no subscription.
+func TestEmbeddedResourceNoPark(t *testing.T) {
+	errWithEmbedded, _ := json.Marshal(protocol.CallToolResult{IsError: true, Content: []protocol.Content{
+		{Type: "text", Text: "hard failure with diagnostics"},
+		{Type: "resource", Resource: &protocol.ResourceRef{URI: "test://diagnostics", MimeType: "application/json"}},
+	}})
+	ft := newWaitTransport(errWithEmbedded)
+	adapter := waitAdapter(t, ft)
+
+	start := time.Now()
+	res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	assert.False(t, res.Success)
+	require.NotNil(t, res.Error)
+	assert.Contains(t, res.Error.Message, "hard failure with diagnostics")
+	assert.Less(t, time.Since(start), 2*time.Second, "embedded plain resource must not trigger a park")
+	assert.Equal(t, 1, ft.calls())
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	assert.Empty(t, ft.listenIDs, "no subscription for embedded plain resources")
+}
+
 // TestParkTimeoutSurfacesError: a linked failure with no update within the
 // context budget surfaces the original error.
 func TestParkTimeoutSurfacesError(t *testing.T) {
@@ -250,70 +405,5 @@ func TestParkTimeoutSurfacesError(t *testing.T) {
 	assert.False(t, res.Success)
 	require.NotNil(t, res.Error)
 	assert.Contains(t, res.Error.Message, "budget full")
-	assert.Equal(t, 1, ft.calls(), "no blind retries without an update")
-}
-
-// TestAutoReleaseOnConversationEnd: a successful call whose result carries a
-// session_handle is tracked by the ctx collector and released best-effort
-// when the conversation ends — the runtime-owned lifecycle of issue #345.
-func TestAutoReleaseOnConversationEnd(t *testing.T) {
-	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
-		{Type: "text", Text: `{"session_handle":"tdsh_test123","target":"default"}`},
-	}})
-	released, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
-		{Type: "text", Text: `{"target":"released"}`},
-	}})
-	ft := newWaitTransport(mint, released)
-	adapter := waitAdapter(t, ft)
-
-	ctx, collector := WithHandleCollector(context.Background())
-	res, err := adapter.Execute(ctx, map[string]interface{}{})
-	require.NoError(t, err)
-	require.True(t, res.Success)
-	require.Equal(t, 1, collector.Count(), "minted handle must be tracked")
-
-	collector.ReleaseAll(nil)
-	assert.Equal(t, 0, collector.Count())
-	assert.Equal(t, 2, ft.calls(), "release call must reach the wire")
-	// The second call carried the tracked handle.
-	last := ft.lastCallParams()
-	assert.Equal(t, "tdsh_test123", last["release_handle"])
-}
-
-// TestAutoReleaseSkipsExplicitlyReleased: an agent that releases its own
-// handle is not double-released at conversation end.
-func TestAutoReleaseSkipsExplicitlyReleased(t *testing.T) {
-	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
-		{Type: "text", Text: `{"session_handle":"tdsh_selfclean"}`},
-	}})
-	released, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
-		{Type: "text", Text: `{"target":"released"}`},
-	}})
-	ft := newWaitTransport(mint, released)
-	adapter := waitAdapter(t, ft)
-
-	ctx, collector := WithHandleCollector(context.Background())
-	_, err := adapter.Execute(ctx, map[string]interface{}{})
-	require.NoError(t, err)
-	_, err = adapter.Execute(ctx, map[string]interface{}{"release_handle": "tdsh_selfclean"})
-	require.NoError(t, err)
-
-	require.Equal(t, 0, collector.Count(), "explicit release must untrack the handle")
-	collector.ReleaseAll(nil)
-	assert.Equal(t, 2, ft.calls(), "no extra release call")
-}
-
-// TestNoCollectorNoTracking: without a collector in ctx (workflow paths),
-// behavior is unchanged.
-func TestNoCollectorNoTracking(t *testing.T) {
-	mint, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
-		{Type: "text", Text: `{"session_handle":"tdsh_untracked"}`},
-	}})
-	ft := newWaitTransport(mint)
-	adapter := waitAdapter(t, ft)
-
-	res, err := adapter.Execute(context.Background(), map[string]interface{}{})
-	require.NoError(t, err)
-	require.True(t, res.Success)
-	assert.Equal(t, 1, ft.calls())
+	assert.Equal(t, 1, ft.calls(), "no blind retries without an ack or update")
 }

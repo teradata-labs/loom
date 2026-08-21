@@ -1785,7 +1785,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
 	// released a handle — so the runtime owns the cleanup.
 	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
-	defer handleCollector.ReleaseAll(nil)
+	defer handleCollector.ReleaseAll(zap.L())
 
 	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()

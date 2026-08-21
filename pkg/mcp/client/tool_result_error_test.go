@@ -43,13 +43,22 @@ func TestToolResultError(t *testing.T) {
 			wantURI: "teradata://session-handles",
 		},
 		{
-			name: "embedded resource reference also counts",
+			name: "embedded plain resource is payload, not a retry condition",
 			content: []protocol.Content{
 				{Type: "text", Text: "busy"},
 				{Type: "resource", Resource: &protocol.ResourceRef{URI: "x://slots"}},
 			},
 			wantMsg: "tool error: busy",
-			wantURI: "x://slots",
+			wantURI: "",
+		},
+		{
+			name: "resource_link without uri is ignored",
+			content: []protocol.Content{
+				{Type: "text", Text: "busy"},
+				{Type: "resource_link", Name: "nameless"},
+			},
+			wantMsg: "tool error: busy",
+			wantURI: "",
 		},
 		{
 			name:    "no content",

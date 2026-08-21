@@ -112,6 +112,7 @@ func (d *DynamicToolDiscovery) Search(ctx context.Context, intent string) (shutt
 			if d.matches(intent, tool) {
 				// Found a match! Convert to shuttle.Tool
 				mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
+				mcpAdapter.SetLogger(d.logger)
 
 				// Cache for future use
 				d.mu.Lock()
@@ -157,6 +158,7 @@ func (d *DynamicToolDiscovery) SearchMultiple(ctx context.Context, intent string
 		for _, tool := range tools {
 			if d.matches(intent, tool) {
 				mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
+				mcpAdapter.SetLogger(d.logger)
 
 				matchingTools = append(matchingTools, mcpAdapter)
 			}

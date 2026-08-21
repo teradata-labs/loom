@@ -329,6 +329,17 @@ func convertMCPContent(content []protocol.Content) interface{} {
 				item["uri"] = c.Resource.URI
 				item["mimeType"] = c.Resource.MimeType
 			}
+		case "resource_link":
+			// A reference to a server resource without its contents
+			// (2025-06-18+): preserve uri/name so the agent can see and act
+			// on the link instead of receiving an empty content item.
+			item["uri"] = c.URI
+			if c.Name != "" {
+				item["name"] = c.Name
+			}
+			if c.MimeType != "" {
+				item["mimeType"] = c.MimeType
+			}
 		}
 
 		results[i] = item

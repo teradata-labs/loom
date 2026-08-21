@@ -15,6 +15,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -36,6 +37,19 @@ const defaultResourceWaitBudget = 60 * time.Second
 // subscriptions/listen stream for that URI and retries when
 // notifications/resources/updated arrives. The agent sees one tool call that
 // succeeds late instead of burning a turn per retry.
+//
+// Two acknowledgment-driven behaviors close the protocol's gaps:
+//
+//   - Missed-wake window: an update landing between the failed call and the
+//     subscription's registration is never delivered. The server's
+//     acknowledgment proves registration, so ONE optimistic retry fires as
+//     soon as the ack arrives — an update that raced the subscribe is covered
+//     by that attempt. Notification-driven retries continue afterwards.
+//
+//   - Honored subset: the acknowledgment echoes the filter subset the server
+//     agreed to honor. If our URI's resource subscription was not honored,
+//     no wake will ever come — fail fast to the original error instead of
+//     stalling out the full budget.
 //
 // Returns the retried call's outcome. Anything that prevents waiting — no
 // linked resource, a legacy (non-2026-07-28) connection, subscription
@@ -69,14 +83,46 @@ func (a *MCPToolAdapter) awaitLinkedResource(ctx context.Context, params map[str
 	})
 	if serr != nil {
 		a.logger.Debug("resource-wait: subscribe failed; surfacing original error",
+			zap.String("server", a.serverName),
+			zap.String("tool", a.tool.Name),
 			zap.String("uri", uri), zap.Error(serr))
 		return nil, callErr
 	}
 
 	a.logger.Info("resource-wait: parked failed tool call on linked resource",
+		zap.String("server", a.serverName),
 		zap.String("tool", a.tool.Name),
 		zap.String("uri", uri),
 		zap.Duration("budget", budget))
+
+	parkExit := func(reason string) {
+		a.logger.Info("resource-wait: park ended without success; surfacing error",
+			zap.String("server", a.serverName),
+			zap.String("tool", a.tool.Name),
+			zap.String("uri", uri),
+			zap.String("reason", reason))
+	}
+
+	// retryOnce re-issues the parked call. final=true means the outcome is
+	// terminal: success, or a failure that is not the same linked condition.
+	// A repeat of the same linked failure keeps the park alive within budget.
+	retryOnce := func(trigger string) (interface{}, error, bool) {
+		result, err := a.client.CallTool(ctx, a.tool.Name, params)
+		if err == nil {
+			a.logger.Info("resource-wait: retry succeeded",
+				zap.String("server", a.serverName),
+				zap.String("tool", a.tool.Name),
+				zap.String("uri", uri),
+				zap.String("trigger", trigger))
+			return result, nil, true
+		}
+		var again *client.ToolResultError
+		if !errors.As(err, &again) || again.RetryResourceURI() != uri {
+			parkExit("retry failed with a different error")
+			return nil, err, true
+		}
+		return nil, err, false
+	}
 
 	lastErr := callErr
 	timer := time.NewTimer(time.Until(waitDeadline))
@@ -84,33 +130,67 @@ func (a *MCPToolAdapter) awaitLinkedResource(ctx context.Context, params map[str
 	for {
 		select {
 		case <-ctx.Done():
+			parkExit("context cancelled")
 			return nil, lastErr
 		case <-timer.C:
+			parkExit("budget exhausted")
 			return nil, lastErr
 		case <-sub.Done():
 			// Stream ended (server closed it or no subscription support at
 			// runtime): nothing will wake us — surface the error.
+			parkExit("subscription stream ended")
 			return nil, lastErr
 		case notif, ok := <-sub.Notifications:
 			if !ok {
+				parkExit("subscription channel closed")
 				return nil, lastErr
 			}
-			if notif.Method != protocol.NotificationResourceUpdated {
-				continue // the acknowledgment, or an unrelated method
-			}
-			result, err := a.client.CallTool(ctx, a.tool.Name, params)
-			if err == nil {
-				a.logger.Info("resource-wait: retry succeeded after resource update",
-					zap.String("tool", a.tool.Name), zap.String("uri", uri))
-				return result, nil
-			}
-			lastErr = err
-			// Still failing with the same linked condition: keep waiting out
-			// the budget. A different failure surfaces immediately.
-			var again *client.ToolResultError
-			if !errors.As(err, &again) || again.RetryResourceURI() != uri {
-				return nil, err
+			switch notif.Method {
+			case protocol.NotificationSubscriptionAcknowledged:
+				if !ackHonorsResource(notif.Params, uri) {
+					// The server declined our resource subscription: no
+					// update will ever arrive, so waiting is a guaranteed
+					// full-budget stall. Fail fast to the original error.
+					parkExit("server declined the resource subscription")
+					return nil, lastErr
+				}
+				// The ack proves the subscription is registered; an update
+				// that landed before registration was lost. One optimistic
+				// retry covers that window.
+				result, err, final := retryOnce("post-ack")
+				if final {
+					return result, err
+				}
+				lastErr = err
+			case protocol.NotificationResourceUpdated:
+				result, err, final := retryOnce("resource-updated")
+				if final {
+					return result, err
+				}
+				lastErr = err
+			default:
+				continue // an unrelated method on this stream
 			}
 		}
 	}
+}
+
+// ackHonorsResource parses a subscriptions/listen acknowledgment's echoed
+// honored subset and reports whether the resource subscription for uri was
+// honored. A missing or unparseable subset counts as not honored: the
+// 2026-07-28 revision requires the acknowledgment to echo what the server
+// agreed to, so anything else gives no basis to expect a wake.
+func ackHonorsResource(params json.RawMessage, uri string) bool {
+	var ack struct {
+		Notifications protocol.NotificationFilter `json:"notifications"`
+	}
+	if err := json.Unmarshal(params, &ack); err != nil {
+		return false
+	}
+	for _, honored := range ack.Notifications.ResourceSubscriptions {
+		if honored == uri {
+			return true
+		}
+	}
+	return false
 }
