@@ -502,7 +502,8 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 		usage.OutputTokens = tokenCount
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens,
+		usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -765,7 +766,8 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			CostUSD:      c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens),
+			CostUSD: c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens,
+				resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
@@ -808,7 +810,12 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 
 // calculateCost estimates cost for Bedrock Claude models.
 // Pricing varies by model and region - these are approximate.
-func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
+//
+// Cache tiers: a cache write bills at 1.25x the input rate and a cache read at
+// 0.10x. Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so
+// the three buckets are additive (unlike the OpenAI-compatible shape, where
+// prompt_tokens includes them). Mirrors SDKClient.calculateCost.
+func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
 	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
 	// to substring matching only for model ids it does not list.
 	// IMPORTANT: in the fallback, check "opus-4-1" BEFORE "opus-4" because
@@ -842,7 +849,9 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	return inputCost + outputCost
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // bedrockResponse represents Bedrock's response format (Anthropic-compatible).
@@ -859,6 +868,10 @@ type bedrockResponse struct {
 type bedrockUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// Cache tiers are billed differently (write 1.25x, read 0.10x), so they
+	// must be parsed to cost the call correctly.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // bedrockStreamChunk represents a chunk from Bedrock's streaming response.
