@@ -276,38 +276,62 @@ func (rl *RateLimiter) processQueue() {
 	for {
 		select {
 		case req := <-rl.queue:
-			rl.processRequest(req)
+			// Pace ADMISSION here (request-token bucket + MinDelay spacing),
+			// then run the call concurrently. Executing calls synchronously in
+			// this loop serialized the whole fleet behind one LLM round-trip
+			// per request — ~1 call/s regardless of configuration (issue #349).
+			if !rl.waitForAdmission(req) {
+				continue // waitForAdmission already delivered the error result
+			}
+			// wg.Add here is safe: processQueue itself holds a wg count, so
+			// the counter cannot reach zero while new work is being added.
+			rl.wg.Add(1)
+			go func(r *rateLimitedRequest) {
+				defer rl.wg.Done()
+				rl.execute(r)
+			}(req)
 		case <-rl.stopCh:
 			return
 		}
 	}
 }
 
-// processRequest processes a single request with token bucket rate limiting.
-func (rl *RateLimiter) processRequest(req *rateLimitedRequest) {
-	// Wait for token availability
+// waitForAdmission blocks until the request may start: a request token from
+// the bucket (RequestsPerSecond), then MinDelay as inter-admission spacing.
+// Returns false — after delivering the error result — if the request's
+// context expires or the limiter stops while waiting.
+func (rl *RateLimiter) waitForAdmission(req *rateLimitedRequest) bool {
 	for !rl.acquireToken() {
 		select {
 		case <-time.After(50 * time.Millisecond):
 			// Continue waiting
 		case <-req.ctx.Done():
 			req.resultCh <- &rateLimitedResult{err: req.ctx.Err()}
-			return
+			return false
 		case <-rl.stopCh:
 			req.resultCh <- &rateLimitedResult{err: fmt.Errorf("rate limiter stopped")}
-			return
+			return false
 		}
 	}
 
-	// Enforce minimum delay
+	// Enforce minimum delay between request STARTS. Sleeping in the dispatch
+	// loop preserves the documented spacing semantics without serializing the
+	// calls themselves.
 	if rl.config.MinDelay > 0 {
-		time.Sleep(rl.config.MinDelay)
+		select {
+		case <-time.After(rl.config.MinDelay):
+		case <-rl.stopCh:
+			req.resultCh <- &rateLimitedResult{err: fmt.Errorf("rate limiter stopped")}
+			return false
+		}
 	}
+	return true
+}
 
-	// Execute call with retry on throttling
+// execute runs the call (with throttling retries) and delivers the result.
+func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	result, err := rl.executeWithRetry(req.ctx, req.call)
 
-	// Send result
 	select {
 	case req.resultCh <- &rateLimitedResult{result: result, err: err}:
 	case <-req.ctx.Done():

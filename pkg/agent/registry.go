@@ -1265,9 +1265,18 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 // When proto config has disabled=true, returns a disabled rate limiter config.
 // Non-zero numeric fields override the provider defaults set by NewRateLimiter().
 func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.RateLimiterConfig {
+	return BuildRateLimiterConfig(proto, r.logger)
+}
+
+// BuildRateLimiterConfig converts the proto LLMRateLimitConfig to the llm
+// package config. Exported so every client-construction path (the agent
+// registry and looms' custom-LLM path) applies identical rate-limit
+// semantics — a client built without this is unthrottled and, because 429
+// retry lives inside the limiter, also retry-less (issue #348).
+func BuildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig, logger *zap.Logger) llm.RateLimiterConfig {
 	cfg := llm.RateLimiterConfig{
 		Enabled: true,
-		Logger:  r.logger,
+		Logger:  logger,
 		// All numeric fields left at zero → NewRateLimiter() fills them from DefaultRateLimiterConfig()
 	}
 

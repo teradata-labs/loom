@@ -686,3 +686,78 @@ func BenchmarkRateLimiter_Concurrent(b *testing.B) {
 		}
 	})
 }
+
+// TestRateLimiter_ConcurrentDispatch proves execution is no longer serialized
+// behind the dispatch loop (issue #349): 8 calls of 200ms each must complete
+// in far less than the 1.6s a serial dispatcher needs.
+func TestRateLimiter_ConcurrentDispatch(t *testing.T) {
+	rl := NewRateLimiter(RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 1000,
+		BurstCapacity:     16,
+		MinDelay:          time.Millisecond,
+		Logger:            zap.NewNop(),
+	})
+	defer func() { _ = rl.Close() }()
+
+	const n = 8
+	callDur := 200 * time.Millisecond
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := rl.Do(context.Background(), func(context.Context) (interface{}, error) {
+				time.Sleep(callDur)
+				return "ok", nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	// Serial execution would need n*callDur = 1.6s. Allow generous scheduling
+	// slack while still proving overlap.
+	assert.Less(t, elapsed, n*callDur/2,
+		"calls must overlap: %v elapsed for %d x %v calls", elapsed, n, callDur)
+}
+
+// TestRateLimiter_AdmissionStillPaced proves the concurrency fix did not
+// remove request-rate pacing: with 1 rps and burst 1, the second call must
+// start roughly a second after the first.
+func TestRateLimiter_AdmissionStillPaced(t *testing.T) {
+	rl := NewRateLimiter(RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 1,
+		BurstCapacity:     1,
+		MinDelay:          time.Millisecond,
+		Logger:            zap.NewNop(),
+	})
+	defer func() { _ = rl.Close() }()
+
+	var mu sync.Mutex
+	var starts []time.Time
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := rl.Do(context.Background(), func(context.Context) (interface{}, error) {
+				mu.Lock()
+				starts = append(starts, time.Now())
+				mu.Unlock()
+				return "ok", nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	require.Len(t, starts, 2)
+	gap := starts[1].Sub(starts[0])
+	if gap < 0 {
+		gap = -gap
+	}
+	assert.GreaterOrEqual(t, gap, 700*time.Millisecond,
+		"1 rps with burst 1 must space the second admission ~1s after the first, got %v", gap)
+}

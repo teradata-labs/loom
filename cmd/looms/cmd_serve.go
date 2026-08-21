@@ -823,6 +823,11 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 
 	timeout := time.Duration(serverConfig.LLM.Timeout) * time.Second
 
+	// Rate limiting must be attached on THIS path too: a client built without
+	// it is unthrottled and retry-less (429 retry lives inside the limiter),
+	// which produced the 512-agent thundering-herd outage of issue #348.
+	rlCfg := agent.BuildRateLimiterConfig(protoConfig.RateLimit, logger)
+
 	switch protoConfig.Provider {
 	case "anthropic":
 		model := protoConfig.Model
@@ -835,11 +840,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		return anthropic.NewClient(anthropic.Config{
-			APIKey:      apiKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            apiKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "bedrock":
@@ -851,15 +857,16 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		return bedrock.NewClientForModel(bedrock.Config{
-			Region:          serverConfig.LLM.BedrockRegion,
-			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
-			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
-			SessionToken:    serverConfig.LLM.BedrockSessionToken,
-			BearerToken:     serverConfig.LLM.BedrockBearerToken,
-			Profile:         serverConfig.LLM.BedrockProfile,
-			ModelID:         modelID,
-			MaxTokens:       maxTokens,
-			Temperature:     temperature,
+			Region:            serverConfig.LLM.BedrockRegion,
+			AccessKeyID:       serverConfig.LLM.BedrockAccessKeyID,
+			SecretAccessKey:   serverConfig.LLM.BedrockSecretAccessKey,
+			SessionToken:      serverConfig.LLM.BedrockSessionToken,
+			BearerToken:       serverConfig.LLM.BedrockBearerToken,
+			Profile:           serverConfig.LLM.BedrockProfile,
+			ModelID:           modelID,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "ollama":
@@ -868,11 +875,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.OllamaModel
 		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:    serverConfig.LLM.OllamaEndpoint,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:          serverConfig.LLM.OllamaEndpoint,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "openai":
@@ -886,11 +894,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
 		return openai.NewClient(openai.Config{
-			APIKey:      apiKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            apiKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "azure-openai", "azureopenai":
@@ -898,14 +907,31 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if deploymentID == "" {
 			deploymentID = serverConfig.LLM.AzureOpenAIDeploymentID
 		}
+		// Env fallbacks for parity with the anthropic/openai branches and the
+		// registry path — without them an env-only key fails this path and
+		// silently changes which construction path (and rate-limit behavior)
+		// an agent gets (issue #348).
+		azEndpoint := serverConfig.LLM.AzureOpenAIEndpoint
+		if azEndpoint == "" {
+			azEndpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
+		}
+		azAPIKey := serverConfig.LLM.AzureOpenAIAPIKey
+		if azAPIKey == "" {
+			azAPIKey = os.Getenv("AZURE_OPENAI_API_KEY")
+		}
+		azEntraToken := serverConfig.LLM.AzureOpenAIEntraToken
+		if azEntraToken == "" {
+			azEntraToken = os.Getenv("AZURE_OPENAI_ENTRA_TOKEN")
+		}
 		return azureopenai.NewClient(azureopenai.Config{
-			Endpoint:     serverConfig.LLM.AzureOpenAIEndpoint,
-			DeploymentID: deploymentID,
-			APIKey:       serverConfig.LLM.AzureOpenAIAPIKey,
-			EntraToken:   serverConfig.LLM.AzureOpenAIEntraToken,
-			MaxTokens:    maxTokens,
-			Temperature:  temperature,
-			Timeout:      timeout,
+			Endpoint:          azEndpoint,
+			DeploymentID:      deploymentID,
+			APIKey:            azAPIKey,
+			EntraToken:        azEntraToken,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "mistral":
@@ -914,11 +940,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.MistralModel
 		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:      serverConfig.LLM.MistralAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            serverConfig.LLM.MistralAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "gemini":
@@ -927,11 +954,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.GeminiModel
 		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:      serverConfig.LLM.GeminiAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            serverConfig.LLM.GeminiAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "huggingface":
@@ -940,11 +968,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.HuggingFaceModel
 		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:       serverConfig.LLM.HuggingFaceToken,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Token:             serverConfig.LLM.HuggingFaceToken,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "litellm":
@@ -953,12 +982,13 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.LiteLLMModel
 		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
-			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:          serverConfig.LLM.LiteLLMEndpoint,
+			APIKey:            serverConfig.LLM.LiteLLMAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	default:
