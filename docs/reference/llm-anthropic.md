@@ -221,7 +221,9 @@ repeated system prompts or long conversations are detected.
 ## Rate Limiter
 
 ✅ The Anthropic client includes a built-in rate limiter (`pkg/llm.RateLimiter`) that is shared
-as a global singleton across all Anthropic client instances. The rate limiter:
+by every Anthropic client on the same model with the same rate-limit values (clients that set
+different values each get their own limiter, with a logged warning that the combined rate can
+exceed the quota). The rate limiter:
 
 - Automatically retries HTTP 429 (rate limit) responses with exponential backoff
 - Respects Anthropic's per-tier ITPM (input-tokens-per-minute) limits

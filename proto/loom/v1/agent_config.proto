@@ -157,7 +157,11 @@ message LLMRateLimitConfig {
   // has its own throttle handling or you are managing concurrency externally.
   bool disabled = 1;
 
-  // Maximum requests per second across all agents sharing this provider.
+  // Maximum requests per second, shared by every agent on the same provider
+  // quota boundary (endpoint/deployment/model/region, provider-dependent)
+  // with the same rate-limit values. Agents that set different values on the
+  // same boundary each get their own limiter — their combined rate can
+  // exceed the quota, and a warning is logged when that happens.
   // 0 = use default (2.0 RPS).
   double requests_per_second = 2;
 
