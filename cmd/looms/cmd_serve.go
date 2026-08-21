@@ -992,6 +992,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// construction: clients attach their CapacityObserver at build time,
 	// and agents are loaded well before gRPC service registration.
 	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+	llmscheduler.SetDoorLimits(config.LLM.MaxActiveConversations, config.LLM.MaxDoorQueue)
 
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
