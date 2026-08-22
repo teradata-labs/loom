@@ -222,6 +222,72 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	return c.convertResponse(resp), nil
 }
 
+// retryableUpstreamStatus reports whether an HTTP status is transient
+// upstream trouble worth an in-place retry (alongside 429 throttling).
+func retryableUpstreamStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+		return true
+	}
+	return false
+}
+
+// doWithRateLimit sends the marshaled request to apiURL under the rate
+// limiter. Two properties matter and were previously both wrong here:
+//
+//  1. The http.Request is rebuilt on EVERY attempt — a request body reader
+//     is consumed by the first send, so reusing the request silently
+//     retries with an empty body.
+//  2. A 429 (and transient 5xx) response is converted to an error INSIDE
+//     the limiter's closure, so its backoff-and-retry loop actually sees
+//     throttling. Returning the raw response (a 429 is a perfectly valid
+//     HTTP response) let every throttle sail past the limiter's retry
+//     logic and kill the caller's conversation. The Retry-After header,
+//     when present, is echoed into the error text ("retry after Ns") so
+//     the limiter and layers above can honor the provider-stated window.
+func (c *Client) doWithRateLimit(ctx context.Context, apiURL string, body []byte) (*http.Response, error) {
+	send := func(ctx context.Context) (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" {
+			httpReq.Header.Set("api-key", c.apiKey)
+		} else {
+			httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
+		}
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || retryableUpstreamStatus(resp.StatusCode) {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				return nil, fmt.Errorf("API error (status %d, retry after %ss): %s",
+					resp.StatusCode, ra, string(respBody))
+			}
+			return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+		return resp, nil
+	}
+
+	if c.rateLimiter != nil {
+		result, err := c.rateLimiter.Do(ctx, send)
+		if err != nil {
+			return nil, fmt.Errorf("HTTP request failed: %w", err)
+		}
+		return result.(*http.Response), nil
+	}
+	result, err := send(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	return result.(*http.Response), nil
+}
+
 // callAPI makes the HTTP request to Azure OpenAI's API.
 func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
 	// Build Azure-specific URL
@@ -238,40 +304,9 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+	httpResp, err := c.doWithRateLimit(ctx, apiURL, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Authentication: Use api-key OR Authorization header
-	if c.apiKey != "" {
-		// Option 1: API key authentication
-		httpReq.Header.Set("api-key", c.apiKey)
-	} else {
-		// Option 2: Microsoft Entra ID token
-		httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
-	}
-
-	// Send request with rate limiting if enabled
-	var httpResp *http.Response
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
-	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -693,36 +728,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+	httpResp, err := c.doWithRateLimit(ctx, apiURL, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("api-key", c.apiKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+c.entraToken)
-	}
-
-	// Send request with rate limiting if enabled
-	var httpResp *http.Response
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
-	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
