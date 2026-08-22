@@ -151,33 +151,18 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 
 	var sb strings.Builder
 	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
-	// Two extraction lanes. The original single-lane rule ("IGNORE the
-	// assistant's ... error messages") discarded exactly the material that
-	// carries method knowledge: a 30-wave fleet study measured agents
-	// recalling hundreds of task-echo memories per run while never learning
-	// the one error->fix lesson that dominated their failure rate. Lane 2
-	// exists so working knowledge survives; the chatter exclusion narrows to
-	// what is genuinely transient.
-	sb.WriteString("IMPORTANT — extract along two lanes:\n")
-	sb.WriteString("1. USER FACTS: factual content from the USER's messages — names, dates, events, ")
-	sb.WriteString("preferences, and real-world facts.\n")
-	sb.WriteString("2. LESSONS: durable working knowledge the ASSISTANT discovered by doing — an error and ")
-	sb.WriteString("what fixed it, a schema fact learned by probing (actual column names and types), an ")
-	sb.WriteString("environment quirk (data formats, dialect behavior, API limits), a technique that ")
-	sb.WriteString("succeeded after failures. State each lesson in reusable, situation-independent form — ")
-	sb.WriteString("the cause and the fix, not the story. Examples: \"the events table's timestamp column ")
-	sb.WriteString("is a string, so date filters must compare strings\"; \"inserting 16-digit identifiers ")
-	sb.WriteString("into an INTEGER column overflows — declare such columns BIGINT\". ")
-	sb.WriteString("Use memory_type \"lesson\" and salience 0.8-1.0 for these.\n")
-	sb.WriteString("VERIFICATION GATE: extract a lesson ONLY when this conversation shows the fix being ")
-	sb.WriteString("applied AND the next attempt succeeding. A hypothesis, a suggestion, or a fix whose ")
-	sb.WriteString("retry still failed is NOT a lesson — an unverified belief stored as a lesson actively ")
-	sb.WriteString("misleads future work. If the error is still unresolved at the end of the excerpt, ")
-	sb.WriteString("extract nothing for it (a later pass will see the resolution).\n")
-	sb.WriteString("IGNORE transient chatter: progress narration, politeness, retries that add no new ")
-	sb.WriteString("information, and the assistant's self-referential observations. An error message paired ")
-	sb.WriteString("with its resolution is never chatter — it is the highest-value memory a working agent ")
-	sb.WriteString("produces.\n\n")
+	// Per-turn extraction is the USER-FACTS lane only. Assistant-side
+	// content is deliberately excluded HERE because mid-conversation prose
+	// is where unverified beliefs live (a fleet study measured the wrong
+	// error theory minted 58:8 against the real fix when this pass read
+	// assistant turns). Method knowledge is captured instead by the
+	// ledger-grounded lesson pass at conversation end
+	// (extractLessonsAtEnd), which only ever sees verified error→fix
+	// transitions.
+	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
+	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
+	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior ")
+	sb.WriteString("(working lessons are captured by a separate verified pass; do not extract them here).\n\n")
 
 	sb.WriteString(buildConversationBlock(ec))
 

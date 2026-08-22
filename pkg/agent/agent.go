@@ -1875,6 +1875,18 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Ledger-grounded lesson pass (PR #357): once, over the finished
+	// conversation, mine verified error→fix transitions from the tool
+	// ledger. Runs regardless of outcome — a failed conversation may still
+	// contain verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	}
+
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
