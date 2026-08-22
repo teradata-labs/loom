@@ -97,10 +97,33 @@ const maxFleetLessons = 5
 const maxErrorLessonInjections = 5
 
 // errorLessonSession tracks which lessons a session has already been shown
-// through the error-triggered path, so a repeated failure re-injects nothing.
+// through the error-triggered path (so a repeated failure re-injects
+// nothing) and where in the tool ledger each injection landed (so outcome
+// credit can score what happened after it).
 type errorLessonSession struct {
-	injected   map[string]bool // lesson memory IDs already surfaced
+	injected   map[string]int // lesson memory ID → ledger length at injection
 	injections int
+}
+
+// ledgerLen returns the session's current tool-ledger length — the
+// injection position outcome credit scores against.
+func (a *Agent) ledgerLen(sessionID string) int {
+	a.toolLedgerMu.Lock()
+	defer a.toolLedgerMu.Unlock()
+	return len(a.toolLedgers[sessionID])
+}
+
+// takeErrorLessonState removes and returns the session's injection record
+// (consumed exactly once by the end-of-conversation credit pass).
+func (a *Agent) takeErrorLessonState(sessionID string) map[string]int {
+	a.errorLessonMu.Lock()
+	defer a.errorLessonMu.Unlock()
+	st := a.errorLessonState[sessionID]
+	delete(a.errorLessonState, sessionID)
+	if st == nil {
+		return nil
+	}
+	return st.injected
 }
 
 // errorLessonQuery reduces raw tool-error text to FTS-safe bareword terms.
@@ -171,13 +194,15 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 		return
 	}
 
+	ledgerPos := a.ledgerLen(session.ID)
+
 	a.errorLessonMu.Lock()
 	if a.errorLessonState == nil {
 		a.errorLessonState = map[string]*errorLessonSession{}
 	}
 	st := a.errorLessonState[session.ID]
 	if st == nil {
-		st = &errorLessonSession{injected: map[string]bool{}}
+		st = &errorLessonSession{injected: map[string]int{}}
 		a.errorLessonState[session.ID] = st
 	}
 	if st.injections >= maxErrorLessonInjections {
@@ -186,8 +211,8 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	}
 	var fresh []*memory.Memory
 	for _, m := range lessons {
-		if !st.injected[m.ID] {
-			st.injected[m.ID] = true
+		if _, seen := st.injected[m.ID]; !seen {
+			st.injected[m.ID] = ledgerPos
 			fresh = append(fresh, m)
 		}
 	}
@@ -285,6 +310,86 @@ type lessonPair struct {
 	// invisible (measured: zero BIGINT lessons minted while the fix was
 	// applied dozens of times, always via a re-CREATE).
 	Intervening []string
+	// ChangedFragments are the tokens the recovery actually changed,
+	// computed mechanically (failing vs succeeding input, plus each
+	// intervening call vs the most recent earlier call of its class).
+	// The lesson must be grounded in these: the miner's narrative about
+	// WHY a fix worked is untrustworthy — measured: recoveries that both
+	// widened a DECIMAL and fixed an INTEGER column produced lessons
+	// crediting only the (irrelevant) DECIMAL change.
+	ChangedFragments []string
+}
+
+// maxChangedFragments caps the fragment list carried per pair.
+const maxChangedFragments = 12
+
+// tokenDiff returns the tokens that differ between two statements as a
+// case-insensitive multiset diff: tokens added by `after` and tokens removed
+// from `before`. Surrounding punctuation is trimmed so "INTEGER," matches
+// "INTEGER"; case is preserved from the input for display.
+func tokenDiff(before, after string) (added, removed []string) {
+	count := func(s string) (map[string]int, map[string]string) {
+		counts := map[string]int{}
+		display := map[string]string{}
+		for _, raw := range strings.Fields(s) {
+			tok := strings.Trim(raw, ",;()[]{}'\"`")
+			if len(tok) < 2 {
+				continue
+			}
+			key := strings.ToLower(tok)
+			counts[key]++
+			if _, ok := display[key]; !ok {
+				display[key] = tok
+			}
+		}
+		return counts, display
+	}
+	bCounts, bDisplay := count(before)
+	aCounts, aDisplay := count(after)
+	for key, n := range aCounts {
+		if n > bCounts[key] {
+			added = append(added, aDisplay[key])
+		}
+	}
+	for key, n := range bCounts {
+		if n > aCounts[key] {
+			removed = append(removed, bDisplay[key])
+		}
+	}
+	return added, removed
+}
+
+// changedFragments computes the grounded fragment list for a pair: the diff
+// of the failing vs succeeding input, plus the diff of each intervening
+// event against the most recent earlier event of the same class (where a
+// cross-statement fix like a re-CREATE actually lives).
+func changedFragments(events []minedEvent, failIdx, succeedIdx int, interveningIdx []int) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(toks []string) {
+		for _, t := range toks {
+			key := strings.ToLower(t)
+			if seen[key] || len(out) >= maxChangedFragments {
+				continue
+			}
+			seen[key] = true
+			out = append(out, t)
+		}
+	}
+	added, removed := tokenDiff(events[failIdx].input, events[succeedIdx].input)
+	add(added)
+	add(removed)
+	for _, k := range interveningIdx {
+		for j := k - 1; j >= 0; j-- {
+			if events[j].key == events[k].key {
+				a, r := tokenDiff(events[j].input, events[k].input)
+				add(a)
+				add(r)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // maxInterveningCalls bounds the between-failure-and-success excerpt; the
@@ -356,20 +461,24 @@ func pairEvents(events []minedEvent) []lessonPair {
 		}
 		emitted[ev.key] = true
 		var between []string
+		var betweenIdx []int
 		for k := fi + 1; k < i; k++ {
 			if events[k].ok {
 				between = append(between, events[k].input)
+				betweenIdx = append(betweenIdx, k)
 			}
 		}
 		if len(between) > maxInterveningCalls {
 			between = between[len(between)-maxInterveningCalls:]
+			betweenIdx = betweenIdx[len(betweenIdx)-maxInterveningCalls:]
 		}
 		pairs = append(pairs, lessonPair{
-			Tool:        ev.name,
-			FailingIn:   events[fi].input,
-			ErrorText:   events[fi].errText,
-			SucceedsIn:  ev.input,
-			Intervening: between,
+			Tool:             ev.name,
+			FailingIn:        events[fi].input,
+			ErrorText:        events[fi].errText,
+			SucceedsIn:       ev.input,
+			Intervening:      between,
+			ChangedFragments: changedFragments(events, fi, i, betweenIdx),
 		})
 		if len(pairs) >= maxLessonPairs {
 			return pairs
@@ -411,9 +520,15 @@ func buildLessonMiningPrompt(pairs []lessonPair) string {
 		for _, b := range p.Intervening {
 			fmt.Fprintf(&sb, "   CALL BETWEEN FAILURE AND SUCCESS: %s\n", b)
 		}
-		fmt.Fprintf(&sb, "   SUCCEEDED INPUT: %s\n\n", p.SucceedsIn)
+		fmt.Fprintf(&sb, "   SUCCEEDED INPUT: %s\n", p.SucceedsIn)
+		if len(p.ChangedFragments) > 0 {
+			fmt.Fprintf(&sb, "   OBSERVED CHANGED FRAGMENTS: %s\n", strings.Join(p.ChangedFragments, ", "))
+		}
+		sb.WriteString("\n")
 	}
 	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — the cause and the fix, not the story. Compare the failed and succeeded inputs: the difference between them is the fix. When the failed and succeeded inputs are identical or nearly identical, the fix happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson. Example form: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT".
+
+The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, computed mechanically from the ledger. The lesson MUST quote these fragments verbatim. When several fragments changed, name ALL of them in the lesson — never pick one and present it as the sole cause; the ledger cannot tell which mattered, and neither can you.
 
 Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
 
@@ -435,11 +550,12 @@ func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int
 		return nil
 	}
 	lessons, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-		AgentID:    a.lessonPartition(),
-		Query:      searchQuery,
-		MemoryType: memory.MemoryTypeLesson,
-		Limit:      maxFleetLessons,
-		MaxTokens:  budget,
+		AgentID:     a.lessonPartition(),
+		Query:       searchQuery,
+		MemoryType:  memory.MemoryTypeLesson,
+		MinSalience: lessonMinSalience, // outcome credit sinks bad lessons below this
+		Limit:       maxFleetLessons,
+		MaxTokens:   budget,
 	})
 	if err != nil {
 		return nil
@@ -454,8 +570,16 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
 		return
 	}
+	events := a.takeToolLedger(sessionID)
+
+	// Outcome credit (Fix B, docs/architecture/lesson-grounding-and-credit.md):
+	// score the lessons the error lane injected against what the ledger says
+	// happened after each injection. Runs before mining so credit lands even
+	// when this conversation mints nothing new.
+	a.applyLessonCredit(ctx, events, a.takeErrorLessonState(sessionID))
+
 	var pairs []lessonPair
-	if events := a.takeToolLedger(sessionID); len(events) > 0 {
+	if len(events) > 0 {
 		pairs = pairEvents(events)
 	} else if session, ok := a.memory.GetSession(sessionID); ok && session != nil {
 		// Fallback (restored sessions, ledgerless paths): the compiled view.
@@ -487,9 +611,17 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	}
 
 	agentID := a.config.Name
-	stored := 0
+	grounding := lessonGroundingTokens(pairs)
+	stored, dropped := 0, 0
 	for _, m := range data.Memories {
 		if m.Content == "" {
+			continue
+		}
+		// Grounding gate (Fix A): when the ledger observed concrete changed
+		// fragments, a lesson naming none of them is narrative, not
+		// observation — drop it rather than store a plausible misdiagnosis.
+		if len(grounding) > 0 && !lessonIsGrounded(m.Content, grounding) {
+			dropped++
 			continue
 		}
 		salience := m.Salience
@@ -510,10 +642,105 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 			stored++
 		}
 	}
-	if stored > 0 {
+	if stored > 0 || dropped > 0 {
 		zap.L().Info("lesson mining: stored verified lessons",
 			zap.String("agent", agentID),
 			zap.Int("pairs", len(pairs)),
-			zap.Int("lessons", stored))
+			zap.Int("lessons", stored),
+			zap.Int("dropped_ungrounded", dropped))
+	}
+}
+
+// lessonGroundingTokens is the union of every pair's observed changed
+// fragments (lowercased) — the vocabulary a grounded lesson must draw from.
+func lessonGroundingTokens(pairs []lessonPair) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range pairs {
+		for _, f := range p.ChangedFragments {
+			out[strings.ToLower(f)] = true
+		}
+	}
+	return out
+}
+
+// lessonIsGrounded reports whether the lesson text names at least one
+// observed changed fragment.
+func lessonIsGrounded(content string, grounding map[string]bool) bool {
+	lc := strings.ToLower(content)
+	for frag := range grounding {
+		if strings.Contains(lc, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// lessonCreditWin / lessonCreditLoss are the salience deltas outcome credit
+// applies; lessonMinSalience is the recall lane's eligibility floor. Four
+// uncorrected losses sink a lesson from its 0.8 floor to below eligibility.
+const (
+	lessonCreditWin   = 0.02
+	lessonCreditLoss  = -0.15
+	lessonMinSalience = 0.3
+)
+
+// salienceAdjuster is the optional store capability outcome credit needs.
+// Kept as a soft type assertion so GraphMemoryStore implementations that
+// predate it (other repos, mocks) build unchanged; credit is skipped there.
+type salienceAdjuster interface {
+	AdjustSalience(ctx context.Context, memoryID string, delta float64) error
+}
+
+// applyLessonCredit scores error-lane injections against the ledger: a
+// lesson injected while class C was failing gets a win if C succeeded after
+// the injection, a loss if no failing class recovered after it. Class-level
+// attribution, not causal proof — the claim is only that repeated injection
+// into failing recoveries is evidence against a lesson.
+func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, injections map[string]int) {
+	if len(injections) == 0 || len(events) == 0 {
+		return
+	}
+	adjuster, ok := a.graphMemoryStore.(salienceAdjuster)
+	if !ok {
+		return
+	}
+	wins, losses := 0, 0
+	for lessonID, idx := range injections {
+		if idx > len(events) {
+			idx = len(events)
+		}
+		failedBefore := map[string]bool{}
+		for _, ev := range events[:idx] {
+			if !ev.ok {
+				failedBefore[ev.key] = true
+			}
+		}
+		if len(failedBefore) == 0 {
+			continue
+		}
+		recovered := false
+		for _, ev := range events[idx:] {
+			if ev.ok && failedBefore[ev.key] {
+				recovered = true
+				break
+			}
+		}
+		delta := lessonCreditLoss
+		if recovered {
+			delta = lessonCreditWin
+		}
+		if err := adjuster.AdjustSalience(ctx, lessonID, delta); err == nil {
+			if recovered {
+				wins++
+			} else {
+				losses++
+			}
+		}
+	}
+	if wins > 0 || losses > 0 {
+		zap.L().Info("lesson credit applied",
+			zap.String("agent", a.config.Name),
+			zap.Int("wins", wins),
+			zap.Int("losses", losses))
 	}
 }

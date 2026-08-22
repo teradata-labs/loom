@@ -365,6 +365,101 @@ func TestInjectErrorLessons(t *testing.T) {
 	assert.False(t, present)
 }
 
+// The literal card-trap recovery: the re-CREATE swaps INTEGER for BIGINT.
+// The diff must expose BIGINT so the lesson can be grounded in it.
+func TestTokenDiffAndChangedFragments(t *testing.T) {
+	added, removed := tokenDiff(
+		`CREATE VOLATILE TABLE vt (card_id INTEGER, txns INTEGER, amt DECIMAL(14,2))`,
+		`CREATE VOLATILE TABLE vt (card_id BIGINT, txns INTEGER, amt DECIMAL(18,2))`,
+	)
+	assert.Contains(t, added, "BIGINT")
+	assert.Contains(t, added, "DECIMAL(18,2")
+	assert.Contains(t, removed, "INTEGER")
+
+	events := []minedEvent{
+		{name: "execute_statement", key: "execute_statement:CREATE:VT", ok: true,
+			input: `{"sql":"CREATE VOLATILE TABLE vt (card_id INTEGER, amt DECIMAL(14,2))"}`},
+		{name: "execute_statement", key: "execute_statement:INSERT:VT", ok: false,
+			input:   `{"sql":"INSERT INTO vt SELECT CC_Number, SUM(Amount) FROM t GROUP BY 1"}`,
+			errText: "Error 2616 Numeric overflow occurred during computation"},
+		{name: "execute_statement", key: "execute_statement:DROP:VT", ok: true,
+			input: `{"sql":"DROP TABLE vt"}`},
+		{name: "execute_statement", key: "execute_statement:CREATE:VT", ok: true,
+			input: `{"sql":"CREATE VOLATILE TABLE vt (card_id BIGINT, amt DECIMAL(14,2))"}`},
+		{name: "execute_statement", key: "execute_statement:INSERT:VT", ok: true,
+			input: `{"sql":"INSERT INTO vt SELECT CC_Number, SUM(Amount) FROM t GROUP BY 1"}`},
+	}
+	pairs := pairEvents(events)
+	require.Len(t, pairs, 1)
+	// The INSERT itself never changed — the fragment comes from the
+	// intervening re-CREATE diffed against the original CREATE.
+	assert.Contains(t, pairs[0].ChangedFragments, "BIGINT")
+
+	grounding := lessonGroundingTokens(pairs)
+	assert.True(t, lessonIsGrounded("declare card_id as BIGINT to avoid overflow", grounding))
+	assert.False(t, lessonIsGrounded("widen the DECIMAL precision to avoid overflow", grounding),
+		"a lesson naming none of the observed changes must be dropped")
+}
+
+// Outcome credit end-to-end: a lesson injected before a recovery gains
+// salience; one injected into a conversation that never recovers loses
+// enough to sink below the lesson lane's recall floor.
+func TestApplyLessonCredit(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	mkLesson := func(content string) string {
+		m, err := store.Remember(ctx, &memory.Memory{
+			AgentID:    fleetLessonAgentID,
+			Content:    content,
+			MemoryType: memory.MemoryTypeLesson,
+			Source:     "lesson_mined",
+			Salience:   0.4,
+		})
+		require.NoError(t, err)
+		return m.ID
+	}
+	winID := mkLesson("numeric overflow on card columns — declare card_id BIGINT")
+	lossID := mkLesson("numeric overflow — widen the DECIMAL precision")
+
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
+	}
+
+	failThenRecover := []minedEvent{
+		{key: "execute_statement:INSERT:VT", ok: false, errText: "overflow"},
+		{key: "execute_statement:INSERT:VT", ok: true},
+	}
+	a.applyLessonCredit(ctx, failThenRecover, map[string]int{winID: 1})
+
+	failForever := []minedEvent{
+		{key: "execute_statement:INSERT:VT", ok: false, errText: "overflow"},
+		{key: "execute_statement:INSERT:VT", ok: false, errText: "overflow"},
+	}
+	// Four losing conversations sink the bad lesson below the floor.
+	for range [4]int{} {
+		a.applyLessonCredit(ctx, failForever, map[string]int{lossID: 1})
+	}
+
+	win, err := store.GetMemory(ctx, fleetLessonAgentID, winID)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.42, win.Salience, 0.001)
+	loss, err := store.GetMemory(ctx, fleetLessonAgentID, lossID)
+	require.NoError(t, err)
+	assert.Less(t, loss.Salience, lessonMinSalience)
+
+	// The demoted lesson no longer surfaces through the lesson lane.
+	got := a.fleetLessons(ctx, "numeric overflow DECIMAL BIGINT", 4000)
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	assert.True(t, ids[winID])
+	assert.False(t, ids[lossID], "demoted lesson must sink below the recall floor")
+}
+
 // Without fleet sharing, the error lane still serves the earning agent's
 // own lessons — and nothing to anyone else.
 func TestInjectErrorLessonsPrivate(t *testing.T) {

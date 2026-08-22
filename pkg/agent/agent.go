@@ -1914,11 +1914,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		a.graphExtractionWG.Add(1)
 		go func() {
 			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
 			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
 		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
 	}
-	// Error-triggered lesson tracking is per-conversation state.
-	a.clearErrorLessonState(sessionID)
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()

@@ -932,6 +932,20 @@ func (s *GraphMemoryStore) TouchMemories(ctx context.Context, memoryIDs []string
 	return err
 }
 
+// AdjustSalience applies a bounded delta to one memory's salience, clamped
+// to [0.05, 1.0]. Optional store capability (discovered by type assertion in
+// pkg/agent): outcome credit for injected lessons — a lesson repeatedly
+// injected into conversations that then fail sinks below the lesson lane's
+// recall floor; one that precedes recoveries drifts up. Deliberately not on
+// the GraphMemoryStore interface so other implementations build unchanged.
+func (s *GraphMemoryStore) AdjustSalience(ctx context.Context, memoryID string, delta float64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE graph_memories SET salience = MIN(1.0, MAX(0.05, salience + ?)) WHERE id = ?`,
+		delta, memoryID,
+	)
+	return err
+}
+
 func (s *GraphMemoryStore) DecayAll(ctx context.Context, agentID string, decayFactor float64) error {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.graph_memory.decay_all")
 	defer s.tracer.EndSpan(span)
