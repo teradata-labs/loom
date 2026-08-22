@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -221,11 +222,63 @@ func TestFleetLessonsSharedAcrossAgents(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// A DIFFERENT agent gets the lesson through the dedicated lane.
-	a := &Agent{graphMemoryStore: store, config: &Config{Name: "runner-4o-01"}}
+	// A DIFFERENT agent gets the lesson through the dedicated lane —
+	// but only when fleet sharing is opted in.
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
+	}
 	lessons := a.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000)
 	require.Len(t, lessons, 1)
 	assert.Contains(t, lessons[0].Content, "BIGINT")
+}
+
+// Sharing is opt-in: by default lessons are stored under the agent's own ID
+// and another agent's lane must NOT see them.
+func TestFleetLessonSharingIsOptIn(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	earner := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-09"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
+	assert.Equal(t, "runner-4o-09", earner.lessonPartition())
+
+	_, err := store.Remember(ctx, &memory.Memory{
+		AgentID:       earner.lessonPartition(),
+		Content:       "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "lesson_mined",
+		MemoryAgentID: "runner-4o-09",
+		Salience:      0.9,
+	})
+	require.NoError(t, err)
+
+	// The earner still recalls its own private lesson through the lane.
+	require.Len(t, earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000), 1)
+
+	// A different agent (sharing off) sees nothing.
+	other := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
+	assert.Empty(t, other.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000))
+
+	// The private lane must not leak the agent's ordinary memories either.
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID:    "runner-4o-09",
+		Content:    "the INTEGER overflow discussion mentioned BIGINT columns in passing",
+		MemoryType: memory.MemoryTypeFact,
+		Salience:   0.9,
+	})
+	require.NoError(t, err)
+	lessons := earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000)
+	require.Len(t, lessons, 1)
+	assert.Equal(t, memory.MemoryTypeLesson, lessons[0].MemoryType)
 }
 
 // The lesson type must survive ingestion instead of coercing to fact.

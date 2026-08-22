@@ -3302,8 +3302,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	// Dedicated lesson lane (PR #357): verified, fleet-shared working
-	// knowledge rides regardless of the echo-memory ranking above.
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking above. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
 	lessons := a.fleetLessons(ctx, searchQuery, budget)
 	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"

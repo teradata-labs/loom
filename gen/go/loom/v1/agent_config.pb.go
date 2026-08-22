@@ -1155,8 +1155,15 @@ type GraphMemoryConfig struct {
 	// Set higher to give the extractor more conversational context per cycle.
 	// Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
 	ExtractionWindowMessages int32 `protobuf:"varint,14,opt,name=extraction_window_messages,json=extractionWindowMessages,proto3" json:"extraction_window_messages,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// Share verified lessons across all agents on this server. Opt-in.
+	// When true, lessons mined at conversation end (observed error->fix
+	// transitions) are stored in a shared partition visible to every agent,
+	// and each agent's dedicated lesson recall lane draws from that pool.
+	// When false (default), lessons stay private to the agent that earned
+	// them: stored under its own ID and recalled only by it.
+	FleetLessonSharing bool `protobuf:"varint,15,opt,name=fleet_lesson_sharing,json=fleetLessonSharing,proto3" json:"fleet_lesson_sharing,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GraphMemoryConfig) Reset() {
@@ -1285,6 +1292,13 @@ func (x *GraphMemoryConfig) GetExtractionWindowMessages() int32 {
 		return x.ExtractionWindowMessages
 	}
 	return 0
+}
+
+func (x *GraphMemoryConfig) GetFleetLessonSharing() bool {
+	if x != nil {
+		return x.FleetLessonSharing
+	}
+	return false
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
@@ -2199,7 +2213,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
 	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\x127\n" +
 	"\n" +
-	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\xc7\x05\n" +
+	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\xf9\x05\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2216,7 +2230,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\x12F\n" +
 	"\x1fconversation_extraction_cadence\x18\f \x01(\x05R\x1dconversationExtractionCadence\x12<\n" +
 	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\x12<\n" +
-	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\"\x94\x02\n" +
+	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\x120\n" +
+	"\x14fleet_lesson_sharing\x18\x0f \x01(\bR\x12fleetLessonSharing\"\x94\x02\n" +
 	"\x0fTaskBoardConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eauto_decompose\x18\x02 \x01(\bR\rautoDecompose\x12\x1b\n" +

@@ -65,13 +65,24 @@ type minedEvent struct {
 // maxLedgerEvents caps a session's mining ledger.
 const maxLedgerEvents = 300
 
-// fleetLessonAgentID is the shared partition verified lessons live in.
-// Method knowledge is the one memory class that is inherently shareable:
-// pass-7 measurement showed correct lessons minted into per-agent scopes
-// were structurally invisible to 9 of 12 fleet agents and never recalled
-// even by their owners (drowned by same-vocabulary echo memories). Lessons
-// are stored HERE and surfaced by a dedicated recall lane.
+// fleetLessonAgentID is the shared partition verified lessons live in when
+// fleet_lesson_sharing is enabled. Method knowledge is the one memory class
+// that is inherently shareable: pass-7 measurement showed correct lessons
+// minted into per-agent scopes were structurally invisible to 9 of 12 fleet
+// agents. Sharing is opt-in (GraphMemoryConfig.fleet_lesson_sharing): a
+// shared partition means one agent's mining shapes every agent's context,
+// which is a policy decision the operator has to make, not a default.
 const fleetLessonAgentID = "__fleet_lessons__"
+
+// lessonPartition returns the graph-memory agent ID lessons are stored under
+// and recalled from: the shared fleet partition when sharing is opted in,
+// otherwise the agent's own partition (private lessons).
+func (a *Agent) lessonPartition() string {
+	if a.graphMemoryConfig != nil && a.graphMemoryConfig.GetFleetLessonSharing() {
+		return fleetLessonAgentID
+	}
+	return a.config.Name
+}
 
 // maxFleetLessons caps the dedicated lesson lane in the injected context.
 const maxFleetLessons = 5
@@ -278,19 +289,22 @@ Return ONLY a JSON object:
 }
 
 // fleetLessons returns up to maxFleetLessons verified lessons matching the
-// query from the shared partition. A dedicated lane, deliberately outside
-// the echo-memory ranking and the rerank stage: lessons are verified by
-// construction (ledger-mined from observed error→fix transitions), so they
-// earn context space on relevance alone.
+// query from the lesson partition (fleet-shared when opted in, otherwise the
+// agent's own). A dedicated lane, deliberately outside the echo-memory
+// ranking and the rerank stage: lessons are verified by construction
+// (ledger-mined from observed error→fix transitions), so they earn context
+// space on relevance alone. The MemoryType filter keeps the private-mode
+// query from pulling ordinary memories out of the agent's own partition.
 func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int) []*memory.Memory {
 	if a.graphMemoryStore == nil {
 		return nil
 	}
 	lessons, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-		AgentID:   fleetLessonAgentID,
-		Query:     searchQuery,
-		Limit:     maxFleetLessons,
-		MaxTokens: budget,
+		AgentID:    a.lessonPartition(),
+		Query:      searchQuery,
+		MemoryType: memory.MemoryTypeLesson,
+		Limit:      maxFleetLessons,
+		MaxTokens:  budget,
 	})
 	if err != nil {
 		return nil
@@ -348,7 +362,7 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 			salience = lessonSalienceFloor
 		}
 		mem := &memory.Memory{
-			AgentID:       fleetLessonAgentID,
+			AgentID:       a.lessonPartition(),
 			Content:       m.Content,
 			Summary:       m.Summary,
 			MemoryType:    memory.MemoryTypeLesson,
