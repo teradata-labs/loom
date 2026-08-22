@@ -621,7 +621,7 @@ func TestAdaptMCPTools_PreservesUIMetadata(t *testing.T) {
 }
 
 // =============================================================================
-// Tests for toSnakeCase, toCamelCase, normalizeParametersToCamelCase,
+// Tests for toSnakeCase, buildParamNameMap, restoreParameterNames,
 // detectAndExtractSQLResult, and Execute integration scenarios
 // =============================================================================
 
@@ -654,109 +654,121 @@ func TestToSnakeCase(t *testing.T) {
 	}
 }
 
-func TestToCamelCase(t *testing.T) {
+func TestBuildParamNameMap(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
-		expected string
+		schema   map[string]interface{}
+		expected map[string]string
 	}{
-		{"snake_case basic", "database_name", "databaseName"},
-		{"single word", "single", "single"},
-		{"three parts", "a_b_c", "aBC"},
-		{"empty string", "", ""},
-		{"two word snake", "already_camel", "alreadyCamel"},
-		{"double underscore", "with__double", "withDouble"},
-		{"trailing underscore", "trailing_", "trailing"},
-		{"leading underscore", "_leading", "Leading"},
-		{"three word snake", "my_table_name", "myTableName"},
-		{"all single chars", "x_y_z", "xYZ"},
-		{"no underscore passthrough", "nounderscores", "nounderscores"},
+		{
+			name:     "nil schema",
+			schema:   nil,
+			expected: nil,
+		},
+		{
+			name:     "no properties key",
+			schema:   map[string]interface{}{"type": "object"},
+			expected: nil,
+		},
+		{
+			name: "snake_case schema is identity (nil map)",
+			schema: map[string]interface{}{
+				"properties": map[string]interface{}{
+					"table_name": map[string]interface{}{"type": "string"},
+					"database":   map[string]interface{}{"type": "string"},
+				},
+			},
+			expected: nil,
+		},
+		{
+			name: "camelCase schema maps back to original names",
+			schema: map[string]interface{}{
+				"properties": map[string]interface{}{
+					"databaseName": map[string]interface{}{"type": "string"},
+					"maxRows":      map[string]interface{}{"type": "integer"},
+					"sql":          map[string]interface{}{"type": "string"},
+				},
+			},
+			expected: map[string]string{
+				"database_name": "databaseName",
+				"max_rows":      "maxRows",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := toCamelCase(tt.input)
+			result := buildParamNameMap(tt.schema)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestNormalizeParametersToCamelCase(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    map[string]interface{}
-		expected map[string]interface{}
-	}{
-		{
-			name:     "nil input",
-			input:    nil,
-			expected: nil,
+func TestRestoreParameterNames(t *testing.T) {
+	camelTool := protocol.Tool{Name: "t", InputSchema: map[string]interface{}{
+		"properties": map[string]interface{}{
+			"databaseName": map[string]interface{}{"type": "string"},
+			"sql":          map[string]interface{}{"type": "string"},
 		},
-		{
-			name:     "empty map",
-			input:    map[string]interface{}{},
-			expected: map[string]interface{}{},
+	}}
+	snakeTool := protocol.Tool{Name: "t", InputSchema: map[string]interface{}{
+		"properties": map[string]interface{}{
+			"table_name":     map[string]interface{}{"type": "string"},
+			"session_handle": map[string]interface{}{"type": "string"},
 		},
-		{
-			name: "snake_case keys converted",
-			input: map[string]interface{}{
-				"database_name": "test_db",
-				"table_name":    "users",
-			},
-			expected: map[string]interface{}{
-				"databaseName": "test_db",
-				"tableName":    "users",
-			},
-		},
-		{
-			name: "already camelCase passes through",
-			input: map[string]interface{}{
-				"databaseName": "test_db",
-				"tableName":    "users",
-			},
-			expected: map[string]interface{}{
-				"databaseName": "test_db",
-				"tableName":    "users",
-			},
-		},
-		{
-			name: "mixed keys",
-			input: map[string]interface{}{
-				"database_name": "mydb",
-				"limit":         10,
-				"include_meta":  true,
-			},
-			expected: map[string]interface{}{
-				"databaseName": "mydb",
-				"limit":        10,
-				"includeMeta":  true,
-			},
-		},
-		{
-			name: "values preserved including nested structures",
-			input: map[string]interface{}{
-				"filter_config": map[string]interface{}{
-					"inner_key": "value",
-				},
-			},
-			expected: map[string]interface{}{
-				"filterConfig": map[string]interface{}{
-					"inner_key": "value", // only top-level keys are converted
-				},
-			},
-		},
-	}
+	}}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := normalizeParametersToCamelCase(tt.input)
-			if tt.expected == nil {
-				assert.Nil(t, result)
-			} else {
-				assert.Equal(t, tt.expected, result)
-			}
+	t.Run("camelCase server gets original names restored", func(t *testing.T) {
+		a := NewMCPToolAdapter(nil, camelTool, "s")
+		out := a.restoreParameterNames(map[string]interface{}{
+			"database_name": "demo",
+			"sql":           "SELECT 1",
 		})
-	}
+		assert.Equal(t, map[string]interface{}{"databaseName": "demo", "sql": "SELECT 1"}, out)
+	})
+
+	t.Run("colliding property names are never guessed", func(t *testing.T) {
+		// tableName and table_name both present as table_name; renaming would
+		// be a nondeterministic guess between two real schema properties, so
+		// the ambiguous name must pass through unchanged — deterministically.
+		collidingTool := protocol.Tool{Name: "t", InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"tableName":  map[string]interface{}{"type": "string"},
+				"table_name": map[string]interface{}{"type": "string"},
+				"rowCount":   map[string]interface{}{"type": "integer"},
+			},
+		}}
+		a := NewMCPToolAdapter(nil, collidingTool, "s")
+		out := a.restoreParameterNames(map[string]interface{}{
+			"table_name": "t1",
+			"row_count":  3,
+		})
+		assert.Equal(t, "t1", out["table_name"], "ambiguous name must not be renamed")
+		assert.NotContains(t, out, "tableName")
+		assert.Equal(t, 3, out["rowCount"], "unambiguous sibling still restores")
+	})
+
+	t.Run("snake_case server params pass through untouched (issue #339)", func(t *testing.T) {
+		a := NewMCPToolAdapter(nil, snakeTool, "s")
+		params := map[string]interface{}{
+			"table_name":     "titanic",
+			"session_handle": "tdsh_abc",
+		}
+		out := a.restoreParameterNames(params)
+		assert.Equal(t, params, out)
+	})
+
+	t.Run("unknown keys pass through unchanged", func(t *testing.T) {
+		a := NewMCPToolAdapter(nil, camelTool, "s")
+		out := a.restoreParameterNames(map[string]interface{}{"not_in_schema": 1})
+		assert.Equal(t, map[string]interface{}{"not_in_schema": 1}, out)
+	})
+
+	t.Run("nil params stay nil", func(t *testing.T) {
+		a := NewMCPToolAdapter(nil, camelTool, "s")
+		assert.Nil(t, a.restoreParameterNames(nil))
+	})
 }
 
 // =============================================================================
@@ -912,31 +924,29 @@ func TestInputSchema_CamelCaseToSnakeCase_Conversion(t *testing.T) {
 	assert.Contains(t, schema.Required, "table_name")
 }
 
-func TestNormalizeParametersToCamelCase_RoundTrip(t *testing.T) {
-	// Test the round-trip: camelCase -> snake_case (InputSchema) -> camelCase (normalizeParametersToCamelCase)
-	// This validates that the LLM sees snake_case but the MCP server receives camelCase
-	originalKeys := []string{"databaseName", "tableName", "maxRows"}
+func TestParamNameRoundTrip(t *testing.T) {
+	// Round-trip for a camelCase server: schema names -> snake_case
+	// (InputSchema) -> LLM params -> original names (restoreParameterNames).
+	tool := protocol.Tool{Name: "t", InputSchema: map[string]interface{}{
+		"properties": map[string]interface{}{
+			"databaseName": map[string]interface{}{"type": "string"},
+			"tableName":    map[string]interface{}{"type": "string"},
+			"maxRows":      map[string]interface{}{"type": "integer"},
+		},
+	}}
+	a := NewMCPToolAdapter(nil, tool, "s")
 
-	// Step 1: Convert to snake_case (what InputSchema does)
-	snakeKeys := make([]string, len(originalKeys))
-	for i, k := range originalKeys {
-		snakeKeys[i] = toSnakeCase(k)
-	}
-	assert.Equal(t, []string{"database_name", "table_name", "max_rows"}, snakeKeys)
-
-	// Step 2: Build params map as the LLM would (snake_case)
+	// The LLM sees snake_case and sends snake_case.
 	params := map[string]interface{}{
 		"database_name": "mydb",
 		"table_name":    "users",
 		"max_rows":      100,
 	}
 
-	// Step 3: Normalize back to camelCase (what Execute does)
-	normalized := normalizeParametersToCamelCase(params)
-
-	assert.Equal(t, "mydb", normalized["databaseName"])
-	assert.Equal(t, "users", normalized["tableName"])
-	assert.Equal(t, 100, normalized["maxRows"])
+	restored := a.restoreParameterNames(params)
+	assert.Equal(t, "mydb", restored["databaseName"])
+	assert.Equal(t, "users", restored["tableName"])
+	assert.Equal(t, 100, restored["maxRows"])
 }
 
 // =============================================================================
@@ -967,10 +977,9 @@ func TestExecute_SchemaToolCacheHit_ReturnsEarly(t *testing.T) {
 		"table_name":    "users",
 	}
 
-	// Pre-populate the cache with what Execute would store
-	// normalizeParametersToCamelCase converts the keys
-	camelParams := normalizeParametersToCamelCase(params)
-	cacheKey := adapter.buildSchemaCacheKey(camelParams)
+	// Pre-populate the cache with what Execute would store: the key is
+	// built from the restored (server-name) parameters.
+	cacheKey := adapter.buildSchemaCacheKey(adapter.restoreParameterNames(params))
 	globalSchemaCache.set(cacheKey, "CREATE TABLE users (id INT)")
 
 	// Execute should return cached result without calling the client
@@ -1021,9 +1030,9 @@ func TestExecute_ParameterNormalization(t *testing.T) {
 		"table_name":    "users",
 	}
 
-	// Build the cache key using camelCase (what Execute internally does)
-	camelParams := normalizeParametersToCamelCase(snakeParams)
-	cacheKey := adapter.buildSchemaCacheKey(camelParams)
+	// Build the cache key from the restored parameter names (what Execute
+	// internally does; identity here — the tool declares no schema)
+	cacheKey := adapter.buildSchemaCacheKey(adapter.restoreParameterNames(snakeParams))
 
 	// Pre-populate cache
 	globalSchemaCache.set(cacheKey, "schema result")

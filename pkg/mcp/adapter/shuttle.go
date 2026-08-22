@@ -91,15 +91,23 @@ type MCPToolAdapter struct {
 	serverName    string      // Used as backend identifier
 	uiResourceURI string      // From tool._meta.ui.resourceUri (MCP Apps)
 	logger        *zap.Logger // Structured logger (defaults to no-op)
+
+	// paramNameMap maps the LLM-visible property name (snake_case, as
+	// presented by InputSchema) back to the server's ORIGINAL property name
+	// from the tool's own schema. Execute renames via this map only — a key
+	// with no entry passes through unchanged, so the adapter never invents a
+	// casing the server's schema doesn't contain (issue #339).
+	paramNameMap map[string]string
 }
 
 // NewMCPToolAdapter creates a new adapter that wraps an MCP tool
 func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName string) *MCPToolAdapter {
 	adapter := &MCPToolAdapter{
-		client:     client,
-		tool:       tool,
-		serverName: serverName,
-		logger:     zap.NewNop(), // No-op by default; use SetLogger to enable
+		client:       client,
+		tool:         tool,
+		serverName:   serverName,
+		logger:       zap.NewNop(), // No-op by default; use SetLogger to enable
+		paramNameMap: buildParamNameMap(tool.InputSchema),
 	}
 
 	// Extract UI metadata from tool._meta.ui if present (MCP Apps)
@@ -108,6 +116,60 @@ func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName str
 	}
 
 	return adapter
+}
+
+// buildParamNameMap derives the snake_case → original-name mapping from the
+// tool's input schema, recording only entries where the LLM-visible name
+// differs from the server's. For a snake_case schema the map is empty
+// (identity); for a camelCase schema it restores the original names exactly.
+func buildParamNameMap(inputSchema map[string]interface{}) map[string]string {
+	props, ok := inputSchema["properties"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	m := make(map[string]string)
+	ambiguous := map[string]bool{}
+	for original := range props {
+		visible := toSnakeCase(original)
+		if visible == original {
+			// An identity property claims its own name: a differently-cased
+			// sibling that collapses to it must not shadow it.
+			ambiguous[visible] = true
+			delete(m, visible)
+			continue
+		}
+		if _, taken := m[visible]; taken || ambiguous[visible] {
+			// Two original properties collapse to one visible name
+			// (e.g. tableName + table_name). Renaming would be a
+			// nondeterministic guess; ambiguous names pass through as-is.
+			ambiguous[visible] = true
+			delete(m, visible)
+			continue
+		}
+		m[visible] = original
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// restoreParameterNames renames each parameter from its LLM-visible name back
+// to the server's original schema property name via paramNameMap. Keys without
+// a mapping pass through unchanged.
+func (a *MCPToolAdapter) restoreParameterNames(params map[string]interface{}) map[string]interface{} {
+	if params == nil || len(a.paramNameMap) == 0 {
+		return params
+	}
+	restored := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		if original, ok := a.paramNameMap[key]; ok {
+			restored[original] = value
+		} else {
+			restored[key] = value
+		}
+	}
+	return restored
 }
 
 // SetLogger configures the structured logger for this adapter.
@@ -194,13 +256,17 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	startTime := time.Now()
 
-	// Convert parameter names from snake_case back to camelCase for MCP tools
-	// LLMs naturally use snake_case but MCP tools expect camelCase
-	camelCaseParams := normalizeParametersToCamelCase(params)
+	// Restore the server's original parameter names. InputSchema presents
+	// properties to the LLM in snake_case; this maps each name back to the
+	// exact property name in the tool's schema. A blind snake→camel
+	// conversion here corrupted calls to snake_case servers (issue #339):
+	// "table_name" became "tableName", which strict servers reject and
+	// lenient servers silently drop.
+	restoredParams := a.restoreParameterNames(params)
 
 	// Check schema cache for schema-related tools (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
-		cacheKey := a.buildSchemaCacheKey(camelCaseParams)
+		cacheKey := a.buildSchemaCacheKey(restoredParams)
 		if cached, ok := globalSchemaCache.get(cacheKey); ok {
 			return &shuttle.Result{
 				Success:         true,
@@ -217,7 +283,7 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	}
 
 	// Call MCP tool with camelCase parameters
-	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, camelCaseParams)
+	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, restoredParams)
 	executionTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
@@ -255,7 +321,7 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
-		cacheKey := a.buildSchemaCacheKey(camelCaseParams)
+		cacheKey := a.buildSchemaCacheKey(restoredParams)
 		if str, ok := data.(string); ok {
 			globalSchemaCache.set(cacheKey, str)
 		}
@@ -418,37 +484,4 @@ func toSnakeCase(s string) string {
 		}
 	}
 	return result.String()
-}
-
-// toCamelCase converts a snake_case string to camelCase.
-// Example: "database_name" -> "databaseName"
-func toCamelCase(s string) string {
-	parts := strings.Split(s, "_")
-	if len(parts) == 1 {
-		return s // Already camelCase or single word
-	}
-
-	var result strings.Builder
-	result.WriteString(parts[0]) // First part stays lowercase
-	for i := 1; i < len(parts); i++ {
-		if len(parts[i]) > 0 {
-			result.WriteRune(unicode.ToUpper(rune(parts[i][0])))
-			result.WriteString(parts[i][1:])
-		}
-	}
-	return result.String()
-}
-
-// normalizeParametersToCamelCase converts all parameter keys in a map from snake_case to camelCase.
-// This restores the original parameter names expected by MCP tools.
-func normalizeParametersToCamelCase(params map[string]interface{}) map[string]interface{} {
-	if params == nil {
-		return nil
-	}
-
-	normalized := make(map[string]interface{}, len(params))
-	for key, value := range params {
-		normalized[toCamelCase(key)] = value
-	}
-	return normalized
 }
