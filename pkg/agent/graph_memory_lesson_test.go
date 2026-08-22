@@ -40,4 +40,15 @@ func TestExtractionPromptHasLessonLane(t *testing.T) {
 		"schema enum must include lesson")
 	// User-fact lane preserved.
 	assert.True(t, strings.Contains(p, "USER FACTS"))
+	// Verification gate: unverified beliefs must never become lessons (a
+	// ladder pass measured misdiagnoses outnumbering correct lessons 7:1
+	// without it).
+	assert.Contains(t, p, "VERIFICATION GATE")
+	assert.Contains(t, p, "NOT a lesson")
+}
+
+// The lesson type must survive ingestion instead of coercing to fact.
+func TestLessonTypeIsValid(t *testing.T) {
+	assert.True(t, isValidMemoryType("lesson"))
+	assert.False(t, isValidMemoryType("hunch"))
 }
