@@ -14,6 +14,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -83,6 +84,55 @@ func TestMineLessonPairsOnePerClass(t *testing.T) {
 	require.Len(t, pairs, 1)
 	assert.Contains(t, pairs[0].ErrorText, "attempt 1", "earliest failure wins")
 	assert.Contains(t, pairs[0].SucceedsIn, "SELECT z FROM", "first success after failure wins")
+}
+
+// The trap's real shape: the INSERT fails, the fix happens in OTHER
+// statements (DROP + re-CREATE with BIGINT), then the identical INSERT
+// succeeds. The pair must carry those intervening calls — without them the
+// diff is empty and the miner is blind to cross-statement fixes.
+func TestMineLessonPairsCrossStatementFix(t *testing.T) {
+	ins := "INSERT INTO vt_card_day SELECT CC_Number FROM t"
+	msgs := []types.Message{
+		callMsg("1", "execute_statement", ins),
+		resultMsg("1", false, "[Error 2616] Numeric overflow occurred during computation."),
+		callMsg("2", "execute_statement", "DROP TABLE vt_card_day"),
+		resultMsg("2", true, ""),
+		callMsg("3", "execute_statement", "CREATE VOLATILE TABLE vt_card_day (card_id BIGINT, txns INTEGER, amt DECIMAL(14,2)) ON COMMIT PRESERVE ROWS"),
+		resultMsg("3", true, ""),
+		callMsg("4", "execute_statement", ins),
+		resultMsg("4", true, ""),
+	}
+	pairs := mineLessonPairs(msgs)
+	require.Len(t, pairs, 1)
+	assert.Equal(t, pairs[0].FailingIn, pairs[0].SucceedsIn, "identical inputs — the fix is elsewhere")
+	require.NotEmpty(t, pairs[0].Intervening)
+	joined := strings.Join(pairs[0].Intervening, " ")
+	assert.Contains(t, joined, "BIGINT", "the re-CREATE carrying the fix must be visible")
+
+	prompt := buildLessonMiningPrompt(pairs)
+	assert.Contains(t, prompt, "CALL BETWEEN FAILURE AND SUCCESS")
+	assert.Contains(t, prompt, "name THAT change")
+}
+
+// Intervening calls cap at the most recent few — the fix is adjacent to
+// the success.
+func TestMineLessonPairsInterveningCap(t *testing.T) {
+	msgs := []types.Message{
+		callMsg("1", "execute_statement", "INSERT INTO vt_a SELECT x FROM t"),
+		resultMsg("1", false, "boom"),
+	}
+	for i := 0; i < 6; i++ {
+		id := string(rune('a' + i))
+		msgs = append(msgs,
+			callMsg(id, "execute_query", "SELECT probe"+id+" FROM other"+id),
+			resultMsg(id, true, ""))
+	}
+	msgs = append(msgs,
+		callMsg("9", "execute_statement", "INSERT INTO vt_a SELECT y FROM t"),
+		resultMsg("9", true, ""))
+	pairs := mineLessonPairs(msgs)
+	require.Len(t, pairs, 1)
+	assert.LessOrEqual(t, len(pairs[0].Intervening), maxInterveningCalls)
 }
 
 func TestSQLClass(t *testing.T) {
