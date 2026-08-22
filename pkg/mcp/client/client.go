@@ -41,6 +41,7 @@ type Client struct {
 	protocolVersion    string
 	serverInfo         protocol.Implementation
 	serverCapabilities protocol.ServerCapabilities
+	instructions       string
 
 	// Negotiated revision state (see connect.go). statelessMode is true when
 	// the server speaks a 2026-07-28+ revision; requests then carry protocol
@@ -269,6 +270,7 @@ func (c *Client) initializeWithVersion(ctx context.Context, clientInfo protocol.
 	c.protocolVersion = result.ProtocolVersion
 	c.serverInfo = result.ServerInfo
 	c.serverCapabilities = result.Capabilities
+	c.instructions = result.Instructions
 	c.mu.Unlock()
 
 	c.logger.Info("MCP client initialized",
@@ -341,6 +343,15 @@ func (c *Client) ServerCapabilities() protocol.ServerCapabilities {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.serverCapabilities
+}
+
+// Instructions returns the server-level usage guidance the server sent in
+// InitializeResult.instructions — the spec's channel for a server to tell the
+// model how to use its tools. Empty when the server sent none.
+func (c *Client) Instructions() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.instructions
 }
 
 // IsInitialized returns whether the client is initialized

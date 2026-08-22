@@ -139,6 +139,11 @@ type Agent struct {
 	// MCP client tracking for cleanup (lazy initialized)
 	mcpClients map[string]MCPClientRef
 
+	// Server-level usage guidance from MCP servers whose tools this agent
+	// registered (InitializeResult.instructions), keyed by server name.
+	// Rendered into the system prompt by mcpInstructionsPromptSupplement.
+	mcpServerInstructions map[string]string
+
 	// Dynamic tool discovery for MCP servers (lazy tool loading)
 	dynamicDiscovery *DynamicToolDiscovery
 
