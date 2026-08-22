@@ -87,12 +87,24 @@ and the item must be skipped. Judgment stays with the mining LLM, which
 makes it endpoint-agnostic: it reads any payload text the way a reviewer
 would, instead of `pkg/agent` parsing one server's result schema.
 
-Deliberately NOT built (yet): a mechanical vacuous-success detector. The
-exact JSON keys (`activity_count`, `row_count`, `rows`) are one MCP
-server's conventions; hardcoding them into the framework trades a general
-gap for a hidden coupling. If model judgment proves insufficient, the
-mechanical layer should arrive as a pluggable per-backend detector seam,
-with the JSON-shape detector as its first implementation.
+Judgment is tri-layer, endpoint-agnostic by construction:
+
+1. **Tool-supplied** (`shuttle.VacuousResultJudge`, optional interface):
+   exact knowledge stays with the endpoint's own adapter; a judging tool
+   wins over everything below.
+2. **Convention matcher** (`shuttle.ConventionVacuousResult`): recognizes
+   the row-count / affected-rows / row-array conventions shared across
+   SQL-ish tools in any spelling (`row_count`/`rowCount`,
+   `activity_count`/`rowsAffected`/`affected_rows`, `rows`/`records`),
+   applies the zero-activity rule only to row-moving SQL verbs (DDL acks
+   with 0 activity are normal), and ABSTAINS on anything it cannot
+   positively identify. Conventions, never one server's schema.
+3. **Model judgment** (the result preview above): covers whatever the
+   mechanical layers abstain on — prose payloads, unknown shapes.
+
+Mechanical verdicts feed BOTH sides: a vacuous success cannot close a
+mining pair (no lesson minted) and cannot score an outcome-credit recovery
+(the win the measured poison would otherwise have earned).
 
 ## What this does not do (yet)
 
@@ -103,7 +115,6 @@ with the JSON-shape detector as its first implementation.
   claim is only that repeated injection into failing recoveries is evidence
   against a lesson, and repeated presence in successful recoveries is weak
   evidence for it.
-- Outcome credit still counts a vacuous success as a recovery (a win): the
-  mechanical credit pass has no result-shape judgment. Fix C only guards the
-  minting side; credit-side vacuous detection needs the pluggable detector
-  seam above.
+- Credit-side vacuous detection is mechanical-only (layers 1–2): a vacuous
+  success that only the model layer could catch (prose payload) still
+  scores as a recovery, since credit runs without an LLM call.

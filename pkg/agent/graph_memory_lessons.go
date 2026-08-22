@@ -72,10 +72,34 @@ type minedEvent struct {
 	// success is not task-level progress. Measured: a date-filter "fix"
 	// that silenced the parse error by matching ZERO rows was mined as a
 	// verified lesson, propagated fleet-wide, and produced entire waves
-	// confidently reporting "0 cards, NULL total, no errors". Result
-	// judgment stays with the mining LLM (endpoint-agnostic: any payload
-	// text) rather than parsing any one server's result schema here.
+	// confidently reporting "0 cards, NULL total, no errors".
 	resultPreview string
+	// vacuous marks a success mechanically judged to have done no work.
+	// Judgment is tri-layer and endpoint-agnostic: the tool's own
+	// VacuousResultJudge (exact, per-endpoint) wins; the shuttle
+	// convention matcher (recognizes common structured shapes, abstains
+	// otherwise) is the default; whatever both abstain on falls through
+	// to the mining LLM's result-preview judgment. A vacuous success can
+	// neither close a lesson pair nor score outcome-credit recovery.
+	vacuous bool
+}
+
+// judgeVacuous runs the mechanical layers of vacuous-success judgment for a
+// successful call: the tool's own judge when it implements one, else the
+// shuttle convention matcher. Abstention means not vacuous here — the model
+// layer (result preview in the mining prompt) covers the remainder.
+func (a *Agent) judgeVacuous(tc types.ToolCall, result *shuttle.Result) bool {
+	if a.tools != nil {
+		if tool, ok := a.tools.Get(tc.Name); ok {
+			if judge, isJudge := tool.(shuttle.VacuousResultJudge); isJudge {
+				if vacuous, judged := judge.VacuousSuccess(tc.Input, result); judged {
+					return vacuous
+				}
+			}
+		}
+	}
+	vacuous, judged := shuttle.ConventionVacuousResult(tc.Input, result)
+	return judged && vacuous
 }
 
 // maxLedgerEvents caps a session's mining ledger.
@@ -276,6 +300,7 @@ func (a *Agent) recordToolLedger(sessionID string, tc types.ToolCall, result *sh
 		if data, isStr := result.Data.(string); isStr {
 			ev.resultPreview = truncate(data, lessonResultPreview)
 		}
+		ev.vacuous = a.judgeVacuous(tc, result)
 	}
 	if result.Error != nil {
 		ev.errText = truncate(result.Error.Message, lessonErrorPreview)
@@ -480,11 +505,17 @@ func pairEvents(events []minedEvent) []lessonPair {
 		if !have || emitted[ev.key] {
 			continue
 		}
+		// A vacuous success (mechanically judged to have done no work)
+		// cannot close a pair: an error silenced by matching nothing is
+		// not a fix, and mining it teaches the fleet confident emptiness.
+		if ev.vacuous {
+			continue
+		}
 		emitted[ev.key] = true
 		var between []string
 		var betweenIdx []int
 		for k := fi + 1; k < i; k++ {
-			if events[k].ok {
+			if events[k].ok && !events[k].vacuous {
 				between = append(between, events[k].input)
 				betweenIdx = append(betweenIdx, k)
 			}
@@ -747,7 +778,9 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 		}
 		recovered := false
 		for _, ev := range events[idx:] {
-			if ev.ok && failedBefore[ev.key] {
+			// A vacuous success is not a recovery — silencing the error by
+			// doing no work must not score a win for the injected lesson.
+			if ev.ok && !ev.vacuous && failedBefore[ev.key] {
 				recovered = true
 				break
 			}

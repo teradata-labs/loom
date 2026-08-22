@@ -165,13 +165,11 @@ func TestToolLedgerRecordAndTake(t *testing.T) {
 	assert.Empty(t, a.takeToolLedger("s1"), "take consumes")
 }
 
-// The vacuous-success poison scenario, endpoint-agnostic form: the miner is
-// shown what the "fix" actually returned and instructed to skip work-free
-// successes. Measured motivation: a date-filter change that silenced the
-// parse error by matching zero rows ({"activity_count":0}) was mined as a
-// verified lesson and taught the whole fleet to report confident empty
-// answers.
-func TestLessonMiningPromptShowsResultAndSkipRule(t *testing.T) {
+// The measured poison scenario, mechanical layer: a date-filter "fix" whose
+// INSERT succeeded with activity_count 0 (it inserted NOTHING) must not
+// close a pair — no lesson gets minted from an error silenced by matching
+// no rows.
+func TestVacuousSuccessBlocksPairing(t *testing.T) {
 	a := &Agent{enableGraphMemoryExtraction: true}
 	tc := types.ToolCall{ID: "1", Name: "execute_statement",
 		Input: map[string]interface{}{"sql": "INSERT INTO vt SELECT ... WHERE CAST(TrxDateTime AS DATE) = DATE '2004-07-15'"}}
@@ -182,13 +180,62 @@ func TestLessonMiningPromptShowsResultAndSkipRule(t *testing.T) {
 	a.recordToolLedger("s2", tcFixed, &shuttle.Result{Success: true,
 		Data: `{"activity_count":0,"status":"success"}`})
 
-	pairs := pairEvents(a.takeToolLedger("s2"))
+	events := a.takeToolLedger("s2")
+	assert.True(t, events[1].vacuous, "activity_count 0 on an INSERT must be judged vacuous")
+	assert.Empty(t, pairEvents(events), "a vacuous success must not close a pair")
+}
+
+// The model layer (Fix C): where mechanics abstain (prose result), the miner
+// is shown what the "fix" actually returned plus the skip rule.
+func TestLessonMiningPromptShowsResultAndSkipRule(t *testing.T) {
+	a := &Agent{enableGraphMemoryExtraction: true}
+	tc := types.ToolCall{ID: "1", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "INSERT INTO vt SELECT ... WHERE CAST(TrxDateTime AS DATE) = DATE '2004-07-15'"}}
+	a.recordToolLedger("s3", tc, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "db_error", Message: "[Error 2666] Invalid date supplied"}})
+	tcFixed := types.ToolCall{ID: "2", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "INSERT INTO vt SELECT ... WHERE SUBSTR(TrxDateTime,1,10) = '2004-07-15'"}}
+	// Prose payload: the convention matcher abstains, so the pair survives
+	// mechanically and the model layer is the guard under test.
+	a.recordToolLedger("s3", tcFixed, &shuttle.Result{Success: true,
+		Data: `Statement completed. 0 rows inserted.`})
+
+	pairs := pairEvents(a.takeToolLedger("s3"))
 	require.Len(t, pairs, 1)
 
 	prompt := buildLessonMiningPrompt(pairs)
-	assert.Contains(t, prompt, `SUCCEEDED RESULT: {"activity_count":0`,
-		"the miner must see that the fix did no work")
+	assert.Contains(t, prompt, "SUCCEEDED RESULT: Statement completed. 0 rows inserted.",
+		"the miner must see what the fix actually returned")
 	assert.Contains(t, prompt, "a success that did no work is NOT a fix")
+}
+
+// A tool implementing shuttle.VacuousResultJudge wins over the convention
+// matcher — exact endpoint knowledge stays with the endpoint's adapter.
+type vacuousJudgingTool struct {
+	shuttle.MockTool
+}
+
+func (v *vacuousJudgingTool) VacuousSuccess(_ map[string]interface{}, result *shuttle.Result) (bool, bool) {
+	data, _ := result.Data.(string)
+	// This tool knows its own schema: "outcome":"noop" means nothing happened
+	// (a shape no generic convention would recognize).
+	return strings.Contains(data, `"outcome":"noop"`), true
+}
+
+func TestToolJudgeOverridesConvention(t *testing.T) {
+	reg := shuttle.NewRegistry()
+	tool := &vacuousJudgingTool{MockTool: shuttle.MockTool{MockName: "custom_api"}}
+	reg.Register(tool)
+	a := &Agent{enableGraphMemoryExtraction: true, tools: reg}
+
+	tc := types.ToolCall{ID: "1", Name: "custom_api", Input: map[string]interface{}{}}
+	a.recordToolLedger("s4", tc, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "api_error", Message: "bad filter"}})
+	a.recordToolLedger("s4", tc, &shuttle.Result{Success: true, Data: `{"outcome":"noop"}`})
+
+	events := a.takeToolLedger("s4")
+	assert.True(t, events[1].vacuous, "the tool's own judge must be honored")
+	assert.Empty(t, pairEvents(events))
 }
 
 func TestToolLedgerConcurrent(t *testing.T) {
@@ -467,8 +514,15 @@ func TestApplyLessonCredit(t *testing.T) {
 		{key: "execute_statement:INSERT:VT", ok: false, errText: "overflow"},
 		{key: "execute_statement:INSERT:VT", ok: false, errText: "overflow"},
 	}
+	// A vacuous "recovery" (the error went away because the call did no
+	// work) must score exactly like no recovery at all.
+	vacuousRecovery := []minedEvent{
+		{key: "execute_statement:INSERT:VT", ok: false, errText: "invalid date"},
+		{key: "execute_statement:INSERT:VT", ok: true, vacuous: true},
+	}
 	// Four losing conversations sink the bad lesson below the floor.
-	for range [4]int{} {
+	a.applyLessonCredit(ctx, vacuousRecovery, map[string]int{lossID: 1})
+	for range [3]int{} {
 		a.applyLessonCredit(ctx, failForever, map[string]int{lossID: 1})
 	}
 
