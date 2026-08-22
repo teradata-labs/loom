@@ -2841,6 +2841,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Timestamp:  time.Now(),
 			}, false)
 
+			// Mining ledger (graph_memory_lessons.go): record the execution
+			// now, before compilation can evict this turn.
+			a.recordToolLedger(session.ID, toolCall, result)
+
 			// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 			// — the skill body belongs under the user-instruction slot, not the
 			// tool-result data slot), BUFFER it. Sidecars from an entire tool

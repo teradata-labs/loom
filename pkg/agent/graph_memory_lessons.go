@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -47,6 +48,71 @@ const (
 	// lessonSalienceFloor: a verified lesson is always high-salience.
 	lessonSalienceFloor = 0.8
 )
+
+// minedEvent is one tool execution as the miner sees it. Class key and
+// previews are computed AT EXECUTION TIME: the compiled message view evicts
+// old turns (measured: the long early overflow fight produced 3 lessons from
+// the board's most common error while short late skirmishes produced 55), so
+// the miner keeps its own ledger instead of trusting messages at the end.
+type minedEvent struct {
+	name    string
+	key     string
+	input   string
+	ok      bool
+	errText string
+}
+
+// maxLedgerEvents caps a session's mining ledger.
+const maxLedgerEvents = 300
+
+// recordToolLedger appends one execution to the session's mining ledger.
+// Called from the conversation loop when the tool result lands. Previews are
+// captured immediately — the params map can be mutated by later machinery.
+func (a *Agent) recordToolLedger(sessionID string, tc types.ToolCall, result *shuttle.Result) {
+	if !a.enableGraphMemoryExtraction || result == nil {
+		return
+	}
+	ev := minedEvent{
+		name:  tc.Name,
+		key:   eventClass(tc),
+		input: eventInputPreview(tc),
+		ok:    result.Success && result.Error == nil,
+	}
+	if result.Error != nil {
+		ev.errText = truncate(result.Error.Message, lessonErrorPreview)
+	}
+	a.toolLedgerMu.Lock()
+	if a.toolLedgers == nil {
+		a.toolLedgers = map[string][]minedEvent{}
+	}
+	if len(a.toolLedgers[sessionID]) < maxLedgerEvents {
+		a.toolLedgers[sessionID] = append(a.toolLedgers[sessionID], ev)
+	}
+	a.toolLedgerMu.Unlock()
+}
+
+// takeToolLedger removes and returns the session's ledger (mining consumes
+// it exactly once; sessions that never mine leak nothing past the map entry,
+// which take also clears).
+func (a *Agent) takeToolLedger(sessionID string) []minedEvent {
+	a.toolLedgerMu.Lock()
+	defer a.toolLedgerMu.Unlock()
+	evs := a.toolLedgers[sessionID]
+	delete(a.toolLedgers, sessionID)
+	return evs
+}
+
+func eventClass(tc types.ToolCall) string {
+	if sqlRaw, ok := tc.Input["sql"].(string); ok {
+		return tc.Name + ":" + sqlClass(sqlRaw)
+	}
+	return tc.Name
+}
+
+func eventInputPreview(tc types.ToolCall) string {
+	b, _ := json.Marshal(tc.Input)
+	return truncate(string(b), lessonInputPreview)
+}
 
 // lessonPair is one error→verified-fix transition from the tool ledger.
 type lessonPair struct {
@@ -73,29 +139,9 @@ const maxInterveningCalls = 3
 // tool; for SQL-bearing calls, same statement class — verb plus target).
 // One pair per kind: the first failure against the fix that finally worked.
 func mineLessonPairs(msgs []types.Message) []lessonPair {
-	type event struct {
-		tc      types.ToolCall
-		key     string
-		input   string
-		ok      bool
-		errText string
-	}
 	calls := map[string]types.ToolCall{} // ToolUseID → call
 	var order []string                   // preserve call order for ID-less results
-	var events []event
-
-	classOf := func(tc types.ToolCall) string {
-		if sqlRaw, ok := tc.Input["sql"].(string); ok {
-			return tc.Name + ":" + sqlClass(sqlRaw)
-		}
-		return tc.Name
-	}
-	inputPreview := func(tc types.ToolCall) string {
-		b, _ := json.Marshal(tc.Input)
-		return truncate(string(b), lessonInputPreview)
-	}
-
-	// Pass 1: pair calls with results, in conversation order.
+	var events []minedEvent
 	for _, m := range msgs {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
@@ -122,18 +168,21 @@ func mineLessonPairs(msgs []types.Message) []lessonPair {
 		if m.ToolResult.Error != nil {
 			errText = m.ToolResult.Error.Message
 		}
-		events = append(events, event{
-			tc:      tc,
-			key:     classOf(tc),
-			input:   inputPreview(tc),
+		events = append(events, minedEvent{
+			name:    tc.Name,
+			key:     eventClass(tc),
+			input:   eventInputPreview(tc),
 			ok:      m.ToolResult.Success && m.ToolResult.Error == nil,
 			errText: truncate(errText, lessonErrorPreview),
 		})
 	}
+	return pairEvents(events)
+}
 
-	// Pass 2: for each class, pair the earliest failure with the first later
-	// success, carrying the successful calls in between (the cross-statement
-	// fix path).
+// pairEvents pairs, per class, the earliest failure with the first later
+// success, carrying the successful calls in between (the cross-statement fix
+// path — e.g. a re-CREATE with a widened column type).
+func pairEvents(events []minedEvent) []lessonPair {
 	firstFailure := map[string]int{}
 	emitted := map[string]bool{}
 	var pairs []lessonPair
@@ -159,7 +208,7 @@ func mineLessonPairs(msgs []types.Message) []lessonPair {
 			between = between[len(between)-maxInterveningCalls:]
 		}
 		pairs = append(pairs, lessonPair{
-			Tool:        ev.tc.Name,
+			Tool:        ev.name,
 			FailingIn:   events[fi].input,
 			ErrorText:   events[fi].errText,
 			SucceedsIn:  ev.input,
@@ -224,11 +273,15 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
 		return
 	}
-	session, ok := a.memory.GetSession(sessionID)
-	if !ok || session == nil {
-		return
+	var pairs []lessonPair
+	if events := a.takeToolLedger(sessionID); len(events) > 0 {
+		pairs = pairEvents(events)
+	} else if session, ok := a.memory.GetSession(sessionID); ok && session != nil {
+		// Fallback (restored sessions, ledgerless paths): the compiled view.
+		// It under-reports long conversations — compilation evicts early
+		// turns — which is exactly why the ledger is primary.
+		pairs = mineLessonPairs(session.GetMessages())
 	}
-	pairs := mineLessonPairs(session.GetMessages())
 	if len(pairs) == 0 {
 		return
 	}

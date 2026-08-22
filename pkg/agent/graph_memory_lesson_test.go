@@ -135,6 +135,48 @@ func TestMineLessonPairsInterveningCap(t *testing.T) {
 	assert.LessOrEqual(t, len(pairs[0].Intervening), maxInterveningCalls)
 }
 
+// The execution-time ledger survives what the compiled view loses, and
+// take-consumes exactly once. Concurrency-safe (parallel tool execution).
+func TestToolLedgerRecordAndTake(t *testing.T) {
+	a := &Agent{enableGraphMemoryExtraction: true}
+	tc := types.ToolCall{ID: "1", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "INSERT INTO vt_a SELECT x FROM t"}}
+	a.recordToolLedger("s1", tc, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "db_error", Message: "[Error 2616] overflow"}})
+	tc2 := types.ToolCall{ID: "2", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "CREATE VOLATILE TABLE vt_a (card_id BIGINT)"}}
+	a.recordToolLedger("s1", tc2, &shuttle.Result{Success: true})
+	a.recordToolLedger("s1", tc, &shuttle.Result{Success: true})
+
+	events := a.takeToolLedger("s1")
+	require.Len(t, events, 3)
+	pairs := pairEvents(events)
+	require.Len(t, pairs, 1)
+	assert.Contains(t, pairs[0].ErrorText, "2616")
+	require.NotEmpty(t, pairs[0].Intervening)
+	assert.Contains(t, pairs[0].Intervening[0], "BIGINT")
+
+	assert.Empty(t, a.takeToolLedger("s1"), "take consumes")
+}
+
+func TestToolLedgerConcurrent(t *testing.T) {
+	a := &Agent{enableGraphMemoryExtraction: true}
+	done := make(chan struct{})
+	for g := 0; g < 8; g++ {
+		go func(g int) {
+			defer func() { done <- struct{}{} }()
+			for i := 0; i < 50; i++ {
+				a.recordToolLedger("s", types.ToolCall{Name: "t",
+					Input: map[string]interface{}{}}, &shuttle.Result{Success: true})
+			}
+		}(g)
+	}
+	for g := 0; g < 8; g++ {
+		<-done
+	}
+	assert.LessOrEqual(t, len(a.takeToolLedger("s")), maxLedgerEvents)
+}
+
 func TestSQLClass(t *testing.T) {
 	assert.Equal(t, "INSERT VT_CARD_DAY", sqlClass("insert into vt_card_day (a,b) select ..."))
 	assert.Equal(t, "CREATE VT_X", sqlClass("CREATE VOLATILE TABLE vt_x (a int)")) // keys on the actual table name
