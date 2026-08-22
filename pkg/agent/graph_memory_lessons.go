@@ -65,6 +65,17 @@ type minedEvent struct {
 // maxLedgerEvents caps a session's mining ledger.
 const maxLedgerEvents = 300
 
+// fleetLessonAgentID is the shared partition verified lessons live in.
+// Method knowledge is the one memory class that is inherently shareable:
+// pass-7 measurement showed correct lessons minted into per-agent scopes
+// were structurally invisible to 9 of 12 fleet agents and never recalled
+// even by their owners (drowned by same-vocabulary echo memories). Lessons
+// are stored HERE and surfaced by a dedicated recall lane.
+const fleetLessonAgentID = "__fleet_lessons__"
+
+// maxFleetLessons caps the dedicated lesson lane in the injected context.
+const maxFleetLessons = 5
+
 // recordToolLedger appends one execution to the session's mining ledger.
 // Called from the conversation loop when the tool result lands. Previews are
 // captured immediately — the params map can be mutated by later machinery.
@@ -266,6 +277,27 @@ Return ONLY a JSON object:
 	return sb.String()
 }
 
+// fleetLessons returns up to maxFleetLessons verified lessons matching the
+// query from the shared partition. A dedicated lane, deliberately outside
+// the echo-memory ranking and the rerank stage: lessons are verified by
+// construction (ledger-mined from observed error→fix transitions), so they
+// earn context space on relevance alone.
+func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int) []*memory.Memory {
+	if a.graphMemoryStore == nil {
+		return nil
+	}
+	lessons, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   fleetLessonAgentID,
+		Query:     searchQuery,
+		Limit:     maxFleetLessons,
+		MaxTokens: budget,
+	})
+	if err != nil {
+		return nil
+	}
+	return lessons
+}
+
 // extractLessonsAtEnd runs the ledger-grounded lesson pass over the finished
 // conversation. Fire-and-forget from the chat teardown via graphExtractionWG.
 func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
@@ -316,12 +348,12 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 			salience = lessonSalienceFloor
 		}
 		mem := &memory.Memory{
-			AgentID:       agentID,
+			AgentID:       fleetLessonAgentID,
 			Content:       m.Content,
 			Summary:       m.Summary,
 			MemoryType:    memory.MemoryTypeLesson,
 			Source:        "lesson_mined",
-			MemoryAgentID: agentID,
+			MemoryAgentID: agentID, // provenance: who verified it
 			Tags:          append(m.Tags, "lesson"),
 			Salience:      salience,
 		}

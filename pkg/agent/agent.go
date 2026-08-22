@@ -3302,14 +3302,28 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	// Dedicated lesson lane (PR #357): verified, fleet-shared working
+	// knowledge rides regardless of the echo-memory ranking above.
+	lessons := a.fleetLessons(ctx, searchQuery, budget)
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return
 	}
 	span.SetAttribute("recall.injected", len(relevant))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString("Verified lessons from prior work (each fix was observed to succeed):\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
