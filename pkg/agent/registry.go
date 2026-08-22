@@ -996,7 +996,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// Wrap the MCP manager to satisfy the shuttle.MCPManager interface
 		var mcpMgrAdapter shuttle.MCPManager
 		if r.mcpMgr != nil {
-			mcpMgrAdapter = &mcpManagerAdapter{mgr: r.mcpMgr}
+			mcpMgrAdapter = toolregistry.NewShuttleMCPManager(r.mcpMgr)
 		}
 		agent.SetToolRegistryForDynamicDiscovery(r.toolRegistry, mcpMgrAdapter)
 		r.logger.Debug("Enabled dynamic tool registration for agent",
@@ -2696,15 +2696,4 @@ func removeFile(path string) error {
 		return nil
 	}
 	return err
-}
-
-// mcpManagerAdapter adapts *manager.Manager to shuttle.MCPManager interface.
-// This is needed because manager.Manager.GetClient returns (*client.Client, error)
-// but the interface requires (interface{}, error) for generic handling.
-type mcpManagerAdapter struct {
-	mgr *manager.Manager
-}
-
-func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	return a.mgr.GetClient(serverName)
 }

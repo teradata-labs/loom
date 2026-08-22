@@ -1453,17 +1453,26 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Create MCP indexer if MCP manager is available
 		var indexers []toolregistry.Indexer
 		indexers = append(indexers, builtinIndexer)
+		// Search results only surface MCP tools whose server currently
+		// exists; with no manager, no MCP tool is servable at all (#334).
+		liveMCPServers := func() []string { return nil }
 		if mcpManager != nil {
-			mcpIndexer := toolregistry.NewMCPIndexer(mcpManager.GetManager(), tracer)
+			mgr := mcpManager.GetManager()
+			mcpIndexer := toolregistry.NewMCPIndexer(mgr, tracer)
 			indexers = append(indexers, mcpIndexer)
+			liveMCPServers = func() []string {
+				return enabledMCPServerNames(mgr, logger)
+			}
 		}
 
 		var err error
 		toolRegistry, err = toolregistry.New(toolregistry.Config{
-			DBPath:   toolDBPath,
-			LLM:      llmProvider,
-			Tracer:   tracer,
-			Indexers: indexers,
+			DBPath:         toolDBPath,
+			LLM:            llmProvider,
+			Tracer:         tracer,
+			Logger:         logger,
+			Indexers:       indexers,
+			LiveMCPServers: liveMCPServers,
 		})
 		if err != nil {
 			logger.Warn("Failed to create tool registry", zap.Error(err))
@@ -1478,6 +1487,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					zap.Int32("builtin_tools", resp.BuiltinCount),
 					zap.Int32("mcp_tools", resp.McpCount),
 					zap.Int32("total_tools", resp.TotalCount),
+					zap.Int32("pruned_stale_tools", resp.PrunedCount),
 					zap.Int64("duration_ms", resp.DurationMs))
 			}
 		}
@@ -2024,7 +2034,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					// Enable dynamic tool registration for discovered MCP tools
 					var mcpMgrAdapter shuttle.MCPManager
 					if mcpManager != nil {
-						mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+						mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 					}
 					ag.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 					logger.Info("    Enabled dynamic tool registration")
@@ -3270,7 +3280,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Enable dynamic tool registration for discovered MCP tools
 				var mcpMgrAdapter shuttle.MCPManager
 				if mcpManager != nil {
-					mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+					mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 				}
 				newAgent.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 				logger.Info("  Enabled dynamic tool registration")
@@ -3781,15 +3791,27 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 	}, nil
 }
 
-// mcpManagerAdapter adapts *manager.Manager to shuttle.MCPManager interface.
-// This is needed because manager.Manager.GetClient returns (*client.Client, error)
-// but the interface requires (interface{}, error) for generic handling.
-type mcpManagerAdapter struct {
-	mgr *manager.Manager
-}
-
-func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	return a.mgr.GetClient(serverName)
+// enabledMCPServerNames returns the names of the manager's servers that are
+// enabled in configuration, connected or not. Disabled servers are excluded:
+// their stale index rows would pass the search liveness filter, yet their
+// tools can never execute, so surfacing them only misleads agents (#334).
+// Skipped servers are logged so filtered-out tools stay traceable.
+func enabledMCPServerNames(mgr *manager.Manager, logger *zap.Logger) []string {
+	servers := mgr.ListServers()
+	names := make([]string, 0, len(servers))
+	var skipped []string
+	for _, s := range servers {
+		if !s.Enabled {
+			skipped = append(skipped, s.Name)
+			continue
+		}
+		names = append(names, s.Name)
+	}
+	if len(skipped) > 0 && logger != nil {
+		logger.Debug("Excluding disabled MCP servers from tool search",
+			zap.Strings("disabled_servers", skipped))
+	}
+	return names
 }
 
 // copyDir recursively copies a directory tree from src to dst.

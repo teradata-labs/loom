@@ -16,6 +16,7 @@ package shuttle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"go.uber.org/zap"
 )
 
 // ToolRegistry is an interface for dynamic tool discovery.
@@ -32,6 +34,20 @@ import (
 type ToolRegistry interface {
 	Search(ctx context.Context, req *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error)
 }
+
+// ToolEvictor is an optional extension of ToolRegistry: registries that
+// implement it get stale entries removed when dynamic registration proves
+// them dead (their MCP server no longer exists), so the same stale tool is
+// never served twice (issue #334).
+type ToolEvictor interface {
+	EvictTool(ctx context.Context, toolID string) error
+}
+
+// ErrMCPServerNotFound reports that an MCP tool's server does not exist —
+// not configured at all, as opposed to configured but temporarily
+// unreachable. MCPManager implementations wrap this sentinel so the executor
+// can evict the tool's index entry instead of retrying it forever.
+var ErrMCPServerNotFound = errors.New("MCP server not found")
 
 // MCPManager is an interface for getting MCP clients.
 // This avoids import cycles with pkg/mcp/manager.
@@ -57,6 +73,7 @@ type Executor struct {
 	toolRegistry        ToolRegistry                 // Tool registry for dynamic tool discovery
 	mcpManager          MCPManager                   // MCP manager for dynamic MCP tool registration
 	builtinToolProvider BuiltinToolProvider          // Builtin tool provider for dynamic builtin tool registration
+	logger              *zap.Logger                  // Structured logger; never nil (defaults to no-op)
 
 	// Metrics for large parameter optimization
 	largeParamStores      atomic.Int64 // Count of parameters stored
@@ -71,6 +88,15 @@ func NewExecutor(registry *Registry) *Executor {
 	return &Executor{
 		registry:  registry,
 		threshold: storage.DefaultSharedMemoryThreshold,
+		logger:    zap.NewNop(),
+	}
+}
+
+// SetLogger configures structured logging for executor housekeeping (e.g.
+// stale-index evictions that fail). A nil logger keeps the no-op default.
+func (e *Executor) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		e.logger = logger
 	}
 }
 
@@ -594,18 +620,28 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	resp, err := e.toolRegistry.Search(ctx, &loomv1.SearchToolsRequest{
 		Query:         toolName,
 		Mode:          loomv1.SearchMode_SEARCH_MODE_FAST, // Use fast mode for keyword match
-		MaxResults:    1,
+		MaxResults:    5,
 		IncludeSchema: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to search tool registry: %w", err)
 	}
 
-	if len(resp.Results) == 0 {
-		return nil, fmt.Errorf("tool not found in registry")
+	// The search is fuzzy (tokenized full-text match), but the caller asked
+	// for one specific tool by name: only an exact name match may be
+	// registered and executed. Without this guard, a request for a tool whose
+	// index entry is gone would silently execute whichever different tool
+	// happens to share tokens with the dead tool's name.
+	var toolInfo *loomv1.IndexedTool
+	for _, result := range resp.Results {
+		if result.Tool != nil && result.Tool.Name == toolName {
+			toolInfo = result.Tool
+			break
+		}
 	}
-
-	toolInfo := resp.Results[0].Tool
+	if toolInfo == nil {
+		return nil, fmt.Errorf("tool not found in registry: no indexed tool is named %q", toolName)
+	}
 
 	// Handle based on tool source
 	switch toolInfo.Source {
@@ -633,6 +669,24 @@ func (e *Executor) registerMCPTool(ctx context.Context, toolInfo *loomv1.Indexed
 	// Get MCP client for the server
 	client, err := e.mcpManager.GetClient(toolInfo.McpServer)
 	if err != nil {
+		// A server that does not exist (vs. temporarily unreachable) means
+		// the index entry is stale: evict it so it is never served again
+		// (issue #334). Transient failures keep the entry.
+		if errors.Is(err, ErrMCPServerNotFound) {
+			if evictor, ok := e.toolRegistry.(ToolEvictor); ok {
+				evictErr := evictor.EvictTool(ctx, toolInfo.Id)
+				if evictErr == nil {
+					return nil, fmt.Errorf("failed to get MCP client for server %s: %w (stale tool index entry %s evicted)", toolInfo.McpServer, err, toolInfo.Id)
+				}
+				// A failed eviction means the dead entry will be served
+				// again; that must be visible, not swallowed.
+				e.logger.Warn("Failed to evict stale tool index entry",
+					zap.String("tool_id", toolInfo.Id),
+					zap.String("tool_name", toolInfo.Name),
+					zap.String("mcp_server", toolInfo.McpServer),
+					zap.Error(evictErr))
+			}
+		}
 		return nil, fmt.Errorf("failed to get MCP client for server %s: %w", toolInfo.McpServer, err)
 	}
 

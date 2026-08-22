@@ -29,15 +29,18 @@ import (
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 )
 
 // Registry manages the tool index and provides search capabilities.
 type Registry struct {
-	db       *sql.DB
-	llm      types.LLMProvider
-	tracer   observability.Tracer
-	mu       sync.RWMutex
-	indexers []Indexer
+	db             *sql.DB
+	llm            types.LLMProvider
+	tracer         observability.Tracer
+	logger         *zap.Logger
+	mu             sync.RWMutex
+	indexers       []Indexer
+	liveMCPServers func() []string
 }
 
 // Indexer is an interface for tool source indexers.
@@ -52,18 +55,69 @@ type Indexer interface {
 	Index(ctx context.Context) ([]*loomv1.IndexedTool, error)
 }
 
+// IndexOutcome is the result of an index run that can vouch for the
+// completeness of what it reports, so IndexAll can prune rows the run did
+// not re-report instead of accumulating them forever (issue #334).
+//
+// A scope is the value of the tools table's mcp_server column: the server
+// name for MCP tools, "" for sources that don't partition by server.
+type IndexOutcome struct {
+	// Tools is the set of tools reported by this run.
+	Tools []*loomv1.IndexedTool
+
+	// CompleteScopes lists the scopes for which Tools is the complete
+	// current set. Indexed rows in these scopes that are absent from Tools
+	// are stale and are deleted. A scope that failed to enumerate this run
+	// (e.g. an unreachable MCP server) must NOT be listed here, so a
+	// transient failure never wipes a server's tools.
+	CompleteScopes []string
+
+	// KnownScopes lists every scope that still exists for this source
+	// (e.g. every configured MCP server, reachable or not). Only consulted
+	// when PruneOrphanScopes is true.
+	KnownScopes []string
+
+	// PruneOrphanScopes, when true, deletes rows of this source whose scope
+	// is not in KnownScopes — the "server was removed from configuration"
+	// case. With an empty KnownScopes it deletes every row of the source.
+	PruneOrphanScopes bool
+}
+
+// ReconcilingIndexer is an optional extension of Indexer. Indexers that
+// implement it get stale rows pruned after each run; plain Indexers keep
+// the historical upsert-only behavior (required for sources like custom
+// tools, where rows are registered out-of-band via RegisterTool).
+type ReconcilingIndexer interface {
+	Indexer
+
+	// IndexWithOutcome indexes all tools and reports the reconciliation
+	// boundaries of the run.
+	IndexWithOutcome(ctx context.Context) (*IndexOutcome, error)
+}
+
 // Config holds registry configuration.
 type Config struct {
 	DBPath   string            // Path to SQLite database
 	LLM      types.LLMProvider // LLM provider for search assistance
 	Tracer   observability.Tracer
-	Indexers []Indexer // Tool source indexers
+	Logger   *zap.Logger // Structured logger for prune/evict audit trails; nil uses a no-op logger
+	Indexers []Indexer   // Tool source indexers
+
+	// LiveMCPServers, when set, returns the names of the MCP servers that
+	// currently exist; search results are then restricted to MCP tools from
+	// these servers, so stale index rows are never surfaced to agents even
+	// between reconciliation runs. nil disables the filter. An empty result
+	// filters out all MCP tools.
+	LiveMCPServers func() []string
 }
 
 // New creates a new tool registry.
 func New(cfg Config) (*Registry, error) {
 	if cfg.Tracer == nil {
 		cfg.Tracer = observability.NewNoOpTracer()
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
 	}
 
 	// Open SQLite database with FTS5 support
@@ -73,16 +127,31 @@ func New(cfg Config) (*Registry, error) {
 	}
 
 	r := &Registry{
-		db:       db,
-		llm:      cfg.LLM,
-		tracer:   cfg.Tracer,
-		indexers: cfg.Indexers,
+		db:             db,
+		llm:            cfg.LLM,
+		tracer:         cfg.Tracer,
+		logger:         cfg.Logger,
+		indexers:       cfg.Indexers,
+		liveMCPServers: cfg.LiveMCPServers,
 	}
 
 	// Initialize schema
 	if err := r.initSchema(); err != nil {
 		_ = db.Close() // Best-effort cleanup; initSchema error takes priority
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	// Rebuild the FTS index from the content table, once per open. Databases
+	// written by earlier builds were populated via INSERT OR REPLACE, whose
+	// implicit DELETE does not fire the tools_ad trigger (recursive_triggers
+	// is off by default), leaving ghost FTS postings behind; a later DELETE
+	// could free the max rowid, which SQLite then reuses for a new tool,
+	// attaching the ghost postings to the wrong tool (wrong search results and
+	// a failing FTS5 integrity-check). The rebuild is idempotent and cheap at
+	// open time, and repairs any such database in place.
+	if _, err := db.Exec(`INSERT INTO tools_fts(tools_fts) VALUES('rebuild')`); err != nil {
+		_ = db.Close() // Best-effort cleanup; rebuild error takes priority
+		return nil, fmt.Errorf("failed to rebuild FTS index: %w", err)
 	}
 
 	return r, nil
@@ -177,7 +246,18 @@ func (r *Registry) IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, er
 	defer r.mu.Unlock()
 
 	for _, indexer := range r.indexers {
-		tools, err := indexer.Index(ctx)
+		var tools []*loomv1.IndexedTool
+		var outcome *IndexOutcome
+		var err error
+
+		if reconciler, ok := indexer.(ReconcilingIndexer); ok {
+			outcome, err = reconciler.IndexWithOutcome(ctx)
+			if outcome != nil {
+				tools = outcome.Tools
+			}
+		} else {
+			tools, err = indexer.Index(ctx)
+		}
 		if err != nil {
 			errors = append(errors, &loomv1.IndexError{
 				Source:       indexer.Source(),
@@ -196,6 +276,13 @@ func (r *Registry) IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, er
 				})
 				continue
 			}
+		}
+
+		// Prune rows this run vouches are stale (removed servers, removed tools).
+		if outcome != nil {
+			pruned, pruneErrs := r.pruneStaleRows(ctx, indexer.Source(), outcome)
+			resp.PrunedCount += types.SafeInt32(pruned)
+			errors = append(errors, pruneErrs...)
 		}
 
 		// Update counts
@@ -218,10 +305,156 @@ func (r *Registry) IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, er
 
 	span.Status = observability.Status{
 		Code:    observability.StatusOK,
-		Message: fmt.Sprintf("Indexed %d tools", resp.TotalCount),
+		Message: fmt.Sprintf("Indexed %d tools, pruned %d stale", resp.TotalCount, resp.PrunedCount),
 	}
 
 	return resp, nil
+}
+
+// pruneStaleRows deletes rows the outcome vouches are stale: rows in scopes
+// that no longer exist (PruneOrphanScopes/KnownScopes) and rows in
+// CompleteScopes that this run did not re-report. Returns the number of rows
+// deleted; failures are reported as IndexErrors, never as a hard failure —
+// a prune problem must not abort indexing. Caller holds r.mu.
+func (r *Registry) pruneStaleRows(ctx context.Context, source loomv1.ToolSource, outcome *IndexOutcome) (int, []*loomv1.IndexError) {
+	var errs []*loomv1.IndexError
+	pruned := 0
+
+	// Group the reported tool IDs by scope for the complete-scope diffs.
+	keepByScope := make(map[string]map[string]bool)
+	for _, tool := range outcome.Tools {
+		scope := tool.McpServer
+		if keepByScope[scope] == nil {
+			keepByScope[scope] = make(map[string]bool)
+		}
+		keepByScope[scope][tool.Id] = true
+	}
+
+	// 1. Orphaned scopes: the scope (MCP server) is gone from configuration.
+	if outcome.PruneOrphanScopes {
+		known := make(map[string]bool, len(outcome.KnownScopes))
+		for _, s := range outcome.KnownScopes {
+			known[s] = true
+		}
+		deleted, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
+			return !known[scope]
+		})
+		pruned += len(deleted)
+		r.logPruned("server removed from configuration", source, deleted)
+		if err != nil {
+			errs = append(errs, &loomv1.IndexError{
+				Source:       source,
+				ErrorMessage: fmt.Sprintf("failed to prune orphaned scopes: %v", err),
+			})
+		}
+	}
+
+	// 2. Complete scopes: the scope still exists and this run enumerated it
+	// fully, so any row not re-reported is a removed tool.
+	if len(outcome.CompleteScopes) > 0 {
+		complete := make(map[string]bool, len(outcome.CompleteScopes))
+		for _, s := range outcome.CompleteScopes {
+			complete[s] = true
+		}
+		deleted, err := r.deleteRowsWhere(ctx, source, func(scope, id string) bool {
+			return complete[scope] && !keepByScope[scope][id]
+		})
+		pruned += len(deleted)
+		r.logPruned("tool no longer reported by its server", source, deleted)
+		if err != nil {
+			errs = append(errs, &loomv1.IndexError{
+				Source:       source,
+				ErrorMessage: fmt.Sprintf("failed to prune removed tools: %v", err),
+			})
+		}
+	}
+
+	return pruned, errs
+}
+
+// logPruned records exactly which index rows a prune removed, so a tool that
+// disappears from search is traceable to the reconciliation decision that
+// deleted it. No-op when nothing was deleted.
+func (r *Registry) logPruned(reason string, source loomv1.ToolSource, deleted []prunedRow) {
+	if len(deleted) == 0 {
+		return
+	}
+	ids := make([]string, len(deleted))
+	scopeSet := make(map[string]bool, len(deleted))
+	scopes := make([]string, 0, len(deleted))
+	for i, row := range deleted {
+		ids[i] = row.id
+		if !scopeSet[row.scope] {
+			scopeSet[row.scope] = true
+			scopes = append(scopes, row.scope)
+		}
+	}
+	r.logger.Info("Pruned stale tool index entries",
+		zap.String("reason", reason),
+		zap.String("source", source.String()),
+		zap.Strings("tool_ids", ids),
+		zap.Strings("mcp_servers", scopes))
+}
+
+// prunedRow identifies one deleted index row: its tool ID and its scope (the
+// tools.mcp_server value, "" for sources that don't partition by server).
+type prunedRow struct {
+	id    string
+	scope string
+}
+
+// deleteRowsWhere deletes every row of the given source for which stale
+// returns true, evaluated over (scope, id), and returns the rows it deleted.
+// The candidate set is read first and deleted by ID, so the work stays clear
+// of SQLite bind-variable limits regardless of tool count. Caller holds r.mu.
+func (r *Registry) deleteRowsWhere(ctx context.Context, source loomv1.ToolSource, stale func(scope, id string) bool) ([]prunedRow, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, COALESCE(mcp_server, '') FROM tools WHERE source = ?`, int(source))
+	if err != nil {
+		return nil, err
+	}
+
+	var staleRows []prunedRow
+	for rows.Next() {
+		var id, scope string
+		if err := rows.Scan(&id, &scope); err != nil {
+			continue
+		}
+		if stale(scope, id) {
+			staleRows = append(staleRows, prunedRow{id: id, scope: scope})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	var deleted []prunedRow
+	for _, row := range staleRows {
+		if _, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, row.id); err != nil {
+			return deleted, err
+		}
+		deleted = append(deleted, row)
+	}
+	return deleted, nil
+}
+
+// EvictTool removes a single tool from the index by ID. Used when dynamic
+// registration proves an entry stale (its MCP server no longer exists), so
+// the same dead tool is never served twice.
+func (r *Registry) EvictTool(ctx context.Context, toolID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	res, err := r.db.ExecContext(ctx, `DELETE FROM tools WHERE id = ?`, toolID)
+	if err != nil {
+		return err
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+		r.logger.Info("Evicted stale tool index entry", zap.String("tool_id", toolID))
+	}
+	return nil
 }
 
 // RegisterTool registers or updates a single tool in the database.
@@ -234,6 +467,14 @@ func (r *Registry) RegisterTool(ctx context.Context, tool *loomv1.IndexedTool) e
 }
 
 // upsertTool inserts or updates a tool in the database.
+//
+// The upsert MUST be INSERT ... ON CONFLICT DO UPDATE, never INSERT OR
+// REPLACE: OR REPLACE resolves the conflict by deleting the existing row and
+// inserting a new one with a fresh rowid, and that implicit DELETE does not
+// fire the tools_ad trigger (recursive_triggers is off by default), leaving
+// ghost postings in the external-content tools_fts index. ON CONFLICT DO
+// UPDATE keeps the rowid stable, so the tools_au UPDATE trigger keeps the FTS
+// index in sync. The conflict target is the table's primary key, tools(id).
 func (r *Registry) upsertTool(ctx context.Context, tool *loomv1.IndexedTool) error {
 	capabilities, _ := json.Marshal(tool.Capabilities)
 	keywords, _ := json.Marshal(tool.Keywords)
@@ -241,10 +482,24 @@ func (r *Registry) upsertTool(ctx context.Context, tool *loomv1.IndexedTool) err
 	rateLimit, _ := json.Marshal(tool.RateLimit)
 
 	_, err := r.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO tools (
+		INSERT INTO tools (
 			id, name, description, source, mcp_server, input_schema, output_schema,
 			capabilities, keywords, examples, indexed_at, version, requires_approval, rate_limit
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			description = excluded.description,
+			source = excluded.source,
+			mcp_server = excluded.mcp_server,
+			input_schema = excluded.input_schema,
+			output_schema = excluded.output_schema,
+			capabilities = excluded.capabilities,
+			keywords = excluded.keywords,
+			examples = excluded.examples,
+			indexed_at = excluded.indexed_at,
+			version = excluded.version,
+			requires_approval = excluded.requires_approval,
+			rate_limit = excluded.rate_limit
 	`,
 		tool.Id, tool.Name, tool.Description, tool.Source, tool.McpServer,
 		tool.InputSchema, tool.OutputSchema, string(capabilities), string(keywords),
@@ -412,6 +667,12 @@ func (r *Registry) ftsSearch(ctx context.Context, query string, expandedTerms []
 		}
 	}
 
+	// Restrict MCP tools to live servers so stale index rows are never
+	// surfaced to agents (issue #334).
+	livenessSQL, livenessArgs := r.mcpLivenessClause("t")
+	sql += livenessSQL // #nosec G202 -- clause contains only literal "?" placeholders, values are parameterized
+	args = append(args, livenessArgs...)
+
 	sql += " ORDER BY score LIMIT ?"
 	args = append(args, limit)
 
@@ -463,6 +724,41 @@ func (r *Registry) ftsSearch(ctx context.Context, query string, expandedTerms []
 	}
 
 	return results, nil
+}
+
+// mcpLivenessClause returns a SQL fragment (leading " AND ...") restricting
+// MCP-sourced rows to currently-live servers, with its bind arguments. It is
+// a no-op ("" and nil) when no liveness callback is configured. With a
+// callback returning no servers, every MCP row is excluded: a tool whose
+// server does not exist cannot be executed, so surfacing it only misleads
+// the agent (issue #334).
+func (r *Registry) mcpLivenessClause(alias string) (string, []interface{}) {
+	if r.liveMCPServers == nil {
+		return "", nil
+	}
+	col := "mcp_server"
+	srcCol := "source"
+	if alias != "" {
+		col = alias + "." + col
+		srcCol = alias + "." + srcCol
+	}
+
+	live := r.liveMCPServers()
+	if len(live) == 0 {
+		return fmt.Sprintf(" AND %s != ?", srcCol),
+			[]interface{}{int(loomv1.ToolSource_TOOL_SOURCE_MCP)}
+	}
+
+	placeholders := make([]string, len(live))
+	args := make([]interface{}, 0, len(live)+1)
+	args = append(args, int(loomv1.ToolSource_TOOL_SOURCE_MCP))
+	for i, server := range live {
+		placeholders[i] = "?"
+		args = append(args, server)
+	}
+	clause := fmt.Sprintf(" AND (%s != ? OR COALESCE(%s, '') IN (%s))",
+		srcCol, col, strings.Join(placeholders, ",")) // #nosec G201 -- placeholders are literal "?" strings, values are parameterized
+	return clause, args
 }
 
 // expandQuery uses LLM to expand the search query with synonyms and related terms.
@@ -671,6 +967,11 @@ func (r *Registry) GetToolsByCapability(ctx context.Context, capability string, 
 		}
 		sql += " AND source IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- placeholders are literal "?" strings, values are parameterized
 	}
+
+	// Restrict MCP tools to live servers (issue #334).
+	livenessSQL, livenessArgs := r.mcpLivenessClause("")
+	sql += livenessSQL // #nosec G202 -- clause contains only literal "?" placeholders, values are parameterized
+	args = append(args, livenessArgs...)
 
 	sql += " LIMIT ?"
 	args = append(args, maxResults)

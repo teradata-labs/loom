@@ -232,6 +232,11 @@ message IndexToolsResponse {
 
   // Time taken (milliseconds).
   int64 duration_ms = 6;
+
+  // Number of stale rows removed during reconciliation: tools whose source
+  // no longer reports them (removed from a server) or whose MCP server is
+  // no longer configured.
+  int32 pruned_count = 7;
 }
 
 // IndexError describes a failure during indexing.
