@@ -130,7 +130,7 @@ func buildConversationBlock(ec extractionContext) string {
 const jsonSchema = `{
   "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system|event|place", "properties": "{}", "is_user": false}],
   "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES|ATTENDED|PURCHASED|VISITED|MEMBER_OF"}],
-  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
+  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation|lesson", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
 }`
 
 // buildGraphMemoryExtractionPrompt creates PASS 1: main topic extraction.
@@ -151,9 +151,28 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 
 	var sb strings.Builder
 	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
-	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
-	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
-	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior.\n\n")
+	// Two extraction lanes. The original single-lane rule ("IGNORE the
+	// assistant's ... error messages") discarded exactly the material that
+	// carries method knowledge: a 30-wave fleet study measured agents
+	// recalling hundreds of task-echo memories per run while never learning
+	// the one error->fix lesson that dominated their failure rate. Lane 2
+	// exists so working knowledge survives; the chatter exclusion narrows to
+	// what is genuinely transient.
+	sb.WriteString("IMPORTANT — extract along two lanes:\n")
+	sb.WriteString("1. USER FACTS: factual content from the USER's messages — names, dates, events, ")
+	sb.WriteString("preferences, and real-world facts.\n")
+	sb.WriteString("2. LESSONS: durable working knowledge the ASSISTANT discovered by doing — an error and ")
+	sb.WriteString("what fixed it, a schema fact learned by probing (actual column names and types), an ")
+	sb.WriteString("environment quirk (data formats, dialect behavior, API limits), a technique that ")
+	sb.WriteString("succeeded after failures. State each lesson in reusable, situation-independent form — ")
+	sb.WriteString("the cause and the fix, not the story. Examples: \"the events table's timestamp column ")
+	sb.WriteString("is a string, so date filters must compare strings\"; \"inserting 16-digit identifiers ")
+	sb.WriteString("into an INTEGER column overflows — declare such columns BIGINT\". ")
+	sb.WriteString("Use memory_type \"lesson\" and salience 0.8-1.0 for these.\n")
+	sb.WriteString("IGNORE transient chatter: progress narration, politeness, retries that add no new ")
+	sb.WriteString("information, and the assistant's self-referential observations. An error message paired ")
+	sb.WriteString("with its resolution is never chatter — it is the highest-value memory a working agent ")
+	sb.WriteString("produces.\n\n")
 
 	sb.WriteString(buildConversationBlock(ec))
 
