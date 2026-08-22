@@ -293,10 +293,28 @@ func TestErrorLessonQuery(t *testing.T) {
 	assert.Contains(t, q, "CC_Number")
 	assert.NotContains(t, q, `"`)
 	assert.NotContains(t, q, "(")
-	// Caps runaway error dumps.
-	long := errorLessonQuery(strings.Repeat("verylongword ", 50))
-	assert.LessOrEqual(t, len(strings.Fields(long)), 12)
+	// Caps runaway error dumps; repeats dedupe to a single term.
+	long := errorLessonQuery(strings.Repeat("verylongword ", 50) + strings.Repeat("uniqueword%d ", 30))
+	assert.LessOrEqual(t, len(strings.Fields(long)), 24)
+	assert.Equal(t, "verylongword", errorLessonQuery(strings.Repeat("verylongword ", 50)))
 	assert.Equal(t, "", errorLessonQuery("!!! ()"))
+}
+
+// Regression: the words naming the actual failure must survive the term cap
+// even when the error arrives wrapped in transport boilerplate. Measured
+// live: a 12-term cap filled with wrapper words and "Numeric overflow" never
+// entered the query, so the error lane recalled only generic lessons.
+func TestErrorLessonQueryRealWrappedError(t *testing.T) {
+	errText := `tool error: {"code":"db_error","message":"[Version 20.0.56] [Session 100746] ` +
+		`[Teradata Database] [Error 2616] Numeric overflow occurred during computation.\n ` +
+		`at github.com/Teradata-TIO/go-teradata.MakeError ErrorUtil.go:100"}`
+	q := errorLessonQuery(errText)
+	assert.Contains(t, q, "Numeric")
+	assert.Contains(t, q, "overflow")
+	assert.Contains(t, q, "computation")
+	assert.Contains(t, q, "2616")
+	// Deduped: "error" appears many times in the wrapper but once in the query.
+	assert.Equal(t, 1, strings.Count(strings.ToLower(q), " error "))
 }
 
 // The error-triggered lane: an error text pulls the matching lesson into the

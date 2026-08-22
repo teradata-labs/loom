@@ -105,17 +105,29 @@ type errorLessonSession struct {
 
 // errorLessonQuery reduces raw tool-error text to FTS-safe bareword terms.
 // Error text carries punctuation, quotes, and parentheses that FTS5 parses
-// as syntax; only alphanumeric/underscore words survive, capped so a huge
-// error dump doesn't become a huge query.
+// as syntax; only alphanumeric/underscore words survive. Terms are deduped
+// case-insensitively and capped GENEROUSLY: real errors arrive wrapped in
+// transport boilerplate ("tool error ... db_error ... [Version ...] [Session
+// ...]"), and a tight cap fills with wrapper words before the message that
+// names the actual failure — measured live: "Numeric overflow occurred"
+// never survived a 12-term cap on a Teradata error, so the lane recalled
+// only generic lessons.
 func errorLessonQuery(errText string) string {
-	const maxTerms = 12
+	const maxTerms = 24
 	var terms []string
+	seen := map[string]bool{}
 	var cur strings.Builder
 	flush := func() {
-		if cur.Len() >= 3 { // 1-2 char fragments only add noise
-			terms = append(terms, cur.String())
+		defer cur.Reset()
+		if cur.Len() < 3 { // 1-2 char fragments only add noise
+			return
 		}
-		cur.Reset()
+		key := strings.ToLower(cur.String())
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		terms = append(terms, cur.String())
 	}
 	for _, r := range errText {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
@@ -124,7 +136,7 @@ func errorLessonQuery(errText string) string {
 		}
 		flush()
 		if len(terms) >= maxTerms {
-			break
+			return strings.Join(terms, " ")
 		}
 	}
 	flush()
