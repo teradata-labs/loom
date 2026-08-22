@@ -54,19 +54,35 @@ type lessonPair struct {
 	FailingIn  string
 	ErrorText  string
 	SucceedsIn string
+	// Intervening holds the successful calls made between the failure and
+	// the success (most recent last, capped). When the failing and
+	// succeeding inputs are near-identical, the fix lives HERE — e.g. an
+	// INSERT that overflows, a DROP+CREATE with a widened column type, then
+	// the same INSERT succeeding. Without these, cross-statement fixes are
+	// invisible (measured: zero BIGINT lessons minted while the fix was
+	// applied dozens of times, always via a re-CREATE).
+	Intervening []string
 }
+
+// maxInterveningCalls bounds the between-failure-and-success excerpt; the
+// fix is usually adjacent to the success, so the last few wins.
+const maxInterveningCalls = 3
 
 // mineLessonPairs walks the conversation's tool calls in order and pairs
 // each failed call with the next SUCCEEDING call of the same kind (same
 // tool; for SQL-bearing calls, same statement class — verb plus target).
 // One pair per kind: the first failure against the fix that finally worked.
 func mineLessonPairs(msgs []types.Message) []lessonPair {
-	type pending struct{ input, errText string }
+	type event struct {
+		tc      types.ToolCall
+		key     string
+		input   string
+		ok      bool
+		errText string
+	}
 	calls := map[string]types.ToolCall{} // ToolUseID → call
 	var order []string                   // preserve call order for ID-less results
-	failures := map[string]pending{}     // class key → earliest failure
-	emitted := map[string]bool{}
-	var pairs []lessonPair
+	var events []event
 
 	classOf := func(tc types.ToolCall) string {
 		if sqlRaw, ok := tc.Input["sql"].(string); ok {
@@ -79,6 +95,7 @@ func mineLessonPairs(msgs []types.Message) []lessonPair {
 		return truncate(string(b), lessonInputPreview)
 	}
 
+	// Pass 1: pair calls with results, in conversation order.
 	for _, m := range msgs {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
@@ -101,29 +118,55 @@ func mineLessonPairs(msgs []types.Message) []lessonPair {
 			tc = calls[order[0]]
 			order = order[1:]
 		}
-		key := classOf(tc)
-		if m.ToolResult.Error != nil || !m.ToolResult.Success {
-			errText := ""
-			if m.ToolResult.Error != nil {
-				errText = m.ToolResult.Error.Message
-			}
-			if _, have := failures[key]; !have {
-				failures[key] = pending{input: inputPreview(tc), errText: truncate(errText, lessonErrorPreview)}
+		errText := ""
+		if m.ToolResult.Error != nil {
+			errText = m.ToolResult.Error.Message
+		}
+		events = append(events, event{
+			tc:      tc,
+			key:     classOf(tc),
+			input:   inputPreview(tc),
+			ok:      m.ToolResult.Success && m.ToolResult.Error == nil,
+			errText: truncate(errText, lessonErrorPreview),
+		})
+	}
+
+	// Pass 2: for each class, pair the earliest failure with the first later
+	// success, carrying the successful calls in between (the cross-statement
+	// fix path).
+	firstFailure := map[string]int{}
+	emitted := map[string]bool{}
+	var pairs []lessonPair
+	for i, ev := range events {
+		if !ev.ok {
+			if _, have := firstFailure[ev.key]; !have {
+				firstFailure[ev.key] = i
 			}
 			continue
 		}
-		if f, have := failures[key]; have && !emitted[key] {
-			emitted[key] = true
-			pairs = append(pairs, lessonPair{
-				Tool:       tc.Name,
-				FailingIn:  f.input,
-				ErrorText:  f.errText,
-				SucceedsIn: inputPreview(tc),
-			})
-			delete(failures, key)
-			if len(pairs) >= maxLessonPairs {
-				return pairs
+		fi, have := firstFailure[ev.key]
+		if !have || emitted[ev.key] {
+			continue
+		}
+		emitted[ev.key] = true
+		var between []string
+		for k := fi + 1; k < i; k++ {
+			if events[k].ok {
+				between = append(between, events[k].input)
 			}
+		}
+		if len(between) > maxInterveningCalls {
+			between = between[len(between)-maxInterveningCalls:]
+		}
+		pairs = append(pairs, lessonPair{
+			Tool:        ev.tc.Name,
+			FailingIn:   events[fi].input,
+			ErrorText:   events[fi].errText,
+			SucceedsIn:  ev.input,
+			Intervening: between,
+		})
+		if len(pairs) >= maxLessonPairs {
+			return pairs
 		}
 	}
 	return pairs
@@ -158,10 +201,13 @@ func buildLessonMiningPrompt(pairs []lessonPair) string {
 	sb.WriteString("that failed, the error it produced, and the later call of the same kind that succeeded. ")
 	sb.WriteString("The fix demonstrably worked — your job is only to name it.\n\n")
 	for i, p := range pairs {
-		fmt.Fprintf(&sb, "%d. tool: %s\n   FAILED INPUT: %s\n   ERROR: %s\n   SUCCEEDED INPUT: %s\n\n",
-			i+1, p.Tool, p.FailingIn, p.ErrorText, p.SucceedsIn)
+		fmt.Fprintf(&sb, "%d. tool: %s\n   FAILED INPUT: %s\n   ERROR: %s\n", i+1, p.Tool, p.FailingIn, p.ErrorText)
+		for _, b := range p.Intervening {
+			fmt.Fprintf(&sb, "   CALL BETWEEN FAILURE AND SUCCESS: %s\n", b)
+		}
+		fmt.Fprintf(&sb, "   SUCCEEDED INPUT: %s\n\n", p.SucceedsIn)
 	}
-	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — the cause and the fix, not the story. Compare the failed and succeeded inputs: the difference between them is the fix. Example form: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT".
+	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — the cause and the fix, not the story. Compare the failed and succeeded inputs: the difference between them is the fix. When the failed and succeeded inputs are identical or nearly identical, the fix happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson. Example form: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT".
 
 Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
 
