@@ -41,9 +41,11 @@ const (
 	// maxLessonPairs bounds the mining prompt; the highest-value transitions
 	// are the earliest distinct ones.
 	maxLessonPairs = 6
-	// lessonInputPreview / lessonErrorPreview bound quoted ledger excerpts.
-	lessonInputPreview = 400
-	lessonErrorPreview = 300
+	// lessonInputPreview / lessonErrorPreview / lessonResultPreview bound
+	// quoted ledger excerpts.
+	lessonInputPreview  = 400
+	lessonErrorPreview  = 300
+	lessonResultPreview = 200
 	// lessonExtractionTimeout bounds the single mining LLM call.
 	lessonExtractionTimeout = 30 * time.Second
 	// lessonSalienceFloor: a verified lesson is always high-salience.
@@ -64,6 +66,16 @@ type minedEvent struct {
 	input   string
 	ok      bool
 	errText string
+	// resultPreview is a short excerpt of a successful call's result,
+	// captured at execution time. The mining prompt shows it so the miner
+	// can judge whether the "success" actually did work — tool-level
+	// success is not task-level progress. Measured: a date-filter "fix"
+	// that silenced the parse error by matching ZERO rows was mined as a
+	// verified lesson, propagated fleet-wide, and produced entire waves
+	// confidently reporting "0 cards, NULL total, no errors". Result
+	// judgment stays with the mining LLM (endpoint-agnostic: any payload
+	// text) rather than parsing any one server's result schema here.
+	resultPreview string
 }
 
 // maxLedgerEvents caps a session's mining ledger.
@@ -260,6 +272,11 @@ func (a *Agent) recordToolLedger(sessionID string, tc types.ToolCall, result *sh
 		input: eventInputPreview(tc),
 		ok:    result.Success && result.Error == nil,
 	}
+	if ev.ok {
+		if data, isStr := result.Data.(string); isStr {
+			ev.resultPreview = truncate(data, lessonResultPreview)
+		}
+	}
 	if result.Error != nil {
 		ev.errText = truncate(result.Error.Message, lessonErrorPreview)
 	}
@@ -310,6 +327,10 @@ type lessonPair struct {
 	// invisible (measured: zero BIGINT lessons minted while the fix was
 	// applied dozens of times, always via a re-CREATE).
 	Intervening []string
+	// SucceedsResult previews what the succeeding call actually returned,
+	// so the miner can reject "fixes" that silenced the error by doing no
+	// work (empty rowset, zero rows affected, all-NULL aggregates).
+	SucceedsResult string
 	// ChangedFragments are the tokens the recovery actually changed,
 	// computed mechanically (failing vs succeeding input, plus each
 	// intervening call vs the most recent earlier call of its class).
@@ -477,6 +498,7 @@ func pairEvents(events []minedEvent) []lessonPair {
 			FailingIn:        events[fi].input,
 			ErrorText:        events[fi].errText,
 			SucceedsIn:       ev.input,
+			SucceedsResult:   ev.resultPreview,
 			Intervening:      between,
 			ChangedFragments: changedFragments(events, fi, i, betweenIdx),
 		})
@@ -521,6 +543,9 @@ func buildLessonMiningPrompt(pairs []lessonPair) string {
 			fmt.Fprintf(&sb, "   CALL BETWEEN FAILURE AND SUCCESS: %s\n", b)
 		}
 		fmt.Fprintf(&sb, "   SUCCEEDED INPUT: %s\n", p.SucceedsIn)
+		if p.SucceedsResult != "" {
+			fmt.Fprintf(&sb, "   SUCCEEDED RESULT: %s\n", p.SucceedsResult)
+		}
 		if len(p.ChangedFragments) > 0 {
 			fmt.Fprintf(&sb, "   OBSERVED CHANGED FRAGMENTS: %s\n", strings.Join(p.ChangedFragments, ", "))
 		}
@@ -531,6 +556,8 @@ func buildLessonMiningPrompt(pairs []lessonPair) string {
 The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, computed mechanically from the ledger. The lesson MUST quote these fragments verbatim. When several fragments changed, name ALL of them in the lesson — never pick one and present it as the sole cause; the ledger cannot tell which mattered, and neither can you.
 
 Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
+
+Check the SUCCEEDED RESULT before trusting a fix: a success that did no work is NOT a fix. An empty result set, zero rows inserted/affected (e.g. "activity_count":0 on an INSERT), or all-NULL values means the change silenced the error by matching nothing — extracting that as a lesson teaches every agent to produce confident empty answers. Skip such items entirely.
 
 Return ONLY a JSON object:
 {"entities": [], "relationships": [], "memories": [{"content": "cause and fix, one sentence", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}

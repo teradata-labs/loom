@@ -69,6 +69,31 @@ actually recovered.
   only counts accesses); the only salience signals are outcome credit and
   the store's global decay.
 
+## Fix C — vacuous-success judgment (endpoint-agnostic)
+
+A third measured poisoning mechanism: **tool-level success is not task-level
+progress.** A date-filter change that silenced a parse error by matching
+zero rows (`{"activity_count":0,"status":"success"}`) was mined as a
+verified lesson — it is grounded (the change was real) and scores an
+outcome-credit win (the failing class stopped failing) — then propagated
+fleet-wide and produced whole waves confidently reporting "0 cards, NULL
+total, no errors".
+
+The counter: the ledger records a short **result preview** of every
+successful call, the mined pair carries the succeeding call's preview, and
+the mining prompt shows it with an explicit rule — a success that did no
+work (empty rowset, zero rows affected, all-NULL aggregates) is NOT a fix
+and the item must be skipped. Judgment stays with the mining LLM, which
+makes it endpoint-agnostic: it reads any payload text the way a reviewer
+would, instead of `pkg/agent` parsing one server's result schema.
+
+Deliberately NOT built (yet): a mechanical vacuous-success detector. The
+exact JSON keys (`activity_count`, `row_count`, `rows`) are one MCP
+server's conventions; hardcoding them into the framework trades a general
+gap for a hidden coupling. If model judgment proves insufficient, the
+mechanical layer should arrive as a pluggable per-backend detector seam,
+with the JSON-shape detector as its first implementation.
+
 ## What this does not do (yet)
 
 - No consolidation/dedup of near-identical lessons; credit demotes bad ones
@@ -78,3 +103,7 @@ actually recovered.
   claim is only that repeated injection into failing recoveries is evidence
   against a lesson, and repeated presence in successful recoveries is weak
   evidence for it.
+- Outcome credit still counts a vacuous success as a recovery (a win): the
+  mechanical credit pass has no result-shape judgment. Fix C only guards the
+  minting side; credit-side vacuous detection needs the pluggable detector
+  seam above.

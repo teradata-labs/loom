@@ -149,17 +149,46 @@ func TestToolLedgerRecordAndTake(t *testing.T) {
 	tc2 := types.ToolCall{ID: "2", Name: "execute_statement",
 		Input: map[string]interface{}{"sql": "CREATE VOLATILE TABLE vt_a (card_id BIGINT)"}}
 	a.recordToolLedger("s1", tc2, &shuttle.Result{Success: true})
-	a.recordToolLedger("s1", tc, &shuttle.Result{Success: true})
+	a.recordToolLedger("s1", tc, &shuttle.Result{Success: true,
+		Data: `{"activity_count":55316,"status":"success"}`})
 
 	events := a.takeToolLedger("s1")
 	require.Len(t, events, 3)
+	assert.Contains(t, events[2].resultPreview, "55316", "successful results carry a preview")
 	pairs := pairEvents(events)
 	require.Len(t, pairs, 1)
 	assert.Contains(t, pairs[0].ErrorText, "2616")
+	assert.Contains(t, pairs[0].SucceedsResult, "55316")
 	require.NotEmpty(t, pairs[0].Intervening)
 	assert.Contains(t, pairs[0].Intervening[0], "BIGINT")
 
 	assert.Empty(t, a.takeToolLedger("s1"), "take consumes")
+}
+
+// The vacuous-success poison scenario, endpoint-agnostic form: the miner is
+// shown what the "fix" actually returned and instructed to skip work-free
+// successes. Measured motivation: a date-filter change that silenced the
+// parse error by matching zero rows ({"activity_count":0}) was mined as a
+// verified lesson and taught the whole fleet to report confident empty
+// answers.
+func TestLessonMiningPromptShowsResultAndSkipRule(t *testing.T) {
+	a := &Agent{enableGraphMemoryExtraction: true}
+	tc := types.ToolCall{ID: "1", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "INSERT INTO vt SELECT ... WHERE CAST(TrxDateTime AS DATE) = DATE '2004-07-15'"}}
+	a.recordToolLedger("s2", tc, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "db_error", Message: "[Error 2666] Invalid date supplied"}})
+	tcFixed := types.ToolCall{ID: "2", Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "INSERT INTO vt SELECT ... WHERE SUBSTR(TrxDateTime,1,10) = '2004-07-15'"}}
+	a.recordToolLedger("s2", tcFixed, &shuttle.Result{Success: true,
+		Data: `{"activity_count":0,"status":"success"}`})
+
+	pairs := pairEvents(a.takeToolLedger("s2"))
+	require.Len(t, pairs, 1)
+
+	prompt := buildLessonMiningPrompt(pairs)
+	assert.Contains(t, prompt, `SUCCEEDED RESULT: {"activity_count":0`,
+		"the miner must see that the fix did no work")
+	assert.Contains(t, prompt, "a success that did no work is NOT a fix")
 }
 
 func TestToolLedgerConcurrent(t *testing.T) {
