@@ -169,6 +169,11 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 	sb.WriteString("is a string, so date filters must compare strings\"; \"inserting 16-digit identifiers ")
 	sb.WriteString("into an INTEGER column overflows — declare such columns BIGINT\". ")
 	sb.WriteString("Use memory_type \"lesson\" and salience 0.8-1.0 for these.\n")
+	sb.WriteString("VERIFICATION GATE: extract a lesson ONLY when this conversation shows the fix being ")
+	sb.WriteString("applied AND the next attempt succeeding. A hypothesis, a suggestion, or a fix whose ")
+	sb.WriteString("retry still failed is NOT a lesson — an unverified belief stored as a lesson actively ")
+	sb.WriteString("misleads future work. If the error is still unresolved at the end of the excerpt, ")
+	sb.WriteString("extract nothing for it (a later pass will see the resolution).\n")
 	sb.WriteString("IGNORE transient chatter: progress narration, politeness, retries that add no new ")
 	sb.WriteString("information, and the assistant's self-referential observations. An error message paired ")
 	sb.WriteString("with its resolution is never chatter — it is the highest-value memory a working agent ")
@@ -613,7 +618,8 @@ func isValidMemoryType(t string) bool {
 		memory.MemoryTypeExperience,
 		memory.MemoryTypeFailure,
 		memory.MemoryTypeObservation,
-		memory.MemoryTypeConsolidation:
+		memory.MemoryTypeConsolidation,
+		memory.MemoryTypeLesson:
 		return true
 	}
 	return false
