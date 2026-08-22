@@ -194,13 +194,14 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	startTime := time.Now()
 
-	// Convert parameter names from snake_case back to camelCase for MCP tools
-	// LLMs naturally use snake_case but MCP tools expect camelCase
-	camelCaseParams := normalizeParametersToCamelCase(params)
+	// Map the LLM's parameter names onto the names the tool's schema
+	// declares (snake_case kept for snake_case servers, camelized only
+	// when the schema itself is camelCase).
+	serverParams := a.normalizeParametersToSchema(params)
 
 	// Check schema cache for schema-related tools (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
-		cacheKey := a.buildSchemaCacheKey(camelCaseParams)
+		cacheKey := a.buildSchemaCacheKey(serverParams)
 		if cached, ok := globalSchemaCache.get(cacheKey); ok {
 			return &shuttle.Result{
 				Success:         true,
@@ -216,8 +217,8 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 		}
 	}
 
-	// Call MCP tool with camelCase parameters
-	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, camelCaseParams)
+	// Call MCP tool with the schema-declared parameter names.
+	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, serverParams)
 	executionTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
@@ -255,7 +256,7 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
-		cacheKey := a.buildSchemaCacheKey(camelCaseParams)
+		cacheKey := a.buildSchemaCacheKey(serverParams)
 		if str, ok := data.(string); ok {
 			globalSchemaCache.set(cacheKey, str)
 		}
@@ -449,6 +450,37 @@ func normalizeParametersToCamelCase(params map[string]interface{}) map[string]in
 	normalized := make(map[string]interface{}, len(params))
 	for key, value := range params {
 		normalized[toCamelCase(key)] = value
+	}
+	return normalized
+}
+
+// normalizeParametersToSchema maps LLM-supplied parameter names onto the
+// names the tool's schema actually declares. InputSchema shows the LLM
+// snake_case names, so a key is kept as-is when the schema declares it
+// (snake_case servers), converted to camelCase when the schema declares
+// only the camelCase form (camelCase servers), and passed through
+// untouched otherwise so schema validation reports it under the name the
+// model used. Blind camelization corrupted snake_case servers: a strict
+// schema rejected the renamed key, and a lenient decoder silently dropped
+// it (session_handle → sessionHandle → ignored → leaked handles).
+func (a *MCPToolAdapter) normalizeParametersToSchema(params map[string]interface{}) map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	props, _ := a.tool.InputSchema["properties"].(map[string]interface{})
+	normalized := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		if _, declared := props[key]; declared {
+			normalized[key] = value
+			continue
+		}
+		if camel := toCamelCase(key); camel != key {
+			if _, declared := props[camel]; declared {
+				normalized[camel] = value
+				continue
+			}
+		}
+		normalized[key] = value
 	}
 	return normalized
 }
