@@ -14,12 +14,14 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -200,6 +202,30 @@ func TestPerTurnPromptExcludesLessons(t *testing.T) {
 	assert.Contains(t, p, "IGNORE the assistant's process notes")
 	assert.NotContains(t, p, "LESSONS:")
 	assert.Contains(t, p, "separate verified pass")
+}
+
+// Lessons live in the fleet-shared partition and surface through the
+// dedicated lane for ANY agent — pass-7 measured per-agent lessons never
+// recalled at all (invisible to 9/12 agents, outranked by echoes for the
+// rest; access_count stayed 0).
+func TestFleetLessonsSharedAcrossAgents(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+	_, err := store.Remember(ctx, &memory.Memory{
+		AgentID:       fleetLessonAgentID,
+		Content:       "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "lesson_mined",
+		MemoryAgentID: "runner-4o-09",
+		Salience:      0.9,
+	})
+	require.NoError(t, err)
+
+	// A DIFFERENT agent gets the lesson through the dedicated lane.
+	a := &Agent{graphMemoryStore: store, config: &Config{Name: "runner-4o-01"}}
+	lessons := a.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000)
+	require.Len(t, lessons, 1)
+	assert.Contains(t, lessons[0].Content, "BIGINT")
 }
 
 // The lesson type must survive ingestion instead of coercing to fact.
