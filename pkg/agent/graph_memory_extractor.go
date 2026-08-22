@@ -130,7 +130,7 @@ func buildConversationBlock(ec extractionContext) string {
 const jsonSchema = `{
   "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system|event|place", "properties": "{}", "is_user": false}],
   "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES|ATTENDED|PURCHASED|VISITED|MEMBER_OF"}],
-  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
+  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation|lesson", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
 }`
 
 // buildGraphMemoryExtractionPrompt creates PASS 1: main topic extraction.
@@ -151,9 +151,18 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 
 	var sb strings.Builder
 	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
+	// Per-turn extraction is the USER-FACTS lane only. Assistant-side
+	// content is deliberately excluded HERE because mid-conversation prose
+	// is where unverified beliefs live (a fleet study measured the wrong
+	// error theory minted 58:8 against the real fix when this pass read
+	// assistant turns). Method knowledge is captured instead by the
+	// ledger-grounded lesson pass at conversation end
+	// (extractLessonsAtEnd), which only ever sees verified error→fix
+	// transitions.
 	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
 	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
-	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior.\n\n")
+	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior ")
+	sb.WriteString("(working lessons are captured by a separate verified pass; do not extract them here).\n\n")
 
 	sb.WriteString(buildConversationBlock(ec))
 
@@ -594,7 +603,8 @@ func isValidMemoryType(t string) bool {
 		memory.MemoryTypeExperience,
 		memory.MemoryTypeFailure,
 		memory.MemoryTypeObservation,
-		memory.MemoryTypeConsolidation:
+		memory.MemoryTypeConsolidation,
+		memory.MemoryTypeLesson:
 		return true
 	}
 	return false

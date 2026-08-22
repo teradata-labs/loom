@@ -322,6 +322,14 @@ message GraphMemoryConfig {
   // Set higher to give the extractor more conversational context per cycle.
   // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
   int32 extraction_window_messages = 14;
+
+  // Share verified lessons across all agents on this server. Opt-in.
+  // When true, lessons mined at conversation end (observed error->fix
+  // transitions) are stored in a shared partition visible to every agent,
+  // and each agent's dedicated lesson recall lane draws from that pool.
+  // When false (default), lessons stay private to the agent that earned
+  // them: stored under its own ID and recalled only by it.
+  bool fleet_lesson_sharing = 15;
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
