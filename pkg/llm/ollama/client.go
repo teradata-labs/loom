@@ -23,18 +23,11 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-)
-
-// Global singleton rate limiter shared across all Ollama clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // Client implements the LLMProvider interface for Ollama.
@@ -143,7 +136,7 @@ func NewClient(cfg Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if cfg.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(cfg.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("ollama|"+cfg.Endpoint, cfg.RateLimiterConfig)
 	}
 
 	return &Client{
@@ -166,14 +159,6 @@ func NewClient(cfg Config) *Client {
 			},
 		},
 	}
-}
-
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Name returns the provider name.

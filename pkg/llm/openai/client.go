@@ -25,19 +25,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-)
-
-// Global singleton rate limiter shared across all OpenAI clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // Client implements the LLMProvider interface for OpenAI's API.
@@ -120,7 +113,7 @@ func NewClient(config Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(config.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("openai|"+llm.CredentialScope(config.APIKey)+"|"+config.Endpoint+"|"+config.Model, config.RateLimiterConfig)
 	}
 
 	return &Client{
@@ -148,14 +141,6 @@ func copyHeaders(m map[string]string) map[string]string {
 		cp[k] = v
 	}
 	return cp
-}
-
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Name returns the provider name.

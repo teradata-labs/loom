@@ -853,7 +853,7 @@ ollama show llama3.1
 
 ### Rate Limiting (Go API Only)
 
-The Ollama client supports client-side rate limiting via the `RateLimiterConfig` field in `ollama.Config`. This is a global singleton shared across all Ollama client instances.
+The Ollama client supports client-side rate limiting via the `RateLimiterConfig` field in `ollama.Config`. Clients on the same endpoint with the same rate-limit values share one limiter.
 
 ```go
 client := ollama.NewClient(ollama.Config{

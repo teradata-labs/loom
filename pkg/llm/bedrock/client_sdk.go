@@ -163,7 +163,7 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 			rlCfg.QueueTimeout = cfg.RateLimiterConfig.QueueTimeout
 		}
 
-		rateLimiter = getOrCreateGlobalRateLimiter(rlCfg)
+		rateLimiter = llm.SharedRateLimiter("bedrock|"+cfg.Region+"|"+cfg.ModelID, rlCfg)
 	}
 
 	// Create Anthropic client with Bedrock backend

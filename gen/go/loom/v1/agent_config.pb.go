@@ -697,7 +697,11 @@ type LLMRateLimitConfig struct {
 	// Default: false (rate limiting is ON). Set to true only if the provider
 	// has its own throttle handling or you are managing concurrency externally.
 	Disabled bool `protobuf:"varint,1,opt,name=disabled,proto3" json:"disabled,omitempty"`
-	// Maximum requests per second across all agents sharing this provider.
+	// Maximum requests per second, shared by every agent on the same provider
+	// quota boundary (endpoint/deployment/model/region, provider-dependent)
+	// with the same rate-limit values. Agents that set different values on the
+	// same boundary each get their own limiter — their combined rate can
+	// exceed the quota, and a warning is logged when that happens.
 	// 0 = use default (2.0 RPS).
 	RequestsPerSecond float64 `protobuf:"fixed64,2,opt,name=requests_per_second,json=requestsPerSecond,proto3" json:"requests_per_second,omitempty"`
 	// Maximum input+output tokens per minute for token-based throttling.

@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -43,12 +42,6 @@ const (
 	DefaultTemperature = 1.0
 	// DefaultTimeout is the default HTTP timeout
 	DefaultTimeout = 60 * time.Second
-)
-
-// Global singleton rate limiter shared across all Anthropic clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // DefaultAnthropicRateLimiterConfig returns safe defaults for Anthropic's API.
@@ -127,7 +120,7 @@ func NewClient(config Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(config.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("anthropic|"+llm.CredentialScope(config.APIKey)+"|"+config.Model, mergedRateLimiterConfig(config.RateLimiterConfig))
 	}
 
 	return &Client{
@@ -143,42 +136,38 @@ func NewClient(config Config) *Client {
 	}
 }
 
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-// Caller-supplied non-zero fields override DefaultAnthropicRateLimiterConfig values.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		// Start from Anthropic-specific defaults, then apply caller overrides.
-		// This ensures we don't blindly fall through to DefaultRateLimiterConfig()
-		// (which is tuned for Bedrock and allows 2 RPS — exceeding Anthropic Tier 1).
-		merged := DefaultAnthropicRateLimiterConfig()
-		merged.Enabled = config.Enabled
-		if config.Logger != nil {
-			merged.Logger = config.Logger
-		}
-		if config.RequestsPerSecond > 0 {
-			merged.RequestsPerSecond = config.RequestsPerSecond
-		}
-		if config.TokensPerMinute > 0 {
-			merged.TokensPerMinute = config.TokensPerMinute
-		}
-		if config.BurstCapacity > 0 {
-			merged.BurstCapacity = config.BurstCapacity
-		}
-		if config.MinDelay > 0 {
-			merged.MinDelay = config.MinDelay
-		}
-		if config.MaxRetries > 0 {
-			merged.MaxRetries = config.MaxRetries
-		}
-		if config.RetryBackoff > 0 {
-			merged.RetryBackoff = config.RetryBackoff
-		}
-		if config.QueueTimeout > 0 {
-			merged.QueueTimeout = config.QueueTimeout
-		}
-		globalRateLimiter = llm.NewRateLimiter(merged)
-	})
-	return globalRateLimiter
+// mergedRateLimiterConfig starts from Anthropic-specific defaults, then
+// applies caller overrides. This ensures we don't blindly fall through to
+// llm.DefaultRateLimiterConfig() (which is tuned for Bedrock and allows
+// 2 RPS — exceeding Anthropic Tier 1).
+func mergedRateLimiterConfig(config llm.RateLimiterConfig) llm.RateLimiterConfig {
+	merged := DefaultAnthropicRateLimiterConfig()
+	merged.Enabled = config.Enabled
+	if config.Logger != nil {
+		merged.Logger = config.Logger
+	}
+	if config.RequestsPerSecond > 0 {
+		merged.RequestsPerSecond = config.RequestsPerSecond
+	}
+	if config.TokensPerMinute > 0 {
+		merged.TokensPerMinute = config.TokensPerMinute
+	}
+	if config.BurstCapacity > 0 {
+		merged.BurstCapacity = config.BurstCapacity
+	}
+	if config.MinDelay > 0 {
+		merged.MinDelay = config.MinDelay
+	}
+	if config.MaxRetries > 0 {
+		merged.MaxRetries = config.MaxRetries
+	}
+	if config.RetryBackoff > 0 {
+		merged.RetryBackoff = config.RetryBackoff
+	}
+	if config.QueueTimeout > 0 {
+		merged.QueueTimeout = config.QueueTimeout
+	}
+	return merged
 }
 
 // Name returns the provider name.

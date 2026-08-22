@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -31,12 +30,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-)
-
-// Global singleton rate limiter shared across all Azure OpenAI clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // Client implements the LLMProvider interface for Azure OpenAI.
@@ -136,7 +129,7 @@ func NewClient(config Config) (*Client, error) {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(config.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("azure-openai|"+config.Endpoint+"|"+config.DeploymentID, config.RateLimiterConfig)
 	}
 
 	// Strip "Bearer " prefix from Entra token if present, since we add it
@@ -158,14 +151,6 @@ func NewClient(config Config) (*Client, error) {
 			Timeout: config.Timeout,
 		},
 	}, nil
-}
-
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Name returns the provider name.
