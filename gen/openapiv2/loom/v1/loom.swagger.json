@@ -4112,6 +4112,10 @@
         "outputPolicy": {
           "$ref": "#/definitions/v1OutputPolicy",
           "description": "Optional: Output validation policy for this task's output."
+        },
+        "levelingPolicy": {
+          "$ref": "#/definitions/v1LevelingPolicy",
+          "description": "Optional: capability-leveling policy for this task. Leveling activates\nonly when leveling_policy.enabled is true; when active, the task's\noutput_policy (field 4) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\ntask behaves exactly as before, including leaving output_policy\nunenforced by the executor."
         }
       },
       "description": "AgentTask represents a single agent task with its own prompt."
@@ -5713,6 +5717,11 @@
         "rateLimit": {
           "$ref": "#/definitions/v1LLMRateLimitConfig",
           "description": "Client-side rate limiting configuration.\nWhen nil, rate limiting is enabled with provider-appropriate defaults."
+        },
+        "seed": {
+          "type": "string",
+          "format": "int64",
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\nHonored by: ollama. Other providers ignore it today."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
@@ -5861,6 +5870,88 @@
         }
       },
       "description": "LetsEncryptConfig for automatic HTTPS with Let's Encrypt."
+    },
+    "v1LevelingPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Leveling is off unless explicitly true."
+        },
+        "shortCircuitMid": {
+          "type": "boolean",
+          "description": "When unset, defaults to true: mid-tier primaries short-circuit (no\njudge, no escalation) like frontier ones."
+        },
+        "maxEscalations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Ladder rungs allowed beyond the primary. When unset, defaults to 1.\n0 disables escalation while keeping per-tier retry/coercion active."
+        },
+        "maxCostUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Hard cost ceiling in USD across all leveling-visible LLM calls\n(attempts on every rung plus judge spend). 0 = no ceiling."
+        },
+        "ladder": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1LevelingRung"
+          },
+          "description": "Escalation ladder beyond the primary model, tried in order."
+        },
+        "frontierMinOutputCostUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Output price ($/1M tokens) at or above which a reasoning model is\nclassified frontier. 0 = built-in default (10.0)."
+        },
+        "midMinOutputCostUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Output price ($/1M tokens) at or above which a non-reasoning model is\nclassified mid. 0 = built-in default (1.5)."
+        },
+        "tierPolicies": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/v1LevelingTierPolicy"
+          },
+          "description": "Per-tier knob overrides keyed by tier name: \"local\", \"small-open\",\n\"mid\", \"frontier\", \"unknown\". Absent tiers use built-in defaults."
+        }
+      },
+      "description": "LevelingPolicy configures capability leveling: escalate a weak model's\nfailed output up a ladder of stronger models, spending nothing when the\nprimary output passes. Leveling activates ONLY when enabled is true; an\nabsent policy or enabled=false leaves executor behavior unchanged,\nincluding leaving any OutputPolicy on the same stage/task unenforced\n(matching pre-leveling behavior)."
+    },
+    "v1LevelingRung": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider name, used to resolve the rung's LLM from the executing agent's\nprovider pool (Agent.GetProviderPool) and for catalog tier resolution."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier for catalog tier resolution. Optional when role is set:\nthe resolved role LLM reports its own model."
+        },
+        "role": {
+          "$ref": "#/definitions/v1LLMRole",
+          "description": "Optional: resolve the rung's LLM from the executing agent's role LLMs\n(Agent.GetLLMForRole). Takes precedence over the provider pool lookup\nwhen set to a value other than LLM_ROLE_UNSPECIFIED."
+        }
+      },
+      "description": "LevelingRung is one step of a capability-leveling escalation ladder — a\nstronger model tried when a weaker primary's output fails validation."
+    },
+    "v1LevelingTierPolicy": {
+      "type": "object",
+      "properties": {
+        "retryBudget": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Same-model retry count applied when the stage/task OutputPolicy carries\nno retry_policy of its own."
+        },
+        "aggressiveCoercion": {
+          "type": "boolean",
+          "description": "Attempt free JSON extraction from mixed text before declaring a schema\nfailure (no LLM call)."
+        }
+      },
+      "description": "LevelingTierPolicy holds per-tier capability-leveling knobs, overriding the\nbuilt-in defaults for one tier."
     },
     "v1ListAgentPresetsResponse": {
       "type": "object",
@@ -7091,6 +7182,10 @@
         "hitlGate": {
           "$ref": "#/definitions/v1HITLGate",
           "description": "Optional: Human-in-the-loop approval gate evaluated AFTER this stage's\noutput passes validation and BEFORE the next stage starts. When the gate\nfires, the executor either asks a configured HITLHandler for an inline\ndecision or suspends the workflow with a WorkflowCheckpoint the host can\npersist and later resume. Gates are supported on pipeline and iterative\npatterns only."
+        },
+        "levelingPolicy": {
+          "$ref": "#/definitions/v1LevelingPolicy",
+          "description": "Optional: capability-leveling policy for this stage. Leveling activates\nonly when leveling_policy.enabled is true; when active, the stage's\noutput_policy (field 6) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\nstage behaves exactly as before, including leaving output_policy\nunenforced by the pipeline executor."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
