@@ -1917,6 +1917,8 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
 		}()
 	}
+	// Error-triggered lesson tracking is per-conversation state.
+	a.clearErrorLessonState(sessionID)
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
@@ -2649,6 +2651,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// when the model fires multiple tools in parallel.
 		var pendingSidecars []Message
 
+		// batchErrTexts: tool-error messages from this batch, used to
+		// re-query the lesson partition at failure time (the error-triggered
+		// recall lane in graph_memory_lessons.go).
+		var batchErrTexts []string
+
 		for i, toolCall := range llmResp.ToolCalls {
 			if toolExecutionCount >= a.config.MaxToolExecutions {
 				break
@@ -2876,6 +2883,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// now, before compilation can evict this turn.
 			a.recordToolLedger(session.ID, toolCall, result)
 
+			// Collect failure text for error-triggered lesson recall
+			// (injected AFTER the whole batch — never between a tool_use
+			// and its tool_result).
+			if result != nil && result.Error != nil && result.Error.Message != "" {
+				batchErrTexts = append(batchErrTexts, result.Error.Message)
+			}
+
 			// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 			// — the skill body belongs under the user-instruction slot, not the
 			// tool-result data slot), BUFFER it. Sidecars from an entire tool
@@ -2916,6 +2930,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Sidecars never advance the turn and hold no special status beyond
 			// that (HLD §4.5).
 			a.appendMessage(ctx, session, sidecar, false)
+		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(batchErrTexts) > 0 {
+			a.injectErrorLessons(ctx, session, batchErrTexts)
 		}
 	}
 

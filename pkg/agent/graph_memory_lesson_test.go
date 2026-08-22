@@ -286,3 +286,99 @@ func TestLessonTypeIsValid(t *testing.T) {
 	assert.True(t, isValidMemoryType("lesson"))
 	assert.False(t, isValidMemoryType("hunch"))
 }
+
+func TestErrorLessonQuery(t *testing.T) {
+	q := errorLessonQuery(`Error 2616: numeric overflow occurred during computation (column "CC_Number")`)
+	assert.Contains(t, q, "overflow")
+	assert.Contains(t, q, "CC_Number")
+	assert.NotContains(t, q, `"`)
+	assert.NotContains(t, q, "(")
+	// Caps runaway error dumps.
+	long := errorLessonQuery(strings.Repeat("verylongword ", 50))
+	assert.LessOrEqual(t, len(strings.Fields(long)), 12)
+	assert.Equal(t, "", errorLessonQuery("!!! ()"))
+}
+
+// The error-triggered lane: an error text pulls the matching lesson into the
+// conversation, repeats inject nothing, and the injection cap holds.
+func TestInjectErrorLessons(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+	_, err := store.Remember(ctx, &memory.Memory{
+		AgentID:       fleetLessonAgentID,
+		Content:       "numeric overflow inserting CC_Number into an INTEGER column — declare the column BIGINT",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "lesson_mined",
+		MemoryAgentID: "runner-4o-09",
+		Salience:      0.9,
+	})
+	require.NoError(t, err)
+
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
+	}
+	session := &types.Session{ID: "s-err-1"}
+
+	errText := "Error 2616: numeric overflow occurred during computation of CC_Number"
+	a.injectErrorLessons(ctx, session, []string{errText})
+
+	msgs := session.GetMessages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "system", msgs[0].Role)
+	assert.Contains(t, msgs[0].Content, "BIGINT")
+	assert.Contains(t, msgs[0].Content, "matched to the error just hit")
+
+	// Same error again: the lesson was already shown — nothing new lands.
+	a.injectErrorLessons(ctx, session, []string{errText})
+	assert.Len(t, session.GetMessages(), 1)
+
+	// A different session gets its own delivery.
+	session2 := &types.Session{ID: "s-err-2"}
+	a.injectErrorLessons(ctx, session2, []string{errText})
+	assert.Len(t, session2.GetMessages(), 1)
+
+	// Teardown clears tracking.
+	a.clearErrorLessonState(session.ID)
+	a.errorLessonMu.Lock()
+	_, present := a.errorLessonState[session.ID]
+	a.errorLessonMu.Unlock()
+	assert.False(t, present)
+}
+
+// Without fleet sharing, the error lane still serves the earning agent's
+// own lessons — and nothing to anyone else.
+func TestInjectErrorLessonsPrivate(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+	_, err := store.Remember(ctx, &memory.Memory{
+		AgentID:       "runner-4o-09",
+		Content:       "numeric overflow inserting CC_Number into an INTEGER column — declare the column BIGINT",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "lesson_mined",
+		MemoryAgentID: "runner-4o-09",
+		Salience:      0.9,
+	})
+	require.NoError(t, err)
+
+	errText := "numeric overflow occurred during computation of CC_Number"
+
+	owner := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-09"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
+	ownerSession := &types.Session{ID: "s-own"}
+	owner.injectErrorLessons(ctx, ownerSession, []string{errText})
+	assert.Len(t, ownerSession.GetMessages(), 1)
+
+	other := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
+	otherSession := &types.Session{ID: "s-other"}
+	other.injectErrorLessons(ctx, otherSession, []string{errText})
+	assert.Empty(t, otherSession.GetMessages())
+}
