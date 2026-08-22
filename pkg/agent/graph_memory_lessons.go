@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.uber.org/zap"
 
@@ -47,6 +48,9 @@ const (
 	lessonExtractionTimeout = 30 * time.Second
 	// lessonSalienceFloor: a verified lesson is always high-salience.
 	lessonSalienceFloor = 0.8
+	// lessonRecallBudget bounds tokens for one lesson-lane recall; lessons
+	// are single sentences, so this is generous.
+	lessonRecallBudget = 2000
 )
 
 // minedEvent is one tool execution as the miner sees it. Class key and
@@ -86,6 +90,125 @@ func (a *Agent) lessonPartition() string {
 
 // maxFleetLessons caps the dedicated lesson lane in the injected context.
 const maxFleetLessons = 5
+
+// maxErrorLessonInjections caps error-triggered lesson injections per
+// session: enough to cover distinct failure modes, small enough that a
+// flailing conversation doesn't fill its context with repeated lessons.
+const maxErrorLessonInjections = 5
+
+// errorLessonSession tracks which lessons a session has already been shown
+// through the error-triggered path, so a repeated failure re-injects nothing.
+type errorLessonSession struct {
+	injected   map[string]bool // lesson memory IDs already surfaced
+	injections int
+}
+
+// errorLessonQuery reduces raw tool-error text to FTS-safe bareword terms.
+// Error text carries punctuation, quotes, and parentheses that FTS5 parses
+// as syntax; only alphanumeric/underscore words survive, capped so a huge
+// error dump doesn't become a huge query.
+func errorLessonQuery(errText string) string {
+	const maxTerms = 12
+	var terms []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() >= 3 { // 1-2 char fragments only add noise
+			terms = append(terms, cur.String())
+		}
+		cur.Reset()
+	}
+	for _, r := range errText {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			cur.WriteRune(r)
+			continue
+		}
+		flush()
+		if len(terms) >= maxTerms {
+			break
+		}
+	}
+	flush()
+	if len(terms) > maxTerms {
+		terms = terms[:maxTerms]
+	}
+	return strings.Join(terms, " ")
+}
+
+// injectErrorLessons is the error-triggered recall lane: when a tool batch
+// contained failures, the lesson partition is re-queried with the ERROR
+// text — not the task text — and any not-yet-seen matches are appended to
+// the conversation before the model's retry turn. This closes the gap the
+// conversation-start lane cannot: a lesson whose trigger is an error that
+// has not happened yet shares no vocabulary with the task, so it can only
+// be delivered at failure time. Called after the whole tool batch is
+// appended (never between a tool_use and its tool_result).
+func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, errTexts []string) {
+	if a.graphMemoryStore == nil || len(errTexts) == 0 {
+		return
+	}
+	if a.graphMemoryConfig != nil && !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	query := errorLessonQuery(strings.Join(errTexts, " "))
+	if query == "" {
+		return
+	}
+	lessons := a.fleetLessons(ctx, query, lessonRecallBudget)
+	if len(lessons) == 0 {
+		return
+	}
+
+	a.errorLessonMu.Lock()
+	if a.errorLessonState == nil {
+		a.errorLessonState = map[string]*errorLessonSession{}
+	}
+	st := a.errorLessonState[session.ID]
+	if st == nil {
+		st = &errorLessonSession{injected: map[string]bool{}}
+		a.errorLessonState[session.ID] = st
+	}
+	if st.injections >= maxErrorLessonInjections {
+		a.errorLessonMu.Unlock()
+		return
+	}
+	var fresh []*memory.Memory
+	for _, m := range lessons {
+		if !st.injected[m.ID] {
+			st.injected[m.ID] = true
+			fresh = append(fresh, m)
+		}
+	}
+	if len(fresh) > 0 {
+		st.injections++
+	}
+	a.errorLessonMu.Unlock()
+
+	if len(fresh) == 0 {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[Verified Lessons — matched to the error just hit]\n")
+	sb.WriteString("These fixes were observed to succeed on this error in prior work:\n")
+	for _, m := range fresh {
+		sb.WriteString("- ")
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
+	}
+	session.AddMessage(ctx, types.Message{
+		Role:    "system",
+		Content: sb.String(),
+	})
+}
+
+// clearErrorLessonState drops the session's error-injection tracking
+// (paired with ledger teardown at conversation end).
+func (a *Agent) clearErrorLessonState(sessionID string) {
+	a.errorLessonMu.Lock()
+	delete(a.errorLessonState, sessionID)
+	a.errorLessonMu.Unlock()
+}
 
 // recordToolLedger appends one execution to the session's mining ledger.
 // Called from the conversation loop when the tool result lands. Previews are

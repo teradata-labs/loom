@@ -219,6 +219,11 @@ type Agent struct {
 	// from the compiled message view.
 	toolLedgerMu sync.Mutex
 	toolLedgers  map[string][]minedEvent
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
