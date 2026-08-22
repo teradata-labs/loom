@@ -728,7 +728,7 @@
         "requestsPerSecond": {
           "type": "number",
           "format": "double",
-          "description": "Maximum requests per second across all agents sharing this provider.\n0 = use default (2.0 RPS)."
+          "description": "Maximum requests per second, shared by every agent on the same provider\nquota boundary (endpoint/deployment/model/region, provider-dependent)\nwith the same rate-limit values. Agents that set different values on the\nsame boundary each get their own limiter — their combined rate can\nexceed the quota, and a warning is logged when that happens.\n0 = use default (2.0 RPS)."
         },
         "tokensPerMinute": {
           "type": "string",

@@ -65,7 +65,7 @@ The Gemini provider connects Loom to Google's Gemini models through the Google A
 - Token-by-token streaming via Server-Sent Events (SSE)
 - Implicit caching (automatic since May 2025; cached tokens tracked in usage metadata)
 - Cost calculation per model
-- Client-side rate limiting (shared singleton across all Gemini client instances)
+- Client-side rate limiting (shared per model + rate-limit config)
 
 **Source code**: `pkg/llm/gemini/client.go`, `pkg/llm/gemini/types.go`
 
@@ -470,7 +470,7 @@ The `gemini-3.1-pro-preview` and `gemini-3.1-flash-lite-preview` catalog IDs are
 
 ## Rate Limiting
 
-The Gemini provider uses a **global singleton rate limiter** shared across all Gemini client instances in the process. This is initialized once via `sync.Once`.
+The Gemini provider uses a **shared rate limiter**: clients on the same model with the same rate-limit values share one limiter; a different model or different values gets its own (a warning is logged when two configs share one quota boundary).
 
 Rate limiting is optional and controlled by the `RateLimiterConfig` passed in the `Config` struct. When enabled via YAML:
 
@@ -564,7 +564,7 @@ error reading stream: unexpected EOF
 
 7. **No call IDs**: Gemini does not provide function call IDs in its response. The reversed tool name is used as the call ID.
 
-8. **Global rate limiter**: The rate limiter is a process-wide singleton. All Gemini client instances share the same rate limiter, initialized from the first client that enables it.
+8. **Shared rate limiter**: Clients on the same model with the same rate-limit values share one limiter. Differing values on the same model are honored separately (their combined rate can exceed the quota; a warning is logged).
 
 9. **Cached tokens and rate limits**: Gemini's implicit caching provides cost savings, but cached tokens still count against rate limits.
 

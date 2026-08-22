@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -1204,14 +1205,19 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		if endpoint == "" {
 			return nil, fmt.Errorf("AZURE_OPENAI_ENDPOINT environment variable not set")
 		}
-		return azureopenai.NewClient(azureopenai.Config{
+		azCfg := azureopenai.Config{
 			APIKey:            apiKey,
 			Endpoint:          endpoint,
 			DeploymentID:      config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
-		})
+		}
+		if scheduler.Enabled() {
+			azCfg.CapacityObserver = scheduler.Default().For(
+				"azure-openai|"+endpoint+"|"+config.Model, scheduler.Config{})
+		}
+		return azureopenai.NewClient(azCfg)
 
 	case "mistral":
 		apiKey := os.Getenv("MISTRAL_API_KEY")
@@ -1265,9 +1271,18 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 // When proto config has disabled=true, returns a disabled rate limiter config.
 // Non-zero numeric fields override the provider defaults set by NewRateLimiter().
 func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.RateLimiterConfig {
+	return BuildRateLimiterConfig(proto, r.logger)
+}
+
+// BuildRateLimiterConfig converts the proto LLMRateLimitConfig to the llm
+// package config. Exported so every client-construction path (the agent
+// registry and looms' custom-LLM path) applies identical rate-limit
+// semantics — a client built without this is unthrottled and, because 429
+// retry lives inside the limiter, also retry-less (issue #348).
+func BuildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig, logger *zap.Logger) llm.RateLimiterConfig {
 	cfg := llm.RateLimiterConfig{
 		Enabled: true,
-		Logger:  r.logger,
+		Logger:  logger,
 		// All numeric fields left at zero → NewRateLimiter() fills them from DefaultRateLimiterConfig()
 	}
 
