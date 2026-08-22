@@ -28,6 +28,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm"
+	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -1778,6 +1779,13 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
+
+	// Session-handle lifecycle (issue #345): MCP tools that mint session
+	// handles get them auto-released when this conversation ends. Agent
+	// discretion doesn't work — in a 3×64-agent live study, zero agents
+	// released a handle — so the runtime owns the cleanup.
+	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
+	defer handleCollector.ReleaseAll(zap.L())
 
 	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()

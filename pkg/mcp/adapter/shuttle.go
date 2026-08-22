@@ -218,6 +218,11 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Call MCP tool with camelCase parameters
 	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, camelCaseParams)
+	if err != nil {
+		// Park-and-wake (issue #343): a failure that links a resource parks
+		// here and retries when the resource updates; otherwise unchanged.
+		mcpResultInterface, err = a.awaitLinkedResource(ctx, camelCaseParams, err)
+	}
 	executionTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
@@ -252,6 +257,10 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// offload, the persist-time row bound and the retrieval page bound are the
 	// only size logic, so no second bound may cut the payload upstream here.
 	data := convertMCPContent(mcpResult.Content)
+
+	// Session-handle lifecycle (issue #345): collect minted handles for
+	// end-of-conversation auto-release; drop ones the agent released itself.
+	trackSessionHandles(ctx, a, params, data)
 
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
@@ -319,6 +328,17 @@ func convertMCPContent(content []protocol.Content) interface{} {
 			if c.Resource != nil {
 				item["uri"] = c.Resource.URI
 				item["mimeType"] = c.Resource.MimeType
+			}
+		case "resource_link":
+			// A reference to a server resource without its contents
+			// (2025-06-18+): preserve uri/name so the agent can see and act
+			// on the link instead of receiving an empty content item.
+			item["uri"] = c.URI
+			if c.Name != "" {
+				item["name"] = c.Name
+			}
+			if c.MimeType != "" {
+				item["mimeType"] = c.MimeType
 			}
 		}
 
