@@ -112,7 +112,7 @@ func TestMineLessonPairsCrossStatementFix(t *testing.T) {
 	joined := strings.Join(pairs[0].Intervening, " ")
 	assert.Contains(t, joined, "BIGINT", "the re-CREATE carrying the fix must be visible")
 
-	prompt := buildLessonMiningPrompt(pairs)
+	prompt := buildLessonMiningPrompt(pairs, "")
 	assert.Contains(t, prompt, "CALL BETWEEN FAILURE AND SUCCESS")
 	assert.Contains(t, prompt, "name THAT change")
 }
@@ -203,7 +203,7 @@ func TestLessonMiningPromptShowsResultAndSkipRule(t *testing.T) {
 	pairs := pairEvents(a.takeToolLedger("s3"))
 	require.Len(t, pairs, 1)
 
-	prompt := buildLessonMiningPrompt(pairs)
+	prompt := buildLessonMiningPrompt(pairs, "")
 	assert.Contains(t, prompt, "SUCCEEDED RESULT: Statement completed. 0 rows inserted.",
 		"the miner must see what the fix actually returned")
 	assert.Contains(t, prompt, "a success that did no work is NOT a fix")
@@ -263,12 +263,68 @@ func TestSQLClass(t *testing.T) {
 	assert.Equal(t, "", sqlClass("  "))
 }
 
-// The mining prompt states the evidence contract and the skip rule.
+// The mining prompt states the auditor stance, the evidence contract, and
+// the skip rules.
 func TestLessonMiningPrompt(t *testing.T) {
-	p := buildLessonMiningPrompt([]lessonPair{{Tool: "x", FailingIn: "{a}", ErrorText: "boom", SucceedsIn: "{b}"}})
-	assert.Contains(t, p, "VERIFIED fix")
+	p := buildLessonMiningPrompt([]lessonPair{{Tool: "x", FailingIn: "{a}", ErrorText: "boom", SucceedsIn: "{b}"}}, "")
+	assert.Contains(t, p, "CLAIMED fix")
+	assert.Contains(t, p, "AUDITING")
+	assert.Contains(t, p, "what it traded away")
 	assert.Contains(t, p, "Skip an item")
 	assert.Contains(t, p, `"memory_type": "lesson"`)
+	assert.NotContains(t, p, "THE CONVERSATION'S TASK", "no task block when task is empty")
+}
+
+// The auditor trio: task background, downstream harm evidence, and the
+// warning-not-fix rule — the information a healthy-looking defensive cast
+// hides (measured: card_id NULLed fleet-wide while activity_count read
+// 55316; the proof sat three ledger events later, unseen).
+func TestLessonMiningPromptAuditorTrio(t *testing.T) {
+	pair := lessonPair{
+		Tool:           "execute_statement",
+		FailingIn:      `{"sql":"INSERT INTO vt_card_day SELECT CAST(CC_Number AS INTEGER) ..."}`,
+		ErrorText:      "[Error 2616] Numeric overflow occurred during computation",
+		SucceedsIn:     `{"sql":"INSERT INTO vt_card_day SELECT CASE WHEN ... ELSE NULL END ..."}`,
+		SucceedsResult: `{"activity_count":55316,"status":"success"}`,
+		Downstream: []string{
+			`{"sql":"SELECT COUNT(DISTINCT card_id) FROM vt_card_day"} RETURNED {"row_count":1,"rows":[[0]]}`,
+		},
+		ChangedFragments: []string{"CASE", "NULL"},
+	}
+	task := "Create a summary of card transactions for 2004-07-15: how many cards, total amount."
+	p := buildLessonMiningPrompt([]lessonPair{pair}, task)
+
+	assert.Contains(t, p, "THE CONVERSATION'S TASK")
+	assert.Contains(t, p, "how many cards, total amount")
+	assert.Contains(t, p, "lessons must still generalize")
+	assert.Contains(t, p, `LATER USE OF THE SAME OBJECT: {"sql":"SELECT COUNT(DISTINCT card_id)`)
+	assert.Contains(t, p, "record the lesson as a WARNING against that change")
+	assert.Contains(t, p, "safe only when the column is not used as a key")
+}
+
+// downstreamUses pulls later successful reads of the pair's target object,
+// with results — and nothing about other objects.
+func TestDownstreamUses(t *testing.T) {
+	events := []minedEvent{
+		{key: "execute_statement:INSERT VT_CARD_DAY", ok: false, errText: "overflow",
+			input: `{"sql":"INSERT INTO vt_card_day ..."}`},
+		{key: "execute_statement:INSERT VT_CARD_DAY", ok: true,
+			input:         `{"sql":"INSERT INTO vt_card_day ... CASE ... NULL ..."}`,
+			resultPreview: `{"activity_count":55316}`},
+		{key: "execute_query:SELECT OTHER_TABLE", ok: true,
+			input:         `{"sql":"SELECT * FROM other_table"}`,
+			resultPreview: `{"row_count":5}`},
+		{key: "execute_query:SELECT VT_CARD_DAY", ok: true,
+			input:         `{"sql":"SELECT COUNT(DISTINCT card_id) FROM vt_card_day"}`,
+			resultPreview: `{"row_count":1,"rows":[[0]]}`},
+	}
+	uses := downstreamUses(events, 1, events[1].key)
+	require.Len(t, uses, 1)
+	assert.Contains(t, uses[0], "COUNT(DISTINCT card_id)")
+	assert.Contains(t, uses[0], `RETURNED {"row_count":1,"rows":[[0]]}`)
+
+	// No target identifier in the class: no downstream evidence.
+	assert.Nil(t, downstreamUses(events, 1, "some_tool"))
 }
 
 // The per-turn prompt is the user-facts lane only: mid-conversation beliefs

@@ -46,6 +46,8 @@ const (
 	lessonInputPreview  = 400
 	lessonErrorPreview  = 300
 	lessonResultPreview = 200
+	// lessonTaskPreview bounds the conversation-task background block.
+	lessonTaskPreview = 600
 	// lessonExtractionTimeout bounds the single mining LLM call.
 	lessonExtractionTimeout = 30 * time.Second
 	// lessonSalienceFloor: a verified lesson is always high-salience.
@@ -356,6 +358,12 @@ type lessonPair struct {
 	// so the miner can reject "fixes" that silenced the error by doing no
 	// work (empty rowset, zero rows affected, all-NULL aggregates).
 	SucceedsResult string
+	// Downstream carries later uses of the same object ("input RETURNED
+	// result"), the harm evidence a healthy-looking fix hides: a defensive
+	// cast that NULLed a key column shows activity_count 55316 on its own
+	// INSERT — and rows of zeros when the table is read three calls later.
+	// The proof lives in the same ledger; the miner just never saw it.
+	Downstream []string
 	// ChangedFragments are the tokens the recovery actually changed,
 	// computed mechanically (failing vs succeeding input, plus each
 	// intervening call vs the most recent earlier call of its class).
@@ -530,6 +538,7 @@ func pairEvents(events []minedEvent) []lessonPair {
 			ErrorText:        events[fi].errText,
 			SucceedsIn:       ev.input,
 			SucceedsResult:   ev.resultPreview,
+			Downstream:       downstreamUses(events, i, ev.key),
 			Intervening:      between,
 			ChangedFragments: changedFragments(events, fi, i, betweenIdx),
 		})
@@ -538,6 +547,40 @@ func pairEvents(events []minedEvent) []lessonPair {
 		}
 	}
 	return pairs
+}
+
+// maxDownstreamUses caps the later-use evidence carried per pair.
+const maxDownstreamUses = 3
+
+// downstreamUses collects later successful uses of the pair's target object
+// (the identifier its class keys on) with their result previews. The last
+// few are kept — the reads closest to the conversation's final answer are
+// the ones that reveal whether the "fixed" object actually holds good data.
+func downstreamUses(events []minedEvent, succeedIdx int, key string) []string {
+	_, class, found := strings.Cut(key, ":")
+	if !found {
+		return nil
+	}
+	fields := strings.Fields(class)
+	if len(fields) < 2 {
+		return nil
+	}
+	target := fields[1]
+	var uses []string
+	for k := succeedIdx + 1; k < len(events); k++ {
+		ev := events[k]
+		if !ev.ok || ev.resultPreview == "" {
+			continue
+		}
+		if !strings.Contains(strings.ToUpper(ev.input), target) {
+			continue
+		}
+		uses = append(uses, truncate(ev.input, lessonResultPreview)+" RETURNED "+ev.resultPreview)
+	}
+	if len(uses) > maxDownstreamUses {
+		uses = uses[len(uses)-maxDownstreamUses:]
+	}
+	return uses
 }
 
 // sqlClass reduces a SQL statement to verb + first target identifier, so a
@@ -563,11 +606,18 @@ func sqlClass(sql string) string {
 // buildLessonMiningPrompt asks for one reusable cause→fix memory per
 // verified transition. The evidence is the ledger excerpt itself, so the
 // model is describing an observed fix, never endorsing a theory.
-func buildLessonMiningPrompt(pairs []lessonPair) string {
+func buildLessonMiningPrompt(pairs []lessonPair, task string) string {
 	var sb strings.Builder
-	sb.WriteString("Each numbered item below is a VERIFIED fix from a tool-execution ledger: a tool call ")
-	sb.WriteString("that failed, the error it produced, and the later call of the same kind that succeeded. ")
-	sb.WriteString("The fix demonstrably worked — your job is only to name it.\n\n")
+	sb.WriteString("Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call ")
+	sb.WriteString("that failed, the error it produced, and the later call of the same kind that stopped ")
+	sb.WriteString("erroring. You are AUDITING these claims: an error going away proves nothing about the ")
+	sb.WriteString("work being right. Name what each change did — and what it traded away.\n\n")
+	if task != "" {
+		sb.WriteString("THE CONVERSATION'S TASK (context for judging whether a fix served it — ")
+		sb.WriteString("lessons must still generalize beyond this task):\n")
+		sb.WriteString(task)
+		sb.WriteString("\n\n")
+	}
 	for i, p := range pairs {
 		fmt.Fprintf(&sb, "%d. tool: %s\n   FAILED INPUT: %s\n   ERROR: %s\n", i+1, p.Tool, p.FailingIn, p.ErrorText)
 		for _, b := range p.Intervening {
@@ -577,21 +627,27 @@ func buildLessonMiningPrompt(pairs []lessonPair) string {
 		if p.SucceedsResult != "" {
 			fmt.Fprintf(&sb, "   SUCCEEDED RESULT: %s\n", p.SucceedsResult)
 		}
+		for _, d := range p.Downstream {
+			fmt.Fprintf(&sb, "   LATER USE OF THE SAME OBJECT: %s\n", d)
+		}
 		if len(p.ChangedFragments) > 0 {
 			fmt.Fprintf(&sb, "   OBSERVED CHANGED FRAGMENTS: %s\n", strings.Join(p.ChangedFragments, ", "))
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — the cause and the fix, not the story. Compare the failed and succeeded inputs: the difference between them is the fix. When the failed and succeeded inputs are identical or nearly identical, the fix happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson. Example form: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT".
+	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — one or two sentences, the cause, the change, and its trade-off; not the story. Compare the failed and succeeded inputs: the difference between them is the change. When the failed and succeeded inputs are identical or nearly identical, the change happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson.
+
+State the trade-off and its applicability condition whenever the change has one. A change that silences an error by discarding or nulling data is a trade, not a free fix. Example of a clean fix: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT". Example of a trade-off lesson: "wrapping CC_Number in a defensive CAST silences numeric overflow but NULLs unconvertible values — safe only when the column is not used as a key or in counts downstream".
+
+Judge each claim against the evidence:
+- LATER USE OF THE SAME OBJECT shows what the "fixed" object actually held afterward. Zeros, NULLs, or empty rows where the task expected data mean the change corrupted the data — record the lesson as a WARNING against that change, stating what it broke, not as a fix.
+- SUCCEEDED RESULT: a success that did no work is NOT a fix. An empty result set, zero rows inserted/affected (e.g. "activity_count":0 on an INSERT), or all-NULL values means the change silenced the error by matching nothing. Skip such items entirely.
+- Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
 
 The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, computed mechanically from the ledger. The lesson MUST quote these fragments verbatim. When several fragments changed, name ALL of them in the lesson — never pick one and present it as the sole cause; the ledger cannot tell which mattered, and neither can you.
 
-Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
-
-Check the SUCCEEDED RESULT before trusting a fix: a success that did no work is NOT a fix. An empty result set, zero rows inserted/affected (e.g. "activity_count":0 on an INSERT), or all-NULL values means the change silenced the error by matching nothing — extracting that as a lesson teaches every agent to produce confident empty answers. Skip such items entirely.
-
 Return ONLY a JSON object:
-{"entities": [], "relationships": [], "memories": [{"content": "cause and fix, one sentence", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}
+{"entities": [], "relationships": [], "memories": [{"content": "cause, change, and trade-off", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}
 `)
 	return sb.String()
 }
@@ -636,10 +692,24 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	// when this conversation mints nothing new.
 	a.applyLessonCredit(ctx, events, a.takeErrorLessonState(sessionID))
 
+	// The conversation's opening request, as BACKGROUND for the miner:
+	// whether a change served or corrupted the work is judgeable only
+	// against what the work was for. Lessons still must generalize.
+	var task string
+	session, haveSession := a.memory.GetSession(sessionID)
+	if haveSession && session != nil {
+		for _, m := range session.GetMessages() {
+			if m.Role == "user" && m.Content != "" {
+				task = truncate(m.Content, lessonTaskPreview)
+				break
+			}
+		}
+	}
+
 	var pairs []lessonPair
 	if len(events) > 0 {
 		pairs = pairEvents(events)
-	} else if session, ok := a.memory.GetSession(sessionID); ok && session != nil {
+	} else if haveSession && session != nil {
 		// Fallback (restored sessions, ledgerless paths): the compiled view.
 		// It under-reports long conversations — compilation evicts early
 		// turns — which is exactly why the ledger is primary.
@@ -657,7 +727,7 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		llmProvider = a.compressorLLM
 	}
 	response, err := llmProvider.Chat(extractCtx, []types.Message{
-		{Role: "user", Content: buildLessonMiningPrompt(pairs)},
+		{Role: "user", Content: buildLessonMiningPrompt(pairs, task)},
 	}, nil)
 	if err != nil {
 		zap.L().Debug("lesson mining: LLM call failed", zap.Error(err))
