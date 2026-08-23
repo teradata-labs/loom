@@ -1,6 +1,8 @@
 # Lesson Grounding and Outcome Credit
 
-**Status**: 🚧 In Development (branch `feat/graph-memory-lesson-extraction`)
+**Status**: ✅ Implemented and measured (branch `feat/graph-memory-lesson-extraction`);
+final ablation and full-curriculum results in the **Measured results** section
+at the bottom.
 
 ## Problem (measured, 2026-08-22 fleet curriculum)
 
@@ -118,3 +120,58 @@ mining pair (no lesson minted) and cannot score an outcome-credit recovery
 - Credit-side vacuous detection is mechanical-only (layers 1–2): a vacuous
   success that only the model layer could catch (prose payload) still
   scores as a recovery, since credit runs without an LLM call.
+
+## Fix D — the auditor-miner
+
+v15 measured the limit of tool-level signals: the pool converged on
+defensive casts that NULLed the key column — INSERT activity 55316, real
+sums, nothing mechanically vacuous, two of three answers wrong. Three
+additions, all built from information the pipeline already holds:
+
+1. **Auditor stance**: the mining prompt presents CLAIMED fixes ("an error
+   going away proves nothing about the work being right") and requires
+   naming what each change traded away. Lessons carry trade-offs and
+   applicability conditions instead of verdicts ("…NULLs unconvertible
+   values — safe only when the column is not used as a key or in counts
+   downstream"), deferring judgment to the consuming agent, which has the
+   task the miner lacks.
+2. **Downstream evidence**: each pair carries later successful uses of the
+   same object with their results (ledger events after the succeeding
+   call, matched on the class's target identifier, last 3 kept). A later
+   use showing zeros/NULLs where the task expected data instructs the
+   miner to record a WARNING against the change.
+3. **Task background**: the conversation's opening request rides along as
+   context for judging whether a change served it, with the explicit rule
+   that lessons must still generalize beyond the task.
+
+## Measured results (12 × gpt-4o fleet, Teradata MCP curriculum, 2026-08-22/23)
+
+**Ablation protocol** (L1 from wiped pool → L2 preserved → both again;
+144 attempts per run, identical prompts and model):
+
+| run | added layer | correct /144 | failure signature |
+|---|---|---|---|
+| v12 | grounding + error-time delivery + credit | 0 | confident empty answers |
+| v14 | prompt rule "no-work success is not a fix" | 3 | same (miner ignored it) |
+| v15 | mechanical vacuous detection (mint + credit) | 3 | poison mutated: NULLed key column, tool-level signals healthy |
+| v16 | auditor-miner (Fix D) | **102** | learning curves; L1 revisit opened 12/12 |
+
+**Full 10-level curriculum** (fresh pool, everything earned in-run):
+scribe pipeline (v11) 117/360 (33%) → audited pipeline (v16) 199/360
+(55%); trap tasks 33/252 → 111/252. **Second exposure** of the audited
+pool: 240/360 (67%), with the entire gain at the cold-start levels
+(L1–L2: 12→56 of 72) and everything else stable — where the scribe pool's
+second exposure HALVED its trap-task score. Pool stable at 784 lessons /
+8,658 reads.
+
+**The boundary (level-9 autopsy)**: one level scored 0/36 in every
+configuration. Per-metric scoring shows the fleet nearly solves it (24/36
+and 23/36 exact on the two hard metrics); every attempt fails the third
+identically — `MAX(txns)` on a per-card-per-hour table where the busiest
+*hour* needs `SUM(txns) GROUP BY hour_str` first. The method is correct
+on the earlier per-hour-grained level (29/36) and silently wrong here:
+negative transfer of a genuinely correct method. It never errors, so the
+error→fix pipeline is structurally blind to it; all twelve agents share
+the bias, so consensus would confirm the wrong answer. Reaching it
+requires channels outside errors: self-check disciplines, answer-validated
+feedback, or graded scoring.
