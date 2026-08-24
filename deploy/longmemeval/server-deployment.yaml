@@ -1,8 +1,9 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: lme-server
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
   labels:
     app: lme-server
 spec:
@@ -26,12 +27,12 @@ spec:
           effect: NoSchedule
       containers:
         - name: server
-          image: loomcloudacr.azurecr.io/loom-longmemeval:latest
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
           command: ["/looms"]
           args: ["serve", "--config", "/etc/loom/looms.yaml"]
           ports:
             - name: grpc
-              containerPort: 60051
+              containerPort: ${LME_GRPC_PORT}
               protocol: TCP
           env:
             - name: HOME
@@ -76,11 +77,11 @@ apiVersion: v1
 kind: Service
 metadata:
   name: lme-server
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 spec:
   selector:
     app: lme-server
   ports:
     - name: grpc
-      port: 60051
+      port: ${LME_GRPC_PORT}
       targetPort: grpc
