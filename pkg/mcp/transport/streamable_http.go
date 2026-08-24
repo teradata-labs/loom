@@ -99,7 +99,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	t := &StreamableHTTPTransport{
 		endpoint:       config.Endpoint,
-		client:         &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()},
+		client:         &http.Client{Transport: httpTransport},
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -202,8 +202,12 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 
 	// Notification acknowledgments (202/204) carry no body and no content
 	// type; falling through to the Content-Type switch would reject them as
-	// unexpected.
+	// unexpected. Requests (JSON-RPC messages with an id) must receive a
+	// response body; a bare 202 for a request indicates a server bug.
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+		if isJSONRPCRequest(message) {
+			return fmt.Errorf("unexpected 202 Accepted for JSON-RPC request")
+		}
 		t.logger.Debug("Notification accepted")
 		return nil
 	}
@@ -491,6 +495,16 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 
 // isJSONRPCErrorResponse reports whether body is a routable JSON-RPC error
 // response: correct version, an id to route on, and an error member.
+func isJSONRPCRequest(msg []byte) bool {
+	var probe struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(msg, &probe); err != nil {
+		return false
+	}
+	return len(probe.ID) > 0 && string(probe.ID) != "null"
+}
+
 func isJSONRPCErrorResponse(body []byte) bool {
 	var probe struct {
 		JSONRPC string          `json:"jsonrpc"`
