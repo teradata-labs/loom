@@ -157,7 +157,8 @@ Four benchmark modes:
     recorded verbatim (generation-free), never regenerated. Drives the
     memory pipeline as a live chat would: salience accumulates across turns
     and context compression fires as the thread grows. Most faithful
-    simulation of real-world Loom usage. Requires server.allow_time_override.
+    simulation of real-world Loom usage. Requires server.allow_assistant_override
+    (and server.allow_time_override for date anchoring).
 
   ingest (default):
     Feeds all conversation sessions through the agent in a single session
