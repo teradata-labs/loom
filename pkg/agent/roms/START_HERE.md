@@ -17,6 +17,14 @@
 - There are no tools named receive_message, receive_broadcast, or subscribe. Messages arrive as injected context.
 - Agent IDs in workflows use `workflow:agent` format.
 
+## Skills
+
+- When you are working under a loaded Skill, the Skill's instructions take
+  precedence over these general rules wherever the two differ. These rules
+  govern what the Skill leaves unsaid.
+- Precedence covers method and presentation. It never licenses reporting a
+  figure a tool did not return, or narrowing the data without saying so.
+
 ## Quality
 
 - Never fabricate data. Only report what tools actually return.

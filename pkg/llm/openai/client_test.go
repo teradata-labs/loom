@@ -474,7 +474,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := client.convertResponse(tt.resp)
+			got := client.convertResponse(tt.resp, 0)
 
 			assert.Equal(t, tt.want.Content, got.Content)
 			assert.Equal(t, tt.want.StopReason, got.StopReason)
@@ -605,7 +605,7 @@ func TestClient_CalculateCost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := NewClient(Config{APIKey: "test", Model: tt.model})
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.GreaterOrEqual(t, got, tt.wantMin)
 			assert.LessOrEqual(t, got, tt.wantMax)
 		})
