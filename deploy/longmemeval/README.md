@@ -29,7 +29,11 @@ bash deploy/longmemeval/scale-down.sh
 ```
 
 Configuration lives in `lme.env` (override with `lme.env.local`): dataset variant,
-run mode, concurrency, chunk size, VM sizes.
+run mode, concurrency, chunk size, VM sizes, namespace, port, model. Every
+manifest is a template rendered by `run-500.sh` (allowlisted `envsubst` via
+`render-common.sh`), so overrides apply consistently across the namespace,
+server, service, config, and runner job. `bash deploy/longmemeval/render-test.sh`
+renders everything with nondefault values and asserts the manifests agree.
 
 ## Architecture
 
@@ -52,11 +56,23 @@ run mode, concurrency, chunk size, VM sizes.
 - **Time anchoring:** the server config sets `server.allow_time_override: true`; the
   runner passes `--occurred-at=true` so replayed conversations anchor at their
   historical dates (see `docs/guides/longmemeval-benchmark.md`).
-- **Resume:** the runner writes one output pair per `(type, offset)` chunk. On any
-  restart it skips chunks whose `.jsonl` exists. Failed chunks are cleaned and retried
-  by the Job's backoff. Individual errored entries *inside* a completed chunk are
-  visible in the `-detailed.json` (non-empty `error` field); repair them with a
-  targeted `--offset/--limit` run against the same output naming.
+- **Run identity:** `run-500.sh` derives a run id from a manifest of everything
+  that determines what the benchmark measures (dataset, mode, occurred_at, model,
+  pinned image tag, chunk size). Chunk outputs live under
+  `/results/runs/<run-id>/`, and the runner verifies the stored `manifest.txt`
+  before resuming — a changed configuration gets a fresh run directory instead of
+  silently reusing chunks. To knowingly continue a run after e.g. an image
+  rebuild: `LME_RUN_ID=<id> LME_ALLOW_MANIFEST_DRIFT=1` (drift is logged to the
+  run's `manifest-drift.log`; nothing is ever deleted). Workload images are
+  pinned to the immutable commit tag the build pushes, never `:latest`.
+- **Resume:** the runner writes each `(type, offset)` chunk to `*.tmp`, validates
+  it (exact entry count, every line parses as JSON, zero errored entries in the
+  `-detailed.json`), promotes it with an atomic rename, and only then writes a
+  `.done` marker. The marker — not file nonemptiness — is the resume signal, so a
+  killed or partial chunk is always redone. A failed attempt removes only its own
+  unpromoted `.tmp` files; promoted results are never deleted. Individual errored
+  entries can no longer hide inside a "completed" chunk — validation rejects them
+  and the Job's backoff retries the chunk.
 
 ## Time and cost — read before launching
 
@@ -85,7 +101,8 @@ Scoring runs **off-cluster** on pulled results (raw LongMemEval-compatible JSONL
 
 ```bash
 bash deploy/longmemeval/pull-results.sh ./results/s500
-cat ./results/s500/results/s500-*.jsonl > ./results/s500/s500-all.jsonl
+# Chunks live under runs/<run-id>/ — concatenate ONE run, don't mix runs:
+cat ./results/s500/results/runs/<run-id>/s500-*.jsonl > ./results/s500/s500-all.jsonl
 
 # Official evaluator (paper prompts). Judge model is a disclosed parameter:
 #   gpt-5.1 (needs OPENAI_API_KEY)  | azure-gpt (needs AZURE_OPENAI_* env)

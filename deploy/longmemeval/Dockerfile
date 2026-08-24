@@ -23,8 +23,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -tags fts5 \
 
 FROM debian:bookworm-slim
 
+# jq is required by the runner's chunk validation (deploy/longmemeval/runner-script.yaml)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates jq \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /looms /looms

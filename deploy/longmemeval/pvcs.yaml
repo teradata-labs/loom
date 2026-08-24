@@ -1,3 +1,5 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
+#
 # lme-results holds benchmark outputs — NEVER auto-delete; these represent
 # days of paid LLM compute. teardown-cluster.sh refuses to run while it exists.
 # azurefile (RWX) so pull-results.sh can mount read-only mid-run.
@@ -5,7 +7,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: lme-results
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 spec:
   accessModes:
     - ReadWriteMany
@@ -19,7 +21,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: lme-data
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 spec:
   accessModes:
     - ReadWriteMany
