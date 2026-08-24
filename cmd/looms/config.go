@@ -1122,6 +1122,7 @@ func setDefaults() {
 	viper.SetDefault("server.insecure_admin", false)
 	viper.SetDefault("server.allow_time_override", false)
 	viper.SetDefault("skip_embedded_agents", false)
+	viper.SetDefault("patterns_dir", "")
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
