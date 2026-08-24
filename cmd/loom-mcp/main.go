@@ -44,6 +44,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -135,11 +136,17 @@ func main() {
 			skillsDir = home + "/.loom/skills"
 		}
 	}
+	// The list-result ttlMs freshness hint (2026-07-28, SEP-2549) depends on
+	// whether the tool set can change at runtime: with skills enabled, lazy
+	// loading may add tools, so lists go stale quickly; without, a long TTL
+	// keeps serialized lists byte-stable for downstream prompt caches.
+	listTTL := 5 * time.Minute
 	if skillsDir != "" {
 		skillLib := skills.NewLibrary(skills.WithSearchPaths(skillsDir))
 		skillOrch := skills.NewOrchestrator(skillLib)
 		bridgeOpts = append(bridgeOpts, server.WithSkillOrchestrator(skillOrch))
 		logger.Info("skills orchestrator initialized", zap.String("skills_dir", skillsDir))
+		listTTL = server.DefaultListTTLMs * time.Millisecond
 	}
 
 	// Connect to running looms via gRPC
@@ -156,6 +163,7 @@ func main() {
 	mcpServer := server.NewMCPServer(serverName, version.Get(), logger,
 		server.WithToolProvider(bridge),
 		server.WithResourceProvider(bridge),
+		server.WithListTTL(listTTL),
 		server.WithExtensions(protocol.ServerAppsExtension()),
 		server.WithInstructions("To create agents or workflows, call loom_build with a natural-language description; Loom's weaver authors and saves them for you. Do not construct workflow YAML or patterns directly — the weaver knows Loom's components and conventions far better. Use loom_execute_workflow to RUN a workflow the weaver built."),
 	)
@@ -233,9 +241,27 @@ func runHTTP(ctx context.Context, mcpServer *server.MCPServer, addr string, logg
 		logger.Warn("HTTP-MCP endpoint authentication is DISABLED; the endpoint is unauthenticated")
 	}
 
+	// OAuth 2.0 Protected Resource Metadata (RFC 9728, MCP 2026-07-28 §8.4):
+	// points clients at this deployment's authorization server. Served
+	// outside the auth middleware — discovery metadata must be publicly
+	// readable — and only when the deployment is configured for auth.
+	mux := http.NewServeMux()
+	if metadata, ok := buildProtectedResourceMetadata(); ok {
+		mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(metadata)
+		})
+		logger.Info("serving OAuth protected resource metadata (RFC 9728)")
+	}
+	mux.Handle("/", handler)
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -273,9 +299,12 @@ func buildEdgeAuthenticator(logger *zap.Logger) (auth *loomserver.Authenticator,
 	ref := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF")
 	jwksURL := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_JWKS_URL")
 	issuer := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_ISSUER")
-	audience := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_AUDIENCE")
-	if audience == "" {
-		audience = "authenticated"
+	audience, err := resolveEdgeAudience(
+		os.Getenv("LOOM_SERVER_AUTH_SUPABASE_AUDIENCE"),
+		os.Getenv("LOOM_MCP_RESOURCE_URL"),
+	)
+	if err != nil {
+		logger.Fatal("inconsistent auth/PRM configuration", zap.Error(err))
 	}
 	if ref != "" {
 		if jwksURL == "" {
@@ -303,6 +332,36 @@ func buildEdgeAuthenticator(logger *zap.Logger) (auth *loomserver.Authenticator,
 		logger.Fatal("failed to initialize HTTP-MCP authenticator", zap.Error(err))
 	}
 	return authr, required, true
+}
+
+// buildProtectedResourceMetadata assembles the RFC 9728 document from the
+// deployment's auth configuration: the authorization server is the Supabase
+// issuer (explicit, or derived from the project ref), and the resource
+// identifier comes from LOOM_MCP_RESOURCE_URL (the public URL of this MCP
+// endpoint). Absent configuration disables the endpoint.
+func buildProtectedResourceMetadata() ([]byte, bool) {
+	if !envBool("LOOM_SERVER_AUTH_ENABLED") {
+		return nil, false
+	}
+	issuer := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_ISSUER")
+	if issuer == "" {
+		if ref := os.Getenv("LOOM_SERVER_AUTH_SUPABASE_PROJECT_REF"); ref != "" {
+			issuer = "https://" + ref + ".supabase.co/auth/v1"
+		}
+	}
+	resource := os.Getenv("LOOM_MCP_RESOURCE_URL")
+	if issuer == "" || resource == "" {
+		return nil, false
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"resource":                 resource,
+		"authorization_servers":    []string{issuer},
+		"bearer_methods_supported": []string{"header"},
+	})
+	if err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 // authMiddleware validates the inbound Supabase JWT and forwards the caller
@@ -405,5 +464,29 @@ func parseLogLevel(logLevel string) zapcore.Level {
 		return zap.ErrorLevel
 	default:
 		return zap.InfoLevel
+	}
+}
+
+// resolveEdgeAudience binds JWT audience validation to the advertised MCP
+// resource (review finding 6, PR #328). The MCP authorization specification
+// requires a resource server to accept only tokens issued for it
+// specifically: when PRM advertises LOOM_MCP_RESOURCE_URL, the audience IS
+// that canonical resource identifier. An explicit audience override must
+// agree with it — a mismatch means tokens minted for one identity would be
+// validated against another, so startup fails instead of guessing. Without
+// PRM (no advertised resource), the explicit audience or Supabase's
+// "authenticated" default applies as before.
+func resolveEdgeAudience(explicitAudience, resourceURL string) (string, error) {
+	switch {
+	case resourceURL == "" && explicitAudience == "":
+		return "authenticated", nil
+	case resourceURL == "":
+		return explicitAudience, nil
+	case explicitAudience == "" || explicitAudience == resourceURL:
+		return resourceURL, nil
+	default:
+		return "", fmt.Errorf(
+			"LOOM_SERVER_AUTH_SUPABASE_AUDIENCE (%q) must equal the PRM resource LOOM_MCP_RESOURCE_URL (%q); tokens must be issued for the advertised resource",
+			explicitAudience, resourceURL)
 	}
 }

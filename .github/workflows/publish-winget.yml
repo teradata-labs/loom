@@ -77,6 +77,7 @@ jobs:
           Write-Host "Combined package hash: $combinedHash"
 
       - name: Fork and clone winget-pkgs
+        id: fork
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -124,6 +125,14 @@ jobs:
           git merge upstream/master
           git push origin master
 
+          # Steps run as separate pwsh processes, so $login/$fork do NOT
+          # carry into "Create manifests and submit PR" — exporting them as
+          # step outputs is what makes them visible there. (The v1.4.0
+          # rerun failed exactly here: the submit step read an undefined
+          # $login and built the PR head ref ":branch".)
+          "login=$login" >> $env:GITHUB_OUTPUT
+          "fork=$fork" >> $env:GITHUB_OUTPUT
+
       # The former wingetcreate path never succeeded (its CLI rejected the
       # invocation on every run since January 2026) and its exit 1 marked
       # every run failed even when this fallback then submitted the PR.
@@ -136,6 +145,12 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $combinedHash = "${{ steps.hashes.outputs.combined_hash }}"
+          $login = "${{ steps.fork.outputs.login }}"
+          $fork = "${{ steps.fork.outputs.fork }}"
+          if (-not $login -or -not $fork) {
+            Write-Error "fork step outputs missing (login='$login' fork='$fork')"
+            exit 1
+          }
 
           cd winget-pkgs
 
@@ -175,11 +190,13 @@ jobs:
           # Push to fork
           git push origin $branch
 
-          # Create PR
-          gh pr create `
-            --repo microsoft/winget-pkgs `
-            --title "New version: Teradata.Loom version $version" `
-            --body "Updates Teradata.Loom to version $version
+          # Create the PR via the REST API rather than `gh pr create`:
+          # the fork is renamed ($login/loom-winget-pkgs), and only the REST
+          # `head_repo` parameter disambiguates a renamed fork's head ref.
+          # Retried with backoff because a just-pushed branch may not have
+          # replicated when the create fires ("Head sha can't be blank").
+          $prBody = @"
+          Updates Teradata.Loom to version $version
 
           ## Changes
           - Update to v$version
@@ -191,11 +208,32 @@ jobs:
 
           Automated PR from GitHub Actions.
 
-          @microsoft-github-policy-service agree" `
-            --head "$($login):$branch" `
-            --base master
+          @microsoft-github-policy-service agree
+          "@
 
-          Write-Host "✅ Manual PR created successfully"
+          $prUrl = $null
+          foreach ($attempt in 1..5) {
+            $result = gh api repos/microsoft/winget-pkgs/pulls `
+              -f title="New version: Teradata.Loom version $version" `
+              -f head="$($login):$branch" `
+              -f head_repo="$fork" `
+              -f base=master `
+              -f body="$prBody" --jq '.html_url' 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              $prUrl = $result
+              break
+            }
+            Write-Host "PR create attempt $attempt failed: $result"
+            Start-Sleep -Seconds 15
+          }
+          # Fail the step for real — pwsh does not stop on a native command's
+          # nonzero exit, and earlier revisions printed a success message
+          # after a failed create.
+          if (-not $prUrl) {
+            Write-Error "Failed to create winget PR after 5 attempts"
+            exit 1
+          }
+          Write-Host "✅ PR created: $prUrl"
 
       - name: Summary
         shell: pwsh

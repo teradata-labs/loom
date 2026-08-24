@@ -334,13 +334,13 @@ func TestMultiAgentServer_FindAgentBySession(t *testing.T) {
 	sessionID := resp.SessionId
 
 	// findAgentBySession should find agent2
-	found, foundID, ok := server.findAgentBySession(sessionID)
+	found, foundID, ok := server.findAgentBySession(sessionID, "")
 	assert.True(t, ok, "should find the session's agent")
 	assert.Equal(t, agent2.GetID(), foundID)
 	assert.NotNil(t, found)
 
 	// Non-existent session should return false
-	_, _, ok = server.findAgentBySession("nonexistent-session")
+	_, _, ok = server.findAgentBySession("nonexistent-session", "")
 	assert.False(t, ok, "should not find agent for nonexistent session")
 }
 

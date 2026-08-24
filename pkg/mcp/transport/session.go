@@ -22,6 +22,11 @@ import (
 // SessionManager manages MCP session IDs for streamable-http transport.
 // Per the MCP spec, session IDs are globally unique, cryptographically secure,
 // and consist only of visible ASCII characters (0x21 to 0x7E).
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The 2026-07-28 revision removes
+// protocol-level sessions; the client echoes a session ID only to legacy
+// servers that minted one.
 type SessionManager struct {
 	sessionID string
 	mu        sync.RWMutex

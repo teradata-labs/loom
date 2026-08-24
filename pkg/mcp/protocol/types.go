@@ -14,6 +14,8 @@
 // Package protocol implements MCP protocol types for the Model Context Protocol.
 package protocol
 
+import "encoding/json"
+
 // ProtocolVersion is the MCP protocol version supported by this implementation
 const ProtocolVersion = "2024-11-05"
 
@@ -45,20 +47,29 @@ type Implementation struct {
 
 // ClientCapabilities declares what the client supports
 type ClientCapabilities struct {
-	Roots    *RootsCapability    `json:"roots,omitempty"`
-	Sampling *SamplingCapability `json:"sampling,omitempty"`
+	Roots       *RootsCapability           `json:"roots,omitempty"`
+	Sampling    *SamplingCapability        `json:"sampling,omitempty"`
+	Elicitation *ElicitationCapability     `json:"elicitation,omitempty"`
+	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // ServerCapabilities declares what the server supports
 type ServerCapabilities struct {
-	Tools     *ToolsCapability     `json:"tools,omitempty"`
-	Resources *ResourcesCapability `json:"resources,omitempty"`
-	Prompts   *PromptsCapability   `json:"prompts,omitempty"`
-	Logging   *LoggingCapability   `json:"logging,omitempty"`
+	Tools      *ToolsCapability           `json:"tools,omitempty"`
+	Resources  *ResourcesCapability       `json:"resources,omitempty"`
+	Prompts    *PromptsCapability         `json:"prompts,omitempty"`
+	Logging    *LoggingCapability         `json:"logging,omitempty"`
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // Capability markers (empty structs indicate support)
 type RootsCapability struct{}
+
+// ElicitationCapability marks client support for answering elicitation
+// requests, which under MRTR (2026-07-28) arrive embedded in input_required
+// results. Servers must not issue elicitation inputRequests to clients that
+// do not declare it.
+type ElicitationCapability struct{}
 type SamplingCapability struct{}
 type ToolsCapability struct{}
 
@@ -94,6 +105,11 @@ type Tool struct {
 // ToolListResult is the response from tools/list
 type ToolListResult struct {
 	Tools []Tool `json:"tools"`
+	// CacheableResult fields (2026-07-28, SEP-2549): freshness hint and
+	// intermediary cacheability. "private" prevents shared caches from
+	// serving one identity's list to another.
+	TTLMs      int64  `json:"ttlMs,omitempty"`
+	CacheScope string `json:"cacheScope,omitempty"`
 }
 
 // CallToolParams contains parameters for tools/call
@@ -134,7 +150,9 @@ type Resource struct {
 
 // ResourceListResult is the response from resources/list
 type ResourceListResult struct {
-	Resources []Resource `json:"resources"`
+	Resources  []Resource `json:"resources"`
+	TTLMs      int64      `json:"ttlMs,omitempty"`
+	CacheScope string     `json:"cacheScope,omitempty"`
 }
 
 // ReadResourceParams contains parameters for resources/read
@@ -144,7 +162,9 @@ type ReadResourceParams struct {
 
 // ReadResourceResult is the response from resources/read
 type ReadResourceResult struct {
-	Contents []ResourceContents `json:"contents"`
+	Contents   []ResourceContents `json:"contents"`
+	TTLMs      int64              `json:"ttlMs,omitempty"`
+	CacheScope string             `json:"cacheScope,omitempty"`
 }
 
 // ResourceContents contains resource data
@@ -180,7 +200,9 @@ type PromptArgument struct {
 
 // PromptListResult is the response from prompts/list
 type PromptListResult struct {
-	Prompts []Prompt `json:"prompts"`
+	Prompts    []Prompt `json:"prompts"`
+	TTLMs      int64    `json:"ttlMs,omitempty"`
+	CacheScope string   `json:"cacheScope,omitempty"`
 }
 
 // GetPromptParams contains parameters for prompts/get
@@ -201,7 +223,12 @@ type PromptMessage struct {
 	Content interface{} `json:"content"` // Can be string or Content object
 }
 
-// SamplingParams contains parameters for sampling/createMessage
+// SamplingParams contains parameters for sampling/createMessage.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Server-initiated sampling was replaced
+// by MRTR inputRequests (SEP-2322); the type is retained for source
+// compatibility with existing importers.
 type SamplingParams struct {
 	Messages       []PromptMessage        `json:"messages"`
 	ModelPrefs     *ModelPreferences      `json:"modelPreferences,omitempty"`
@@ -213,7 +240,10 @@ type SamplingParams struct {
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// ModelPreferences specifies LLM selection preferences
+// ModelPreferences specifies LLM selection preferences.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
 type ModelPreferences struct {
 	Hints                []ModelHint `json:"hints,omitempty"`
 	CostPriority         *float64    `json:"costPriority,omitempty"`         // 0-1
@@ -221,12 +251,18 @@ type ModelPreferences struct {
 	IntelligencePriority *float64    `json:"intelligencePriority,omitempty"` // 0-1
 }
 
-// ModelHint suggests model preferences
+// ModelHint suggests model preferences.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
 type ModelHint struct {
 	Name string `json:"name,omitempty"`
 }
 
-// SamplingResult is the response from sampling/createMessage
+// SamplingResult is the response from sampling/createMessage.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Retained for source compatibility.
 type SamplingResult struct {
 	Role       string  `json:"role"` // "assistant"
 	Content    Content `json:"content"`
@@ -236,6 +272,17 @@ type SamplingResult struct {
 
 // Notification types
 
+// LogNotification sends log messages from server to client.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. Never constructed inside Loom; retained
+// for source compatibility with existing importers.
+type LogNotification struct {
+	Level  string      `json:"level"` // "debug", "info", "warning", "error"
+	Logger string      `json:"logger,omitempty"`
+	Data   interface{} `json:"data"`
+}
+
 // ProgressNotification reports progress for a long-running operation
 type ProgressNotification struct {
 	ProgressToken string  `json:"progressToken"`
@@ -244,13 +291,6 @@ type ProgressNotification struct {
 	// Message is an optional human-readable status (MCP 2025-03-26). loom uses
 	// it to stream the agent's cumulative partial response text as it generates.
 	Message string `json:"message,omitempty"`
-}
-
-// LogNotification sends log messages from server to client
-type LogNotification struct {
-	Level  string      `json:"level"` // "debug", "info", "warning", "error"
-	Logger string      `json:"logger,omitempty"`
-	Data   interface{} `json:"data"`
 }
 
 // ResourceUpdatedNotification notifies of a resource change

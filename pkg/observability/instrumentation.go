@@ -43,6 +43,7 @@ const (
 
 	// MCP spans
 	SpanMCPClientInitialize   = "mcp.client.initialize"
+	SpanMCPClientConnect      = "mcp.client.connect"
 	SpanMCPToolsList          = "mcp.tools.list"
 	SpanMCPToolsCall          = "mcp.tools.call"
 	SpanMCPResourcesList      = "mcp.resources.list"

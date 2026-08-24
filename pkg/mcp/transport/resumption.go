@@ -19,15 +19,15 @@ import (
 	"sync"
 )
 
-// SSEEvent represents a Server-Sent Event with ID for resumption.
-type SSEEvent struct {
-	ID   string // Event ID for resumption
-	Data []byte // JSON-RPC message
-}
-
-// StreamResumption manages event buffering for stream resumption.
-// Per MCP spec, event IDs are globally unique across all streams in a session,
-// and servers MAY replay messages after a given event ID on the same stream.
+// StreamResumption manages event buffering for stream resumption under
+// pre-2026 protocol revisions, where event IDs are globally unique across a
+// session's streams and servers MAY replay messages after a given event ID.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28. The 2026-07-28 revision removes SSE
+// resumption (Last-Event-ID) from the protocol, and Loom's own client no
+// longer wires this buffer; the type is retained for source compatibility
+// with existing importers.
 type StreamResumption struct {
 	lastEventID string
 	eventBuffer *ring.Ring // Circular buffer of recent events
@@ -36,6 +36,9 @@ type StreamResumption struct {
 }
 
 // NewStreamResumption creates a new stream resumption manager.
+//
+// Deprecated: frozen legacy MCP surface (docs/architecture/mcp-2026-07-28-migration.md §9.2);
+// removal no earlier than 2027-07-28.
 func NewStreamResumption(bufferSize int) *StreamResumption {
 	if bufferSize <= 0 {
 		bufferSize = 100 // Default buffer size

@@ -218,6 +218,27 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 }
 
 // ListSessions returns all session IDs ordered by most recently updated.
+// SessionExists reports whether any live session row has this id, regardless
+// of owner (see SessionStorage: an authorization primitive for resume gates,
+// not a data read — no session data is returned). Soft-deleted rows do not
+// count: their ids are legitimately reusable.
+func (s *SessionStore) SessionExists(ctx context.Context, sessionID string) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.session_exists")
+	defer s.tracer.EndSpan(span)
+
+	var exists bool
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NULL)", sessionID).
+			Scan(&exists)
+	})
+	if err != nil {
+		span.RecordError(err)
+		return false, fmt.Errorf("failed to check session existence: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.list_sessions")
 	defer s.tracer.EndSpan(span)

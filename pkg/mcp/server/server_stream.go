@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -35,6 +36,20 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 	var req protocol.Request
 	if err := json.Unmarshal(msg, &req); err != nil {
 		return marshalResponse(nil, nil, protocol.NewError(protocol.ParseError, "invalid JSON", nil))
+	}
+
+	// The streaming path bypasses HandleMessage, so it extracts _meta itself;
+	// the fallback path re-extracts inside HandleMessage, which is harmless.
+	ctx = withRequestMeta(ctx, req.Params)
+	if resp, done := rejectMalformedRetry(ctx, &req); done {
+		return resp, nil
+	}
+
+	// subscriptions/listen (2026-07-28) holds this response stream open and
+	// delivers opted-in change notifications; it exists only on the
+	// streaming path (the synchronous path answers MethodNotFound).
+	if req.Method == protocol.MethodSubscriptionsListen && req.ID != nil {
+		return s.handleSubscriptionsListenStream(ctx, &req, w)
 	}
 
 	// Only requests (with an id) for a streamable tool take the streaming path.
@@ -56,11 +71,37 @@ func (s *MCPServer) HandleMessageStream(ctx context.Context, msg []byte, w trans
 
 	result, err := sp.CallToolStream(ctx, callParams.Name, callParams.Arguments, progressToken, emit)
 	if err != nil {
+		// MRTR pause on the streaming path: the interim result is the final
+		// event of this stream; the client answers and retries the call.
+		var inputReq *protocol.InputRequiredError
+		if errors.As(err, &inputReq) {
+			if !RequestMetaFromContext(ctx).Stateless() {
+				// Legacy clients cannot drive MRTR: mirror the synchronous
+				// path's explicit -32600 rather than downgrading the pause to
+				// an opaque isError blob carrying an internal error string.
+				return marshalResponse(req.ID, nil, protocol.NewError(protocol.InvalidRequest,
+					"this operation requires interactive input, which needs an MCP 2026-07-28 (MRTR-capable) client", nil))
+			}
+			interim := protocol.InputRequiredResult{
+				ResultType:    protocol.ResultTypeInputRequired,
+				InputRequests: inputReq.Requests,
+				RequestState:  inputReq.RequestStatePtr(),
+			}
+			if stamped, stampErr := s.stampResult(interim); stampErr == nil {
+				return marshalResponse(req.ID, stamped, nil)
+			}
+			return marshalResponse(req.ID, interim, nil)
+		}
 		// Mirror newToolsCallHandler: surface tool failures as an isError result,
 		// not a transport error, so the client still receives a well-formed event.
 		result = &protocol.CallToolResult{
 			Content: []protocol.Content{{Type: "text", Text: err.Error()}},
 			IsError: true,
+		}
+	}
+	if RequestMetaFromContext(ctx).Stateless() {
+		if stamped, stampErr := s.stampResult(result); stampErr == nil {
+			return marshalResponse(req.ID, stamped, nil)
 		}
 	}
 	return marshalResponse(req.ID, result, nil)
