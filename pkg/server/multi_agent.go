@@ -64,6 +64,12 @@ type MultiAgentServer struct {
 	// (server.allow_time_override). Set via SetAllowTimeOverride.
 	allowTimeOverride bool
 
+	// allowAssistantOverride accepts WeaveRequest.replay_assistant_message
+	// (generation-free conversation replay — the caller supplies the
+	// assistant's turn verbatim). Default false (server.allow_assistant_override).
+	// Set via SetAllowAssistantOverride.
+	allowAssistantOverride bool
+
 	defaultAgentID     string                           // Agent to use when no agent_id specified
 	patternBroadcaster *PatternEventBroadcaster         // Broadcasts pattern update events
 	hotReloaders       map[string]*patterns.HotReloader // Hot-reloaders for each agent's patterns
@@ -311,6 +317,16 @@ func (s *MultiAgentServer) SetAllowTimeOverride(allow bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.allowTimeOverride = allow
+}
+
+// SetAllowAssistantOverride configures whether
+// WeaveRequest.replay_assistant_message is honored
+// (server.allow_assistant_override). See applyReplayAssistant for the gate
+// semantics. This should be called after NewMultiAgentServer(), before serving.
+func (s *MultiAgentServer) SetAllowAssistantOverride(allow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowAssistantOverride = allow
 }
 
 // SetLogger injects the logger for server operations.
@@ -835,7 +851,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	}
 	// Generation-free replay: a scripted assistant turn substitutes for the LLM
 	// call while the memory pipeline still runs (see applyReplayAssistant).
-	ctx, err = applyReplayAssistant(ctx, req, s.allowTimeOverride)
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,6 +1061,14 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// Replay/import support: validate occurred_at and thread it through the
 	// context used for the agent call (see applyOccurredAt).
 	ctx, err := applyOccurredAt(stream.Context(), req, s.allowTimeOverride)
+	if err != nil {
+		return err
+	}
+	// Generation-free replay: a scripted assistant turn substitutes for the LLM
+	// call while the memory pipeline still runs (see applyReplayAssistant).
+	// Mirrors Weave — without this, a streaming replay would silently persist a
+	// generated turn where the scripted one belongs.
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return err
 	}

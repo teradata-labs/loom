@@ -2352,6 +2352,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Arrival-time override enabled (server.allow_time_override): WeaveRequest.occurred_at will be honored")
 	}
 
+	// Honor WeaveRequest.replay_assistant_message only when the operator opted
+	// in — generation-free replay writes caller-supplied assistant turns, so it
+	// has its own switch, separate from allow_time_override (see
+	// applyReplayAssistant).
+	loomService.SetAllowAssistantOverride(config.Server.AllowAssistantOverride)
+	if config.Server.AllowAssistantOverride {
+		logger.Info("Assistant override enabled (server.allow_assistant_override): WeaveRequest.replay_assistant_message will be honored")
+	}
+
 	// Set provider factory for dynamic model switching
 	loomService.SetProviderFactory(providerFactory)
 	logger.Info("Provider factory configured on server for model switching")

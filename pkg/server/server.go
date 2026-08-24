@@ -66,12 +66,26 @@ type Server struct {
 	// grounding, so honoring them is an explicit operator decision
 	// (server.allow_time_override). Set via SetAllowTimeOverride.
 	allowTimeOverride bool
+
+	// allowAssistantOverride accepts WeaveRequest.replay_assistant_message
+	// (generation-free conversation replay — the caller supplies the
+	// assistant's turn verbatim). Default false (server.allow_assistant_override).
+	// Set via SetAllowAssistantOverride.
+	allowAssistantOverride bool
 }
 
 // SetAllowTimeOverride configures whether WeaveRequest.occurred_at is honored
 // (server.allow_time_override). See applyOccurredAt for the gate semantics.
 func (s *Server) SetAllowTimeOverride(allow bool) {
 	s.allowTimeOverride = allow
+}
+
+// SetAllowAssistantOverride configures whether
+// WeaveRequest.replay_assistant_message is honored
+// (server.allow_assistant_override). See applyReplayAssistant for the gate
+// semantics.
+func (s *Server) SetAllowAssistantOverride(allow bool) {
+	s.allowAssistantOverride = allow
 }
 
 // SetJudgeServer wires an in-memory JudgeServer so that ABTest can resolve req.JudgeId.
@@ -129,7 +143,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	}
 	// Generation-free replay: a scripted assistant turn substitutes for the LLM
 	// call while the memory pipeline still runs (see applyReplayAssistant).
-	ctx, err = applyReplayAssistant(ctx, req, s.allowTimeOverride)
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +213,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	}
 	// Generation-free replay: a scripted assistant turn substitutes for the LLM
 	// call while the memory pipeline still runs (see applyReplayAssistant).
-	ctx, err = applyReplayAssistant(ctx, req, s.allowTimeOverride)
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return err
 	}
