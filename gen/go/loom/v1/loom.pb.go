@@ -324,8 +324,12 @@ type WeaveRequest struct {
 	// the LongMemEval conversation-replay harness and is typically paired with
 	// occurred_at to anchor each turn at its historical time.
 	//
-	// Gated by the same server.allow_time_override switch as occurred_at
-	// (FAILED_PRECONDITION when disabled). Live conversations leave it unset.
+	// Gated by its own server.allow_assistant_override switch
+	// (FAILED_PRECONDITION when disabled) — separate from occurred_at's
+	// server.allow_time_override, so operators who enabled timestamp anchoring
+	// have not implicitly accepted caller-supplied assistant content.
+	// Whitespace-only values are rejected (INVALID_ARGUMENT). Live
+	// conversations leave it unset.
 	ReplayAssistantMessage string `protobuf:"bytes,12,opt,name=replay_assistant_message,json=replayAssistantMessage,proto3" json:"replay_assistant_message,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache

@@ -408,7 +408,9 @@ func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, oc
 // replayTurn records a pre-written (user, assistant) exchange generation-free:
 // the server substitutes the scripted assistant text for the LLM call
 // (WeaveRequest.replay_assistant_message) while still running the full memory
-// pipeline. Anchors both rows at occurredAt. Requires server.allow_time_override.
+// pipeline. Anchors both rows at occurredAt. Requires
+// server.allow_assistant_override (replay) and server.allow_time_override
+// (anchoring) on the target server.
 func (r *Runner) replayTurn(ctx context.Context, sessionID, userContent, assistantContent, agentID string, occurredAt time.Time, result *EntryResult) error {
 	req := buildWeaveRequest(sessionID, userContent, agentID, occurredAt)
 	req.ReplayAssistantMessage = assistantContent
