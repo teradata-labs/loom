@@ -385,6 +385,17 @@ func TestProbeInputRequiredWithoutAnswerFailsFast(t *testing.T) {
 	require.Error(t, err, "input_required with no -answer must fail, not silently pass")
 }
 
+func TestProbeAnswerWithoutElicitationIsError(t *testing.T) {
+	// Stateless server whose tool completes immediately: the MRTR driver is
+	// armed but never runs, so -answer verified nothing and must fail loudly.
+	srv := startScripted(t, &scriptedHTTPServer{statelessOK: true})
+	_, err := run(context.Background(), options{
+		URL: srv.URL, Call: "greet", Args: "{}", Answer: `{"x":1}`, Timeout: 5 * time.Second,
+	}, io.Discard)
+	require.Error(t, err, "-answer with a call that never elicits must fail, not exit 0")
+	assert.Contains(t, err.Error(), "never exercised")
+}
+
 func TestProbeAnswerOnLegacyConnectionIsError(t *testing.T) {
 	srv := startScripted(t, &scriptedHTTPServer{statelessOK: false})
 	_, err := run(context.Background(), options{

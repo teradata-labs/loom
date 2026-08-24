@@ -238,6 +238,12 @@ func run(ctx context.Context, opts options, out io.Writer) (*report, error) {
 		if err != nil {
 			return rep, err
 		}
+		// A call that completed without ever eliciting exercised the MRTR
+		// driver on nothing: -answer was a gate that verified nothing, so
+		// exiting 0 would prove nothing. Mirror the legacy-connection rule.
+		if opts.Answer != "" && len(rep.Elicited) == 0 {
+			return rep, fmt.Errorf("-answer requested, but tools/call %s completed without input_required: the answer was never exercised", opts.Call)
+		}
 	}
 
 	if opts.WatchSec > 0 {
