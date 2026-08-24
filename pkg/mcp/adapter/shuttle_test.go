@@ -931,12 +931,77 @@ func TestNormalizeParametersToCamelCase_RoundTrip(t *testing.T) {
 		"max_rows":      100,
 	}
 
-	// Step 3: Normalize back to camelCase (what Execute does)
-	normalized := normalizeParametersToCamelCase(params)
+	// Step 3: Map back onto the schema's declared (camelCase) names,
+	// exactly as Execute does for a camelCase server.
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{
+		Name: "query_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"databaseName": map[string]interface{}{"type": "string"},
+				"tableName":    map[string]interface{}{"type": "string"},
+				"maxRows":      map[string]interface{}{"type": "integer"},
+			},
+		},
+	}, "test")
+	normalized := adapter.normalizeParametersToSchema(params)
 
 	assert.Equal(t, "mydb", normalized["databaseName"])
 	assert.Equal(t, "users", normalized["tableName"])
 	assert.Equal(t, 100, normalized["maxRows"])
+}
+
+// A snake_case server's parameter names must pass through untouched: blind
+// camelization made strict servers reject the call and lenient servers
+// silently drop the parameter (the session_handle leak).
+func TestNormalizeParametersToSchema_SnakeCaseServer(t *testing.T) {
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{
+		Name: "execute_statement",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"sql":            map[string]interface{}{"type": "string"},
+				"session_handle": map[string]interface{}{"type": "string"},
+			},
+			"additionalProperties": false,
+		},
+	}, "teradata")
+
+	normalized := adapter.normalizeParametersToSchema(map[string]interface{}{
+		"sql":            "SELECT 1",
+		"session_handle": "h-123",
+	})
+
+	assert.Equal(t, "SELECT 1", normalized["sql"])
+	assert.Equal(t, "h-123", normalized["session_handle"])
+	_, leaked := normalized["sessionHandle"]
+	assert.False(t, leaked, "snake_case key must not be camelized when the schema declares it")
+}
+
+// A key the schema doesn't declare in either form passes through under the
+// name the model used, so validation errors name what the model actually sent.
+func TestNormalizeParametersToSchema_UnknownKeyUntouched(t *testing.T) {
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{
+		Name: "connect",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"host": map[string]interface{}{"type": "string"}},
+		},
+	}, "teradata")
+
+	normalized := adapter.normalizeParametersToSchema(map[string]interface{}{
+		"host":      "db1",
+		"bogus_key": 1,
+	})
+	assert.Equal(t, "db1", normalized["host"])
+	assert.Equal(t, 1, normalized["bogus_key"])
+}
+
+// With no schema at all, names pass through unchanged.
+func TestNormalizeParametersToSchema_NoSchema(t *testing.T) {
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{Name: "tool"}, "test")
+	normalized := adapter.normalizeParametersToSchema(map[string]interface{}{"some_key": "v"})
+	assert.Equal(t, "v", normalized["some_key"])
 }
 
 // =============================================================================
@@ -968,9 +1033,8 @@ func TestExecute_SchemaToolCacheHit_ReturnsEarly(t *testing.T) {
 	}
 
 	// Pre-populate the cache with what Execute would store
-	// normalizeParametersToCamelCase converts the keys
-	camelParams := normalizeParametersToCamelCase(params)
-	cacheKey := adapter.buildSchemaCacheKey(camelParams)
+	// (schema-aware mapping; no schema here, so names pass through)
+	cacheKey := adapter.buildSchemaCacheKey(adapter.normalizeParametersToSchema(params))
 	globalSchemaCache.set(cacheKey, "CREATE TABLE users (id INT)")
 
 	// Execute should return cached result without calling the client
@@ -1021,9 +1085,8 @@ func TestExecute_ParameterNormalization(t *testing.T) {
 		"table_name":    "users",
 	}
 
-	// Build the cache key using camelCase (what Execute internally does)
-	camelParams := normalizeParametersToCamelCase(snakeParams)
-	cacheKey := adapter.buildSchemaCacheKey(camelParams)
+	// Build the cache key the way Execute internally does
+	cacheKey := adapter.buildSchemaCacheKey(adapter.normalizeParametersToSchema(snakeParams))
 
 	// Pre-populate cache
 	globalSchemaCache.set(cacheKey, "schema result")
