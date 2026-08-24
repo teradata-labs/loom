@@ -27,6 +27,12 @@ from openai import OpenAI
 import numpy as np
 
 
+# Judge reply budget, shared by every backend. Upstream uses max_tokens=10;
+# flip this single constant to 10 to reproduce upstream exactly (see the
+# module docstring for why 64 is kept here).
+JUDGE_MAX_TOKENS = 64
+
+
 model_zoo = {
     'llama-3.1-70b-instruct': ('meta-llama/Meta-Llama-3.1-70B-Instruct', 'local'),
     'gpt-4o-mini': ('gpt-4o-mini-2024-07-18', 'openai'),
@@ -47,7 +53,7 @@ def bedrock_converse_with_backoff(client, model_id, prompt, max_tries=5):
             resp = client.converse(
                 modelId=model_id,
                 messages=[{'role': 'user', 'content': [{'text': prompt}]}],
-                inferenceConfig={'maxTokens': 64, 'temperature': 0},
+                inferenceConfig={'maxTokens': JUDGE_MAX_TOKENS, 'temperature': 0},
             )
             return resp['output']['message']['content'][0]['text']
         except ClientError as e:
@@ -172,7 +178,7 @@ if __name__ == '__main__':
                     ],
                     'n': 1,
                     'temperature': 0,
-                    'max_completion_tokens': 64
+                    'max_completion_tokens': JUDGE_MAX_TOKENS
                 }
                 completion = chat_completions_with_backoff(metric_client, **kwargs)
                 eval_response = completion.choices[0].message.content.strip()

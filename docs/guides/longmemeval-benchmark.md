@@ -37,7 +37,7 @@ The six question categories are:
 
 - Loom server running (`just build-server && ./bin/looms serve`)
 - An LLM provider configured in `~/.loom/looms.yaml` with judge access (examples in this guide use Bedrock Opus 4.6)
-- `server.allow_time_override: true` in `~/.loom/looms.yaml`. The harness sends each haystack session's date as `WeaveRequest.occurred_at` so extraction anchors memories at the historical date instead of the run day. Without the flag, every entry fails with `FAILED_PRECONDITION` (pass `--occurred-at=false` to run without the override; memories then anchor to the run date instead of the historical session date. Note: the only A/B measured so far — oracle x30, temporal-reasoning — scored slightly HIGHER with the override off (100% vs 93.3%), because the extractor also reads dates from the conversation text itself; the override's value is mechanism correctness on full haystacks where the text cue may be absent, not a measured accuracy win)
+- `server.allow_time_override: true` in `~/.loom/looms.yaml`. In the memory modes (`ingest`, `multi-session`) the harness sends each haystack session's date as `WeaveRequest.occurred_at` so extraction anchors memories at the historical date instead of the run day; `context-stuffing` never sends it, so the baseline runs on a stock server. Without the flag, every memory-mode entry fails with `FAILED_PRECONDITION` (pass `--occurred-at=false` to run without the override; memories then anchor to the run date instead of the historical session date. Note: the only A/B measured so far — oracle x30, temporal-reasoning — scored slightly HIGHER with the override off (100% vs 93.3%), because the extractor also reads dates from the conversation text itself; the override's value is mechanism correctness on full haystacks where the text cue may be absent, not a measured accuracy win)
 - Benchmark binary built: `just build-longmemeval`
 - Network access to `huggingface.co` for the one-time dataset download (~285 MB for the oracle set)
 
@@ -51,15 +51,16 @@ pip install -r scripts/longmemeval-eval/requirements.txt
 # judge model backends: gpt-5.1 (OpenAI, OPENAI_API_KEY), azure-gpt
 # (AZURE_OPENAI_ENDPOINT/_API_KEY/_DEPLOYMENT_ID), or
 # claude-opus-4-6-bedrock (AWS default credential chain)
-python3 scripts/longmemeval-eval/evaluate_qa.py claude-opus-4-6-bedrock \
-    results/hypotheses.jsonl data/longmemeval_oracle.json
+python3 scripts/longmemeval-eval/evaluate_qa.py \
+    results/hypotheses.jsonl data/longmemeval_oracle.json claude-opus-4-6-bedrock
 ```
 
 Known deviation from upstream, disclosed: the judge reply budget is 64 tokens
 (upstream: `max_tokens: 10`); the verdict check is upstream's substring
 `'yes' in response`, so a verbose judge has marginally more room to emit an
-incidental "yes". Kept for parity with the runs published on the PRs; flip a
-single constant in the script to reproduce upstream exactly.
+incidental "yes". Kept for parity with the runs published on the PRs; flip the
+`JUDGE_MAX_TOKENS` constant at the top of the script to 10 to reproduce
+upstream exactly.
 
 ## Quick Start
 
@@ -203,7 +204,7 @@ Additional run flags:
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `--isolate` | `true` | Create a fresh `lme-tmp-<qid>` agent per entry; delete it afterward. Ensures no cross-entry memory bleed. |
-| `--occurred-at` | `true` | Send haystack/question dates as `WeaveRequest.occurred_at` so memories anchor at historical dates. Requires `server.allow_time_override: true` on the server. |
+| `--occurred-at` | `true` | Send haystack/question dates as `WeaveRequest.occurred_at` so memories anchor at historical dates. Requires `server.allow_time_override: true` on the server. Ignored in `context-stuffing` mode — the no-memory baseline never sends `occurred_at` and runs on a stock server. |
 | `--concurrency` | `3` | Number of entries processed in parallel. Lower to `2` if you see Bedrock throttling. |
 | `--server` | `localhost:60051` | Loom gRPC address. |
 | `--agent` | `""` | Use a specific agent ID instead of cloning the default. |

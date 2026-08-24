@@ -28,7 +28,9 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -84,6 +86,11 @@ type EntryResult struct {
 	OutputTokens int           `json:"output_tokens"`
 	Sessions     int           `json:"sessions_ingested"`
 	Error        string        `json:"error,omitempty"`
+
+	// grpcCode carries the gRPC status code of a failed Weave call so the
+	// runner can decide whether to abort the whole run. Unexported — never
+	// serialized to results.
+	grpcCode codes.Code
 }
 
 // Runner orchestrates the benchmark execution against a running Loom server.
@@ -188,7 +195,7 @@ loop:
 			defer func() { <-sem }()
 
 			result := r.runEntry(runCtx, e)
-			if strings.Contains(result.Error, "allow_time_override") {
+			if isTimeOverrideRejection(result) {
 				msg := "server rejects occurred_at (server.allow_time_override is not enabled); aborting the run — enable it in looms.yaml or pass --occurred-at=false"
 				if abortErr.CompareAndSwap(nil, &msg) {
 					r.logger.Error(msg, zap.String("first_failed_entry", e.QuestionID))
@@ -217,6 +224,18 @@ loop:
 		return errors.New(*msg)
 	}
 	return ctx.Err()
+}
+
+// isTimeOverrideRejection reports whether an entry failed because the server
+// rejects WeaveRequest.occurred_at (server.allow_time_override disabled). The
+// primary signal is the gRPC FailedPrecondition code from the Weave call
+// paired with a mention of occurred_at; the bare flag-name substring is kept
+// as a fallback for servers whose status code was lost in transit.
+func isTimeOverrideRejection(result EntryResult) bool {
+	if result.grpcCode == codes.FailedPrecondition && strings.Contains(result.Error, "occurred_at") {
+		return true
+	}
+	return strings.Contains(result.Error, "allow_time_override")
 }
 
 // runEntry evaluates a single LongMemEval entry.
@@ -248,7 +267,14 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 			return result
 		}
 		tempAgentID = id
-		defer r.deleteTempAgent(ctx, tempAgentID)
+		defer func() {
+			// Cleanup must survive cancellation of the run context —
+			// otherwise an abort strands the sibling goroutines' temp
+			// agents (and their graph-memory stores) server-side.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			r.deleteTempAgent(cleanupCtx, tempAgentID)
+		}()
 	}
 
 	// Use temp agent if available, otherwise the configured agent.
@@ -260,7 +286,7 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 	// The question turn anchors at the entry's question date, matching the
 	// "Current date:" line in the prompt.
 	var questionAt time.Time
-	if r.config.UseOccurredAt {
+	if r.occurredAtEnabled() {
 		t, err := ParseDate(entry.QuestionDate)
 		if err != nil {
 			result.Error = fmt.Sprintf("parse question date %q: %v", entry.QuestionDate, err)
@@ -330,10 +356,17 @@ func buildWeaveRequest(sessionID, query, agentID string, occurredAt time.Time) *
 	return req
 }
 
+// occurredAtEnabled reports whether occurred_at overrides should be sent.
+// Context-stuffing is the no-memory baseline and must run unchanged against
+// a stock server (allow_time_override off), so it never sends occurred_at.
+func (r *Runner) occurredAtEnabled() bool {
+	return r.config.UseOccurredAt && r.config.Mode != ModeContextStuffing
+}
+
 // sessionOccurredAt returns the haystack session's date as the occurred_at
 // override, or the zero time when the override is disabled.
 func (r *Runner) sessionOccurredAt(s SessionWithDate) time.Time {
-	if r.config.UseOccurredAt {
+	if r.occurredAtEnabled() {
 		return s.ParsedAt
 	}
 	return time.Time{}
@@ -345,6 +378,7 @@ func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, oc
 
 	resp, err := r.client.Weave(ctx, req)
 	if err != nil {
+		result.grpcCode = status.Code(err)
 		return nil, err
 	}
 

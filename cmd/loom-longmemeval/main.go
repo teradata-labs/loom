@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -375,18 +376,21 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 
 	// Run benchmark and collect results
 	resultCh := make(chan EntryResult, len(entries))
+	runErrCh := make(chan error, 1)
 	startTime := time.Now()
 
 	go func() {
-		if err := runner.Run(ctx, entries, resultCh); err != nil {
-			logger.Error("runner error", zap.Error(err))
-		}
+		runErrCh <- runner.Run(ctx, entries, resultCh)
 		close(resultCh)
 	}()
 
 	var results []EntryResult
 	for r := range resultCh {
 		results = append(results, r)
+	}
+	runErr := <-runErrCh
+	if runErr != nil {
+		logger.Error("runner error", zap.Error(runErr))
 	}
 
 	elapsed := time.Since(startTime)
@@ -411,6 +415,14 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 	// Print summary
 	summary := Summarize(results, mode, serverAddr)
 	PrintSummary(summary)
+
+	// An aborted run (e.g. the server rejects occurred_at) must exit
+	// non-zero so callers don't mistake a results file full of failed rows
+	// for a completed run. A user interrupt (SIGINT/SIGTERM) still exits
+	// cleanly with whatever finished.
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		return fmt.Errorf("benchmark run aborted: %w", runErr)
+	}
 
 	return nil
 }
