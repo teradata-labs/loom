@@ -16,6 +16,8 @@ package llm
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -325,10 +327,17 @@ func (rl *RateLimiter) executeWithRetry(ctx context.Context, call func(context.C
 				zap.Error(err),
 			)
 
-			// Exponential backoff before retry (except on last attempt)
+			// Exponential backoff before retry (except on last attempt).
+			// A provider-stated retry-after ("Please retry after 60 seconds",
+			// Retry-After header echoed into the error) overrides a shorter
+			// backoff — waiting less than the window just burns an attempt.
 			if attempt < rl.config.MaxRetries {
+				wait := backoff
+				if hint := RetryAfterHint(err); hint > wait {
+					wait = hint
+				}
 				select {
-				case <-time.After(backoff):
+				case <-time.After(wait):
 					backoff *= 2 // Double the backoff
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -380,6 +389,40 @@ func isThrottlingError(err error) bool {
 		contains(errStr, "TooManyRequests") ||
 		contains(errStr, "rate limit") ||
 		contains(errStr, "throttle")
+}
+
+// IsThrottlingError reports whether an error is a provider throttle (HTTP
+// 429 and equivalents). Throttling is flow control, not failure: callers
+// above the rate limiter (the agent's conversation loop, streaming paths
+// that bypass it) must wait and re-invoke rather than kill the conversation.
+func IsThrottlingError(err error) bool {
+	return isThrottlingError(err)
+}
+
+// retryAfterRe matches provider-stated retry windows: Azure's "Please retry
+// after 60 seconds", and "retry after 60s" / "(retry after 60s)" variants
+// clients echo from a Retry-After header into error text.
+var retryAfterRe = regexp.MustCompile(`(?i)retry\s+after\s+(\d+)\s*s`)
+
+// RetryAfterHint extracts a provider-stated retry-after duration from a
+// throttle error's text. Zero when the error names no window.
+func RetryAfterHint(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	m := retryAfterRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0
+	}
+	secs, convErr := strconv.Atoi(m[1])
+	if convErr != nil || secs <= 0 {
+		return 0
+	}
+	// Cap: a pathological or garbled window must not park a caller for hours.
+	if secs > 300 {
+		secs = 300
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func contains(s, substr string) bool {
