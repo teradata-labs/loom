@@ -1,4 +1,5 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: loom-lme
+  name: ${LME_NAMESPACE}

@@ -1,18 +1,19 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: lme-server-config
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 data:
   looms.yaml: |
     llm:
       provider: bedrock
-      bedrock_model_id: global.anthropic.claude-opus-4-6-v1
+      bedrock_model_id: ${LME_MODEL}
       bedrock_region: us-west-2
       # bedrock_bearer_token comes from LOOM_LLM_BEDROCK_BEARER_TOKEN (Secret lme-bedrock)
     server:
       host: 0.0.0.0
-      port: 60051
+      port: ${LME_GRPC_PORT}
       # Required: the harness replays historical conversations and anchors
       # them via WeaveRequest.occurred_at.
       allow_time_override: true

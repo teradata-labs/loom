@@ -1,23 +1,106 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
+# Only allowlisted LME_* placeholders are substituted; the embedded script's
+# own shell variables pass through untouched.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: lme-runner-script
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 data:
   run-slices.sh: |
     #!/bin/bash
-    # Drives the full LongMemEval run in resumable chunks. Each chunk's output
-    # lands on the results PVC; chunks whose output already exists are skipped,
-    # so a pod restart (node reboot, transient failure, job re-run) resumes
-    # instead of restarting. Failed chunks have partial output removed so the
-    # next attempt redoes them; a non-zero exit makes the Job retry the pod.
+    # Drives the full LongMemEval run in resumable, validated chunks.
+    #
+    # Durability model (per chunk):
+    #   1. the harness writes to *.tmp paths on the results PVC
+    #   2. the chunk is validated: exact entry count, every line parses as
+    #      JSON with a unique non-empty question_id, and the detailed output
+    #      shows zero missing/errored entries (the harness skips errored
+    #      entries in the .jsonl and exits 0 even after a partial/cancelled
+    #      run, so a nonempty file alone proves nothing)
+    #   3. only then is the output promoted via atomic rename and a .done
+    #      marker written; the marker — never file nonemptiness — is the
+    #      resume signal, so a killed or partial attempt is always redone
+    #
+    # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and the stored
+    # manifest.txt must match RUN_MANIFEST before resuming, so chunks from a
+    # different configuration are never silently reused.
+    #
+    # Results are never deleted: a failed attempt removes only its own
+    # unpromoted *.tmp files; promoted outputs and other runs are untouched.
     set -uo pipefail
 
-    : "${SERVER:?}" "${DATASET_FILE:?}" "${MODE:?}" "${CONCURRENCY:?}" "${CHUNK:?}" "${OCCURRED_AT:?}" "${RESULTS_DIR:?}"
+    : "${SERVER:?}" "${DATASET_FILE:?}" "${MODE:?}" "${CONCURRENCY:?}" "${CHUNK:?}" "${OCCURRED_AT:?}" "${RESULTS_DIR:?}" "${RUN_ID:?}" "${RUN_MANIFEST:?}"
+    ALLOW_MANIFEST_DRIFT="${ALLOW_MANIFEST_DRIFT:-0}"
+
+    command -v jq >/dev/null 2>&1 || { echo "FATAL: jq not present in runner image (required for chunk validation)"; exit 1; }
+
+    run_dir="${RESULTS_DIR}/runs/${RUN_ID}"
+    mkdir -p "${run_dir}"
+
+    # Verify run identity before touching anything. A mismatch means this run
+    # directory was produced by a different configuration (dataset, mode,
+    # occurred_at, model, image, chunking) — resuming would mix results.
+    manifest_file="${run_dir}/manifest.txt"
+    if [ -f "${manifest_file}" ]; then
+      stored="$(cat "${manifest_file}")"
+      if [ "${stored}" != "${RUN_MANIFEST}" ]; then
+        if [ "${ALLOW_MANIFEST_DRIFT}" = "1" ]; then
+          echo "WARNING: resuming run ${RUN_ID} despite manifest drift (LME_ALLOW_MANIFEST_DRIFT=1)"
+          echo "  stored:  ${stored}"
+          echo "  current: ${RUN_MANIFEST}"
+          echo "$(date -u '+%FT%TZ') ${RUN_MANIFEST}" >> "${run_dir}/manifest-drift.log"
+        else
+          echo "FATAL: refusing to resume run ${RUN_ID}: this run directory was produced by a"
+          echo "different configuration. Existing outputs are preserved and untouched."
+          echo "  stored:  ${stored}"
+          echo "  current: ${RUN_MANIFEST}"
+          echo "A configuration change normally yields a new run id (fresh directory); to"
+          echo "knowingly continue THIS run — e.g. same benchmark on a rebuilt image —"
+          echo "re-run run-500.sh with LME_RUN_ID=${RUN_ID} LME_ALLOW_MANIFEST_DRIFT=1."
+          exit 1
+        fi
+      fi
+    else
+      printf '%s' "${RUN_MANIFEST}" > "${manifest_file}.tmp"
+      mv "${manifest_file}.tmp" "${manifest_file}"
+    fi
 
     # Per-type question counts in LongMemEval (oracle and _S share them).
     types=(temporal-reasoning multi-session knowledge-update single-session-user single-session-assistant single-session-preference)
     counts=(133 133 78 70 56 30)
+
+    # validate_chunk <jsonl> <detailed.json> <expected-entries>
+    # Complete = the .jsonl holds exactly the expected number of well-formed
+    # entries (unique non-empty question_id, hypothesis string) AND the
+    # detailed output holds the same number of results, none with an error
+    # (the harness marks per-entry failures via a non-empty "error" field
+    # there and omits them from the .jsonl).
+    validate_chunk() {
+      local out="$1" det="$2" want="$3"
+      if [ ! -s "${out}" ] || [ ! -s "${det}" ]; then
+        echo "  invalid chunk: missing or empty output (${out} / ${det})"
+        return 1
+      fi
+      if ! jq -e -s --argjson want "${want}" '
+            length == $want
+            and (map(.question_id) | unique | length) == $want
+            and all(.[]; type == "object"
+                    and (.question_id | type == "string" and length > 0)
+                    and (.hypothesis | type == "string"))' \
+            "${out}" >/dev/null; then
+        echo "  invalid chunk: ${out} is not exactly ${want} well-formed JSONL entries"
+        return 1
+      fi
+      if ! jq -e --argjson want "${want}" '
+            type == "array" and length == $want
+            and all(.[]; (.error // "") == "")' \
+            "${det}" >/dev/null; then
+        echo "  invalid chunk: ${det} reports missing or errored entries"
+        return 1
+      fi
+      return 0
+    }
 
     failed=0
     for i in "${!types[@]}"; do
@@ -26,15 +109,16 @@ data:
       while [ "$offset" -lt "$n" ]; do
         lim="$CHUNK"
         [ $((offset + lim)) -gt "$n" ] && lim=$((n - offset))
-        out="${RESULTS_DIR}/s500-${t}-o$(printf '%03d' "$offset").jsonl"
-        det="${out%.jsonl}-detailed.json"
-        if [ -s "$out" ]; then
-          echo "skip completed chunk: $out"
+        base="${run_dir}/s500-${t}-o$(printf '%03d' "$offset")"
+        out="${base}.jsonl"; det="${base}-detailed.json"; marker="${base}.done"
+        tmp_out="${out}.tmp"; tmp_det="${det}.tmp"
+        if [ -f "${marker}" ]; then
+          echo "skip completed chunk: ${out}"
           offset=$((offset + CHUNK))
           continue
         fi
-        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} ==="
-        if ! /loom-longmemeval run \
+        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} run_id=${RUN_ID} ==="
+        if /loom-longmemeval run \
             --server "$SERVER" \
             --dataset "$DATASET_FILE" \
             --mode "$MODE" \
@@ -43,15 +127,22 @@ data:
             --limit "$lim" \
             --concurrency "$CONCURRENCY" \
             --occurred-at="$OCCURRED_AT" \
-            --output "$out" \
-            --detailed "$det"; then
-          echo "CHUNK FAILED: ${t} offset=${offset} (removing partial output for retry)"
-          rm -f "$out" "$det"
+            --output "$tmp_out" \
+            --detailed "$tmp_det" \
+            && validate_chunk "$tmp_out" "$tmp_det" "$lim"; then
+          mv "$tmp_det" "$det"
+          mv "$tmp_out" "$out"
+          printf 'run_id=%s entries=%s completed=%s\n' "${RUN_ID}" "${lim}" "$(date -u '+%FT%TZ')" > "${marker}.tmp"
+          mv "${marker}.tmp" "${marker}"
+          echo "chunk complete: ${out} (${lim} entries)"
+        else
+          echo "CHUNK FAILED: ${t} offset=${offset} (removing unpromoted .tmp output; promoted results are never touched)"
+          rm -f "$tmp_out" "$tmp_det"
           failed=1
         fi
         offset=$((offset + CHUNK))
       done
     done
 
-    echo "=== run complete (failed=${failed}) ==="
+    echo "=== run complete (failed=${failed}, run_id=${RUN_ID}) ==="
     exit "$failed"

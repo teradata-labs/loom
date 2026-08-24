@@ -1,12 +1,13 @@
-# Template — applied by run-500.sh via envsubst (LME_* variables from lme.env).
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst;
+# LME_* variables from lme.env / lme.env.local).
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: lme-runner
-  namespace: loom-lme
+  namespace: ${LME_NAMESPACE}
 spec:
-  # Multi-day run: pod restarts are the resume mechanism (completed chunks
-  # are skipped from the results PVC), so allow generous retries.
+  # Multi-day run: pod restarts are the resume mechanism (chunks with a .done
+  # marker on the results PVC are skipped), so allow generous retries.
   backoffLimit: 30
   template:
     metadata:
@@ -23,7 +24,7 @@ spec:
       initContainers:
         # One-time (cached on the data PVC): fetch the dataset from HuggingFace.
         - name: download-dataset
-          image: ${LME_IMAGE}:latest
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
           command: ["/loom-longmemeval"]
           args: ["download", "--datasets", "${LME_DATASET}", "--data-dir", "/data/longmemeval"]
           volumeMounts:
@@ -31,7 +32,7 @@ spec:
               mountPath: /data
       containers:
         - name: runner
-          image: ${LME_IMAGE}:latest
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
           command: ["/bin/bash", "/scripts/run-slices.sh"]
           env:
             - name: SERVER
@@ -48,6 +49,12 @@ spec:
               value: "${LME_OCCURRED_AT}"
             - name: RESULTS_DIR
               value: "/results"
+            - name: RUN_ID
+              value: "${LME_RUN_ID}"
+            - name: RUN_MANIFEST
+              value: "${LME_RUN_MANIFEST}"
+            - name: ALLOW_MANIFEST_DRIFT
+              value: "${LME_ALLOW_MANIFEST_DRIFT}"
           volumeMounts:
             - name: results
               mountPath: /results
