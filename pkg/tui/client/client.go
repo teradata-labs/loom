@@ -166,6 +166,13 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// SchedulerClient returns an LLM slot-scheduler client on this connection,
+// so callers reach the scheduler's admin surface with the same address, TLS
+// and bearer-token configuration they already dialed with.
+func (c *Client) SchedulerClient() loomv1.LLMSchedulerServiceClient {
+	return loomv1.NewLLMSchedulerServiceClient(c.conn)
+}
+
 // withSlotOrigin reports this turn's LLM scheduling band to the server
 // (gRPC metadata "loom-slot-origin"): "interactive" when a human at a
 // terminal is waiting on the response — stdin and stdout are TTYs, which is
