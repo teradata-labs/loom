@@ -130,7 +130,7 @@ func buildConversationBlock(ec extractionContext) string {
 const jsonSchema = `{
   "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system|event|place", "properties": "{}", "is_user": false}],
   "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES|ATTENDED|PURCHASED|VISITED|MEMBER_OF"}],
-  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation|lesson", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
+  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
 }`
 
 // buildGraphMemoryExtractionPrompt creates PASS 1: main topic extraction.
@@ -156,9 +156,10 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 	// is where unverified beliefs live (a fleet study measured the wrong
 	// error theory minted 58:8 against the real fix when this pass read
 	// assistant turns). Method knowledge is captured instead by the
-	// ledger-grounded lesson pass at conversation end
+	// ledger-grounded lesson pass that runs at the end of each Chat() call
 	// (extractLessonsAtEnd), which only ever sees verified error→fix
-	// transitions.
+	// transitions. That lane is also the ONLY writer of MemoryTypeLesson:
+	// a lesson-typed memory returned here is dropped below.
 	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
 	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
 	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior ")
@@ -437,8 +438,20 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		if m.Content == "" {
 			continue
 		}
+		// The lesson class belongs to the ledger miner alone. This lane reads
+		// mid-conversation prose, where unverified beliefs live (measured:
+		// the wrong error theory minted 58 times against the correct fix 8),
+		// so a memory it labels "lesson" is exactly the thing the verified
+		// lane exists to keep out. Dropped, not relabelled: relabelling would
+		// keep the same untested theory under a different type. The prompt
+		// already excludes working knowledge here; this makes it structural.
+		if isMinerOnlyMemoryType(m.MemoryType) {
+			zap.L().Debug("graph memory extraction: refused lesson-typed memory from the per-turn lane",
+				zap.String("content_preview", truncate(m.Content, 80)))
+			continue
+		}
 		memoryType := m.MemoryType
-		if !isValidMemoryType(memoryType) {
+		if !isPerTurnMemoryType(memoryType) {
 			memoryType = memory.MemoryTypeFact
 		}
 		salience := m.Salience
@@ -594,8 +607,11 @@ func normalizeEntityName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// isValidMemoryType checks if a memory type is one of the known types.
-func isValidMemoryType(t string) bool {
+// isPerTurnMemoryType reports whether a memory type may be minted by the
+// per-turn (user-facts) extraction lane. MemoryTypeLesson is deliberately
+// absent: it is a valid stored type, but only the ledger miner
+// (extractLessonsAtEnd) may write it — see isMinerOnlyMemoryType.
+func isPerTurnMemoryType(t string) bool {
 	switch t {
 	case memory.MemoryTypeFact,
 		memory.MemoryTypePreference,
@@ -603,11 +619,20 @@ func isValidMemoryType(t string) bool {
 		memory.MemoryTypeExperience,
 		memory.MemoryTypeFailure,
 		memory.MemoryTypeObservation,
-		memory.MemoryTypeConsolidation,
-		memory.MemoryTypeLesson:
+		memory.MemoryTypeConsolidation:
 		return true
 	}
 	return false
+}
+
+// isMinerOnlyMemoryType reports whether a caller-supplied memory type is one
+// only the ledger-grounded lesson miner may write. Both other ingestion paths
+// — the per-turn extractor and the LLM-callable graph_memory tool — refuse
+// these outright, so "verified lesson" describes who wrote the row, not what
+// a prompt asked a model to do. Case- and space-insensitive because the
+// values arrive from model output and tool input.
+func isMinerOnlyMemoryType(t string) bool {
+	return strings.EqualFold(strings.TrimSpace(t), memory.MemoryTypeLesson)
 }
 
 // sanitizeEventDate validates the (date, confidence) pair the extractor

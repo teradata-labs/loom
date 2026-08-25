@@ -361,7 +361,7 @@ func TestFleetLessonsSharedAcrossAgents(t *testing.T) {
 		config:            &Config{Name: "runner-4o-01"},
 		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
 	}
-	lessons := a.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000)
+	lessons := a.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000, false)
 	require.Len(t, lessons, 1)
 	assert.Contains(t, lessons[0].Content, "BIGINT")
 }
@@ -377,7 +377,10 @@ func TestFleetLessonSharingIsOptIn(t *testing.T) {
 		config:            &Config{Name: "runner-4o-09"},
 		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
 	}
-	assert.Equal(t, "runner-4o-09", earner.lessonPartition())
+	// Private lessons live in a DERIVED partition, never the agent's own —
+	// which is where the per-turn extractor and the graph_memory tool write.
+	assert.Equal(t, "runner-4o-09__lessons", earner.lessonPartition())
+	assert.NotEqual(t, earner.config.Name, earner.lessonPartition())
 
 	_, err := store.Remember(ctx, &memory.Memory{
 		AgentID:       earner.lessonPartition(),
@@ -390,7 +393,7 @@ func TestFleetLessonSharingIsOptIn(t *testing.T) {
 	require.NoError(t, err)
 
 	// The earner still recalls its own private lesson through the lane.
-	require.Len(t, earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000), 1)
+	require.Len(t, earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000, false), 1)
 
 	// A different agent (sharing off) sees nothing.
 	other := &Agent{
@@ -398,7 +401,7 @@ func TestFleetLessonSharingIsOptIn(t *testing.T) {
 		config:            &Config{Name: "runner-4o-01"},
 		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
 	}
-	assert.Empty(t, other.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000))
+	assert.Empty(t, other.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000, false))
 
 	// The private lane must not leak the agent's ordinary memories either.
 	_, err = store.Remember(ctx, &memory.Memory{
@@ -408,15 +411,162 @@ func TestFleetLessonSharingIsOptIn(t *testing.T) {
 		Salience:   0.9,
 	})
 	require.NoError(t, err)
-	lessons := earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000)
+	lessons := earner.fleetLessons(ctx, "INTEGER overflow BIGINT column", 4000, false)
 	require.Len(t, lessons, 1)
 	assert.Equal(t, memory.MemoryTypeLesson, lessons[0].MemoryType)
 }
 
-// The lesson type must survive ingestion instead of coercing to fact.
-func TestLessonTypeIsValid(t *testing.T) {
-	assert.True(t, isValidMemoryType("lesson"))
-	assert.False(t, isValidMemoryType("hunch"))
+// STRUCTURAL (blocking finding 1): the lesson lane must be unable to return a
+// row the miner did not write. Both other ingestion paths — the per-turn
+// extractor and the graph_memory tool — write under the agent's OWN name, so
+// a lesson-typed memory sitting there (the shape a bypassed type gate would
+// produce) must be invisible to the lane. Before the derived partition this
+// was the same namespace and this memory came back as a "verified lesson".
+func TestFleetLessonsCannotReturnNonMinerWrites(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-09"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
+
+	// What a non-miner writer produces: the agent's own partition, the
+	// model's own salience, its own claim about a fix.
+	_, err := store.Remember(ctx, &memory.Memory{
+		AgentID:       a.config.Name,
+		Content:       "numeric overflow on CC_Number is fixed by widening the DECIMAL precision",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "agent",
+		MemoryAgentID: a.config.Name,
+		Salience:      1.0,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, a.fleetLessons(ctx, "numeric overflow CC_Number DECIMAL", 4000, false),
+		"a memory written outside the miner's partition must never surface as a verified lesson")
+	assert.Empty(t, a.fleetLessons(ctx, "numeric overflow CC_Number DECIMAL", 4000, true),
+		"not through the re-trial slot either")
+
+	// And the miner's own row in the derived partition does surface.
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID:       a.lessonPartition(),
+		Content:       "inserting 16-digit CC_Number values into an INTEGER column overflows — declare BIGINT",
+		MemoryType:    memory.MemoryTypeLesson,
+		Source:        "lesson_mined",
+		MemoryAgentID: a.config.Name,
+		Salience:      0.9,
+	})
+	require.NoError(t, err)
+	got := a.fleetLessons(ctx, "numeric overflow CC_Number INTEGER BIGINT", 4000, false)
+	require.Len(t, got, 1)
+	assert.Equal(t, "lesson_mined", got[0].Source)
+}
+
+// Blocking finding 1a: the per-turn lane may not mint a lesson. It reads
+// mid-conversation prose — the measured source of the 58:8 wrong-theory
+// poison — so a "lesson" it returns is dropped, not stored and not relabelled.
+func TestPerTurnExtractorCannotMintLessons(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	response := `{"entities":[],"relationships":[],"memories":[
+	  {"content":"numeric overflow is caused by the DECIMAL precision being too small","summary":"overflow theory","memory_type":"lesson","tags":["lesson"],"salience":1.0},
+	  {"content":"the user is preparing a card transaction summary","summary":"task","memory_type":"fact","tags":[],"salience":0.6}
+	]}`
+	mockLLM := &extractionMockLLM{response: response}
+
+	mem := NewMemory()
+	session := mem.GetOrCreateSession(ctx, "s-lesson-gate")
+	segMem := NewSegmentedMemory("", 200000, 20000)
+	segMem.AddMessage(ctx, types.Message{Role: "user", Content: "summarize the card transactions"})
+	session.SegmentedMem = segMem
+
+	a := &Agent{
+		llm:                         mockLLM,
+		graphMemoryStore:            store,
+		enableGraphMemoryExtraction: true,
+		graphMemoryConfig:           &loomv1.GraphMemoryConfig{Enabled: true, EnableExtraction: true},
+		memory:                      mem,
+		config:                      &Config{Name: "runner-4o-09"},
+	}
+	a.extractGraphMemoryAsync(ctx, "s-lesson-gate")
+
+	// Everything this lane wrote, whatever type it ended up with.
+	written, err := store.Recall(ctx, memory.RecallOpts{
+		AgentID: "runner-4o-09", MinSalience: 0.01, Limit: 50,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, written, "ordinary per-turn extraction still works")
+	sawFact := false
+	for _, m := range written {
+		assert.NotEqual(t, memory.MemoryTypeLesson, m.MemoryType,
+			"the per-turn lane must not store lesson-typed memories")
+		assert.NotContains(t, m.Content, "DECIMAL precision being too small",
+			"and must not keep the same unverified theory under a relabelled type")
+		if m.MemoryType == memory.MemoryTypeFact {
+			sawFact = true
+		}
+	}
+	assert.True(t, sawFact, "the ordinary user fact still landed")
+
+	assert.Empty(t, a.fleetLessons(ctx, "numeric overflow DECIMAL precision", 4000, false),
+		"and nothing it wrote may reach the verified lane")
+
+	// The schema it is handed no longer offers the class at all.
+	assert.NotContains(t, buildGraphMemoryExtractionPrompt(nil, 5, nil, nil), "observation|lesson")
+}
+
+// Blocking finding 1b: the model cannot write into the lane through the
+// LLM-callable tool either — memory_type "lesson" is refused with a reason.
+func TestGraphMemoryToolCannotMintLessons(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	tool := NewGraphMemoryTool(store, "runner-4o-09")
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"action":      "remember",
+		"content":     "numeric overflow is fixed by widening the DECIMAL precision",
+		"memory_type": "lesson",
+		"salience":    1.0,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.Success)
+	require.NotNil(t, res.Error)
+	assert.Contains(t, res.Error.Message, "reserved")
+
+	// Case and padding are model output, not a contract.
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"action": "remember", "content": "same claim", "memory_type": " Lesson ",
+	})
+	require.NoError(t, err)
+	assert.False(t, res.Success)
+
+	stored, err := store.Recall(ctx, memory.RecallOpts{
+		AgentID: "runner-4o-09", MinSalience: 0.01, Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, stored, "nothing was written")
+
+	// Ordinary types still work.
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"action": "remember", "content": "the card table is named vt_card_day", "memory_type": "fact",
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Success)
+}
+
+// The lesson class is the miner's alone: a valid stored type that neither
+// other ingestion path may write.
+func TestLessonTypeIsMinerOnly(t *testing.T) {
+	assert.True(t, isMinerOnlyMemoryType("lesson"))
+	assert.True(t, isMinerOnlyMemoryType(" LESSON "))
+	assert.False(t, isMinerOnlyMemoryType("fact"))
+	assert.False(t, isMinerOnlyMemoryType(""))
+	assert.False(t, isPerTurnMemoryType("lesson"))
+	assert.True(t, isPerTurnMemoryType("fact"))
 }
 
 func TestErrorLessonQuery(t *testing.T) {
@@ -589,8 +739,8 @@ func TestApplyLessonCredit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, loss.Salience, lessonMinSalience)
 
-	// The demoted lesson no longer surfaces through the lesson lane.
-	got := a.fleetLessons(ctx, "numeric overflow DECIMAL BIGINT", 4000)
+	// The demoted lesson no longer surfaces through the ordinary lesson lane.
+	got := a.fleetLessons(ctx, "numeric overflow DECIMAL BIGINT", 4000, false)
 	ids := map[string]bool{}
 	for _, m := range got {
 		ids[m.ID] = true
@@ -604,8 +754,13 @@ func TestApplyLessonCredit(t *testing.T) {
 func TestInjectErrorLessonsPrivate(t *testing.T) {
 	store := newTestGraphMemoryStore(t)
 	ctx := context.Background()
+	owner := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-09"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
+	}
 	_, err := store.Remember(ctx, &memory.Memory{
-		AgentID:       "runner-4o-09",
+		AgentID:       owner.lessonPartition(),
 		Content:       "numeric overflow inserting CC_Number into an INTEGER column — declare the column BIGINT",
 		MemoryType:    memory.MemoryTypeLesson,
 		Source:        "lesson_mined",
@@ -616,11 +771,6 @@ func TestInjectErrorLessonsPrivate(t *testing.T) {
 
 	errText := "numeric overflow occurred during computation of CC_Number"
 
-	owner := &Agent{
-		graphMemoryStore:  store,
-		config:            &Config{Name: "runner-4o-09"},
-		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true},
-	}
 	ownerSession := &types.Session{ID: "s-own"}
 	owner.injectErrorLessons(ctx, ownerSession, []string{errText})
 	assert.Len(t, ownerSession.GetMessages(), 1)
@@ -633,4 +783,234 @@ func TestInjectErrorLessonsPrivate(t *testing.T) {
 	otherSession := &types.Session{ID: "s-other"}
 	other.injectErrorLessons(ctx, otherSession, []string{errText})
 	assert.Empty(t, otherSession.GetMessages())
+}
+
+// Blocking finding 2a: "nothing happened after the injection" is not a loss.
+// The ledger drains at the end of every Chat() call, so an injection landing
+// on the turn's last tool call is the NORMAL ending of an interactive turn —
+// scoring it as a loss demoted lessons for existing rather than for failing.
+func TestApplyLessonCreditNoPostInjectionEvidence(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
+	}
+	mk := func(content string) string {
+		m, err := store.Remember(ctx, &memory.Memory{
+			AgentID: fleetLessonAgentID, Content: content,
+			MemoryType: memory.MemoryTypeLesson, Source: "lesson_mined", Salience: 0.8,
+		})
+		require.NoError(t, err)
+		return m.ID
+	}
+	salience := func(id string) float64 {
+		m, err := store.GetMemory(ctx, fleetLessonAgentID, id)
+		require.NoError(t, err)
+		return m.Salience
+	}
+
+	// The turn ended right after the injection: idx == len(events).
+	emptyTail := mk("declare 16-digit identifier columns BIGINT")
+	events := []minedEvent{
+		{key: "execute_statement:INSERT VT", ok: false, errText: "overflow"},
+	}
+	a.applyLessonCredit(ctx, events, map[string]int{emptyTail: len(events)})
+	assert.InDelta(t, 0.8, salience(emptyTail), 0.0001, "an empty tail must score nothing")
+
+	// A stale/overshot position is the same non-observation.
+	overshot := mk("cast wide identifiers before comparing them")
+	a.applyLessonCredit(ctx, events, map[string]int{overshot: len(events) + 5})
+	assert.InDelta(t, 0.8, salience(overshot), 0.0001)
+
+	// Tail with only unrelated successful work: neither vindicated nor
+	// contradicted, so untouched.
+	unrelated := mk("volatile tables need ON COMMIT PRESERVE ROWS")
+	a.applyLessonCredit(ctx, []minedEvent{
+		{key: "execute_statement:INSERT VT", ok: false, errText: "overflow"},
+		{key: "execute_query:SELECT DBC", ok: true},
+	}, map[string]int{unrelated: 1})
+	assert.InDelta(t, 0.8, salience(unrelated), 0.0001)
+
+	// An observed continued failure still earns the loss — the signal the
+	// mechanism exists for is intact.
+	contradicted := mk("widen the DECIMAL precision")
+	a.applyLessonCredit(ctx, []minedEvent{
+		{key: "execute_statement:INSERT VT", ok: false, errText: "overflow"},
+		{key: "execute_statement:INSERT VT", ok: false, errText: "overflow"},
+	}, map[string]int{contradicted: 1})
+	assert.InDelta(t, 0.8+lessonCreditLoss, salience(contradicted), 0.0001)
+}
+
+// Blocking finding 2b: demotion must not be absorbing. A demoted lesson was
+// unreachable — never recalled, so never injected, so unable to earn the only
+// signal that could raise it. It now rides a bounded re-trial slot on the
+// lane that scores outcomes, and one observed recovery reinstates it.
+func TestDemotedLessonGetsRetrialAndCanReturn(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	a := &Agent{
+		graphMemoryStore:  store,
+		config:            &Config{Name: "runner-4o-01"},
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{Enabled: true, FleetLessonSharing: true},
+	}
+	demoted, err := store.Remember(ctx, &memory.Memory{
+		AgentID:    fleetLessonAgentID,
+		Content:    "numeric overflow on wide identifiers — declare the column BIGINT",
+		MemoryType: memory.MemoryTypeLesson,
+		Source:     "lesson_mined",
+		Salience:   0.05, // sunk to the AdjustSalience clamp
+	})
+	require.NoError(t, err)
+
+	query := "numeric overflow BIGINT identifiers"
+	// The ordinary lane cannot see it — demotion is real.
+	require.Empty(t, a.fleetLessons(ctx, query, 4000, false))
+
+	// The error lane re-tries it: one recall in lessonRetrialInterval carries
+	// a demoted candidate, so it is reachable again within a session.
+	seen := 0
+	for i := 0; i < lessonRetrialInterval*2; i++ {
+		for _, m := range a.fleetLessons(ctx, query, 4000, true) {
+			if m.ID == demoted.ID {
+				seen++
+				assert.True(t, lessonOnProbation(m))
+			}
+		}
+	}
+	require.GreaterOrEqual(t, seen, 1, "a demoted lesson must remain reachable for re-evaluation")
+	assert.LessOrEqual(t, seen, 2, "and only in the bounded re-trial slot")
+
+	// It is delivered honestly, not as a verified fix.
+	session := &types.Session{ID: "s-probation"}
+	for i := 0; i < lessonRetrialInterval*2 && len(session.GetMessages()) == 0; i++ {
+		a.injectErrorLessons(ctx, session, []string{"Error 2616 numeric overflow BIGINT identifiers"})
+	}
+	msgs := session.GetMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Content, "Under re-trial")
+
+	// Winning the re-trial reinstates it exactly to the recall floor: one
+	// observed recovery readmits, one observed failure demotes again.
+	a.applyLessonCredit(ctx, []minedEvent{
+		{key: "execute_statement:INSERT VT", ok: false, errText: "overflow"},
+		{key: "execute_statement:INSERT VT", ok: true},
+	}, map[string]int{demoted.ID: 1})
+
+	back, err := store.GetMemory(ctx, fleetLessonAgentID, demoted.ID)
+	require.NoError(t, err)
+	assert.InDelta(t, lessonMinSalience, back.Salience, 0.0001)
+	require.Len(t, a.fleetLessons(ctx, query, 4000, false), 1,
+		"a reinstated lesson is served by the ordinary lane again")
+}
+
+// Major finding 3: the transient-retry shape — rate limit, then the IDENTICAL
+// input succeeding — changed nothing. It must be dropped before mining, not
+// handed to the miner with the grounding gate switched off (which is what an
+// all-empty fragment set used to do).
+func TestFragmentlessTransientRetryIsNotMined(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// A plausible invented cause that names nothing observed.
+	mockLLM := &extractionMockLLM{response: `{"entities":[],"relationships":[],"memories":[
+	  {"content":"queries against the transactions table must be issued with a smaller batch size to avoid rate limiting","summary":"batch size","memory_type":"lesson","tags":["lesson"],"salience":0.9}
+	]}`}
+
+	a := &Agent{
+		llm:                         mockLLM,
+		graphMemoryStore:            store,
+		enableGraphMemoryExtraction: true,
+		graphMemoryConfig:           &loomv1.GraphMemoryConfig{Enabled: true},
+		memory:                      NewMemory(),
+		config:                      &Config{Name: "runner-4o-01"},
+	}
+
+	call := types.ToolCall{ID: "1", Name: "execute_query",
+		Input: map[string]interface{}{"sql": "SELECT COUNT(*) FROM transactions"}}
+	a.recordToolLedger("s-retry", call, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "rate_limit", Message: "429 Too Many Requests"}})
+	a.recordToolLedger("s-retry", call, &shuttle.Result{Success: true, Data: `{"row_count":1,"rows":[[42]]}`})
+
+	// The pair exists mechanically but carries no observed change.
+	peek := pairEvents([]minedEvent{
+		{name: "execute_query", key: eventClass(call), input: eventInputPreview(call), ok: false, errText: "429"},
+		{name: "execute_query", key: eventClass(call), input: eventInputPreview(call), ok: true},
+	})
+	require.Len(t, peek, 1)
+	require.Empty(t, peek[0].ChangedFragments)
+	assert.Empty(t, groundedPairs(peek))
+
+	a.extractLessonsAtEnd(ctx, "s-retry")
+
+	assert.Equal(t, 0, mockLLM.getCalls(),
+		"a pair with nothing to explain must never reach the miner")
+	assert.Empty(t, a.fleetLessons(ctx, "batch size rate limiting transactions", 4000, false))
+}
+
+// extractLessonsAtEnd end-to-end: the store path. A grounded lesson lands in
+// the lesson partition (never the agent's own), at the verified-salience
+// floor regardless of what the miner asked for, tagged and attributed; an
+// ungrounded sibling is dropped.
+func TestExtractLessonsAtEndStorePath(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	mockLLM := &extractionMockLLM{response: `{"entities":[],"relationships":[],"memories":[
+	  {"content":"16-digit identifiers overflow an INTEGER column — declare such columns BIGINT","summary":"declare BIGINT","memory_type":"lesson","tags":["schema"],"salience":0.1},
+	  {"content":"numeric overflow is really about the DECIMAL precision being too small","summary":"decimal theory","memory_type":"lesson","tags":["schema"],"salience":0.95}
+	]}`}
+
+	a := &Agent{
+		llm:                         mockLLM,
+		graphMemoryStore:            store,
+		enableGraphMemoryExtraction: true,
+		graphMemoryConfig:           &loomv1.GraphMemoryConfig{Enabled: true},
+		memory:                      NewMemory(),
+		config:                      &Config{Name: "runner-4o-09"},
+	}
+
+	create := func(colType string) types.ToolCall {
+		return types.ToolCall{Name: "execute_statement", Input: map[string]interface{}{
+			"sql": "CREATE VOLATILE TABLE vt_card_day (card_id " + colType + ", amt DECIMAL(14,2))"}}
+	}
+	insert := types.ToolCall{Name: "execute_statement", Input: map[string]interface{}{
+		"sql": "INSERT INTO vt_card_day SELECT CC_Number, SUM(Amount) FROM txns GROUP BY 1"}}
+
+	a.recordToolLedger("s-mine", create("INTEGER"), &shuttle.Result{Success: true})
+	a.recordToolLedger("s-mine", insert, &shuttle.Result{Success: false,
+		Error: &shuttle.Error{Code: "db_error", Message: "[Error 2616] Numeric overflow occurred during computation."}})
+	a.recordToolLedger("s-mine", types.ToolCall{Name: "execute_statement",
+		Input: map[string]interface{}{"sql": "DROP TABLE vt_card_day"}}, &shuttle.Result{Success: true})
+	a.recordToolLedger("s-mine", create("BIGINT"), &shuttle.Result{Success: true})
+	a.recordToolLedger("s-mine", insert, &shuttle.Result{Success: true,
+		Data: `{"activity_count":55316,"status":"success"}`})
+
+	a.extractLessonsAtEnd(ctx, "s-mine")
+
+	require.Equal(t, 1, mockLLM.getCalls(), "one mining call for the whole pass")
+
+	lessons := a.fleetLessons(ctx, "INTEGER overflow BIGINT identifiers DECIMAL precision", 4000, false)
+	require.Len(t, lessons, 1, "the ungrounded sibling is dropped by the grounding gate")
+	got := lessons[0]
+	assert.Contains(t, got.Content, "BIGINT")
+	assert.Equal(t, memory.MemoryTypeLesson, got.MemoryType)
+	assert.Equal(t, "lesson_mined", got.Source)
+	assert.Equal(t, "runner-4o-09", got.MemoryAgentID, "provenance: who verified it")
+	assert.Contains(t, got.Tags, "lesson")
+	assert.InDelta(t, lessonSalienceFloor, got.Salience, 0.0001,
+		"a verified lesson is stored at the floor, not at the miner's self-assessment")
+
+	// It is NOT in the agent's own partition — the one other writers use.
+	own, err := store.Recall(ctx, memory.RecallOpts{AgentID: "runner-4o-09", MinSalience: 0.01, Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, own)
+
+	// The ledger was consumed: a second pass has nothing to mine and makes no
+	// LLM call.
+	a.extractLessonsAtEnd(ctx, "s-mine")
+	assert.Equal(t, 1, mockLLM.getCalls(), "no pairs, no LLM call")
 }

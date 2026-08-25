@@ -489,6 +489,12 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	conditions = append(conditions, "m.salience >= ?")
 	args = append(args, opts.MinSalience)
 
+	// Optional strict salience ceiling (band selection — see RecallOpts).
+	if opts.BelowSalience > 0 {
+		conditions = append(conditions, "m.salience < ?")
+		args = append(args, opts.BelowSalience)
+	}
+
 	// Optional type filter.
 	if opts.MemoryType != "" {
 		conditions = append(conditions, "m.memory_type = ?")

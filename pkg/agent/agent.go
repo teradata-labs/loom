@@ -1906,10 +1906,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
-	// Ledger-grounded lesson pass (PR #357): once, over the finished
-	// conversation, mine verified error→fix transitions from the tool
-	// ledger. Runs regardless of outcome — a failed conversation may still
-	// contain verified intermediate fixes.
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
 	if a.enableGraphMemoryExtraction {
 		a.graphExtractionWG.Add(1)
 		go func() {
@@ -3331,7 +3333,10 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// Dedicated lesson lane (PR #357): verified working knowledge rides
 	// regardless of the echo-memory ranking above. Fleet-shared only when
 	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
-	lessons := a.fleetLessons(ctx, searchQuery, budget)
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons).
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
 	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return

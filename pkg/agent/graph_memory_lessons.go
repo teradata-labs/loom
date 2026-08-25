@@ -36,7 +36,23 @@ import (
 // reach: the conversation's own tool ledger. A lesson candidate exists only
 // where the ledger shows an error followed by a succeeding retry of the same
 // kind of call — the fix demonstrably worked before the extractor ever sees
-// it. This pass runs ONCE, at conversation end, over the full transcript.
+// it.
+//
+// SCOPE OF ONE PASS: this runs at the end of every Chat() call — that is ONE
+// USER MESSAGE, not one conversation — because the ledger it consumes is
+// drained there (takeToolLedger). An error hit on turn 1 and fixed on turn 2
+// is therefore structurally unmineable: the pair spans two ledgers and no
+// single pass ever sees both halves. Only within-turn error→fix transitions
+// mint lessons.
+//
+// LANE MEMBERSHIP IS STRUCTURAL: mined lessons live in their own partition
+// (lessonPartition) that no other writer targets, and the "lesson" memory
+// type is refused on both other ingestion paths — the per-turn extractor
+// (graph_memory_extractor.go) and the LLM-callable graph_memory tool
+// (graph_memory_tool.go). "Verified lessons from prior work" therefore names
+// a set the miner alone can add to, rather than a prompt instruction other
+// writers are trusted to respect. See
+// docs/architecture/lesson-grounding-and-credit.md.
 const (
 	// maxLessonPairs bounds the mining prompt; the highest-value transitions
 	// are the earliest distinct ones.
@@ -116,14 +132,25 @@ const maxLedgerEvents = 300
 // which is a policy decision the operator has to make, not a default.
 const fleetLessonAgentID = "__fleet_lessons__"
 
+// lessonPartitionSuffix derives the PRIVATE lesson partition from the agent's
+// own name. Private mode used to store lessons under a.config.Name — the same
+// partition the per-turn extractor and the LLM-callable graph_memory tool
+// write to — so "verified lesson" was a claim about a prompt instruction, not
+// about who could write the row. A derived partition makes the claim
+// structural: a caller that does not go through the miner cannot reach it,
+// and a future caller cannot forget a filter that does not exist.
+const lessonPartitionSuffix = "__lessons"
+
 // lessonPartition returns the graph-memory agent ID lessons are stored under
 // and recalled from: the shared fleet partition when sharing is opted in,
-// otherwise the agent's own partition (private lessons).
+// otherwise a partition derived from the agent's own name (private lessons).
+// Neither value is ever a partition another writer targets — the per-turn
+// extractor and the graph_memory tool both write under a.config.Name.
 func (a *Agent) lessonPartition() string {
 	if a.graphMemoryConfig != nil && a.graphMemoryConfig.GetFleetLessonSharing() {
 		return fleetLessonAgentID
 	}
-	return a.config.Name
+	return a.config.Name + lessonPartitionSuffix
 }
 
 // maxFleetLessons caps the dedicated lesson lane in the injected context.
@@ -227,7 +254,9 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	if query == "" {
 		return
 	}
-	lessons := a.fleetLessons(ctx, query, lessonRecallBudget)
+	// Probation is allowed here and nowhere else: this is the lane outcome
+	// credit scores, so a demoted lesson offered here is actually re-measured.
+	lessons := a.fleetLessons(ctx, query, lessonRecallBudget, true)
 	if len(lessons) == 0 {
 		return
 	}
@@ -263,13 +292,41 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString("[Verified Lessons — matched to the error just hit]\n")
-	sb.WriteString("These fixes were observed to succeed on this error in prior work:\n")
+	var verified, probation []*memory.Memory
 	for _, m := range fresh {
-		sb.WriteString("- ")
-		sb.WriteString(m.Content)
-		sb.WriteString("\n")
+		if lessonOnProbation(m) {
+			probation = append(probation, m)
+			continue
+		}
+		verified = append(verified, m)
+	}
+
+	var sb strings.Builder
+	// The heading has to match what is actually below it: a delivery holding
+	// only a re-trial candidate is not a delivery of verified lessons.
+	if len(verified) > 0 {
+		sb.WriteString("[Verified Lessons — matched to the error just hit]\n")
+	} else {
+		sb.WriteString("[Lesson Re-trial — matched to the error just hit]\n")
+	}
+	if len(verified) > 0 {
+		sb.WriteString("These fixes were observed to succeed on this error in prior work:\n")
+		for _, m := range verified {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+	}
+	// A demoted lesson rides the re-trial slot. Presenting it as verified
+	// would be a lie — the outcome record has it preceding failures — so it
+	// is labelled for what it is and the model is left free to ignore it.
+	if len(probation) > 0 {
+		sb.WriteString("Under re-trial (this one has preceded failures before — use only if it clearly fits):\n")
+		for _, m := range probation {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
 	}
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
@@ -278,7 +335,7 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 }
 
 // clearErrorLessonState drops the session's error-injection tracking
-// (paired with ledger teardown at conversation end).
+// (paired with ledger teardown at the end of a Chat() call).
 func (a *Agent) clearErrorLessonState(sessionID string) {
 	a.errorLessonMu.Lock()
 	delete(a.errorLessonState, sessionID)
@@ -654,12 +711,23 @@ Return ONLY a JSON object:
 
 // fleetLessons returns up to maxFleetLessons verified lessons matching the
 // query from the lesson partition (fleet-shared when opted in, otherwise the
-// agent's own). A dedicated lane, deliberately outside the echo-memory
-// ranking and the rerank stage: lessons are verified by construction
-// (ledger-mined from observed error→fix transitions), so they earn context
-// space on relevance alone. The MemoryType filter keeps the private-mode
-// query from pulling ordinary memories out of the agent's own partition.
-func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int) []*memory.Memory {
+// agent's own derived one). A dedicated lane, deliberately outside the
+// echo-memory ranking and the rerank stage: lessons are verified by
+// construction (ledger-mined from observed error→fix transitions), so they
+// earn context space on relevance alone.
+//
+// Two structural filters, both enforced in the store query rather than in Go
+// after the fact, make the lane's membership a fact and not a convention:
+// AgentID is a partition only the miner writes to, and MemoryType is a class
+// both other ingestion paths refuse. Nothing this returns can have been
+// written by the per-turn extractor or by the model through the graph_memory
+// tool.
+//
+// allowProbation offers ONE demoted lesson (below the recall floor) every
+// lessonRetrialInterval-th call, so demotion is not an absorbing state. It is
+// true only on the error-triggered lane, where outcome credit scores what
+// happens next — a re-trial that nothing measures is pure cost.
+func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int, allowProbation bool) []*memory.Memory {
 	if a.graphMemoryStore == nil {
 		return nil
 	}
@@ -674,11 +742,52 @@ func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int
 	if err != nil {
 		return nil
 	}
-	return lessons
+	if !allowProbation || len(lessons) >= maxFleetLessons {
+		return lessons
+	}
+	if a.lessonTrials.Add(1)%lessonRetrialInterval != 0 {
+		return lessons
+	}
+	// Re-trial slot: the highest-ranked demoted lesson, one at a time. The
+	// ceiling is a store-side condition (BelowSalience), so a demoted row is
+	// selected as such instead of being fished out of a wider result set.
+	demoted, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:       a.lessonPartition(),
+		Query:         searchQuery,
+		MemoryType:    memory.MemoryTypeLesson,
+		MinSalience:   lessonProbationFloor,
+		BelowSalience: lessonMinSalience,
+		Limit:         1,
+		MaxTokens:     budget,
+	})
+	if err != nil || len(demoted) == 0 {
+		return lessons
+	}
+	// A store that does not honor BelowSalience (the field is optional; only
+	// the SQLite store implements it) would answer with an eligible lesson
+	// instead. Take the candidate only if it really is demoted and new.
+	pick := demoted[0]
+	if !lessonOnProbation(pick) {
+		return lessons
+	}
+	for _, m := range lessons {
+		if m.ID == pick.ID {
+			return lessons
+		}
+	}
+	return append(lessons, pick)
 }
 
-// extractLessonsAtEnd runs the ledger-grounded lesson pass over the finished
-// conversation. Fire-and-forget from the chat teardown via graphExtractionWG.
+// lessonOnProbation reports whether a recalled lesson is a demoted one riding
+// the re-trial slot — injected under a different, honest heading.
+func lessonOnProbation(m *memory.Memory) bool {
+	return m != nil && m.Salience < lessonMinSalience
+}
+
+// extractLessonsAtEnd runs the ledger-grounded lesson pass over the ledger
+// accumulated during ONE Chat() call — one user message, not one conversation
+// (see the file header). Fire-and-forget from the chat teardown via
+// graphExtractionWG.
 func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	if !a.enableGraphMemoryExtraction || a.graphMemoryStore == nil ||
 		a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
@@ -715,6 +824,14 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		// turns — which is exactly why the ledger is primary.
 		pairs = mineLessonPairs(session.GetMessages())
 	}
+	// Drop pairs the ledger observed no change in, BEFORE mining (Fix A).
+	// The commonest error→success shape in agent tool use is a transient
+	// retry — a rate limit or a timeout, then the IDENTICAL input succeeding
+	// — which changed nothing. Asking the miner to explain a change that does
+	// not exist is asking it to invent one, and an all-empty grounding map
+	// used to switch OFF the very gate that would have caught the invention.
+	// Dropping the pairs instead means the gate below is unconditional.
+	pairs = groundedPairs(pairs)
 	if len(pairs) == 0 {
 		return
 	}
@@ -745,10 +862,12 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		if m.Content == "" {
 			continue
 		}
-		// Grounding gate (Fix A): when the ledger observed concrete changed
-		// fragments, a lesson naming none of them is narrative, not
-		// observation — drop it rather than store a plausible misdiagnosis.
-		if len(grounding) > 0 && !lessonIsGrounded(m.Content, grounding) {
+		// Grounding gate (Fix A): every surviving pair carries observed
+		// changed fragments (groundedPairs above), so a lesson naming none of
+		// them is narrative, not observation — drop it rather than store a
+		// plausible misdiagnosis. Unconditional: the gate must not weaken in
+		// the case where the evidence is weakest.
+		if !lessonIsGrounded(m.Content, grounding) {
 			dropped++
 			continue
 		}
@@ -779,6 +898,24 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	}
 }
 
+// groundedPairs keeps only the pairs the ledger observed a concrete change
+// in. A pair with no ChangedFragments has no cause to teach: either nothing
+// changed between the failure and the success (the transient-retry shape) or
+// the change happened in a call with no earlier same-class call to diff it
+// against, and neither is evidence a lesson can be grounded in. Recall is
+// deliberately traded for the guarantee that every stored lesson names
+// something that actually happened.
+func groundedPairs(pairs []lessonPair) []lessonPair {
+	var out []lessonPair
+	for _, p := range pairs {
+		if len(p.ChangedFragments) == 0 {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // lessonGroundingTokens is the union of every pair's observed changed
 // fragments (lowercased) — the vocabulary a grounded lesson must draw from.
 func lessonGroundingTokens(pairs []lessonPair) map[string]bool {
@@ -806,10 +943,35 @@ func lessonIsGrounded(content string, grounding map[string]bool) bool {
 // lessonCreditWin / lessonCreditLoss are the salience deltas outcome credit
 // applies; lessonMinSalience is the recall lane's eligibility floor. Four
 // uncorrected losses sink a lesson from its 0.8 floor to below eligibility.
+//
+// Demotion is deliberately NOT absorbing. A lesson below the floor would
+// otherwise be unreachable forever — never recalled, so never injected, so
+// never able to earn the win that is its only way back up (the store's other
+// salience paths are decay; TouchMemories only counts accesses). Instead:
+//   - lessonRetrialInterval: one demoted lesson rides the error lane's recall
+//     every Nth call, so it gets re-measured against real work.
+//   - a win by a demoted lesson reinstates it exactly TO the floor rather
+//     than nudging it by lessonCreditWin (13 wins from the 0.05 clamp is a
+//     theoretical path, not a real one). One observed recovery readmits it;
+//     one observed failure demotes it again.
+//
+// The alternative — flooring salience at the recall threshold — was rejected:
+// it keeps genuinely bad lessons permanently eligible, which is the failure
+// outcome credit exists to fix.
 const (
 	lessonCreditWin   = 0.02
 	lessonCreditLoss  = -0.15
 	lessonMinSalience = 0.3
+	// lessonProbationFloor is the lower bound of the re-trial band. Below the
+	// store's AdjustSalience clamp (0.05) so every demoted lesson is
+	// reachable, above 0 so the store's default-min-salience substitution
+	// (which triggers on <= 0) does not silently widen it.
+	lessonProbationFloor = 0.01
+	// lessonRetrialInterval: one in N error-lane recalls carries a demoted
+	// lesson. Frequent enough that a wrongly demoted lesson gets re-measured
+	// within a working session, rare enough that a genuinely bad one costs
+	// little context.
+	lessonRetrialInterval = 8
 )
 
 // salienceAdjuster is the optional store capability outcome credit needs.
@@ -821,9 +983,19 @@ type salienceAdjuster interface {
 
 // applyLessonCredit scores error-lane injections against the ledger: a
 // lesson injected while class C was failing gets a win if C succeeded after
-// the injection, a loss if no failing class recovered after it. Class-level
-// attribution, not causal proof — the claim is only that repeated injection
-// into failing recoveries is evidence against a lesson.
+// the injection, and a loss only if the ledger went on to show a FAILURE
+// after it. Class-level attribution, not causal proof — the claim is only
+// that repeated injection into failing recoveries is evidence against a
+// lesson.
+//
+// Silence scores nothing. The ledger drains at the end of every Chat() call,
+// so the normal ending of an interactive turn is an empty post-injection tail
+// — charging that as a loss would demote every lesson delivered near the end
+// of a turn, which is most of them (the error lane fires on the failure that
+// usually ends the turn). Absence of evidence is not evidence of failure. A
+// win needs an observed recovery; a loss needs observed contradiction — a
+// failure after the injection, or a mechanically-judged no-work "success" of
+// the failing class. Everything else leaves the lesson untouched.
 func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, injections map[string]int) {
 	if len(injections) == 0 || len(events) == 0 {
 		return
@@ -832,10 +1004,15 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 	if !ok {
 		return
 	}
-	wins, losses := 0, 0
+	wins, losses, unscored := 0, 0, 0
 	for lessonID, idx := range injections {
-		if idx > len(events) {
-			idx = len(events)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(events) {
+			// Nothing was recorded after the injection at all.
+			unscored++
+			continue
 		}
 		failedBefore := map[string]bool{}
 		for _, ev := range events[:idx] {
@@ -844,9 +1021,10 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 			}
 		}
 		if len(failedBefore) == 0 {
+			unscored++
 			continue
 		}
-		recovered := false
+		recovered, contradicted := false, false
 		for _, ev := range events[idx:] {
 			// A vacuous success is not a recovery — silencing the error by
 			// doing no work must not score a win for the injected lesson.
@@ -854,10 +1032,26 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 				recovered = true
 				break
 			}
+			switch {
+			case !ev.ok:
+				// An observed failure after the injection.
+				contradicted = true
+			case ev.vacuous && failedBefore[ev.key]:
+				// A no-work "fix" of the failing class, positively judged
+				// (not abstained on) by the mechanical layers: the error went
+				// quiet and the work did not happen. Evidence, not silence.
+				contradicted = true
+			}
+		}
+		if !recovered && !contradicted {
+			// The tail holds only unrelated successful work: the lesson was
+			// neither vindicated nor contradicted.
+			unscored++
+			continue
 		}
 		delta := lessonCreditLoss
 		if recovered {
-			delta = lessonCreditWin
+			delta = a.lessonWinDelta(ctx, lessonID)
 		}
 		if err := adjuster.AdjustSalience(ctx, lessonID, delta); err == nil {
 			if recovered {
@@ -871,6 +1065,23 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 		zap.L().Info("lesson credit applied",
 			zap.String("agent", a.config.Name),
 			zap.Int("wins", wins),
-			zap.Int("losses", losses))
+			zap.Int("losses", losses),
+			zap.Int("unscored", unscored))
 	}
+}
+
+// lessonWinDelta is the salience delta for an observed win: the ordinary
+// upward nudge for an eligible lesson, or full reinstatement to the recall
+// floor for a demoted one that won its re-trial. Reinstatement is what keeps
+// demotion reversible — see the constant block above. A store that cannot
+// report current salience falls back to the nudge.
+func (a *Agent) lessonWinDelta(ctx context.Context, lessonID string) float64 {
+	if a.graphMemoryStore == nil {
+		return lessonCreditWin
+	}
+	cur, err := a.graphMemoryStore.GetMemory(ctx, a.lessonPartition(), lessonID)
+	if err != nil || cur == nil || cur.Salience >= lessonMinSalience {
+		return lessonCreditWin
+	}
+	return lessonMinSalience - cur.Salience
 }

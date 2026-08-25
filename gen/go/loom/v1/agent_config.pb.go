@@ -1156,11 +1156,17 @@ type GraphMemoryConfig struct {
 	// Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
 	ExtractionWindowMessages int32 `protobuf:"varint,14,opt,name=extraction_window_messages,json=extractionWindowMessages,proto3" json:"extraction_window_messages,omitempty"`
 	// Share verified lessons across all agents on this server. Opt-in.
-	// When true, lessons mined at conversation end (observed error->fix
+	// When true, lessons mined from the tool ledger (observed error->fix
 	// transitions) are stored in a shared partition visible to every agent,
 	// and each agent's dedicated lesson recall lane draws from that pool.
 	// When false (default), lessons stay private to the agent that earned
-	// them: stored under its own ID and recalled only by it.
+	// them: stored in a partition derived from its name ("<name>__lessons")
+	// that no other writer targets, and recalled only by it.
+	//
+	// SECURITY: mined lessons derive from tool-server output and are injected
+	// at system role. Enabling this makes one server's output every agent's
+	// system prompt -- do not enable it when running untrusted tool servers.
+	// See docs/reference/security-model.md.
 	FleetLessonSharing bool `protobuf:"varint,15,opt,name=fleet_lesson_sharing,json=fleetLessonSharing,proto3" json:"fleet_lesson_sharing,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
