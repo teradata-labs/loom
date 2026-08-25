@@ -43,6 +43,25 @@ type scheduleMockServer struct {
 	gotUpdate  *loomv1.UpdateScheduledWorkflowRequest
 	gotGet     *loomv1.GetScheduledWorkflowRequest
 	gotGetExec *loomv1.GetWorkflowExecutionRequest
+	gotCancel  *loomv1.CancelWorkflowExecutionRequest
+
+	// cancelResult is what the fake reports back; false models an execution
+	// that had already finished.
+	cancelResult bool
+}
+
+func (m *scheduleMockServer) CancelWorkflowExecution(_ context.Context, req *loomv1.CancelWorkflowExecutionRequest) (*loomv1.CancelWorkflowExecutionResponse, error) {
+	m.gotCancel = req
+	if !m.cancelResult {
+		return &loomv1.CancelWorkflowExecutionResponse{
+			Cancelled: false,
+			Message:   "execution is not running",
+		}, nil
+	}
+	return &loomv1.CancelWorkflowExecutionResponse{
+		Cancelled: true,
+		Message:   "cancellation signalled",
+	}, nil
 }
 
 func (m *scheduleMockServer) ListScheduledWorkflows(_ context.Context, req *loomv1.ListScheduledWorkflowsRequest) (*loomv1.ListScheduledWorkflowsResponse, error) {
@@ -427,5 +446,47 @@ func TestWrapBorrowsConnection(t *testing.T) {
 func TestWrapNilConn(t *testing.T) {
 	if got := Wrap(nil); got != nil {
 		t.Errorf("Wrap(nil) = %v, want nil", got)
+	}
+}
+
+// Cancel must forward the reason — the history entry depends on it to read as an
+// operator stop rather than a crash.
+func TestCancelExecution(t *testing.T) {
+	c, mock := setupScheduleServer(t)
+	mock.cancelResult = true
+
+	cancelled, msg, err := c.CancelExecution(context.Background(), "exec-1", "operator stop")
+	if err != nil {
+		t.Fatalf("CancelExecution: %v", err)
+	}
+	if !cancelled {
+		t.Error("cancelled = false, want true")
+	}
+	if msg == "" {
+		t.Error("message is empty; callers show it directly")
+	}
+	if mock.gotCancel.ExecutionId != "exec-1" {
+		t.Errorf("ExecutionId = %q", mock.gotCancel.ExecutionId)
+	}
+	if mock.gotCancel.Reason != "operator stop" {
+		t.Errorf("Reason = %q, want it forwarded", mock.gotCancel.Reason)
+	}
+}
+
+// An already-finished execution comes back as cancelled=false with no error.
+// Treating that as a failure would have the UI apologise for a race it won.
+func TestCancelExecutionAlreadyFinished(t *testing.T) {
+	c, mock := setupScheduleServer(t)
+	mock.cancelResult = false
+
+	cancelled, msg, err := c.CancelExecution(context.Background(), "exec-done", "")
+	if err != nil {
+		t.Fatalf("an already-finished execution must not error: %v", err)
+	}
+	if cancelled {
+		t.Error("cancelled = true for a finished execution")
+	}
+	if msg == "" {
+		t.Error("message is empty; it is the only thing distinguishing this case")
 	}
 }

@@ -2044,6 +2044,51 @@ func local_request_LoomService_GetScheduleHistory_0(ctx context.Context, marshal
 	return msg, metadata, err
 }
 
+func request_LoomService_CancelWorkflowExecution_0(ctx context.Context, marshaler runtime.Marshaler, client LoomServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CancelWorkflowExecutionRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	val, ok := pathParams["execution_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "execution_id")
+	}
+	protoReq.ExecutionId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "execution_id", err)
+	}
+	msg, err := client.CancelWorkflowExecution(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_LoomService_CancelWorkflowExecution_0(ctx context.Context, marshaler runtime.Marshaler, server LoomServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CancelWorkflowExecutionRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["execution_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "execution_id")
+	}
+	protoReq.ExecutionId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "execution_id", err)
+	}
+	msg, err := server.CancelWorkflowExecution(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_LoomService_Publish_0(ctx context.Context, marshaler runtime.Marshaler, client LoomServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq PublishRequest
@@ -4299,6 +4344,26 @@ func RegisterLoomServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux
 		}
 		forward_LoomService_GetScheduleHistory_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LoomService_CancelWorkflowExecution_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/loom.v1.LoomService/CancelWorkflowExecution", runtime.WithHTTPPathPattern("/v1/workflows/executions/{execution_id}:cancel"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_LoomService_CancelWorkflowExecution_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LoomService_CancelWorkflowExecution_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_LoomService_Publish_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -5949,6 +6014,23 @@ func RegisterLoomServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux
 		}
 		forward_LoomService_GetScheduleHistory_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LoomService_CancelWorkflowExecution_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/loom.v1.LoomService/CancelWorkflowExecution", runtime.WithHTTPPathPattern("/v1/workflows/executions/{execution_id}:cancel"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_LoomService_CancelWorkflowExecution_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LoomService_CancelWorkflowExecution_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_LoomService_Publish_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -6504,6 +6586,7 @@ var (
 	pattern_LoomService_PauseSchedule_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "workflows", "schedules", "schedule_id"}, "pause"))
 	pattern_LoomService_ResumeSchedule_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "workflows", "schedules", "schedule_id"}, "resume"))
 	pattern_LoomService_GetScheduleHistory_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4}, []string{"v1", "workflows", "schedules", "schedule_id", "history"}, ""))
+	pattern_LoomService_CancelWorkflowExecution_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "workflows", "executions", "execution_id"}, "cancel"))
 	pattern_LoomService_Publish_0                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "bus", "publish"}, ""))
 	pattern_LoomService_Subscribe_0                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "bus", "subscribe"}, ""))
 	pattern_LoomService_Unsubscribe_0                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "bus", "unsubscribe"}, ""))
@@ -6594,6 +6677,7 @@ var (
 	forward_LoomService_PauseSchedule_0               = runtime.ForwardResponseMessage
 	forward_LoomService_ResumeSchedule_0              = runtime.ForwardResponseMessage
 	forward_LoomService_GetScheduleHistory_0          = runtime.ForwardResponseMessage
+	forward_LoomService_CancelWorkflowExecution_0     = runtime.ForwardResponseMessage
 	forward_LoomService_Publish_0                     = runtime.ForwardResponseMessage
 	forward_LoomService_Subscribe_0                   = runtime.ForwardResponseStream
 	forward_LoomService_Unsubscribe_0                 = runtime.ForwardResponseMessage

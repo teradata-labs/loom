@@ -217,3 +217,26 @@ func (c *Client) GetWorkflowExecution(ctx context.Context, executionID string) (
 
 	return c.client.GetWorkflowExecution(ctx, req)
 }
+
+// CancelExecution stops a workflow execution that is currently running.
+//
+// The boolean in the response distinguishes "signalled" from "there was nothing
+// to signal" — an execution that finished a moment earlier is not an error, so
+// callers should report the message rather than treating false as a failure.
+//
+// Cancellation is cooperative: the run stops at its next context check, so a
+// caller that wants to show the final state should re-read the schedule's
+// history rather than assume the run has already ended.
+func (c *Client) CancelExecution(ctx context.Context, executionID, reason string) (bool, string, error) {
+	req := &loomv1.CancelWorkflowExecutionRequest{
+		ExecutionId: executionID,
+		Reason:      reason,
+	}
+
+	resp, err := c.client.CancelWorkflowExecution(ctx, req)
+	if err != nil {
+		return false, "", err
+	}
+
+	return resp.GetCancelled(), resp.GetMessage(), nil
+}

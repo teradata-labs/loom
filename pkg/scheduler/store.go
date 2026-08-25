@@ -600,6 +600,39 @@ func (s *Store) RecordFailure(ctx context.Context, scheduleID, errorMsg string) 
 }
 
 // IncrementSkipped increments the skipped execution counter.
+// RecordCancelled marks a schedule's last run as cancelled.
+//
+// Like a skip, a cancelled run reached no verdict, so it does not increment
+// total_executions and is not counted among successes or failures — that keeps
+// the success rate consumers derive from those counters honest.
+//
+// What it must do is move last_status. Without this a cancelled run would leave
+// last_status showing the *previous* run's outcome, so a routine someone just
+// stopped would report itself as having last succeeded.
+//
+// Cancellations remain visible in schedule_executions. Giving them their own
+// counter would mean a new column and a new ScheduleStats field, which is a
+// schema change worth making on its own rather than inside this one.
+func (s *Store) RecordCancelled(ctx context.Context, scheduleID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `
+		UPDATE scheduled_workflows
+		SET last_status = 'cancelled',
+		    last_error = ?,
+		    updated_at = ?
+		WHERE id = ?
+	`
+
+	_, err := s.db.ExecContext(ctx, query, reason, time.Now().Unix(), scheduleID)
+	if err != nil {
+		return fmt.Errorf("failed to record cancellation: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) IncrementSkipped(ctx context.Context, scheduleID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
