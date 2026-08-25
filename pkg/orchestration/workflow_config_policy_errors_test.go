@@ -47,7 +47,7 @@ func TestWorkflowYAMLOutputPolicyFieldTypeErrors(t *testing.T) {
 		},
 		{
 			name: "nested retry_policy field is wrong",
-			body: "      output_policy:\n        retry_policy:\n          max_retries: many\n",
+			body: "      output_policy:\n        retry_policy:\n          max_retries: true\n",
 			contains: []string{
 				"spec.stages[0].output_policy.retry_policy.max_retries must be an integer",
 			},
@@ -161,7 +161,7 @@ spec:
   condition_agent_id: classifier
   condition_prompt: "simple or complex?"
   retry_policy:
-    max_retries: many
+    max_retries: true
   branches:
     simple:
       type: fork-join

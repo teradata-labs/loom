@@ -5721,7 +5721,7 @@
         "seed": {
           "type": "string",
           "format": "int64",
-          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\nHonored by: ollama. Other providers ignore it today."
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
@@ -5945,10 +5945,6 @@
           "type": "integer",
           "format": "int32",
           "description": "Same-model retry count applied when the stage/task OutputPolicy carries\nno retry_policy of its own."
-        },
-        "aggressiveCoercion": {
-          "type": "boolean",
-          "description": "Attempt free JSON extraction from mixed text before declaring a schema\nfailure (no LLM call)."
         }
       },
       "description": "LevelingTierPolicy holds per-tier capability-leveling knobs, overriding the\nbuilt-in defaults for one tier."

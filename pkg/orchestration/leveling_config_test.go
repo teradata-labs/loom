@@ -7,6 +7,7 @@ package orchestration
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 
@@ -127,8 +128,8 @@ func TestLevelingPolicyFromProto(t *testing.T) {
 				FrontierMinOutputCostUsd: 25,
 				MidMinOutputCostUsd:      2.5,
 				TierPolicies: map[string]*loomv1.LevelingTierPolicy{
-					"local": {RetryBudget: 4, AggressiveCoercion: true},
-					"mid":   {RetryBudget: 0, AggressiveCoercion: false},
+					"local": {RetryBudget: 4},
+					"mid":   {RetryBudget: 0},
 				},
 			},
 			verify: func(t *testing.T, got *LevelingPolicy) {
@@ -141,7 +142,7 @@ func TestLevelingPolicyFromProto(t *testing.T) {
 				assert.InDelta(t, 2.5, got.Thresholds.MidMinOutputCostUSD, 1e-9)
 				require.Len(t, got.TierPolicies, 2)
 				assert.Equal(t,
-					TierPolicy{RetryBudget: 4, AggressiveCoercion: true},
+					TierPolicy{RetryBudget: 4},
 					got.TierPolicies[catalog.TierLocal])
 				assert.Equal(t, TierPolicy{}, got.TierPolicies[catalog.TierMid])
 				assert.Nil(t, got.Judge, "the proto surface carries no judge")
@@ -255,6 +256,62 @@ func TestLevelingPolicyFromProtoErrors(t *testing.T) {
 			},
 			wantMsg: []string{"retry_budget", "local"},
 		},
+		{
+			name: "NaN max_cost_usd",
+			in: &loomv1.LevelingPolicy{
+				Enabled:    true,
+				MaxCostUsd: math.NaN(),
+			},
+			wantMsg: []string{"max_cost_usd", "NaN"},
+		},
+		{
+			name: "positive infinite max_cost_usd",
+			in: &loomv1.LevelingPolicy{
+				Enabled:    true,
+				MaxCostUsd: math.Inf(1),
+			},
+			wantMsg: []string{"max_cost_usd", "finite"},
+		},
+		{
+			name: "negative infinite max_cost_usd",
+			in: &loomv1.LevelingPolicy{
+				Enabled:    true,
+				MaxCostUsd: math.Inf(-1),
+			},
+			wantMsg: []string{"max_cost_usd", "finite"},
+		},
+		{
+			name: "negative frontier threshold",
+			in: &loomv1.LevelingPolicy{
+				Enabled:                  true,
+				FrontierMinOutputCostUsd: -10,
+			},
+			wantMsg: []string{"frontier_min_output_cost_usd", ">= 0"},
+		},
+		{
+			name: "negative mid threshold",
+			in: &loomv1.LevelingPolicy{
+				Enabled:             true,
+				MidMinOutputCostUsd: -1.5,
+			},
+			wantMsg: []string{"mid_min_output_cost_usd", ">= 0"},
+		},
+		{
+			name: "NaN frontier threshold",
+			in: &loomv1.LevelingPolicy{
+				Enabled:                  true,
+				FrontierMinOutputCostUsd: math.NaN(),
+			},
+			wantMsg: []string{"frontier_min_output_cost_usd", "NaN"},
+		},
+		{
+			name: "infinite mid threshold",
+			in: &loomv1.LevelingPolicy{
+				Enabled:             true,
+				MidMinOutputCostUsd: math.Inf(1),
+			},
+			wantMsg: []string{"mid_min_output_cost_usd", "finite"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -281,7 +338,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 		},
 	}
 
-	t.Run("role based rung resolves through GetLLMForRole", func(t *testing.T) {
+	t.Run("role based rung resolves through GetLLMForRoleStrict", func(t *testing.T) {
 		t.Parallel()
 
 		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")

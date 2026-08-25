@@ -123,7 +123,6 @@ func TestWorkflowYAMLLevelingFullRoundTrip(t *testing.T) {
         tier_policies:
           local:
             retry_budget: 2
-            aggressive_coercion: true
           small-open:
             retry_budget: 1
 `
@@ -153,11 +152,9 @@ func TestWorkflowYAMLLevelingFullRoundTrip(t *testing.T) {
 		local := p.GetTierPolicies()["local"]
 		require.NotNil(t, local)
 		assert.Equal(t, int32(2), local.GetRetryBudget())
-		assert.True(t, local.GetAggressiveCoercion())
 		smallOpen := p.GetTierPolicies()["small-open"]
 		require.NotNil(t, smallOpen)
 		assert.Equal(t, int32(1), smallOpen.GetRetryBudget())
-		assert.False(t, smallOpen.GetAggressiveCoercion())
 
 		// The whole point of the surface: what it produces must convert.
 		goPolicy, err := LevelingPolicyFromProto(p)
@@ -718,13 +715,13 @@ func TestWorkflowYAMLRetryPolicyExtendedFields(t *testing.T) {
 				contains: "cooldown_ms must be >= 0",
 			},
 			{
-				name:     "retry-only field without retries",
-				body:     "      retry_policy:\n        feedback_template: \"fix it\"\n",
-				contains: "feedback_template needs max_retries >= 1",
-			},
-			{
+				// A bool is the max_retries malformation with no legacy tolerance:
+				// it was never accepted, so it stays a load error. A fractional or
+				// string max_retries, and a retry-only key without a positive
+				// max_retries, are tolerated with a warning instead — see
+				// TestWorkflowYAMLRetryPolicyLegacyShapesStayLoadable.
 				name:     "max_retries not an integer",
-				body:     "      retry_policy:\n        max_retries: many\n",
+				body:     "      retry_policy:\n        max_retries: true\n",
 				contains: "max_retries must be an integer",
 			},
 		}
@@ -746,5 +743,72 @@ func TestWorkflowYAMLRetryPolicyExtendedFields(t *testing.T) {
 		stage, err := loadLevelingStage(t, "      retry_policy:\n        max_retries: 0\n")
 		require.NoError(t, err)
 		assert.Nil(t, stage.RetryPolicy, "0 retries is the same as no retry policy, as before")
+	})
+}
+
+// TestWorkflowYAMLLevelingValidationPromptConflict pins the load-time half of the
+// leveling/validation_prompt conflict. PipelineExecutor rejects the pair when the
+// stage runs, and still does — a raw-proto workflow never passes through this
+// loader — but a config that cannot work should not need a workflow run to say so.
+func TestWorkflowYAMLLevelingValidationPromptConflict(t *testing.T) {
+	t.Parallel()
+
+	t.Run("enabled leveling plus validation_prompt fails the load", func(t *testing.T) {
+		t.Parallel()
+
+		bodies := map[string]string{
+			"leveling key":          "      validation_prompt: \"is it any good?\"\n      leveling:\n        enabled: true\n",
+			"leveling_policy alias": "      validation_prompt: \"is it any good?\"\n      leveling_policy:\n        enabled: true\n",
+		}
+
+		for name, body := range bodies {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				_, err := loadLevelingStage(t, body)
+				require.Error(t, err)
+				require.ErrorIs(t, err, ErrInvalidWorkflow)
+				assert.Contains(t, err.Error(), "validation_prompt")
+				assert.Contains(t, err.Error(), "leveling has no semantic-prompt signal")
+				assert.Contains(t, err.Error(), "output_policy.output_schema",
+					"the error must say where the criteria can go instead")
+			})
+		}
+	})
+
+	t.Run("disabled leveling leaves validation_prompt alone", func(t *testing.T) {
+		t.Parallel()
+
+		stage, err := loadLevelingStage(t,
+			"      validation_prompt: \"is it any good?\"\n      leveling:\n        enabled: false\n")
+		require.NoError(t, err, "a disabled policy runs neither leveling nor its conflict check")
+		assert.Equal(t, "is it any good?", stage.GetValidationPrompt())
+		assert.False(t, stage.GetLevelingPolicy().GetEnabled())
+	})
+
+	t.Run("enabled leveling without validation_prompt loads", func(t *testing.T) {
+		t.Parallel()
+
+		stage, err := loadLevelingStage(t, "      leveling:\n        enabled: true\n")
+		require.NoError(t, err)
+		assert.True(t, stage.GetLevelingPolicy().GetEnabled())
+		assert.Empty(t, stage.GetValidationPrompt())
+	})
+
+	t.Run("empty validation_prompt is not a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		stage, err := loadLevelingStage(t,
+			"      validation_prompt: \"\"\n      leveling:\n        enabled: true\n")
+		require.NoError(t, err, "an empty prompt is what the executor also treats as absent")
+		assert.True(t, stage.GetLevelingPolicy().GetEnabled())
+	})
+
+	t.Run("parallel task with enabled leveling still loads", func(t *testing.T) {
+		t.Parallel()
+
+		task, err := loadLevelingTask(t, "      leveling:\n        enabled: true\n")
+		require.NoError(t, err, "tasks carry no validation_prompt, so the check is a no-op there")
+		assert.True(t, task.GetLevelingPolicy().GetEnabled())
 	})
 }

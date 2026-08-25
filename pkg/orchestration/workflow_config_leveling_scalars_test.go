@@ -63,13 +63,18 @@ func TestWorkflowYAMLLevelingScalarTypeErrors(t *testing.T) {
 			contains: []string{"tier_policies[local].retry_budget must be an integer"},
 		},
 		{
-			name:     "tier aggressive_coercion not a boolean",
-			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            aggressive_coercion: sure\n",
-			contains: []string{"tier_policies[local].aggressive_coercion must be a boolean"},
-		},
-		{
 			// The removed key has no type left to get wrong: whatever it carries,
 			// the load fails because the key itself is gone.
+			name:     "removed aggressive_coercion outranks its old type check",
+			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            aggressive_coercion: sure\n",
+			contains: []string{"tier_policies[local].aggressive_coercion was removed"},
+		},
+		{
+			name:     "removed aggressive_coercion is rejected even when well-typed",
+			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            aggressive_coercion: true\n",
+			contains: []string{"tier_policies[local].aggressive_coercion was removed", "gated nothing"},
+		},
+		{
 			name:     "removed scaffolding_depth outranks its old type check",
 			body:     "      leveling:\n        enabled: true\n        tier_policies:\n          local:\n            scaffolding_depth: deep\n",
 			contains: []string{"tier_policies[local].scaffolding_depth was removed"},
@@ -102,37 +107,124 @@ func TestWorkflowYAMLLevelingScalarTypeErrors(t *testing.T) {
 }
 
 // TestWorkflowYAMLLevelingNullTierEntryMeansDefaults pins the documented
-// shorthand: a tier key with no body is "use the defaults for this tier", which
-// must produce a present-but-empty tier policy rather than being dropped. A
-// dropped key would silently disagree with the YAML the operator wrote.
+// shorthand: a tier key with no body is "use the defaults for this tier", so it
+// must arrive at the executor carrying that tier's built-in values.
+//
+// Storing an all-zero policy would be the silent-override bug the shorthand
+// promises not to be: proto3 cannot tell an unset int32 from 0, so local's
+// built-in retry_budget of 2 would reach the executor as 0 and a tier that
+// asked for the defaults would get no retries. Dropping the key instead would
+// disagree with the YAML the operator wrote, so the entry stays present.
 func TestWorkflowYAMLLevelingNullTierEntryMeansDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "null entry",
+			body: `      leveling:
+        enabled: true
+        tier_policies:
+          local:
+          mid:
+            retry_budget: 1
+`,
+		},
+		{
+			// An empty map overrides nothing either, so it means the same thing.
+			name: "empty map entry",
+			body: `      leveling:
+        enabled: true
+        tier_policies:
+          local: {}
+          mid:
+            retry_budget: 1
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stage, err := loadLevelingStage(t, tt.body)
+			require.NoError(t, err)
+
+			tiers := stage.GetLevelingPolicy().GetTierPolicies()
+			require.Len(t, tiers, 2)
+			local, ok := tiers["local"]
+			require.True(t, ok, "an entry that overrides nothing must still be present")
+			require.NotNil(t, local)
+			assert.Equal(t, int32(2), local.GetRetryBudget(),
+				"the built-in local retry budget, not a proto3 zero")
+			assert.Equal(t, int32(1), tiers["mid"].GetRetryBudget(),
+				"an explicit override still wins")
+
+			// What the executor actually reads: the same built-in budget
+			// DefaultTierPolicies() carries for the tier.
+			goPolicy, err := LevelingPolicyFromProto(stage.GetLevelingPolicy())
+			require.NoError(t, err)
+			require.Contains(t, goPolicy.TierPolicies, catalog.TierLocal)
+			assert.Equal(t, DefaultTierPolicies()[catalog.TierLocal].RetryBudget,
+				goPolicy.TierPolicies[catalog.TierLocal].RetryBudget,
+				"an entry that overrides nothing keeps the built-in retry budget")
+		})
+	}
+}
+
+// TestWorkflowYAMLLevelingExplicitZeroRetryBudgetIsNotDefaults is the other side
+// of the shorthand: `retry_budget: 0` is a value, not an absence, so it must
+// survive as 0 rather than being replaced by the tier's built-in budget.
+func TestWorkflowYAMLLevelingExplicitZeroRetryBudgetIsNotDefaults(t *testing.T) {
 	t.Parallel()
 
 	stage, err := loadLevelingStage(t, `      leveling:
         enabled: true
         tier_policies:
           local:
-          mid:
-            retry_budget: 1
+            retry_budget: 0
 `)
 	require.NoError(t, err)
+	assert.Equal(t, int32(0),
+		stage.GetLevelingPolicy().GetTierPolicies()["local"].GetRetryBudget())
 
-	tiers := stage.GetLevelingPolicy().GetTierPolicies()
-	require.Len(t, tiers, 2)
-	local, ok := tiers["local"]
-	require.True(t, ok, "an empty tier entry must still be present")
-	require.NotNil(t, local)
-	assert.Equal(t, int32(0), local.GetRetryBudget())
-	assert.False(t, local.GetAggressiveCoercion())
-	assert.Equal(t, int32(1), tiers["mid"].GetRetryBudget())
-
-	// The empty entry is a valid tier name, so conversion succeeds and the tier
-	// carries the explicit zeros rather than the built-in defaults.
 	goPolicy, err := LevelingPolicyFromProto(stage.GetLevelingPolicy())
 	require.NoError(t, err)
-	require.Contains(t, goPolicy.TierPolicies, catalog.TierLocal)
 	assert.Equal(t, 0, goPolicy.TierPolicies[catalog.TierLocal].RetryBudget,
-		"an explicitly empty tier entry overrides the built-in retry budget with 0")
+		"an explicit zero means no retries for the tier")
+}
+
+// TestWorkflowYAMLLevelingUnknownTierNameWithNoBodyStillErrors pins that filling
+// an override-nothing entry with built-in values did not create a second tier
+// name authority: an unknown name is still rejected by LevelingPolicyFromProto,
+// with its list of the valid names.
+func TestWorkflowYAMLLevelingUnknownTierNameWithNoBodyStillErrors(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"null entry": `      leveling:
+        enabled: true
+        tier_policies:
+          teeny:
+`,
+		"empty map entry": `      leveling:
+        enabled: true
+        tier_policies:
+          teeny: {}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := loadLevelingStage(t, body)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidWorkflow)
+			assert.Contains(t, err.Error(), `unknown tier name "teeny"`)
+			assert.Contains(t, err.Error(), "unknown, local, small-open, mid, frontier")
+		})
+	}
 }
 
 // TestWorkflowYAMLLevelingWholeNumberFloatsAccepted covers the YAML forms that

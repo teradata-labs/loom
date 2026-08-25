@@ -4,15 +4,45 @@ Identical 20 (problem, weak-solution) pairs and identical prompt to the
 llama3.1 probe (rzJudgeProbePrompt in leveling_reasoning_live_test.go), so the
 two judges are directly comparable. Pivotal question: is judge quality a
 model-selection problem (reasoning judge ~= oracle) or a scale problem?
+
+Paths are configurable so the JSONL is regenerable from any checkout. Each has a
+CLI flag, an environment variable, and a default expressed relative to this
+file's location in the repo (`<repo>/docs/experiments/`):
+
+  --experiments-dir / LOOM_PROBE_EXPERIMENTS_DIR
+      Directory holding the probe inputs (judge_probe.jsonl,
+      reasoning_arms.jsonl). Default: this script's own directory.
+  --out / LOOM_PROBE_OUT
+      Output JSONL. Default: <experiments-dir>/r1_judge_probe.jsonl — i.e. a
+      rerun overwrites the committed copy in place.
+  --calib-dir / LOOM_PROBE_CALIB_DIR
+      Directory holding the harness helper module `ollama_client` (which carries
+      the cloud guard). This lived in the original run's scratchpad and is not
+      committed, so the default below only resolves on the machine that ran the
+      experiment; point it at a checkout of those helpers elsewhere.
+  --judge / LOOM_PROBE_JUDGE
+      Judge model. Default: deepseek-r1:latest (as measured).
 """
-import json, re, sys, time
+import argparse, json, os, re, sys, time
+from pathlib import Path
 
-sys.path.insert(0, "/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/calib")
+_HERE = Path(__file__).resolve().parent
+_DEFAULT_CALIB = ("/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-"
+                  "affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/calib")
+
+_p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_p.add_argument("--experiments-dir", default=os.environ.get("LOOM_PROBE_EXPERIMENTS_DIR", str(_HERE)))
+_p.add_argument("--out", default=os.environ.get("LOOM_PROBE_OUT"))
+_p.add_argument("--calib-dir", default=os.environ.get("LOOM_PROBE_CALIB_DIR", _DEFAULT_CALIB))
+_p.add_argument("--judge", default=os.environ.get("LOOM_PROBE_JUDGE", "deepseek-r1:latest"))
+_args = _p.parse_args()
+
+EXPERIMENTS = Path(_args.experiments_dir)
+OUT = _args.out or str(EXPERIMENTS / "r1_judge_probe.jsonl")
+JUDGE = _args.judge
+
+sys.path.insert(0, _args.calib_dir)
 from ollama_client import chat  # noqa: E402  (carries the cloud guard)
-
-REPO = "/Users/josh.schoen/repos/loom/.claude/worktrees/affectionate-colden"
-OUT = "/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/exp_results/r1_judge_probe.jsonl"
-JUDGE = "deepseek-r1:latest"
 
 PROMPT = """Expression: %s
 
@@ -30,9 +60,9 @@ VERDICT_RE = re.compile(r'(?i)"verdict"\s*:\s*"?(correct|incorrect)"?')
 
 # The 20 probe pairs are the indices in judge_probe.jsonl; the raw weak
 # solutions live in reasoning_arms.jsonl arm 1 attempts[0].output.
-probe_rows = [json.loads(l) for l in open(f"{REPO}/docs/experiments/judge_probe.jsonl")]
+probe_rows = [json.loads(l) for l in open(EXPERIMENTS / "judge_probe.jsonl")]
 arm1 = {r["index"]: r for r in
-        (json.loads(l) for l in open(f"{REPO}/docs/experiments/reasoning_arms.jsonl"))
+        (json.loads(l) for l in open(EXPERIMENTS / "reasoning_arms.jsonl"))
         if r["arm"] == "1-llama2-off"}
 
 agree = fp = fn = unparsed = 0

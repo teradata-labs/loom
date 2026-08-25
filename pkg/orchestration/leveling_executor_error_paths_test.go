@@ -205,7 +205,7 @@ func TestLevelingEscalationRungCoercionEndsTheLadder(t *testing.T) {
 		TierPolicies: map[catalog.ModelTier]TierPolicy{
 			// Explicit zero retry budget isolates the escalation-side coercion
 			// from the primary's in-validator retries.
-			catalog.TierLocal: {RetryBudget: 0, AggressiveCoercion: true},
+			catalog.TierLocal: {RetryBudget: 0},
 		},
 	})
 
@@ -229,43 +229,6 @@ func TestLevelingEscalationRungCoercionEndsTheLadder(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, lvlValidJSON, result.Output, "the result carries the extracted JSON")
 	assert.InDelta(t, 0.02+0.30, report.TotalCostUSD, 1e-9)
-}
-
-// TestLevelingEscalationRungCoercionOffRejects is the control for the test
-// above: with coercion disabled for the tier, the same fenced payload is a
-// failure and the ladder keeps going.
-func TestLevelingEscalationRungCoercionOffRejects(t *testing.T) {
-	t.Parallel()
-
-	rung0 := newMockRung(0.02, lvlInvalidJSON)
-	rung1 := newMockRung(0.30, lvlFencedJSON)
-	rung2 := newMockRung(0.90, lvlValidJSON)
-
-	exec := newTestLevelingExecutor(t, &LevelingPolicy{
-		Enabled:        true,
-		MaxEscalations: 2,
-		TierPolicies: map[catalog.ModelTier]TierPolicy{
-			catalog.TierLocal: {RetryBudget: 0, AggressiveCoercion: false},
-		},
-	})
-
-	result, report, err := exec.Execute(
-		context.Background(), schemaPolicy(0, true),
-		[]LevelingRung{
-			{Provider: lvlLowProvider, Model: lvlLowModel, Execute: rung0.execute},
-			{Provider: lvlMidProvider, Model: lvlMidModel, Execute: rung1.execute},
-			{Provider: lvlFrontierProvider, Model: lvlFrontierModel, Execute: rung2.execute},
-		},
-		"do the thing", "wf-esc-no-coerce")
-
-	require.NoError(t, err)
-	require.NotNil(t, report)
-	assert.False(t, report.CoercionApplied)
-	assert.Equal(t, 2, report.Escalations)
-	assert.Equal(t, 1, rung2.count(), "without coercion the fenced payload costs another rung")
-	assert.True(t, report.Passed)
-	require.NotNil(t, result)
-	assert.Equal(t, lvlValidJSON, result.Output)
 }
 
 // TestEffectiveOutputPolicyNilStaysNil pins that a caller with no contract keeps

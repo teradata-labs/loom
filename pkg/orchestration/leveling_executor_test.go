@@ -226,7 +226,7 @@ func TestLevelingDisabledIsInert(t *testing.T) {
 		// Direct validator call as the reference behavior.
 		refRung := newMockRung(0.02, lvlInvalidJSON)
 		refResult, refOutcome, refErr := validator.ValidateAndRetry(
-			context.Background(), schemaPolicy(1, true), refRung.execute, nil, "do the thing", "wf-ref", nil)
+			context.Background(), schemaPolicy(1, true), refRung.execute, nil, "do the thing", "wf-ref", nil, nil)
 		require.NoError(t, refErr)
 		require.NotEmpty(t, refOutcome.Warnings, "reference call surfaces validation warnings")
 		assert.False(t, refOutcome.Passed, "the reference output never satisfies the schema")
@@ -680,6 +680,12 @@ func TestLevelingBudgetCapsEscalation(t *testing.T) {
 		assert.True(t, report.BudgetExhausted)
 		assert.Equal(t, 0, report.Escalations)
 		assert.Equal(t, 0, rung1.count())
+		// The skip is a report-visible event, not only a span attribute: the
+		// output passed because nothing examined it, and a consumer reading the
+		// report has to be able to tell that from a real pass.
+		require.Len(t, report.Warnings, 1)
+		assert.Contains(t, report.Warnings[0], "judge skipped: cost ceiling reached")
+		assert.Contains(t, report.Warnings[0], "accepted unexamined")
 	})
 }
 

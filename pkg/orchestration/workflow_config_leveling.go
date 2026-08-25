@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -33,6 +34,18 @@ const (
 // was rejected on measurement, and a config the loader silently drops is the
 // exact failure mode removing the knob was meant to prevent.
 const removedTierPolicyScaffoldingDepthKey = "scaffolding_depth"
+
+// removedTierPolicyAggressiveCoercionKey is the second tier knob removed on
+// this branch, for the same reason and with the same treatment: free JSON
+// extraction now runs on every schema-bearing path, so the key selected
+// between "coerce" and "coerce" — and switching it off would have rejected
+// payloads the pre-leveling pipeline accepted.
+const removedTierPolicyAggressiveCoercionKey = "aggressive_coercion"
+
+// levelingValidationPromptKey is the legacy per-stage semantic check that
+// leveling cannot carry. It is a sibling of the leveling block rather than a key
+// inside it, so it is read off the enclosing stage map.
+const levelingValidationPromptKey = "validation_prompt"
 
 // llmRoleEnumPrefix is the generated enum's value prefix, stripped when
 // accepting the short form of a role name and re-added when parsing one.
@@ -72,11 +85,12 @@ const retrySessionModeEnumPrefix = "RETRY_SESSION_MODE_"
 //
 // Type errors (wrong YAML shape or scalar type) always fail the load. Semantic
 // errors — negative bounds, unknown tier names, a rung naming neither a role
-// nor a provider — fail the load only when enabled is true, by running the
-// freshly built proto through LevelingPolicyFromProto and the ladder-shape
-// check the executors use. That reuses the executors' rules and messages
-// instead of duplicating them, and it mirrors LevelingPolicyFromProto's own
-// rule that a policy which was never enabled can never fail conversion.
+// nor a provider, a validation_prompt on the same stage — fail the load only
+// when enabled is true, by running the freshly built proto through
+// LevelingPolicyFromProto and the ladder-shape check the executors use. That
+// reuses the executors' rules and messages instead of duplicating them, and it
+// mirrors LevelingPolicyFromProto's own rule that a policy which was never
+// enabled can never fail conversion.
 //
 // YAML shape:
 //
@@ -94,7 +108,6 @@ const retrySessionModeEnumPrefix = "RETRY_SESSION_MODE_"
 //	  tier_policies:                       # optional; keys: unknown, local,
 //	    local:                             # small-open, mid, frontier
 //	      retry_budget: 2
-//	      aggressive_coercion: true
 func parseLevelingPolicy(enclosing map[string]interface{}, path string) (*loomv1.LevelingPolicy, error) {
 	raw, key, err := levelingBlockValue(enclosing, path)
 	if err != nil {
@@ -163,6 +176,9 @@ func parseLevelingPolicy(enclosing map[string]interface{}, path string) (*loomv1
 		if err := validateLevelingLadderShape(policy.GetLadder()); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+		if err := validateLevelingValidationPromptConflict(enclosing, path); err != nil {
+			return nil, err
+		}
 	}
 
 	return policy, nil
@@ -186,6 +202,29 @@ func levelingBlockValue(enclosing map[string]interface{}, path string) (interfac
 	default:
 		return nil, "", nil
 	}
+}
+
+// validateLevelingValidationPromptConflict rejects a stage that asks for both
+// enabled leveling and the legacy validation_prompt.
+//
+// PipelineExecutor.executeStageWithLeveling rejects the same pair and keeps
+// doing so: a workflow submitted as raw proto over gRPC never passes through
+// this loader, so the executor check remains the one that cannot be bypassed.
+// This is the load-time half — a config surface that can see the conflict should
+// not need a workflow run to report it — and its wording is kept in step with
+// the executor's.
+//
+// The key is read with the same tolerant cast convertPipelinePattern uses for
+// validation_prompt itself, so a non-string value is ignored here exactly as it
+// is there rather than being reported as a leveling problem. Parallel tasks
+// carry no validation_prompt, so the check is a no-op for them.
+func validateLevelingValidationPromptConflict(enclosing map[string]interface{}, path string) error {
+	prompt, _ := enclosing[levelingValidationPromptKey].(string)
+	if prompt == "" {
+		return nil
+	}
+	return fmt.Errorf("%s cannot be combined with the legacy %s — leveling has no semantic-prompt signal, so the criteria would be silently dropped; move the criteria into output_policy.output_schema or disable leveling on this stage",
+		path, levelingValidationPromptKey)
 }
 
 // parseLevelingLadder parses the optional escalation ladder. Rung resolution
@@ -241,10 +280,19 @@ func parseLevelingLadder(block map[string]interface{}, path string) ([]*loomv1.L
 // names are not checked here: LevelingPolicyFromProto rejects unknown names and
 // lists the valid ones, and routing the check through it keeps one authority.
 //
-// The removed scaffolding_depth key is rejected here, alongside the shape and
-// scalar-type checks, rather than in the enabled-gated semantic pass: the key no
-// longer exists in the schema at any enabled state, so — like a wrong YAML type
-// — there is nothing to store either way.
+// The removed aggressive_coercion and scaffolding_depth keys are rejected here,
+// alongside the shape and scalar-type checks, rather than in the enabled-gated
+// semantic pass: neither key exists in the schema at any enabled state, so —
+// like a wrong YAML type — there is nothing to store either way.
+//
+// # A tier entry that overrides nothing means the built-in defaults
+//
+// `local:` (null) and `local: {}` both name a tier without asking for a
+// different retry_budget, and both are filled with that tier's built-in values
+// by defaultTierPolicyProto. Storing an all-zero policy instead would silently
+// override the defaults the entry asks for — proto3 cannot tell an unset int32
+// from 0, so local's built-in budget of 2 would arrive at the executor as 0.
+// An explicit `retry_budget: 0` still means zero retries.
 func parseLevelingTierPolicies(block map[string]interface{}, path string) (map[string]*loomv1.LevelingTierPolicy, error) {
 	raw, ok := block["tier_policies"]
 	if !ok || raw == nil {
@@ -259,8 +307,8 @@ func parseLevelingTierPolicies(block map[string]interface{}, path string) (map[s
 	for name, item := range tiersRaw {
 		tierPath := fmt.Sprintf("%s.tier_policies[%s]", path, name)
 		if item == nil {
-			// An empty tier entry means "defaults for this tier".
-			tiers[name] = &loomv1.LevelingTierPolicy{}
+			// A null tier entry means "the built-in defaults for this tier".
+			tiers[name] = defaultTierPolicyProto(name)
 			continue
 		}
 		tierMap, ok := item.(map[string]interface{})
@@ -268,22 +316,47 @@ func parseLevelingTierPolicies(block map[string]interface{}, path string) (map[s
 			return nil, fmt.Errorf("%s must be an object, got %T", tierPath, item)
 		}
 
-		tier := &loomv1.LevelingTierPolicy{}
-		var err error
-		if tier.RetryBudget, _, err = yamlInt32Field(tierMap, tierPath, "retry_budget"); err != nil {
+		retryBudget, hasRetryBudget, err := yamlInt32Field(tierMap, tierPath, "retry_budget")
+		if err != nil {
 			return nil, err
 		}
-		if tier.AggressiveCoercion, _, err = yamlBoolField(tierMap, tierPath, "aggressive_coercion"); err != nil {
-			return nil, err
+		if _, removed := tierMap[removedTierPolicyAggressiveCoercionKey]; removed {
+			return nil, fmt.Errorf("%s.%s was removed: free JSON extraction now runs on every schema-bearing leveling path, so the knob gated nothing — remove the key (see docs/plan-capability-leveling.md)",
+				tierPath, removedTierPolicyAggressiveCoercionKey)
 		}
 		if _, removed := tierMap[removedTierPolicyScaffoldingDepthKey]; removed {
 			return nil, fmt.Errorf("%s.%s was removed: C2 capability-adaptive scaffolding was rejected on measurement (it made a weak model worse), so the knob is gone rather than dead — remove the key (see docs/plan-capability-leveling.md)",
 				tierPath, removedTierPolicyScaffoldingDepthKey)
 		}
+
+		// An entry that names the tier without overriding retry_budget — `{}` —
+		// is the same request as the null entry above.
+		tier := defaultTierPolicyProto(name)
+		if hasRetryBudget {
+			tier.RetryBudget = retryBudget
+		}
 		tiers[name] = tier
 	}
 
 	return tiers, nil
+}
+
+// defaultTierPolicyProto is the proto form of a tier's built-in knobs, used for
+// a tier entry that overrides nothing.
+//
+// An unresolvable tier name yields an empty policy rather than an error: name
+// validation belongs to LevelingPolicyFromProto, which owns the message that
+// lists the valid names and is reached from parseLevelingPolicy's enabled gate.
+// catalog.ParseModelTier is the same resolver it uses, so the two cannot
+// disagree about which names exist.
+func defaultTierPolicyProto(name string) *loomv1.LevelingTierPolicy {
+	tier, ok := catalog.ParseModelTier(name)
+	if !ok {
+		return &loomv1.LevelingTierPolicy{}
+	}
+	return &loomv1.LevelingTierPolicy{
+		RetryBudget: types.SafeInt32(DefaultTierPolicies()[tier].RetryBudget),
+	}
 }
 
 // parseLLMRoleName resolves a YAML role name to an LLMRole. It accepts the

@@ -987,9 +987,23 @@ func BaseModelID(modelID string) string {
 // on top of that: when the exact ID is not found anywhere in the registered
 // source and the ID carries a ":tag" qualifier, the whole source is consulted a
 // second time with BaseModelID(modelID). An exact match therefore always wins
-// over a tag-stripped one — including an exact match in a later chain entry —
-// and a lookup that succeeds today cannot change answer, because the fallback
-// runs only after a nil return.
+// over a tag-stripped one — including an exact match in a later chain entry.
+//
+// The full compatibility contract of that fallback, stated in both directions:
+//
+//   - Lookups that already succeed are unchanged. The fallback runs only after a
+//     nil return, so it can never override or reorder a hit.
+//   - Lookups that previously FAILED may now succeed. That is a behavior change,
+//     not a no-op: a tagged ID such as "llama3.1:latest" used to return nil and
+//     send its callers to their own fallbacks, and now returns the catalog entry
+//     for "llama3.1". Callers that branch on a nil ModelInfo therefore take a
+//     different branch than before for tagged IDs — including the context-limit
+//     and output-reservation paths (agent.ResolveContextLimits,
+//     agent.EffectiveOutputReservation) and the factory's per-request output cap
+//     (ProviderFactory.resolveMaxOutput), which now use the catalog's
+//     ContextWindow / MaxOutputTokens for tagged IDs instead of the legacy
+//     prefix table, provider defaults, or fallbackMaxOutputTokens. Reservations
+//     for tagged models can grow or shrink accordingly.
 //
 // Both passes go through the same Source value so a concurrent Register cannot
 // split them across two different catalogs. Callers needing any other relaxation

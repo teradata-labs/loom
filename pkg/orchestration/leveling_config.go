@@ -8,6 +8,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -38,9 +39,16 @@ const (
 //
 // Proto3 optional fields carry the executor's defaults when absent:
 // short_circuit_mid defaults to true and max_escalations to 1, matching
-// DefaultLevelingPolicy. Negative max_escalations, max_cost_usd or retry_budget
-// are rejected rather than clamped — a negative bound is a config mistake, not
-// an intent.
+// DefaultLevelingPolicy. Negative max_escalations, max_cost_usd, retry_budget or
+// pricing threshold is rejected rather than clamped — a negative bound is a
+// config mistake, not an intent — and so is a NaN or infinite max_cost_usd or
+// threshold, which is the same mistake arriving as a float: NaN compares false
+// against everything, so a NaN ceiling would silently disable the cost gate and
+// a NaN threshold would silently reclassify every model.
+//
+// A zero threshold still means "use the catalog's built-in cutoff", which is
+// what an absent proto3 double looks like on the wire and cannot be told apart
+// from an explicit 0.
 //
 // The returned policy's Judge is always nil. The proto surface deliberately
 // carries no judge reference: the free structural signal (a JSON Schema on the
@@ -58,10 +66,21 @@ func LevelingPolicyFromProto(p *loomv1.LevelingPolicy) (*LevelingPolicy, error) 
 		return &LevelingPolicy{Enabled: false}, nil
 	}
 
+	if err := validateLevelingCostField("max_cost_usd", p.GetMaxCostUsd()); err != nil {
+		return nil, err
+	}
+	if err := validateLevelingCostField("frontier_min_output_cost_usd", p.GetFrontierMinOutputCostUsd()); err != nil {
+		return nil, err
+	}
+	if err := validateLevelingCostField("mid_min_output_cost_usd", p.GetMidMinOutputCostUsd()); err != nil {
+		return nil, err
+	}
+
 	policy := &LevelingPolicy{
 		Enabled:         true,
 		ShortCircuitMid: true,
 		MaxEscalations:  1,
+		MaxCostUSD:      p.GetMaxCostUsd(),
 		Thresholds: catalog.TierThresholds{
 			FrontierMinOutputCostUSD: p.GetFrontierMinOutputCostUsd(),
 			MidMinOutputCostUSD:      p.GetMidMinOutputCostUsd(),
@@ -77,10 +96,6 @@ func LevelingPolicyFromProto(p *loomv1.LevelingPolicy) (*LevelingPolicy, error) 
 		}
 		policy.MaxEscalations = int(p.GetMaxEscalations())
 	}
-	if p.GetMaxCostUsd() < 0 {
-		return nil, fmt.Errorf("leveling policy: max_cost_usd must be >= 0, got %f", p.GetMaxCostUsd())
-	}
-	policy.MaxCostUSD = p.GetMaxCostUsd()
 
 	if len(p.GetTierPolicies()) > 0 {
 		policy.TierPolicies = make(map[catalog.ModelTier]TierPolicy, len(p.GetTierPolicies()))
@@ -94,13 +109,51 @@ func LevelingPolicyFromProto(p *loomv1.LevelingPolicy) (*LevelingPolicy, error) 
 				return nil, fmt.Errorf("leveling policy: tier %q retry_budget must be >= 0, got %d", name, tp.GetRetryBudget())
 			}
 			policy.TierPolicies[tier] = TierPolicy{
-				RetryBudget:        int(tp.GetRetryBudget()),
-				AggressiveCoercion: tp.GetAggressiveCoercion(),
+				RetryBudget: int(tp.GetRetryBudget()),
 			}
 		}
 	}
 
 	return policy, nil
+}
+
+// validateLevelingCostField rejects a USD-denominated leveling field that
+// cannot be compared against a running cost: negative, NaN, or infinite. Zero
+// is accepted and means "unset" for all three of them — no ceiling for
+// max_cost_usd, the catalog's built-in cutoff for a threshold.
+//
+// The three fields share one check because they share one failure mode: they
+// are all read by a numeric comparison whose answer decides whether money is
+// spent, and NaN makes every such comparison false without erroring.
+func validateLevelingCostField(name string, value float64) error {
+	switch {
+	case math.IsNaN(value):
+		return fmt.Errorf("leveling policy: %s must be a number, got NaN", name)
+	case math.IsInf(value, 0):
+		return fmt.Errorf("leveling policy: %s must be finite, got %f", name, value)
+	case value < 0:
+		return fmt.Errorf("leveling policy: %s must be >= 0, got %f", name, value)
+	}
+	return nil
+}
+
+// validateLevelingOutputPolicy rejects an OutputPolicy that leveling cannot
+// enforce sanely. It is the OutputPolicy-side companion to
+// LevelingPolicyFromProto's negative-bound checks and belongs with them, but
+// takes its own argument because the contract leveling enforces lives on the
+// stage/task rather than on the LevelingPolicy proto.
+//
+// A negative retry_policy.max_retries is rejected rather than clamped, for the
+// same reason a negative max_escalations is: a negative bound is a config
+// mistake, not an intent. The validator floors the bound too, so this check is
+// the second of two defenses — a workflow submitted as raw proto (the gRPC
+// ExecuteWorkflow path, which no YAML loader sees) fails here with the field
+// named instead of silently running exactly one attempt.
+func validateLevelingOutputPolicy(policy *loomv1.OutputPolicy) error {
+	if rp := policy.GetRetryPolicy(); rp != nil && rp.GetMaxRetries() < 0 {
+		return fmt.Errorf("leveling policy: output_policy.retry_policy.max_retries must be >= 0, got %d", rp.GetMaxRetries())
+	}
+	return nil
 }
 
 // validateLevelingLadderShape checks the part of a proto ladder that can be
@@ -130,19 +183,22 @@ func validateLevelingLadderShape(protoRungs []*loomv1.LevelingRung) error {
 //
 // primary is rung 0 as the caller built it (its Execute/Feedback run the agent's
 // own conversation, and its Provider/Model come from the agent's main LLM).
-// agentID labels the AgentResult that an escalation rung produces so workflow
-// cost aggregation attributes the spend to the same agent as the primary.
+// agentID labels the AgentResult that an escalation rung produces, so when a
+// rung's output is the one adopted, the leveling spend it carries
+// (adoptLevelingCost) is attributed to the same agent as the primary rather
+// than to an agent the workflow never declared. A losing rung's result is
+// discarded and never reaches cost aggregation on its own.
 //
 // Each proto rung resolves through exactly one of two lookups that already
 // exist on the agent — no provider is constructed and no routing is added:
 //
-//   - role set: agent.GetLLMForRole(role)
+//   - role set: agent.GetLLMForRoleStrict(role)
 //   - otherwise provider set: agent.GetProviderPool()[provider]
 //
 // A rung with neither is a config error, as is a provider name absent from the
-// pool. Provider/Model on the returned rung prefer the explicit proto fields
-// (they are what the catalog is keyed on) and fall back to what the resolved
-// LLM reports.
+// pool and a role with no LLM of its own. Provider/Model on the returned rung
+// prefer the explicit proto fields (they are what the catalog is keyed on) and
+// fall back to what the resolved LLM reports.
 func resolveLevelingLadder(
 	ag *agent.Agent,
 	agentID string,
@@ -164,8 +220,11 @@ func resolveLevelingLadder(
 		var llm agent.LLMProvider
 		switch {
 		case pr.GetRole() != loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
-			llm = ag.GetLLMForRole(pr.GetRole())
-			if llm == nil {
+			// Strict lookup: GetLLMForRole falls back to the agent's own LLM,
+			// which would build a rung that escalates to the primary's model.
+			var ok bool
+			llm, ok = ag.GetLLMForRoleStrict(pr.GetRole())
+			if !ok {
 				return nil, fmt.Errorf("leveling ladder: rung %d role %s has no LLM configured on agent %q",
 					i+1, pr.GetRole(), agentID)
 			}
@@ -264,6 +323,41 @@ func backfillLevelingResultMetadata(result *loomv1.AgentResult, base map[string]
 			result.Metadata[k] = v
 		}
 	}
+}
+
+// adoptLevelingCost stamps the whole leveling spend onto the winning result
+// before it enters a workflow's result list.
+//
+// A leveled stage's result is not the product of one LLM call: producing it also
+// paid for the primary's retries, every losing escalation rung and every judge
+// call. Workflow cost aggregation sums the results it is given, so leaving the
+// winning call's own cost in place would report a leveled stage as cheaper than
+// it was and hide exactly the spend leveling introduces. The report's total is
+// what this output cost, and that is what a billing consumer needs.
+//
+// Token counts are left alone: they describe the winning call, and the report
+// carries no per-rung token total to replace them with.
+func adoptLevelingCost(result *loomv1.AgentResult, report *LevelingReport) {
+	if result == nil || report == nil {
+		return
+	}
+	if result.Cost == nil {
+		result.Cost = &loomv1.AgentExecutionCost{}
+	}
+	result.Cost.CostUsd = report.TotalCostUSD
+}
+
+// levelingWinningModel names the model that produced the output being returned:
+// the escalation rung's model when a rung won, and the primary's otherwise.
+//
+// A rung result carries its own model in metadata (levelingRungExecute sets it,
+// and backfillLevelingResultMetadata never overwrites an existing key), so the
+// winner is readable off the result rather than tracked separately.
+func levelingWinningModel(result *loomv1.AgentResult, primaryModel string) string {
+	if model := result.GetMetadata()[levelingRungModelKey]; model != "" {
+		return model
+	}
+	return primaryModel
 }
 
 // effectiveLevelingOutputPolicy returns the validation contract leveling should

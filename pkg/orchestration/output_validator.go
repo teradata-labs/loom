@@ -62,6 +62,16 @@ type FeedbackFunc func(ctx context.Context, sessionID string, feedback string) (
 // ok reports whether a candidate rewrite was produced.
 type CoerceFunc func(output string) (coerced string, ok bool)
 
+// BudgetFunc reports whether budget remains for another paid attempt. It is
+// consulted before each retry, never before the first attempt: the first
+// attempt is the work the caller asked for, and refusing to do it at all would
+// leave no output to return.
+//
+// The check is check-before-spend against whatever the caller has managed to
+// account for so far, so it bounds the number of retries rather than
+// guaranteeing a spend ceiling.
+type BudgetFunc func() bool
+
 // ValidationOutcome is the validator's final verdict on the returned result.
 type ValidationOutcome struct {
 	// Passed reports whether the final attempt satisfied the policy.
@@ -74,6 +84,9 @@ type ValidationOutcome struct {
 	// CoercionApplied is true when coerce rewrote the output into a form
 	// that passed validation; the returned result carries the rewrite.
 	CoercionApplied bool
+	// BudgetExhausted is true when a retry was not attempted because the
+	// caller's BudgetFunc reported no budget left.
+	BudgetExhausted bool
 }
 
 // ValidateAndRetry executes an agent, validates the output against the policy,
@@ -88,6 +101,9 @@ type ValidationOutcome struct {
 //   - coerce: optional free rewrite attempted on a schema failure before the
 //     attempt is written off. A rewrite that validates ends the loop, so a
 //     fenced-but-valid payload never burns a retry. nil disables coercion.
+//   - budget: optional gate consulted before each retry. Reporting false stops
+//     the loop and returns the best result so far with BudgetExhausted set.
+//     nil leaves retries ungated.
 //
 // Returns the agent result (possibly from a retry, possibly coerced) and the
 // final verdict on it. The returned ValidationOutcome carries whether that
@@ -109,6 +125,7 @@ func (v *OutputValidator) ValidateAndRetry(
 	originalPrompt string,
 	workflowID string,
 	coerce CoerceFunc,
+	budget BudgetFunc,
 ) (*loomv1.AgentResult, ValidationOutcome, error) {
 	ctx, span := v.tracer.StartSpan(ctx, "output_validator.validate_and_retry")
 	defer v.tracer.EndSpan(span)
@@ -144,11 +161,12 @@ func (v *OutputValidator) ValidateAndRetry(
 	var lastResult *loomv1.AgentResult
 	var warnings []string
 	var lastValidationErr error
+	budgetExhausted := false
 	currentSessionID := workflowID
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if ctx.Err() != nil {
-			return lastResult, ValidationOutcome{Warnings: warnings}, ctx.Err()
+			return lastResult, ValidationOutcome{Warnings: warnings, BudgetExhausted: budgetExhausted}, ctx.Err()
 		}
 
 		var result *loomv1.AgentResult
@@ -158,6 +176,19 @@ func (v *OutputValidator) ValidateAndRetry(
 			// First attempt: always execute with original prompt.
 			result, err = execute(ctx, currentSessionID, originalPrompt)
 		} else {
+			// A retry is a fresh paid call, so the caller's ceiling gets a say
+			// before it is made. Stopping here keeps the best result obtained
+			// so far, which is what the retry would have improved on.
+			if budget != nil && !budget() {
+				budgetExhausted = true
+				warnings = append(warnings,
+					fmt.Sprintf("attempt %d not made: cost ceiling reached before the retry", attempt+1))
+				v.logger.Debug("retry skipped by the caller's cost ceiling",
+					zap.Int("attempt", attempt+1),
+					zap.Int("max_retries", maxRetries))
+				break
+			}
+
 			// Apply cooldown before retry execution (not after).
 			if retryPolicy != nil && retryPolicy.CooldownMs > 0 {
 				time.Sleep(time.Duration(retryPolicy.CooldownMs) * time.Millisecond)
@@ -229,8 +260,13 @@ func (v *OutputValidator) ValidateAndRetry(
 			zap.String("error", validationErr.Error()))
 	}
 
-	// All retries exhausted — return the last result with the verdict against it.
-	return lastResult, ValidationOutcome{Err: lastValidationErr, Warnings: warnings}, nil
+	// Retries exhausted, or stopped by the budget — return the last result with
+	// the verdict against it.
+	return lastResult, ValidationOutcome{
+		Err:             lastValidationErr,
+		Warnings:        warnings,
+		BudgetExhausted: budgetExhausted,
+	}, nil
 }
 
 // validate checks an output against all validation criteria in the policy.

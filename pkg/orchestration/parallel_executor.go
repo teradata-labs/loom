@@ -325,6 +325,9 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 	if err != nil {
 		return nil, "", fmt.Errorf("task %d (%s): %w", taskIndex, task.AgentId, err)
 	}
+	if err := validateLevelingOutputPolicy(task.GetOutputPolicy()); err != nil {
+		return nil, "", fmt.Errorf("task %d (%s): %w", taskIndex, task.AgentId, err)
+	}
 
 	ag, err := e.orchestrator.GetAgent(ctx, task.AgentId)
 	if err != nil {
@@ -363,6 +366,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 		base[k] = v
 	}
 	backfillLevelingResultMetadata(result, base)
+	adoptLevelingCost(result, report)
 	if report != nil && !report.Passed {
 		// Graceful degradation, matching the leveling executor's contract: the
 		// best output obtained is returned rather than failing the task.
@@ -374,7 +378,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 			zap.Bool("budget_exhausted", report.BudgetExhausted),
 			zap.Strings("warnings", report.Warnings))
 	}
-	return result, ag.GetLLMModel(), nil
+	return result, levelingWinningModel(result, ag.GetLLMModel()), nil
 }
 
 // mergeResults merges task results using the specified strategy.

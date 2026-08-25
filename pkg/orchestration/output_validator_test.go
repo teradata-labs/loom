@@ -141,7 +141,7 @@ func TestValidateAndRetryOutcome(t *testing.T) {
 
 			result, outcome, err := v.ValidateAndRetry(
 				context.Background(), tt.policy, rung.execute, nil,
-				"do the thing", "wf-outcome", tt.coerce)
+				"do the thing", "wf-outcome", tt.coerce, nil)
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
@@ -169,7 +169,7 @@ func TestValidateAndRetryWarningsFormat(t *testing.T) {
 
 	_, outcome, err := v.ValidateAndRetry(
 		context.Background(), schemaPolicy(1, true), rung.execute, nil,
-		"do the thing", "wf-warn", nil)
+		"do the thing", "wf-warn", nil, nil)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Warnings, 2)
@@ -193,7 +193,7 @@ func TestValidateAndRetryCoercionSkipsTheRetryPrompt(t *testing.T) {
 
 	result, outcome, err := v.ValidateAndRetry(
 		context.Background(), schemaPolicy(3, true), rung.execute, nil,
-		"do the thing", "wf-coerce-once", jsonCoerce)
+		"do the thing", "wf-coerce-once", jsonCoerce, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -217,7 +217,7 @@ func TestValidateAndRetryExecutionErrorOutcome(t *testing.T) {
 
 	result, outcome, err := v.ValidateAndRetry(
 		context.Background(), schemaPolicy(1, true), rung.execute, nil,
-		"do the thing", "wf-exec-err", nil)
+		"do the thing", "wf-exec-err", nil, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "upstream 503")
@@ -239,7 +239,7 @@ func TestValidateAndRetryCanceledContextOutcome(t *testing.T) {
 
 	result, outcome, err := v.ValidateAndRetry(
 		ctx, schemaPolicy(1, true), rung.execute, nil,
-		"do the thing", "wf-canceled", nil)
+		"do the thing", "wf-canceled", nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -264,7 +264,7 @@ func TestValidateAndRetryCoerceNotConsultedOnPass(t *testing.T) {
 
 	result, outcome, err := v.ValidateAndRetry(
 		context.Background(), schemaPolicy(1, true), rung.execute, nil,
-		"do the thing", "wf-coerce-unused", coerce)
+		"do the thing", "wf-coerce-unused", coerce, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)

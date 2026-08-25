@@ -777,6 +777,10 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
 	}
+	outputPolicy := effectiveLevelingOutputPolicy(stage)
+	if err := validateLevelingOutputPolicy(outputPolicy); err != nil {
+		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
+	}
 	if stage.ValidationPrompt != "" {
 		return nil, "", nil, fmt.Errorf(
 			"stage %d (%s): leveling_policy cannot be combined with the legacy validation_prompt — leveling has no semantic-prompt signal, so the criteria would be silently dropped; move the criteria into output_policy.output_schema or disable leveling on this stage",
@@ -808,7 +812,7 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 	}
 
 	leveler := NewLevelingExecutor(nil, policy, e.orchestrator.tracer, e.orchestrator.logger)
-	result, report, err := leveler.Execute(ctx, effectiveLevelingOutputPolicy(stage), ladder, prompt, sessionID)
+	result, report, err := leveler.Execute(ctx, outputPolicy, ladder, prompt, sessionID)
 	if err != nil {
 		return nil, "", report, err
 	}
@@ -816,7 +820,8 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 		"stage":      fmt.Sprintf("%d", stageNum),
 		"agent_name": ag.GetName(),
 	})
-	return result, ag.GetLLMModel(), report, nil
+	adoptLevelingCost(result, report)
+	return result, levelingWinningModel(result, ag.GetLLMModel()), report, nil
 }
 
 // levelingStageWarnings turns a leveling report into the stage-prefixed

@@ -115,27 +115,53 @@ func TestResolveLevelingLadderNilRung(t *testing.T) {
 	assert.Equal(t, 0, strong.count(), "no rung is called during resolution")
 }
 
-// TestResolveLevelingLadderRoleWithNoLLM covers the role-lookup failure: an
-// agent that cannot supply an LLM for the named role must fail the resolve with
-// the role and the agent named, rather than producing a rung with a nil LLM that
-// would panic at call time.
+// TestResolveLevelingLadderRoleWithNoLLM covers the role-lookup failure: a role
+// with no LLM of its own must fail the resolve with the role and the agent
+// named, rather than silently becoming a rung that escalates to the primary's
+// own model — a paid call that cannot improve anything.
 func TestResolveLevelingLadderRoleWithNoLLM(t *testing.T) {
 	t.Parallel()
 
-	// GetLLMForRole falls back to the agent's main LLM for every role, so the
-	// only way a role resolves to nothing is an agent with no LLM at all.
-	ag := agent.NewAgent(&mockBackend{}, nil, agent.WithName("llm-less-agent"))
-	require.Nil(t, ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_JUDGE),
-		"precondition: this agent can supply no LLM for any role")
+	tests := []struct {
+		name  string
+		agent func() *agent.Agent
+	}{
+		{
+			// The case the strict lookup exists for: a perfectly normal agent
+			// whose JUDGE role was never configured. GetLLMForRole answers this
+			// with the main LLM, which is why the ladder cannot use it.
+			name: "role unset on an agent that has a main LLM",
+			agent: func() *agent.Agent {
+				main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+				return agent.NewAgent(&mockBackend{}, main, agent.WithName("llm-less-agent"))
+			},
+		},
+		{
+			name: "agent with no LLM at all",
+			agent: func() *agent.Agent {
+				return agent.NewAgent(&mockBackend{}, nil, agent.WithName("llm-less-agent"))
+			},
+		},
+	}
 
-	primary := LevelingRung{Provider: lvlLowProvider, Model: lvlLowModel}
-	ladder, err := resolveLevelingLadder(ag, "llm-less-agent", primary,
-		[]*loomv1.LevelingRung{{Role: loomv1.LLMRole_LLM_ROLE_JUDGE}})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Error(t, err)
-	assert.Nil(t, ladder)
-	assert.Contains(t, err.Error(), "rung 1 role LLM_ROLE_JUDGE has no LLM configured")
-	assert.Contains(t, err.Error(), "llm-less-agent")
+			ag := tt.agent()
+			_, ok := ag.GetLLMForRoleStrict(loomv1.LLMRole_LLM_ROLE_JUDGE)
+			require.False(t, ok, "precondition: no LLM is configured for the judge role")
+
+			primary := LevelingRung{Provider: lvlLowProvider, Model: lvlLowModel}
+			ladder, err := resolveLevelingLadder(ag, "llm-less-agent", primary,
+				[]*loomv1.LevelingRung{{Role: loomv1.LLMRole_LLM_ROLE_JUDGE}})
+
+			require.Error(t, err)
+			assert.Nil(t, ladder)
+			assert.Contains(t, err.Error(), "rung 1 role LLM_ROLE_JUDGE has no LLM configured")
+			assert.Contains(t, err.Error(), "llm-less-agent")
+		})
+	}
 }
 
 // TestLevelingRungExecuteSurfacesLLMError pins the rung ExecuteFunc's error

@@ -5,6 +5,7 @@
 package catalog
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -121,6 +122,71 @@ func TestTierFromInfoWithCustomThresholds(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, TierFromInfoWith(tt.info, tt.th))
+		})
+	}
+}
+
+// TestTierThresholdsNonFiniteFallsBackToDefaults pins that a cutoff which is
+// not a usable number is treated like an absent one. NaN matters most: every
+// comparison against it is false, so a NaN cutoff that reached the comparisons
+// would classify every priced model as small-open without erroring anywhere.
+func TestTierThresholdsNonFiniteFallsBackToDefaults(t *testing.T) {
+	t.Parallel()
+
+	// Reasoning at 12.0 is frontier under the built-in cutoffs; every case
+	// below must therefore land on frontier if the defaults were substituted.
+	reasoningAt12 := &loomv1.ModelInfo{
+		CostPer_1MInputUsd:  3.0,
+		CostPer_1MOutputUsd: 12.0,
+		IsReasoning:         true,
+	}
+
+	tests := []struct {
+		name string
+		th   TierThresholds
+	}{
+		{name: "NaN frontier", th: TierThresholds{FrontierMinOutputCostUSD: math.NaN()}},
+		{name: "NaN mid", th: TierThresholds{MidMinOutputCostUSD: math.NaN()}},
+		{name: "NaN both", th: TierThresholds{
+			FrontierMinOutputCostUSD: math.NaN(), MidMinOutputCostUSD: math.NaN()}},
+		{name: "positive infinite frontier", th: TierThresholds{FrontierMinOutputCostUSD: math.Inf(1)}},
+		{name: "negative infinite frontier", th: TierThresholds{FrontierMinOutputCostUSD: math.Inf(-1)}},
+		{name: "positive infinite both", th: TierThresholds{
+			FrontierMinOutputCostUSD: math.Inf(1), MidMinOutputCostUSD: math.Inf(1)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, TierFrontier, TierFromInfoWith(reasoningAt12, tt.th),
+				"a non-finite cutoff must behave exactly like an unset one")
+		})
+	}
+}
+
+// TestUsablePriceCutoff pins the predicate directly, including the two cases the
+// positivity test alone would get wrong (NaN and +Inf).
+func TestUsablePriceCutoff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   float64
+		want bool
+	}{
+		{name: "positive", in: 1.5, want: true},
+		{name: "tiny positive", in: 0.0001, want: true},
+		{name: "zero", in: 0},
+		{name: "negative", in: -1},
+		{name: "NaN", in: math.NaN()},
+		{name: "positive infinity", in: math.Inf(1)},
+		{name: "negative infinity", in: math.Inf(-1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, usablePriceCutoff(tt.in))
 		})
 	}
 }

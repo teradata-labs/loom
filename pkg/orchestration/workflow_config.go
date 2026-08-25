@@ -7,9 +7,12 @@ package orchestration
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -71,11 +74,19 @@ type WorkflowMetadata struct {
 //   - ErrInvalidWorkflow: If the workflow structure is invalid
 //   - ErrUnsupportedPattern: If the pattern type is not recognized
 func LoadWorkflowFromYAML(path string) (*loomv1.WorkflowPattern, error) {
+	return LoadWorkflowFromYAMLWithLogger(path, nil)
+}
+
+// LoadWorkflowFromYAMLWithLogger is LoadWorkflowFromYAML with a logger for the
+// loader's tolerance warnings — the diagnostics for YAML the loader accepts but
+// does not take at face value (see parseOutputRetryPolicy). A nil logger
+// discards them; nothing else about the load changes.
+func LoadWorkflowFromYAMLWithLogger(path string, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	data, err := readWorkflowFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return LoadWorkflowFromYAMLBytes(data)
+	return LoadWorkflowFromYAMLBytesWithLogger(data, logger)
 }
 
 // LoadWorkflowFromYAMLBytes parses, validates, and converts a workflow YAML
@@ -84,6 +95,12 @@ func LoadWorkflowFromYAML(path string) (*loomv1.WorkflowPattern, error) {
 // loom_execute_workflow MCP tool's workflow_yaml argument) rather than from a
 // file on disk.
 func LoadWorkflowFromYAMLBytes(data []byte) (*loomv1.WorkflowPattern, error) {
+	return LoadWorkflowFromYAMLBytesWithLogger(data, nil)
+}
+
+// LoadWorkflowFromYAMLBytesWithLogger is LoadWorkflowFromYAMLBytes with a
+// logger for the loader's tolerance warnings. A nil logger discards them.
+func LoadWorkflowFromYAMLBytesWithLogger(data []byte, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	config, err := parseWorkflowYAML(data)
 	if err != nil {
 		return nil, err
@@ -91,7 +108,7 @@ func LoadWorkflowFromYAMLBytes(data []byte) (*loomv1.WorkflowPattern, error) {
 	if err := validateWorkflowStructure(config); err != nil {
 		return nil, err
 	}
-	pattern, err := convertToProto(config)
+	pattern, err := convertToProto(config, loaderLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +118,17 @@ func LoadWorkflowFromYAMLBytes(data []byte) (*loomv1.WorkflowPattern, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 	}
 	return pattern, nil
+}
+
+// loaderLogger normalizes the optional logger the exported loaders accept. The
+// loader has no logger of its own and takes no global one: a caller that wants
+// the tolerance warnings passes its logger in, and nil — which is what the
+// logger-free entry points pass — means "discard them".
+func loaderLogger(logger *zap.Logger) *zap.Logger {
+	if logger == nil {
+		return zap.NewNop()
+	}
+	return logger
 }
 
 // readWorkflowFile reads the workflow file from disk
@@ -181,8 +209,12 @@ func validateWorkflowStructure(config *WorkflowConfig) error {
 	return nil
 }
 
-// convertToProto converts WorkflowConfig to loomv1.WorkflowPattern
-func convertToProto(config *WorkflowConfig) (*loomv1.WorkflowPattern, error) {
+// convertToProto converts WorkflowConfig to loomv1.WorkflowPattern. logger
+// carries the loader's tolerance warnings and is never nil on this path — the
+// exported entry points run it through loaderLogger first. The debate and
+// fork-join converters take no logger because neither parses a block that can
+// warn.
+func convertToProto(config *WorkflowConfig, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	patternType, ok := config.Spec["type"].(string)
 	if !ok {
 		return nil, fmt.Errorf("%w: spec.type must be a string", ErrInvalidWorkflow)
@@ -194,15 +226,15 @@ func convertToProto(config *WorkflowConfig) (*loomv1.WorkflowPattern, error) {
 	case "fork-join":
 		return convertForkJoinPattern(config.Spec)
 	case "pipeline":
-		return convertPipelinePattern(config.Spec)
+		return convertPipelinePattern(config.Spec, logger)
 	case "parallel":
-		return convertParallelPattern(config.Spec)
+		return convertParallelPattern(config.Spec, logger)
 	case "conditional":
-		return convertConditionalPattern(config.Spec)
+		return convertConditionalPattern(config.Spec, logger)
 	case "iterative":
-		return convertIterativePattern(config.Spec)
+		return convertIterativePattern(config.Spec, logger)
 	case "swarm":
-		return convertSwarmPattern(config.Spec)
+		return convertSwarmPattern(config.Spec, logger)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPattern, patternType)
 	}
@@ -317,7 +349,7 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 }
 
 // convertPipelinePattern converts spec to PipelinePattern proto
-func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, error) {
+func convertPipelinePattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Extract initial_prompt
 	initialPrompt, ok := spec["initial_prompt"].(string)
 	if !ok {
@@ -351,11 +383,11 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 
 		validationPrompt, _ := stageMap["validation_prompt"].(string)
 		outputSchema, _ := stageMap["output_schema"].(string)
-		retryPolicy, err := parseOutputRetryPolicy(stageMap, stagePath)
+		retryPolicy, err := parseOutputRetryPolicy(stageMap, stagePath, logger)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 		}
-		outputPolicy, err := parseOutputPolicy(stageMap, stagePath)
+		outputPolicy, err := parseOutputPolicy(stageMap, stagePath, logger)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 		}
@@ -398,7 +430,7 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 }
 
 // convertParallelPattern converts spec to ParallelPattern proto
-func convertParallelPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, error) {
+func convertParallelPattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Extract tasks
 	tasksRaw, ok := spec["tasks"].([]interface{})
 	if !ok {
@@ -433,7 +465,7 @@ func convertParallelPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 		}
 
 		taskPath := fmt.Sprintf("spec.tasks[%d]", i)
-		outputPolicy, err := parseOutputPolicy(taskMap, taskPath)
+		outputPolicy, err := parseOutputPolicy(taskMap, taskPath, logger)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 		}
@@ -482,7 +514,7 @@ func convertParallelPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 }
 
 // convertConditionalPattern converts spec to ConditionalPattern proto
-func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, error) {
+func convertConditionalPattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Extract condition_agent_id
 	conditionAgentID, ok := spec["condition_agent_id"].(string)
 	if !ok {
@@ -514,7 +546,7 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 			Kind:       "Workflow",
 			Metadata:   WorkflowMetadata{Name: "nested-" + key},
 			Spec:       branchConfig,
-		})
+		}, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse branch '%s': %w", key, err)
 		}
@@ -531,14 +563,14 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 			Kind:       "Workflow",
 			Metadata:   WorkflowMetadata{Name: "default-branch"},
 			Spec:       defaultRaw,
-		})
+		}, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse default_branch: %w", err)
 		}
 	}
 
 	// Extract optional retry_policy
-	retryPolicy, err := parseOutputRetryPolicy(spec, "spec")
+	retryPolicy, err := parseOutputRetryPolicy(spec, "spec", logger)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 	}
@@ -557,7 +589,7 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 }
 
 // convertIterativePattern converts spec to IterativeWorkflowPattern proto
-func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, error) {
+func convertIterativePattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Extract pipeline configuration (nested under "pipeline" key)
 	pipelineSpec, ok := spec["pipeline"].(map[string]interface{})
 	if !ok {
@@ -567,7 +599,7 @@ func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPatte
 	// Parse the base pipeline using existing converter
 	// We need to add the "type" field to make it compatible with convertPipelinePattern
 	pipelineSpec["type"] = "pipeline"
-	pipelinePattern, err := convertPipelinePattern(pipelineSpec)
+	pipelinePattern, err := convertPipelinePattern(pipelineSpec, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse base pipeline: %w", err)
 	}
@@ -670,7 +702,7 @@ func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPatte
 }
 
 // convertSwarmPattern converts spec to SwarmPattern proto
-func convertSwarmPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, error) {
+func convertSwarmPattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Extract question
 	question, ok := spec["question"].(string)
 	if !ok {
@@ -719,7 +751,7 @@ func convertSwarmPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, 
 	judgeAgentID, _ := spec["judge_agent_id"].(string)
 
 	// Extract optional retry_policy
-	retryPolicy, err := parseOutputRetryPolicy(spec, "spec")
+	retryPolicy, err := parseOutputRetryPolicy(spec, "spec", logger)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 	}
@@ -758,7 +790,7 @@ func parseVotingStrategy(strategy string) loomv1.VotingStrategy {
 }
 
 // retryPolicyRetryOnlyKeys are the retry_policy fields that only mean something
-// once at least one retry is allowed. They are named in the error raised when
+// once at least one retry is allowed. They are named in the warning logged when
 // they appear alongside max_retries <= 0, because silently dropping them (which
 // is what returning nil does) is how a typo becomes a mystery.
 var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "cooldown_ms"}
@@ -767,9 +799,26 @@ var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "co
 // path is the YAML location of the enclosing block, used only for errors.
 //
 // Returns nil if no retry_policy is present or if max_retries is 0/negative —
-// both mean "no retry policy". Setting session_mode, feedback_template or
-// cooldown_ms without a positive max_retries is an error rather than a silent
-// drop.
+// both mean "no retry policy".
+//
+// # Three tolerated shapes, each warned about
+//
+// This block predates the strict scalar helpers, so three shapes that loaded
+// before them keep loading, with a warning naming the value and what it resolved
+// to instead of a load error. Rejecting them would break configs that already
+// run, which is a worse outcome than a warning:
+//
+//   - max_retries: 2.5 — truncated toward zero, as the pre-helper decode did.
+//   - max_retries: "3" — ignored, i.e. treated as absent, as before. A string is
+//     not silently parsed: that would turn a no-retry config into a retrying one.
+//   - a retry-only key (session_mode, feedback_template, cooldown_ms) without a
+//     positive max_retries — the whole retry_policy is dropped, as before.
+//
+// The tolerance is local to this function and reads the raw map itself, so the
+// shared yamlInt32Field/yamlStringField helpers stay strict for every other key,
+// on this block and on the leveling blocks that have no legacy configs to keep
+// loading. Every other malformation here — max_retries: true, a fractional
+// cooldown_ms, an unknown session_mode — still fails the load.
 //
 // YAML shape:
 //
@@ -779,7 +828,7 @@ var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "co
 //	  session_mode: fresh                 # optional; fresh | continue | escalate
 //	  feedback_template: "..."            # optional; {{error}}, {{previous_output}},
 //	  cooldown_ms: 250                    #   {{attempt}}, {{max_retries}}
-func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.OutputRetryPolicy, error) {
+func parseOutputRetryPolicy(raw map[string]interface{}, path string, logger *zap.Logger) (*loomv1.OutputRetryPolicy, error) {
 	retryRaw, ok := raw["retry_policy"].(map[string]interface{})
 	if !ok {
 		return nil, nil
@@ -788,7 +837,7 @@ func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.Ou
 
 	policy := &loomv1.OutputRetryPolicy{}
 
-	maxRetries, _, err := yamlInt32Field(retryRaw, path, "max_retries")
+	maxRetries, err := retryPolicyMaxRetries(retryRaw, path, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -796,10 +845,12 @@ func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.Ou
 
 	// Return nil if max_retries is 0 or negative — same as "no retry policy"
 	if policy.MaxRetries <= 0 {
-		for _, key := range retryPolicyRetryOnlyKeys {
-			if _, present := retryRaw[key]; present {
-				return nil, fmt.Errorf("%s.%s needs max_retries >= 1: with no retries allowed the whole retry_policy is discarded", path, key)
-			}
+		if dropped := presentRetryOnlyKeys(retryRaw); len(dropped) > 0 {
+			logger.Warn("workflow retry_policy dropped: its retry-only keys need max_retries >= 1",
+				zap.String("field", path),
+				zap.Int32("max_retries", policy.MaxRetries),
+				zap.Strings("ignored_keys", dropped),
+				zap.String("resolved_to", "no retry policy"))
 		}
 		return nil, nil
 	}
@@ -845,6 +896,52 @@ func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.Ou
 	return policy, nil
 }
 
+// retryPolicyMaxRetries reads retry_policy.max_retries with the two value-level
+// tolerances parseOutputRetryPolicy documents, and delegates everything else to
+// the shared strict helper so this key keeps yamlInt32Field's accepted types and
+// its error wording.
+//
+// A fractional value truncates toward zero (int64 conversion, matching
+// math.Trunc) and a string is ignored, both with a warning. The second return of
+// yamlInt32Field is dropped: an ignored string and an absent key are the same
+// answer here, which is what makes the string tolerance byte-identical to the
+// behavior it restores.
+func retryPolicyMaxRetries(retryRaw map[string]interface{}, path string, logger *zap.Logger) (int32, error) {
+	switch value := retryRaw["max_retries"].(type) {
+	case float64:
+		if value != math.Trunc(value) {
+			truncated := types.SafeInt32FromInt64(int64(value))
+			logger.Warn("workflow retry_policy.max_retries is not a whole number: truncating toward zero",
+				zap.String("field", path+".max_retries"),
+				zap.Float64("yaml_value", value),
+				zap.Int32("resolved_to", truncated))
+			return truncated, nil
+		}
+	case string:
+		logger.Warn("workflow retry_policy.max_retries is a string: ignoring it as if the key were absent",
+			zap.String("field", path+".max_retries"),
+			zap.String("yaml_value", value),
+			zap.String("resolved_to", "no retry policy"))
+		return 0, nil
+	}
+
+	value, _, err := yamlInt32Field(retryRaw, path, "max_retries")
+	return value, err
+}
+
+// presentRetryOnlyKeys lists the retry-only keys the block actually carries, in
+// retryPolicyRetryOnlyKeys order so the warning reads the same for a given
+// config every time.
+func presentRetryOnlyKeys(retryRaw map[string]interface{}) []string {
+	present := make([]string, 0, len(retryPolicyRetryOnlyKeys))
+	for _, key := range retryPolicyRetryOnlyKeys {
+		if _, ok := retryRaw[key]; ok {
+			present = append(present, key)
+		}
+	}
+	return present
+}
+
 // parseOutputPolicy parses an optional unified output_policy block from a
 // pipeline stage or parallel task.
 //
@@ -862,7 +959,7 @@ func parseOutputRetryPolicy(raw map[string]interface{}, path string) (*loomv1.Ou
 //	  validator_agent_id: reviewer              # optional (ditto)
 //	  judge_config_id: strict-judge             # optional (ditto)
 //	  retry_policy: { ... }                     # optional; see parseOutputRetryPolicy
-func parseOutputPolicy(enclosing map[string]interface{}, path string) (*loomv1.OutputPolicy, error) {
+func parseOutputPolicy(enclosing map[string]interface{}, path string, logger *zap.Logger) (*loomv1.OutputPolicy, error) {
 	raw, ok := enclosing["output_policy"]
 	if !ok || raw == nil {
 		return nil, nil
@@ -887,7 +984,7 @@ func parseOutputPolicy(enclosing map[string]interface{}, path string) (*loomv1.O
 	if policy.JudgeConfigId, _, err = yamlStringField(block, path, "judge_config_id"); err != nil {
 		return nil, err
 	}
-	if policy.RetryPolicy, err = parseOutputRetryPolicy(block, path); err != nil {
+	if policy.RetryPolicy, err = parseOutputRetryPolicy(block, path, logger); err != nil {
 		return nil, err
 	}
 
@@ -1006,13 +1103,19 @@ func LoadWorkflowConfigFromYAML(path string) (*WorkflowConfig, error) {
 // ConvertConfigToProto converts a WorkflowConfig to a WorkflowPattern proto.
 // This is used by the scheduler after loading a workflow YAML file.
 func ConvertConfigToProto(config *WorkflowConfig) (*loomv1.WorkflowPattern, error) {
+	return ConvertConfigToProtoWithLogger(config, nil)
+}
+
+// ConvertConfigToProtoWithLogger is ConvertConfigToProto with a logger for the
+// loader's tolerance warnings. A nil logger discards them.
+func ConvertConfigToProtoWithLogger(config *WorkflowConfig, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
 	// Validate structure
 	if err := validateWorkflowStructure(config); err != nil {
 		return nil, err
 	}
 
 	// Convert to proto
-	pattern, err := convertToProto(config)
+	pattern, err := convertToProto(config, loaderLogger(logger))
 	if err != nil {
 		return nil, err
 	}

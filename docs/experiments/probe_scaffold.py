@@ -8,16 +8,43 @@ decomposition collapses the wrong-rate, C2 (proactive scaffolding, NO signal
 needed) beats C3 (reactive escalation, signal-bound) on this task class.
 
 Two scaffold depths, S1 light / S2 heavy, 30 problems each, llama2 only.
-"""
-import json, sys, time
 
-sys.path.insert(0, "/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/calib")
+Paths are configurable so the JSONL is regenerable from any checkout. Each has a
+CLI flag, an environment variable, and a default expressed relative to this
+file's location in the repo (`<repo>/docs/experiments/`):
+
+  --out / LOOM_PROBE_OUT
+      Output JSONL. Default: <this script's directory>/scaffold_probe.jsonl —
+      i.e. a rerun overwrites the committed copy in place.
+  --calib-dir / LOOM_PROBE_CALIB_DIR
+      Directory holding the harness helper modules `ollama_client` (which
+      carries the cloud guard), `parse` and `generators`. These lived in the
+      original run's scratchpad and are not committed, so the default below only
+      resolves on the machine that ran the experiment; point it at a checkout of
+      those helpers elsewhere.
+  --model / LOOM_PROBE_MODEL
+      Model under test. Default: llama2:latest (as measured).
+"""
+import argparse, json, os, sys, time
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_DEFAULT_CALIB = ("/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-"
+                  "affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/calib")
+
+_p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_p.add_argument("--out", default=os.environ.get("LOOM_PROBE_OUT"))
+_p.add_argument("--calib-dir", default=os.environ.get("LOOM_PROBE_CALIB_DIR", _DEFAULT_CALIB))
+_p.add_argument("--model", default=os.environ.get("LOOM_PROBE_MODEL", "llama2:latest"))
+_args = _p.parse_args()
+
+OUT = _args.out or str(_HERE / "scaffold_probe.jsonl")
+MODEL = _args.model
+
+sys.path.insert(0, _args.calib_dir)
 from ollama_client import chat          # noqa: E402
 from parse import parse_answer          # noqa: E402
 from generators import gen_arith_chain  # noqa: E402
-
-OUT = "/private/tmp/claude-501/-Users-josh-schoen-repos-loom--claude-worktrees-affectionate-colden/3d7bbe33-d920-4f5c-aec0-3a31ff447f0d/scratchpad/exp_results/scaffold_probe.jsonl"
-MODEL = "llama2:latest"
 
 S1 = """Evaluate this expression using standard order of operations:
 

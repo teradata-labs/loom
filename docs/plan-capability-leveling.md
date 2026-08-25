@@ -1,8 +1,9 @@
 # Plan: Capability-Leveling
 
-**Status**: Draft — ready to start
+**Status**: ✅ Implemented (C1 + C3) and measured through Phase 5 — under review; C2 and C4
+❌ rejected on evidence. Leveling remains off unless `leveling_policy.enabled = true`.
 **Author**: Josh Schoen
-**Date**: 2026-08-15
+**Date**: 2026-08-15 (plan); last results section 2026-08-16
 
 ## Goal
 
@@ -34,7 +35,7 @@ be repackaging Loom's own capabilities.
 | **Per-role LLMs** | `LLMRole` enum + `Agent.GetLLMForRole` (`pkg/agent/agent.go:4110`) | Cheap primary vs. strong escalation target |
 | **Judge / eval** (6 aggregations) | `pkg/evals/judges/` | The **quality signal** that triggers escalation |
 | **Judge-and-retry loop** | `pkg/orchestration/output_validator.go` (`ValidateAndRetry`, `RetryPolicy`, feedback modes) | Shape to extend — today it only retries the **same** model |
-| **Structured-output enforcement** | `pkg/orchestration/output_coercion.go` | Format-gap closing (aggressive coercion for low tiers) |
+| **Structured-output enforcement** | `pkg/orchestration/output_coercion.go` | Format-gap closing (planned as "aggressive coercion for low tiers"; ⚠️ shipped **unconditional, not tier-gated** — see the 2026-08-24 removal of `aggressive_coercion`) |
 | **Orchestration patterns** | `pkg/orchestration/*_executor.go`, YAML pattern domains | Decomposition (pipeline) + home for the new pattern domain |
 
 ## The missing sliver (what to build)
@@ -46,6 +47,10 @@ Derive a capability tier from the catalog — `frontier | mid | small-open | loc
 `Capabilities`, `IsReasoning`, context-window, and pricing fields. A pure mapping + config; no new
 store. Output: `Tier(provider, model) → tier` + per-tier policy knobs (scaffolding depth, coercion
 strictness, retry budget, escalation ladder).
+
+⚠️ Two of those four knobs did not survive to merge: `scaffolding_depth` was cut on 2026-08-16
+(C2 rejected) and `aggressive_coercion` on 2026-08-24 (free extraction became unconditional).
+What shipped is a per-tier `retry_budget` plus the policy-level escalation ladder.
 
 ### C2 — Capability-adaptive scaffolding (a `capability-leveling` pattern domain)
 
@@ -212,7 +217,7 @@ policy is also disabled (`leveling_executor.go:55-86`).
 | Flag off (nil policy or `Enabled: false`) | One nil/bool check, then direct delegation (`leveling_executor.go:177-181`) | 0 |
 | Flag on, primary is `frontier` / `mid` (default) / `unknown` | One memoized catalog lookup (two map hits, 0 allocs) + one tracer span (`:200-223`) | 0 — the judge is never consulted on this path |
 | Flag on, low tier, first pass passes schema | One JSON-schema check (already free in the validator) re-applied once ⚠️ *corrected at Phase 2b (the re-check cost ~9.2 µs / 203 allocs, not "free"); removed entirely in Phase 2c — the validator's verdict is now reused* | 0 |
-| Flag on, low tier, fenced-but-valid JSON | Free `extractJSONFromText` coercion instead of any retry/escalation | 0 |
+| Flag on, **any** tier, fenced-but-valid JSON | Free `extractJSONFromText` coercion instead of any retry/escalation ⚠️ *this row said "low tier" through Phase 2d, when coercion was gated by the per-tier `aggressive_coercion` knob; since that knob's removal on 2026-08-24 the free extraction runs on every leveling path where a schema is present, at every tier* | 0 |
 | Flag on, low tier, no schema, no judge | Nothing — no signal exists, output stands (`:428-429`) | 0 |
 | Flag on, low tier, failure signal | Escalation rungs, each budget-checked first | ≤ `MaxEscalations`, hard-capped by `MaxCostUSD` |
 
@@ -238,12 +243,20 @@ type LevelingPolicy struct {
 }
 ```
 
-`TierPolicy` knobs: `RetryBudget` (✅ consumed — becomes the validator's `MaxRetries` when the
-caller supplied none), `AggressiveCoercion` (✅ consumed — free JSON extraction before declaring
-schema failure; since Phase 2c this runs *inside* the validator on the failing attempt, so it no
-longer waits for the retry budget to drain), `ScaffoldingDepth` (📋 reserved for C2, documented
-as not consumed — ❌ **removed pre-merge 2026-08-16** once C2 was rejected on measurement; it
-never shipped, so `TierPolicy` today has two fields, not three).
+`TierPolicy` knobs, as of the merge: **one field, `RetryBudget`** (✅ consumed — becomes the
+validator's `MaxRetries` when the caller supplied none). Two knobs written in this section at
+Phase 1 did not survive:
+
+- `AggressiveCoercion` (was ✅ consumed — free JSON extraction before declaring schema failure,
+  moved *inside* the validator in Phase 2c) — ❌ **removed pre-merge 2026-08-24.** Free
+  extraction/fence-stripping now runs unconditionally wherever a schema is present, on the
+  short-circuit, active and escalation-rung paths alike, so the knob could no longer turn
+  anything off — and a tier that *could* have switched it off would have rejected payloads the
+  pre-leveling pipeline already accepted.
+- `ScaffoldingDepth` (📋 was reserved for C2, documented as not consumed) — ❌ **removed
+  pre-merge 2026-08-16** once C2 was rejected on measurement.
+
+Neither ever shipped outside this PR.
 
 `LevelingJudge` is a local func type because `pkg/evals/judges` imports `pkg/orchestration` —
 importing it back would be a cycle. An adapter from `judges.Judge` is a one-liner at the call
@@ -333,17 +346,23 @@ Three new messages, plus one new import (`loom/v1/agent_config.proto`, for `LLMR
 - `LevelingPolicy` — fields 1–8: `enabled` (field 1, `bool`, zero value off),
   `short_circuit_mid` (2, `optional bool`, absent ⇒ true), `max_escalations`
   (3, `optional int32`, absent ⇒ 1; explicit 0 disables escalation while keeping
-  per-tier retry/coercion), `max_cost_usd` (4), `ladder` (5, `repeated LevelingRung`),
+  per-tier retry and the free extraction), `max_cost_usd` (4), `ladder` (5, `repeated LevelingRung`),
   `frontier_min_output_cost_usd` (6), `mid_min_output_cost_usd` (7),
   `tier_policies` (8, `map<string, LevelingTierPolicy>` keyed by tier name:
   `unknown`, `local`, `small-open`, `mid`, `frontier`).
 - `LevelingRung` — `provider` (1), `model` (2), `role` (3, `LLMRole`).
-- `LevelingTierPolicy` — `retry_budget` (1), `aggressive_coercion` (2),
-  `scaffolding_depth` (3, 📋 reserved for C2; carried in config, consumed by nothing).
-  ❌ **Field 3 was removed pre-merge 2026-08-16** and is now `reserved 3` /
-  `reserved "scaffolding_depth"` — the message is new in this PR, so it never existed on `main`
-  and `buf breaking` stays clean. Removing it cost one `reserved` line; keeping it would have
-  been a permanent dead API. See "What this feature is, and is not".
+- `LevelingTierPolicy` — as written at Phase 2 this had three fields: `retry_budget` (1),
+  `aggressive_coercion` (2), `scaffolding_depth` (3, 📋 reserved for C2; carried in config,
+  consumed by nothing). **Two of the three were removed pre-merge and only `retry_budget`
+  ships**:
+  - ❌ **Field 3 removed 2026-08-16** — now `reserved 3` / `reserved "scaffolding_depth"`.
+  - ❌ **Field 2 removed 2026-08-24** — now `reserved 2` / `reserved "aggressive_coercion"`,
+    the same treatment, for the same reason: free extraction became unconditional on every
+    leveling path with a schema, so the flag controlled nothing.
+
+  The message is new in this PR, so it never existed on `main` and `buf breaking` stays clean.
+  Both removals cost one `reserved` line each; keeping either would have been a permanent dead
+  API. See "What this feature is, and is not".
 
 Carrier fields: `PipelineStage.leveling_policy = 8` (previous max was
 `hitl_gate = 7`) and `AgentTask.leveling_policy = 5` (previous max was
@@ -720,6 +739,10 @@ gain came from the cheaper rung of the ladder.
 **⚠️ Free coercion never fired either.** 0 coercions across 40 trials. `llama2` did not
 wrap its JSON in prose or fences on this task — it emitted almost-correct JSON with a
 type error. `AggressiveCoercion` was untested by this experiment, not validated by it.
+(❌ Later: the `aggressive_coercion` knob was removed on 2026-08-24 — free extraction became
+unconditional wherever a schema is present — so what stayed untested here is the extraction
+path, not a per-tier setting. The extraction itself was first measured in Phase 3 arm 2:
+30/30 rescues.)
 
 **⚠️ The schema signal is blind to correctness, and satisfying it can destroy a correct
 fact.** Sri Lanka, run 2: arm 1 produced `"currency_code": "LKR"` (correct) with
@@ -788,8 +811,11 @@ into `head`/`grep` (which reports the pipeline's exit code, not the command's).
 - 📋 Re-run the measurement with a genuinely larger escalation rung (e.g. a 70B local
   model, or a hosted frontier model) before making any claim about C3. As measured, C3 is
   unproven, not validated.
-- 📋 Design a task set where the failure mode is prose-wrapped or fenced JSON, so
-  `AggressiveCoercion` is actually exercised.
+- ✅ **Done in Phase 3.** Design a task set where the failure mode is prose-wrapped or fenced
+  JSON, so the free extraction is actually exercised: arm 2's llama2 replies were malformed on
+  every trial and extraction rescued 30/30. (This follow-up was written against the
+  `AggressiveCoercion` knob, ❌ removed 2026-08-24; the extraction path it gated is what got
+  measured.)
 - 📋 Add a seeded/deterministic sampling option to the harness so arms see identical
   draws, or raise N enough that the factual column means something.
 - 📋 Decide whether `RegisterOllamaCatalogSource` should be wired into `loom-server`
@@ -851,8 +877,11 @@ retries burned, and no warning recorded for the rescued attempt.
 | Active, primary rung | `ValidateAndRetry`, then `evaluate` re-validated the schema *and* ran a second coercion pass | New `primaryVerdict` helper reads the outcome; no re-validation, no second coercion |
 | Active, escalation rungs | `evaluate` | Unchanged — rungs are one-shot `Chat` calls that never touch the validator, so `evaluate` still owns their schema check and coercion |
 
-The coerce hook is handed to the validator only when `TierPolicy.AggressiveCoercion` is on *and*
-a schema is present; it wraps the existing `extractJSONFromText`. The judge branch, previously
+The coerce hook wraps the existing `extractJSONFromText`. As shipped in Phase 2c it was handed to
+the validator only when `TierPolicy.AggressiveCoercion` was on *and* a schema was present;
+⚠️ **since 2026-08-24 the tier condition is gone** — the hook is handed over whenever a schema is
+present, on every leveling path, and the `aggressive_coercion` knob was removed rather than left
+as a flag with one reachable setting. The judge branch, previously
 duplicated between the primary and escalation paths, was extracted into a shared `judgeVerdict`
 helper so the budget ceiling and fail-open rules live in one place.
 
@@ -918,8 +947,12 @@ in place.
 
 Note this fixes an *ordering* bug that Phase 2b never observed live: `llama2` emitted
 almost-correct JSON with a type error, not fenced or prose-wrapped JSON, so 0 coercions fired
-across 40 trials. `AggressiveCoercion` is still exercised only by unit tests, and the Phase 2b
-follow-up to design a task set that actually produces fenced JSON remains open.
+across 40 trials. As of Phase 2c the coercion path was exercised only by unit tests, and the
+Phase 2b follow-up to design a task set that actually produces fenced JSON was still open.
+(✅ Closed in Phase 3: arm 2's replies were malformed on every trial and the free extraction
+rescued 30/30. The `AggressiveCoercion` knob named in the original wording was ❌ removed on
+2026-08-24 — extraction is unconditional wherever a schema is present — so there is no per-tier
+setting left to exercise, only the path.)
 
 ## Verification record (2026-08-15, Phase 2c)
 
@@ -1044,8 +1077,13 @@ judge cannot be free.
    oracle. That is precisely the free-signal regime the executor already prioritizes. For
    semantic wrongness with no programmatic check, local-LLM judges are the binding constraint
    (35% agreement), and no ladder can outrun its signal.
-3. **The format-gap result from Phase 2b stands** — coercion rescued 30/30 malformed replies
-   here too, for free.
+3. **The format gap closed here too, but by a different mechanism than in Phase 2b — and
+   only this run measured coercion.** In arm 2, free JSON extraction rescued 30/30 malformed
+   replies at zero model cost. Phase 2b also closed format (5/10 → 10/10 schema pass) but
+   recorded **0 coercions across 40 trials**; that repair came from same-model retry with
+   schema feedback. So this program has one coercion measurement, not two. Either way the
+   extraction is no longer tier-gated: it runs on every leveling path where a schema is
+   present, for every tier.
 4. 📋 Follow-ups: r1's 3 unparseable escalation replies (empty content under the retry prompt)
    deserve a look at `num_predict`/prompt shape; judge quality vs. judge size is unmeasured
    above 8B; C2/C4 remain unbuilt and this evidence lowers C4's priority (self-consistency
@@ -1178,7 +1216,7 @@ silently truncates if set wrong). Seed 0, temperature 0.1.
 
 | Gap | Verdict across Phases 2b-4 | Mechanism |
 |---|---|---|
-| Format | ✅ closed, free | coercion + schema retry (30/30 twice) |
+| Format | ✅ closed, free | Phase 3 arm 2: free coercion, 30/30. Phase 2b: same-model retry with schema feedback, 5/10 → 10/10, 0 coercions |
 | Reasoning | ❌ cannot be closed locally — only routed around | escalate to a reasoning model behind a trustworthy signal; retry/self-critique/scaffolds all failed |
 | Knowledge | ✅ closed fully, weak beats strong | retrieval injection; BM25 already in Loom |
 
@@ -1241,18 +1279,31 @@ stages:
         - role: orchestrator               # or LLM_ROLE_ORCHESTRATOR / llm-role-orchestrator
       tier_policies:                       # optional; keys: unknown, local, small-open,
         local:                             #   mid, frontier
-          retry_budget: 2
-          aggressive_coercion: true
+          retry_budget: 2                  # the only per-tier key that still exists
 ```
 
-⚠️ As shipped in Phase 2d this block also accepted `scaffolding_depth: 0` ("carried, consumed by
-nothing (C2)"). The key was **removed on 2026-08-16** and is now a load-time error naming its
-replacement-by-nothing, so an old config fails loudly rather than being silently ignored:
+⚠️ As shipped in Phase 2d this block accepted two more per-tier keys. **Both were removed
+pre-merge, and each is now a load-time error** — regardless of `enabled` — so an old config fails
+loudly instead of being silently ignored:
+
+- `scaffolding_depth: 0` ("carried, consumed by nothing (C2)"), removed **2026-08-16**:
 
 ```
 spec.stages[0].leveling.tier_policies[local].scaffolding_depth was removed: C2
 capability-adaptive scaffolding was rejected on measurement (it made a weak model worse), so the
 knob is gone rather than dead — remove the key (see docs/plan-capability-leveling.md)
+```
+
+- `aggressive_coercion: true`, removed **2026-08-24**. Free JSON extraction / fence-stripping now
+  runs unconditionally wherever a schema is present — short-circuit, active and escalation-rung
+  paths alike — so the flag had no reachable "off" and was removed rather than kept as a no-op.
+  Deleting the key is the whole migration: the behavior it used to request is now the default
+  everywhere.
+
+```
+spec.stages[0].leveling.tier_policies[local].aggressive_coercion was removed: free JSON extraction
+now runs on every schema-bearing leveling path, so the knob gated nothing — remove the key (see
+docs/plan-capability-leveling.md)
 ```
 
 Role names accept the generated enum name, the short form, either case, and `-` for `_`.
@@ -1293,8 +1344,8 @@ Load time means `LoadWorkflowFromYAML` / `LoadWorkflowFromYAMLBytes`; all load e
 | Check | Fires at | Authority |
 |---|---|---|
 | Block/rung/tier-map shape, scalar types, fractional integers, unknown role name, unknown `session_mode`, both leveling keys set, missing `enabled` | **load** | the loader (nothing else can see YAML types) |
-| Negative `max_escalations`/`max_cost_usd`/`retry_budget`/`scaffolding_depth`, unknown tier key | **load**, and again at convert | `LevelingPolicyFromProto`, called by the loader as a validation gate and discarded — no duplicated rules or messages |
-| The removed `scaffolding_depth` key (added to this table 2026-08-16) | **load**, regardless of `enabled` | the loader. It sits with the type errors, not the semantic ones: the key is absent from the schema at every enabled state, so — as with a wrong YAML type — there is nothing to store either way |
+| Negative `max_escalations`/`max_cost_usd`/`retry_budget`, unknown tier key | **load**, and again at convert | `LevelingPolicyFromProto`, called by the loader as a validation gate and discarded — no duplicated rules or messages. (The negative-`scaffolding_depth` check went away with the field on 2026-08-16) |
+| The removed per-tier keys: `scaffolding_depth` (added to this table 2026-08-16) and `aggressive_coercion` (added 2026-08-24) | **load**, regardless of `enabled` | the loader, identical handling for both. They sit with the type errors, not the semantic ones: each key is absent from the schema at every enabled state, so — as with a wrong YAML type — there is nothing to store either way |
 | Rung names neither role nor provider | **load**, and again at resolve | new `validateLevelingLadderShape`; `resolveLevelingLadder` re-checks because it also serves callers that never touched a config loader, with identical wording |
 | Rung's provider is absent from the agent's pool / role has no LLM | **execution only** | `resolveLevelingLadder` — needs the executing agent, so it is unknowable at load time |
 
@@ -1435,11 +1486,14 @@ the reproducibility the seed plumbing (40a9335) was built for.
 
 ## Economics on this mix
 
-Arm 3 (77%) cost 30.4s of model time; arm 4 (100%) cost 475s — the weak ladder is ~15× cheaper
-in wall-clock but gives up 23pp of accuracy, all of it in the silent-wrong blind spot. The
-rational production configs are therefore: execution-signal ladder when result verification
-exists downstream or errors are tolerable; strong model (or a result-verifying judge per the
-Phase 3b r1-critic finding) when silent wrongness is unacceptable.
+Arm 3 (77%) cost 29.7s of model time (arm 2: 30.4s; arm 1: 25.3s); arm 4 (100%) cost 475.2s —
+all four figures are the sum of the per-trial `seconds` field in
+`docs/experiments/sql_arms.jsonl`, so they are reproducible from the committed data. The weak
+ladder is ~16× cheaper in wall-clock but gives up 23pp of accuracy, all of it in the
+silent-wrong blind spot. The rational production configs are therefore: execution-signal ladder
+when result verification exists downstream or errors are tolerable; strong model (or a
+result-verifying judge per the Phase 3b r1-critic finding) when silent wrongness is
+unacceptable.
 
 ## Confounds, stated
 
@@ -1461,10 +1515,47 @@ Leveling activates only on `leveling_policy.enabled = true`. An absent policy an
 `enabled: false` are the same closed gate in both executors, and absence is not merely
 documented: a stage carrying a hostile disabled policy **and** a violated schema is asserted to
 make one agent call, with no validation and no warnings
-(`TestWorkflowYAMLLevelingDisabledBlockLoadsAndStaysInert`). Enabled-but-unneeded costs one
-memoized catalog lookup — **~16 ns**, after Phase 2c removed the redundant second schema
-validation that had been ~570× larger and was the real cost of enabling it. Nothing about
-existing behavior changes when nothing is configured.
+(`TestWorkflowYAMLLevelingDisabledBlockLoadsAndStaysInert`). Enabled-but-unneeded costs the
+leveling bookkeeping around one memoized catalog lookup: the lookup alone benchmarks at
+~16 ns/op, and the measured enabled-vs-disabled delta is **~1.3–4 µs** (span, report, policy
+plumbing, lookup) after Phase 2c removed the redundant second schema validation — ~9.2 µs and
+203 allocs on its own, and the real cost of enabling leveling before that. Against a
+~900,000 µs model call that delta is under 0.001%. Nothing about existing behavior changes when
+nothing is configured.
+
+## Behavior changes for existing configs
+
+Leveling is off unless asked for, but three changes here are visible to configs that never
+enable it. These are the release-notes items.
+
+1. ⚠️ **Catalog lookups now tolerate `:tag` model IDs, everywhere.** `catalog.Lookup` retries
+   once with `BaseModelID(modelID)` when the exact ID misses in the registered source. Lookups
+   that already succeeded are **unchanged** — the fallback runs only after a nil return, so it
+   cannot override or reorder a hit. What changes is the failure case: a lookup that previously
+   returned nil for a tagged ID (`ollama` / `llama3.1:latest`) can now return the entry for the
+   bare name, so every caller that branched on "unknown model" takes a different branch for
+   tagged IDs. Concretely, context-limit resolution and output reservations
+   (`agent.ResolveContextLimits`, `agent.EffectiveOutputReservation`) and the factory's
+   per-request output cap (`ProviderFactory.resolveMaxOutput`) now use the catalog's
+   `ContextWindow` / `MaxOutputTokens` for tagged IDs instead of the legacy prefix table,
+   provider defaults, or the conservative fallback — so a tagged model's reservation can move
+   in either direction. Untagged IDs are unaffected, and no explicit config value is overridden.
+2. ⚠️ **The workflow-YAML loader logs warnings where it used to be silently lenient.** Three
+   previously-tolerated output-retry shapes stay tolerated, with their old behavior, and each
+   now emits a zap warning naming the YAML path: `max_retries: 2.5` (float, truncated as
+   before), `max_retries: "3"` (string, ignored as before), and `session_mode` present without
+   a positive `max_retries` (dropped as before). Everything else malformed in a leveling or
+   retry block is a **load error** wrapping `ErrInvalidWorkflow` — removed keys
+   (`scaffolding_depth`, `aggressive_coercion`), unknown tier names, unknown role or
+   `session_mode` values, negative numerics, and a leveling block with no `enabled`. A file that
+   loaded before and was quietly half-applied now either warns or fails at load; no malformed
+   key is dropped without a trace.
+3. ⚠️ **A stray `seed:` in agent YAML is now live on the agent-registry path.** `llm.seed` used
+   to be parsed and ignored; it is now passed through to the Ollama client by
+   `pkg/agent/registry.go`, so an existing key that had no effect starts pinning sampling.
+   Ollama only, registry path only — the `looms serve` path builds clients from
+   `factory.FactoryConfig`, which carries no seed, so the same YAML has no effect there
+   (📋 follow-up).
 
 ## Built out of Loom's primitives, and it subtracts as well as adds
 
@@ -1473,16 +1564,18 @@ existing behavior changes when nothing is configured.
 `Recall()` path owns retrieval. No router, no store, and no pricing table was added — rung spend
 comes from each provider's own catalog-priced `Usage.CostUSD`.
 
-The PR also removes things. `scaffolding_depth` was cut before merge rather than shipped as a
-knob nothing reads, and two planned components are marked ❌ rejected above because measurement
-disproved them (C2 scaffolding, C4 self-consistency). One `reserved` line now; a permanent dead
-field otherwise.
+The PR also removes things. Two of the three planned per-tier knobs were cut before merge:
+`scaffolding_depth`, rather than ship a knob nothing reads, and `aggressive_coercion`, once free
+extraction ran unconditionally and the flag had no reachable "off". Two planned components are
+marked ❌ rejected above because measurement disproved them (C2 scaffolding, C4
+self-consistency). Two `reserved` lines now; two permanent dead fields otherwise. `retry_budget`
+is the one per-tier knob that ships.
 
 ## Every capability claim has a measured counter-claim
 
 | Claim | The bound measured with it |
 |---|---|
-| Format closes, and closes free | Coercion rescued 30/30 malformed replies, twice — but the schema signal is structurally blind to wrong answers: Phase 3 arm 2 escalated **zero** times on 18 wrong answers that all passed the schema |
+| Format closes, and closes free | Measured as coercion once: Phase 3 arm 2's free JSON extraction rescued 30/30 malformed replies (it applies on every leveling path with a schema, for every tier). Phase 2b's format gain — 5/10 → 10/10 schema pass — came from same-model retry with schema feedback instead, at **0 coercions in 40 trials**. And the schema signal is structurally blind to wrong answers: Phase 3 arm 2 escalated **zero** times on 18 wrong answers that all passed the schema |
 | Knowledge closes, and the weak model beats the strong one | BM25 retrieval took llama2 from 0/30 to **30/30** where deepseek-r1 alone scored 0/30 — on single-hop attribute lookup over a 200-record fictional corpus |
 | Reasoning does **not** close | Same-model retry, self-critique (0/18) and scaffolding (−13pp, −37pp) all failed. Escalation behind a trustworthy signal routes *around* the ceiling; it does not raise it. That is routing, not magic |
 | Execution signals pay on Loom's own workload | One free retry carrying the sqlite error text: +20pp (57% → 77%) for 8 extra ~1s calls — and **83.3% is the structural ceiling** of an execution-only signal, because 7 silently-wrong queries execute cleanly and never escalate (2 of them created *by* the retry) |

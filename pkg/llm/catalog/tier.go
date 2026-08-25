@@ -15,6 +15,8 @@
 package catalog
 
 import (
+	"math"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
@@ -108,15 +110,24 @@ func ParseModelTier(s string) (ModelTier, bool) {
 }
 
 // TierThresholds carries the pricing cutoffs used to derive a tier, expressed
-// in USD per 1M output tokens. A zero or negative field means "use the
-// built-in constant" (FrontierMinOutputCostUSD, MidMinOutputCostUSD), so the
-// zero value behaves exactly like DefaultTierThresholds.
+// in USD per 1M output tokens. A field that cannot serve as a price cutoff —
+// zero, negative, NaN or +Inf — means "use the built-in constant"
+// (FrontierMinOutputCostUSD, MidMinOutputCostUSD), so the zero value behaves
+// exactly like DefaultTierThresholds.
 //
 // A consequence of that rule: a threshold of 0 cannot be expressed. A caller
 // who wants every priced model to clear a cutoff passes a small positive
 // number (e.g. 0.0001) rather than 0. This is deliberate — it keeps the zero
 // value usable as "defaults" so callers embedding TierThresholds in a config
 // struct do not have to populate both fields to get the built-in behavior.
+//
+// Substituting a default is the right answer for a Go caller that left a field
+// alone, and the wrong answer for a config file that says something
+// unusable — a negative or non-finite cutoff written down on purpose is a
+// mistake, not a request for the defaults. Config surfaces therefore reject
+// such values before they get here (see
+// orchestration.LevelingPolicyFromProto); this fallback is what a
+// direct-in-Go caller gets.
 type TierThresholds struct {
 	// FrontierMinOutputCostUSD is the output price at or above which a
 	// reasoning model is treated as frontier.
@@ -135,16 +146,28 @@ func DefaultTierThresholds() TierThresholds {
 	}
 }
 
-// withDefaults substitutes the built-in constant for each non-positive field.
-// It returns a value, so it allocates nothing.
+// withDefaults substitutes the built-in constant for each field that cannot
+// serve as a price cutoff. It returns a value, so it allocates nothing.
 func (th TierThresholds) withDefaults() TierThresholds {
-	if th.FrontierMinOutputCostUSD <= 0 {
+	if !usablePriceCutoff(th.FrontierMinOutputCostUSD) {
 		th.FrontierMinOutputCostUSD = FrontierMinOutputCostUSD
 	}
-	if th.MidMinOutputCostUSD <= 0 {
+	if !usablePriceCutoff(th.MidMinOutputCostUSD) {
 		th.MidMinOutputCostUSD = MidMinOutputCostUSD
 	}
 	return th
+}
+
+// usablePriceCutoff reports whether v can be compared against a model's output
+// price to place it on one side of a boundary.
+//
+// Non-finite values are excluded alongside the non-positive ones because they
+// answer no comparison usefully: every comparison against NaN is false, so a
+// NaN cutoff would silently classify every priced model as small-open, and a
+// +Inf cutoff no model can ever clear is a boundary that does not divide
+// anything. -Inf is already excluded by the positivity test.
+func usablePriceCutoff(v float64) bool {
+	return v > 0 && !math.IsInf(v, 1)
 }
 
 // TierOf returns the capability tier for (provider, modelID) using the

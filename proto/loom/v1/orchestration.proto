@@ -465,9 +465,13 @@ message LevelingTierPolicy {
   // no retry_policy of its own.
   int32 retry_budget = 1;
 
-  // Attempt free JSON extraction from mixed text before declaring a schema
-  // failure (no LLM call).
-  bool aggressive_coercion = 2;
+  // Field 2 was aggressive_coercion, removed before this message ever
+  // shipped: free JSON extraction from mixed text is now applied on every
+  // schema-bearing path regardless of tier, so the knob gated nothing. A tier
+  // that switched it off would have rejected payloads the pre-leveling
+  // pipeline accepted. See docs/plan-capability-leveling.md.
+  reserved 2;
+  reserved "aggressive_coercion";
 
   // Field 3 was scaffolding_depth, removed before this message ever shipped:
   // C2 (capability-adaptive scaffolding) was rejected on measurement, so the

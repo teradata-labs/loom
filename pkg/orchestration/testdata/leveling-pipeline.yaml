@@ -32,4 +32,3 @@ spec:
             # 0 same-model retries: escalate on the first schema failure, which
             # keeps the call counts in the test unambiguous.
             retry_budget: 0
-            aggressive_coercion: true

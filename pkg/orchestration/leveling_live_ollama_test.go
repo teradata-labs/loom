@@ -253,6 +253,7 @@ type trial struct {
 	escalations     int
 	coercionApplied bool
 	shortCircuited  bool
+	warnings        int
 	latency         time.Duration
 	costUSD         float64
 	output          string
@@ -359,6 +360,7 @@ func runArm(t *testing.T, name string, exec *LevelingExecutor, ladder []Leveling
 			tr.escalations = report.Escalations
 			tr.coercionApplied = report.CoercionApplied
 			tr.shortCircuited = report.ShortCircuited
+			tr.warnings = len(report.Warnings)
 			tr.costUSD = report.TotalCostUSD
 		} else if result != nil {
 			tr.costUSD = result.GetCost().GetCostUsd()
@@ -449,10 +451,14 @@ func TestLiveOllamaLeveling(t *testing.T) {
 	reportArms(t, arms)
 
 	// The one hard requirement: enabled-but-not-needed must not add a model
-	// call. Any trial in arm 4 whose first attempt satisfied the schema must
-	// have cost exactly one call.
+	// call. The predicate has to identify trials that passed on the FIRST
+	// attempt, so every way of passing later is excluded: no escalation, no
+	// coercion, and no warnings — one warning per failed attempt is exactly how
+	// a same-model retry that then succeeded shows up, and such a trial is
+	// legitimately more than one call.
 	for _, tr := range arms[3].trials {
-		if tr.err == nil && tr.schemaPass && tr.escalations == 0 && !tr.coercionApplied && tr.calls != 1 {
+		if tr.err == nil && tr.schemaPass && tr.escalations == 0 && !tr.coercionApplied &&
+			tr.warnings == 0 && tr.calls != 1 {
 			t.Errorf("arm 4 %q passed the schema on the first attempt but made %d model calls; "+
 				"leveling must add no call on the happy path", tr.task, tr.calls)
 		}
