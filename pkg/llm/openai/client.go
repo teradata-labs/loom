@@ -179,32 +179,54 @@ func isRetryableTransportError(err error) bool {
 }
 
 func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, error) {
-	for attempt := 1; attempt <= 2; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	newReq := func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		for key, value := range c.extraHeaders {
-			httpReq.Header.Set(key, value)
+			req.Header.Set(key, value)
 		}
+		return req, nil
+	}
 
-		var response *http.Response
-		var doErr error
-		if c.rateLimiter != nil {
-			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-				return c.httpClient.Do(httpReq)
-			})
-			doErr = err
-			if err == nil {
-				response = result.(*http.Response)
+	if c.rateLimiter != nil {
+		// Build a fresh request inside the closure so each retry attempt gets
+		// an unconsumed body reader. Detect 429 here and return it as an error
+		// so the rate limiter's isThrottlingError check triggers its retry loop.
+		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+			req, err := newReq(ctx)
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			response, doErr = c.httpClient.Do(httpReq)
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			}
+			return resp, nil
+		})
+		if err != nil {
+			return nil, err
 		}
+		return result.(*http.Response), nil
+	}
+
+	// Without rate limiter: single retry on transient transport errors only.
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, err := newReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resp, doErr := c.httpClient.Do(req)
 		if doErr == nil {
-			return response, nil
+			return resp, nil
 		}
 		if attempt == 2 || !isRetryableTransportError(doErr) {
 			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
