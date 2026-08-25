@@ -182,7 +182,7 @@ llm:
   # Optional: client-side rate limiting
   rate_limit:
     requests_per_second: 2.0
-    tokens_per_minute: 30000
+    tokens_per_minute: 30000   # observational only: reported in metrics, NOT enforced
     min_delay_ms: 400
 ```
 

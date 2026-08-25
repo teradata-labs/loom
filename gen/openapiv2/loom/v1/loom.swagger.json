@@ -5776,7 +5776,7 @@
         "tokensPerMinute": {
           "type": "string",
           "format": "int64",
-          "title": "Maximum input+output tokens per minute for token-based throttling.\n0 = use default (40000 TPM).\nSet this to match your API tier:\n  Anthropic free: 30000, Tier 1: 100000\n  Bedrock: varies by model (40000-400000)"
+          "description": "Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token\nconsumption is tracked and reported in rate-limiter metrics, but this\nvalue is never enforced — only requests_per_second, burst_capacity, and\nmin_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline)."
         },
         "burstCapacity": {
           "type": "integer",

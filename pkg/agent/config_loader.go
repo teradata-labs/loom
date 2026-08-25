@@ -191,6 +191,10 @@ type LLMConfigYAML struct {
 // LLMRateLimitYAML mirrors proto LLMRateLimitConfig for agent YAML files.
 // Before this existed, a spec.llm.rate_limit block was silently dropped by
 // the loader — the proto field was never populated from YAML (issue #348).
+//
+// Note: tokens_per_minute is OBSERVATIONAL ONLY today — tracked and reported
+// in rate-limiter metrics, never enforced. Only requests_per_second,
+// burst_capacity, and min_delay_ms gate requests.
 type LLMRateLimitYAML struct {
 	Disabled            bool    `yaml:"disabled"`
 	RequestsPerSecond   float64 `yaml:"requests_per_second"`

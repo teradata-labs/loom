@@ -704,12 +704,10 @@ type LLMRateLimitConfig struct {
 	// exceed the quota, and a warning is logged when that happens.
 	// 0 = use default (2.0 RPS).
 	RequestsPerSecond float64 `protobuf:"fixed64,2,opt,name=requests_per_second,json=requestsPerSecond,proto3" json:"requests_per_second,omitempty"`
-	// Maximum input+output tokens per minute for token-based throttling.
-	// 0 = use default (40000 TPM).
-	// Set this to match your API tier:
-	//
-	//	Anthropic free: 30000, Tier 1: 100000
-	//	Bedrock: varies by model (40000-400000)
+	// Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token
+	// consumption is tracked and reported in rate-limiter metrics, but this
+	// value is never enforced — only requests_per_second, burst_capacity, and
+	// min_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline).
 	TokensPerMinute int64 `protobuf:"varint,3,opt,name=tokens_per_minute,json=tokensPerMinute,proto3" json:"tokens_per_minute,omitempty"`
 	// Burst capacity: maximum concurrent requests allowed before queuing.
 	// 0 = use default (5).

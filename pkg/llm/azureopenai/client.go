@@ -226,8 +226,10 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 	// sendOnce builds and sends a fresh request. It must construct a new
 	// http.Request per attempt (a consumed body cannot be re-sent), and it
 	// surfaces HTTP 429 as an ERROR: httpClient.Do returns nil error for any
-	// HTTP status, so without this the rate limiter's executeWithRetry never
-	// saw throttling and 429s went straight to the caller un-retried.
+	// HTTP status, so without this the rate limiter's retry never saw
+	// throttling and 429s went straight to the caller un-retried. The error
+	// carries the server-specified wait (Retry-After / retry-after-ms /
+	// x-ratelimit reset headers) so the limiter waits at least that long.
 	sendOnce := func(ctx context.Context) (interface{}, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 		if err != nil {
@@ -247,7 +249,9 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			return nil, llm.NewThrottleError(
+				fmt.Errorf("API error (status 429): %s", string(respBody)),
+				llm.RetryAfterFromHeaders(resp.Header))
 		}
 		return resp, nil
 	}
@@ -690,7 +694,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// sendOnce builds and sends a fresh request per attempt (a consumed body
 	// cannot be re-sent) and surfaces HTTP 429 as an ERROR so the rate
 	// limiter's retry actually sees throttling — httpClient.Do returns nil
-	// error for any HTTP status.
+	// error for any HTTP status. The error carries the server-specified wait
+	// (Retry-After and friends) so the limiter waits at least that long.
 	sendOnce := func(ctx context.Context) (interface{}, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 		if err != nil {
@@ -709,7 +714,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		if resp.StatusCode == http.StatusTooManyRequests {
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			return nil, llm.NewThrottleError(
+				fmt.Errorf("API error (status 429): %s", string(respBody)),
+				llm.RetryAfterFromHeaders(resp.Header))
 		}
 		return resp, nil
 	}

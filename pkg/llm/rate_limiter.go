@@ -15,7 +15,9 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,8 +34,11 @@ type RateLimiterConfig struct {
 	// Default: 5 (conservative for AWS Bedrock)
 	RequestsPerSecond float64
 
-	// TokensPerMinute is the maximum tokens allowed per minute (for token-based rate limiting).
-	// Default: 100000 (AWS Bedrock typical limit)
+	// TokensPerMinute is OBSERVATIONAL ONLY today: consumption is tracked
+	// (RecordTokenUsage / GetTokenUsageLastMinute) and exported in metrics, but
+	// the limiter never enforces it — only the request bucket
+	// (RequestsPerSecond/BurstCapacity/MinDelay) gates admission.
+	// Default: 40000 (metrics baseline).
 	TokensPerMinute int64
 
 	// BurstCapacity is the maximum burst of requests allowed.
@@ -114,6 +119,11 @@ type rateLimitedRequest struct {
 	ctx      context.Context
 	call     func(context.Context) (interface{}, error)
 	resultCh chan *rateLimitedResult
+	// attempt is the 0-based attempt number. A value > 0 means this request
+	// re-entered the queue as a throttling retry: it is paced through
+	// admission exactly like fresh work (no queue jumping), so the configured
+	// request rate holds even when the upstream is throttling.
+	attempt int
 }
 
 type rateLimitedResult struct {
@@ -301,6 +311,14 @@ func (rl *RateLimiter) processQueue() {
 // Returns false — after delivering the error result — if the request's
 // context expires or the limiter stops while waiting.
 func (rl *RateLimiter) waitForAdmission(req *rateLimitedRequest) bool {
+	// An already-abandoned request must not consume a bucket token or stall
+	// the dispatcher for MinDelay — that would slow every request queued
+	// behind it for work nobody is waiting on.
+	if err := req.ctx.Err(); err != nil {
+		req.resultCh <- &rateLimitedResult{err: err}
+		return false
+	}
+
 	for !rl.acquireToken() {
 		select {
 		case <-time.After(50 * time.Millisecond):
@@ -328,58 +346,103 @@ func (rl *RateLimiter) waitForAdmission(req *rateLimitedRequest) bool {
 	return true
 }
 
-// execute runs the call (with throttling retries) and delivers the result.
+// execute runs ONE admitted attempt and delivers the result. A throttled
+// attempt with retries remaining sleeps its backoff and then re-enters the
+// admission path via the queue — it never re-sends directly. Every outbound
+// attempt therefore consumed an admission token, so the configured request
+// rate holds exactly even when the upstream is throttling; without this,
+// aggregate outbound rate was admitted RPS plus all concurrent retry waves.
 func (rl *RateLimiter) execute(req *rateLimitedRequest) {
-	result, err := rl.executeWithRetry(req.ctx, req.call)
+	result, err := req.call(req.ctx)
+	rl.recordMetric("request", 0)
+
+	// Success or non-retryable error: deliver as-is.
+	if err == nil || !isThrottlingError(err) {
+		rl.deliver(req, &rateLimitedResult{result: result, err: err})
+		return
+	}
+
+	rl.recordMetric("throttled", 0)
+
+	if req.attempt >= rl.config.MaxRetries {
+		// All attempts exhausted.
+		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf(
+			"LLM request failed after %d retries due to throttling: %w",
+			rl.config.MaxRetries+1, err)})
+		return
+	}
+
+	delay := rl.retryDelay(req.attempt, err)
+	rl.config.Logger.Warn("LLM request throttled, retrying",
+		zap.Int("attempt", req.attempt+1),
+		zap.Int("max_retries", rl.config.MaxRetries),
+		zap.Duration("backoff", delay),
+		zap.Error(err),
+	)
 
 	select {
-	case req.resultCh <- &rateLimitedResult{result: result, err: err}:
+	case <-time.After(delay):
+	case <-req.ctx.Done():
+		rl.deliver(req, &rateLimitedResult{err: req.ctx.Err()})
+		return
+	case <-rl.stopCh:
+		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf("rate limiter stopped during retry")})
+		return
+	}
+
+	// Re-enter the admission path: the retry queues behind fresh work and is
+	// paced exactly like a new request. The queue send cannot deadlock: the
+	// dispatcher keeps draining, and ctx/stop provide an escape while full.
+	req.attempt++
+	select {
+	case rl.queue <- req:
+	case <-req.ctx.Done():
+		rl.deliver(req, &rateLimitedResult{err: req.ctx.Err()})
+	case <-rl.stopCh:
+		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf("rate limiter stopped during retry")})
+	}
+}
+
+// deliver hands the final result to the caller waiting in Do. Each request is
+// delivered exactly once onto its buffered (capacity 1) channel; the ctx/stop
+// cases cover a caller that has already left.
+func (rl *RateLimiter) deliver(req *rateLimitedRequest, res *rateLimitedResult) {
+	select {
+	case req.resultCh <- res:
 	case <-req.ctx.Done():
 	case <-rl.stopCh:
 	}
 }
 
-// executeWithRetry executes a call with exponential backoff retry on throttling.
-func (rl *RateLimiter) executeWithRetry(ctx context.Context, call func(context.Context) (interface{}, error)) (interface{}, error) {
-	backoff := rl.config.RetryBackoff
+// maxRetryDelay caps the exponential backoff so pathological attempt counts
+// cannot produce multi-hour waits.
+const maxRetryDelay = 5 * time.Minute
 
-	for attempt := 0; attempt <= rl.config.MaxRetries; attempt++ {
-		// Execute call
-		result, err := call(ctx)
-		rl.recordMetric("request", 0)
-
-		// Check for throttling error
-		if err != nil && isThrottlingError(err) {
-			rl.recordMetric("throttled", 0)
-			rl.config.Logger.Warn("LLM request throttled, retrying",
-				zap.Int("attempt", attempt+1),
-				zap.Int("max_retries", rl.config.MaxRetries),
-				zap.Duration("backoff", backoff),
-				zap.Error(err),
-			)
-
-			// Exponential backoff before retry (except on last attempt)
-			if attempt < rl.config.MaxRetries {
-				select {
-				case <-time.After(backoff):
-					backoff *= 2 // Double the backoff
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-rl.stopCh:
-					return nil, fmt.Errorf("rate limiter stopped during retry")
-				}
-				continue
-			}
-			// Last attempt failed with throttling - continue to return formatted error
-			continue
-		}
-
-		// Success or non-retryable error
-		return result, err
+// retryDelay computes the wait before retry attempt attempt+1: exponential
+// backoff (RetryBackoff doubled per attempt) with uniform ±50% jitter so
+// concurrent throttled requests do not retry in synchronized waves, floored
+// by any server-specified Retry-After carried on the error — retrying sooner
+// than the server's throttle window just burns attempts inside it.
+func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
+	shift := attempt
+	if shift > 30 {
+		shift = 30 // cap the shift; maxRetryDelay clamps below anyway
+	}
+	backoff := rl.config.RetryBackoff << uint(shift)
+	if backoff <= 0 || backoff > maxRetryDelay {
+		backoff = maxRetryDelay
 	}
 
-	// All retries exhausted
-	return nil, fmt.Errorf("LLM request failed after %d retries due to throttling", rl.config.MaxRetries+1)
+	// Uniform jitter in [0.5*backoff, 1.5*backoff].
+	delay := backoff/2 + time.Duration(rand.Int64N(int64(backoff)+1))
+
+	// Honor the server-specified wait when it is longer than the jittered
+	// backoff (delta-seconds, HTTP-date, and x-ratelimit reset forms all
+	// arrive here via ThrottleError.RetryAfter).
+	if ra := RetryAfter(err); ra > delay {
+		delay = ra
+	}
+	return delay
 }
 
 // acquireToken attempts to acquire a token from the bucket.
@@ -406,6 +469,12 @@ func (rl *RateLimiter) acquireToken() bool {
 func isThrottlingError(err error) bool {
 	if err == nil {
 		return false
+	}
+	// Typed throttle errors (carrying Retry-After) are always throttling,
+	// regardless of message wording.
+	var te *ThrottleError
+	if errors.As(err, &te) {
+		return true
 	}
 	errStr := err.Error()
 	return contains(errStr, "429") ||

@@ -987,7 +987,7 @@ client := mistral.NewClient(mistral.Config{
     RateLimiterConfig: llm.RateLimiterConfig{
         Enabled:           true,
         RequestsPerSecond: 2.0,
-        TokensPerMinute:   450000,  // 450K TPM (below 500K limit)
+        TokensPerMinute:   450000,  // observational only: reported in metrics, NOT enforced
         BurstCapacity:     5,
         MinDelay:          200 * time.Millisecond,
         MaxRetries:        5,
@@ -998,9 +998,13 @@ client := mistral.NewClient(mistral.Config{
 ```
 
 **Behavior**:
-- Requests are automatically queued when approaching limit
-- Prevents 429 errors before they occur
-- Smooths request rate across time
+- Requests are queued and admitted at the configured request rate
+  (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
+- 429 responses are retried inside the limiter with jittered exponential
+  backoff, honoring the server's `Retry-After`
+- `TokensPerMinute` is **observational only today**: token consumption is
+  tracked and reported in rate-limiter metrics, but it is never enforced —
+  size `RequestsPerSecond` against your TPM quota instead
 
 
 ## Testing

@@ -1002,7 +1002,7 @@ Success: received response after 2 retries
 ```
 
 
-#### Option 2: Token Rate Limiting (Client-Side)
+#### Option 2: Client-Side Rate Limiting
 
 ```go
 import "github.com/teradata-labs/loom/pkg/llm"
@@ -1013,16 +1013,21 @@ client, err := azureopenai.NewClient(azureopenai.Config{
     DeploymentID: deploymentID,
     APIKey:       apiKey,
     RateLimiterConfig: llm.RateLimiterConfig{
-        Enabled:         true,
-        TokensPerMinute: 100000,  // 100K TPM (below your 120K quota)
+        Enabled:           true,
+        RequestsPerSecond: 2.0,     // enforced: paces request admission
+        TokensPerMinute:   100000,  // observational only: reported in metrics, NOT enforced
     },
 })
 ```
 
 **Behavior**:
-- Requests are automatically queued when rate limit approached
-- Prevents 429 errors before they occur
-- Smooths request rate across time
+- Requests are queued and admitted at the configured request rate
+  (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
+- 429 responses are retried inside the limiter with jittered exponential
+  backoff, honoring the server's `Retry-After`
+- `TokensPerMinute` is **observational only today**: token consumption is
+  tracked and reported in rate-limiter metrics, but it is never enforced —
+  size `RequestsPerSecond` against your TPM quota instead
 
 
 #### Option 3: Load Balancing Across Deployments

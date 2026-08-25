@@ -593,11 +593,15 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if err != nil {
 				return nil, err
 			}
-			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			// Convert 429 to a retryable error so the rate limiter backs off and
+			// retries, carrying the server-specified Retry-After so the limiter
+			// waits at least that long.
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
-				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+				return nil, llm.NewThrottleError(
+					fmt.Errorf("API error (status 429): %s", string(respBody)),
+					llm.RetryAfterFromHeaders(resp.Header))
 			}
 			return resp, nil
 		})
@@ -821,11 +825,15 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 			if err != nil {
 				return nil, err
 			}
-			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			// Convert 429 to a retryable error so the rate limiter backs off and
+			// retries, carrying the server-specified Retry-After so the limiter
+			// waits at least that long.
 			if resp.StatusCode == http.StatusTooManyRequests {
 				respBody, _ := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
-				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+				return nil, llm.NewThrottleError(
+					fmt.Errorf("API error (status 429): %s", string(respBody)),
+					llm.RetryAfterFromHeaders(resp.Header))
 			}
 			return resp, nil
 		})

@@ -165,11 +165,10 @@ message LLMRateLimitConfig {
   // 0 = use default (2.0 RPS).
   double requests_per_second = 2;
 
-  // Maximum input+output tokens per minute for token-based throttling.
-  // 0 = use default (40000 TPM).
-  // Set this to match your API tier:
-  //   Anthropic free: 30000, Tier 1: 100000
-  //   Bedrock: varies by model (40000-400000)
+  // Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token
+  // consumption is tracked and reported in rate-limiter metrics, but this
+  // value is never enforced — only requests_per_second, burst_capacity, and
+  // min_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline).
   int64 tokens_per_minute = 3;
 
   // Burst capacity: maximum concurrent requests allowed before queuing.

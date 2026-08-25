@@ -454,30 +454,47 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// sendOnce builds and sends ONE fresh HTTP request per attempt. It must
+	// construct a new http.Request each time — a consumed body cannot be
+	// re-sent, so a retry of a request built once outside the closure would go
+	// out empty. It also surfaces HTTP 429 as an ERROR carrying any
+	// server-specified wait (Retry-After and friends): httpClient.Do returns
+	// nil error for any HTTP status, so without this the rate limiter's retry
+	// never sees throttling and 429s go straight to the caller un-retried.
+	sendOnce := func(ctx context.Context) (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/chat", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, llm.NewThrottleError(
+				fmt.Errorf("API error (status 429): %s", string(respBody)),
+				llm.RetryAfterFromHeaders(resp.Header))
+		}
+		return resp, nil
 	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
 
 	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
+		result, err := c.rateLimiter.Do(ctx, sendOnce)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		result, err := sendOnce(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
+		httpResp = result.(*http.Response)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 

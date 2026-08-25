@@ -376,8 +376,10 @@ type LLMRateLimitConfig struct {
 	// Max requests per second (0 = default: 2.0).
 	RequestsPerSecond float64 `mapstructure:"requests_per_second"`
 
-	// Max tokens per minute for token-based throttling (0 = default: 40000).
-	// Match your API tier: Anthropic free=30000, Tier1=100000, Bedrock varies.
+	// Max tokens per minute. OBSERVATIONAL ONLY today: token consumption is
+	// tracked and reported in rate-limiter metrics, but this value is never
+	// enforced — only requests_per_second, burst_capacity, and min_delay_ms
+	// gate requests (0 = default: 40000, metrics baseline).
 	TokensPerMinute int64 `mapstructure:"tokens_per_minute"`
 
 	// Max burst size before queuing (0 = default: 5).

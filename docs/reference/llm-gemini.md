@@ -277,7 +277,7 @@ llm:
   rate_limit:
     disabled: false
     requests_per_second: 2.0
-    tokens_per_minute: 40000
+    tokens_per_minute: 40000   # observational only: reported in metrics, NOT enforced
     burst_capacity: 5
     min_delay_ms: 300
     max_retries: 5
@@ -439,8 +439,8 @@ func main() {
         Timeout:     120 * time.Second,
         RateLimiterConfig: llm.RateLimiterConfig{
             Enabled:           true,
-            RequestsPerSecond: 2.0,
-            TokensPerMinute:   40000,
+            RequestsPerSecond: 2.0,   // enforced: paces request admission
+            TokensPerMinute:   40000, // observational only: reported in metrics, NOT enforced
         },
     })
 
@@ -480,7 +480,7 @@ llm:
   rate_limit:
     disabled: false
     requests_per_second: 2.0
-    tokens_per_minute: 40000
+    tokens_per_minute: 40000   # observational only: reported in metrics, NOT enforced
     burst_capacity: 5
     min_delay_ms: 300
     max_retries: 5
@@ -489,6 +489,8 @@ llm:
 ```
 
 Both `Chat` and `ChatStream` methods respect the rate limiter. Token usage is recorded for the rate limiter's metrics after streaming completes.
+
+**Note**: `tokens_per_minute` is observational only today — token consumption is tracked and reported in rate-limiter metrics, but never enforced. Only `requests_per_second`, `burst_capacity`, and `min_delay_ms` gate requests; size `requests_per_second` against your TPM quota.
 
 
 ## Error Codes

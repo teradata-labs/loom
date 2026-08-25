@@ -1099,16 +1099,21 @@ client := openai.NewClient(openai.Config{
     APIKey:  apiKey,
     Model:   "gpt-4.1",
     RateLimiterConfig: llm.RateLimiterConfig{
-        Enabled:         true,
-        TokensPerMinute: 180000,  // 180K TPM (below 200K limit for Tier 1)
+        Enabled:           true,
+        RequestsPerSecond: 2.0,     // enforced: paces request admission
+        TokensPerMinute:   180000,  // observational only: reported in metrics, NOT enforced
     },
 })
 ```
 
 **Behavior**:
-- Requests are automatically queued when approaching limit
-- Prevents 429 errors before they occur
-- Smooths request rate across time
+- Requests are queued and admitted at the configured request rate
+  (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
+- 429 responses are retried inside the limiter with jittered exponential
+  backoff, honoring the server's `Retry-After`
+- `TokensPerMinute` is **observational only today**: token consumption is
+  tracked and reported in rate-limiter metrics, but it is never enforced —
+  size `RequestsPerSecond` against your TPM quota instead
 
 
 ## Testing

@@ -99,7 +99,8 @@ func TestRateLimiter_Do_Success(t *testing.T) {
 func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 10
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 3
 	config.RetryBackoff = 10 * time.Millisecond // Fast for testing
 
@@ -127,7 +128,8 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 func TestRateLimiter_Do_ThrottlingExhausted(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 10
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 2
 	config.RetryBackoff = 10 * time.Millisecond
 
@@ -386,6 +388,11 @@ func TestIsThrottlingError(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "typed ThrottleError with no keyword in message",
+			err:      fmt.Errorf("wrapped: %w", NewThrottleError(errors.New("slow down"), time.Second)),
+			expected: true,
+		},
+		{
 			name:     "other error",
 			err:      errors.New("connection timeout"),
 			expected: false,
@@ -434,7 +441,9 @@ func TestRateLimiter_MinDelay(t *testing.T) {
 func TestRateLimiter_Metrics(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 50 // Fast for testing
+	config.RequestsPerSecond = 50          // Fast for testing
+	config.MinDelay = time.Millisecond     // retries re-enter admission; keep spacing small
+	config.RetryBackoff = time.Millisecond // keep retry waits short
 
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
@@ -466,8 +475,9 @@ func TestRateLimiter_Metrics(t *testing.T) {
 func TestRateLimiter_ConcurrentThrottling(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 20
+	config.RequestsPerSecond = 100
 	config.BurstCapacity = 10
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 2
 	config.RetryBackoff = 10 * time.Millisecond
 
@@ -557,6 +567,9 @@ func TestRateLimiter_TokenWindowPruning(t *testing.T) {
 func TestRateLimiter_ExponentialBackoff(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 1000
+	config.BurstCapacity = 10
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 3
 	config.RetryBackoff = 50 * time.Millisecond
 
@@ -572,18 +585,18 @@ func TestRateLimiter_ExponentialBackoff(t *testing.T) {
 	require.Error(t, err)
 	require.Len(t, callTimes, 4) // 1 initial + 3 retries
 
-	// Verify exponential backoff: ~50ms, ~100ms, ~200ms
+	// Backoff is exponential (base doubles per attempt: 50ms, 100ms, 200ms)
+	// with uniform ±50% jitter, so each observed gap must be at least half its
+	// attempt's base. Admission and scheduling only add delay, never remove
+	// it, so the lower bounds are strict. Exact jitter bounds are covered by
+	// TestRateLimiter_RetryDelayJitter (no sleeping, no scheduling noise).
 	delay1 := callTimes[1].Sub(callTimes[0])
 	delay2 := callTimes[2].Sub(callTimes[1])
 	delay3 := callTimes[3].Sub(callTimes[2])
 
-	assert.GreaterOrEqual(t, delay1, 50*time.Millisecond)
-	assert.GreaterOrEqual(t, delay2, 100*time.Millisecond)
-	assert.GreaterOrEqual(t, delay3, 200*time.Millisecond)
-
-	// Verify exponential growth
-	assert.Greater(t, delay2, delay1)
-	assert.Greater(t, delay3, delay2)
+	assert.GreaterOrEqual(t, delay1, 25*time.Millisecond)
+	assert.GreaterOrEqual(t, delay2, 50*time.Millisecond)
+	assert.GreaterOrEqual(t, delay3, 100*time.Millisecond)
 }
 
 func TestRateLimiter_RaceConditions(t *testing.T) {
