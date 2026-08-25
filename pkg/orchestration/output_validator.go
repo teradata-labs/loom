@@ -98,6 +98,9 @@ type ValidationOutcome struct {
 // A non-nil error means execution or the context failed, not that validation
 // failed: an output that fails every attempt is returned with Passed=false and
 // a nil error.
+//
+// The policy's retry bound is clamped to [0, 10], so at least one attempt
+// always runs: a nil error guarantees a non-nil result.
 func (v *OutputValidator) ValidateAndRetry(
 	ctx context.Context,
 	policy *loomv1.OutputPolicy,
@@ -122,6 +125,14 @@ func (v *OutputValidator) ValidateAndRetry(
 		maxRetries = int(retryPolicy.MaxRetries)
 		if maxRetries > 10 {
 			maxRetries = 10 // cap
+		}
+		if maxRetries < 0 {
+			// Floor. A negative bound would make the attempt loop below run
+			// zero times, so this method would return a nil result with a nil
+			// error — a contract every caller reads as "here is your output".
+			// Zero means one attempt and no retry, which is what a caller
+			// asking for "no retries" can only have meant.
+			maxRetries = 0
 		}
 	}
 
