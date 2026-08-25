@@ -65,7 +65,9 @@ func (g *DoorGate) Enter(ctx context.Context) (func(), error) {
 
 	select {
 	case <-admit:
-		// The releaser incremented active on our behalf before signalling.
+		// The releaser handed its slot directly to us before signalling:
+		// active stays constant across the hand-off (see releaseFunc), so no
+		// counter update happens here.
 		return g.releaseFunc(), nil
 	case <-ctx.Done():
 		g.mu.Lock()

@@ -15,6 +15,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// waitQueued blocks until the gate reports exactly n parked waiters.
+// Readiness is observed through DoorState instead of sleeps: pathological
+// scheduling fails the Eventually assertion instead of deadlocking the test
+// or silently testing the wrong interleaving.
+func waitQueued(t *testing.T, g *DoorGate, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, queued := g.DoorState()
+		return queued == n
+	}, 5*time.Second, time.Millisecond, "expected %d parked waiter(s) at the door", n)
+}
+
 func TestDoorGateDisabledIsTransparent(t *testing.T) {
 	g := NewDoorGate(0, 0)
 	rel, err := g.Enter(context.Background())
@@ -37,13 +49,18 @@ func TestDoorGateCapsAndAdmitsFIFO(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			rel, err := g.Enter(context.Background())
-			require.NoError(t, err)
+			if err != nil {
+				t.Errorf("waiter %d: unexpected enter error: %v", i, err)
+				return
+			}
 			mu.Lock()
 			order = append(order, i)
 			mu.Unlock()
 			rel()
 		}(i)
-		time.Sleep(50 * time.Millisecond) // deterministic queue order
+		// Deterministic queue order: waiter i must be parked before waiter
+		// i+1 is spawned.
+		waitQueued(t, g, i)
 	}
 
 	active, queued := g.DoorState()
@@ -67,20 +84,25 @@ func TestDoorGateQueueCapRejects(t *testing.T) {
 	g := NewDoorGate(1, 1)
 	r1, err := g.Enter(context.Background())
 	require.NoError(t, err)
-	defer r1()
 
 	// One waiter fits the queue.
+	waiterErr := make(chan error, 1)
 	go func() {
 		rel, err := g.Enter(context.Background())
 		if err == nil {
 			rel()
 		}
+		waiterErr <- err
 	}()
-	time.Sleep(100 * time.Millisecond)
+	waitQueued(t, g, 1)
 
 	// The next is refused with backpressure, before any waiting.
 	_, err = g.Enter(context.Background())
 	require.ErrorIs(t, err, ErrDoorFull)
+
+	// Releasing the active slot admits the parked waiter normally.
+	r1()
+	require.NoError(t, <-waiterErr, "parked waiter must be admitted after release")
 }
 
 func TestDoorGateCtxCancelLeavesNoLeak(t *testing.T) {
@@ -114,21 +136,22 @@ func TestDoorGateReleaseIdempotent(t *testing.T) {
 
 	r1, err := g.Enter(context.Background())
 	require.NoError(t, err)
-	defer r1()
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		r2, err := g.Enter(context.Background())
-		require.NoError(t, err)
-		r2()
-		close(done)
+		if err == nil {
+			r2()
+		}
+		done <- err
 	}()
+	waitQueued(t, g, 1)
 	select {
 	case <-done:
 		t.Fatal("second enter must wait: double release created a phantom slot")
 	case <-time.After(200 * time.Millisecond):
 	}
 	r1()
-	<-done
+	require.NoError(t, <-done)
 }
 
 func TestDoorGateConcurrentChurnRace(t *testing.T) {
@@ -151,4 +174,40 @@ func TestDoorGateConcurrentChurnRace(t *testing.T) {
 	active, queued := g.DoorState()
 	assert.Equal(t, 0, active)
 	assert.Equal(t, 0, queued)
+}
+
+// TestGetSlotStatePopulatesDoorCounters: the LLMSchedulerService surfaces the
+// process-wide door gate's live counters on every scope's SlotState.
+func TestGetSlotStatePopulatesDoorCounters(t *testing.T) {
+	SetDoorLimits(1, 0)
+	defer SetDoorLimits(0, 0)
+
+	rel, err := Door().Enter(context.Background())
+	require.NoError(t, err)
+
+	parkedErr := make(chan error, 1)
+	go func() {
+		r, err := Door().Enter(context.Background())
+		if err == nil {
+			r()
+		}
+		parkedErr <- err
+	}()
+	waitQueued(t, Door(), 1)
+
+	reg := NewRegistry(nil)
+	defer reg.Close()
+	reg.For("scope-a", Config{})
+	svc := NewService(reg)
+
+	resp, err := svc.GetSlotState(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, resp.States, 1)
+	assert.Equal(t, int32(1), resp.States[0].ActiveConversations,
+		"SlotState must report the door gate's active-conversation count")
+	assert.Equal(t, int32(1), resp.States[0].DoorQueueDepth,
+		"SlotState must report the door gate's queue depth")
+
+	rel()
+	require.NoError(t, <-parkedErr)
 }

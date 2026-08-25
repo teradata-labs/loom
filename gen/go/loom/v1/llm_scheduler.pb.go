@@ -170,13 +170,14 @@ type LLMSchedulerConfig struct {
 	ReservationTokensPerCall int32 `protobuf:"varint,2,opt,name=reservation_tokens_per_call,json=reservationTokensPerCall,proto3" json:"reservation_tokens_per_call,omitempty"`
 	// Ceiling on concurrently active (admitted, not parked) conversations.
 	// 0 = derive from measured capacity; see the design doc for the formula.
-	// Enforced only when door admission is enabled; the door layer is not yet
-	// wired, so this field is currently ignored.
+	// The door gate is wired process-wide and configured at boot via looms
+	// config (llm.max_active_conversations); this per-scope field is not yet
+	// read.
 	MaxActiveConversations int32 `protobuf:"varint,3,opt,name=max_active_conversations,json=maxActiveConversations,proto3" json:"max_active_conversations,omitempty"`
 	// Door-queue depth beyond which new conversations are rejected with
 	// RESOURCE_EXHAUSTED instead of queued.
-	// Enforced only when door admission is enabled; the door layer is not yet
-	// wired, so this field is currently ignored.
+	// The door gate is wired process-wide and configured at boot via looms
+	// config (llm.max_door_queue); this per-scope field is not yet read.
 	MaxDoorQueue int32 `protobuf:"varint,4,opt,name=max_door_queue,json=maxDoorQueue,proto3" json:"max_door_queue,omitempty"`
 	// Seconds after which a waiting slot request is promoted one priority
 	// class. Bounds starvation: any waiter reaches the top class in at most
@@ -277,14 +278,16 @@ type SlotState struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The provider quota scope this scheduler protects.
 	Scope string `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
-	// Conversations currently holding at least one grant or eligible to
-	// request one. Populated when door admission is enabled (door layer not
-	// yet wired).
+	// Conversation turns currently admitted through the process-wide door
+	// gate. Populated from the door gate's live counters; the door is one gate
+	// in front of every scope, so all scopes report the same value. Zero when
+	// door admission is disabled (llm.max_active_conversations = 0).
 	ActiveConversations int32 `protobuf:"varint,2,opt,name=active_conversations,json=activeConversations,proto3" json:"active_conversations,omitempty"`
 	// Slot requests currently parked waiting for capacity.
 	ParkedRequests int32 `protobuf:"varint,3,opt,name=parked_requests,json=parkedRequests,proto3" json:"parked_requests,omitempty"`
-	// Conversations queued at the admission door. Populated when door
-	// admission is enabled (door layer not yet wired).
+	// Conversation turns parked at the admission door. Populated from the
+	// process-wide door gate's live counters (same value on every scope);
+	// zero when door admission is disabled or nothing is queued.
 	DoorQueueDepth int32 `protobuf:"varint,4,opt,name=door_queue_depth,json=doorQueueDepth,proto3" json:"door_queue_depth,omitempty"`
 	// Effective tokens-per-minute after provider-telemetry calibration (or
 	// AIMD for signal-free providers). This is the enforced number.

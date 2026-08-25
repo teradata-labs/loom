@@ -7,7 +7,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +22,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
-	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
@@ -893,6 +891,16 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// turn-executing entry point, unary and streaming alike.
 	ctx = installTurnSlotInfo(ctx, sessionResumed)
 
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	// Without this, unary callers (MCP bridge, TUI, grpc-gateway) would
+	// slip past max_active_conversations entirely.
+	releaseDoor, doorErr := enterTurnDoor(ctx, s.logger)
+	if doorErr != nil {
+		return nil, doorErr
+	}
+	defer releaseDoor()
+
 	// Add progress multiplexer to context if available for this agent
 	s.mu.RLock()
 	if pm, ok := s.progressMultiplexers[agentID]; ok {
@@ -1107,21 +1115,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// resumed session classifies IN_FLIGHT from its first call of the turn.
 	ctx = installTurnSlotInfo(ctx, sessionResumed)
 
-	// Door admission: batch turns queue at the front door when the active
-	// ceiling is reached — starving at the door is free, starving mid-task
-	// wastes held resources. Interactive turns bypass (the scheduler's
-	// interactive headroom protects their capacity). A full door queue is
-	// backpressure, not silence.
-	if slotOriginFromMetadata(ctx) != loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
-		releaseDoor, doorErr := llmscheduler.Door().Enter(ctx)
-		if doorErr != nil {
-			if errors.Is(doorErr, llmscheduler.ErrDoorFull) {
-				return status.Error(codes.ResourceExhausted, "server at capacity: conversation door queue full, retry later")
-			}
-			return doorErr
-		}
-		defer releaseDoor()
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, s.logger)
+	if doorErr != nil {
+		return doorErr
 	}
+	defer releaseDoor()
 
 	// Register manage_ephemeral_agents tool if not already registered
 	// This allows agents to spawn and despawn sub-agents dynamically

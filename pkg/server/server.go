@@ -141,6 +141,14 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	_, sessionResumed := s.agent.GetSession(sessionID)
 	ctx = installTurnSlotInfo(ctx, sessionResumed)
 
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, nil)
+	if doorErr != nil {
+		return nil, doorErr
+	}
+	defer releaseDoor()
+
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {
 		s.agent.ResetSessionContext(sessionID)
@@ -209,6 +217,14 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	// turn-executing entry point installs it).
 	_, sessionResumed := s.agent.GetSession(sessionID)
 	ctx = installTurnSlotInfo(ctx, sessionResumed)
+
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, nil)
+	if doorErr != nil {
+		return doorErr
+	}
+	defer releaseDoor()
 
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {

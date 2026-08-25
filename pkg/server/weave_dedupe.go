@@ -34,6 +34,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -123,7 +124,11 @@ func wrapAgentError(err error) error {
 }
 
 // isTransientOutcome reports whether err reflects an interrupted run
-// (caller disconnect, deadline) rather than a deterministic result.
+// (caller disconnect, deadline) or a capacity rejection rather than a
+// deterministic result. RESOURCE_EXHAUSTED — the door-full backpressure code
+// — means "retry later" by definition: caching it for the dedupe TTL would
+// keep serving the stale rejection to a same-key retry long after the door
+// queue drained, so it must be released, never cached.
 func isTransientOutcome(err error) bool {
 	if err == nil {
 		return false
@@ -132,7 +137,7 @@ func isTransientOutcome(err error) bool {
 		return true
 	}
 	switch status.Code(err) {
-	case codes.Canceled, codes.DeadlineExceeded:
+	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted:
 		return true
 	}
 	return false
@@ -304,4 +309,58 @@ func installTurnSlotInfo(ctx context.Context, resumed bool) context.Context {
 		priorCalls = 1
 	}
 	return llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), priorCalls)
+}
+
+// doorParkLogThreshold separates the un-parked fast path (a mutex
+// acquisition, microseconds) from an actual park at the door: an admission
+// that took at least this long waited behind the active ceiling and is worth
+// a debug line.
+const doorParkLogThreshold = time.Millisecond
+
+// enterTurnDoor admits one batch-origin conversation turn through the
+// process-wide door gate (llmscheduler.Door): batch turns beyond the
+// configured active ceiling park FIFO at the front door — starving a turn at
+// the door is free, starving it mid-task wastes held resources and partial
+// work. Interactive turns bypass entirely (the slot scheduler's interactive
+// headroom protects their capacity). A full door queue surfaces as
+// RESOURCE_EXHAUSTED backpressure, never silence.
+//
+// EVERY turn-executing entry point (Weave and StreamWeave, single- and
+// multi-agent alike) must call this right after installTurnSlotInfo: a
+// bypassed entry point would make max_active_conversations a suggestion, not
+// a ceiling. On success the returned release is non-nil and idempotent;
+// callers defer it for the life of the turn. logger may be nil.
+//
+// Observability: rejections log at Warn with the live door counters; a turn
+// that actually parked logs its door wait at Debug. There is no span seam
+// before admission (entry-point spans start after the turn is admitted), so
+// the wait is surfaced through the door_wait log field and the SlotState
+// proto counters rather than a new tracing seam.
+func enterTurnDoor(ctx context.Context, logger *zap.Logger) (release func(), err error) {
+	if slotOriginFromMetadata(ctx) == loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
+		return func() {}, nil
+	}
+	door := llmscheduler.Door()
+	start := time.Now()
+	release, err = door.Enter(ctx)
+	if err != nil {
+		if errors.Is(err, llmscheduler.ErrDoorFull) {
+			if logger != nil {
+				active, queued := door.DoorState()
+				logger.Warn("door admission rejected: queue full",
+					zap.Int("active_conversations", active),
+					zap.Int("door_queue_depth", queued))
+			}
+			return nil, status.Error(codes.ResourceExhausted, "server at capacity: conversation door queue full, retry later")
+		}
+		return nil, err
+	}
+	if wait := time.Since(start); wait >= doorParkLogThreshold && logger != nil {
+		active, queued := door.DoorState()
+		logger.Debug("door admission: turn parked at the front door",
+			zap.Duration("door_wait", wait),
+			zap.Int("active_conversations", active),
+			zap.Int("door_queue_depth", queued))
+	}
+	return release, nil
 }

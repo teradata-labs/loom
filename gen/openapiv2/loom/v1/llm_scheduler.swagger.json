@@ -73,12 +73,12 @@
         "maxActiveConversations": {
           "type": "integer",
           "format": "int32",
-          "description": "Ceiling on concurrently active (admitted, not parked) conversations.\n0 = derive from measured capacity; see the design doc for the formula.\nEnforced only when door admission is enabled; the door layer is not yet\nwired, so this field is currently ignored."
+          "description": "Ceiling on concurrently active (admitted, not parked) conversations.\n0 = derive from measured capacity; see the design doc for the formula.\nThe door gate is wired process-wide and configured at boot via looms\nconfig (llm.max_active_conversations); this per-scope field is not yet\nread."
         },
         "maxDoorQueue": {
           "type": "integer",
           "format": "int32",
-          "description": "Door-queue depth beyond which new conversations are rejected with\nRESOURCE_EXHAUSTED instead of queued.\nEnforced only when door admission is enabled; the door layer is not yet\nwired, so this field is currently ignored."
+          "description": "Door-queue depth beyond which new conversations are rejected with\nRESOURCE_EXHAUSTED instead of queued.\nThe door gate is wired process-wide and configured at boot via looms\nconfig (llm.max_door_queue); this per-scope field is not yet read."
         },
         "starvationAgeS": {
           "type": "integer",
@@ -149,7 +149,7 @@
         "activeConversations": {
           "type": "integer",
           "format": "int32",
-          "description": "Conversations currently holding at least one grant or eligible to\nrequest one. Populated when door admission is enabled (door layer not\nyet wired)."
+          "description": "Conversation turns currently admitted through the process-wide door\ngate. Populated from the door gate's live counters; the door is one gate\nin front of every scope, so all scopes report the same value. Zero when\ndoor admission is disabled (llm.max_active_conversations = 0)."
         },
         "parkedRequests": {
           "type": "integer",
@@ -159,7 +159,7 @@
         "doorQueueDepth": {
           "type": "integer",
           "format": "int32",
-          "description": "Conversations queued at the admission door. Populated when door\nadmission is enabled (door layer not yet wired)."
+          "description": "Conversation turns parked at the admission door. Populated from the\nprocess-wide door gate's live counters (same value on every scope);\nzero when door admission is disabled or nothing is queued."
         },
         "effectiveTokensPerMinute": {
           "type": "string",

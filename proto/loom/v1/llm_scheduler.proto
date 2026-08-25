@@ -73,14 +73,15 @@ message LLMSchedulerConfig {
 
   // Ceiling on concurrently active (admitted, not parked) conversations.
   // 0 = derive from measured capacity; see the design doc for the formula.
-  // Enforced only when door admission is enabled; the door layer is not yet
-  // wired, so this field is currently ignored.
+  // The door gate is wired process-wide and configured at boot via looms
+  // config (llm.max_active_conversations); this per-scope field is not yet
+  // read.
   int32 max_active_conversations = 3;
 
   // Door-queue depth beyond which new conversations are rejected with
   // RESOURCE_EXHAUSTED instead of queued.
-  // Enforced only when door admission is enabled; the door layer is not yet
-  // wired, so this field is currently ignored.
+  // The door gate is wired process-wide and configured at boot via looms
+  // config (llm.max_door_queue); this per-scope field is not yet read.
   int32 max_door_queue = 4;
 
   // Seconds after which a waiting slot request is promoted one priority
@@ -103,16 +104,18 @@ message SlotState {
   // The provider quota scope this scheduler protects.
   string scope = 1;
 
-  // Conversations currently holding at least one grant or eligible to
-  // request one. Populated when door admission is enabled (door layer not
-  // yet wired).
+  // Conversation turns currently admitted through the process-wide door
+  // gate. Populated from the door gate's live counters; the door is one gate
+  // in front of every scope, so all scopes report the same value. Zero when
+  // door admission is disabled (llm.max_active_conversations = 0).
   int32 active_conversations = 2;
 
   // Slot requests currently parked waiting for capacity.
   int32 parked_requests = 3;
 
-  // Conversations queued at the admission door. Populated when door
-  // admission is enabled (door layer not yet wired).
+  // Conversation turns parked at the admission door. Populated from the
+  // process-wide door gate's live counters (same value on every scope);
+  // zero when door admission is disabled or nothing is queued.
   int32 door_queue_depth = 4;
 
   // Effective tokens-per-minute after provider-telemetry calibration (or

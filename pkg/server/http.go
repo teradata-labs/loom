@@ -307,6 +307,34 @@ func (h *HTTPServer) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(spec)
 }
 
+// SlotOriginHTTPHeader is the HTTP request header SSE clients use to assert
+// this turn's scheduling band — "interactive" (a human is waiting on the
+// response) or "batch" (the default when absent). It mirrors the gRPC
+// metadata key (SlotOriginMetadataKey) under the same trust model: the value
+// is client-asserted and trusted as-is.
+const SlotOriginHTTPHeader = "X-Loom-Slot-Origin"
+
+// withHTTPSlotOrigin maps the client-asserted X-Loom-Slot-Origin header into
+// incoming gRPC metadata on ctx, so slotOriginFromMetadata — and with it
+// slot scheduling and door admission — sees the HTTP turn's band. Without
+// this mapping an HTTP request context carries no gRPC metadata, every
+// HTTP/SSE client classifies BATCH, and a web human parks at the door
+// behind fleets.
+func withHTTPSlotOrigin(ctx context.Context, r *http.Request) context.Context {
+	origin := strings.ToLower(strings.TrimSpace(r.Header.Get(SlotOriginHTTPHeader)))
+	if origin == "" {
+		return ctx
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if ok {
+		md = md.Copy()
+	} else {
+		md = metadata.MD{}
+	}
+	md.Set(SlotOriginMetadataKey, origin)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
 // handleStreamWeaveSSE handles SSE streaming for /v1/weave:stream
 func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -332,9 +360,11 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
-	// Create gRPC stream
+	// Create gRPC stream. The context carries the client-asserted slot
+	// origin (X-Loom-Slot-Origin) as incoming gRPC metadata so interactive
+	// HTTP turns bypass door admission exactly like interactive gRPC turns.
 	stream := &sseStreamWrapper{
-		ctx:     r.Context(),
+		ctx:     withHTTPSlotOrigin(r.Context(), r),
 		writer:  w,
 		flusher: w.(http.Flusher),
 		logger:  h.logger,

@@ -1675,6 +1675,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
+	// Door admission knobs: a negative value is a configuration error, not a
+	// silent disable (max_active_conversations) or an unbounded queue
+	// (max_door_queue). Zero keeps its documented meaning: gate off /
+	// unbounded queueing.
+	if c.LLM.MaxActiveConversations < 0 {
+		return fmt.Errorf("llm.max_active_conversations must be >= 0, got %d (0 disables the door gate)", c.LLM.MaxActiveConversations)
+	}
+	if c.LLM.MaxDoorQueue < 0 {
+		return fmt.Errorf("llm.max_door_queue must be >= 0, got %d (0 means unbounded queueing)", c.LLM.MaxDoorQueue)
+	}
+
 	// Validate storage config
 	switch c.Storage.Backend {
 	case "sqlite", "":

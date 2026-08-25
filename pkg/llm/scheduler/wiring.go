@@ -180,7 +180,13 @@ func Door() *DoorGate {
 }
 
 // SetDoorLimits configures the process-wide door gate. maxActive <= 0
-// disables gating.
+// disables gating; maxQueue <= 0 means unbounded queueing.
+//
+// The gate is swapped wholesale, not resized: turns already admitted (or
+// parked) drain on the previous gate while the new gate admits from zero, so
+// reconfiguring under load transiently over-admits up to the sum of the old
+// and new ceilings. Call it once at boot — before the server starts
+// admitting turns — which is what cmd_serve.go does.
 func SetDoorLimits(maxActive, maxQueue int) {
 	doorMu.Lock()
 	defer doorMu.Unlock()

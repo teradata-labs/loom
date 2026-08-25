@@ -100,19 +100,27 @@ func NewService(reg *Registry) *Service {
 	return &Service{reg: reg}
 }
 
-// GetSlotState returns the live state of one scope, or all scopes.
+// GetSlotState returns the live state of one scope, or all scopes. Every
+// returned state also carries the process-wide door gate's live counters
+// (active_conversations / door_queue_depth): the door is one gate in front
+// of every scope, so all scopes report the same values.
 func (s *Service) GetSlotState(_ context.Context, req *loomv1.GetSlotStateRequest) (*loomv1.GetSlotStateResponse, error) {
 	resp := &loomv1.GetSlotStateResponse{}
 	if scope := req.GetScope(); scope != "" {
 		if sched, ok := s.reg.Get(scope); ok {
 			resp.States = append(resp.States, sched.State())
 		}
-		return resp, nil
-	}
-	for _, scope := range s.reg.Scopes() {
-		if sched, ok := s.reg.Get(scope); ok {
-			resp.States = append(resp.States, sched.State())
+	} else {
+		for _, scope := range s.reg.Scopes() {
+			if sched, ok := s.reg.Get(scope); ok {
+				resp.States = append(resp.States, sched.State())
+			}
 		}
+	}
+	doorActive, doorQueued := Door().DoorState()
+	for _, st := range resp.States {
+		st.ActiveConversations = int32(doorActive) // #nosec G115 -- bounded by the operator-set ceiling
+		st.DoorQueueDepth = int32(doorQueued)      // #nosec G115 -- bounded by the operator-set queue cap / live request count
 	}
 	return resp, nil
 }
