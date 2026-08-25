@@ -457,7 +457,7 @@ only when both Kind and ID are equal. Parsing is tolerant by contract: tool
 results are data, so a malformed entry is skipped, never an error, and the
 stored form survives JSON marshal/unmarshal boundaries unchanged.
 
-**Backpressure hint**: the park-and-wake contract PR #355 introduced at the
+**Backpressure hint**: the park-and-wake contract from PR #355 (📋 open, unmerged) at the
 MCP layer is hoisted here as a generic `Error.Details` slot —
 `loom.backpressure` (`shuttle.DetailsBackpressure`), typed as
 `shuttle.BackpressureHint{Code, RetryAfterS, WaitParam, MaxWaitS}` with
@@ -466,7 +466,7 @@ same wire field names (`code`, `retry_after_s`, `wait_param`, `max_wait_s`).
 A hint declares the failure to be capacity flow control, not a fault: the
 identical call, re-issued after a wait, is expected to succeed. This is the
 contract only — no wait loop lives at the shuttle layer; the MCP adapter's
-freeze loop migrates onto it when PR #355 merges.
+freeze loop migrates onto it when PR #355 merges. On this branch the hint is contract-only: it has no producer or consumer yet.
 
 ### 11.2 The mark/unmark lifecycle (pkg/agent + pkg/llm/scheduler) ✅
 
@@ -499,6 +499,8 @@ the session's conversation currently holds.
 
 ### 11.3 Planned follow-ups 📋
 
+- **Trust model**: lease events are taken at the emitting tool's word — any tool that shapes `Result.Metadata` can assert or release any lease. Operator-chosen backends are trusted; deployments running untrusted tool servers must strip these keys at their adapter boundary (see the doc block in `pkg/shuttle/lease.go`).
+- **Ledger durability**: the lease ledger is process memory only. After a `looms` restart the ledger is empty — a backend lease that survived the restart (e.g. a remote HTTP-MCP session) loses RESOURCE_HOLDER seeding until its next lease event. Durable seeding is 📋 planned alongside durable park persistence.
 - **MCP adapter migration**: PR #355's MCP-level backpressure hint and
   freeze loop move onto the shuttle contract when that PR merges, and MCP
   session handles then declare themselves as lease events instead of

@@ -30,9 +30,10 @@ const DetailsBackpressure = "loom.backpressure"
 // model. Task-level failures (SQL errors, timeouts, deadlocks) never carry
 // the hint and must reach the model.
 //
-// This type is the contract only — no wait loop lives at the shuttle layer.
-// The MCP adapter's freeze loop (PR #355) migrates onto this contract when
-// that PR merges; until then it parses its own MCP-level hint.
+// This type is the contract only — no wait loop lives at the shuttle layer,
+// and on this branch the hint has no producer or consumer yet. The MCP
+// adapter's freeze loop lives on open PR #355 with its own MCP-level parse;
+// it migrates onto this contract when that PR merges.
 type BackpressureHint struct {
 	// Code names the capacity condition (e.g. "session_handle_budget_full").
 	// Backend-defined; loom treats it as an opaque label.

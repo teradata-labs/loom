@@ -54,7 +54,14 @@ type leaseLedger struct {
 // of a held lease is idempotent; double-release and release-of-unknown are
 // tolerated no-ops — tool results are data, so the ledger never errors and
 // a session's count never goes negative.
-func (l *leaseLedger) apply(sessionID string, events []shuttle.LeaseEvent) bool {
+// apply folds events into the session's held set and invokes onOutcome with
+// the resulting holding state WHILE STILL HOLDING the ledger mutex. Running
+// the outcome under the lock makes decision+mark one atomic step: two
+// concurrent turns on the same session (background chats, parallel Weaves)
+// cannot interleave a release's unmark with an acquire's mark and leave a
+// turn's SlotInfo contradicting the ledger. onOutcome must be brief and must
+// not call back into the ledger.
+func (l *leaseLedger) apply(sessionID string, events []shuttle.LeaseEvent, onOutcome func(holding bool)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, ev := range events {
@@ -77,7 +84,9 @@ func (l *leaseLedger) apply(sessionID string, events []shuttle.LeaseEvent) bool 
 			}
 		}
 	}
-	return len(l.held[sessionID]) > 0
+	if onOutcome != nil {
+		onOutcome(len(l.held[sessionID]) > 0)
+	}
 }
 
 // holds reports whether the session has any outstanding lease.
@@ -110,20 +119,22 @@ func (l *leaseLedger) reset() {
 // failed results too — the backend's declaration is authoritative (a failing
 // tool can still have released its handle).
 //
-// The ledger read and the mark are not one atomic step, which is safe
-// because a conversation's tool calls execute sequentially in the loop; the
-// ledger's own mutex covers cross-session concurrency, and sessions never
-// share a SlotInfo.
+// The ledger decision and the SlotInfo mark run as one atomic step under the
+// ledger mutex (see leaseLedger.apply), so concurrent turns on the same
+// session — background chats, parallel Weaves — cannot leave a turn's class
+// contradicting the ledger.
 func (a *Agent) applyLeaseEvents(ctx context.Context, sessionID string, res *shuttle.Result) {
 	events := shuttle.LeaseEventsFrom(res)
 	if len(events) == 0 {
 		return
 	}
-	if a.leases.apply(sessionID, events) {
-		scheduler.MarkResourceHolder(ctx)
-	} else {
-		scheduler.UnmarkResourceHolder(ctx)
-	}
+	a.leases.apply(sessionID, events, func(holding bool) {
+		if holding {
+			scheduler.MarkResourceHolder(ctx)
+		} else {
+			scheduler.UnmarkResourceHolder(ctx)
+		}
+	})
 }
 
 // seedLeaseHolding starts a turn in the RESOURCE_HOLDER class when the

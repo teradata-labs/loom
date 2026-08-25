@@ -29,6 +29,23 @@ package shuttle
 // the JSON-shaped form (a []interface{} of map[string]interface{} with
 // "action", "kind", "id" string fields) so a metadata map that crosses a
 // JSON marshal/unmarshal boundary parses identically on the other side.
+//
+// TRUST MODEL: lease events are taken at the emitting tool's word. Any tool
+// or backend that can shape Result.Metadata can assert or release a lease
+// for any (Kind, ID) — nothing attributes events to emitters, so a hostile
+// or buggy MCP server can pin its conversations in the RESOURCE_HOLDER
+// scheduling class (a priority-escalation primitive against every other
+// agent sharing the LLM scope), or forge a release and demote a genuine
+// holder. This matches the deployment posture everywhere else in the tool
+// layer: connected backends are operator-chosen and trusted. A deployment
+// that runs untrusted tool servers must strip or ignore these metadata keys
+// at its adapter boundary before results reach the agent.
+//
+// The backend's declaration is authoritative in both directions: an
+// "acquired" on a FAILED result still counts (the lease was minted even
+// though the call errored afterward), and a backend that rolls a lease back
+// server-side MUST emit a matching "released" event or the conversation
+// keeps holder priority until session end.
 
 // MetadataLeaseEvents is the well-known Result.Metadata key carrying the
 // result's lease events. The value is a []interface{} whose entries are

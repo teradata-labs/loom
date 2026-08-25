@@ -220,8 +220,8 @@ func TestDeleteSessionRetiresLeases(t *testing.T) {
 // ClearAllSessions is DeleteSession's sibling retirement path.
 func TestClearAllSessionsRetiresLeases(t *testing.T) {
 	ag := newLeaseTestAgent(&leaseScriptLLM{})
-	ag.leases.apply("s1", []shuttle.LeaseEvent{{Action: shuttle.LeaseAcquired, Kind: "db-session", ID: "a"}})
-	ag.leases.apply("s2", []shuttle.LeaseEvent{{Action: shuttle.LeaseAcquired, Kind: "db-session", ID: "b"}})
+	ag.leases.apply("s1", []shuttle.LeaseEvent{{Action: shuttle.LeaseAcquired, Kind: "db-session", ID: "a"}}, nil)
+	ag.leases.apply("s2", []shuttle.LeaseEvent{{Action: shuttle.LeaseAcquired, Kind: "db-session", ID: "b"}}, nil)
 
 	ag.ClearAllSessions()
 	assert.False(t, ag.leases.holds("s1"))
@@ -285,7 +285,8 @@ func TestLeaseLedgerApply(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var l leaseLedger
-			got := l.apply("sess", tt.events)
+			var got bool
+			l.apply("sess", tt.events, func(h bool) { got = h })
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.want, l.holds("sess"))
 		})
