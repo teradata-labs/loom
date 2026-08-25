@@ -101,6 +101,16 @@ func (a *MCPToolAdapter) awaitBackpressure(ctx context.Context, params map[strin
 		zap.String("wait_param", hint.WaitParam),
 		zap.Duration("budget", budget))
 
+	// The re-invoke params are a private copy: params aliases the model's
+	// toolCall.Input whenever no schema case-restore happened, and injecting
+	// wait_s into that map would leak flow control into the model's replayed
+	// tool history and the persisted tool-execution record — the exact leak
+	// this freeze exists to prevent.
+	reinvoke := make(map[string]interface{}, len(params)+1)
+	for k, v := range params {
+		reinvoke[k] = v
+	}
+
 	attempts := 0
 	lastErr := callErr
 	for {
@@ -124,7 +134,7 @@ func (a *MCPToolAdapter) awaitBackpressure(ctx context.Context, params map[strin
 			if waitS < 1 {
 				waitS = 1
 			}
-			params[hint.WaitParam] = waitS
+			reinvoke[hint.WaitParam] = waitS
 		} else {
 			sleep := time.Duration(hint.RetryAfterS) * time.Second
 			if sleep < backpressurePollFloor {
@@ -147,7 +157,7 @@ func (a *MCPToolAdapter) awaitBackpressure(ctx context.Context, params map[strin
 
 		attempts++
 		attemptStart := time.Now()
-		result, err := a.client.CallTool(ctx, a.tool.Name, params)
+		result, err := a.client.CallTool(ctx, a.tool.Name, reinvoke)
 		if err == nil {
 			a.logger.Info("backpressure: call succeeded after freeze",
 				zap.String("tool", a.tool.Name),
@@ -171,15 +181,32 @@ func (a *MCPToolAdapter) awaitBackpressure(ctx context.Context, params map[strin
 		}
 		if hint.WaitParam != "" && time.Since(attemptStart) < backpressurePollFloor {
 			// The server advertised parking but refused instantly instead of
-			// holding the call: degrade to polling pace so the loop can't
-			// spin hot against a server that doesn't honor its own contract.
-			timer := time.NewTimer(backpressurePollFloor)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, err
-			case <-timer.C:
+			// holding the call: degrade to polling pace — honoring the
+			// server's own retry_after estimate when it exceeds the floor —
+			// so the loop can't spin hot against a server that doesn't
+			// honor its own contract.
+			sleep := backpressurePollFloor
+			if ra := time.Duration(next.RetryAfterS) * time.Second; ra > sleep {
+				sleep = ra
 			}
+			if remaining := time.Until(waitDeadline); sleep > remaining {
+				sleep = remaining
+			}
+			if sleep > 0 {
+				timer := time.NewTimer(sleep)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, err
+				case <-timer.C:
+				}
+			}
+		}
+		if hint.WaitParam != "" && hint.WaitParam != next.WaitParam {
+			// The contract changed: drop the previously injected wait key so
+			// later polling re-invokes don't carry a stale server-side park
+			// request on top of the client-side pacing.
+			delete(reinvoke, hint.WaitParam)
 		}
 		hint = next // refresh retry_after / wait caps from the newest error
 	}

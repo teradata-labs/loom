@@ -285,6 +285,11 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// Call MCP tool with camelCase parameters
 	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, restoredParams)
 	if err != nil {
+		// The mechanism is chosen once, on the first error: a resource-wait
+		// retry that then fails with a backpressure hint (or a freeze
+		// re-invoke that fails with a resource link) surfaces that second
+		// error to the model rather than chaining waits — deliberate
+		// recursion bounding, one wait mechanism per tool call.
 		if isBackpressure(err) {
 			// Backpressure freeze (issue #354): capacity flow control never
 			// reaches the model — the call re-invokes, parked server-side

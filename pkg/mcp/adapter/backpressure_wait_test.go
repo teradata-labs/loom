@@ -184,3 +184,30 @@ func TestBackpressureBudgetRidesDeadline(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	assert.LessOrEqual(t, backpressureBudget(dead), time.Duration(0))
 }
+
+// TestBackpressureCallerParamsNotMutated pins the map-isolation invariant:
+// the freeze loop injects wait_s into its own private copy, never into the
+// caller's params map — that map aliases the model's toolCall.Input whenever
+// no schema case-restore happened, and mutating it would leak flow control
+// into the model's replayed tool history and the persisted execution record.
+func TestBackpressureCallerParamsNotMutated(t *testing.T) {
+	ft := newWaitTransport(
+		backpressureResult("session_handle_budget_full", 412, "wait_s", 300),
+		successResult("connected"),
+	)
+	adapter := waitAdapter(t, ft)
+
+	callerParams := map[string]interface{}{"query": "SELECT 1"}
+	res, err := adapter.Execute(context.Background(), callerParams)
+	require.NoError(t, err)
+	require.True(t, res.Success)
+
+	// The re-invoke carried wait_s on the wire…
+	wire := ft.lastCallParams()
+	require.NotNil(t, wire)
+	assert.Contains(t, wire, "wait_s", "server-side park must be requested on the wire")
+	// …but the caller's map is untouched.
+	assert.NotContains(t, callerParams, "wait_s",
+		"the model-owned params map must never see injected flow control")
+	assert.Equal(t, map[string]interface{}{"query": "SELECT 1"}, callerParams)
+}
