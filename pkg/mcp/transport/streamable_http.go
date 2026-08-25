@@ -63,8 +63,8 @@ type StreamableHTTPTransport struct {
 
 // StreamableHTTPConfig configures streamable-http transport.
 type StreamableHTTPConfig struct {
-	Endpoint       string            // MCP endpoint URL
-	Headers        map[string]string // Custom headers
+	Endpoint string            // MCP endpoint URL
+	Headers  map[string]string // Custom headers
 	// EnableSessions is a no-op. MCP 2026-07-28 moved session management to
 	// server-side header injection (Mcp-Session-Id); this client always
 	// captures and threads the session ID when the server sends it. The field
