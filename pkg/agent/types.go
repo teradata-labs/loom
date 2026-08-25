@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -225,6 +226,21 @@ type Agent struct {
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
 	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+	// toolLedgerMu guards toolLedgers: per-session tool-execution ledgers
+	// for the lesson miner (graph_memory_lessons.go). Recorded at execution
+	// time so mining is immune to context compilation evicting early turns
+	// from the compiled message view.
+	toolLedgerMu sync.Mutex
+	toolLedgers  map[string][]minedEvent
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
+	// lessonTrials counts error-lane lesson recalls; every
+	// lessonRetrialInterval-th one carries a demoted lesson so demotion
+	// stays reversible (graph_memory_lessons.go).
+	lessonTrials atomic.Uint64
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled

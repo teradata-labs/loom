@@ -5485,6 +5485,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
+        },
+        "fleetLessonSharing": {
+          "type": "boolean",
+          "description": "Share verified lessons across all agents on this server. Opt-in.\nWhen true, lessons mined from the tool ledger (observed error-\u003efix\ntransitions) are stored in a shared partition visible to every agent,\nand each agent's dedicated lesson recall lane draws from that pool.\nWhen false (default), lessons stay private to the agent that earned\nthem: stored in a partition derived from its name (\"\u003cname\u003e__lessons\")\nthat no other writer targets, and recalled only by it.\n\nSECURITY: mined lessons derive from tool-server output and are injected\nat system role. Enabling this makes one server's output every agent's\nsystem prompt -- do not enable it when running untrusted tool servers.\nSee docs/reference/security-model.md."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
