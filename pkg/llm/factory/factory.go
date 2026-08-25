@@ -15,6 +15,7 @@ package factory
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -438,6 +439,10 @@ func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, 
 
 func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, error) {
 	endpoint := f.config.LiteLLMEndpoint
+	if unresolved := loomconfig.UnresolvedEnvPlaceholders(endpoint); len(unresolved) > 0 {
+		log.Printf("warning: litellm_endpoint contains unresolved placeholder(s) %v; falling back to LITELLM_ENDPOINT/LITELLM_BASE_URL", unresolved)
+		endpoint = ""
+	}
 	if endpoint == "" {
 		endpoint = os.Getenv("LITELLM_ENDPOINT")
 	}

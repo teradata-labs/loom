@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -183,6 +184,48 @@ func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
 
 	// Endpoint placeholder expanded to "" so the factory falls back to env.
 	assert.Equal(t, "", f.config.LiteLLMEndpoint)
+
+	raw, err := f.createLiteLLMProvider("")
+	require.NoError(t, err)
+	client, ok := raw.(*litellm.Client)
+	require.True(t, ok)
+	response, err := client.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "ping"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", response.Content)
+	assert.Equal(t, "/v1/chat/completions", <-requestPath)
+}
+
+// TestCreateLiteLLMProvider_GenuinelyUnsetPlaceholderFallsBack verifies that
+// when an env-var placeholder references a variable that is genuinely absent
+// from the environment (LookupEnv returns false), ExpandEnvPlaceholders leaves
+// the literal "${VAR}" in place. The factory detects the unresolved placeholder
+// via UnresolvedEnvPlaceholders, logs a warning, and falls back to
+// LITELLM_ENDPOINT / LITELLM_BASE_URL — rather than using the literal string
+// as the endpoint URL and producing "no Host in request URL".
+func TestCreateLiteLLMProvider_GenuinelyUnsetPlaceholderFallsBack(t *testing.T) {
+	const varName = "MY_GENUINELY_UNSET_ENDPOINT"
+	t.Setenv(varName, "") // ensure it's unset for this test via Unsetenv
+	os.Unsetenv(varName)  //nolint:tenv // deliberately unset after Setenv cleanup registration
+
+	requestPath := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath <- r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("LITELLM_BASE_URL", server.URL)
+
+	f := NewProviderFactory(FactoryConfig{
+		LiteLLMEndpoint: "${" + varName + "}", // expands to literal "${MY_GENUINELY_UNSET_ENDPOINT}"
+	})
+
+	// ExpandEnvPlaceholders leaves the placeholder literal when the var is unset.
+	assert.Equal(t, "${"+varName+"}", f.config.LiteLLMEndpoint)
 
 	raw, err := f.createLiteLLMProvider("")
 	require.NoError(t, err)
