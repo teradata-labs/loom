@@ -288,11 +288,14 @@ const SlotOriginHTTPHeader = "X-Loom-Slot-Origin"
 
 // withHTTPSlotOrigin copies the X-Loom-Slot-Origin HTTP header from r into ctx
 // as gRPC incoming metadata so that slotOriginFromMetadata (which reads from
-// metadata) works on the HTTP/SSE path. The header value is lower-cased before
-// injection to match the gRPC path where the CLI always sends "interactive".
+// metadata) works on the HTTP/SSE path. The header value is trimmed and
+// lower-cased before injection to match the gRPC path where the CLI always
+// sends "interactive". Existing incoming metadata (if any) is preserved.
 func withHTTPSlotOrigin(ctx context.Context, r *http.Request) context.Context {
-	val := strings.ToLower(r.Header.Get(SlotOriginHTTPHeader))
-	md := metadata.Pairs(SlotOriginMetadataKey, val)
+	val := strings.ToLower(strings.TrimSpace(r.Header.Get(SlotOriginHTTPHeader)))
+	// Preserve any existing incoming metadata (e.g. set by earlier interceptors).
+	existing, _ := metadata.FromIncomingContext(ctx)
+	md := metadata.Join(existing, metadata.Pairs(SlotOriginMetadataKey, val))
 	return metadata.NewIncomingContext(ctx, md)
 }
 

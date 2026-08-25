@@ -536,9 +536,9 @@ func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, ses
 	if cfg.BedrockProfile != "" {
 		return "", "", ""
 	}
-	return os.ExpandEnv(cfg.BedrockAccessKeyID),
-		os.ExpandEnv(cfg.BedrockSecretAccessKey),
-		os.ExpandEnv(cfg.BedrockSessionToken)
+	return loomconfig.ExpandEnvPlaceholders(cfg.BedrockAccessKeyID),
+		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSecretAccessKey),
+		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
 }
 
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
@@ -605,11 +605,12 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		// NewClientForModel routes Anthropic Claude models to the streaming +
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
+		accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
 		client, err := bedrock.NewClientForModel(bedrock.Config{
 			Region:            cfg.BedrockRegion,
-			AccessKeyID:       cfg.BedrockAccessKeyID,
-			SecretAccessKey:   cfg.BedrockSecretAccessKey,
-			SessionToken:      cfg.BedrockSessionToken,
+			AccessKeyID:       accessKeyID,
+			SecretAccessKey:   secretAccessKey,
+			SessionToken:      sessionToken,
 			BearerToken:       cfg.BedrockBearerToken,
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
@@ -728,22 +729,22 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "litellm":
-		endpoint := os.ExpandEnv(cfg.LiteLLMEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(cfg.LiteLLMEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 		}
-		key := apiKey(os.ExpandEnv(cfg.LiteLLMAPIKey), "LITELLM_API_KEY")
+		key := apiKey(loomconfig.ExpandEnvPlaceholders(cfg.LiteLLMAPIKey), "LITELLM_API_KEY")
 		extraHeaders := make(map[string]string, len(cfg.LiteLLMExtraHeaders))
 		for k, v := range cfg.LiteLLMExtraHeaders {
-			extraHeaders[k] = os.ExpandEnv(v)
+			extraHeaders[k] = loomconfig.ExpandEnvPlaceholders(v)
 		}
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            key,
-			Model:             os.ExpandEnv(cfg.LiteLLMModel),
+			Model:             loomconfig.ExpandEnvPlaceholders(cfg.LiteLLMModel),
 			ExtraHeaders:      extraHeaders,
 			MaxTokens:         cfg.MaxTokens,
 			Temperature:       cfg.Temperature,
@@ -1016,25 +1017,25 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// AutomaticEnv does not bind nested secret keys that are absent from
 		// the config. Fall back to the environment so agent-config-driven
 		// providers get the same credentials as the primary LLM.
-		endpoint := os.ExpandEnv(serverConfig.LLM.LiteLLMEndpoint)
+		endpoint := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.LiteLLMEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_BASE_URL")
 		}
-		apiKey := os.ExpandEnv(serverConfig.LLM.LiteLLMAPIKey)
+		apiKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.LiteLLMAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("LITELLM_API_KEY")
 		}
 		extraHeaders := make(map[string]string, len(serverConfig.LLM.LiteLLMExtraHeaders))
 		for k, v := range serverConfig.LLM.LiteLLMExtraHeaders {
-			extraHeaders[k] = os.ExpandEnv(v)
+			extraHeaders[k] = loomconfig.ExpandEnvPlaceholders(v)
 		}
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            apiKey,
-			Model:             os.ExpandEnv(model),
+			Model:             loomconfig.ExpandEnvPlaceholders(model),
 			ExtraHeaders:      extraHeaders,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1154,6 +1155,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Create tracer based on mode
 	var tracer observability.Tracer
+
+	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
+	// injected, force observability on. See applyOTLPEnvOverride for full details.
+	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
+
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
@@ -1167,6 +1173,13 @@ func runServe(cmd *cobra.Command, args []string) {
 				mode = "service"
 			} else {
 				mode = "embedded"
+			}
+		}
+
+		if otlpEnv != "" {
+			if mode != "otel" {
+				logOTLPModeOverride(logger, mode, otlpEnv)
+				mode = "otel"
 			}
 		}
 
@@ -3531,10 +3544,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		defer preflightCancel()
 
 		if err := server.ValidateProviders(preflightCtx, agents); err != nil {
-			logger.Fatal("LLM provider preflight check failed", zap.Error(err))
+			// Log as a warning rather than fatal: some providers (e.g. LiteLLM)
+			// now expose a real HealthCheck endpoint that may not be reachable
+			// in all environments (auth-gated, different path convention, cold
+			// start). Failing to reach it does not mean completions will fail.
+			logger.Warn("LLM provider preflight check failed (non-fatal, server will start)", zap.Error(err))
+		} else {
+			logger.Info("All LLM provider preflight checks passed",
+				zap.Int("agents_checked", len(agents)))
 		}
-		logger.Info("All LLM provider preflight checks passed",
-			zap.Int("agents_checked", len(agents)))
 	}
 
 	// Start server
@@ -3914,16 +3932,8 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
-		// Expand ${ENV_VAR} in header values so secrets (e.g. a bearer token for
-		// an authenticated remote MCP server) come from the environment rather
-		// than being committed to the config file.
-		var headers map[string]string
-		if len(serverConfig.Headers) > 0 {
-			headers = make(map[string]string, len(serverConfig.Headers))
-			for k, v := range serverConfig.Headers {
-				headers[k] = os.ExpandEnv(v)
-			}
-		}
+		// Header expansion is handled by the manager (expandEnvHeaders) using
+		// the safe ${VAR} expander — do NOT expand here to avoid double-expansion.
 
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
@@ -3931,7 +3941,7 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			Env:              serverConfig.Env,
 			Transport:        transport,
 			URL:              serverConfig.URL,
-			Headers:          headers,
+			Headers:          serverConfig.Headers,
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,

@@ -286,10 +286,23 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// dynamic registration) so an externally-resolved tool is governed at the
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, tool.Name(), normalizedParams)
+	//
+	// Check both the requested name (alias/unqualified) and the canonical name
+	// so that deny rules written against either form are effective. Without this,
+	// a deny rule on the unqualified name would be inert once the tool is
+	// resolved to its server-qualified canonical name.
+	canonicalName := tool.Name()
+	req, admRes, denied := e.admit(ctx, canonicalName, normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
+	}
+	if toolName != canonicalName {
+		_, admRes2, denied2 := e.admit(ctx, toolName, normalizedParams)
+		if denied2 != nil {
+			adm = admRes2
+			return denied2, nil
+		}
 	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat

@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -35,12 +34,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-)
-
-// Global singleton rate limiter shared across all OpenAI clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // Client implements the LLMProvider interface for OpenAI's API.
@@ -120,10 +113,12 @@ func NewClient(config Config) *Client {
 		config.Temperature = DefaultOpenAITemperature
 	}
 
-	// Initialize rate limiter if enabled
+	// Initialize rate limiter if enabled — keyed by credential+endpoint+model
+	// so clients with independent quotas do not throttle each other.
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(config.RateLimiterConfig)
+		scope := "openai|" + llm.CredentialScope(config.APIKey) + "|" + config.Endpoint + "|" + config.Model
+		rateLimiter = llm.SharedRateLimiter(scope, config.RateLimiterConfig)
 	}
 
 	return &Client{
@@ -137,7 +132,11 @@ func NewClient(config Config) *Client {
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConns:          100,
 				// Use a short idle-connection timeout so the pool doesn't
 				// hand out stale connections that the LLM proxy has already
 				// closed on its side (which causes EOF errors).
@@ -206,9 +205,12 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 				return nil, err
 			}
 			if resp.StatusCode == http.StatusTooManyRequests {
+				retryAfter := llm.RetryAfterFromHeaders(resp.Header)
 				respBody, _ := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
-				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+				return nil, llm.NewThrottleError(
+					fmt.Errorf("API error (status 429): %s", string(respBody)),
+					retryAfter)
 			}
 			return resp, nil
 		})
@@ -233,14 +235,6 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 		}
 	}
 	return nil, fmt.Errorf("HTTP request failed")
-}
-
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Name returns the provider name.
@@ -407,7 +401,7 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 				}
 			}
 
-			if apiMsg.Content == "" && len(apiMsg.ToolCalls) == 0 {
+			if apiMsg.Content == nil && len(apiMsg.ToolCalls) == 0 {
 				continue
 			}
 			srcToEmitted[i] = len(apiMessages)

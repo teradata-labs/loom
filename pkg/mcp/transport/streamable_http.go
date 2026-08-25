@@ -65,7 +65,12 @@ type StreamableHTTPTransport struct {
 type StreamableHTTPConfig struct {
 	Endpoint       string            // MCP endpoint URL
 	Headers        map[string]string // Custom headers
-	EnableSessions bool              // Enable session management
+	// EnableSessions is a no-op. MCP 2026-07-28 moved session management to
+	// server-side header injection (Mcp-Session-Id); this client always
+	// captures and threads the session ID when the server sends it. The field
+	// is retained so existing configs load without error. It is removed after
+	// the deprecation window (2027-07-28).
+	EnableSessions bool
 	// EnableResumption is a no-op. SSE resumption never had a read path in
 	// Loom (no Last-Event-ID was ever sent) and the 2026-07-28 revision
 	// removes resumption from the protocol; the field is retained only so
@@ -87,13 +92,20 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	}
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
-	httpTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		logger.Warn("http.DefaultTransport is not *http.Transport; using plain transport (otel/mTLS wrappers will not apply)")
-		httpTransport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+
+	// Prefer a Clone of http.DefaultTransport so we inherit proxy/TLS settings.
+	// If DefaultTransport has been replaced by a wrapper (e.g. otel or mTLS
+	// RoundTripper), keep the wrapper as-is rather than discarding it.
+	var clientTransport http.RoundTripper
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		clientTransport = base.Clone()
 	} else {
-		httpTransport = httpTransport.Clone()
+		logger.Warn("http.DefaultTransport is not *http.Transport; using it as-is (otel/mTLS wrappers preserved)")
+		clientTransport = http.DefaultTransport
 	}
+	// httpTransport is used only for CloseIdleConnections; fall back to nil when
+	// the transport is a wrapped RoundTripper that doesn't expose the method.
+	httpTransport, _ := clientTransport.(*http.Transport)
 
 	if config.EnableResumption {
 		logger.Warn("enable_resumption is deprecated and has no effect: SSE resumption was removed by MCP 2026-07-28 and never had a read path in this client")
@@ -101,7 +113,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	t := &StreamableHTTPTransport{
 		endpoint:       config.Endpoint,
-		client:         &http.Client{Transport: httpTransport},
+		client:         &http.Client{Transport: clientTransport},
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -303,16 +315,17 @@ func (t *StreamableHTTPTransport) Close() error {
 	// Wait for streams to finish
 	t.activeStreams.Wait()
 
-	if t.transport != nil {
-		t.transport.CloseIdleConnections()
-	}
-
-	// A server-issued session must always be terminated, even when proactive
-	// session management was disabled in the client configuration.
+	// Terminate the server session before closing idle connections so the
+	// DELETE request can reuse a pooled connection rather than opening a new
+	// one into an already-drained pool.
 	if t.sessionMgr.HasSession() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = t.terminateSession(ctx) // Best effort
+	}
+
+	if t.transport != nil {
+		t.transport.CloseIdleConnections()
 	}
 
 	// The message channels are deliberately never closed: Send delivers into
@@ -476,19 +489,13 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	// Legacy (2025-03-26..2025-11-25) session expiry: a 404 while holding a
-	// session means the server dropped it.
-	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
-		t.logger.Warn("Session expired (404), clearing session")
-		t.sessionMgr.ClearSession()
-		return true, ErrSessionExpired
-	}
-
 	// 2026-07-28 servers carry JSON-RPC error responses in HTTP 4xx bodies
 	// (unknown method → 404 with -32601, version problems → 400 with -32022,
 	// header mismatch → 400 with -32020). Deliver them as protocol messages
 	// so the pending request receives the typed JSON-RPC error instead of a
-	// transport failure.
+	// transport failure. This MUST be checked before the session-expiry branch
+	// below, because a 404 with a JSON-RPC -32601 error (method not found) is
+	// NOT a session expiry — it is a normal protocol error response.
 	if isJSONRPCErrorResponse(body) {
 		select {
 		case t.messages <- body:
@@ -496,6 +503,15 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 		case <-ctx.Done():
 			return true, ctx.Err()
 		}
+	}
+
+	// Legacy (2025-03-26..2025-11-25) session expiry: a 404 while holding a
+	// session means the server dropped it. Only fires when the body is NOT a
+	// JSON-RPC error (handled above).
+	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
+		t.logger.Warn("Session expired (404), clearing session")
+		t.sessionMgr.ClearSession()
+		return true, ErrSessionExpired
 	}
 
 	return true, &HTTPStatusError{Code: resp.StatusCode, Body: body}

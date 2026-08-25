@@ -143,6 +143,11 @@ func (r *Registry) Unregister(name string) {
 // This allows callers to look up a tool by both its canonical prefixed name
 // (e.g. "teradata-aiop:base_databaseList") and a plain alias
 // (e.g. "base_databaseList") without duplicating the tool implementation.
+//
+// Known limitation: aliases are permanent once registered. If a second MCP
+// server later registers a tool with the same unqualified name, the alias
+// still routes to the first winner. The ambiguity guard in
+// tryDynamicRegistration only fires on the initial resolution pass.
 func (r *Registry) RegisterAlias(alias string, tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
