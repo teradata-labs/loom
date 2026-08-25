@@ -403,3 +403,29 @@ func TestSessionHandleFromData(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleCollectorScopedPerServer pins the dedup scope: two servers
+// minting the identical handle string are tracked independently, and a
+// release through one server never forgets the other's handle.
+func TestHandleCollectorScopedPerServer(t *testing.T) {
+	_, c := WithHandleCollector(context.Background())
+	aA := &MCPToolAdapter{serverName: "server-a"}
+	aB := &MCPToolAdapter{serverName: "server-b"}
+
+	c.add(aA, "tdsh_same")
+	c.add(aB, "tdsh_same")
+	if got := c.Count(); got != 2 {
+		t.Fatalf("expected both servers' identical handle strings tracked, got %d", got)
+	}
+
+	c.forget(aB, "tdsh_same")
+	if got := c.Count(); got != 1 {
+		t.Fatalf("expected server-a's handle to survive server-b's release, got %d", got)
+	}
+	c.mu.Lock()
+	survivor := c.minted[0]
+	c.mu.Unlock()
+	if survivor.adapter.serverName != "server-a" {
+		t.Fatalf("wrong survivor: %s", survivor.adapter.serverName)
+	}
+}

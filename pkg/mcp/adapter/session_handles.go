@@ -84,29 +84,40 @@ func collectorFrom(ctx context.Context) *HandleCollector {
 	return c
 }
 
-// add records a minted handle once. Duplicates (the same handle re-reported)
-// are ignored; releases are deduplicated at collection time.
+// collectorKey scopes dedup to the minting server: two servers can mint
+// identical handle strings, and a release on one must never forget the
+// other's handle.
+func collectorKey(a *MCPToolAdapter, handle string) string {
+	return a.serverName + "\x00" + handle
+}
+
+// add records a minted handle once per server. Duplicates (the same handle
+// re-reported by the same server) are ignored; releases are deduplicated at
+// collection time.
 func (c *HandleCollector) add(a *MCPToolAdapter, handle string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.present[handle] {
+	key := collectorKey(a, handle)
+	if c.present[key] {
 		return
 	}
-	c.present[handle] = true
+	c.present[key] = true
 	c.minted = append(c.minted, mintedHandle{adapter: a, handle: handle})
 }
 
-// forget drops a handle the agent released explicitly (seen as a release
-// argument on a successful call), so ReleaseAll doesn't double-release it.
-func (c *HandleCollector) forget(handle string) {
+// forget drops a handle the agent released explicitly through the same
+// server (seen as a release argument on a successful call), so ReleaseAll
+// doesn't double-release it.
+func (c *HandleCollector) forget(a *MCPToolAdapter, handle string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.present[handle] {
+	key := collectorKey(a, handle)
+	if !c.present[key] {
 		return
 	}
-	delete(c.present, handle)
+	delete(c.present, key)
 	for i, m := range c.minted {
-		if m.handle == handle {
+		if m.handle == handle && m.adapter.serverName == a.serverName {
 			c.minted = append(c.minted[:i:i], c.minted[i+1:]...)
 			break
 		}
@@ -272,7 +283,7 @@ func trackSessionHandles(ctx context.Context, a *MCPToolAdapter, params map[stri
 	}
 	for _, key := range []string{"release_handle", "releaseHandle"} {
 		if released, ok := params[key].(string); ok && released != "" {
-			c.forget(released)
+			c.forget(a, released)
 		}
 	}
 	if _, declared := releaseHandleProperty(a.tool.InputSchema); !declared {
