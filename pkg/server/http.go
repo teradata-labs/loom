@@ -337,7 +337,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
-	ctx := r.Context()
+	ctx := withHTTPSlotOrigin(r.Context(), r)
 
 	// Create gRPC stream
 	stream := &sseStreamWrapper{

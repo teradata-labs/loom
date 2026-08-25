@@ -452,12 +452,18 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 	// endpoint is optional — litellm.NewClient defaults to http://litellm:4000/v1/chat/completions
 
 	apiKey := f.config.LiteLLMAPIKey
+	if unresolved := loomconfig.UnresolvedEnvPlaceholders(apiKey); len(unresolved) > 0 {
+		log.Printf("warning: litellm_api_key contains unresolved placeholder(s) %v; the literal placeholder string will be sent as the key", unresolved)
+	}
 	if apiKey == "" {
 		apiKey = os.Getenv("LITELLM_API_KEY")
 	}
 
 	if model == "" {
 		model = f.config.LiteLLMModel
+	}
+	if unresolved := loomconfig.UnresolvedEnvPlaceholders(model); len(unresolved) > 0 {
+		log.Printf("warning: litellm_model contains unresolved placeholder(s) %v; the literal placeholder string will be used as the model name", unresolved)
 	}
 	// model is optional — litellm.NewClient defaults to anthropic/claude-sonnet-4-5-20250929
 

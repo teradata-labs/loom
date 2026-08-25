@@ -645,6 +645,16 @@ func TestResolveOTelConfig(t *testing.T) {
 }
 
 func TestResolveOTLPEndpointEnv(t *testing.T) {
+	t.Run("returns empty string when no env vars set", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("LOOM_OTLP_ENDPOINT", "")
+		got := ResolveOTLPEndpointEnv()
+		if got != "" {
+			t.Errorf("expected empty string when no env vars set, got %q", got)
+		}
+	})
+
 	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
 		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://col:4318/v1/traces")
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")
@@ -704,6 +714,14 @@ func TestResolveOTelConfigHeaders(t *testing.T) {
 }
 
 func TestResolveOTelConfigInsecure(t *testing.T) {
+	t.Run("Insecure stays false when LOOM_OTLP_INSECURE is unset", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "https://collector:4318"})
+		if cfg.Insecure {
+			t.Error("expected Insecure=false when LOOM_OTLP_INSECURE is unset")
+		}
+	})
+
 	t.Run("LOOM_OTLP_INSECURE sets Insecure when not already true", func(t *testing.T) {
 		t.Setenv("LOOM_OTLP_INSECURE", "true")
 		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})

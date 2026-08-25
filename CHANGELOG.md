@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in (`tools.permissions.allowed_tools: [manage_ephemeral_agents]`) or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
+- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
 
 ### Added
 
 #### MCP Streamable-HTTP Session & 202 Handling
 - Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
-- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
+- Handle HTTP 202 Accepted (async MCP responses) correctly for non-request messages; for JSON-RPC requests, 202 is now treated as an error since the spec requires a response body.
 - Forward the `DELETE` verb (session teardown) with the correct headers.
 
 #### OpenAI Client Transport Hardening
@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### LiteLLM Health Checks
 - Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
 - Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
+#### OTLP Runtime Integration
+- `applyOTLPEnvOverride` on both `looms serve` and `looms workflow` paths so the platform can enable tracing by injecting `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+- In-process parent-linkage test added to the OTLP test suite.
 
 ## [1.4.0] - 2026-08-12
 
@@ -58,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### OTLP Tracing (#255)
 - `OTelTracer` exports spans to any OTLP/HTTP backend (Opik, Jaeger, Tempo); Loom span attributes translate to OTel `gen_ai.*` semantic conventions; `mode: otel` in observability config plus auto-select from `OTEL_EXPORTER_OTLP_TRACES_*` env vars; credential and PII redaction default-on for exported spans. OTLP/gRPC is not implemented.
-- In-process parent-linkage test added to the OTLP test suite.
 
 #### Multimodal User Turns (#249)
 - `ChatWithContentBlocks`: user turns carry text + image content blocks end-to-end (agent → provider), with the canonical text preserved on the stored turn.
