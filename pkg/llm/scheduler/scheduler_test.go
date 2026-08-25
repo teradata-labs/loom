@@ -533,3 +533,36 @@ func TestAcquireAfterCloseGrantsImmediately(t *testing.T) {
 		"Close-time and post-Close grants must flow through grantLocked accounting")
 	assert.Equal(t, int64(2), st.GrantsTotal)
 }
+
+// TestOperatorCeilingSurvivesHeaderCalibration pins the override contract: an
+// operator sets a ceiling to drain a scope or to reproduce contention, and
+// the provider's very next successful response must not silently undo it.
+func TestOperatorCeilingSurvivesHeaderCalibration(t *testing.T) {
+	s := New("scope", Config{})
+	defer s.Close()
+
+	s.SetConfig(600_000, 0, 0, 0)
+	require.True(t, s.State().CeilingPinned, "an explicit ceiling is pinned")
+	require.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute)
+
+	// The provider says 1.5M on the next response — exactly what clobbered
+	// the override before.
+	s.UpdateFromHeaders(1_500_000, 1_499_000, 0)
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"header calibration must not move a pinned ceiling")
+
+	// AIMD must not move it either, in either direction.
+	s.ObserveThrottle(0)
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"a throttle must not halve a pinned ceiling")
+	s.ObserveSuccess()
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"AIMD must not grow a pinned ceiling")
+
+	// 0 releases the pin and hands the scope back to calibration.
+	s.SetConfig(0, 0, 0, 0)
+	assert.False(t, s.State().CeilingPinned)
+	s.UpdateFromHeaders(1_500_000, 1_499_000, 0)
+	assert.Equal(t, int64(1_500_000), s.State().EffectiveTokensPerMinute,
+		"released scopes calibrate again")
+}
