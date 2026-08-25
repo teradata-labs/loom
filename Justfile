@@ -640,7 +640,7 @@ build-runtime-multiarch tag=`cat VERSION`:
 # Build and load loom-runtime image into ALL nodes of a minikube cluster.
 # Uses docker build + minikube image load (vs minikube image build) so the image
 # is distributed to every node — required for multi-node clusters.
-build-runtime-minikube tag="1.0.0" profile="agentops-cluster":
+build-runtime-minikube tag=`cat VERSION` profile="agentops-cluster":
     just build-runtime {{tag}}
     minikube image load teradata/loom-runtime:{{tag}} -p {{profile}}
 

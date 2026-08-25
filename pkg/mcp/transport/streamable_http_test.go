@@ -143,10 +143,8 @@ func TestStreamableHTTPTransport_CapturesSessionIDWithoutEnableSessions(t *testi
 		"Close must terminate a server-issued session even when EnableSessions is false")
 }
 
-// TestStreamableHTTPTransport_Accepts202PlainTextAck reproduces the Atlassian
-// remote MCP behaviour: a notification (e.g. notifications/initialized) is
-// acknowledged with 202 Accepted and Content-Type text/plain, which must be
-// treated as a successful acknowledgment rather than an unexpected Content-Type.
+// TestStreamableHTTPTransportReestablishesExpiredSession verifies that the transport
+// clears an expired session (HTTP 404) and re-establishes a new session on the next request.
 func TestStreamableHTTPTransportReestablishesExpiredSession(t *testing.T) {
 	const oldSession = "session-old"
 	const newSession = "session-new"
@@ -196,6 +194,10 @@ func TestNewStreamableHTTPTransportHandlesWrappedDefaultTransport(t *testing.T) 
 	_ = transport.Close()
 }
 
+// TestStreamableHTTPTransport_Accepts202PlainTextAck reproduces the Atlassian
+// remote MCP behaviour: a notification (e.g. notifications/initialized) is
+// acknowledged with 202 Accepted and Content-Type text/plain, which must be
+// treated as a successful acknowledgment rather than an unexpected Content-Type.
 func TestStreamableHTTPTransport_Accepts202PlainTextAck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
@@ -220,12 +222,25 @@ func TestStreamableHTTPTransport_Rejects202ForRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
-	require.NoError(t, err)
-	defer func() { _ = tr.Close() }()
+	t.Run("rejects 202 for JSON-RPC request with method and id", func(t *testing.T) {
+		tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
+		require.NoError(t, err)
+		defer func() { _ = tr.Close() }()
 
-	err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	require.EqualError(t, err, "unexpected 202 Accepted for JSON-RPC request")
+		err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		require.EqualError(t, err, "unexpected 202 response for JSON-RPC request")
+	})
+
+	t.Run("does not reject 202 for message with id but no method (response)", func(t *testing.T) {
+		tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{Endpoint: srv.URL})
+		require.NoError(t, err)
+		defer func() { _ = tr.Close() }()
+
+		// A message with id but no method is a client response to a server-initiated request,
+		// not a request itself — it must not trigger the JSON-RPC request error.
+		err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1}`))
+		require.NoError(t, err)
+	})
 }
 
 func TestNewStreamableHTTPTransport(t *testing.T) {

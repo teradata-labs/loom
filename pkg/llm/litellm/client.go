@@ -118,6 +118,11 @@ func NewClient(cfg Config) *Client {
 		cfg.Temperature = DefaultTemperature
 	}
 
+	extraHeadersCopy := make(map[string]string, len(cfg.ExtraHeaders))
+	for k, v := range cfg.ExtraHeaders {
+		extraHeadersCopy[k] = v
+	}
+
 	inner := openai.NewClient(openai.Config{
 		APIKey:            cfg.APIKey,
 		Model:             cfg.Model,
@@ -126,7 +131,7 @@ func NewClient(cfg Config) *Client {
 		MaxTokens:         cfg.MaxTokens,
 		Temperature:       cfg.Temperature,
 		RateLimiterConfig: cfg.RateLimiterConfig,
-		ExtraHeaders:      cfg.ExtraHeaders,
+		ExtraHeaders:      extraHeadersCopy,
 	})
 
 	return &Client{
@@ -134,7 +139,7 @@ func NewClient(cfg Config) *Client {
 		model:        cfg.Model,
 		healthURL:    healthEndpoint(cfg.Endpoint),
 		apiKey:       cfg.APIKey,
-		extraHeaders: cfg.ExtraHeaders,
+		extraHeaders: extraHeadersCopy,
 		httpClient:   &http.Client{Timeout: cfg.Timeout},
 	}
 }
@@ -184,7 +189,15 @@ func healthEndpoint(chatEndpoint string) string {
 	if err != nil {
 		return strings.TrimSuffix(chatEndpoint, "/v1/chat/completions") + "/health/liveliness"
 	}
-	parsed.Path = "/health/liveliness"
+	// Strip everything from /v1/ onward and append /health/liveliness,
+	// preserving any gateway path prefix (e.g. /litellm).
+	path := parsed.Path
+	if idx := strings.Index(path, "/v1/"); idx >= 0 {
+		path = path[:idx]
+	} else {
+		path = strings.TrimSuffix(path, "/")
+	}
+	parsed.Path = path + "/health/liveliness"
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()

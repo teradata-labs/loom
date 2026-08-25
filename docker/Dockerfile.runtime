@@ -35,7 +35,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # =============================================================================
 # Stage 2: Runtime image — minimal, distroless, no shell
 # =============================================================================
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian12:nonroot
 
 # Binary
 COPY --from=builder /looms /looms

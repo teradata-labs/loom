@@ -58,6 +58,7 @@ type StreamableHTTPTransport struct {
 	// Configuration
 	enableSessions bool
 	headers        map[string]string // custom headers (e.g. Authorization) sent on every request
+	transport      *http.Transport   // stored for CloseIdleConnections on Close
 }
 
 // StreamableHTTPConfig configures streamable-http transport.
@@ -88,6 +89,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	httpTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
+		logger.Warn("http.DefaultTransport is not *http.Transport; using plain transport (otel/mTLS wrappers will not apply)")
 		httpTransport = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	} else {
 		httpTransport = httpTransport.Clone()
@@ -108,6 +110,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 		streamCancel:   streamCancel,
 		enableSessions: config.EnableSessions,
 		headers:        config.Headers,
+		transport:      httpTransport,
 	}
 
 	logger.Info("Streamable HTTP transport created", zap.String("endpoint", config.Endpoint))
@@ -189,7 +192,8 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	// held yet. Per the MCP spec, if the server issues a session ID the client
 	// MUST echo it on every subsequent request; session-based servers such as
 	// Atlassian's remote MCP reject follow-up notifications without it.
-	// The enable_sessions flag controls proactive session termination on Close.
+	// Note: session IDs are captured regardless of enable_sessions; the flag is
+	// retained for config compatibility but has no runtime effect.
 	if !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
@@ -206,7 +210,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	// response body; a bare 202 for a request indicates a server bug.
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
 		if isJSONRPCRequest(message) {
-			return fmt.Errorf("unexpected 202 Accepted for JSON-RPC request")
+			return fmt.Errorf("unexpected %d response for JSON-RPC request", resp.StatusCode)
 		}
 		t.logger.Debug("Notification accepted")
 		return nil
@@ -298,6 +302,10 @@ func (t *StreamableHTTPTransport) Close() error {
 
 	// Wait for streams to finish
 	t.activeStreams.Wait()
+
+	if t.transport != nil {
+		t.transport.CloseIdleConnections()
+	}
 
 	// A server-issued session must always be terminated, even when proactive
 	// session management was disabled in the client configuration.
@@ -493,18 +501,22 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 	return true, &HTTPStatusError{Code: resp.StatusCode, Body: body}
 }
 
-// isJSONRPCErrorResponse reports whether body is a routable JSON-RPC error
-// response: correct version, an id to route on, and an error member.
+// isJSONRPCRequest reports whether msg is a JSON-RPC request: it must have
+// both a method and a non-null id. Responses also carry ids, so probing
+// only for id would misclassify client responses to server-initiated requests.
 func isJSONRPCRequest(msg []byte) bool {
 	var probe struct {
-		ID json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
 	}
 	if err := json.Unmarshal(msg, &probe); err != nil {
 		return false
 	}
-	return len(probe.ID) > 0 && string(probe.ID) != "null"
+	return probe.Method != "" && len(probe.ID) > 0 && string(probe.ID) != "null"
 }
 
+// isJSONRPCErrorResponse reports whether body is a routable JSON-RPC error
+// response: correct version, an id to route on, and an error member.
 func isJSONRPCErrorResponse(body []byte) bool {
 	var probe struct {
 		JSONRPC string          `json:"jsonrpc"`

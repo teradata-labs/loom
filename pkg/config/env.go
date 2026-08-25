@@ -68,6 +68,10 @@ func ExpandEnvPlaceholders(value string) string {
 func UnresolvedEnvPlaceholders(value string) []string {
 	missing := make(map[string]struct{})
 	for i := 0; i+2 < len(value); i++ {
+		if value[i] == '$' && i+1 < len(value) && value[i+1] == '$' {
+			i++ // skip the escaped dollar — the expander emits a literal '$', no variable reference
+			continue
+		}
 		if value[i] != '$' || value[i+1] != '{' {
 			continue
 		}

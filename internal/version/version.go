@@ -17,6 +17,10 @@ package version
 // go build -ldflags="-X github.com/teradata-labs/loom/internal/version.Version=vX.Y.Z"
 var Version = "1.4.0" // Default version
 
+// GitCommit can be overridden at build time via ldflags:
+// go build -ldflags="-X github.com/teradata-labs/loom/internal/version.GitCommit=<hash>"
+var GitCommit = "unknown"
+
 // Get returns the current version
 func Get() string {
 	if Version == "" {
