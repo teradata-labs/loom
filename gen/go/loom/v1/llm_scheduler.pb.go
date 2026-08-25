@@ -92,6 +92,13 @@ func (SlotPriorityClass) EnumDescriptor() ([]byte, []int) {
 // response experiences latency directly, while batch work only cares about
 // throughput. Within a band, SlotPriorityClass orders requests. Aging never
 // promotes across bands.
+//
+// Trust model: the origin is CLIENT-ASSERTED (gRPC metadata
+// "loom-slot-origin") and trusted as-is by design. Loom deployments are
+// operated by the same party that runs the clients (single-operator), so a
+// client has nothing to gain by lying about a human waiting. A deployment
+// exposing the API to untrusted callers must strip or override this
+// metadata at its edge.
 type SlotOrigin int32
 
 const (
@@ -158,13 +165,18 @@ type LLMSchedulerConfig struct {
 	TokensPerMinute int64 `protobuf:"varint,1,opt,name=tokens_per_minute,json=tokensPerMinute,proto3" json:"tokens_per_minute,omitempty"`
 	// Token reservation charged per call at grant time, mirroring providers
 	// that debit prompt-estimate + max_tokens at admission (Azure/OpenAI).
-	// 0 = derive from the requesting agent's max_tokens.
+	// 📋 Planned: not yet read by the scheduler — reservations are currently
+	// derived per call (prompt estimate + the agent's max_tokens).
 	ReservationTokensPerCall int32 `protobuf:"varint,2,opt,name=reservation_tokens_per_call,json=reservationTokensPerCall,proto3" json:"reservation_tokens_per_call,omitempty"`
 	// Ceiling on concurrently active (admitted, not parked) conversations.
 	// 0 = derive from measured capacity; see the design doc for the formula.
+	// Enforced only when door admission is enabled; the door layer is not yet
+	// wired, so this field is currently ignored.
 	MaxActiveConversations int32 `protobuf:"varint,3,opt,name=max_active_conversations,json=maxActiveConversations,proto3" json:"max_active_conversations,omitempty"`
 	// Door-queue depth beyond which new conversations are rejected with
 	// RESOURCE_EXHAUSTED instead of queued.
+	// Enforced only when door admission is enabled; the door layer is not yet
+	// wired, so this field is currently ignored.
 	MaxDoorQueue int32 `protobuf:"varint,4,opt,name=max_door_queue,json=maxDoorQueue,proto3" json:"max_door_queue,omitempty"`
 	// Seconds after which a waiting slot request is promoted one priority
 	// class. Bounds starvation: any waiter reaches the top class in at most
@@ -266,11 +278,13 @@ type SlotState struct {
 	// The provider quota scope this scheduler protects.
 	Scope string `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
 	// Conversations currently holding at least one grant or eligible to
-	// request one.
+	// request one. Populated when door admission is enabled (door layer not
+	// yet wired).
 	ActiveConversations int32 `protobuf:"varint,2,opt,name=active_conversations,json=activeConversations,proto3" json:"active_conversations,omitempty"`
 	// Slot requests currently parked waiting for capacity.
 	ParkedRequests int32 `protobuf:"varint,3,opt,name=parked_requests,json=parkedRequests,proto3" json:"parked_requests,omitempty"`
-	// Conversations queued at the admission door.
+	// Conversations queued at the admission door. Populated when door
+	// admission is enabled (door layer not yet wired).
 	DoorQueueDepth int32 `protobuf:"varint,4,opt,name=door_queue_depth,json=doorQueueDepth,proto3" json:"door_queue_depth,omitempty"`
 	// Effective tokens-per-minute after provider-telemetry calibration (or
 	// AIMD for signal-free providers). This is the enforced number.

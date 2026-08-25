@@ -228,19 +228,48 @@ func TestReservationTrueUpFreesBudget(t *testing.T) {
 
 func TestUpdateFromHeadersCalibrates(t *testing.T) {
 	s := newTest(t, Config{TokensPerMinute: 100, InteractiveHeadroom: -1})
+	// Azure's own fixture: a HEALTHY scope — abundant remaining quota, with
+	// the informational "window resets in 30s" header every response carries.
 	s.UpdateFromHeaders(1_500_000, 745_399, 30*time.Second)
 	st := s.State()
 	assert.Equal(t, int64(1_500_000), st.EffectiveTokensPerMinute)
+	assert.Nil(t, st.NextWake,
+		"an informational reset with abundant remaining must not gate admission")
 
 	// Header calibration must open the budget for a large reservation the
-	// static config would have parked forever.
-	// (nextWake from reset is respected, so wait past it.)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// static config would have parked forever — PROMPTLY, not after the 30s
+	// reset: gating every healthy response on the reset header froze the
+	// scope for the rest of its window per success.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := s.Acquire(ctx, Request{ReservationTokens: 5_000})
-	// May park until the 30s reset in a strict reading; accept either grant
-	// or context expiry, but the ceiling must be calibrated.
-	_ = err
+	g, err := s.Acquire(ctx, Request{ReservationTokens: 5_000})
+	require.NoError(t, err, "a healthy calibrated scope must admit promptly")
+	require.NotNil(t, g)
+	g.Release(100)
+}
+
+// The inverse: when the provider says remaining is actually exhausted, the
+// reset header IS the gate — admission stops until the window renews.
+func TestUpdateFromHeadersExhaustedGatesUntilReset(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
+	s.UpdateFromHeaders(1000, 0, 400*time.Millisecond)
+	st := s.State()
+	require.NotNil(t, st.NextWake, "exhausted remaining must arm the reset wake")
+
+	// Gated while the wake is pending.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := s.Acquire(ctx, Request{ReservationTokens: 10})
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"an exhausted window must refuse admission until the reset")
+
+	// Admitted after the reset passes (the provider's window renewed, so
+	// ours renews with it — the stale windowUsed must not keep refusing).
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	g, err := s.Acquire(ctx2, Request{ReservationTokens: 10})
+	require.NoError(t, err, "the scope must recover once the provider's window resets")
+	g.Release(1)
 }
 
 func TestAIMD(t *testing.T) {
@@ -254,6 +283,179 @@ func TestAIMD(t *testing.T) {
 	s.UpdateFromHeaders(1_000_000, -1, 0)
 	s.ObserveSuccess()
 	assert.Equal(t, int64(1_000_000), s.State().EffectiveTokensPerMinute)
+}
+
+// resetThrottleHoldOff forces the next ObserveThrottle to count as a NEW
+// congestion event (tests are in-package precisely for knobs like this).
+func resetThrottleHoldOff(s *Scheduler) {
+	s.mu.Lock()
+	s.decreaseHoldOffUntil = time.Time{}
+	s.mu.Unlock()
+}
+
+// A 429 retry storm — every attempt of one logical call, times concurrent
+// callers — is ONE congestion event: exactly one multiplicative decrease.
+func TestThrottleStormOneDecreasePerCongestionEvent(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 100_000, InteractiveHeadroom: -1})
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.ObserveThrottle(0)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int64(50_000), s.State().EffectiveTokensPerMinute,
+		"50 throttle reports within one hold-off must apply exactly one halving")
+}
+
+// Repeated congestion events can never push the ceiling below the floor that
+// keeps the scope's smallest reservation admissible.
+func TestThrottleFloorKeepsSmallestReservationAdmissible(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 100_000, InteractiveHeadroom: -1})
+	g, err := s.Acquire(context.Background(), Request{ReservationTokens: 8_000})
+	require.NoError(t, err)
+	g.Cancel() // never ran: seeds minSeenReservation, window stays untouched
+
+	for i := 0; i < 20; i++ {
+		s.ObserveThrottle(0)
+		resetThrottleHoldOff(s)
+	}
+	// floor = minSeenReservation / utilization + 1 = 8000/0.8 + 1.
+	assert.Equal(t, int64(10_001), s.State().EffectiveTokensPerMinute,
+		"the ceiling must stop at the smallest-reservation floor")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	g2, err := s.Acquire(ctx, Request{ReservationTokens: 8_000})
+	require.NoError(t, err, "the floor exists precisely so this stays admissible")
+	g2.Release(1)
+}
+
+// The structural anti-wedge guarantee: an idle scope (nothing reserved,
+// window untouched) ALWAYS admits its head request, however far the ceiling
+// has collapsed — a scope that admits nothing can never observe the success
+// it needs to recover.
+func TestWedgeImpossibleIdleScopeAlwaysAdmits(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
+	// Collapse the ceiling as far as repeated congestion events can push it.
+	for i := 0; i < 30; i++ {
+		s.ObserveThrottle(0)
+		resetThrottleHoldOff(s)
+	}
+	require.LessOrEqual(t, s.State().EffectiveTokensPerMinute, int64(1),
+		"with no reservations seen the ceiling collapses to the minimal floor")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	g, err := s.Acquire(ctx, Request{ReservationTokens: 50_000})
+	require.NoError(t, err, "an idle scope must admit its head regardless of budget")
+	g.Cancel()
+
+	g2, err := s.Acquire(ctx, Request{ReservationTokens: 50_000})
+	require.NoError(t, err, "and again: the valve is structural, not one-shot")
+	g2.Release(10)
+}
+
+// After a collapse, clean traffic must rebuild the ceiling (AIMD growth is
+// the repair path for uncalibrated scopes).
+func TestRecoveryAfterCollapse(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 100_000, InteractiveHeadroom: -1})
+	for i := 0; i < 10; i++ {
+		s.ObserveThrottle(0)
+		resetThrottleHoldOff(s)
+	}
+	low := s.State().EffectiveTokensPerMinute
+	for i := 0; i < 40; i++ {
+		s.ObserveSuccess()
+	}
+	assert.Greater(t, s.State().EffectiveTokensPerMinute, low,
+		"clean completions must grow a collapsed ceiling back")
+}
+
+// Cancelled grants (the call never ran) must not charge the window: a
+// mass-cancel wave that charged full reservations would exhaust the budget
+// with phantom usage.
+func TestCancelledGrantChargesNoUsage(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
+	// Mass-cancel wave: 20 full-budget grants acquired and cancelled. If any
+	// one of them charged its reservation, the window would be exhausted 20
+	// times over and the final acquire below would park until rollover.
+	for i := 0; i < 20; i++ {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
+		require.NoError(t, err)
+		g.Cancel()
+	}
+	st := s.State()
+	assert.Equal(t, int64(0), st.ReservedTokensOutstanding)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	g, err := s.Acquire(ctx, Request{ReservationTokens: 800})
+	require.NoError(t, err, "the wave must leave windowUsed unchanged")
+	g.Release(1)
+}
+
+// M2: once a top-class waiter has starved past its aging point, smaller
+// lower-class arrivals must stop backfilling past it — otherwise a large
+// reservation starves forever behind a continuous stream of small NEW work.
+func TestStarvedTopClassHeadHaltsBackfill(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 200 * time.Millisecond, InteractiveHeadroom: -1})
+	hog1, err := s.Acquire(context.Background(), Request{ReservationTokens: 500})
+	require.NoError(t, err)
+	hog2, err := s.Acquire(context.Background(), Request{ReservationTokens: 200})
+	require.NoError(t, err)
+
+	// A large RESOURCE_HOLDER parks (500+200+400 > 800)...
+	holderGranted := make(chan *Grant, 1)
+	go func() {
+		g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 400, Class: classHolder, ConversationID: "big-holder"})
+		require.NoError(t, gerr)
+		holderGranted <- g
+	}()
+	// ...and starves past its aging point at the top class.
+	time.Sleep(300 * time.Millisecond)
+
+	// A stream of small NEW arrivals that would individually fit.
+	smallGranted := make(chan *Grant, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 100, Class: classNew})
+			require.NoError(t, gerr)
+			smallGranted <- g
+		}()
+	}
+	time.Sleep(100 * time.Millisecond) // let them park behind the holder
+
+	// Free 200 tokens: the starved holder still does not fit (500+400 > 800)
+	// and the smalls (500+100 <= 800) MUST NOT backfill past it.
+	hog2.Release(1)
+	select {
+	case <-holderGranted:
+		t.Fatal("holder cannot fit while hog1 holds 500")
+	case g := <-smallGranted:
+		g.Release(1)
+		t.Fatal("small NEW arrival backfilled past a starved RESOURCE_HOLDER head")
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	// Drain the rest: the holder must be admitted within bounded churn.
+	hog1.Release(1)
+	select {
+	case g := <-holderGranted:
+		g.Release(1)
+	case <-time.After(5 * time.Second):
+		t.Fatal("starved holder never admitted after capacity drained")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case g := <-smallGranted:
+			g.Release(1)
+		case <-time.After(5 * time.Second):
+			t.Fatal("small waiters starved after the holder drained")
+		}
+	}
 }
 
 func TestConcurrentAcquireReleaseRace(t *testing.T) {
@@ -307,4 +509,27 @@ func TestCloseWakesParkedWaiters(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close must wake parked waiters, not strand them")
 	}
+}
+
+// Acquire AFTER Close must not park on a scheduler nothing will ever wake:
+// it grants immediately (shutdown semantics — pacing no longer matters), and
+// the grant flows through the normal accounting.
+func TestAcquireAfterCloseGrantsImmediately(t *testing.T) {
+	s := New("test|closed-acquire", Config{TokensPerMinute: 1000, InteractiveHeadroom: -1})
+	// Saturate the scope first so a non-closed scheduler WOULD park.
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 800})
+	require.NoError(t, err)
+	s.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	g, err := s.Acquire(ctx, Request{ReservationTokens: 800})
+	require.NoError(t, err, "Acquire after Close must fail fast into a grant, never park forever")
+	require.NotNil(t, g)
+	g.Release(1)
+	hog.Release(1)
+	st := s.State()
+	assert.Equal(t, int64(0), st.ReservedTokensOutstanding,
+		"Close-time and post-Close grants must flow through grantLocked accounting")
+	assert.Equal(t, int64(2), st.GrantsTotal)
 }

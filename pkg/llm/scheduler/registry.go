@@ -130,11 +130,13 @@ func (s *Service) ListWaiters(_ context.Context, req *loomv1.ListWaitersRequest)
 func (s *Service) SetSchedulerConfig(_ context.Context, req *loomv1.SetSchedulerConfigRequest) (*loomv1.SetSchedulerConfigResponse, error) {
 	cfg := req.GetConfig()
 	sched := s.reg.For(req.GetScope(), Config{
-		TokensPerMinute:   cfg.GetTokensPerMinute(),
-		UtilizationTarget: float64(cfg.GetUtilizationTarget()),
-		StarvationAge:     time.Duration(cfg.GetStarvationAgeS()) * time.Second,
+		TokensPerMinute:     cfg.GetTokensPerMinute(),
+		UtilizationTarget:   float64(cfg.GetUtilizationTarget()),
+		StarvationAge:       time.Duration(cfg.GetStarvationAgeS()) * time.Second,
+		InteractiveHeadroom: float64(cfg.GetInteractiveHeadroom()),
 	})
 	sched.SetConfig(cfg.GetTokensPerMinute(), float64(cfg.GetUtilizationTarget()),
-		time.Duration(cfg.GetStarvationAgeS())*time.Second)
+		time.Duration(cfg.GetStarvationAgeS())*time.Second,
+		float64(cfg.GetInteractiveHeadroom()))
 	return &loomv1.SetSchedulerConfigResponse{State: sched.State()}, nil
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -50,6 +51,13 @@ const (
 	aimdIncreaseStep = 0.05
 	// aimdDecreaseFactor halves the ceiling on an observed throttle.
 	aimdDecreaseFactor = 0.5
+	// throttleDecreaseCooldown bounds AIMD decreases to one per congestion
+	// EVENT, not one per report: client retry loops report every 429 attempt
+	// of a single logical call, and concurrent callers multiply the reports.
+	// Without the hold-off, one throttled minute could halve the ceiling a
+	// dozen times and wedge the scope below its smallest admissible
+	// reservation.
+	throttleDecreaseCooldown = 15 * time.Second
 )
 
 // Request describes one LLM call asking for a slot.
@@ -70,18 +78,29 @@ type Request struct {
 	ReservationTokens int64
 }
 
-// Grant is a granted slot. Exactly one Release call must follow; Release
-// with the actual token usage trues up the reservation.
+// Grant is a granted slot. Exactly one Release or Cancel call must follow;
+// Release with the actual token usage trues up the reservation.
 type Grant struct {
 	s           *Scheduler
 	reservation int64
 	released    sync.Once
 }
 
-// Release returns the slot. actualTokens is the provider-metered usage of
-// the call (0 if unknown — the reservation is then charged as used).
+// Release returns the slot after the call ran. actualTokens is the
+// provider-metered usage of the call (0 if unknown — the reservation is then
+// charged as used, the conservative reading for a call that did run without
+// a true-up).
 func (g *Grant) Release(actualTokens int64) {
-	g.released.Do(func() { g.s.release(g.reservation, actualTokens) })
+	g.released.Do(func() { g.s.release(g.reservation, actualTokens, true) })
+}
+
+// Cancel returns the slot for a call that never ran (e.g. its context
+// expired between grant and dispatch). The reservation is returned WITHOUT
+// charging the window: a call that never reached the provider consumed no
+// quota, and charging it would let a mass-cancel wave exhaust the window
+// with phantom usage.
+func (g *Grant) Cancel() {
+	g.released.Do(func() { g.s.release(g.reservation, 0, false) })
 }
 
 // waiter is one parked request.
@@ -113,6 +132,16 @@ type Scheduler struct {
 	nextWake      time.Time
 	starvationAge time.Duration
 	headroom      float64
+	// minSeenReservation is the smallest reservation any request has carried:
+	// the anchor for the AIMD decrease floor and the "remaining exhausted"
+	// header check. 0 until the first Acquire.
+	minSeenReservation int64
+	// decreaseHoldOffUntil suppresses further AIMD decreases: one
+	// multiplicative decrease per congestion event (see ObserveThrottle).
+	decreaseHoldOffUntil time.Time
+	// closed is set by Close; Acquire then grants immediately instead of
+	// parking on a scheduler nothing will ever wake again.
+	closed bool
 	// queues indexed by band then priority class; FIFO within a class.
 	queues map[loomv1.SlotOrigin]map[loomv1.SlotPriorityClass][]*waiter
 
@@ -163,17 +192,22 @@ func New(scope string, cfg Config) *Scheduler {
 
 // Close stops the scheduler's background ticker. Outstanding grants remain
 // valid; parked waiters are woken with a grant so no caller hangs on a
-// closed scheduler (the process is shutting down — pacing no longer matters).
+// closed scheduler (the process is shutting down — pacing no longer
+// matters). Close-time grants go through grantLocked so the accounting
+// (reservedOut, grantsTotal) stays consistent when they are later released.
+// Acquire after Close grants immediately for the same reason: parking on a
+// scheduler nothing will ever wake again would hang the caller forever.
 func (s *Scheduler) Close() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.closed = true
 		for _, band := range s.queues {
 			for class, q := range band {
 				for _, w := range q {
 					if !w.cancelled {
-						w.ready <- &Grant{s: s, reservation: w.req.ReservationTokens}
+						w.ready <- s.grantLocked(w.req.ReservationTokens)
 					}
 				}
 				band[class] = nil
@@ -203,6 +237,15 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 		s.mu.Unlock()
 		return nil, err
 	}
+	if s.minSeenReservation == 0 || req.ReservationTokens < s.minSeenReservation {
+		s.minSeenReservation = req.ReservationTokens
+	}
+	if s.closed {
+		// Shutdown semantics (see Close): grant immediately, never park.
+		g := s.grantLocked(req.ReservationTokens)
+		s.mu.Unlock()
+		return g, nil
+	}
 	if s.canGrantLocked(origin, req.ReservationTokens) && s.queuesEmptyAtOrAboveLocked(origin, class) {
 		g := s.grantLocked(req.ReservationTokens)
 		s.mu.Unlock()
@@ -226,10 +269,13 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 		w.cancelled = true
 		s.mu.Unlock()
 		// A grant may have raced the cancellation; if so, return it to the
-		// pool rather than leaking the reservation.
+		// pool rather than leaking the reservation. The call never ran, so
+		// the reservation is returned without charging the window (Cancel,
+		// not Release: charging phantom usage here would let a mass-cancel
+		// wave exhaust the window).
 		select {
 		case g := <-w.ready:
-			g.Release(0)
+			g.Cancel()
 		default:
 		}
 		return nil, ctx.Err()
@@ -237,8 +283,11 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 }
 
 // release returns a grant's reservation and charges actual usage, then
-// dispatches waiters — completion is the churn that wakes the queue.
-func (s *Scheduler) release(reservation, actualTokens int64) {
+// dispatches waiters — completion is the churn that wakes the queue. ran
+// distinguishes Release (the call ran: unknown usage is conservatively
+// charged as the full reservation) from Cancel (the call never ran: nothing
+// is charged).
+func (s *Scheduler) release(reservation, actualTokens int64, ran bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reservedOut -= reservation
@@ -246,7 +295,11 @@ func (s *Scheduler) release(reservation, actualTokens int64) {
 		s.reservedOut = 0
 	}
 	if actualTokens <= 0 {
-		actualTokens = reservation
+		if ran {
+			actualTokens = reservation
+		} else {
+			actualTokens = 0
+		}
 	}
 	s.windowUsed += actualTokens
 	s.dispatchLocked()
@@ -275,26 +328,64 @@ func (s *Scheduler) UpdateFromHeaders(limitTokens, remainingTokens int64, reset 
 		if used > s.windowUsed {
 			s.windowUsed = used
 		}
-	}
-	if reset > 0 {
-		s.nextWake = time.Now().Add(reset)
+		// The reset header is INFORMATIONAL while quota remains: it states
+		// when the provider's window renews, not that admission must stop.
+		// Arming nextWake from it on every healthy response froze the scope
+		// for the remainder of the provider's window after each success. It
+		// gates admission only when remaining is actually exhausted — too
+		// small to admit even the smallest reservation this scope serves.
+		// (An actual throttle's Retry-After gates via ObserveThrottle.)
+		if reset > 0 && remainingTokens < s.smallestReservationLocked() {
+			now := time.Now()
+			if wake := now.Add(reset); wake.After(s.nextWake) {
+				s.nextWake = wake
+			}
+			// Align our window with the provider's: at reset the provider's
+			// window renews, so ours renews with it — otherwise the stale
+			// windowUsed keeps refusing grants after the provider recovered.
+			s.windowStart = now.Add(reset - time.Minute)
+		}
 	}
 	s.dispatchLocked()
 }
 
 // ObserveThrottle applies the AIMD decrease for signal-free providers (and
 // schedules the wake from retryAfter when the provider supplied one).
+//
+// Decreases use congestion-EVENT semantics, not per-report semantics: client
+// retry loops report every 429 attempt of one logical call and concurrent
+// callers multiply the reports, so at most one multiplicative decrease is
+// applied per hold-off window (the provider's stated wait, floored at
+// throttleDecreaseCooldown). The ceiling never drops below the floor that
+// keeps the scope's smallest reservation admissible: a ceiling that admits
+// nothing observes no successes and can never repair itself.
 func (s *Scheduler) ObserveThrottle(retryAfter time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	if retryAfter > 0 {
+		// The provider's latest stated wait is real whichever congestion
+		// event it belongs to; keep the furthest wake.
+		if wake := now.Add(retryAfter); wake.After(s.nextWake) {
+			s.nextWake = wake
+		}
+	}
+	if now.Before(s.decreaseHoldOffUntil) {
+		return // same congestion event: one decrease already applied
+	}
+	hold := retryAfter
+	if hold < throttleDecreaseCooldown {
+		hold = throttleDecreaseCooldown
+	}
+	s.decreaseHoldOffUntil = now.Add(hold)
 	reduced := int64(float64(s.effectiveTPM) * aimdDecreaseFactor)
-	if reduced < 1 {
-		reduced = 1
+	if floor := s.floorTPMLocked(); reduced < floor {
+		reduced = floor
+	}
+	if reduced >= s.effectiveTPM {
+		return // already at or below the floor: nothing left to decrease
 	}
 	s.effectiveTPM = reduced
-	if retryAfter > 0 {
-		s.nextWake = time.Now().Add(retryAfter)
-	}
 	s.logger.Warn("LLM scheduler ceiling reduced after throttle",
 		zap.String("scope", s.scope),
 		zap.Int64("effective_tokens_per_minute", s.effectiveTPM),
@@ -342,6 +433,9 @@ func (s *Scheduler) State() *loomv1.SlotState {
 		GrantsTotal:               s.grantsTotal,
 		PromotionsTotal:           s.promotionsTotal,
 	}
+	if !s.nextWake.IsZero() && time.Now().Before(s.nextWake) {
+		st.NextWake = timestamppb.New(s.nextWake)
+	}
 	return st
 }
 
@@ -362,6 +456,7 @@ func (s *Scheduler) Waiters() []*loomv1.SlotWaiter {
 					Class:          w.class,
 					Origin:         w.origin,
 					Promotions:     w.promoted,
+					WaitingSince:   timestamppb.New(w.since),
 				})
 			}
 		}
@@ -381,6 +476,32 @@ func (s *Scheduler) budgetLocked() int64 {
 	return int64(float64(s.effectiveTPM) * s.utilization)
 }
 
+// smallestReservationLocked is the smallest reservation any request has
+// carried on this scope (1 until the first Acquire): the yardstick for
+// "remaining is effectively exhausted" in header calibration.
+func (s *Scheduler) smallestReservationLocked() int64 {
+	if s.minSeenReservation > 0 {
+		return s.minSeenReservation
+	}
+	return 1
+}
+
+// floorTPMLocked is the lowest ceiling an AIMD decrease may set: the
+// smallest reservation this scope has actually served must remain admissible
+// through the batch band's headroom-capped budget with an empty window.
+// Below that the scope could admit nothing, observe no successes, and never
+// repair — the permanent-wedge state.
+func (s *Scheduler) floorTPMLocked() int64 {
+	if s.minSeenReservation <= 0 {
+		return 1
+	}
+	denom := s.utilization * (1 - s.headroom)
+	if denom <= 0 {
+		denom = defaultUtilization * (1 - defaultInteractiveHeadroom)
+	}
+	return int64(float64(s.minSeenReservation)/denom) + 1
+}
+
 func (s *Scheduler) rolloverLocked() {
 	if time.Since(s.windowStart) >= time.Minute {
 		s.windowStart = time.Now()
@@ -394,7 +515,15 @@ func (s *Scheduler) rolloverLocked() {
 func (s *Scheduler) canGrantLocked(origin loomv1.SlotOrigin, reservation int64) bool {
 	s.rolloverLocked()
 	if !s.nextWake.IsZero() && time.Now().Before(s.nextWake) {
-		return false // provider told us to wait (Retry-After / reset)
+		return false // provider told us to wait (Retry-After / exhausted reset)
+	}
+	// Work-conserving anti-wedge valve: a scope with zero outstanding work
+	// and an untouched window always admits its head request, whatever the
+	// budget arithmetic says. An idle scope that refuses everything can
+	// never observe the success it needs to recover a collapsed ceiling —
+	// this makes the wedge structurally impossible.
+	if s.reservedOut == 0 && s.windowUsed == 0 {
+		return true
 	}
 	budget := s.budgetLocked()
 	if origin != loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE {
@@ -447,17 +576,27 @@ func bandRank(o loomv1.SlotOrigin) int {
 // interactive band first (full budget), then batch (headroom-capped budget);
 // highest class first within a band, FIFO within a class. Each waiter is
 // woken with its own grant — one completion wakes bounded work, no herd.
+//
+// Backfill stops entirely below a STARVED blocked head (a waiter already at
+// the top class of its band that has aged past its next promotion point):
+// aging can no longer help it, and letting smaller lower-class or lower-band
+// work keep consuming every freed token would starve a large reservation
+// forever. Halting backfill lets completion churn drain the window until the
+// head fits — admission liveness, the proto's starvation bound. Below a
+// non-starved head, backfill continues (throughput).
 func (s *Scheduler) dispatchLocked() {
 	for _, band := range bandOrder {
 		for _, class := range dispatchOrder {
 			q := s.queues[band][class]
 			var remaining []*waiter
+			var blockedOnStarvedHead bool
 			for i, w := range q {
 				if w.cancelled {
 					continue
 				}
 				if !s.canGrantLocked(band, w.req.ReservationTokens) {
 					remaining = append(remaining, q[i:]...)
+					blockedOnStarvedHead = s.starvedAtTopLocked(w)
 					break
 				}
 				w.ready <- s.grantLocked(w.req.ReservationTokens)
@@ -470,8 +609,19 @@ func (s *Scheduler) dispatchLocked() {
 				}
 			}
 			s.queues[band][class] = filtered
+			if blockedOnStarvedHead {
+				return
+			}
 		}
 	}
+}
+
+// starvedAtTopLocked reports whether w has waited past its next aging point
+// while already at the top class of its band — the point where promotion can
+// no longer help it and admission liveness (backfill halt) must take over.
+func (s *Scheduler) starvedAtTopLocked(w *waiter) bool {
+	return w.class == loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER &&
+		time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1)
 }
 
 // tick drives window rollover, Retry-After expiry, and starvation aging.
@@ -494,8 +644,11 @@ func (s *Scheduler) tick() {
 // ageLocked promotes waiters older than starvationAge one class within
 // their band (liveness: top class of the band in at most 2 * starvationAge).
 // Aging NEVER crosses bands: saturated batch must not flood the interactive
-// lane by seniority — the batch band's liveness comes from its own budget
-// share, not from promotion into the human lane.
+// lane by seniority. Note the asymmetry this leaves by design: batch has no
+// reserved budget share, so a saturated interactive band CAN starve batch
+// entirely (a human is waiting; throughput work waits — see SlotOrigin in
+// the proto). Within-band aging is therefore a class-liveness guarantee
+// only; batch regains admission when the interactive band goes quiet.
 func (s *Scheduler) ageLocked() {
 	for _, band := range bandOrder {
 		promote := func(from, to loomv1.SlotPriorityClass) {
@@ -523,10 +676,11 @@ func (s *Scheduler) ageLocked() {
 }
 
 // SetConfig replaces the runtime-tunable knobs. Zero values leave the
-// current setting unchanged. An explicit tokens-per-minute re-pins the
+// current setting unchanged (a negative interactiveHeadroom disables the
+// headroom, mirroring Config). An explicit tokens-per-minute re-pins the
 // ceiling and clears calibration so operator intent wins until the next
 // provider telemetry arrives.
-func (s *Scheduler) SetConfig(tokensPerMinute int64, utilization float64, starvationAge time.Duration) {
+func (s *Scheduler) SetConfig(tokensPerMinute int64, utilization float64, starvationAge time.Duration, interactiveHeadroom float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if tokensPerMinute > 0 {
@@ -538,6 +692,12 @@ func (s *Scheduler) SetConfig(tokensPerMinute int64, utilization float64, starva
 	}
 	if starvationAge > 0 {
 		s.starvationAge = starvationAge
+	}
+	switch {
+	case interactiveHeadroom < 0:
+		s.headroom = 0 // explicitly disabled
+	case interactiveHeadroom > 0 && interactiveHeadroom < 1:
+		s.headroom = interactiveHeadroom
 	}
 	s.dispatchLocked()
 }

@@ -37,6 +37,13 @@ enum SlotPriorityClass {
 // response experiences latency directly, while batch work only cares about
 // throughput. Within a band, SlotPriorityClass orders requests. Aging never
 // promotes across bands.
+//
+// Trust model: the origin is CLIENT-ASSERTED (gRPC metadata
+// "loom-slot-origin") and trusted as-is by design. Loom deployments are
+// operated by the same party that runs the clients (single-operator), so a
+// client has nothing to gain by lying about a human waiting. A deployment
+// exposing the API to untrusted callers must strip or override this
+// metadata at its edge.
 enum SlotOrigin {
   SLOT_ORIGIN_UNSPECIFIED = 0;
   // Fleet/background work: workflows, task-board executions, sub-agent
@@ -60,15 +67,20 @@ message LLMSchedulerConfig {
 
   // Token reservation charged per call at grant time, mirroring providers
   // that debit prompt-estimate + max_tokens at admission (Azure/OpenAI).
-  // 0 = derive from the requesting agent's max_tokens.
+  // 📋 Planned: not yet read by the scheduler — reservations are currently
+  // derived per call (prompt estimate + the agent's max_tokens).
   int32 reservation_tokens_per_call = 2;
 
   // Ceiling on concurrently active (admitted, not parked) conversations.
   // 0 = derive from measured capacity; see the design doc for the formula.
+  // Enforced only when door admission is enabled; the door layer is not yet
+  // wired, so this field is currently ignored.
   int32 max_active_conversations = 3;
 
   // Door-queue depth beyond which new conversations are rejected with
   // RESOURCE_EXHAUSTED instead of queued.
+  // Enforced only when door admission is enabled; the door layer is not yet
+  // wired, so this field is currently ignored.
   int32 max_door_queue = 4;
 
   // Seconds after which a waiting slot request is promoted one priority
@@ -92,13 +104,15 @@ message SlotState {
   string scope = 1;
 
   // Conversations currently holding at least one grant or eligible to
-  // request one.
+  // request one. Populated when door admission is enabled (door layer not
+  // yet wired).
   int32 active_conversations = 2;
 
   // Slot requests currently parked waiting for capacity.
   int32 parked_requests = 3;
 
-  // Conversations queued at the admission door.
+  // Conversations queued at the admission door. Populated when door
+  // admission is enabled (door layer not yet wired).
   int32 door_queue_depth = 4;
 
   // Effective tokens-per-minute after provider-telemetry calibration (or
