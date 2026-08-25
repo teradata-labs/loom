@@ -1022,8 +1022,8 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("LITELLM_API_KEY")
 		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:          serverConfig.LLM.LiteLLMEndpoint,
-			APIKey:            serverConfig.LLM.LiteLLMAPIKey,
+			Endpoint:          endpoint,
+			APIKey:            apiKey,
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
