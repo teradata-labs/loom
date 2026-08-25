@@ -120,13 +120,19 @@ type hitlAskResolver struct {
 	timeout  time.Duration // how long to block before failing closed
 	poll     time.Duration // store poll interval
 	notifier Notifier      // pending-emit collaborator; nil disables the emit
+	// heartbeat is how often a still-pending hold pokes the notifier when it
+	// implements Heartbeater. Zero disables heartbeating.
+	heartbeat time.Duration
 }
 
 // NewHITLAskResolver builds the Ask resolver wired into ChainDeps.Ask. timeout
 // bounds the turn-blocking wait (default 300s when non-positive); poll is the
 // store poll interval (default 1s, mirroring ContactHumanConfig). notifier is
 // fired once the pending request is stored so the hold surfaces on the progress
-// stream; a nil notifier disables the emit (the hold is unaffected).
+// stream; a nil notifier disables the emit (the hold is unaffected). A notifier
+// that also implements Heartbeater is poked every askHeartbeatInterval while the
+// hold is still pending, so a byte-silent hold cannot trip a proxy's inactivity
+// timeout; one that does not is never heartbeaten.
 func NewHITLAskResolver(store HumanRequestStore, timeout, poll time.Duration, notifier Notifier) AskResolver {
 	if timeout <= 0 {
 		timeout = 300 * time.Second
@@ -134,7 +140,13 @@ func NewHITLAskResolver(store HumanRequestStore, timeout, poll time.Duration, no
 	if poll <= 0 {
 		poll = 1 * time.Second
 	}
-	return &hitlAskResolver{store: store, timeout: timeout, poll: poll, notifier: notifier}
+	return &hitlAskResolver{
+		store:     store,
+		timeout:   timeout,
+		poll:      poll,
+		notifier:  notifier,
+		heartbeat: askHeartbeatInterval,
+	}
 }
 
 // Resolve creates a pending "approval" HumanRequest scoped to the call's session
@@ -223,6 +235,14 @@ const askDeadlineMargin = 2 * time.Second
 // waiter abandons on context cancellation.
 const abandonWriteTimeout = 5 * time.Second
 
+// askHeartbeatInterval is how often a still-pending hold pokes a Heartbeater
+// notifier. A hold is otherwise byte-silent on the caller's stream for its whole
+// window (up to the 300s default), which is long enough to trip a proxy's
+// inactivity timeout and tear down the very stream the decision must travel
+// back on. 30s sits comfortably inside common proxy read timeouts while costing
+// at most ~10 events over a default-length hold.
+const askHeartbeatInterval = 30 * time.Second
+
 // wait polls the store until the request is resolved, the stored expiry passes,
 // or the context is canceled. ONE clock judges the hold: the row's ExpiresAt —
 // the same instant the store's resolve CAS enforces — so a resolution landing in
@@ -243,6 +263,13 @@ func (r *hitlAskResolver) wait(ctx context.Context, requestID string, expiresAt 
 	}
 	ticker := time.NewTicker(r.poll)
 	defer ticker.Stop()
+
+	// Heartbeating is opt-in by capability: a notifier that does not implement
+	// Heartbeater (or no notifier at all) leaves hb nil and the hold stays
+	// exactly as silent as it was before. Asserting a nil interface yields
+	// ok=false, so the nil-notifier case needs no separate guard.
+	hb, _ := r.notifier.(Heartbeater)
+	lastBeat := time.Now()
 
 	missing := 0
 	for {
@@ -279,6 +306,13 @@ func (r *hitlAskResolver) wait(ctx context.Context, requestID string, expiresAt 
 			}
 			if time.Now().After(deadline) {
 				return r.expire(ctx, requestID)
+			}
+			// Still pending: keep the caller's stream alive. Best-effort and
+			// last — the heartbeat must never delay a resolution the poll above
+			// already saw, and a notifier error never changes the outcome.
+			if hb != nil && r.heartbeat > 0 && time.Since(lastBeat) >= r.heartbeat {
+				lastBeat = time.Now()
+				_ = hb.Heartbeat(ctx)
 			}
 		}
 	}

@@ -115,6 +115,27 @@ type Notifier interface {
 	Notify(ctx context.Context, req *HumanRequest) error
 }
 
+// Heartbeater is an OPTIONAL capability a Notifier may implement. A notifier
+// that implements it is poked periodically for as long as a hold is still
+// waiting on a human, so a transport that would otherwise go byte-silent for
+// the whole hold can keep its stream alive.
+//
+// A hold blocks the turn goroutine inside the waiter's poll loop and emits
+// nothing between the pending notification and the human's decision. On a
+// streaming transport behind a proxy that is silence long enough to trip an
+// inactivity timeout and tear the stream down, so the decision — when it
+// finally arrives — has nowhere to go.
+//
+// It is deliberately a separate optional interface rather than a method on
+// Notifier: a Notifier that does not implement it is never heartbeaten and
+// behaves exactly as before.
+type Heartbeater interface {
+	// Heartbeat signals that a hold is still pending. It carries no request
+	// payload — its only job is to produce traffic. Implementations must be
+	// cheap and best-effort; the returned error never changes a hold's outcome.
+	Heartbeat(ctx context.Context) error
+}
+
 // ContactHumanConfig configures the ContactHumanTool.
 type ContactHumanConfig struct {
 	Store        HumanRequestStore
