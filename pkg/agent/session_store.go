@@ -126,11 +126,10 @@ func NewSessionStoreWithConfig(config DBConfig, tracer observability.Tracer) (*S
 
 	// Enable WAL mode for better concurrency. journal_mode is a persistent
 	// database-level setting (stored in the file header), so a one-time Exec
-	// is sufficient — unlike busy_timeout/foreign_keys, which are
+	// is sufficient — unlike busy_timeout/foreign_keys/key, which are
 	// per-connection and set via the DSN in OpenDB. Kept as an Exec here
 	// because OpenDB is also used for databases that must not be converted
-	// to WAL (and PRAGMA key on encrypted databases must precede any
-	// statement that touches data pages, which journal_mode does).
+	// to WAL.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}

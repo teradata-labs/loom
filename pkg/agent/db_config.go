@@ -57,28 +57,27 @@ type DBConfig struct {
 //	    EncryptionKey: os.Getenv("LOOM_DB_KEY"),
 //	})
 func OpenDB(config DBConfig) (*sql.DB, error) {
-	// Open database using the pre-registered "sqlite3" driver. busy_timeout
-	// and foreign_keys are per-connection settings, so they must ride in the
-	// DSN to reach every pooled connection — a post-open db.Exec configures
-	// only the one connection that runs it. Both PRAGMAs are safe before
-	// PRAGMA key on encrypted databases (neither touches data pages).
-	dsn := sqlitedriver.DSN(config.Path, sqlitedriver.Options{
+	// busy_timeout and foreign_keys are per-connection settings, so they must
+	// ride in the DSN to reach every pooled connection — a post-open db.Exec
+	// configures only the one connection that runs it.
+	opts := sqlitedriver.Options{
 		BusyTimeoutMS: 5000,
 		ForeignKeys:   true,
-	})
-	db, err := sql.Open("sqlite3", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	dsn := sqlitedriver.DSN(config.Path, opts)
 
-	// Set encryption key if encryption is enabled
-	if config.EncryptDatabase && !sqlitedriver.EncryptionSupported {
-		return nil, errors.Join(
-			fmt.Errorf("database encryption requires CGO (SQLCipher); not available in this build"),
-			db.Close(),
-		)
-	}
+	// PRAGMA key is per-connection too, and gets it worse: an unkeyed
+	// connection to an encrypted database fails outright with "file is not a
+	// database". Setting the key with db.Exec after opening keyed only the
+	// connection that ran the statement, and this pool is database/sql's
+	// default (unlimited), so the second concurrent query on an encrypted
+	// store failed. The key rides in the DSN so the driver applies it as each
+	// connection is opened.
 	if config.EncryptDatabase {
+		if !sqlitedriver.EncryptionSupported {
+			return nil, fmt.Errorf("database encryption requires CGO (SQLCipher); not available in this build")
+		}
+
 		// Check for encryption key
 		key := config.EncryptionKey
 		if key == "" {
@@ -86,21 +85,20 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 			key = os.Getenv("LOOM_DB_KEY")
 		}
 		if key == "" {
-			return nil, errors.Join(
-				fmt.Errorf("encryption enabled but no key provided (set EncryptionKey or LOOM_DB_KEY env var)"),
-				db.Close(),
-			)
+			return nil, fmt.Errorf("encryption enabled but no key provided (set EncryptionKey or LOOM_DB_KEY env var)")
 		}
 
-		// Set encryption key via PRAGMA
-		// Note: This must be the first operation after opening the database
-		_, err = db.Exec(fmt.Sprintf("PRAGMA key = '%s'", key))
+		keyedDSN, err := sqlitedriver.EncryptedDSN(config.Path, key, opts)
 		if err != nil {
-			return nil, errors.Join(
-				fmt.Errorf("failed to set encryption key: %w", err),
-				db.Close(),
-			)
+			return nil, fmt.Errorf("failed to set encryption key: %w", err)
 		}
+		dsn = keyedDSN
+	}
+
+	// Open database using the pre-registered "sqlite3" driver.
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Test the connection
