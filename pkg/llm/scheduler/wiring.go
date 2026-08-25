@@ -27,10 +27,11 @@ import (
 //     AcquireForCall, which reads class and origin from the SlotInfo, and
 //     feeds ObserveThrottleForScope/ObserveSuccessForScope from call
 //     outcomes — the provider-agnostic AIMD seam.
-//   - MarkResourceHolder lifts a conversation's remaining calls to the
-//     RESOURCE_HOLDER class (priority inheritance). Its call sites arrive
-//     with the resource-lease integration (MCP session handles); nothing
-//     invokes it on this branch yet.
+//   - MarkResourceHolder / UnmarkResourceHolder lift and restore a
+//     conversation's class around resource leases (priority inheritance).
+//     The agent's per-session lease ledger (pkg/agent/lease_ledger.go)
+//     drives both from backend-declared lease events on tool results
+//     (pkg/shuttle/lease.go) — loom never knows what the resource is.
 
 var (
 	defaultRegistry = NewRegistry(nil)
@@ -70,8 +71,19 @@ type slotInfoKey struct{}
 // seeds the call counter so a resumed conversation classifies as IN_FLIGHT
 // from its first call of the new turn.
 func WithSlotInfo(ctx context.Context, origin loomv1.SlotOrigin, priorCalls int64) context.Context {
+	return WithSlotInfoHolding(ctx, origin, priorCalls, false)
+}
+
+// WithSlotInfoHolding is WithSlotInfo for a conversation that already holds
+// a scarce backend resource from a previous turn: leases outlive turns, but
+// a SlotInfo does not, so an installer that knows the conversation's lease
+// state seeds holding=true and the turn classifies RESOURCE_HOLDER from its
+// first LLM call. Installers without that knowledge use WithSlotInfo; the
+// agent then re-marks from its lease ledger at turn start.
+func WithSlotInfoHolding(ctx context.Context, origin loomv1.SlotOrigin, priorCalls int64, holding bool) context.Context {
 	si := &SlotInfo{origin: origin}
 	si.calls.Store(priorCalls)
+	si.resourceHolder.Store(holding)
 	return context.WithValue(ctx, slotInfoKey{}, si)
 }
 
@@ -88,6 +100,29 @@ func MarkResourceHolder(ctx context.Context) {
 	if si := SlotInfoFrom(ctx); si != nil {
 		si.resourceHolder.Store(true)
 	}
+}
+
+// UnmarkResourceHolder clears the mark when the conversation's last
+// outstanding lease is released; its later LLM calls fall back to the
+// call-count classes. No-op when no SlotInfo is installed.
+func UnmarkResourceHolder(ctx context.Context) {
+	if si := SlotInfoFrom(ctx); si != nil {
+		si.resourceHolder.Store(false)
+	}
+}
+
+// Class returns the priority class the SlotInfo's next LLM call schedules
+// under. RESOURCE_HOLDER outranks the call-count progression: a conversation
+// holding a scarce backend resource blocks other agents, so it must finish
+// and release first (priority inheritance).
+func (si *SlotInfo) Class() loomv1.SlotPriorityClass {
+	if si.resourceHolder.Load() {
+		return loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER
+	}
+	if si.calls.Load() > 0 {
+		return loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT
+	}
+	return loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW
 }
 
 // ScopeProvider is optionally implemented by LLM clients that know their
@@ -120,15 +155,8 @@ func AcquireForCall(ctx context.Context, scope string, reservationTokens int64) 
 	if si == nil {
 		return nil, nil
 	}
-	class := loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW
-	if si.calls.Load() > 0 {
-		class = loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT
-	}
-	if si.resourceHolder.Load() {
-		class = loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER
-	}
 	g, err := defaultRegistry.For(scope, Config{}).Acquire(ctx, Request{
-		Class:             class,
+		Class:             si.Class(),
 		Origin:            si.origin,
 		ReservationTokens: reservationTokens,
 	})
