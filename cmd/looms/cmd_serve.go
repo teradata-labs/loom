@@ -145,8 +145,9 @@ func builtinToolsToSuppress() []string {
 			"shared_memory_write",
 			"top_n_query",
 			"group_by_query",
-			// Orchestration tool registered per-session by MultiAgentServer.Weave.
-			"manage_ephemeral_agents",
+			// manage_ephemeral_agents is intentionally NOT suppressed here: it is a
+			// per-session opt-in tool (agent declares it in spec.tools). Suppressing
+			// it under tools.none would silently break agents that explicitly request it.
 		)
 	}
 	return suppressed
@@ -727,18 +728,23 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "litellm":
-		endpoint := cfg.LiteLLMEndpoint
+		endpoint := os.ExpandEnv(cfg.LiteLLMEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_BASE_URL") // injected by avmo-tera-cloud runtime pods
 		}
-		key := apiKey(cfg.LiteLLMAPIKey, "LITELLM_API_KEY")
+		key := apiKey(os.ExpandEnv(cfg.LiteLLMAPIKey), "LITELLM_API_KEY")
+		extraHeaders := make(map[string]string, len(cfg.LiteLLMExtraHeaders))
+		for k, v := range cfg.LiteLLMExtraHeaders {
+			extraHeaders[k] = os.ExpandEnv(v)
+		}
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            key,
-			Model:             cfg.LiteLLMModel,
+			Model:             os.ExpandEnv(cfg.LiteLLMModel),
+			ExtraHeaders:      extraHeaders,
 			MaxTokens:         cfg.MaxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
@@ -1010,21 +1016,26 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// AutomaticEnv does not bind nested secret keys that are absent from
 		// the config. Fall back to the environment so agent-config-driven
 		// providers get the same credentials as the primary LLM.
-		endpoint := serverConfig.LLM.LiteLLMEndpoint
+		endpoint := os.ExpandEnv(serverConfig.LLM.LiteLLMEndpoint)
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_ENDPOINT")
 		}
 		if endpoint == "" {
 			endpoint = os.Getenv("LITELLM_BASE_URL")
 		}
-		apiKey := serverConfig.LLM.LiteLLMAPIKey
+		apiKey := os.ExpandEnv(serverConfig.LLM.LiteLLMAPIKey)
 		if apiKey == "" {
 			apiKey = os.Getenv("LITELLM_API_KEY")
+		}
+		extraHeaders := make(map[string]string, len(serverConfig.LLM.LiteLLMExtraHeaders))
+		for k, v := range serverConfig.LLM.LiteLLMExtraHeaders {
+			extraHeaders[k] = os.ExpandEnv(v)
 		}
 		return litellm.NewClient(litellm.Config{
 			Endpoint:          endpoint,
 			APIKey:            apiKey,
-			Model:             model,
+			Model:             os.ExpandEnv(model),
+			ExtraHeaders:      extraHeaders,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
 			Timeout:           timeout,

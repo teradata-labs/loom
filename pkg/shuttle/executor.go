@@ -168,9 +168,23 @@ func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 // CanonicalToolName returns the registered tool's own name for a lookup key.
 // Registry aliases point at the same Tool instance, so this keeps permissions,
 // admission, and circuit breakers keyed consistently with direct calls.
+// When the name is not found by direct lookup, a local suffix scan is tried
+// (same logic as tryDynamicRegistration) so callers get the server-qualified
+// name even for suffix or sanitized-name inputs.
 func (e *Executor) CanonicalToolName(name string) string {
 	if tool, ok := e.registry.Get(name); ok {
 		return tool.Name()
+	}
+	suffix := ":" + name
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		n := t.Name()
+		if strings.HasSuffix(n, suffix) || strings.ReplaceAll(n, ":", "_") == name {
+			matches = append(matches, t)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].Name()
 	}
 	return name
 }
