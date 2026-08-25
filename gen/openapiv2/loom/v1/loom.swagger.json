@@ -618,6 +618,13 @@
             "in": "query",
             "required": false,
             "type": "boolean"
+          },
+          {
+            "name": "sessionId",
+            "description": "Filter to artifacts belonging to one session (optional). Unset means no\nsession filtering, preserving existing behaviour. This is what lets a\nremote surface render \"the files this session produced\" — the local\nartifact store has always supported it (artifacts.Filter.SessionID); the\nrequest message could not express it.",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -709,6 +716,13 @@
           {
             "name": "name",
             "description": "Artifact name (alternative lookup if ID not provided)",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "sessionId",
+            "description": "Session to scope a name lookup to (optional). Names are only unique within\na session, so a bare name lookup from a remote client is ambiguous without\nthis. Ignored when id is set. Unset falls back to the session carried in\nthe call context, preserving existing behaviour for in-session callers.",
             "in": "query",
             "required": false,
             "type": "string"
@@ -4212,6 +4226,10 @@
           "type": "string",
           "format": "int64",
           "title": "Soft delete timestamp (Unix seconds, optional)"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Session this artifact belongs to. Empty for artifacts created outside a\nsession (user uploads, pre-session tooling). The store has recorded this\nsince sessions were introduced; it was simply never put on the wire, which\nleft remote clients unable to tell whose files they were looking at."
         }
       },
       "title": "Artifact represents a file in $LOOM_DATA_DIR/artifacts/"

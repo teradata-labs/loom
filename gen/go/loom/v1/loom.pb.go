@@ -9443,7 +9443,12 @@ type Artifact struct {
 	// Additional metadata (JSON-serializable key-value pairs)
 	Metadata map[string]string `protobuf:"bytes,15,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Soft delete timestamp (Unix seconds, optional)
-	DeletedAt     int64 `protobuf:"varint,16,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	DeletedAt int64 `protobuf:"varint,16,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	// Session this artifact belongs to. Empty for artifacts created outside a
+	// session (user uploads, pre-session tooling). The store has recorded this
+	// since sessions were introduced; it was simply never put on the wire, which
+	// left remote clients unable to tell whose files they were looking at.
+	SessionId     string `protobuf:"bytes,17,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9590,6 +9595,13 @@ func (x *Artifact) GetDeletedAt() int64 {
 	return 0
 }
 
+func (x *Artifact) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
 // ListArtifactsRequest lists artifacts with optional filtering.
 type ListArtifactsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -9605,8 +9617,14 @@ type ListArtifactsRequest struct {
 	Offset int32 `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
 	// Include soft-deleted artifacts
 	IncludeDeleted bool `protobuf:"varint,6,opt,name=include_deleted,json=includeDeleted,proto3" json:"include_deleted,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Filter to artifacts belonging to one session (optional). Unset means no
+	// session filtering, preserving existing behaviour. This is what lets a
+	// remote surface render "the files this session produced" — the local
+	// artifact store has always supported it (artifacts.Filter.SessionID); the
+	// request message could not express it.
+	SessionId     string `protobuf:"bytes,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListArtifactsRequest) Reset() {
@@ -9681,6 +9699,13 @@ func (x *ListArtifactsRequest) GetIncludeDeleted() bool {
 	return false
 }
 
+func (x *ListArtifactsRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
 // ListArtifactsResponse returns a list of artifacts.
 type ListArtifactsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -9742,7 +9767,12 @@ type GetArtifactRequest struct {
 	// Artifact ID (primary lookup)
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Artifact name (alternative lookup if ID not provided)
-	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Session to scope a name lookup to (optional). Names are only unique within
+	// a session, so a bare name lookup from a remote client is ambiguous without
+	// this. Ignored when id is set. Unset falls back to the session carried in
+	// the call context, preserving existing behaviour for in-session callers.
+	SessionId     string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9787,6 +9817,13 @@ func (x *GetArtifactRequest) GetId() string {
 func (x *GetArtifactRequest) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *GetArtifactRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
 	}
 	return ""
 }
@@ -11539,7 +11576,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
 	"totalCount\x12\x1f\n" +
 	"\vserver_name\x18\x03 \x01(\tR\n" +
-	"serverName\"\xb2\x04\n" +
+	"serverName\"\xd1\x04\n" +
 	"\bArtifact\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -11561,24 +11598,30 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x04tags\x18\x0e \x03(\tR\x04tags\x12;\n" +
 	"\bmetadata\x18\x0f \x03(\v2\x1f.loom.v1.Artifact.MetadataEntryR\bmetadata\x12\x1d\n" +
 	"\n" +
-	"deleted_at\x18\x10 \x01(\x03R\tdeletedAt\x1a;\n" +
+	"deleted_at\x18\x10 \x01(\x03R\tdeletedAt\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x11 \x01(\tR\tsessionId\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbc\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdb\x01\n" +
 	"\x14ListArtifactsRequest\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12!\n" +
 	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x12\n" +
 	"\x04tags\x18\x03 \x03(\tR\x04tags\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x05 \x01(\x05R\x06offset\x12'\n" +
-	"\x0finclude_deleted\x18\x06 \x01(\bR\x0eincludeDeleted\"i\n" +
+	"\x0finclude_deleted\x18\x06 \x01(\bR\x0eincludeDeleted\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\a \x01(\tR\tsessionId\"i\n" +
 	"\x15ListArtifactsResponse\x12/\n" +
 	"\tartifacts\x18\x01 \x03(\v2\x11.loom.v1.ArtifactR\tartifacts\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount\"8\n" +
+	"totalCount\"W\n" +
 	"\x12GetArtifactRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"D\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\"D\n" +
 	"\x13GetArtifactResponse\x12-\n" +
 	"\bartifact\x18\x01 \x01(\v2\x11.loom.v1.ArtifactR\bartifact\"\xb3\x01\n" +
 	"\x15UploadArtifactRequest\x12\x12\n" +
