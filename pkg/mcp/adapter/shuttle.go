@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -307,14 +308,30 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	if err != nil {
 		// Convert error to shuttle.Result with error
+		shuttleErr := &shuttle.Error{
+			Code:       "MCP_CALL_FAILED",
+			Message:    err.Error(),
+			Retryable:  true,
+			Suggestion: "Check MCP server logs for details",
+		}
+		// A capacity condition that outlived the freeze (budget exhausted,
+		// or a hint that arrived with no wait mechanism) carries its hint
+		// onto the generic contract, so consumers outside pkg/mcp — the
+		// agent loop, observability — read flow control without knowing MCP.
+		var terr *client.ToolResultError
+		if errors.As(err, &terr) {
+			if hint := terr.Backpressure(); hint != nil {
+				shuttleErr.SetBackpressure(shuttle.BackpressureHint{
+					Code:        hint.Code,
+					RetryAfterS: hint.RetryAfterS,
+					WaitParam:   hint.WaitParam,
+					MaxWaitS:    hint.MaxWaitS,
+				})
+			}
+		}
 		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "MCP_CALL_FAILED",
-				Message:    err.Error(),
-				Retryable:  true,
-				Suggestion: "Check MCP server logs for details",
-			},
+			Success:         false,
+			Error:           shuttleErr,
 			ExecutionTimeMs: executionTime,
 		}, nil // Return nil error since we wrapped it in Result.Error
 	}
@@ -340,7 +357,9 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Session-handle lifecycle (issue #345): collect minted handles for
 	// end-of-conversation auto-release; drop ones the agent released itself.
-	trackSessionHandles(ctx, a, params, data)
+	// The events ride out on the Result so the agent's lease ledger and the
+	// LLM slot scheduler learn about the lease generically.
+	leaseEvents := trackSessionHandles(ctx, a, params, data)
 
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
@@ -355,12 +374,16 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 		"tool_name":  a.tool.Name,
 	}
 
-	return &shuttle.Result{
+	result := &shuttle.Result{
 		Success:         true,
 		Data:            data,
 		ExecutionTimeMs: executionTime,
 		Metadata:        metadata,
-	}, nil
+	}
+	for _, ev := range leaseEvents {
+		shuttle.AppendLeaseEvent(result, ev)
+	}
+	return result, nil
 }
 
 // Backend implements shuttle.Tool

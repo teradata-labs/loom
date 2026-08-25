@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // Session-handle auto-release (issue #345). A 3×64-agent live study showed
@@ -84,9 +86,16 @@ func collectorFrom(ctx context.Context) *HandleCollector {
 	return c
 }
 
+// sessionHandleLeaseKind is the Kind the adapter stamps on the lease events
+// it emits for MCP session handles (pkg/shuttle/lease.go). Opaque to loom —
+// the ledger and the LLM slot scheduler match it purely by identity.
+const sessionHandleLeaseKind = "mcp-session-handle"
+
 // collectorKey scopes dedup to the minting server: two servers can mint
 // identical handle strings, and a release on one must never forget the
-// other's handle.
+// other's handle. The same key doubles as the lease event ID, so a mint's
+// LeaseAcquired, an explicit release's LeaseReleased, and ReleaseAll's
+// end-of-conversation LeaseReleased all name the identical (Kind, ID) pair.
 func collectorKey(a *MCPToolAdapter, handle string) string {
 	return a.serverName + "\x00" + handle
 }
@@ -157,14 +166,28 @@ const releaseAllConcurrency = 4
 // required fields; otherwise the handle is skipped with a warning and left
 // to the server's TTL (the pre-#345 behavior), which beats a call the
 // client-side schema validation is guaranteed to reject.
-func (c *HandleCollector) ReleaseAll(logger *zap.Logger) {
+//
+// The returned LeaseReleased events name every handle the collector stopped
+// tracking, including ones whose wire release was skipped or failed: the
+// conversation is over, so the runtime no longer holds them either way and
+// the ledger must not keep seeding RESOURCE_HOLDER for a dead conversation.
+// The caller applies them to the agent's per-session lease ledger.
+func (c *HandleCollector) ReleaseAll(logger *zap.Logger) []shuttle.LeaseEvent {
 	c.mu.Lock()
 	minted := c.minted
 	c.minted = nil
 	c.present = map[string]bool{}
 	c.mu.Unlock()
 	if len(minted) == 0 {
-		return
+		return nil
+	}
+	released := make([]shuttle.LeaseEvent, 0, len(minted))
+	for _, m := range minted {
+		released = append(released, shuttle.LeaseEvent{
+			Action: shuttle.LeaseReleased,
+			Kind:   sessionHandleLeaseKind,
+			ID:     collectorKey(m.adapter, m.handle),
+		})
 	}
 	if logger == nil {
 		logger = zap.NewNop()
@@ -185,6 +208,7 @@ func (c *HandleCollector) ReleaseAll(logger *zap.Logger) {
 		}(m)
 	}
 	wg.Wait()
+	return released
 }
 
 // releaseOne attempts a single best-effort release, deriving the wire
@@ -276,22 +300,47 @@ func releaseSatisfiesRequired(schema map[string]interface{}, prop string) bool {
 // declares a release property, i.e. the server opted into the convention.
 // A successful call that carried a release argument (either spelling)
 // removes that handle from tracking (the agent cleaned up itself).
-func trackSessionHandles(ctx context.Context, a *MCPToolAdapter, params map[string]interface{}, data interface{}) {
+//
+// The returned lease events mirror the collector mutations onto the generic
+// shuttle contract (pkg/shuttle/lease.go): a mint yields LeaseAcquired, an
+// explicit release yields LeaseReleased, in observation order. The caller
+// (Execute) appends them to the outgoing shuttle.Result, so the agent's
+// per-session ledger and the LLM slot scheduler track MCP session handles
+// with zero MCP-specific code. Without a collector in ctx (workflow paths,
+// direct executor use) nothing is tracked and no events are emitted —
+// unchanged behavior.
+func trackSessionHandles(ctx context.Context, a *MCPToolAdapter, params map[string]interface{}, data interface{}) []shuttle.LeaseEvent {
 	c := collectorFrom(ctx)
 	if c == nil {
-		return
+		return nil
 	}
+	var events []shuttle.LeaseEvent
 	for _, key := range []string{"release_handle", "releaseHandle"} {
 		if released, ok := params[key].(string); ok && released != "" {
 			c.forget(a, released)
+			// The release event is emitted even for a handle the collector
+			// never tracked: the server processed the release on a successful
+			// call, and the backend's declaration is authoritative (the
+			// ledger tolerates release-of-unknown as a no-op).
+			events = append(events, shuttle.LeaseEvent{
+				Action: shuttle.LeaseReleased,
+				Kind:   sessionHandleLeaseKind,
+				ID:     collectorKey(a, released),
+			})
 		}
 	}
 	if _, declared := releaseHandleProperty(a.tool.InputSchema); !declared {
-		return // server never declared the convention: do not track
+		return events // server never declared the convention: do not track
 	}
 	if h := sessionHandleFromData(data); h != "" {
 		c.add(a, h)
+		events = append(events, shuttle.LeaseEvent{
+			Action: shuttle.LeaseAcquired,
+			Kind:   sessionHandleLeaseKind,
+			ID:     collectorKey(a, h),
+		})
 	}
+	return events
 }
 
 // sessionHandleFromData extracts a top-level session_handle string from a

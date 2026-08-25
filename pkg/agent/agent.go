@@ -1797,7 +1797,13 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
 	// released a handle — so the runtime owns the cleanup.
 	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
-	defer handleCollector.ReleaseAll(zap.L())
+	defer func() {
+		// The auto-release happens outside any tool result, so the ledger
+		// learns about it here instead of through applyLeaseEvents — without
+		// this the next turn would seed RESOURCE_HOLDER for handles this
+		// conversation already gave back.
+		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
+	}()
 
 	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()

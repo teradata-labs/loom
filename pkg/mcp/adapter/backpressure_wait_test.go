@@ -211,3 +211,54 @@ func TestBackpressureCallerParamsNotMutated(t *testing.T) {
 		"the model-owned params map must never see injected flow control")
 	assert.Equal(t, map[string]interface{}{"query": "SELECT 1"}, callerParams)
 }
+
+// TestBackpressureHintReachesShuttleError: a capacity condition that outlives
+// the freeze (here: an already-expired deadline, so there is no budget to
+// wait in) carries its hint onto the generic shuttle contract, so consumers
+// outside pkg/mcp read flow control without knowing anything about MCP.
+func TestBackpressureHintReachesShuttleError(t *testing.T) {
+	ft := newWaitTransport(
+		backpressureResult("session_handle_budget_full", 412, "wait_s", 300),
+	)
+	adapter := waitAdapter(t, ft)
+
+	// A live ctx whose remaining time is inside the freeze's deadline margin:
+	// the call reaches the server and comes back with the contract, but there
+	// is no budget to wait in, so the error surfaces unchanged.
+	ctx, cancel := context.WithTimeout(context.Background(), backpressureDeadlineMargin)
+	defer cancel()
+
+	res, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	require.False(t, res.Success)
+	require.NotNil(t, res.Error)
+
+	hint := res.Error.Backpressure()
+	require.NotNil(t, hint, "the shuttle error must carry the backpressure hint")
+	assert.Equal(t, "session_handle_budget_full", hint.Code)
+	assert.Equal(t, int64(412), hint.RetryAfterS)
+	assert.Equal(t, "wait_s", hint.WaitParam)
+	assert.Equal(t, int64(300), hint.MaxWaitS)
+	assert.Equal(t, 1, ft.calls(), "no re-invoke without budget")
+}
+
+// TestTaskFailureCarriesNoHint: an ordinary tool failure (no retryable
+// contract — the shape a non-retryable server code like express_ineligible
+// produces) reaches the model unchanged and stamps no hint.
+func TestTaskFailureCarriesNoHint(t *testing.T) {
+	plain, _ := json.Marshal(protocol.CallToolResult{
+		IsError: true,
+		Content: []protocol.Content{{Type: "text", Text: `{"code":"express_ineligible","message":"session-scoped SQL is not express-eligible"}`}},
+	})
+	ft := newWaitTransport(plain)
+	adapter := waitAdapter(t, ft)
+
+	res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	require.False(t, res.Success)
+	require.NotNil(t, res.Error)
+	assert.Nil(t, res.Error.Backpressure(), "a task-level failure carries no flow-control hint")
+	assert.Equal(t, 1, ft.calls(), "a non-retryable failure must not be re-invoked")
+	assert.Contains(t, res.Error.Message, "express_ineligible",
+		"the model sees the server's own reason")
+}

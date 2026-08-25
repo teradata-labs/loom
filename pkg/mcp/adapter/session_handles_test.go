@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // mintSchemaSnake declares the release convention with the snake_case
@@ -428,4 +429,98 @@ func TestHandleCollectorScopedPerServer(t *testing.T) {
 	if survivor.adapter.serverName != "server-a" {
 		t.Fatalf("wrong survivor: %s", survivor.adapter.serverName)
 	}
+}
+
+// TestMintEmitsLeaseAcquiredEvent: a tracked mint rides out on the Result as
+// a generic shuttle lease event, so the agent's ledger and the LLM slot
+// scheduler learn the conversation holds a scarce backend resource without
+// any MCP-specific code.
+func TestMintEmitsLeaseAcquiredEvent(t *testing.T) {
+	released, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransportWithSchema(mintSchemaSnake(), mintResult("tdsh_lease1"), released)
+	adapter := waitAdapter(t, ft)
+
+	ctx, collector := WithHandleCollector(context.Background())
+	res, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+
+	events := shuttle.LeaseEventsFrom(res)
+	require.Len(t, events, 1, "the mint must emit exactly one lease event")
+	assert.Equal(t, shuttle.LeaseAcquired, events[0].Action)
+	assert.Equal(t, sessionHandleLeaseKind, events[0].Kind)
+	assert.Equal(t, collectorKey(adapter, "tdsh_lease1"), events[0].ID,
+		"the event ID is the server-scoped collector key")
+	require.Equal(t, 1, collector.Count())
+}
+
+// TestExplicitReleaseEmitsLeaseReleasedEvent: an agent-driven release is
+// mirrored onto the contract with the identical (Kind, ID) the mint used, so
+// the ledger's set-based accounting cancels exactly.
+func TestExplicitReleaseEmitsLeaseReleasedEvent(t *testing.T) {
+	releasedResult, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransportWithSchema(mintSchemaSnake(), mintResult("tdsh_lease2"), releasedResult)
+	adapter := waitAdapter(t, ft)
+
+	ctx, collector := WithHandleCollector(context.Background())
+	mintRes, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	acquired := shuttle.LeaseEventsFrom(mintRes)
+	require.Len(t, acquired, 1)
+
+	relRes, err := adapter.Execute(ctx, map[string]interface{}{"release_handle": "tdsh_lease2"})
+	require.NoError(t, err)
+	events := shuttle.LeaseEventsFrom(relRes)
+	require.Len(t, events, 1)
+	assert.Equal(t, shuttle.LeaseReleased, events[0].Action)
+	assert.Equal(t, acquired[0].Kind, events[0].Kind)
+	assert.Equal(t, acquired[0].ID, events[0].ID,
+		"release must name the identical (Kind, ID) the mint used")
+	assert.Equal(t, 0, collector.Count())
+}
+
+// TestReleaseAllEmitsLeaseReleasedEvents: the end-of-conversation pass runs
+// outside any tool result, so it hands its released identities back to the
+// caller — without them the agent's ledger would keep seeding
+// RESOURCE_HOLDER for a conversation whose handles are gone.
+func TestReleaseAllEmitsLeaseReleasedEvents(t *testing.T) {
+	releasedResult, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransportWithSchema(mintSchemaSnake(), mintResult("tdsh_lease3"), releasedResult)
+	adapter := waitAdapter(t, ft)
+
+	ctx, collector := WithHandleCollector(context.Background())
+	mintRes, err := adapter.Execute(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	acquired := shuttle.LeaseEventsFrom(mintRes)
+	require.Len(t, acquired, 1)
+
+	events := collector.ReleaseAll(nil)
+	require.Len(t, events, 1, "every tracked handle yields a release event")
+	assert.Equal(t, shuttle.LeaseReleased, events[0].Action)
+	assert.Equal(t, acquired[0].ID, events[0].ID)
+	assert.Equal(t, 0, collector.Count())
+
+	// A second pass has nothing to release and emits nothing.
+	assert.Empty(t, collector.ReleaseAll(nil))
+}
+
+// TestNoCollectorEmitsNoLeaseEvents: without a collector in ctx (workflow
+// paths, direct executor use) nothing is tracked and no events are emitted.
+func TestNoCollectorEmitsNoLeaseEvents(t *testing.T) {
+	releasedResult, _ := json.Marshal(protocol.CallToolResult{Content: []protocol.Content{
+		{Type: "text", Text: `{"target":"released"}`},
+	}})
+	ft := newWaitTransportWithSchema(mintSchemaSnake(), mintResult("tdsh_lease4"), releasedResult)
+	adapter := waitAdapter(t, ft)
+
+	res, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	require.True(t, res.Success)
+	assert.Empty(t, shuttle.LeaseEventsFrom(res), "no collector, no lease events")
 }

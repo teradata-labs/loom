@@ -466,7 +466,7 @@ same wire field names (`code`, `retry_after_s`, `wait_param`, `max_wait_s`).
 A hint declares the failure to be capacity flow control, not a fault: the
 identical call, re-issued after a wait, is expected to succeed. This is the
 contract only — no wait loop lives at the shuttle layer; the MCP adapter's
-freeze loop migrates onto it when PR #355 merges. On this branch the hint is contract-only: it has no producer or consumer yet.
+freeze loop is now merged, and the MCP adapter is the contract's first producer: a capacity condition that outlives the freeze stamps its hint onto the shuttle error, so consumers outside `pkg/mcp` read flow control without knowing MCP. The freeze loop itself still parses the MCP-level hint (it needs the wire-level `wait_param` re-invoke).
 
 ### 11.2 The mark/unmark lifecycle (pkg/agent + pkg/llm/scheduler) ✅
 
@@ -497,14 +497,29 @@ the session's conversation currently holds.
   installed, the ledger still tracks leases and the mark/unmark calls are
   no-ops — unwired deployments behave exactly as before.
 
+### 11.2a MCP session handles ✅
+
+The MCP adapter is the lease contract's first producer. A tool result whose
+minted `session_handle` the runtime tracks (issue #345, schema-gated on both
+ends) carries a `LeaseAcquired` event keyed `mcp-session-handle` with the
+server-scoped handle identity; an agent-driven release and the
+end-of-conversation auto-release pass both emit the matching `LeaseReleased`
+for the identical `(Kind, ID)`. The ledger and the slot scheduler consume
+those events generically — no MCP-specific code on the loom side.
+
+The conversation-end pass runs outside any tool result, so `ReleaseAll`
+returns its released identities and the agent's chat loop applies them to the
+ledger directly; without that, the next turn would seed `RESOURCE_HOLDER` for
+handles the conversation had already given back.
+
 ### 11.3 Planned follow-ups 📋
 
 - **Trust model**: lease events are taken at the emitting tool's word — any tool that shapes `Result.Metadata` can assert or release any lease. Operator-chosen backends are trusted; deployments running untrusted tool servers must strip these keys at their adapter boundary (see the doc block in `pkg/shuttle/lease.go`).
 - **Ledger durability**: the lease ledger is process memory only. After a `looms` restart the ledger is empty — a backend lease that survived the restart (e.g. a remote HTTP-MCP session) loses RESOURCE_HOLDER seeding until its next lease event. Durable seeding is 📋 planned alongside durable park persistence.
-- **MCP adapter migration**: PR #355's MCP-level backpressure hint and
-  freeze loop move onto the shuttle contract when that PR merges, and MCP
-  session handles then declare themselves as lease events instead of
-  adapter-private state.
+- **Express lane** (📋, lives in `teradata-mcp-v2`): a reserved slice of
+  physical connections for stateless per-statement calls, so one-shot reads
+  never queue behind session holders. The loom side needs nothing — express
+  calls simply hold no lease.
 - **Express lane**: reserved scheduler headroom for `RESOURCE_HOLDER`
   acquisitions (analogous to the interactive headroom), so a holder never
   waits behind a saturated general queue.
