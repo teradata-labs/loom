@@ -1898,8 +1898,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				// need a patterns directory to find filesystem patterns.
 				if pd, ok := cfg.Metadata["patterns_dir"]; ok && pd != "" {
 					agentCfg.PatternsDir = pd
-				} else {
+				} else if config.PatternsDir != "" {
 					agentCfg.PatternsDir = config.PatternsDir
+				} else {
+					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
 				}
 				// Skills config: just attach to agentCfg here. Discovery
 				// wiring requires the agent's LLM provider and is performed
@@ -3182,8 +3184,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Set PatternsDir from metadata or the server-level default.
 			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
 				cfg.PatternsDir = pd
-			} else {
+			} else if config.PatternsDir != "" {
 				cfg.PatternsDir = config.PatternsDir
+			} else {
+				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
 			}
 
 			// Set context limits if specified in LLM config

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in (`tools.permissions.allowed_tools: [manage_ephemeral_agents]`) or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
+
+### Added
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
+
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
 ## [1.4.0] - 2026-08-12
 
 ### Breaking Changes
@@ -43,23 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Replay/Import Arrival Time (#308)
 - `WeaveRequest.occurred_at`: replayed or imported conversations anchor every persisted row (user turn, assistant reply, tool rows) at their historical time. Gated by `server.allow_time_override` (default off); future-dated values rejected.
 
-#### MCP Streamable-HTTP Session & 202 Handling
-- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
-- Handle HTTP 202 Accepted (async MCP responses) correctly; previously the client treated 202 as an error.
-- Forward the `DELETE` verb (session teardown) with the correct headers.
-
-#### OpenAI Client Transport Hardening
-- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
-- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
-
-#### SSE Server Improvements (StreamWeave HTTP path)
-- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
-- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
-
-#### LiteLLM Health Checks
-- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
-- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
-
 #### Session Artifact Metadata & ListSessions API (#146)
 - Opt-in session `metadata.json` (config `artifacts.session_metadata_enabled`, env `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED`; default **off**) colocating `agent_name`, `ended_at`, `metadata_status`, `artifact_count`, and allowlisted attribution context next to a session's artifacts. Disk I/O stays off the hot path and is zero-cost when disabled.
 - `ListSessions` pagination (`limit`/`offset`; server default page size 50, max 500) plus `metadata_status` and `project_id` filters (filters require the flag and read `metadata.json` per session).
@@ -83,7 +89,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ListSessions` pagination is **opt-in**: a request that sets neither `limit` nor `offset` still returns every session (no silent truncation). Setting either parameter applies the server-side default page size and 500-row cap.
 - buf remote plugin versions pinned to the committed codegen (#296)
 - Dependency updates: Go toolchain 1.26, golang.org/x/crypto, excelize, and CI action bumps (Dependabot)
-
 
 ## [1.3.0] - 2026-06-01
 

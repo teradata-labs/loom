@@ -343,7 +343,7 @@ spec:
 | **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result or first tool result returned by reference) |
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
 
-The server's tool policy withholds some of these from the model while their subsystems keep running: `tools.minimal` suppresses `graph_memory` and `task_board`; `tools.none` additionally suppresses `conversation_memory`, `session_memory`, `get_error_details`, `query_tool_result`, the workflow-injected tools, and `manage_ephemeral_agents`. `manage_skills` and `load_pattern` are not suppressed by either policy.
+`tools.minimal` suppresses `graph_memory` and `task_board`; `tools.none` additionally suppresses `conversation_memory`, `session_memory`, `get_error_details`, `query_tool_result`, and the workflow-injected tools. `manage_skills` and `load_pattern` are not suppressed by either policy. `manage_ephemeral_agents` is not suppressed by `tools.none`; see the manage_ephemeral_agents section for opt-in/opt-out details.
 
 #### manage_skills
 

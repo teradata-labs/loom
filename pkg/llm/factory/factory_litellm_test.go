@@ -158,12 +158,12 @@ func TestCreateLiteLLMProvider_ExpandsEnvPlaceholder(t *testing.T) {
 }
 
 // TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack verifies that when an
-// env-var placeholder references an unset variable, it expands to "" and the
-// factory falls back to the direct env lookup (LITELLM_ENDPOINT / LITELLM_BASE_URL).
+// env-var placeholder references a variable set to empty string, it expands to ""
+// and the factory falls back to the direct env lookup (LITELLM_ENDPOINT / LITELLM_BASE_URL).
 func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
 	// LITELLM_BASE_URL is NOT set in the config placeholder, but IS set as a
 	// direct env var for the fallback lookup.
-	t.Setenv("MY_CUSTOM_ENDPOINT", "") // placeholder target unset
+	t.Setenv("MY_CUSTOM_ENDPOINT", "") // placeholder target set to empty string, triggers fallback
 	requestPath := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestPath <- r.URL.Path

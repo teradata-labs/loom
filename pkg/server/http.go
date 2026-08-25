@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -26,7 +27,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // CORSConfig holds CORS configuration
@@ -312,34 +312,6 @@ func (h *HTTPServer) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(spec)
 }
 
-// SlotOriginHTTPHeader is the HTTP request header SSE clients use to assert
-// this turn's scheduling band — "interactive" (a human is waiting on the
-// response) or "batch" (the default when absent). It mirrors the gRPC
-// metadata key (SlotOriginMetadataKey) under the same trust model: the value
-// is client-asserted and trusted as-is.
-const SlotOriginHTTPHeader = "X-Loom-Slot-Origin"
-
-// withHTTPSlotOrigin maps the client-asserted X-Loom-Slot-Origin header into
-// incoming gRPC metadata on ctx, so slotOriginFromMetadata — and with it
-// slot scheduling and door admission — sees the HTTP turn's band. Without
-// this mapping an HTTP request context carries no gRPC metadata, every
-// HTTP/SSE client classifies BATCH, and a web human parks at the door
-// behind fleets.
-func withHTTPSlotOrigin(ctx context.Context, r *http.Request) context.Context {
-	origin := strings.ToLower(strings.TrimSpace(r.Header.Get(SlotOriginHTTPHeader)))
-	if origin == "" {
-		return ctx
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if ok {
-		md = md.Copy()
-	} else {
-		md = metadata.MD{}
-	}
-	md.Set(SlotOriginMetadataKey, origin)
-	return metadata.NewIncomingContext(ctx, md)
-}
-
 // handleStreamWeaveSSE handles SSE streaming for /v1/weave:stream
 func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -365,11 +337,11 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
-	// Create gRPC stream. The context carries the client-asserted slot
-	// origin (X-Loom-Slot-Origin) as incoming gRPC metadata so interactive
-	// HTTP turns bypass door admission exactly like interactive gRPC turns.
+	ctx := r.Context()
+
+	// Create gRPC stream
 	stream := &sseStreamWrapper{
-		ctx:     withHTTPSlotOrigin(r.Context(), r),
+		ctx:     ctx,
 		writer:  w,
 		flusher: w.(http.Flusher),
 		logger:  h.logger,
@@ -392,7 +364,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		defer ticker.Stop()
 		for {
 			select {
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				return
 			case <-heartbeatDone:
 				return
@@ -423,7 +395,7 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 			h.logger.Error("StreamWeave failed", zap.Error(err))
 		}
 		// Send error as SSE event
-		h.sendSSEError(w, stream.flusher, err)
+		stream.writeError(err)
 	}
 }
 
@@ -456,14 +428,10 @@ type sseStreamWrapper struct {
 }
 
 func (s *sseStreamWrapper) Send(progress *loomv1.WeaveProgress) error {
-	// Convert progress to JSON using protojson so field names are emitted in
-	// camelCase (e.g. partialContent, isTokenStream) and enums as their string
-	// names (e.g. "EXECUTION_STAGE_COMPLETED") — matching the WeaveProgress
-	// proto-JSON wire format that SSE clients (e.g. the AgentRuntime UI
-	// playground's parseLoomWeaveProgress) expect. Plain encoding/json would
-	// instead emit the struct's snake_case json tags and raw numeric enums,
-	// which those clients cannot parse.
-	data, err := protojson.Marshal(progress)
+	// Use encoding/json so the SSE wire format matches the snake_case field names
+	// and numeric enum values that existing SSE clients (and docs/reference/streaming.md)
+	// expect. Do not switch to protojson — that would change the wire format and break clients.
+	data, err := json.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("failed to marshal progress: %w", err)
 	}
@@ -494,6 +462,31 @@ func (s *sseStreamWrapper) writeHeartbeat() error {
 	}
 	s.flusher.Flush()
 	return nil
+}
+
+func (s *sseStreamWrapper) writeError(err error) {
+	errorEvent := map[string]interface{}{
+		"error":    err.Error(),
+		"stage":    "EXECUTION_STAGE_FAILED",
+		"progress": 0,
+	}
+	data, marshalErr := json.Marshal(errorEvent)
+	if marshalErr != nil {
+		s.logger.Error("failed to marshal SSE error", zap.Error(marshalErr))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, writeErr := fmt.Fprintf(s.writer, "data: %s\n\n", data); writeErr != nil {
+		if isClientCanceled(writeErr) || errors.Is(writeErr, syscall.EPIPE) || errors.Is(writeErr, syscall.ECONNRESET) {
+			s.logger.Debug("client disconnected before SSE error could be written", zap.Error(writeErr))
+		} else {
+			s.logger.Error("failed to write SSE error", zap.Error(writeErr))
+		}
+		return
+	}
+	s.flusher.Flush()
 }
 
 func (s *sseStreamWrapper) SetHeader(md metadata.MD) error {
@@ -600,17 +593,4 @@ func (h *HTTPServer) handleAppHTML(w http.ResponseWriter, _ *http.Request, name 
 			"connect-src 'self'; frame-ancestors 'self'")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content) // #nosec -- trusted internal app HTML served with strict CSP headers
-}
-
-// sendSSEError sends an error event via SSE
-func (h *HTTPServer) sendSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	errorEvent := map[string]interface{}{
-		"error":    err.Error(),
-		"stage":    "EXECUTION_STAGE_FAILED",
-		"progress": 0,
-	}
-
-	data, _ := json.Marshal(errorEvent)
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
 }
