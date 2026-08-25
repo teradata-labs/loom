@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver (encryption when CGO available)
+	"github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver (encryption when CGO available)
 )
 
 // SQLiteStorage provides persistent trace storage using SQLite.
@@ -38,13 +38,22 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 		return nil, fmt.Errorf("database path cannot be empty")
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite3", dbPath)
+	// Open database. busy_timeout rides in the DSN so ALL 10 pooled
+	// connections wait on lock contention instead of failing instantly with
+	// SQLITE_BUSY ("failed to create eval run" under concurrent writers).
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Configure connection pool
+	// Configure connection pool.
+	//
+	// NOTE (follow-up): 10 concurrent connections all write to this database
+	// in rollback-journal mode, so writers serialize on the file lock and
+	// burn their busy_timeout waiting on each other. Enabling WAL and/or
+	// splitting the pool into one writer connection + N readers would cut
+	// contention structurally; kept as-is here to keep this change scoped to
+	// the busy_timeout fix.
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)

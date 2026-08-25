@@ -57,8 +57,16 @@ type DBConfig struct {
 //	    EncryptionKey: os.Getenv("LOOM_DB_KEY"),
 //	})
 func OpenDB(config DBConfig) (*sql.DB, error) {
-	// Open database using pre-registered "sqlite3" driver from sqlcipher
-	db, err := sql.Open("sqlite3", config.Path)
+	// Open database using the pre-registered "sqlite3" driver. busy_timeout
+	// and foreign_keys are per-connection settings, so they must ride in the
+	// DSN to reach every pooled connection — a post-open db.Exec configures
+	// only the one connection that runs it. Both PRAGMAs are safe before
+	// PRAGMA key on encrypted databases (neither touches data pages).
+	dsn := sqlitedriver.DSN(config.Path, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		ForeignKeys:   true,
+	})
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -110,14 +118,9 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 		)
 	}
 
-	// Enable foreign keys for CASCADE operations
-	// This must be set for each connection as it defaults to OFF in SQLite
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("failed to enable foreign keys: %w", err),
-			db.Close(),
-		)
-	}
+	// Foreign keys are enabled via the DSN above: PRAGMA foreign_keys is
+	// per-connection (default OFF), and only the DSN reaches every pooled
+	// connection.
 
 	return db, nil
 }

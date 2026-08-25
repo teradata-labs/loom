@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -30,8 +30,15 @@ type Store struct {
 // NewStore creates a new scheduler store with SQLite backend.
 // The dbPath should point to $LOOM_DATA_DIR/scheduler.db.
 func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, error) {
-	// Open database with SQLite-specific pragmas
-	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?cache=shared&mode=rwc", dbPath))
+	// Open database with SQLite-specific pragmas. WAL and busy_timeout ride
+	// in the DSN (sqlitedriver.DSN renders the active driver's syntax) so
+	// every pooled connection gets them; a post-open db.Exec would configure
+	// only one of the 25 pooled connections.
+	dsn := sqlitedriver.DSN(
+		fmt.Sprintf("file:%s?cache=shared&mode=rwc", dbPath),
+		sqlitedriver.Options{BusyTimeoutMS: 5000, WAL: true},
+	)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -40,12 +47,6 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
-
-	// Enable WAL mode via PRAGMA (not DSN param) for modernc.org/sqlite compatibility
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
 
 	store := &Store{
 		db:     db,

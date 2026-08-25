@@ -51,13 +51,20 @@ type Migrator struct {
 }
 
 // NewMigrator creates a new migrator with embedded SQL migrations.
-// It sets PRAGMA busy_timeout = 5000 on the database to handle lock contention.
+//
+// The caller should open db with a busy_timeout in the DSN (see
+// internal/sqlitedriver.DSN): PRAGMA busy_timeout is per-connection, so the
+// Exec below only reliably covers a single-connection pool. It is kept as a
+// best-effort safety net because NewMigrator also receives databases opened
+// by callers outside this repository.
 func NewMigrator(db *sql.DB, tracer observability.Tracer) (*Migrator, error) {
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
 
-	// Set busy_timeout so concurrent readers/writers wait instead of failing immediately
+	// Best-effort: set busy_timeout so concurrent readers/writers wait
+	// instead of failing immediately. Only guaranteed to configure the one
+	// pooled connection that runs it — the DSN is the authoritative place.
 	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
 		return nil, fmt.Errorf("failed to set busy_timeout: %w", err)
 	}

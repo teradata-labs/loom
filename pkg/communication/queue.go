@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -123,17 +123,23 @@ func NewMessageQueue(dbPath string, tracer observability.Tracer, logger *zap.Log
 		logger = zap.NewNop()
 	}
 
-	// Open SQLite database
-	// Add pragmas for better concurrency:
+	// Open SQLite database with pragmas for better concurrency, rendered
+	// into the DSN so every pooled connection gets them (busy_timeout is
+	// per-connection; a post-open db.Exec would configure only one of the
+	// 10 pooled connections):
 	// - busy_timeout: Wait up to 5s if database is locked
 	// - journal_mode=WAL: Write-Ahead Logging for concurrent reads/writes
-	// - cache_size: Increase cache for better performance
+	//   (file-based databases only; ":memory:" reports journal_mode=memory)
 	dbURL := dbPath
 	if dbPath == ":memory:" {
 		// For in-memory databases with shared cache, use file URI format
 		// This allows multiple connections to share the same in-memory database
 		dbURL = "file::memory:?mode=memory&cache=shared"
 	}
+	dbURL = sqlitedriver.DSN(dbURL, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           dbPath != ":memory:",
+	})
 	db, err := sql.Open("sqlite3", dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -142,20 +148,6 @@ func NewMessageQueue(dbPath string, tracer observability.Tracer, logger *zap.Log
 	// Set connection pool parameters for better concurrency
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
-
-	// Enable WAL mode for better concurrent access (for file-based databases)
-	if dbPath != ":memory:" {
-		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-			logger.Warn("Failed to enable WAL mode", zap.Error(err))
-			// Continue anyway - not critical
-		}
-	}
-
-	// Set busy timeout for all connections
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		logger.Warn("Failed to set busy timeout", zap.Error(err))
-		// Continue anyway - not critical
-	}
 
 	// Create tables
 	schema := `

@@ -105,6 +105,12 @@ func (a *Agent) inTurnSQLite(sessionID string, messageID int64, payload string) 
 	if err != nil {
 		return nil, fmt.Errorf("open in-turn sqlite: %w", err)
 	}
+	// A pooled ":memory:" DSN is a DIFFERENT empty database per physical
+	// connection: if database/sql ever opened a second connection, queries on
+	// it would fail with "no such table: results". Pin the pool to the single
+	// connection that loads the table. Contention settings (busy_timeout) are
+	// moot with one private in-memory connection.
+	db.SetMaxOpenConns(1)
 
 	quoted := make([]string, len(columns))
 	placeholders := make([]string, len(columns))
