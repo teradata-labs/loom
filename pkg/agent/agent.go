@@ -3197,34 +3197,51 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// Use LLM to distill the user message into a search query for memory recall.
 	// "What was the first issue I had with my new car after its first service?"
 	// becomes something like "first issue with new car after first service".
-	searchQuery := a.extractSearchQuery(ctx, userMessage)
+	searchQuery, querySource := a.extractSearchQuery(ctx, userMessage)
+	// Provenance answers the question this whole path exists to answer: did
+	// the LLM side-call actually run, or did every agent in the fleet fall
+	// back to keywords because the token pipe was saturated?
+	span.SetAttribute("recall.query_source", querySource)
 	if searchQuery == "" {
 		outcome = "no_query"
 		return
 	}
-	span.SetAttribute("recall.query", searchQuery)
+	span.SetAttribute("recall.query", truncatePreview(searchQuery))
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
 	var candidates []*memory.Memory
 
+	// A store error must never masquerade as an honest miss. az512h could not
+	// tell "nothing matched" from "every MATCH was a syntax error" because
+	// both surfaced as zero candidates and no recorded error.
+	storeFailed := false
+
 	// Entity-scoped recall: search entities, get their neighborhoods.
 	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
-	if err == nil {
-		for _, e := range entities {
-			recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-				AgentID:    a.config.Name,
-				EntityName: e.Name,
-				Topic:      searchQuery,
-				MaxTokens:  budget,
-			})
-			if err == nil && recall != nil {
-				for _, sm := range recall.Memories {
-					if sm.Memory != nil && !seen[sm.Memory.ID] {
-						seen[sm.Memory.ID] = true
-						candidates = append(candidates, sm.Memory)
-					}
-				}
+	if err != nil {
+		storeFailed = true
+		span.RecordError(fmt.Errorf("graph memory recall: search entities: %w", err))
+	}
+	for _, e := range entities {
+		recall, ctxErr := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+			AgentID:    a.config.Name,
+			EntityName: e.Name,
+			Topic:      searchQuery,
+			MaxTokens:  budget,
+		})
+		if ctxErr != nil {
+			storeFailed = true
+			span.RecordError(fmt.Errorf("graph memory recall: context for entity %q: %w", e.Name, ctxErr))
+			continue
+		}
+		if recall == nil {
+			continue
+		}
+		for _, sm := range recall.Memories {
+			if sm.Memory != nil && !seen[sm.Memory.ID] {
+				seen[sm.Memory.ID] = true
+				candidates = append(candidates, sm.Memory)
 			}
 		}
 	}
@@ -3242,18 +3259,28 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		Limit:     50,
 		MaxTokens: budget,
 	})
-	if recallErr == nil {
-		for _, m := range memories {
-			if !seen[m.ID] {
-				seen[m.ID] = true
-				candidates = append(candidates, m)
-			}
+	if recallErr != nil {
+		storeFailed = true
+		span.RecordError(fmt.Errorf("graph memory recall: unscoped recall: %w", recallErr))
+	}
+	for _, m := range memories {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			candidates = append(candidates, m)
 		}
 	}
 
+	// Recorded even when candidates were found, so a partial store failure is
+	// visible instead of being hidden behind a successful injection.
+	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
 	if len(candidates) == 0 {
-		outcome = "no_candidates"
+		if storeFailed {
+			// Distinct from no_candidates: the store failed, this is not a miss.
+			outcome = "store_error"
+		} else {
+			outcome = "no_candidates"
+		}
 		return
 	}
 
@@ -3432,7 +3459,12 @@ func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidat
 // extractSearchQuery uses the LLM to distill a user message into a concise
 // search query for memory recall. Returns a natural language query like
 // "car GPS malfunction after March service" — not searchQuery, not the raw prompt.
-func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) string {
+//
+// The second return value is the query's provenance: "llm" when the side-call
+// answered, "keyword" when it errored or came back empty and the query came
+// from keywordSearchQuery instead. It lands on the recall span so a trace can
+// tell a starved side-call apart from a working one.
+func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) (query, source string) {
 	extractCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -3456,52 +3488,84 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) stri
 		// out for all 512 agents at a saturated token pipe, silently
 		// disabling recall for the whole run. Degrade to a keyword query —
 		// OR-joined content words are what the distillation would produce.
-		return keywordSearchQuery(userMessage)
+		return keywordSearchQuery(userMessage), "keyword"
 	}
 
-	query := strings.TrimSpace(resp.Content)
+	query = strings.TrimSpace(resp.Content)
 	if idx := strings.IndexByte(query, '\n'); idx > 0 {
 		query = query[:idx]
 	}
 	if query == "" {
-		return keywordSearchQuery(userMessage)
+		return keywordSearchQuery(userMessage), "keyword"
 	}
-	return query
+	return query, "llm"
 }
 
 // searchQueryStopwords are filler words dropped by keywordSearchQuery; what
 // remains are the content words worth matching against memory.
+//
+// The list holds only words that carry no discriminating power on their own.
+// Temporal and interrogative words are NOT filler here — "first", "when",
+// "what", "which", "who", "why" are precisely what separates one remembered
+// event from another ("the FIRST issue after the service"), and the exemplar
+// query in extractSearchQuery's own doc comment leans on "first". Dropping
+// them was throwing away the discriminator and keeping the noise. "call" and
+// "only" went the same way: both are content words in the domains this recalls
+// over (a tool call, the only failing run).
 var searchQueryStopwords = map[string]bool{
 	"the": true, "and": true, "for": true, "with": true, "from": true,
 	"that": true, "this": true, "then": true, "them": true, "your": true,
 	"you": true, "are": true, "was": true, "were": true, "have": true,
 	"has": true, "had": true, "not": true, "but": true, "all": true,
 	"any": true, "can": true, "will": true, "must": true, "should": true,
-	"please": true, "call": true, "first": true, "only": true, "also": true,
-	"into": true, "onto": true, "each": true, "every": true, "when": true,
-	"what": true, "how": true, "which": true, "who": true, "why": true,
+	"please": true, "also": true, "into": true, "onto": true, "each": true,
+	"every": true, "how": true,
 }
 
+// minSearchTermRunes is the shortest token keywordSearchQuery keeps. It is 2,
+// not 3, to match fts5Barewords in pkg/storage/sqlite: the store's sanitizer
+// is the last filter every query passes through, so any threshold above its
+// own only drops terms the store would have happily matched — two-character
+// discriminators like "v2", "AI", "S3", "PE" or a table alias. Aligned, the
+// two filters agree on what a term is; a term that survives here survives
+// there. Short function words admitted by the lower floor are harmless: the
+// store OR-joins the terms and BM25 ranks common words down.
+const minSearchTermRunes = 2
+
 // keywordSearchQuery is the LLM-free fallback for memory recall: the user
-// message's distinct content words (lowercased barewords, length >= 3, minus
-// stopwords), capped at twelve. The store OR-joins and sanitizes them for
-// FTS5, so this can never be a MATCH syntax error.
+// message's distinct content words (lowercased barewords, minSearchTermRunes
+// runes or longer, minus stopwords), capped at twelve. The store OR-joins and
+// sanitizes them for FTS5, so this can never be a MATCH syntax error.
+//
+// The accepted rune set mirrors fts5Barewords, codepoints above 127 included:
+// restricting it to ASCII would reduce a Cyrillic, Greek, or CJK message to an
+// empty fallback query, which disables recall for exactly the conversations
+// this fallback exists to keep alive.
 func keywordSearchQuery(userMessage string) string {
 	seen := make(map[string]bool)
 	var words []string
 	var cur strings.Builder
+	runes := 0
+	nonASCII := false
 	flush := func() {
 		w := cur.String()
+		short := runes < minSearchTermRunes && !nonASCII
 		cur.Reset()
-		if len(words) >= 12 || len(w) < 3 || searchQueryStopwords[w] || seen[w] {
+		runes = 0
+		nonASCII = false
+		if len(words) >= 12 || short || searchQueryStopwords[w] || seen[w] {
 			return
 		}
 		seen[w] = true
 		words = append(words, w)
 	}
 	for _, r := range strings.ToLower(userMessage) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r > 127 {
 			cur.WriteRune(r)
+			runes++
+			if r > 127 {
+				nonASCII = true
+			}
 		} else {
 			flush()
 		}
