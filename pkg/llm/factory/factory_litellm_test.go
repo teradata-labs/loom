@@ -204,8 +204,8 @@ func TestCreateLiteLLMProvider_UnsetPlaceholderFallsBack(t *testing.T) {
 // as the endpoint URL and producing "no Host in request URL".
 func TestCreateLiteLLMProvider_GenuinelyUnsetPlaceholderFallsBack(t *testing.T) {
 	const varName = "MY_GENUINELY_UNSET_ENDPOINT"
-	t.Setenv(varName, "") // ensure it's unset for this test via Unsetenv
-	os.Unsetenv(varName)  //nolint:tenv // deliberately unset after Setenv cleanup registration
+	t.Setenv(varName, "") // register cleanup via t.Setenv, then immediately unset so LookupEnv returns false
+	require.NoError(t, os.Unsetenv(varName))
 
 	requestPath := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
