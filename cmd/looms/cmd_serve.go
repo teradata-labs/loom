@@ -524,6 +524,22 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	return dst
 }
 
+// resolveBedrockCredentials returns the explicit AWS credentials to pass to the
+// Bedrock client. When a named profile is configured the caller should let the
+// AWS SDK resolve credentials from the profile chain — returning empty strings
+// here prevents explicit key/secret values (including ambient env vars) from
+// overriding the profile. Without a profile the fields are expanded for
+// ${ENV_VAR} placeholders and returned directly; ambient env vars that are not
+// referenced in the config fields are not injected.
+func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, sessionToken string) {
+	if cfg.BedrockProfile != "" {
+		return "", "", ""
+	}
+	return os.ExpandEnv(cfg.BedrockAccessKeyID),
+		os.ExpandEnv(cfg.BedrockSecretAccessKey),
+		os.ExpandEnv(cfg.BedrockSessionToken)
+}
+
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, nil
