@@ -453,7 +453,7 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 
 	apiKey := f.config.LiteLLMAPIKey
 	if unresolved := loomconfig.UnresolvedEnvPlaceholders(apiKey); len(unresolved) > 0 {
-		log.Printf("warning: litellm_api_key contains unresolved placeholder(s) %v; the literal placeholder string will be sent as the key", unresolved)
+		log.Printf("warning: litellm_api_key contains unresolved placeholder(s); the literal placeholder string will be sent as the key")
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("LITELLM_API_KEY")
