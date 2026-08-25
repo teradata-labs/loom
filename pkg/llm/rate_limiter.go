@@ -434,6 +434,7 @@ func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
 	}
 
 	// Uniform jitter in [0.5*backoff, 1.5*backoff].
+	// #nosec G404 -- retry-wave desynchronization jitter, not security-sensitive
 	delay := backoff/2 + time.Duration(rand.Int64N(int64(backoff)+1))
 
 	// Honor the server-specified wait when it is longer than the jittered
