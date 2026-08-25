@@ -16,12 +16,16 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
@@ -73,4 +77,53 @@ func TestChatWithRetryAcquiresSchedulerSlot(t *testing.T) {
 	require.NoError(t, err)
 	st2 := scheduler.Default().For(a.schedulerScope(), scheduler.Config{}).State()
 	assert.Equal(t, before+1, st2.GrantsTotal, "an unstamped turn must not touch the scheduler")
+}
+
+// throttleStubLLM is a fake provider with NO scheduler wiring of its own: it
+// only returns what any HTTP client returns — an llm.ThrottleError on 429,
+// a clean response otherwise.
+type throttleStubLLM struct {
+	name     string
+	throttle bool
+}
+
+func (s *throttleStubLLM) Chat(_ context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
+	if s.throttle {
+		return nil, llm.NewThrottleError(errors.New("API error (status 429): busy"), 250*time.Millisecond)
+	}
+	return &LLMResponse{Content: "ok", Usage: llmtypes.Usage{TotalTokens: 10}}, nil
+}
+func (s *throttleStubLLM) Name() string  { return s.name }
+func (s *throttleStubLLM) Model() string { return "m" }
+
+// The provider-agnostic AIMD seam: throttle and success outcomes reach the
+// scope's scheduler at the chatWithRetry funnel for ANY provider, with zero
+// per-provider client wiring — and with or without a SlotInfo grant, because
+// an unscheduled call's 429 depletes the same shared quota.
+func TestFunnelObservesThrottleAndSuccessProviderAgnostic(t *testing.T) {
+	scheduler.SetEnabled(true)
+	defer scheduler.SetEnabled(false)
+
+	// Unique scope per run: schedulers live in the process-wide registry, so
+	// a repeated run (-count>1) must not inherit a prior run's hold-off.
+	stub := &throttleStubLLM{name: fmt.Sprintf("funnel-agnostic-%d", time.Now().UnixNano())}
+	a := &Agent{id: "funnel-test", llm: stub, config: &Config{}}
+	ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+	sched := scheduler.Default().For(a.schedulerScope(), scheduler.Config{})
+	before := sched.State().EffectiveTokensPerMinute
+
+	stub.throttle = true
+	_, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+	require.Error(t, err)
+	st := sched.State()
+	assert.Equal(t, before/2, st.EffectiveTokensPerMinute,
+		"a surfaced llm.ThrottleError must halve the scope's ceiling")
+	assert.NotNil(t, st.NextWake, "the throttle's RetryAfter must arm the scope's wake")
+
+	stub.throttle = false
+	_, err = a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Greater(t, sched.State().EffectiveTokensPerMinute, before/2,
+		"a clean completion must grow the ceiling back (AIMD increase)")
 }

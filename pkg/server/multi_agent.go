@@ -22,7 +22,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
-	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
@@ -840,6 +839,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// default agent instead of the agent that created/owns the session.
 	var ag *agent.Agent
 	var agentID string
+	sessionResumed := false
 
 	// An existing session is resolved and authorized before ANY agent
 	// selection: an inaccessible session must surface as not-found — never
@@ -856,6 +856,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			if ownerAg == nil && ownerID != "" {
 				return nil, status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
 			}
+			sessionResumed = true
 			ag, agentID = ownerAg, ownerID
 			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
@@ -883,6 +884,12 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
 	}
+
+	// Slot scheduling: install this turn's SlotInfo (origin from the
+	// client's own report — gRPC metadata "loom-slot-origin"; a resumed
+	// session classifies IN_FLIGHT from its first call). Installed on every
+	// turn-executing entry point, unary and streaming alike.
+	ctx = installTurnSlotInfo(ctx, sessionResumed)
 
 	// Add progress multiplexer to context if available for this agent
 	s.mu.RLock()
@@ -1044,15 +1051,10 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		return err
 	}
 
-	// Slot scheduling: install this turn's SlotInfo. Origin comes from the
-	// CLI's own report (gRPC metadata "loom-slot-origin"): "interactive"
-	// means a human at a terminal is waiting on this single turn. The stamp
-	// is per-request — edge-triggered, never a conversation-lifetime mark.
-	ctx = llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), 0)
-
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
 	var resolvedAgentID string
+	sessionResumed := false
 
 	// An existing session is resolved and authorized before ANY agent
 	// selection — an inaccessible session is not-found, never a fallback to
@@ -1068,6 +1070,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			if ownerAg == nil && ownerID != "" {
 				return status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
 			}
+			sessionResumed = true
 			ag, resolvedAgentID = ownerAg, ownerID
 			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
@@ -1094,6 +1097,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
 	}
+
+	// Slot scheduling: install this turn's SlotInfo. Origin comes from the
+	// client's own report (gRPC metadata "loom-slot-origin"): "interactive"
+	// means a human at a terminal is waiting on this single turn. The stamp
+	// is per-request — edge-triggered, never a conversation-lifetime mark. A
+	// resumed session classifies IN_FLIGHT from its first call of the turn.
+	ctx = installTurnSlotInfo(ctx, sessionResumed)
 
 	// Register manage_ephemeral_agents tool if not already registered
 	// This allows agents to spawn and despawn sub-agents dynamically

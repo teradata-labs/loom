@@ -26,10 +26,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// chatWithRetry wraps LLM Chat calls with exponential backoff retry logic.
-// If the provider supports streaming and a progress callback is configured,
-// it will use streaming with token buffering to emit real-time progress.
-func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+// chatWithRetry wraps LLM Chat calls with slot scheduling, capacity
+// observation, and exponential backoff retry logic. If the provider supports
+// streaming and a progress callback is configured, it will use streaming
+// with token buffering to emit real-time progress.
+func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (resp *LLMResponse, err error) {
 	// Debug tap: one context dump per provider call, before any dispatch branch.
 	// No-op unless the dump switch is on. Covers streaming, no-retry, and the
 	// retry loop alike since every path fans out from here.
@@ -40,12 +41,14 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 	// grant or the caller's own context expiring; it is never a scheduler
 	// timeout (docs/architecture/llm-slot-scheduler.md). A nil grant means
 	// scheduling is disabled or the turn carries no SlotInfo.
-	grant, err := scheduler.AcquireForCall(ctx, a.schedulerScope(), a.estimateReservation(messages))
-	if err != nil {
-		return nil, err
+	grant, aerr := scheduler.AcquireForCall(ctx, a.schedulerScope(), a.estimateReservation(messages))
+	if aerr != nil {
+		return nil, aerr
 	}
-	var resp *LLMResponse
 	if grant != nil {
+		// Registered before the observation defer so it runs AFTER it:
+		// the outcome must be observed (throttle → ceiling halved, wake
+		// armed) before the released reservation re-dispatches waiters.
 		defer func() {
 			var actual int64
 			if resp != nil {
@@ -54,7 +57,38 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 			grant.Release(actual)
 		}()
 	}
+	// Provider-agnostic capacity observation: every provider's calls pass
+	// through this funnel, so this one seam calibrates all scopes — with or
+	// without a grant, because an unscheduled call's 429 depletes the same
+	// shared quota (see observeSchedulerOutcome).
+	defer func() { a.observeSchedulerOutcome(err) }()
 
+	return a.dispatchChat(ctx, messages, tools)
+}
+
+// observeSchedulerOutcome feeds the slot scheduler's provider-agnostic AIMD
+// seam from one call's outcome: a clean completion grows the scope's ceiling
+// (until header calibration outranks it), a surfaced throttle — a typed
+// llm.ThrottleError from any HTTP client, or an SDK throttling message
+// (Bedrock) — halves it, at most once per congestion event. Anthropic,
+// Bedrock, OpenAI, Gemini, and Ollama scopes all calibrate through this with
+// zero per-provider wiring; Azure's response-header calibration stays in its
+// client and outranks these observations.
+func (a *Agent) observeSchedulerOutcome(err error) {
+	if !scheduler.Enabled() {
+		return
+	}
+	if err == nil {
+		scheduler.ObserveSuccessForScope(a.schedulerScope())
+		return
+	}
+	if llm.IsThrottle(err) {
+		scheduler.ObserveThrottleForScope(a.schedulerScope(), llm.RetryAfter(err))
+	}
+}
+
+// dispatchChat routes one LLM call to streaming, direct, or the retry loop.
+func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
 	// Check if provider supports streaming and we have a progress callback
 	supportsStreaming := llmtypes.SupportsStreaming(a.llm)
 	progressCallback := ctx.ProgressCallback()
@@ -62,17 +96,13 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 
 	// If using streaming, bypass retry logic (streaming already handles errors)
 	if useStreaming {
-		var serr error
-		resp, serr = a.chatWithStreaming(ctx, messages, tools, progressCallback)
-		return resp, serr
+		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
 	}
 
 	// Non-streaming path with retry logic
 	// If retry is disabled, call LLM directly
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		var derr error
-		resp, derr = a.llm.Chat(ctx, messages, tools)
-		return resp, derr
+		return a.llm.Chat(ctx, messages, tools)
 	}
 
 	var lastErr error
@@ -89,8 +119,7 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 					zap.Duration("total_retry_time", delay),
 				)
 			}
-			resp = response
-			return resp, nil
+			return response, nil
 		}
 
 		// A positively-identified context-too-long refusal is returned

@@ -25,9 +25,11 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 // Client wraps the gRPC Loom client with TUI-friendly methods.
@@ -164,8 +166,29 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// withSlotOrigin reports this turn's LLM scheduling band to the server
+// (gRPC metadata "loom-slot-origin"): "interactive" when a human at a
+// terminal is waiting on the response — stdin and stdout are TTYs, which is
+// always true under the TUI — and "batch" for scripted/piped invocations.
+// Same contract as the one-shot CLI (cmd/loom/chat.go); edge-triggered per
+// turn, the server never remembers it. A caller that already stamped the
+// band (e.g. cmd/loom chat's own TTY check) wins. The origin is
+// client-asserted by design; see SlotOrigin in
+// proto/loom/v1/llm_scheduler.proto for the trust model.
+func withSlotOrigin(ctx context.Context) context.Context {
+	if md, ok := metadata.FromOutgoingContext(ctx); ok && len(md.Get("loom-slot-origin")) > 0 {
+		return ctx
+	}
+	origin := "batch"
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		origin = "interactive"
+	}
+	return metadata.AppendToOutgoingContext(ctx, "loom-slot-origin", origin)
+}
+
 // Weave sends a query and returns the response.
 func (c *Client) Weave(ctx context.Context, query string, sessionID string, agentID string) (*loomv1.WeaveResponse, error) {
+	ctx = withSlotOrigin(ctx)
 	req := &loomv1.WeaveRequest{
 		Query:     query,
 		SessionId: sessionID,
@@ -178,6 +201,7 @@ func (c *Client) Weave(ctx context.Context, query string, sessionID string, agen
 // StreamWeave sends a query and streams the response.
 // The progressFn is called for each progress update.
 func (c *Client) StreamWeave(ctx context.Context, query string, sessionID string, agentID string, progressFn func(*loomv1.WeaveProgress)) error {
+	ctx = withSlotOrigin(ctx)
 	req := &loomv1.WeaveRequest{
 		Query:     query,
 		SessionId: sessionID,

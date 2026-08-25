@@ -1087,6 +1087,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	// skills-overhaul Phase D wiring gap during initial diagnosis.
 	zap.ReplaceGlobals(logger)
 
+	// The scheduler registry's logger must be installed BEFORE any agent or
+	// LLM client is constructed: scopes are created lazily at client build
+	// time, and Registry.SetLogger only affects schedulers created after the
+	// call — installing it at gRPC registration (as before) left every
+	// boot-created scope logging calibration events into a no-op.
+	if config.LLM.SchedulerEnabled {
+		llmscheduler.Default().SetLogger(logger)
+	}
+
 	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
 
 	// Show actual config file used (not just the --config flag)
@@ -2329,10 +2338,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService.SetEnforceSessionOwnership(config.Server.Auth.Enabled)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
-	// LLM slot scheduler observability/admin surface (enablement happened at
-	// startup, before client construction).
+	// LLM slot scheduler observability/admin surface (enablement and the
+	// registry logger were both installed at startup, before any LLM client
+	// construction).
 	if config.LLM.SchedulerEnabled {
-		llmscheduler.Default().SetLogger(logger)
 		logger.Info("LLM slot scheduler enabled")
 	}
 	loomv1.RegisterLLMSchedulerServiceServer(grpcServer, llmscheduler.NewService(llmscheduler.Default()))

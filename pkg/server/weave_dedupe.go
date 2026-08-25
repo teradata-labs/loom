@@ -32,6 +32,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -274,6 +275,8 @@ func completedProgressFromResponse(resp *loomv1.WeaveResponse) *loomv1.WeaveProg
 const SlotOriginMetadataKey = "loom-slot-origin"
 
 // slotOriginFromMetadata reads the turn's origin from incoming metadata.
+// The origin is client-asserted and trusted as-is by design (see SlotOrigin
+// in proto/loom/v1/llm_scheduler.proto for the trust model).
 func slotOriginFromMetadata(ctx context.Context) loomv1.SlotOrigin {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -284,4 +287,21 @@ func slotOriginFromMetadata(ctx context.Context) loomv1.SlotOrigin {
 		return loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE
 	}
 	return loomv1.SlotOrigin_SLOT_ORIGIN_BATCH
+}
+
+// installTurnSlotInfo stamps the turn's LLM slot-scheduling state on ctx:
+// the band from client-asserted metadata (slotOriginFromMetadata) and the
+// priority-class seed from whether the conversation already has history — a
+// resumed conversation is mid-task, so its first LLM call of the new turn
+// classifies IN_FLIGHT rather than NEW. EVERY turn-executing entry point
+// (Weave and StreamWeave, single- and multi-agent) must install this: a
+// bypassed entry point would run unscheduled — jumping every parked waiter —
+// while its 429s still lower the scope's shared calibrated ceiling through
+// the funnel's capacity observers.
+func installTurnSlotInfo(ctx context.Context, resumed bool) context.Context {
+	var priorCalls int64
+	if resumed {
+		priorCalls = 1
+	}
+	return llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), priorCalls)
 }

@@ -8,6 +8,7 @@ package scheduler
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -17,14 +18,18 @@ import (
 //
 //   - looms enables scheduling at boot (SetEnabled) and registers the gRPC
 //     Service over Default().
-//   - The server's conversation entry (StreamWeave) installs a SlotInfo into
-//     the request context, stamped with the turn's origin (interactive when
-//     the CLI reports a human at a terminal — edge-triggered per turn).
+//   - The server's turn-executing entries (Weave and StreamWeave, single- and
+//     multi-agent alike) install a SlotInfo into the request context, stamped
+//     with the turn's origin (interactive when the client reports a human at
+//     a terminal — edge-triggered per turn).
 //   - The agent's LLM funnel (chatWithRetry) acquires a slot per call via
-//     AcquireForCall, which reads class and origin from the SlotInfo.
-//   - Resource acquisition sites (MCP session handles) call
-//     MarkResourceHolder to lift the conversation's remaining calls to the
-//     RESOURCE_HOLDER class — priority inheritance.
+//     AcquireForCall, which reads class and origin from the SlotInfo, and
+//     feeds ObserveThrottleForScope/ObserveSuccessForScope from call
+//     outcomes — the provider-agnostic AIMD seam.
+//   - MarkResourceHolder lifts a conversation's remaining calls to the
+//     RESOURCE_HOLDER class (priority inheritance). Its call sites arrive
+//     with the resource-lease integration (MCP session handles); nothing
+//     invokes it on this branch yet.
 
 var (
 	defaultRegistry = NewRegistry(nil)
@@ -131,4 +136,30 @@ func AcquireForCall(ctx context.Context, scope string, reservationTokens int64) 
 	}
 	si.calls.Add(1)
 	return g, nil
+}
+
+// ObserveThrottleForScope and ObserveSuccessForScope are the
+// provider-agnostic AIMD seam: the agent's LLM funnel (chatWithRetry) calls
+// them for EVERY provider's call outcome — a surfaced throttle halves the
+// scope's ceiling (once per congestion event), a clean completion grows it
+// additively until header calibration takes over. No per-provider client
+// wiring is needed; providers that state ratelimit headers (Azure)
+// additionally calibrate via CapacityObserver.UpdateFromHeaders, which
+// outranks AIMD. Both are no-ops while scheduling is disabled.
+
+// ObserveThrottleForScope reports a throttled LLM call on a scope.
+// retryAfter is the server-specified wait (0 when none was carried).
+func ObserveThrottleForScope(scope string, retryAfter time.Duration) {
+	if !Enabled() {
+		return
+	}
+	defaultRegistry.For(scope, Config{}).ObserveThrottle(retryAfter)
+}
+
+// ObserveSuccessForScope reports a clean LLM completion on a scope.
+func ObserveSuccessForScope(scope string) {
+	if !Enabled() {
+		return
+	}
+	defaultRegistry.For(scope, Config{}).ObserveSuccess()
 }

@@ -48,6 +48,15 @@ func NewThrottleError(err error, retryAfter time.Duration) *ThrottleError {
 	return &ThrottleError{Err: err, RetryAfter: retryAfter}
 }
 
+// IsThrottle reports whether err is a throttling error: a typed
+// *ThrottleError anywhere in its chain (every HTTP provider client wraps a
+// 429 in one), or a provider message that identifies throttling (AWS SDK
+// ThrottlingException et al., which carry no HTTP response to type). The
+// scheduler's provider-agnostic AIMD seam classifies call outcomes with it.
+func IsThrottle(err error) bool {
+	return isThrottlingError(err)
+}
+
 // RetryAfter extracts the server-specified wait carried on err (via a
 // ThrottleError anywhere in its chain), or 0 when none was specified.
 func RetryAfter(err error) time.Duration {

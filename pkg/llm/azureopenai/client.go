@@ -161,16 +161,21 @@ func NewClient(config Config) (*Client, error) {
 }
 
 // observeCapacity harvests ratelimit telemetry from a response and forwards
-// it to the configured CapacityObserver. Azure states, on every response:
-// x-ratelimit-limit-tokens, x-ratelimit-remaining-tokens (per-minute
-// window), x-ratelimit-reset-tokens (seconds to window reset), and
-// Retry-After (seconds) on 429.
+// it to the configured CapacityObserver. Azure states, on every successful
+// response: x-ratelimit-limit-tokens, x-ratelimit-remaining-tokens
+// (per-minute window), and x-ratelimit-reset-tokens (seconds to window
+// reset).
+//
+// This hook carries ONLY the Azure-specific header calibration. Throttle and
+// success observations (the AIMD fallback) are provider-agnostic and are
+// driven at the agent's LLM funnel from the call outcome — the 429 surfaces
+// there as an llm.ThrottleError. Only 2xx responses count as calibration
+// sources: a 4xx/5xx without headers proves nothing about capacity.
 func (c *Client) observeCapacity(resp *http.Response) {
 	if c.capacity == nil || resp == nil {
 		return
 	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		c.capacity.ObserveThrottle(headerSeconds(resp.Header, "Retry-After"))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
 	limit := headerInt64(resp.Header, "x-ratelimit-limit-tokens")
@@ -178,11 +183,7 @@ func (c *Client) observeCapacity(resp *http.Response) {
 	reset := headerSeconds(resp.Header, "x-ratelimit-reset-tokens")
 	if limit > 0 {
 		c.capacity.UpdateFromHeaders(limit, remaining, reset)
-		return
 	}
-	// No usable telemetry on a clean response: drive the AIMD fallback so
-	// header-less deployments (proxies, gateways) still calibrate.
-	c.capacity.ObserveSuccess()
 }
 
 func headerInt64(h http.Header, key string) int64 {
