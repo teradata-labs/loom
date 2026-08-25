@@ -1827,6 +1827,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
+	// A session holding backend leases from a previous turn starts this turn
+	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
+	// it, so the ledger re-marks the fresh one the server installed.
+	a.seedLeaseHolding(ctx, sessionID)
+
 	// TURN END for the previous turn (HLD §1, §7.3): a new turn is starting —
 	// in-memory full payloads are replaced by their persisted-row form and the
 	// in-turn SQLite is dropped. Rows and summary versions are all that remains.
@@ -3018,6 +3023,13 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		result, err = a.executor.Execute(ctxWithAgent, toolName, input)
 	}
 
+	// Backend-declared lease events ride the result's metadata: fold them
+	// into the session's ledger and the turn's scheduler class. This is the
+	// one seam every executed tool result passes through (the loop's dedup
+	// path replays cached results without re-executing, so replayed events
+	// are never double-applied).
+	a.applyLeaseEvents(ctx, sessionID, result)
+
 	// If execution succeeded and guardrails enabled, clear error record
 	if err == nil && result != nil && result.Success && a.guardrails != nil {
 		a.guardrails.ClearErrorRecord(sessionID)
@@ -3488,6 +3500,9 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// In-turn SQLite databases are normally dropped at the session's next turn
 	// start; a deleted session has no next turn, so drop them here.
 	a.dropInTurnSQLite(sessionID)
+	// Retire the session's resource leases: a leaked ledger entry on a
+	// deleted session would pin RESOURCE_HOLDER priority forever.
+	a.leases.forget(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -3523,6 +3538,7 @@ func (a *Agent) ClearAllSessions() {
 	a.sessionToolLedger = make(map[string]map[string]bool)
 	a.mu.Unlock()
 	a.dropAllInTurnSQLite()
+	a.leases.reset()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.

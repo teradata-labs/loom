@@ -203,6 +203,13 @@ type Agent struct {
 	baseToolNames     map[string]bool
 	baseToolsOnce     sync.Once
 
+	// Per-session resource-lease ledger: the scarce backend resources each
+	// session's conversation currently holds, tracked from backend-declared
+	// lease events on tool results and mirrored onto the LLM slot scheduler's
+	// RESOURCE_HOLDER class. Self-guarded (own mutex); zero value ready.
+	// Retired with the session, like sessionToolLedger. See lease_ledger.go.
+	leases leaseLedger
+
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
