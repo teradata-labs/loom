@@ -128,8 +128,19 @@ func (s *Service) GetSlotState(_ context.Context, req *loomv1.GetSlotStateReques
 // ListWaiters returns the parked slot requests of a scope.
 func (s *Service) ListWaiters(_ context.Context, req *loomv1.ListWaitersRequest) (*loomv1.ListWaitersResponse, error) {
 	resp := &loomv1.ListWaitersResponse{}
-	if sched, ok := s.reg.Get(req.GetScope()); ok {
-		resp.Waiters = sched.Waiters()
+	if scope := req.GetScope(); scope != "" {
+		if sched, ok := s.reg.Get(scope); ok {
+			resp.Waiters = sched.Waiters()
+		}
+		return resp, nil
+	}
+	// Empty scope means every scope, matching GetSlotState. Without this an
+	// operator asking "who is parked?" with no scope gets an empty list
+	// while the state view reports a non-zero parked count.
+	for _, scope := range s.reg.Scopes() {
+		if sched, ok := s.reg.Get(scope); ok {
+			resp.Waiters = append(resp.Waiters, sched.Waiters()...)
+		}
 	}
 	return resp, nil
 }
