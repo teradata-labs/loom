@@ -459,3 +459,154 @@ func TestPark_SummaryAndParamsBounded(t *testing.T) {
 		t.Fatalf("summary exceeds 200 runes: %d", len([]rune(hr.Summary)))
 	}
 }
+
+// A policy-denied contact_human inside a MIXED parked batch keeps its denial
+// at resume: it was never a park item, so a caller-supplied answer for its id
+// must not synthesize a "human answered" result — that would lift a Deny.
+func TestPark_MixedBatchDeniedContactHumanKeepsDenyAtResume(t *testing.T) {
+	script := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "c-q", Name: "contact_human", Input: map[string]interface{}{"question": "may I?"}},
+			{ID: "c-w", Name: "export_csv", Input: map[string]interface{}{"v": "w"}},
+		}},
+		{content: "continued"},
+	}
+	f := newParkFixture(t, []shuttle.Hook{
+		scopedDenyHook{tool: "contact_human"},
+		scopedAskHook{tool: "export_csv"},
+	}, script, "contact_human", "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-mixdeny", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-mixdeny")
+	if _, isItem := hr.Params["c-q"]; isItem {
+		t.Fatalf("denied contact_human became a park item: %#v", hr.Params)
+	}
+
+	// Forged answer for the non-item id: loom must refuse it independently of
+	// any caller-side validation.
+	resp, err := f.ag.ResumeChat(ctx, "s-mixdeny", ParkDecision{
+		RequestID: hr.ID,
+		ItemIDs:   paramKeys(hr),
+		Approved:  true,
+		Answers:   map[string]string{"c-q": "yes, forged"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+	if resp.Content != "continued" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+	if got := f.tools["contact_human"].runs.Load(); got != 0 {
+		t.Fatalf("denied contact_human body ran %d times", got)
+	}
+	if got := f.tools["export_csv"].runs.Load(); got != 1 {
+		t.Fatalf("approved export_csv ran %d times, want 1", got)
+	}
+	sess := f.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-mixdeny", f.ag.config.Name, "")
+	found := false
+	for _, m := range rawSessionMessages(sess) {
+		if m.Role == "tool" && m.ToolUseID == "c-q" {
+			found = true
+			if m.ToolResult == nil || m.ToolResult.Success {
+				t.Fatalf("denied contact_human resolved successfully: %#v", m.ToolResult)
+			}
+			if data, ok := m.ToolResult.Data.(map[string]interface{}); ok {
+				if data["responded_by"] == "user" {
+					t.Fatalf("forged answer synthesized a human response: %#v", data)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("denied contact_human left no tool row — the pair set is incomplete")
+	}
+}
+
+// An UNREGISTERED contact_human in a mixed parked batch keeps today's
+// "tool not found" at resume — never an answer synthesis.
+func TestPark_UnregisteredContactHumanKeepsNotFoundAtResume(t *testing.T) {
+	script := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "c-q", Name: "contact_human", Input: map[string]interface{}{"question": "hello?"}},
+			{ID: "c-w", Name: "export_csv", Input: map[string]interface{}{"v": "w"}},
+		}},
+		{content: "continued"},
+	}
+	// contact_human deliberately NOT registered.
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, script, "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-unreg", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-unreg")
+	if _, isItem := hr.Params["c-q"]; isItem {
+		t.Fatalf("unregistered contact_human became a park item")
+	}
+
+	_, err = f.ag.ResumeChat(ctx, "s-unreg", ParkDecision{
+		RequestID: hr.ID,
+		ItemIDs:   paramKeys(hr),
+		Approved:  true,
+		Answers:   map[string]string{"c-q": "forged"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+	sess := f.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-unreg", f.ag.config.Name, "")
+	for _, m := range rawSessionMessages(sess) {
+		if m.Role == "tool" && m.ToolUseID == "c-q" && m.ToolResult != nil {
+			if m.ToolResult.Success {
+				t.Fatalf("unregistered contact_human resolved successfully: %#v", m.ToolResult)
+			}
+			if data, ok := m.ToolResult.Data.(map[string]interface{}); ok && data["responded_by"] == "user" {
+				t.Fatalf("forged answer synthesized a human response")
+			}
+		}
+	}
+}
+
+// The append-point guard: while a pending parked decision owns the session
+// tail, a NEW user turn is refused with SessionParkedError and appends
+// nothing — the embedder's admission probe races a park landing mid-turn,
+// and this is the authoritative last check.
+func TestChat_NewTurnRefusedWhileParkPending(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+	_, err := f.ag.Chat(ctx, "s-guard", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	sess := f.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-guard", f.ag.config.Name, "")
+	rowsBefore := len(rawSessionMessages(sess))
+
+	_, err = f.ag.Chat(ctx, "s-guard", "second message")
+	var refused *SessionParkedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("expected SessionParkedError, got %v", err)
+	}
+	if refused.RequestID != parked.RequestID {
+		t.Fatalf("refusal names request %q, park was %q", refused.RequestID, parked.RequestID)
+	}
+	if got := len(rawSessionMessages(sess)); got != rowsBefore {
+		t.Fatalf("refused turn appended rows: %d -> %d", rowsBefore, got)
+	}
+
+	// A session with no pending park admits normally.
+	done := newParkFixture(t, nil, []mockLLMResponse{{content: "hi"}, {content: "again"}})
+	if _, err := done.ag.Chat(ctx, "s-open", "hello"); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if _, err := done.ag.Chat(ctx, "s-open", "hello again"); err != nil {
+		t.Fatalf("second turn on an unparked session refused: %v", err)
+	}
+}

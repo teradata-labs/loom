@@ -86,6 +86,21 @@ func (e *TurnParkedError) Error() string {
 	return fmt.Sprintf("turn parked awaiting human decision (request %s)", e.RequestID)
 }
 
+// SessionParkedError refuses a NEW user turn while a pending parked decision
+// owns the session tail. Appending the turn would bury the parked batch and
+// the decision could never be applied. Raised at the append point — the
+// authoritative last moment — because the embedder's admission-time probe
+// races the park row, which is written mid-turn.
+type SessionParkedError struct {
+	RequestID string
+	SessionID string
+	ExpiresAt time.Time
+}
+
+func (e *SessionParkedError) Error() string {
+	return fmt.Sprintf("session is waiting for a human decision (request %s)", e.RequestID)
+}
+
 // Typed terminals for ResumeChat callers. All three are terminal: the caller
 // must finish the request's lifecycle and never retry the resume.
 var (
@@ -112,6 +127,44 @@ type ParkDecision struct {
 	Approved  bool
 	Reason    string
 	Answers   map[string]string
+}
+
+// guardParkedTail refuses a new user turn while the session holds a PENDING
+// parked request. Store errors fail open with a warn — the embedder's own
+// admission probe is the primary gate; this guard closes its race with a park
+// landing mid-turn, and must not turn a store hiccup into a dead session.
+func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
+	if a.hitlPark == nil {
+		return nil
+	}
+	reqs, err := a.hitlPark.store.ListBySession(ctx, sessionID)
+	if err != nil {
+		zap.L().Warn("parked-tail guard: listing session requests failed; admitting turn",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return nil
+	}
+	for _, r := range reqs {
+		if r != nil && r.RequestType == "parked" && r.Status == "pending" {
+			return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+		}
+	}
+	return nil
+}
+
+// isParkQuestion reproduces the pre-scan's question classification at
+// completion time: a registered contact_human whose preflight verdict is not
+// Deny. A contact_human that fails this — policy-denied, or unregistered —
+// was deliberately NOT a park item and must complete through the normal
+// dispatch ceremony (policy denial, "tool not found"), never through answer
+// synthesis: a caller-supplied answer for it would lift a Deny.
+func (a *Agent) isParkQuestion(ctx Context, call ToolCall) bool {
+	if call.Name != "contact_human" {
+		return false
+	}
+	if _, ok := a.tools.Get("contact_human"); !ok {
+		return false
+	}
+	return a.executor.Preflight(ctx, call.Name, call.Input).Kind != shuttle.Deny
 }
 
 // parkItem is one batch call needing a human: an approval-gated call or a
@@ -493,7 +546,7 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 				Success: false,
 				Error:   &shuttle.Error{Code: "permission_denied", Message: reason, Retryable: false},
 			}, st)
-		case call.Name == "contact_human":
+		case a.isParkQuestion(ctx, call):
 			answer, ok := decision.Answers[call.ID]
 			if !ok || answer == "" {
 				a.synthesizeParkedResult(ctx, sess, call, &shuttle.Result{
