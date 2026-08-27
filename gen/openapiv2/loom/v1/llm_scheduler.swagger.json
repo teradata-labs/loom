@@ -83,7 +83,7 @@
         "starvationAgeS": {
           "type": "integer",
           "format": "int32",
-          "description": "Seconds after which a waiting slot request is promoted one priority\nclass. Bounds starvation: any waiter reaches the top class in at most\n2 * starvation_age_s."
+          "description": "Seconds a request may wait before it earns starvation precedence, which\nputs it at the head of its band ahead of every non-starved request\nregardless of class (oldest starved first). Each further interval\nadvances its tier. Bounds starvation without rewriting priority class:\nwaiting longer does not make a request a lease holder, so the\nRESOURCE_HOLDER class keeps meaning what it says even in a scope that\nhas been saturated for a long time."
         },
         "utilizationTarget": {
           "type": "number",
@@ -137,7 +137,7 @@
         "SLOT_PRIORITY_CLASS_RESOURCE_HOLDER"
       ],
       "default": "SLOT_PRIORITY_CLASS_UNSPECIFIED",
-      "description": "SlotPriorityClass orders slot requests. Higher classes are served first;\naging promotes a starved waiter one class (liveness, not throughput).\n\n - SLOT_PRIORITY_CLASS_NEW: First LLM call of a conversation: admitted as churn allows.\n - SLOT_PRIORITY_CLASS_IN_FLIGHT: Conversation mid-task: run-to-completion bias — finishing releases every\nresource the conversation holds.\n - SLOT_PRIORITY_CLASS_RESOURCE_HOLDER: Conversation holding an external scarce resource (database session\nhandle, MCP slot): priority inheritance — it is blocking other agents\nthat are burning LLM budget trying to acquire what it holds."
+      "description": "SlotPriorityClass orders slot requests. Higher classes are served first;\naging promotes a starved waiter one class (liveness, not throughput).\n\n - SLOT_PRIORITY_CLASS_NEW: First LLM call of a conversation: admitted as churn allows.\n - SLOT_PRIORITY_CLASS_IN_FLIGHT: Conversation mid-task: run-to-completion bias — finishing releases every\nresource the conversation holds.\n - SLOT_PRIORITY_CLASS_RESOURCE_HOLDER: Conversation holding an external scarce resource (database session\nhandle, MCP slot): priority inheritance — it is blocking other agents\nthat are burning LLM budget trying to acquire what it holds. Reached\nONLY by actually holding a lease; starvation aging never promotes a\nrequest into this class (see starvation_age_s)."
     },
     "v1SlotState": {
       "type": "object",

@@ -208,8 +208,63 @@ func TestAgingPromotesStarvedWaiters(t *testing.T) {
 
 	ws := s.Waiters()
 	require.Len(t, ws, 1)
-	assert.NotEqual(t, classNew, ws[0].Class, "waiter should have left NEW")
-	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1))
+	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1), "the starvation tier must advance")
+	assert.Equal(t, classNew, ws[0].Class,
+		"aging must NOT move the waiter's class: class says what a request is, "+
+			"and waiting longer does not turn a request into a lease holder — "+
+			"precedence for a starved waiter comes from dispatch")
+}
+
+// TestStarvedWaiterOutranksHolderWithoutBecomingOne is the liveness half of
+// that contract: a starved NEW waiter must still be served ahead of a
+// freshly-arrived RESOURCE_HOLDER, so removing the cross-class promotion
+// cannot starve lower classes behind a stream of holders.
+//
+// Reservations are sized so exactly ONE of the two waiters fits once the hog
+// releases (budget 800; two 500s cannot both be admitted) — otherwise both
+// are granted in the same dispatch pass and the assertion is a coin flip.
+func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 300 * time.Millisecond, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	// A NEW waiter parks first and ages past a starvation threshold.
+	newDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classNew})
+		if err == nil {
+			g.Release(1)
+		}
+		close(newDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().PromotionsTotal >= 1 },
+		5*time.Second, 20*time.Millisecond, "the NEW waiter must reach starvation")
+
+	// A holder arrives afterwards — higher class, but it has not starved.
+	holderDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classHolder})
+		if err == nil {
+			g.Release(1)
+		}
+		close(holderDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().ParkedRequests >= 2 },
+		5*time.Second, 20*time.Millisecond, "both must be parked")
+
+	// True up the hog's reservation (Release(0) would book the whole 700 and
+	// keep the window full until rollover), freeing room for exactly one.
+	hog.Release(1)
+
+	select {
+	case <-newDone:
+		// The starved waiter went first, without ever changing class.
+	case <-holderDone:
+		t.Fatal("the freshly-arrived holder was served before the starved waiter")
+	case <-time.After(5 * time.Second):
+		t.Fatal("neither waiter was served")
+	}
+	<-holderDone
 }
 
 func TestReservationTrueUpFreesBudget(t *testing.T) {
