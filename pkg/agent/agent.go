@@ -2704,7 +2704,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				span.SetAttribute("hitl.priority", hitlInfo.Priority)
 
 				// Emit HITL-specific progress event
-				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
+				emitProgressWithHITL(ctx, StageHumanInTheLoop, hitlStageProgress, "Waiting for human response", toolCall.Name, hitlInfo)
 			} else {
 				// Emit tool-started progress event
 				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
