@@ -29,6 +29,13 @@ import (
 // stream in one shape.
 type progressNotifier struct{}
 
+// hitlStageProgress is the completion percentage every StageHumanInTheLoop
+// event carries — the pre-creation ping, the card, and the heartbeats between
+// the card and the human's decision. One value for the whole stage because a
+// consumer renders a percentage only while it is in (0, 100), so a heartbeat at
+// a different value would make the indicator flicker for the length of a hold.
+const hitlStageProgress int32 = 50
+
 // NewProgressNotifier returns the bridge that converts a pending HumanRequest
 // into a StageHumanInTheLoop ProgressEvent delivered on the run's installed
 // ProgressCallback.
@@ -51,6 +58,10 @@ func (progressNotifier) Notify(ctx context.Context, req *shuttle.HumanRequest) e
 	}
 	cb(types.ProgressEvent{
 		Stage: StageHumanInTheLoop,
+		// Matches the HITL-stage progress the conversation loop emits for a
+		// contact_human call, so a consumer rendering a percentage does not
+		// see it flip between the card and the heartbeats that follow.
+		Progress: hitlStageProgress,
 		HITLRequest: &types.HITLRequestInfo{
 			RequestID:       req.ID,
 			Kind:            req.Kind,
@@ -68,15 +79,23 @@ func (progressNotifier) Notify(ctx context.Context, req *shuttle.HumanRequest) e
 	return nil
 }
 
-// Heartbeat delivers an id-less StageHumanInTheLoop ProgressEvent on the
+// Heartbeat delivers a payload-less StageHumanInTheLoop ProgressEvent on the
 // callback carried in ctx, so a hold that is otherwise byte-silent for its whole
 // window keeps the run's progress stream producing traffic.
 //
-// It deliberately carries NO HITLRequest. A consumer keys the human-facing card
-// off the id-bearing event (an id-less event is already the documented
-// pre-creation ping and is ignored), so a heartbeat cannot duplicate a card —
-// including on a consumer built before heartbeats existed, which simply drops
-// it. Fail-open like Notify: with no callback installed this is a no-op, and a
+// It deliberately carries NO HITLRequest at all. That is the contract a
+// consumer keys the human-facing card off (proto: WeaveProgress.hitl_request —
+// a HITL-stage message that OMITS it is liveness only, never a card), so a
+// heartbeat cannot raise or duplicate a card, including on a consumer built
+// before heartbeats existed. Note this is a stricter shape than an EMPTY
+// request_id, which the conversation loop already emits ahead of a
+// contact_human row and which IS a card — an unanswerable one until the row
+// exists. Absent payload and empty id are different things; only the former is
+// a heartbeat.
+//
+// The event is marked Droppable: a transport under backpressure discards it
+// rather than block this goroutine, which is the hold's own poll loop.
+// Fail-open like Notify: with no callback installed this is a no-op, and a
 // missing progress stream never blocks or fails the hold.
 func (progressNotifier) Heartbeat(ctx context.Context) error {
 	cb := ProgressCallbackFromContext(ctx)
@@ -85,8 +104,10 @@ func (progressNotifier) Heartbeat(ctx context.Context) error {
 	}
 	cb(types.ProgressEvent{
 		Stage:     StageHumanInTheLoop,
+		Progress:  hitlStageProgress,
 		Message:   "Still waiting for human response",
 		Timestamp: time.Now(),
+		Droppable: true,
 	})
 	return nil
 }

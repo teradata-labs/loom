@@ -197,13 +197,17 @@ func TestAskResolver_HeartbeatOptInAndErrorsIgnored(t *testing.T) {
 			waitForPending(t, store)
 			time.Sleep(60 * time.Millisecond) // several intervals
 
-			if tt.wantBeats {
+			// Every assertion is made against the notifier the resolver
+			// ACTUALLY holds — counting beats on an uninstalled notifier
+			// would pass no matter what the resolver did.
+			if tt.plainNotify {
+				_, isBeater := n.(Heartbeater)
+				require.False(t, isBeater, "a plain notifier must not advertise the capability")
+				require.Equal(t, 1, plain.count(), "the pending card is still emitted once")
+			} else if tt.wantBeats {
 				require.GreaterOrEqual(t, beating.beats(), 1, "expected the hold to heartbeat")
 			} else {
 				require.Zero(t, beating.beats(), "expected no heartbeat")
-			}
-			if tt.plainNotify {
-				require.Equal(t, 1, plain.count(), "the pending card is still emitted once")
 			}
 
 			// The hold still resolves normally in every shape.
@@ -248,7 +252,7 @@ func TestAskResolver_NilNotifierWithHeartbeatDoesNotPanic(t *testing.T) {
 func TestNewHITLAskResolver_DefaultsHeartbeatInterval(t *testing.T) {
 	r, ok := NewHITLAskResolver(NewInMemoryHumanRequestStore(), 0, 0, nil).(*hitlAskResolver)
 	require.True(t, ok)
-	require.Equal(t, askHeartbeatInterval, r.heartbeat)
+	require.Equal(t, holdHeartbeatInterval, r.heartbeat)
 	require.Equal(t, 300*time.Second, r.timeout)
 	require.Equal(t, time.Second, r.poll)
 }

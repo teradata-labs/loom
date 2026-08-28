@@ -34,6 +34,9 @@ type ContactHumanTool struct {
 	pollInterval time.Duration
 	tracer       observability.Tracer
 	logger       *zap.Logger
+	// heartbeat is how often a still-pending question pokes the notifier when
+	// it implements Heartbeater. Zero disables heartbeating.
+	heartbeat time.Duration
 
 	// For testing - allows mocking time
 	now func() time.Time
@@ -115,26 +118,8 @@ type Notifier interface {
 	Notify(ctx context.Context, req *HumanRequest) error
 }
 
-// Heartbeater is an OPTIONAL capability a Notifier may implement. A notifier
-// that implements it is poked periodically for as long as a hold is still
-// waiting on a human, so a transport that would otherwise go byte-silent for
-// the whole hold can keep its stream alive.
-//
-// A hold blocks the turn goroutine inside the waiter's poll loop and emits
-// nothing between the pending notification and the human's decision. On a
-// streaming transport behind a proxy that is silence long enough to trip an
-// inactivity timeout and tear the stream down, so the decision — when it
-// finally arrives — has nowhere to go.
-//
-// It is deliberately a separate optional interface rather than a method on
-// Notifier: a Notifier that does not implement it is never heartbeaten and
-// behaves exactly as before.
-type Heartbeater interface {
-	// Heartbeat signals that a hold is still pending. It carries no request
-	// payload — its only job is to produce traffic. Implementations must be
-	// cheap and best-effort; the returned error never changes a hold's outcome.
-	Heartbeat(ctx context.Context) error
-}
+// Heartbeater — the optional keep-the-stream-alive capability a Notifier may
+// implement — lives in hold_heartbeat.go, shared by both hold origins.
 
 // ContactHumanConfig configures the ContactHumanTool.
 type ContactHumanConfig struct {
@@ -174,6 +159,7 @@ func NewContactHumanTool(config ContactHumanConfig) *ContactHumanTool {
 		pollInterval: config.PollInterval,
 		tracer:       config.Tracer,
 		logger:       config.Logger,
+		heartbeat:    holdHeartbeatInterval,
 		now:          time.Now,
 	}
 }
@@ -464,6 +450,12 @@ func (t *ContactHumanTool) waitForResponse(ctx context.Context, requestID string
 	ticker := time.NewTicker(t.pollInterval)
 	defer ticker.Stop()
 
+	// A question hold is byte-silent on the caller's stream for its whole
+	// window exactly like an ask hold, so it beats on the same terms (see
+	// holdBeater): opt-in by capability, best-effort, and emitted on this
+	// goroutine after the resolution poll.
+	beater := newHoldBeater(t.notifier, t.heartbeat)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -493,13 +485,21 @@ func (t *ContactHumanTool) waitForResponse(ctx context.Context, requestID string
 			// sweep may legitimately retire the row under a live waiter.
 			req, err := t.store.Get(ctx, requestID)
 			if err != nil || req == nil {
-				continue // Retry on error or absent row until the deadline
+				// Retry on error or absent row until the deadline. The beat
+				// still runs: an unreadable row is not a reason to let the
+				// caller's stream go silent.
+				beater.beat(ctx)
+				continue
 			}
 
 			// Check if human has responded
 			if req.Status != "pending" {
 				return req, false
 			}
+
+			// Still pending: keep the caller's stream alive. Last, so it can
+			// never delay a response the poll above already saw.
+			beater.beat(ctx)
 		}
 	}
 }

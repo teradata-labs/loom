@@ -56,9 +56,48 @@ func TestHeartbeatEmit_EmitsIDLessHITLStageEvent(t *testing.T) {
 	require.Equal(t, agent.StageHumanInTheLoop, got.Stage,
 		"the heartbeat rides the HITL stage so consumers can scope it to a hold")
 	require.Nil(t, got.HITLRequest,
-		"a heartbeat must carry no request payload — an id-bearing event is a card")
+		"a heartbeat must carry no request payload at all — absent payload is the "+
+			"contract, which is STRICTER than an empty request id (the pre-creation "+
+			"ping carries a payload with an empty id and IS a card)")
 	require.NotEmpty(t, got.Message)
 	require.False(t, got.Timestamp.IsZero())
+	require.True(t, got.Droppable,
+		"a heartbeat must be droppable — it emits from the turn goroutine parked in "+
+			"the hold's poll loop, so a blocking send on a wedged consumer would stall "+
+			"the poll that reads the human's decision")
+}
+
+// The card and the heartbeats that follow it must carry the SAME progress
+// percentage. A consumer renders a percentage only while it is in (0, 100), so
+// a heartbeat at a different value makes the indicator flicker for the whole
+// length of a hold.
+func TestHeartbeatEmit_ProgressMatchesTheCard(t *testing.T) {
+	var mu sync.Mutex
+	var events []types.ProgressEvent
+
+	ctx := agent.ContextWithProgressCallback(context.Background(), func(e types.ProgressEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	})
+
+	n := agent.NewProgressNotifier()
+	require.NoError(t, n.Notify(ctx, &shuttle.HumanRequest{ID: "req-1", Kind: "approval"}))
+
+	hb, ok := n.(shuttle.Heartbeater)
+	require.True(t, ok)
+	require.NoError(t, hb.Heartbeat(ctx))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, events, 2)
+
+	card, beat := events[0], events[1]
+	require.NotNil(t, card.HITLRequest, "the first emit is the card")
+	require.Nil(t, beat.HITLRequest, "the second emit is the heartbeat")
+	require.Equal(t, card.Progress, beat.Progress,
+		"a heartbeat must not move the progress indicator the card set")
+	require.False(t, card.Droppable, "a card carries state and must never be dropped")
 }
 
 // Fail-open: with no progress callback installed there is nothing to emit on,
