@@ -4,6 +4,7 @@ package sqlitedriver
 
 import (
 	"database/sql"
+	"errors"
 	"strconv"
 
 	"modernc.org/sqlite"
@@ -33,4 +34,14 @@ func dsnParams(opts Options) []string {
 		p = append(p, "_pragma=foreign_keys(1)")
 	}
 	return p
+}
+
+// EncryptedDSN always fails without CGO: modernc.org/sqlite is plain SQLite
+// with no SQLCipher support, so there is no key to render and no way to open
+// an encrypted database at all. It returns an error rather than a silently
+// unkeyed DSN, which would hand the caller a *sql.DB that writes plaintext.
+// Callers gate on EncryptionSupported and report the missing capability with
+// their own wording before reaching this.
+func EncryptedDSN(string, string, Options) (string, error) {
+	return "", errors.New("sqlitedriver: database encryption requires CGO (SQLCipher); not available in this build")
 }

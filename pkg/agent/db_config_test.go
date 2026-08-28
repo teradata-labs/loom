@@ -14,12 +14,18 @@
 package agent
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 )
 
 func TestOpenDB_Unencrypted(t *testing.T) {
@@ -94,11 +100,12 @@ func TestOpenDB_Encrypted(t *testing.T) {
 		t.Fatal("Expected error when opening encrypted DB with wrong key")
 	}
 	assert.Error(t, err)
-	// SQLCipher returns "file is not a database" when the key is wrong
-	assert.True(t,
-		err.Error() == "failed to set encryption key: file is not a database" ||
-			err.Error() == "failed to verify encryption key (wrong key or corrupted database): file is not a database",
-		"Expected database error, got: %s", err.Error())
+	// The key rides in the DSN, so a wrong key is rejected when the first
+	// connection is opened — i.e. at Ping. SQLCipher reports it as "file is
+	// not a database".
+	assert.Equal(t,
+		"failed to verify encryption key (wrong key or corrupted database): file is not a database",
+		err.Error())
 
 	// Try to open encrypted DB without encryption - should fail
 	dbUnencrypted, err := OpenDB(DBConfig{
@@ -210,4 +217,101 @@ func TestNewSessionStoreWithConfig_Unencrypted(t *testing.T) {
 	err = store.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").Scan(&tableCount)
 	require.NoError(t, err)
 	assert.Greater(t, tableCount, 0, "Expected tables to be created")
+}
+
+// TestOpenDB_EncryptedPooledConnections is the regression test for the
+// PRAGMA-key half of the pooled-connection defect (issues #366, #370).
+//
+// OpenDB used to set the key with db.Exec after opening, which keys only the
+// connection that happens to run the statement. The pool here is
+// database/sql's default — unlimited — so the second connection the pool
+// opened was unkeyed and every query on it failed with "file is not a
+// database". Before the fix this test failed on conns 1..3; the key now rides
+// in the DSN, so the driver applies it as each connection is opened.
+func TestOpenDB_EncryptedPooledConnections(t *testing.T) {
+	if !sqlitedriver.EncryptionSupported {
+		t.Skip("SQLCipher requires CGO")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "pooled_encrypted.db")
+	db, err := OpenDB(DBConfig{
+		Path:            dbPath,
+		EncryptDatabase: true,
+		EncryptionKey:   "pooled-key-abc123",
+	})
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec("CREATE TABLE secret (id INTEGER PRIMARY KEY, v TEXT)")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO secret (v) VALUES ('classified')")
+	require.NoError(t, err)
+
+	// Hold each connection while acquiring the next so the pool is forced to
+	// open fresh ones instead of handing back the keyed one.
+	const pinned = 4
+	conns := make([]*sql.Conn, 0, pinned)
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < pinned; i++ {
+		c, err := db.Conn(context.Background())
+		require.NoError(t, err, "conn %d: every pooled connection must be keyed", i)
+		conns = append(conns, c)
+
+		var v string
+		require.NoError(t,
+			c.QueryRowContext(context.Background(), "SELECT v FROM secret WHERE id = 1").Scan(&v),
+			"conn %d: query on a pooled connection must not fail", i)
+		assert.Equal(t, "classified", v, "conn %d", i)
+	}
+	require.Equal(t, pinned, db.Stats().OpenConnections,
+		"connections must be distinct for this test to prove anything")
+}
+
+// TestOpenDB_EncryptedConcurrent exercises the same defect the way production
+// hits it: concurrent goroutines, which make database/sql open more than one
+// connection on its own.
+func TestOpenDB_EncryptedConcurrent(t *testing.T) {
+	if !sqlitedriver.EncryptionSupported {
+		t.Skip("SQLCipher requires CGO")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "concurrent_encrypted.db")
+	db, err := OpenDB(DBConfig{
+		Path:            dbPath,
+		EncryptDatabase: true,
+		EncryptionKey:   "concurrent-key-xyz",
+	})
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec("CREATE TABLE secret (id INTEGER PRIMARY KEY, v TEXT)")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO secret (v) VALUES ('classified')")
+	require.NoError(t, err)
+
+	const readers = 8
+	var wg sync.WaitGroup
+	errCh := make(chan error, readers)
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(reader int) {
+			defer wg.Done()
+			for i := 0; i < 5; i++ {
+				var v string
+				if err := db.QueryRow("SELECT v FROM secret WHERE id = 1").Scan(&v); err != nil {
+					errCh <- fmt.Errorf("reader %d: %w", reader, err)
+					return
+				}
+			}
+		}(r)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent read on encrypted database failed: %v", err)
+	}
 }

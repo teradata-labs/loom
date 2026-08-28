@@ -139,7 +139,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	// already has history classifies IN_FLIGHT from its first call).
 	// Installed on every turn-executing entry point, unary and streaming.
 	_, sessionResumed := s.agent.GetSession(sessionID)
-	ctx = installTurnSlotInfo(ctx, sessionResumed)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.
@@ -216,7 +216,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	// Slot scheduling: install this turn's SlotInfo (see Weave — every
 	// turn-executing entry point installs it).
 	_, sessionResumed := s.agent.GetSession(sessionID)
-	ctx = installTurnSlotInfo(ctx, sessionResumed)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.

@@ -123,8 +123,13 @@ type Scheduler struct {
 
 	mu sync.Mutex
 	// budget accounting (guarded by mu)
-	effectiveTPM  int64 // calibrated ceiling
-	calibrated    bool  // true once provider telemetry has spoken
+	effectiveTPM int64 // calibrated ceiling
+	// ceilingPinned records an operator override of effectiveTPM. While set,
+	// provider header calibration and AIMD leave the ceiling alone;
+	// SetConfig(0, …) releases it.
+	ceilingPinned bool
+
+	calibrated    bool // true once provider telemetry has spoken
 	utilization   float64
 	windowStart   time.Time
 	windowUsed    int64 // actual tokens charged in the current minute window
@@ -319,7 +324,9 @@ func (s *Scheduler) UpdateFromHeaders(limitTokens, remainingTokens int64, reset 
 			zap.Int64("tokens_per_minute", limitTokens),
 			zap.Int64("remaining", remainingTokens))
 	}
-	s.effectiveTPM = limitTokens
+	if !s.ceilingPinned {
+		s.effectiveTPM = limitTokens
+	}
 	s.calibrated = true
 	// Trust the provider's remaining figure over our own window arithmetic:
 	// other consumers may share the deployment.
@@ -370,6 +377,12 @@ func (s *Scheduler) ObserveThrottle(retryAfter time.Duration) {
 			s.nextWake = wake
 		}
 	}
+	if s.ceilingPinned {
+		// The wake from Retry-After above still applies — that is the
+		// provider telling us to wait, which an operator override does not
+		// overrule — but the ceiling itself is the operator's number.
+		return
+	}
 	if now.Before(s.decreaseHoldOffUntil) {
 		return // same congestion event: one decrease already applied
 	}
@@ -400,8 +413,8 @@ func (s *Scheduler) ObserveThrottle(retryAfter time.Duration) {
 func (s *Scheduler) ObserveSuccess() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.calibrated {
-		return // header telemetry outranks AIMD
+	if s.calibrated || s.ceilingPinned {
+		return // header telemetry and operator pins both outrank AIMD
 	}
 	step := int64(float64(s.effectiveTPM) * aimdIncreaseStep)
 	if step < 1 {
@@ -429,6 +442,7 @@ func (s *Scheduler) State() *loomv1.SlotState {
 		Scope:                     s.scope,
 		ParkedRequests:            int32(parked), // #nosec G115 -- queue depth is operator-bounded
 		EffectiveTokensPerMinute:  s.effectiveTPM,
+		CeilingPinned:             s.ceilingPinned,
 		ReservedTokensOutstanding: s.reservedOut,
 		GrantsTotal:               s.grantsTotal,
 		PromotionsTotal:           s.promotionsTotal,
@@ -683,9 +697,20 @@ func (s *Scheduler) ageLocked() {
 func (s *Scheduler) SetConfig(tokensPerMinute int64, utilization float64, starvationAge time.Duration, interactiveHeadroom float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if tokensPerMinute > 0 {
+	switch {
+	case tokensPerMinute > 0:
+		// An explicit ceiling is an operator decision and outranks the
+		// provider's telemetry: pin it, or the next successful response's
+		// x-ratelimit headers overwrite it and the override silently does
+		// nothing (which is what a drain or a deliberate-contention test
+		// would discover the hard way).
 		s.effectiveTPM = tokensPerMinute
 		s.calibrated = false
+		s.ceilingPinned = true
+	case tokensPerMinute == 0 && s.ceilingPinned:
+		// 0 releases the pin and resumes calibration, per the documented
+		// contract. The next response's headers re-derive the ceiling.
+		s.ceilingPinned = false
 	}
 	if utilization > 0 && utilization <= 1 {
 		s.utilization = utilization

@@ -187,3 +187,97 @@ func TestDSNConcurrentWritersSurviveContention(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM burst").Scan(&n))
 	assert.Equal(t, writers*perGoro, n, "every write must land")
 }
+
+// TestEncryptedDSNValidation covers the input checks, which behave the same
+// in both builds.
+func TestEncryptedDSNValidation(t *testing.T) {
+	_, err := EncryptedDSN("", "key", Options{})
+	assert.Error(t, err, "empty path must be rejected")
+
+	_, err = EncryptedDSN("/tmp/x.db", "", Options{})
+	assert.Error(t, err, "empty key must be rejected")
+
+	if !EncryptionSupported {
+		_, err := EncryptedDSN("/tmp/x.db", "key", Options{})
+		assert.ErrorContains(t, err, "requires CGO",
+			"without SQLCipher the helper must fail loudly rather than hand back an unkeyed DSN")
+	}
+}
+
+// TestEncryptedDSNRoundTrip is the regression test for the PRAGMA key half of
+// the pooled-connection defect: `db.Exec("PRAGMA key = ...")` keys only the
+// connection that runs it, so every other pooled connection to an encrypted
+// database fails with "file is not a database".
+//
+// It also pins the quoting contract with go-sqlcipher, which applies
+// _pragma_key by running PRAGMA key = "<value>" — double quotes, hence the
+// doubling escape in EncryptedDSN. Each case creates the database with the
+// OLD single-quoted Exec form and reopens it through EncryptedDSN, so a
+// change in either quoting rule shows up as a database that no longer opens.
+func TestEncryptedDSNRoundTrip(t *testing.T) {
+	if !EncryptionSupported {
+		t.Skip("SQLCipher requires CGO")
+	}
+
+	keys := []struct {
+		name string
+		key  string
+	}{
+		{"plain", "passphrase-1234"},
+		{"double quote", `dquote"key`},
+		{"url metacharacters", "space key&amp=1?x"},
+		{"unicode", "ünïcøde-key-🔑"},
+	}
+
+	for _, tc := range keys {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "encrypted.db")
+			opts := Options{BusyTimeoutMS: 5000, ForeignKeys: true}
+
+			// Create the database the way the pre-fix code did, on a pool of
+			// exactly one so the single keyed connection is the one used.
+			seed, err := sql.Open("sqlite3", DSN(dbPath, opts))
+			require.NoError(t, err)
+			seed.SetMaxOpenConns(1)
+			_, err = seed.Exec("PRAGMA key = '" + tc.key + "'")
+			require.NoError(t, err)
+			_, err = seed.Exec("CREATE TABLE secret (id INTEGER PRIMARY KEY, v TEXT)")
+			require.NoError(t, err)
+			_, err = seed.Exec("INSERT INTO secret (v) VALUES ('classified')")
+			require.NoError(t, err)
+			require.NoError(t, seed.Close())
+
+			// Reopen through EncryptedDSN with a pool wide enough to expose
+			// unkeyed connections.
+			dsn, err := EncryptedDSN(dbPath, tc.key, opts)
+			require.NoError(t, err)
+			db, err := sql.Open("sqlite3", dsn)
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+			db.SetMaxOpenConns(4)
+			db.SetMaxIdleConns(4)
+
+			for i, c := range pinConns(t, db, 4) {
+				var v string
+				require.NoError(t,
+					c.QueryRowContext(context.Background(), "SELECT v FROM secret WHERE id = 1").Scan(&v),
+					"conn %d: every pooled connection must be keyed", i)
+				assert.Equal(t, "classified", v, "conn %d", i)
+
+				var busy int
+				require.NoError(t, c.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
+				assert.Equal(t, 5000, busy, "conn %d: opts must survive alongside the key", i)
+			}
+
+			// The database really is encrypted: a wrong key must not open it.
+			wrongDSN, err := EncryptedDSN(dbPath, "definitely-the-wrong-key", opts)
+			require.NoError(t, err)
+			wrong, err := sql.Open("sqlite3", wrongDSN)
+			require.NoError(t, err)
+			defer func() { _ = wrong.Close() }()
+			var n int
+			assert.Error(t, wrong.QueryRow("SELECT COUNT(*) FROM secret").Scan(&n),
+				"a wrong key must be rejected; if it is not, the database is not encrypted")
+		})
+	}
+}

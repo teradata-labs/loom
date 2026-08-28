@@ -185,6 +185,14 @@ func (s *GraphMemoryStore) SearchEntities(ctx context.Context, agentID, query st
 	}
 
 	ftsQuery := toFTS5OrQuery(query)
+	if ftsQuery == "" {
+		// No usable search terms. An empty MATCH expression is itself a hard
+		// FTS5 syntax error, and there is no non-FTS entity search to degrade
+		// to (ListEntities is an unfiltered listing, not a search), so report
+		// no matches without querying rather than turning a term-less search
+		// into an error.
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.agent_id, e.name, e.entity_type, e.properties_json, COALESCE(e.owner,''), e.created_at, e.updated_at
 		 FROM graph_entities e
@@ -511,13 +519,22 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 
 	where := strings.Join(conditions, " AND ")
 
-	var query string
+	// Convert the query to OR semantics for FTS5. Space-separated terms default
+	// to AND in FTS5 (all must match), which is too strict for memory recall.
+	// OR returns any match and lets BM25 rank multi-term matches higher.
+	//
+	// toFTS5OrQuery yields "" when the text holds no usable terms (punctuation
+	// only, for instance). An empty MATCH expression is itself a hard FTS5
+	// syntax error, so an empty result means "skip the FTS join" — fall
+	// through to the salience-ordered branch instead of failing the whole
+	// recall.
+	var ftsQuery string
 	if opts.Query != "" {
-		// Convert query to OR semantics for FTS5. Space-separated terms default
-		// to AND in FTS5 (all must match), which is too strict for memory recall.
-		// OR returns any match and lets BM25 rank multi-term matches higher.
-		ftsQuery := toFTS5OrQuery(opts.Query)
+		ftsQuery = toFTS5OrQuery(opts.Query)
+	}
 
+	var query string
+	if ftsQuery != "" {
 		// FTS search with BM25 ranking.
 		query = fmt.Sprintf(
 			`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
@@ -1107,26 +1124,94 @@ func (s *GraphMemoryStore) Close() error {
 	return nil // db owned externally
 }
 
-// toFTS5OrQuery converts a natural language query to OR-separated terms for FTS5.
-// FTS5 defaults to AND (all terms must match), which is too strict for memory recall.
-// OR returns any match and BM25 naturally ranks multi-term matches higher.
-// If the query already contains FTS5 operators (OR, AND, NOT, NEAR, quotes), pass through.
+// toFTS5OrQuery converts a natural language query into an OR-joined FTS5
+// bareword expression.
+//
+// Contract: natural language in, always-safe bareword OR-query out.
+//
+// The input is ALWAYS free text — an LLM completion or a raw user message —
+// so this function never passes its argument through to MATCH verbatim, and
+// no caller may hand it a hand-written FTS5 expression. There is deliberately
+// no escape hatch: an earlier pass-through branch (any input containing
+// " OR "/" AND "/" NOT "/" NEAR " or a balanced quote went straight to MATCH)
+// meant ordinary prose took the raw path, and every apostrophe, comma, '?'
+// and paren in it became FTS5 syntax. Verified against a migrated
+// `porter unicode61` table, all four of these were hard errors:
+//
+//	Coach's AND player's stats             -> fts5: syntax error near "'"
+//	first issue NOT resolved yet?          -> fts5: syntax error near "?"
+//	car service AND GPS malfunction, March -> fts5: syntax error near ","
+//	volatile table OR overflow (DECIMAL)   -> fts5: syntax error near "overflow"
+//
+// Both callers report such an error as zero results, which is how the az512h
+// fleet run had graph-memory recall silently dead for 512 agents. Barewords
+// cannot parse-error, so barewords are all this emits. Operator words in
+// prose are tokenized like any other word (lowercased, so FTS5 reads them as
+// barewords rather than as its uppercase-only keywords).
+//
+// FTS5 also defaults to AND across space-separated terms, which is too strict
+// for memory recall; OR returns any match and lets BM25 rank multi-term hits
+// higher.
+//
+// Returns "" when the input yields no usable terms. Callers MUST NOT put that
+// into a MATCH — an empty MATCH expression is itself a hard FTS5 syntax
+// error — and must skip the FTS join instead.
 func toFTS5OrQuery(query string) string {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return query
+	terms := fts5Barewords(query)
+	if len(terms) == 0 {
+		return ""
 	}
-	// Pass through if already using FTS5 operators.
-	for _, op := range []string{" OR ", " AND ", " NOT ", " NEAR ", `"`} {
-		if strings.Contains(query, op) {
-			return query
+	return strings.Join(terms, " OR ")
+}
+
+// minFTS5TermRunes is the shortest ASCII token fts5Barewords keeps. It is the
+// same threshold as minSearchTermRunes in pkg/agent: this sanitizer is the
+// last filter every recall query passes through, so the two must agree or one
+// of them silently discards terms the other admitted.
+const minFTS5TermRunes = 2
+
+// fts5Barewords lowercases text and splits it into FTS5 barewords: runs of
+// ASCII alphanumerics, '_', and any codepoint above 127. That set is exactly
+// what the FTS5 query grammar accepts unquoted, so no term it returns can be
+// a MATCH parse error.
+//
+// Codepoints above 127 are barewords by that grammar and these indexes are
+// tokenized `porter unicode61`, so restricting terms to ASCII silently
+// destroyed non-Latin recall: "Привет мир Москва" sanitized to nothing (and
+// so to an empty MATCH expression, a hard error), and "café" was truncated to
+// "caf", which matches nothing.
+//
+// Minimum term length is minFTS5TermRunes, matching minSearchTermRunes in
+// pkg/agent so the agent-side query builder and this sanitizer agree on what
+// counts as a term — otherwise one filter admits a term the other silently
+// drops. A single non-ASCII rune is always kept: a lone CJK ideograph is a
+// whole word, not a fragment.
+func fts5Barewords(s string) []string {
+	var terms []string
+	var cur strings.Builder
+	runes := 0
+	nonASCII := false
+	flush := func() {
+		if runes >= minFTS5TermRunes || nonASCII {
+			terms = append(terms, cur.String())
+		}
+		cur.Reset()
+		runes = 0
+		nonASCII = false
+	}
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r > 127 {
+			cur.WriteRune(r)
+			runes++
+			if r > 127 {
+				nonASCII = true
+			}
+		} else {
+			flush()
 		}
 	}
-	words := strings.Fields(query)
-	if len(words) <= 1 {
-		return query
-	}
-	return strings.Join(words, " OR ")
+	flush()
+	return terms
 }
 
 // =============================================================================
