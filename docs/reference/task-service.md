@@ -658,7 +658,7 @@ message TaskBoardConfig {
 
 | Flag | Controls |
 |------|----------|
-| `taskManager != nil` (server-level) | Task emission (Phase D), stickiness checking |
+| `taskManager != nil` (server-level) | Skill task emission (on `manage_skills` load), stickiness checking |
 | `TaskBoardConfig.enabled` (agent-level) | `task_board` tool registration, prompt supplement, context injection |
 
 ---

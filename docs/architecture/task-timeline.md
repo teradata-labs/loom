@@ -485,5 +485,5 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 - [Task System Architecture](./task-system.md) — the task model this attributes to
 - [Task Service API Reference](../reference/task-service.md)
 - [Task Board User Guide](../guides/task-board.md)
-- [Skills Overhaul Architecture](./skills-overhaul.md) — Phase D emission
+- [Skills Overhaul Architecture](./skills-overhaul.md) — skill task emission
 - [Observability Architecture](./observability.md) — the span context pattern `taskctx` follows
