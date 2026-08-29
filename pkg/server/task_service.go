@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // TaskServiceImpl implements the loomv1.TaskServiceServer gRPC interface.
@@ -203,24 +204,23 @@ func (s *TaskServiceImpl) GetBoard(ctx context.Context, req *loomv1.GetBoardRequ
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "board not found: %v", err)
 	}
-	// Compute stats.
-	allTasks, total, _ := s.manager.ListTasks(ctx, task.ListTasksOpts{BoardID: req.BoardId, Limit: 1000})
-	stats := &loomv1.TaskBoardStats{Total: int32(total)} // #nosec G115
-	for _, t := range allTasks {
-		switch t.Status {
-		case loomv1.TaskStatus_TASK_STATUS_OPEN:
-			stats.Open++
-		case loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS:
-			stats.InProgress++
-		case loomv1.TaskStatus_TASK_STATUS_BLOCKED:
-			stats.Blocked++
-		case loomv1.TaskStatus_TASK_STATUS_DONE:
-			stats.Done++
-		case loomv1.TaskStatus_TASK_STATUS_DEFERRED:
-			stats.Deferred++
-		case loomv1.TaskStatus_TASK_STATUS_CANCELLED:
-			stats.Cancelled++
-		}
+	// Compute stats with a single aggregate.
+	//
+	// This previously fetched up to 1000 task rows and counted them in Go,
+	// which meant a board holding more than 1000 tasks returned WRONG stats
+	// rather than an error — the counts silently stopped at the limit.
+	counts, err := s.manager.CountByStatus(ctx, task.CountByStatusOpts{BoardID: req.BoardId})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "count board tasks: %v", err)
+	}
+	stats := &loomv1.TaskBoardStats{
+		Total:      types.SafeInt32(counts.Total),
+		Open:       types.SafeInt32(counts.Open),
+		InProgress: types.SafeInt32(counts.InProgress),
+		Blocked:    types.SafeInt32(counts.Blocked),
+		Done:       types.SafeInt32(counts.Done),
+		Deferred:   types.SafeInt32(counts.Deferred),
+		Cancelled:  types.SafeInt32(counts.Cancelled),
 	}
 	return &loomv1.GetBoardResponse{Board: boardToProto(board), Stats: stats}, nil
 }

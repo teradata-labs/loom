@@ -44,6 +44,7 @@ import (
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -291,6 +292,28 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Caller can preempt this by setting WithSkillTaskEmitter explicitly.
 	if a.skillTaskEmitter == nil && a.skillOrchestrator != nil && a.taskManager != nil {
 		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
+	}
+
+	// Auto-wire the implicit task emitter whenever the task subsystem is
+	// configured, mirroring the skill emitter above. Without this, implicit
+	// recording only happened where a host explicitly passed
+	// WithImplicitTaskEmitter — so registry-built agents, and every subagent
+	// spawned through them, minted nothing, and the SUBAGENT_SPAWN trigger had
+	// nothing to fire it.
+	//
+	// ResolveImplicitPolicy(nil) is the opt-out default: recording on, capped
+	// per session, and the resulting tasks excluded from the agent's own task
+	// queries so they cost no context. A host that wants different triggers or
+	// wants recording off passes WithImplicitTaskEmitter explicitly, which
+	// preempts this.
+	//
+	// Cost is bounded by construction: EnsureForTurn memoizes on
+	// (session, turn) behind an in-memory check that runs before any query, so
+	// this is at most one task minted per turn that calls a tool, and nothing
+	// at all on turns that don't.
+	if a.implicitTasks == nil && a.taskManager != nil {
+		a.implicitTasks = task.NewImplicitEmitter(
+			a.taskManager, task.ResolveImplicitPolicy(nil), a.tracer, zap.L())
 	}
 
 	// Install the sticky-while-open-tasks checker on the orchestrator
@@ -1367,6 +1390,11 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		a.enforceRequiredSkillTools,
 	)
 	tool.ctxDebug = a.ctxDebug
+	// Task emission on load. A method value, not the emitter itself, so the
+	// wiring is independent of construction order: this runs before NewAgent
+	// auto-wires a.skillTaskEmitter, and emitSkillTasksAsync reads that field
+	// at call time. An agent with no emitter is a no-op at the same place.
+	tool.emitSkillTasks = a.emitSkillTasksAsync
 	a.tools.Register(tool)
 }
 
@@ -1410,12 +1438,25 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 
 	boardID := a.taskBoardConfig.DefaultBoardId
 
+	// Hide runtime-minted tasks from the agent's own view of its work.
+	//
+	// This is the guard on context growth. Implicit tasks are created once per
+	// working turn, and this block is rebuilt into the system prompt EVERY
+	// turn. Without the exclusion, a long conversation would inject a growing
+	// list of its own past turns — most visibly through the "recent
+	// completions" query below, whose three slots would be permanently occupied
+	// by the last three turns' bookkeeping.
+	//
+	// Empty unless an operator sets implicit_tasks.agent_visible.
+	excludeVia := task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks()).ExcludedCreatedVia()
+
 	// Query current claimed tasks for this agent.
 	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		AssigneeAgentID: a.id,
-		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
-		BoardID:         boardID,
-		Limit:           5,
+		AssigneeAgentID:   a.id,
+		Status:            loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		BoardID:           boardID,
+		Limit:             5,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
 		zap.L().Warn("task context: failed to list claimed tasks", zap.Error(err))
@@ -1423,26 +1464,34 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 
 	// Query ready front.
 	ready, err := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
-		MaxResults: 5,
+		MaxResults:        5,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
 		zap.L().Warn("task context: failed to get ready front", zap.Error(err))
 	}
 
-	// Query board stats.
-	allTasks, total, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		BoardID: boardID,
-		Limit:   1000,
+	// Query board stats with a single aggregate.
+	//
+	// This used to fetch up to 1000 full task rows — every column, several JSON
+	// payloads each — only to increment per-status counters, on a path that runs
+	// before every LLM call. It also truncated silently: a board with more than
+	// 1000 tasks reported wrong numbers to the agent.
+	counts, err := a.taskManager.CountByStatus(ctx, task.CountByStatusOpts{
+		BoardID:           boardID,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
-		zap.L().Warn("task context: failed to list board tasks", zap.Error(err))
+		zap.L().Warn("task context: failed to count board tasks", zap.Error(err))
 	}
+	total := counts.Total
 
 	// Query recent completions (last 3 closed tasks for momentum/context).
 	recentDone, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		BoardID: boardID,
-		Status:  loomv1.TaskStatus_TASK_STATUS_DONE,
-		Limit:   3,
+		BoardID:           boardID,
+		Status:            loomv1.TaskStatus_TASK_STATUS_DONE,
+		Limit:             3,
+		ExcludeCreatedVia: excludeVia,
 	})
 
 	// If no tasks exist anywhere, skip the context block entirely.
@@ -1450,10 +1499,15 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 		return ""
 	}
 
-	// Compute stats.
-	stats := map[string]int{"total": total}
-	for _, t := range allTasks {
-		stats[task.StatusName(t.Status)]++
+	// Stats come straight from the aggregate; no per-row loop.
+	stats := map[string]int{
+		"total": counts.Total,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_OPEN):        counts.Open,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS): counts.InProgress,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_BLOCKED):     counts.Blocked,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DONE):        counts.Done,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DEFERRED):    counts.Deferred,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_CANCELLED):   counts.Cancelled,
 	}
 
 	var b strings.Builder
@@ -1876,7 +1930,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		AgentID:       a.id, // Track which agent received this message
 		Timestamp:     time.Now(),
 	}, true)
-	_ = userMsg
 
 	// Fire graph memory extraction on the incoming user message immediately,
 	// in parallel with the LLM processing it. The user message is where the
@@ -1895,16 +1948,40 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		ctx = ContextWithProgressCallback(ctx, p.progressCallback)
 	}
 
+	// Install this turn's task binding.
+	//
+	// The runtime — not the model — decides whether a turn gets a task. The
+	// binding is an empty slot now; it is filled deterministically on the first
+	// qualifying event (see maybeRecordImplicitTask), so a turn that only talks
+	// leaves no board row while a turn that does work always gets one. Nothing
+	// here asks the agent's permission and nothing depends on the agent electing
+	// to call task_board.
+	//
+	// It must be installed BEFORE agentCtx is built: writers that capture the
+	// context before the task exists read through the binding, so they observe
+	// the attribution as soon as it is set.
+	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
+	turnIndex := userMsg.Turn
+
 	// Create agent context (a nil progressCallback is fine — no events emitted)
 	agentCtx := &agentContext{
 		Context:          ctx,
 		session:          session,
 		tracer:           a.tracer,
 		progressCallback: p.progressCallback,
+		taskBinding:      taskBinding,
+		turnIndex:        turnIndex,
+		userMessage:      userMessage,
 	}
 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
+
+	// Close the turn's recorded task, if the runtime recorded one. Deferred
+	// until after the loop so the task spans the whole turn, and run even on
+	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
+	// would misreport it as still running.
+	defer a.completeImplicitTask(ctx, taskBinding, implicitCloseReason(response, err))
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
@@ -2707,6 +2784,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
 			} else {
 				// Emit tool-started progress event
+				// Record this turn's task before the tool runs, so the tool's
+				// own message rows are already attributable. Fixed rule, not a
+				// model decision; a no-op after the first call in a turn.
+				a.maybeRecordImplicitTask(ctx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL)
 				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
 			}
 
@@ -4071,4 +4152,36 @@ func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allo
 		return a.SetActiveProvider(active)
 	}
 	return nil
+}
+
+// WithImplicitTaskEmitter enables deterministic, runtime-driven task recording.
+//
+// With this set, the runtime records a task the first time a turn does something
+// worth recording — a tool call today — instead of waiting for the model to
+// decide it wants one. That is the difference between a board users can rely on
+// and a board that fills only when an LLM remembers to ask.
+//
+// Independent of WithTaskBoard: an agent can record tasks for the timeline while
+// never seeing the task_board tool, which is the common configuration.
+func WithImplicitTaskEmitter(e *task.ImplicitEmitter) Option {
+	return func(a *Agent) {
+		a.implicitTasks = e
+	}
+}
+
+// implicitCloseReason summarises how a turn ended, for the recorded task's
+// close reason. Kept short: this is a board-row caption, not a log line.
+func implicitCloseReason(resp *Response, err error) string {
+	if err != nil {
+		return "Turn ended with an error."
+	}
+	if resp != nil && resp.Metadata != nil {
+		if n, ok := resp.Metadata["tool_executions"].(int); ok && n > 0 {
+			if n == 1 {
+				return "Turn completed — 1 tool call."
+			}
+			return fmt.Sprintf("Turn completed — %d tool calls.", n)
+		}
+	}
+	return "Turn completed."
 }

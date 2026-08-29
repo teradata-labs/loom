@@ -368,3 +368,84 @@ func TestTimeline_HITLMergesWithConversation(t *testing.T) {
 		task.TimelineKindAssistant,
 	}, kinds, "the approval must interleave into the conversation at the right point")
 }
+
+// TestTimeline_ContextReliefFlagsSurface pins the columns the projection used to
+// drop on the floor.
+//
+// evicted/folded/turn were persisted by the conversation loop and then not
+// selected, which made the timeline narrower than the record it reads from —
+// and hid exactly the facts that explain otherwise-baffling agent behavior. An
+// evicted row is why an agent re-ran a query it had already run; a folded row is
+// why it forgot an earlier decision.
+func TestTimeline_ContextReliefFlagsSurface(t *testing.T) {
+	store := timelineStore(t)
+	ctx := context.Background()
+
+	sess := &Session{ID: "sess-relief", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	require.NoError(t, store.SaveSession(ctx, sess))
+
+	taskCtx := task.ContextWithAttribution(ctx, task.Attribution{
+		TaskID:    "task-relief",
+		SessionID: "sess-relief",
+		AgentID:   "agent-1",
+	})
+
+	// turnStart=true, so this row opens turn 1.
+	require.NoError(t, store.SaveMessage(taskCtx, "sess-relief", &Message{
+		Role:      "user",
+		Content:   "run the report",
+		Timestamp: time.Now(),
+	}, true))
+
+	// An evicted assistant row carrying TWO tool calls: the whole row was shed,
+	// so every event projected from it must say so. This is what applyTo is for.
+	require.NoError(t, store.SaveMessage(taskCtx, "sess-relief", &Message{
+		Role:    "assistant",
+		Content: "Querying twice",
+		ToolCalls: []types.ToolCall{
+			{ID: "tu-1", Name: "sql_query", Input: map[string]interface{}{"q": "SELECT 1"}},
+			{ID: "tu-2", Name: "sql_query", Input: map[string]interface{}{"q": "SELECT 2"}},
+		},
+		AgentID:   "agent-1",
+		Evicted:   true,
+		Timestamp: time.Now(),
+	}, false))
+
+	require.NoError(t, store.SaveMessage(taskCtx, "sess-relief", &Message{
+		Role:      "assistant",
+		Content:   "Folded into the summary",
+		AgentID:   "agent-1",
+		Folded:    true,
+		Timestamp: time.Now(),
+	}, false))
+
+	events, err := store.TimelineEvents(ctx, "task-relief")
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+
+	var (
+		sawUserTurn1  bool
+		evictedEvents int
+		foldedEvents  int
+	)
+	for _, e := range events {
+		switch {
+		case e.Kind == task.TimelineKindUser:
+			// turn is derived at insert; the first turn-start row is turn 1.
+			require.Equal(t, int64(1), e.Turn, "user row should carry its turn")
+			require.False(t, e.Evicted, "a live row must not report as evicted")
+			require.False(t, e.Folded, "a live row must not report as folded")
+			sawUserTurn1 = true
+		case e.Evicted:
+			evictedEvents++
+		case e.Folded:
+			foldedEvents++
+		}
+	}
+
+	require.True(t, sawUserTurn1, "the user message should appear with its turn")
+	// Narrative + two tool calls all came from the one evicted row.
+	require.Equal(t, 3, evictedEvents,
+		"every event projected from an evicted row must inherit the flag")
+	require.Equal(t, 1, foldedEvents, "the folded row should surface, not be hidden")
+}

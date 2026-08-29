@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -455,4 +456,166 @@ func BenchmarkBoardStats(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestImplicitEmitter_AutoCreatesMissingBoard is a regression test for a real
+// failure seen against a live backend: every implicit task creation died with
+//
+//	insert or update on table "cloud_tasks" violates foreign key constraint
+//	"cloud_tasks_board_id_fkey" (SQLSTATE 23503)
+//
+// because the emitter defaults the board id to the session id and nothing had
+// created a board under that id. tasks.board_id is a foreign key, so the task
+// must not be written until the board exists.
+//
+// Note the board is deliberately NOT pre-created here — that is the whole point.
+func TestImplicitEmitter_AutoCreatesMissingBoard(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	mgr := task.NewManager(store, nil, observability.NewNoOpTracer(), nil)
+	ctx := context.Background()
+
+	em := task.NewImplicitEmitter(mgr, task.ResolveImplicitPolicy(nil), nil, nil)
+
+	// Board id == session id, with no such board row — the live configuration.
+	const sessionID = "session-with-no-board"
+	turnCtx, _ := taskctx.ContextWithBinding(ctx)
+	_, created, err := em.EnsureForTurn(turnCtx, task.TurnRequest{
+		SessionID:   sessionID,
+		AgentID:     "agent-1",
+		BoardID:     sessionID,
+		TurnIndex:   0,
+		Trigger:     loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		UserMessage: "list the files in this workspace",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created, "a missing board must be auto-created, not fail the task")
+	assert.Equal(t, sessionID, created.BoardID)
+	assert.Equal(t, "list the files in this workspace", created.Title)
+
+	// The board now exists and the task is readable through it.
+	board, err := store.GetBoard(ctx, sessionID)
+	require.NoError(t, err, "the emitter must have created the board")
+	assert.Equal(t, sessionID, board.ID)
+
+	onBoard, total, err := store.ListTasks(ctx, task.ListTasksOpts{BoardID: sessionID, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	require.Len(t, onBoard, 1)
+	assert.Equal(t, taskctx.CreatedViaImplicit, onBoard[0].CreatedVia)
+
+	// A second turn in the same session reuses the board rather than racing.
+	ctx2, _ := taskctx.ContextWithBinding(ctx)
+	_, second, err := em.EnsureForTurn(turnCtx2Req(ctx2), task.TurnRequest{
+		SessionID: sessionID, AgentID: "agent-1", BoardID: sessionID, TurnIndex: 1,
+		Trigger: loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	_, total, err = store.ListTasks(ctx, task.ListTasksOpts{BoardID: sessionID, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+}
+
+// turnCtx2Req keeps the second EnsureForTurn call readable.
+func turnCtx2Req(c context.Context) context.Context { return c }
+
+// TestImplicitEmitter_CompleteForTurnClosesTask is a regression test for a real
+// observation: the recorded task appeared in the UI but sat on "In Progress"
+// forever, showing 0/1 done for work that had finished. Nothing closed it.
+func TestImplicitEmitter_CompleteForTurnClosesTask(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	mgr := task.NewManager(store, nil, observability.NewNoOpTracer(), nil)
+	ctx := context.Background()
+	em := task.NewImplicitEmitter(mgr, task.ResolveImplicitPolicy(nil), nil, nil)
+
+	turnCtx, _ := taskctx.ContextWithBinding(ctx)
+	_, created, err := em.EnsureForTurn(turnCtx, task.TurnRequest{
+		SessionID: "s1", AgentID: "a1", BoardID: "s1", TurnIndex: 0,
+		Trigger:     loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		UserMessage: "do some work",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, created.Status)
+
+	em.CompleteForTurn(ctx, created.ID, "Turn completed — 2 tool calls.")
+
+	closed, err := store.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, closed.Status,
+		"a finished turn must not leave its task in progress")
+	assert.NotNil(t, closed.ClosedAt)
+	assert.Equal(t, "Turn completed — 2 tool calls.", closed.CloseReason)
+
+	// Idempotent: closing again is a no-op, not an error or a status flip.
+	em.CompleteForTurn(ctx, created.ID, "second call")
+	again, err := store.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, again.Status)
+	assert.Equal(t, "Turn completed — 2 tool calls.", again.CloseReason,
+		"a second close must not overwrite the first reason")
+
+	// A task the agent genuinely owns must never be closed by this path.
+	agentOwned, err := store.CreateTask(ctx, &task.Task{
+		Title: "real work", BoardID: "s1",
+		Status:     loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		CreatedVia: taskctx.CreatedViaAgent,
+	})
+	require.NoError(t, err)
+	em.CompleteForTurn(ctx, agentOwned.ID, "should not happen")
+	untouched, err := store.GetTask(ctx, agentOwned.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, untouched.Status,
+		"only runtime-recorded tasks may be auto-closed")
+}
+
+// TestImplicitEmitter_CloseWorksWhenCreatedViaIsNotProjected reproduces the
+// exact failure seen against the cloud backend: the task was recorded with
+// created_via='implicit', but the store did not SELECT that column, so the close
+// guard read it as empty and silently refused to close its own task.
+//
+// Simulated by stripping created_via from the row after creation — which is
+// indistinguishable, from the emitter's side, from a store that never projects
+// it. The close must still work, because the guard keys on the idempotency key.
+func TestImplicitEmitter_CloseWorksWhenCreatedViaIsNotProjected(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	mgr := task.NewManager(store, nil, observability.NewNoOpTracer(), nil)
+	ctx := context.Background()
+	em := task.NewImplicitEmitter(mgr, task.ResolveImplicitPolicy(nil), nil, nil)
+
+	turnCtx, _ := taskctx.ContextWithBinding(ctx)
+	_, created, err := em.EnsureForTurn(turnCtx, task.TurnRequest{
+		SessionID: "s-noproject", AgentID: "a1", BoardID: "s-noproject", TurnIndex: 0,
+		Trigger:     loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		UserMessage: "do work",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.True(t, strings.HasPrefix(created.SkillIdempotencyKey, "implicit:sess:"),
+		"the close guard depends on this prefix")
+
+	// Blank created_via, mimicking a store that persists but never projects it.
+	_, err = db.ExecContext(ctx, `UPDATE tasks SET created_via = '' WHERE id = ?`, created.ID)
+	require.NoError(t, err)
+
+	em.CompleteForTurn(ctx, created.ID, "Turn completed.")
+
+	closed, err := store.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, closed.Status,
+		"close must not depend on created_via being readable")
+
+	// And a task with no implicit key is still never auto-closed.
+	foreign, err := store.CreateTask(ctx, &task.Task{
+		Title: "human work", BoardID: "s-noproject",
+		Status: loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+	})
+	require.NoError(t, err)
+	em.CompleteForTurn(ctx, foreign.ID, "should not happen")
+	untouched, err := store.GetTask(ctx, foreign.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, untouched.Status)
 }

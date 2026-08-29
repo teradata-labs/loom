@@ -196,3 +196,52 @@ func BindingFromContext(ctx context.Context) *Binding {
 	b, _ := ctx.Value(bindingKey{}).(*Binding)
 	return b
 }
+
+// parentTaskKey carries the delegating task across a spawn boundary.
+type parentTaskKey struct{}
+
+// ParentTask names the work a spawned agent is running on behalf of.
+type ParentTask struct {
+	// TaskID is the delegating turn's task.
+	TaskID string
+	// AgentID is the agent that delegated.
+	AgentID string
+}
+
+// ContextWithParentTask marks a context as running on behalf of another task,
+// and REMOVES any attribution the parent had installed.
+//
+// Both halves matter. A spawned agent must not inherit the parent's
+// attribution: EnsureForTurn declines when it finds one ("a real task owns this
+// work"), so an inherited attribution would silently file the child's tool
+// calls under the parent's task and the delegated work would have no task of
+// its own. Stripping it lets the child mint its own; the marker left behind is
+// what lets that mint draw a PARENT_CHILD edge home.
+//
+// Clearing takes BOTH paths that AttributionFromContext consults, or the parent
+// leaks through the one that is missed:
+//
+//	1. the attribution key, overwritten with an empty value — an empty TaskID
+//	   already reads as absent; and
+//	2. the turn Binding, replaced with a fresh unset one. This is the subtle
+//	   half: AttributionFromContext falls back to the binding precisely so a
+//	   context captured before the task existed still sees it, which means the
+//	   parent's filled binding would otherwise remain visible to the child no
+//	   matter what the attribution key says.
+func ContextWithParentTask(ctx context.Context, p ParentTask) context.Context {
+	ctx = context.WithValue(ctx, attributionKey{}, Attribution{})
+	ctx, _ = ContextWithBinding(ctx)
+	if p.TaskID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, parentTaskKey{}, p)
+}
+
+// ParentTaskFromContext returns the delegating task, if this context was
+// created for a spawned agent.
+func ParentTaskFromContext(ctx context.Context) (ParentTask, bool) {
+	if p, ok := ctx.Value(parentTaskKey{}).(ParentTask); ok && p.TaskID != "" {
+		return p, true
+	}
+	return ParentTask{}, false
+}

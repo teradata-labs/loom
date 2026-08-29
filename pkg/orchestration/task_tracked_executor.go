@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // TaskTrackedOrchestrator wraps an Orchestrator to persist workflow execution
@@ -70,12 +71,17 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 	// Create board + tasks if no prior board exists.
 	var stageTasks []*task.Task
 	if boardID == "" {
-		var err error
-		_, stageTasks, err = t.createBoardFromPattern(ctx, patternType, pattern)
+		board, created, err := t.createBoardFromPattern(ctx, patternType, pattern)
 		if err != nil {
 			t.logger.Warn("task tracking: failed to create board, executing without tracking",
 				zap.Error(err))
 			return t.inner.ExecutePattern(ctx, pattern)
+		}
+		stageTasks = created
+		// Keep the new board's id: the root-task lookup below is shared with
+		// the resume path, and previously this board was discarded.
+		if board != nil {
+			boardID = board.ID
 		}
 	} else {
 		t.logger.Info("task tracking: resuming from prior execution",
@@ -95,6 +101,21 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 
 	// Mark IN_PROGRESS tasks that correspond to stages about to execute.
 	t.markStagesInProgress(ctx, stageTasks, patternType)
+
+	// Attribute the run's conversation to the root task, so the messages the
+	// stage agents write are findable per task instead of only per session.
+	// Without this the stage tasks show lifecycle transitions and nothing else.
+	//
+	// Installed only when a root exists — on both the fresh and resumed paths,
+	// found by its marker rather than threaded through, so a resumed run
+	// attributes to the same task the original run did.
+	if root := t.findRootTask(ctx, boardID); root != nil {
+		ctx = taskctx.ContextWithAttribution(ctx, taskctx.Attribution{
+			TaskID:  root.ID,
+			BoardID: root.BoardID,
+			AgentID: root.OwnerAgentID,
+		})
+	}
 
 	// Execute the actual workflow.
 	result, err := t.inner.ExecutePattern(ctx, pattern)
@@ -175,12 +196,92 @@ func (t *TaskTrackedOrchestrator) createBoardFromPattern(
 		return nil, nil, fmt.Errorf("create tasks for %s: %w", patternType, err)
 	}
 
+	// The root task owns the workflow's ACTIVITY; the stage tasks own its
+	// STRUCTURE.
+	//
+	// Stage tasks already record lifecycle (opened, in progress, closed with
+	// output), but nothing the stage agents actually did — the inner
+	// orchestrator runs every stage under one context, so there is no single
+	// stage a message could honestly be attributed to. Attributing the run to
+	// one root task instead keeps attribution truthful and gives a reader one
+	// timeline holding the whole run. Per-stage drill-down comes from the
+	// AgentID already on each timeline event, since every stage is a distinct
+	// agent.
+	//
+	// Failure here is not fatal: without a root task the run proceeds exactly
+	// as it did before, with stage lifecycle and no activity attribution.
+	root, rootErr := t.manager.CreateTask(ctx, &task.Task{
+		Title:            fmt.Sprintf("%s workflow", patternType),
+		BoardID:          board.ID,
+		Category:         loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION,
+		Priority:         loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
+		Status:           loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		CreatedVia:       taskctx.CreatedViaImplicit,
+		ClaimedBySession: boardName,
+		Metadata: map[string]string{
+			workflowRootMetadataKey: "true",
+			"pattern_type":          patternType,
+		},
+	})
+	if rootErr != nil {
+		t.logger.Warn("task tracking: no workflow root task; stage lifecycle only",
+			zap.String("board_id", board.ID), zap.Error(rootErr))
+	} else {
+		t.linkStagesToRoot(ctx, root, tasks)
+	}
+
 	t.logger.Info("task tracking: board created",
 		zap.String("board_id", board.ID),
 		zap.String("pattern", patternType),
-		zap.Int("tasks", len(tasks)))
+		zap.Int("tasks", len(tasks)),
+		zap.Bool("root_task", rootErr == nil))
 
 	return board, tasks, nil
+}
+
+// workflowRootMetadataKey marks the task that owns a workflow run's activity,
+// so a resumed run can find it again without a second lookup table.
+const workflowRootMetadataKey = "workflow_root"
+
+// linkStagesToRoot records each stage task as a child of the run's root task.
+//
+// PARENT_CHILD rather than BLOCKS: the stages are the run's structure, not its
+// prerequisites. The pipeline dependencies between consecutive stages are
+// separate edges and are left alone.
+func (t *TaskTrackedOrchestrator) linkStagesToRoot(ctx context.Context, root *task.Task, stages []*task.Task) {
+	for _, st := range stages {
+		if st == nil || st.ID == root.ID {
+			continue
+		}
+		if err := t.manager.AddDependency(ctx, &task.TaskDependency{
+			FromTaskID: st.ID,
+			ToTaskID:   root.ID,
+			Type:       loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_PARENT_CHILD,
+			Metadata:   map[string]string{"linked_by": "task_tracked_orchestrator"},
+		}); err != nil {
+			t.logger.Warn("task tracking: stage-to-root link failed",
+				zap.String("stage_task_id", st.ID), zap.Error(err))
+		}
+	}
+}
+
+// findRootTask returns the task owning a board's workflow activity, or nil.
+//
+// Used on the resume path, where the root was created by an earlier process and
+// only the board id survives. The marker lives on the task rather than in board
+// metadata because the board is created before any task exists, so its metadata
+// cannot name one.
+func (t *TaskTrackedOrchestrator) findRootTask(ctx context.Context, boardID string) *task.Task {
+	tasks, _, err := t.manager.ListTasks(ctx, task.ListTasksOpts{BoardID: boardID, Limit: 100})
+	if err != nil {
+		return nil
+	}
+	for _, tk := range tasks {
+		if tk != nil && tk.Metadata[workflowRootMetadataKey] == "true" {
+			return tk
+		}
+	}
+	return nil
 }
 
 // createPipelineTasks creates sequential tasks with dependencies.

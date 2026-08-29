@@ -120,6 +120,32 @@ type TimelineEvent struct {
 	// order (SQL ORDER BY, insertion sequence); preserving it as the tie-break
 	// keeps the merged timeline logically coherent.
 	SourceOrder int
+
+	// Evicted marks an event whose source row the context-relief pass shed from
+	// the agent's replay window under memory pressure. Folded marks one folded
+	// into a session summary the agent replays instead.
+	//
+	// Both are surfaced rather than filtered, because they explain agent
+	// behavior a reader would otherwise find baffling: a repeated query, a
+	// re-run tool call, or a forgotten earlier decision usually means the
+	// original was evicted or folded. The payload is not destroyed by either
+	// operation — only flagged — so the human timeline stays MORE complete than
+	// the agent's own memory and says where the two diverge.
+	//
+	// A row's flag applies to every event derived from it: if an assistant
+	// message carrying three tool calls was evicted, the agent lost all three.
+	Evicted bool
+	Folded  bool
+
+	// Turn is the session turn the source row belongs to, letting a reader
+	// group a task's activity by turn instead of reading a flat list.
+	Turn int64
+
+	// TokenCount and CostUSD are the source row's own accounting, already
+	// recorded per message by the conversation loop. Carried through so a task
+	// can be totalled without a second query against the message table.
+	TokenCount int64
+	CostUSD    float64
 }
 
 // Excerpt returns Detail truncated to at most maxBytes, on a UTF-8 boundary,

@@ -34,6 +34,7 @@ import (
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -117,12 +118,12 @@ type Agent struct {
 	skillOrchestrator *skills.Orchestrator
 	skillDiscovery    *discovery.Discovery
 	// skillTaskEmitter materializes tasks for newly-activated skills onto
-	// the agent's task board. nil means skill activations do not emit tasks
-	// (legacy behavior).
+	// the agent's task board. nil means skill activations do not emit tasks.
+	// Driven from the manage_skills load path via Agent.emitSkillTasksAsync.
 	skillTaskEmitter *skilltasks.Emitter
-	// skillsTurnState tracks which skills were activated in the current
-	// turn so phase D can emit tasks only for the newly-activated set.
-	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
+	// skillTaskEmits counts the detached emit goroutines still in flight, so
+	// they can be joined without polling. See Agent.emitSkillTasksAsync.
+	skillTaskEmits sync.WaitGroup
 
 	// End-of-turn hygiene enforcement for skill-emitted tasks. Constructed
 	// when both skillOrchestrator and taskManager are present; runs at the
@@ -219,6 +220,15 @@ type Agent struct {
 	taskManager     *task.Manager
 	taskDecomposer  *task.Decomposer
 	taskBoardConfig *loomv1.TaskBoardConfig
+
+	// implicitTasks records a task per working turn, deterministically, without
+	// the model electing to call task_board. Nil disables implicit recording.
+	//
+	// Separate from taskBoardConfig on purpose: that flag governs whether the
+	// AGENT sees the board, this governs whether the RUNTIME records one. A
+	// board that only fills when a model remembers to ask is a board users
+	// cannot rely on.
+	implicitTasks *task.ImplicitEmitter
 
 	// Graph memory automatic extraction (mirrors finding extraction pattern).
 	enableGraphMemoryExtraction        bool
@@ -467,6 +477,16 @@ type agentContext struct {
 	session          *Session
 	tracer           observability.Tracer
 	progressCallback ProgressCallback
+
+	// taskBinding is this turn's lazily-filled task attribution slot. Nil when
+	// implicit task recording is off or no store is wired.
+	taskBinding *taskctx.Binding
+	// turnIndex is the session turn this conversation belongs to, taken from
+	// the turn the store derived for the opening user message.
+	turnIndex int64
+	// userMessage seeds an implicit task's title, so a board reads as work
+	// rather than as a numbered log.
+	userMessage string
 }
 
 func (c *agentContext) Session() *Session {
@@ -480,3 +500,12 @@ func (c *agentContext) Tracer() observability.Tracer {
 func (c *agentContext) ProgressCallback() ProgressCallback {
 	return c.progressCallback
 }
+
+// TaskBinding returns this turn's lazily-filled task attribution slot.
+func (c *agentContext) TaskBinding() *taskctx.Binding { return c.taskBinding }
+
+// TurnIndex returns the session turn this conversation belongs to.
+func (c *agentContext) TurnIndex() int64 { return c.turnIndex }
+
+// UserMessage returns the turn's opening user message.
+func (c *agentContext) UserMessage() string { return c.userMessage }

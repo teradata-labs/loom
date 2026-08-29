@@ -35,6 +35,32 @@ const messageTimelineSource = "messages"
 // SourceName implements task.TimelineSource.
 func (s *SessionStore) SourceName() string { return messageTimelineSource }
 
+// messageRowContext holds the facts a message row carries about itself rather
+// than about the event it describes: whether context relief shed it, which turn
+// it belongs to, and what it cost.
+//
+// It exists so the projection reads these columns once per row and stamps them
+// onto every event derived from that row, instead of each event-construction
+// site having to remember five extra fields.
+type messageRowContext struct {
+	evicted    bool
+	folded     bool
+	turn       int64
+	tokenCount int64
+	costUSD    float64
+}
+
+// applyTo stamps the row's context onto every event projected from that row.
+func (c messageRowContext) applyTo(events []task.TimelineEvent) {
+	for i := range events {
+		events[i].Evicted = c.evicted
+		events[i].Folded = c.folded
+		events[i].Turn = c.turn
+		events[i].TokenCount = c.tokenCount
+		events[i].CostUSD = c.costUSD
+	}
+}
+
 // TimelineEvents projects a task's conversation messages into timeline events.
 //
 // This is the read half of the task-attribution design: instead of writing a
@@ -57,8 +83,16 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// evicted, folded, turn, token_count and cost_usd are read even though the
+	// projection below does not branch on them: they are per-row facts the
+	// conversation loop already wrote, and dropping them here is what made the
+	// timeline narrower than the record it reads from. COALESCE because these
+	// columns arrive by ALTER TABLE (SessionStore owns this table and
+	// self-migrates), so rows written before a given column existed read NULL.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, agent_id, timestamp
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, agent_id, timestamp,
+		       COALESCE(evicted, 0), COALESCE(folded, 0), COALESCE(turn, 0),
+		       COALESCE(token_count, 0), COALESCE(cost_usd, 0)
 		FROM messages
 		WHERE task_id = ?
 		ORDER BY timestamp ASC, id ASC`, taskID)
@@ -76,10 +110,25 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 			toolCallsJSON, toolUseID, toolResultRaw sql.NullString
 			agentID                                 sql.NullString
 			ts                                      int64
+			evicted, folded                         int
+			turn, tokenCount                        int64
+			costUSD                                 float64
 		)
 		if err := rows.Scan(&msgID, &role, &content, &toolCallsJSON,
-			&toolUseID, &toolResultRaw, &agentID, &ts); err != nil {
+			&toolUseID, &toolResultRaw, &agentID, &ts,
+			&evicted, &folded, &turn, &tokenCount, &costUSD); err != nil {
 			return nil, fmt.Errorf("timeline: scan message: %w", err)
+		}
+
+		// Per-row context facts, stamped onto every event this row produces.
+		// One assistant message can yield a narrative event plus several tool
+		// calls; if the row was evicted, the agent lost all of them together.
+		rowCtx := messageRowContext{
+			evicted:    evicted != 0,
+			folded:     folded != 0,
+			turn:       turn,
+			tokenCount: tokenCount,
+			costUSD:    costUSD,
 		}
 
 		occurred := time.Unix(ts, 0).UTC()
@@ -89,6 +138,10 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 		// second-resolution and tie constantly.
 		rowOrder := order
 		order++
+
+		// Everything appended from here to the end of this iteration came from
+		// this one message row, so it all carries the row's context facts.
+		rowStart := len(events)
 
 		switch role {
 		case "assistant":
@@ -127,6 +180,8 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 				SourceOrder: rowOrder,
 			})
 		}
+
+		rowCtx.applyTo(events[rowStart:])
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("timeline: iterate messages: %w", err)

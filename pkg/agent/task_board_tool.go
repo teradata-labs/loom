@@ -833,8 +833,8 @@ func (t *TaskBoardTool) resolveBoard(input map[string]interface{}) string {
 //     that hallucinates a board id from a branch name or similar string
 //     doesn't spawn orphan boards every turn.
 //  2. If the chosen id still names a missing board, it is auto-created
-//     with a generic name. This mirrors emitter.ensureBoard for the
-//     skills overhaul Phase D path; without it the agent's task_board
+//     with a generic name. This mirrors emitter.ensureBoard on the skill
+//     task emission path; without it the agent's task_board
 //     create/decompose calls would FK-fail with no actionable signal to
 //     the model (the error surface is just "FOREIGN KEY constraint failed").
 //

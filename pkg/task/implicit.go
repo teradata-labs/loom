@@ -61,6 +61,7 @@ const (
 const (
 	MetricImplicitTaskCreated = "task.implicit.created"
 	MetricImplicitTaskSkipped = "task.implicit.skipped"
+	MetricImplicitTaskClosed  = "task.implicit.closed"
 )
 
 // DefaultImplicitTriggers is the effective trigger set when configuration
@@ -170,6 +171,20 @@ type ImplicitEmitter struct {
 	minted map[string]string
 	// perSession counts minted tasks against MaxPerSession.
 	perSession map[string]int
+	// boardsKnown remembers boards this emitter has already confirmed exist.
+	//
+	// ensureBoard probes with GetBoard on every mint, and after a session's
+	// first turn that probe always hits and always returns the same answer —
+	// one of the four round trips a mint costs, spent re-learning a fact that
+	// cannot change back. Caching it takes a mint from four round trips to
+	// three.
+	//
+	// Safe because board deletion mid-process is not a case this optimizes for:
+	// if a cached board does disappear, CreateTask fails its foreign key, the
+	// turn declines quietly as it already does on any create failure, and
+	// forgetBoard drops the entry so the next turn re-probes and re-creates.
+	// The cache is therefore self-healing rather than merely optimistic.
+	boardsKnown map[string]struct{}
 }
 
 // NewImplicitEmitter builds an emitter. A nil manager yields an emitter that
@@ -182,12 +197,13 @@ func NewImplicitEmitter(manager *Manager, policy ImplicitPolicy, tracer observab
 		logger = zap.NewNop()
 	}
 	return &ImplicitEmitter{
-		manager:    manager,
-		policy:     policy,
-		tracer:     tracer,
-		logger:     logger,
-		minted:     map[string]string{},
-		perSession: map[string]int{},
+		manager:     manager,
+		policy:      policy,
+		tracer:      tracer,
+		logger:      logger,
+		minted:      map[string]string{},
+		perSession:  map[string]int{},
+		boardsKnown: map[string]struct{}{},
 	}
 }
 
@@ -212,6 +228,20 @@ type TurnRequest struct {
 	// UserMessage seeds the title, so a human scanning the board sees what the
 	// turn was about rather than "Turn 7".
 	UserMessage string
+
+	// ParentTaskID and ParentAgentID identify the work that spawned this turn,
+	// set when an ephemeral agent runs on behalf of another.
+	//
+	// A spawned agent gets its OWN session, so nothing in the session record
+	// connects its work back to the agent that asked for it. Without these, a
+	// subagent's task lands on the board as an unexplained sibling. With them,
+	// the mint links child to parent with a PARENT_CHILD edge and stamps
+	// ParentAgentID onto the attribution, so a reader can walk from the
+	// delegating turn into the delegated work.
+	//
+	// Both are optional; a top-level turn leaves them empty.
+	ParentTaskID  string
+	ParentAgentID string
 }
 
 // turnKey identifies a turn for memoization and idempotency.
@@ -260,6 +290,19 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 	}
 	e.mu.Unlock()
 
+	// The board must exist before the task references it: tasks.board_id carries
+	// a foreign key, so creating a task against a missing board fails with an
+	// opaque constraint violation rather than anything actionable. Both the
+	// task_board tool (resolveBoardForWrite) and the skills emitter (ensureBoard)
+	// solve this the same way; skipping it here was a real bug, because the
+	// board id defaults to the session id and no board row exists under that id.
+	if err := e.ensureBoard(ctx, r.BoardID); err != nil {
+		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "board_unavailable"})
+		e.logger.Warn("implicit task skipped: board could not be ensured",
+			zap.String("board_id", r.BoardID), zap.Error(err))
+		return ctx, nil, nil
+	}
+
 	// CreateTaskIdempotent collapses concurrent callers and process restarts
 	// onto one row, reusing the partial unique index that the skills emitter
 	// already uses. Migration 000008 names the column generically for exactly
@@ -283,6 +326,9 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		// Emission is best-effort: a turn must not fail because its bookkeeping
 		// row could not be written.
 		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "create_failed"})
+		// The board cache may have vouched for a board that is gone; drop it so
+		// the next turn re-probes instead of failing identically forever.
+		e.forgetBoard(r.BoardID)
 		e.logger.Warn("implicit task creation failed; continuing without one",
 			zap.String("session_id", r.SessionID), zap.Error(err))
 		return ctx, nil, nil
@@ -299,17 +345,50 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.tracer.RecordMetric(MetricImplicitTaskCreated, 1, map[string]string{
 			"trigger": r.Trigger.String(),
 		})
+		e.linkToParent(ctx, created.ID, r)
 	}
 	return e.bind(ctx, r, created.ID), created, nil
+}
+
+// linkToParent records the PARENT_CHILD edge from a delegated turn's task back
+// to the task that delegated it.
+//
+// Only on first mint: the edge is a property of the task's creation, and an
+// idempotent re-entry returns the existing task whose edge already exists.
+//
+// Failure is logged, not returned. The child task and its timeline are already
+// correct on their own; a missing edge costs a reader one hop of navigation,
+// which does not justify failing the turn that was trying to do real work.
+func (e *ImplicitEmitter) linkToParent(ctx context.Context, childID string, r TurnRequest) {
+	if r.ParentTaskID == "" || r.ParentTaskID == childID {
+		return
+	}
+	err := e.manager.AddDependency(ctx, &TaskDependency{
+		FromTaskID: childID,
+		ToTaskID:   r.ParentTaskID,
+		Type:       loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_PARENT_CHILD,
+		CreatedBy:  r.AgentID,
+		Metadata: map[string]string{
+			"linked_by":       "implicit_emitter",
+			"parent_agent_id": r.ParentAgentID,
+		},
+	})
+	if err != nil {
+		e.logger.Warn("implicit task parent link failed; child task stands alone",
+			zap.String("child_task_id", childID),
+			zap.String("parent_task_id", r.ParentTaskID),
+			zap.Error(err))
+	}
 }
 
 // bind attaches the attribution to the context and fills the turn's binding.
 func (e *ImplicitEmitter) bind(ctx context.Context, r TurnRequest, taskID string) context.Context {
 	a := taskctx.Attribution{
-		TaskID:    taskID,
-		BoardID:   r.BoardID,
-		SessionID: r.SessionID,
-		AgentID:   r.AgentID,
+		TaskID:        taskID,
+		BoardID:       r.BoardID,
+		SessionID:     r.SessionID,
+		AgentID:       r.AgentID,
+		ParentAgentID: r.ParentAgentID,
 	}
 	// Fill the turn binding first: writers that captured the context before the
 	// task existed read through the binding, not through this new context.
@@ -402,4 +481,142 @@ func firstLineOf(s string) string {
 		end--
 	}
 	return s[start:end]
+}
+
+// ensureBoard guarantees the referenced board exists before a task points at it.
+//
+// tasks.board_id is a foreign key, so a task created against a missing board
+// fails with a constraint violation. The implicit emitter defaults the board to
+// the session id, and nothing creates a board under that id, so without this
+// every implicit task would fail — which is precisely what happened the first
+// time this ran against a real backend.
+//
+// Probe-then-create with a second probe on failure: two turns in the same
+// session can reach here concurrently, and one of them will lose the create.
+// The re-probe decides which way that race went instead of failing the loser.
+func (e *ImplicitEmitter) ensureBoard(ctx context.Context, boardID string) error {
+	if boardID == "" {
+		// A board-less task is legal; the FK is only enforced on non-empty ids.
+		return nil
+	}
+	// Already confirmed this process: skip the probe entirely. This is the
+	// steady state for every turn of a session after its first.
+	e.mu.Lock()
+	_, known := e.boardsKnown[boardID]
+	e.mu.Unlock()
+	if known {
+		return nil
+	}
+	if _, err := e.manager.GetBoard(ctx, boardID); err == nil {
+		e.rememberBoard(boardID)
+		return nil
+	}
+	if _, err := e.manager.CreateBoard(ctx, &TaskBoard{
+		ID:   boardID,
+		Name: "Session work",
+	}); err != nil {
+		if _, gerr := e.manager.GetBoard(ctx, boardID); gerr == nil {
+			e.rememberBoard(boardID)
+			return nil
+		}
+		return err
+	}
+	e.rememberBoard(boardID)
+	e.logger.Info("implicit emitter: auto-created board",
+		zap.String("board_id", boardID))
+	return nil
+}
+
+// rememberBoard records that a board is known to exist.
+func (e *ImplicitEmitter) rememberBoard(boardID string) {
+	if boardID == "" {
+		return
+	}
+	e.mu.Lock()
+	e.boardsKnown[boardID] = struct{}{}
+	e.mu.Unlock()
+}
+
+// forgetBoard drops a cached board so the next mint re-probes it.
+//
+// Called when a create fails, which is the only signal available that a board
+// the cache vouched for may be gone. Without this the cache would keep asserting
+// a board that no longer exists and every later turn in the session would fail
+// the same way.
+func (e *ImplicitEmitter) forgetBoard(boardID string) {
+	if boardID == "" {
+		return
+	}
+	e.mu.Lock()
+	delete(e.boardsKnown, boardID)
+	e.mu.Unlock()
+}
+
+// CompleteForTurn closes the task recorded for a turn, if there is one.
+//
+// Without this an implicit task is created IN_PROGRESS and stays there forever:
+// nothing else has a reason to close it, because no agent claimed it and no
+// human is working it. The board fills with permanently in-flight rows and the
+// session panel shows 0/1 done for work that finished — which is exactly what
+// happened the first time this ran end to end.
+//
+// Called once at the end of a turn. Idempotent: a turn with no recorded task, an
+// already-closed task, or a task claimed by something else is a no-op.
+//
+// Best-effort by the same reasoning as creation: a turn must not fail because
+// its bookkeeping row could not be closed. A close failure leaves the task
+// IN_PROGRESS and is counted, not raised.
+func (e *ImplicitEmitter) CompleteForTurn(ctx context.Context, taskID, closeReason string) {
+	if e == nil || e.manager == nil || taskID == "" {
+		return
+	}
+
+	existing, err := e.manager.GetTask(ctx, taskID)
+	if err != nil || existing == nil {
+		return
+	}
+	// Only close what we recorded, and only if it is still open. A task the
+	// agent genuinely claimed and closed itself must not be touched.
+	//
+	// The discriminator is the IDEMPOTENCY KEY, not created_via. created_via is
+	// the natural choice and it is what this originally used — but it is not
+	// read back by every store: avmo-tera-cloud persists the column and omits it
+	// from its SELECT list, so GetTask returns it empty and the guard silently
+	// rejected every task it was meant to admit. Nothing closed, nothing logged.
+	//
+	// skill_idempotency_key is selected by every store (both loom stores and
+	// cloud's), and implicit keys carry a fixed prefix, so it identifies our own
+	// rows without depending on a column a store may not project.
+	if !isImplicitKey(existing.SkillIdempotencyKey) {
+		e.logger.Debug("implicit close skipped: not a runtime-recorded task",
+			zap.String("task_id", taskID),
+			zap.String("idempotency_key", existing.SkillIdempotencyKey))
+		return
+	}
+	if IsTerminal(existing.Status) {
+		return
+	}
+
+	if closeReason == "" {
+		closeReason = "Turn completed."
+	}
+	if _, err := e.manager.CloseTask(ctx, taskID, closeReason); err != nil {
+		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "close_failed"})
+		e.logger.Warn("implicit task close failed; task stays in progress",
+			zap.String("task_id", taskID), zap.Error(err))
+		return
+	}
+	e.tracer.RecordMetric(MetricImplicitTaskClosed, 1, nil)
+}
+
+// implicitKeyPrefix is the fixed prefix on every implicit task's idempotency
+// key. See turnKey.
+const implicitKeyPrefix = "implicit:sess:"
+
+// isImplicitKey reports whether an idempotency key was minted by this emitter.
+//
+// Used instead of created_via because it is projected by every store
+// implementation, including downstream ones this package cannot see.
+func isImplicitKey(key string) bool {
+	return len(key) >= len(implicitKeyPrefix) && key[:len(implicitKeyPrefix)] == implicitKeyPrefix
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // SQLiteHumanRequestStore provides persistent SQLite storage for human requests.
@@ -94,7 +95,8 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 		kind TEXT,
 		summary TEXT,
 		params_json TEXT,
-		params_truncated BOOLEAN DEFAULT 0
+		params_truncated BOOLEAN DEFAULT 0,
+		task_id TEXT
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_human_requests_status ON human_requests(status);
@@ -120,6 +122,10 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 		"summary":          "ALTER TABLE human_requests ADD COLUMN summary TEXT",
 		"params_json":      "ALTER TABLE human_requests ADD COLUMN params_json TEXT",
 		"params_truncated": "ALTER TABLE human_requests ADD COLUMN params_truncated BOOLEAN DEFAULT 0",
+		// task_id attributes a HITL exchange to the task it blocks, so a
+		// pending approval can be surfaced on the work it is holding up
+		// rather than only in a global request queue.
+		"task_id": "ALTER TABLE human_requests ADD COLUMN task_id TEXT",
 	}
 	for col, ddl := range added {
 		var n int
@@ -135,6 +141,7 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 				return fmt.Errorf("add column %s: %w", col, err)
 			}
 		}
+
 	}
 
 	span.SetAttribute("success", true)
@@ -206,15 +213,28 @@ func (s *SQLiteHumanRequestStore) Store(ctx context.Context, req *HumanRequest) 
 			id, agent_id, session_id, question, context_json,
 			request_type, priority, timeout_ms, created_at, expires_at,
 			status, response, response_data_json, responded_at, responded_by,
-			kind, summary, params_json, params_truncated
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			kind, summary, params_json, params_truncated,
+			task_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
+
+	// Attribute the request to the task it blocks. An explicit req.TaskID wins;
+	// otherwise take the ambient attribution. Both empty stores NULL.
+	taskIDValue := req.TaskID
+	if taskIDValue == "" {
+		taskIDValue = taskctx.TaskIDFromContext(ctx)
+	}
+	var taskID *string
+	if taskIDValue != "" {
+		taskID = &taskIDValue
+	}
 
 	_, err = s.db.ExecContext(ctx, query,
 		req.ID, req.AgentID, req.SessionID, req.Question, string(contextJSON),
 		req.RequestType, req.Priority, timeoutMs, createdAtMs, expiresAtMs,
 		req.Status, req.Response, string(responseDataJSON), respondedAtMs, req.RespondedBy,
 		req.Kind, req.Summary, paramsJSON, req.ParamsTruncated,
+		taskID,
 	)
 
 	if err != nil {

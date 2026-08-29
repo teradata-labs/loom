@@ -1081,11 +1081,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	defer func() { _ = logger.Sync() }()
 
 	// Replace the zap global so library packages that log via zap.L()
-	// (Agent.runConversationLoop Phase D, skill required-tool warnings,
-	// task context errors, etc.) reach the same sink as the structured
-	// server logger. Without this, those diagnostics go to the default
-	// Nop and silently disappear — which is what hid the original
-	// skills-overhaul Phase D wiring gap during initial diagnosis.
+	// (Agent.emitSkillTasksAsync, skill required-tool warnings, task context
+	// errors, etc.) reach the same sink as the structured server logger.
+	// Without this, those diagnostics go to the default Nop and silently
+	// disappear — which is what hid the original skill task emission wiring
+	// gap during initial diagnosis.
 	zap.ReplaceGlobals(logger)
 
 	// The scheduler registry's logger must be installed BEFORE any agent or

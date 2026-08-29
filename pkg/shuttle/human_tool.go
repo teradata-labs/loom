@@ -68,6 +68,11 @@ type HumanRequest struct {
 	ResponseData map[string]interface{} `json:"response_data"`
 	RespondedAt  *time.Time             `json:"responded_at"`
 	RespondedBy  string                 `json:"responded_by"`
+
+	// TaskID attributes this request to the task it blocks. Empty when the
+	// request was raised outside a claimed task, which is normal; it is stored
+	// as NULL. Stamped from the ambient task attribution on the context.
+	TaskID string `json:"task_id,omitempty"`
 }
 
 // HumanRequestStore manages storage and retrieval of human requests.
