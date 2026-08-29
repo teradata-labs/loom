@@ -5632,6 +5632,62 @@
       "default": "HYGIENE_POLICY_UNSPECIFIED",
       "description": "HygienePolicy controls how the end-of-turn auditor handles task-board\nviolations left by an active skill.\n\n - HYGIENE_POLICY_REQUIRE_FIX: Inject a synthetic user message describing the violations and re-run the\nLLM turn so the agent resolves them itself. Capped by max_retries; on\nexhaustion the auditor falls through to AUTO_FIX so the loop terminates.\n - HYGIENE_POLICY_AUTO_FIX: Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)\nwith reason notes. Cheaper but hides agent bugs.\n - HYGIENE_POLICY_WARN_ONLY: Emit observability events and add a violations summary to the response\nmetadata; do not change task state and do not retry."
     },
+    "v1ImplicitTaskConfig": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/v1ImplicitTaskMode",
+          "description": "Whether the runtime mints tasks. Unset means enabled."
+        },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Restricts minting to these triggers. Empty means the built-in default set.\nUse this for \"only these\"."
+        },
+        "excludedTriggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Subtracted from the effective set, applied after `triggers`. Use this for\n\"everything except these\", which otherwise requires enumerating the rest\nand silently opting out of any trigger added in a later release."
+        },
+        "maxPerSession": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Caps implicit tasks per session. 0 means the built-in default. Once the cap\nis hit, later turns record no implicit task rather than growing the board\nwithout bound; the count of skipped turns is exported as a metric."
+        },
+        "agentVisible": {
+          "type": "boolean",
+          "description": "Surfaces implicit tasks in the AGENT's task context block and ready front.\n\nDefault false, and that default is load-bearing. The task context block is\nrebuilt into the system prompt every turn; if each turn minted a task that\nthen appeared in that block, the prompt would accumulate the agent's own\nbookkeeping turn over turn — the exact context-window growth the task\nsystem's compaction design exists to avoid. Implicit tasks are a rendering\nartifact for humans, so by default the agent never sees them."
+        }
+      },
+      "description": "ImplicitTaskConfig tunes runtime task minting."
+    },
+    "v1ImplicitTaskMode": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_MODE_UNSPECIFIED",
+        "IMPLICIT_TASK_MODE_ENABLED",
+        "IMPLICIT_TASK_MODE_DISABLED"
+      ],
+      "default": "IMPLICIT_TASK_MODE_UNSPECIFIED",
+      "description": "ImplicitTaskMode controls whether the runtime mints tasks on its own.\n\nUNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot\ndefault to true, and an inverted `bool disable_x` field reads badly at every\ncall site, so the tri-state enum carries the default instead. It also means\nthe default can change later without a proto change.\n\n - IMPLICIT_TASK_MODE_UNSPECIFIED: Not set — treated as ENABLED.\n - IMPLICIT_TASK_MODE_ENABLED: The runtime mints a task on the first qualifying event of a turn.\n - IMPLICIT_TASK_MODE_DISABLED: No implicit tasks. Only the agent and explicit API calls create tasks."
+    },
+    "v1ImplicitTaskTrigger": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+        "IMPLICIT_TASK_TRIGGER_TOOL_CALL",
+        "IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION",
+        "IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST",
+        "IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN",
+        "IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP"
+      ],
+      "default": "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+      "description": "ImplicitTaskTrigger is an event that can cause the runtime to mint a task.\n\nGranularity matters because the triggers have very different cardinality and\nvalue. A tool call happens dozens of times a turn; a human-in-the-loop\nrequest happens rarely but is the one a human most needs to find. An operator\ntuning board noise needs to keep the latter while dropping the former.\n\n - IMPLICIT_TASK_TRIGGER_TOOL_CALL: The agent invoked a tool.\n - IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION: A skill activated for this turn.\n - IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST: The agent asked a human for approval, a decision, input, or review.\n - IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN: The agent spawned an ephemeral subagent.\n - IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP: A workflow stage began executing."
+    },
     "v1IterativeWorkflowPattern": {
       "type": "object",
       "properties": {
@@ -9095,6 +9151,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Maximum tokens for the task context block injected into the system prompt.\nDefault: 500. Set to 0 to disable context injection."
+        },
+        "implicitTasks": {
+          "$ref": "#/definitions/v1ImplicitTaskConfig",
+          "description": "Implicit task emission, controlled independently of `enabled` above.\n\n`enabled` governs whether the AGENT sees the task_board tool and the task\ncontext block. This governs whether the RUNTIME mints a task when a turn\ndoes real work, so that a human-facing timeline has something to attach to\neven when the agent never touches tasks itself.\n\nUnset means implicit emission is ON. It is deliberately opt-out: a task\ntimeline nobody can see by default is a feature nobody has."
         }
       },
       "description": "TaskBoardConfig configures the dependency-aware task decomposition and kanban system."

@@ -87,6 +87,133 @@ func (LLMRole) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{0}
 }
 
+// ImplicitTaskMode controls whether the runtime mints tasks on its own.
+//
+// UNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot
+// default to true, and an inverted `bool disable_x` field reads badly at every
+// call site, so the tri-state enum carries the default instead. It also means
+// the default can change later without a proto change.
+type ImplicitTaskMode int32
+
+const (
+	// Not set — treated as ENABLED.
+	ImplicitTaskMode_IMPLICIT_TASK_MODE_UNSPECIFIED ImplicitTaskMode = 0
+	// The runtime mints a task on the first qualifying event of a turn.
+	ImplicitTaskMode_IMPLICIT_TASK_MODE_ENABLED ImplicitTaskMode = 1
+	// No implicit tasks. Only the agent and explicit API calls create tasks.
+	ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED ImplicitTaskMode = 2
+)
+
+// Enum value maps for ImplicitTaskMode.
+var (
+	ImplicitTaskMode_name = map[int32]string{
+		0: "IMPLICIT_TASK_MODE_UNSPECIFIED",
+		1: "IMPLICIT_TASK_MODE_ENABLED",
+		2: "IMPLICIT_TASK_MODE_DISABLED",
+	}
+	ImplicitTaskMode_value = map[string]int32{
+		"IMPLICIT_TASK_MODE_UNSPECIFIED": 0,
+		"IMPLICIT_TASK_MODE_ENABLED":     1,
+		"IMPLICIT_TASK_MODE_DISABLED":    2,
+	}
+)
+
+func (x ImplicitTaskMode) Enum() *ImplicitTaskMode {
+	p := new(ImplicitTaskMode)
+	*p = x
+	return p
+}
+
+func (x ImplicitTaskMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ImplicitTaskMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
+}
+
+func (ImplicitTaskMode) Type() protoreflect.EnumType {
+	return &file_loom_v1_agent_config_proto_enumTypes[1]
+}
+
+func (x ImplicitTaskMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ImplicitTaskMode.Descriptor instead.
+func (ImplicitTaskMode) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+}
+
+// ImplicitTaskTrigger is an event that can cause the runtime to mint a task.
+//
+// Granularity matters because the triggers have very different cardinality and
+// value. A tool call happens dozens of times a turn; a human-in-the-loop
+// request happens rarely but is the one a human most needs to find. An operator
+// tuning board noise needs to keep the latter while dropping the former.
+type ImplicitTaskTrigger int32
+
+const (
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED ImplicitTaskTrigger = 0
+	// The agent invoked a tool.
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL ImplicitTaskTrigger = 1
+	// A skill activated for this turn.
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION ImplicitTaskTrigger = 2
+	// The agent asked a human for approval, a decision, input, or review.
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST ImplicitTaskTrigger = 3
+	// The agent spawned an ephemeral subagent.
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN ImplicitTaskTrigger = 4
+	// A workflow stage began executing.
+	ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP ImplicitTaskTrigger = 5
+)
+
+// Enum value maps for ImplicitTaskTrigger.
+var (
+	ImplicitTaskTrigger_name = map[int32]string{
+		0: "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+		1: "IMPLICIT_TASK_TRIGGER_TOOL_CALL",
+		2: "IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION",
+		3: "IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST",
+		4: "IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN",
+		5: "IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP",
+	}
+	ImplicitTaskTrigger_value = map[string]int32{
+		"IMPLICIT_TASK_TRIGGER_UNSPECIFIED":      0,
+		"IMPLICIT_TASK_TRIGGER_TOOL_CALL":        1,
+		"IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION": 2,
+		"IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST":    3,
+		"IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN":   4,
+		"IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP":    5,
+	}
+)
+
+func (x ImplicitTaskTrigger) Enum() *ImplicitTaskTrigger {
+	p := new(ImplicitTaskTrigger)
+	*p = x
+	return p
+}
+
+func (x ImplicitTaskTrigger) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ImplicitTaskTrigger) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_agent_config_proto_enumTypes[2].Descriptor()
+}
+
+func (ImplicitTaskTrigger) Type() protoreflect.EnumType {
+	return &file_loom_v1_agent_config_proto_enumTypes[2]
+}
+
+func (x ImplicitTaskTrigger) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ImplicitTaskTrigger.Descriptor instead.
+func (ImplicitTaskTrigger) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
+}
+
 // WorkloadProfile defines memory compression behavior profiles for different use cases
 type WorkloadProfile int32
 
@@ -130,11 +257,11 @@ func (x WorkloadProfile) String() string {
 }
 
 func (WorkloadProfile) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[3].Descriptor()
 }
 
 func (WorkloadProfile) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[1]
+	return &file_loom_v1_agent_config_proto_enumTypes[3]
 }
 
 func (x WorkloadProfile) Number() protoreflect.EnumNumber {
@@ -143,7 +270,7 @@ func (x WorkloadProfile) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WorkloadProfile.Descriptor instead.
 func (WorkloadProfile) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{3}
 }
 
 // SpawnTriggerType enumerates trigger conditions
@@ -198,11 +325,11 @@ func (x SpawnTriggerType) String() string {
 }
 
 func (SpawnTriggerType) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[2].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[4].Descriptor()
 }
 
 func (SpawnTriggerType) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[2]
+	return &file_loom_v1_agent_config_proto_enumTypes[4]
 }
 
 func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
@@ -211,7 +338,7 @@ func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SpawnTriggerType.Descriptor instead.
 func (SpawnTriggerType) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{4}
 }
 
 // AgentConfig defines a complete agent configuration.
@@ -1303,8 +1430,18 @@ type TaskBoardConfig struct {
 	// Maximum tokens for the task context block injected into the system prompt.
 	// Default: 500. Set to 0 to disable context injection.
 	ContextBudgetTokens int32 `protobuf:"varint,6,opt,name=context_budget_tokens,json=contextBudgetTokens,proto3" json:"context_budget_tokens,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Implicit task emission, controlled independently of `enabled` above.
+	//
+	// `enabled` governs whether the AGENT sees the task_board tool and the task
+	// context block. This governs whether the RUNTIME mints a task when a turn
+	// does real work, so that a human-facing timeline has something to attach to
+	// even when the agent never touches tasks itself.
+	//
+	// Unset means implicit emission is ON. It is deliberately opt-out: a task
+	// timeline nobody can see by default is a feature nobody has.
+	ImplicitTasks *ImplicitTaskConfig `protobuf:"bytes,7,opt,name=implicit_tasks,json=implicitTasks,proto3" json:"implicit_tasks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskBoardConfig) Reset() {
@@ -1379,6 +1516,107 @@ func (x *TaskBoardConfig) GetContextBudgetTokens() int32 {
 	return 0
 }
 
+func (x *TaskBoardConfig) GetImplicitTasks() *ImplicitTaskConfig {
+	if x != nil {
+		return x.ImplicitTasks
+	}
+	return nil
+}
+
+// ImplicitTaskConfig tunes runtime task minting.
+type ImplicitTaskConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether the runtime mints tasks. Unset means enabled.
+	Mode ImplicitTaskMode `protobuf:"varint,1,opt,name=mode,proto3,enum=loom.v1.ImplicitTaskMode" json:"mode,omitempty"`
+	// Restricts minting to these triggers. Empty means the built-in default set.
+	// Use this for "only these".
+	Triggers []ImplicitTaskTrigger `protobuf:"varint,2,rep,packed,name=triggers,proto3,enum=loom.v1.ImplicitTaskTrigger" json:"triggers,omitempty"`
+	// Subtracted from the effective set, applied after `triggers`. Use this for
+	// "everything except these", which otherwise requires enumerating the rest
+	// and silently opting out of any trigger added in a later release.
+	ExcludedTriggers []ImplicitTaskTrigger `protobuf:"varint,3,rep,packed,name=excluded_triggers,json=excludedTriggers,proto3,enum=loom.v1.ImplicitTaskTrigger" json:"excluded_triggers,omitempty"`
+	// Caps implicit tasks per session. 0 means the built-in default. Once the cap
+	// is hit, later turns record no implicit task rather than growing the board
+	// without bound; the count of skipped turns is exported as a metric.
+	MaxPerSession int32 `protobuf:"varint,4,opt,name=max_per_session,json=maxPerSession,proto3" json:"max_per_session,omitempty"`
+	// Surfaces implicit tasks in the AGENT's task context block and ready front.
+	//
+	// Default false, and that default is load-bearing. The task context block is
+	// rebuilt into the system prompt every turn; if each turn minted a task that
+	// then appeared in that block, the prompt would accumulate the agent's own
+	// bookkeeping turn over turn — the exact context-window growth the task
+	// system's compaction design exists to avoid. Implicit tasks are a rendering
+	// artifact for humans, so by default the agent never sees them.
+	AgentVisible  bool `protobuf:"varint,5,opt,name=agent_visible,json=agentVisible,proto3" json:"agent_visible,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImplicitTaskConfig) Reset() {
+	*x = ImplicitTaskConfig{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImplicitTaskConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImplicitTaskConfig) ProtoMessage() {}
+
+func (x *ImplicitTaskConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImplicitTaskConfig.ProtoReflect.Descriptor instead.
+func (*ImplicitTaskConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ImplicitTaskConfig) GetMode() ImplicitTaskMode {
+	if x != nil {
+		return x.Mode
+	}
+	return ImplicitTaskMode_IMPLICIT_TASK_MODE_UNSPECIFIED
+}
+
+func (x *ImplicitTaskConfig) GetTriggers() []ImplicitTaskTrigger {
+	if x != nil {
+		return x.Triggers
+	}
+	return nil
+}
+
+func (x *ImplicitTaskConfig) GetExcludedTriggers() []ImplicitTaskTrigger {
+	if x != nil {
+		return x.ExcludedTriggers
+	}
+	return nil
+}
+
+func (x *ImplicitTaskConfig) GetMaxPerSession() int32 {
+	if x != nil {
+		return x.MaxPerSession
+	}
+	return 0
+}
+
+func (x *ImplicitTaskConfig) GetAgentVisible() bool {
+	if x != nil {
+		return x.AgentVisible
+	}
+	return false
+}
+
 // MemoryCompressionBatchSizes defines how many messages to compress in each batch
 type MemoryCompressionBatchSizes struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1394,7 +1632,7 @@ type MemoryCompressionBatchSizes struct {
 
 func (x *MemoryCompressionBatchSizes) Reset() {
 	*x = MemoryCompressionBatchSizes{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1406,7 +1644,7 @@ func (x *MemoryCompressionBatchSizes) String() string {
 func (*MemoryCompressionBatchSizes) ProtoMessage() {}
 
 func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1419,7 +1657,7 @@ func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionBatchSizes.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionBatchSizes) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MemoryCompressionBatchSizes) GetNormal() int32 {
@@ -1469,7 +1707,7 @@ type MemoryCompressionConfig struct {
 
 func (x *MemoryCompressionConfig) Reset() {
 	*x = MemoryCompressionConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1481,7 +1719,7 @@ func (x *MemoryCompressionConfig) String() string {
 func (*MemoryCompressionConfig) ProtoMessage() {}
 
 func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1494,7 +1732,7 @@ func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionConfig.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MemoryCompressionConfig) GetWorkloadProfile() WorkloadProfile {
@@ -1572,7 +1810,7 @@ type BehaviorConfig struct {
 
 func (x *BehaviorConfig) Reset() {
 	*x = BehaviorConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1584,7 +1822,7 @@ func (x *BehaviorConfig) String() string {
 func (*BehaviorConfig) ProtoMessage() {}
 
 func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1597,7 +1835,7 @@ func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviorConfig.ProtoReflect.Descriptor instead.
 func (*BehaviorConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *BehaviorConfig) GetMaxIterations() int32 {
@@ -1688,7 +1926,7 @@ type PatternConfig struct {
 
 func (x *PatternConfig) Reset() {
 	*x = PatternConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1700,7 +1938,7 @@ func (x *PatternConfig) String() string {
 func (*PatternConfig) ProtoMessage() {}
 
 func (x *PatternConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1713,7 +1951,7 @@ func (x *PatternConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatternConfig.ProtoReflect.Descriptor instead.
 func (*PatternConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PatternConfig) GetEnabled() bool {
@@ -1768,7 +2006,7 @@ type AgentTemplate struct {
 
 func (x *AgentTemplate) Reset() {
 	*x = AgentTemplate{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1780,7 +2018,7 @@ func (x *AgentTemplate) String() string {
 func (*AgentTemplate) ProtoMessage() {}
 
 func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1793,7 +2031,7 @@ func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTemplate.ProtoReflect.Descriptor instead.
 func (*AgentTemplate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentTemplate) GetName() string {
@@ -1843,7 +2081,7 @@ type TemplateParameter struct {
 
 func (x *TemplateParameter) Reset() {
 	*x = TemplateParameter{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1855,7 +2093,7 @@ func (x *TemplateParameter) String() string {
 func (*TemplateParameter) ProtoMessage() {}
 
 func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1868,7 +2106,7 @@ func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TemplateParameter.ProtoReflect.Descriptor instead.
 func (*TemplateParameter) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TemplateParameter) GetName() string {
@@ -1921,7 +2159,7 @@ type AgentProfile struct {
 
 func (x *AgentProfile) Reset() {
 	*x = AgentProfile{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1933,7 +2171,7 @@ func (x *AgentProfile) String() string {
 func (*AgentProfile) ProtoMessage() {}
 
 func (x *AgentProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1946,7 +2184,7 @@ func (x *AgentProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProfile.ProtoReflect.Descriptor instead.
 func (*AgentProfile) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AgentProfile) GetName() string {
@@ -1990,7 +2228,7 @@ type EphemeralAgentPolicy struct {
 
 func (x *EphemeralAgentPolicy) Reset() {
 	*x = EphemeralAgentPolicy{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2002,7 +2240,7 @@ func (x *EphemeralAgentPolicy) String() string {
 func (*EphemeralAgentPolicy) ProtoMessage() {}
 
 func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2015,7 +2253,7 @@ func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EphemeralAgentPolicy.ProtoReflect.Descriptor instead.
 func (*EphemeralAgentPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *EphemeralAgentPolicy) GetRole() string {
@@ -2068,7 +2306,7 @@ type SpawnTrigger struct {
 
 func (x *SpawnTrigger) Reset() {
 	*x = SpawnTrigger{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2080,7 +2318,7 @@ func (x *SpawnTrigger) String() string {
 func (*SpawnTrigger) ProtoMessage() {}
 
 func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2093,7 +2331,7 @@ func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnTrigger.ProtoReflect.Descriptor instead.
 func (*SpawnTrigger) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{19}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SpawnTrigger) GetType() SpawnTriggerType {
@@ -2216,14 +2454,21 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\x12F\n" +
 	"\x1fconversation_extraction_cadence\x18\f \x01(\x05R\x1dconversationExtractionCadence\x12<\n" +
 	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\x12<\n" +
-	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\"\x94\x02\n" +
+	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\"\xd8\x02\n" +
 	"\x0fTaskBoardConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eauto_decompose\x18\x02 \x01(\bR\rautoDecompose\x12\x1b\n" +
 	"\tmax_depth\x18\x03 \x01(\x05R\bmaxDepth\x12(\n" +
 	"\x10default_board_id\x18\x04 \x01(\tR\x0edefaultBoardId\x12E\n" +
 	"\x10default_strategy\x18\x05 \x01(\x0e2\x1a.loom.v1.DecomposeStrategyR\x0fdefaultStrategy\x122\n" +
-	"\x15context_budget_tokens\x18\x06 \x01(\x05R\x13contextBudgetTokens\"k\n" +
+	"\x15context_budget_tokens\x18\x06 \x01(\x05R\x13contextBudgetTokens\x12B\n" +
+	"\x0eimplicit_tasks\x18\a \x01(\v2\x1b.loom.v1.ImplicitTaskConfigR\rimplicitTasks\"\x95\x02\n" +
+	"\x12ImplicitTaskConfig\x12-\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x19.loom.v1.ImplicitTaskModeR\x04mode\x128\n" +
+	"\btriggers\x18\x02 \x03(\x0e2\x1c.loom.v1.ImplicitTaskTriggerR\btriggers\x12I\n" +
+	"\x11excluded_triggers\x18\x03 \x03(\x0e2\x1c.loom.v1.ImplicitTaskTriggerR\x10excludedTriggers\x12&\n" +
+	"\x0fmax_per_session\x18\x04 \x01(\x05R\rmaxPerSession\x12#\n" +
+	"\ragent_visible\x18\x05 \x01(\bR\fagentVisible\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
@@ -2288,7 +2533,18 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x0eLLM_ROLE_JUDGE\x10\x02\x12\x19\n" +
 	"\x15LLM_ROLE_ORCHESTRATOR\x10\x03\x12\x17\n" +
 	"\x13LLM_ROLE_CLASSIFIER\x10\x04\x12\x17\n" +
-	"\x13LLM_ROLE_COMPRESSOR\x10\x05*\x9c\x01\n" +
+	"\x13LLM_ROLE_COMPRESSOR\x10\x05*w\n" +
+	"\x10ImplicitTaskMode\x12\"\n" +
+	"\x1eIMPLICIT_TASK_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aIMPLICIT_TASK_MODE_ENABLED\x10\x01\x12\x1f\n" +
+	"\x1bIMPLICIT_TASK_MODE_DISABLED\x10\x02*\x89\x02\n" +
+	"\x13ImplicitTaskTrigger\x12%\n" +
+	"!IMPLICIT_TASK_TRIGGER_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fIMPLICIT_TASK_TRIGGER_TOOL_CALL\x10\x01\x12*\n" +
+	"&IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION\x10\x02\x12'\n" +
+	"#IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST\x10\x03\x12(\n" +
+	"$IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN\x10\x04\x12'\n" +
+	"#IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP\x10\x05*\x9c\x01\n" +
 	"\x0fWorkloadProfile\x12 \n" +
 	"\x1cWORKLOAD_PROFILE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WORKLOAD_PROFILE_BALANCED\x10\x01\x12#\n" +
@@ -2317,74 +2573,81 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 	return file_loom_v1_agent_config_proto_rawDescData
 }
 
-var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_loom_v1_agent_config_proto_goTypes = []any{
 	(LLMRole)(0),                        // 0: loom.v1.LLMRole
-	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
-	(SpawnTriggerType)(0),               // 2: loom.v1.SpawnTriggerType
-	(*AgentConfig)(nil),                 // 3: loom.v1.AgentConfig
-	(*ProviderEntry)(nil),               // 4: loom.v1.ProviderEntry
-	(*ProviderPool)(nil),                // 5: loom.v1.ProviderPool
-	(*LLMConfig)(nil),                   // 6: loom.v1.LLMConfig
-	(*LLMRateLimitConfig)(nil),          // 7: loom.v1.LLMRateLimitConfig
-	(*ToolsConfig)(nil),                 // 8: loom.v1.ToolsConfig
-	(*MCPToolConfig)(nil),               // 9: loom.v1.MCPToolConfig
-	(*CustomToolConfig)(nil),            // 10: loom.v1.CustomToolConfig
-	(*MemoryConfig)(nil),                // 11: loom.v1.MemoryConfig
-	(*GraphMemoryConfig)(nil),           // 12: loom.v1.GraphMemoryConfig
-	(*TaskBoardConfig)(nil),             // 13: loom.v1.TaskBoardConfig
-	(*MemoryCompressionBatchSizes)(nil), // 14: loom.v1.MemoryCompressionBatchSizes
-	(*MemoryCompressionConfig)(nil),     // 15: loom.v1.MemoryCompressionConfig
-	(*BehaviorConfig)(nil),              // 16: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 17: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 18: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 19: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 20: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 21: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 22: loom.v1.SpawnTrigger
-	nil,                                 // 23: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 24: loom.v1.AgentProfile.OverridesEntry
-	(*SkillsConfig)(nil),                // 25: loom.v1.SkillsConfig
-	(DecomposeStrategy)(0),              // 26: loom.v1.DecomposeStrategy
+	(ImplicitTaskMode)(0),               // 1: loom.v1.ImplicitTaskMode
+	(ImplicitTaskTrigger)(0),            // 2: loom.v1.ImplicitTaskTrigger
+	(WorkloadProfile)(0),                // 3: loom.v1.WorkloadProfile
+	(SpawnTriggerType)(0),               // 4: loom.v1.SpawnTriggerType
+	(*AgentConfig)(nil),                 // 5: loom.v1.AgentConfig
+	(*ProviderEntry)(nil),               // 6: loom.v1.ProviderEntry
+	(*ProviderPool)(nil),                // 7: loom.v1.ProviderPool
+	(*LLMConfig)(nil),                   // 8: loom.v1.LLMConfig
+	(*LLMRateLimitConfig)(nil),          // 9: loom.v1.LLMRateLimitConfig
+	(*ToolsConfig)(nil),                 // 10: loom.v1.ToolsConfig
+	(*MCPToolConfig)(nil),               // 11: loom.v1.MCPToolConfig
+	(*CustomToolConfig)(nil),            // 12: loom.v1.CustomToolConfig
+	(*MemoryConfig)(nil),                // 13: loom.v1.MemoryConfig
+	(*GraphMemoryConfig)(nil),           // 14: loom.v1.GraphMemoryConfig
+	(*TaskBoardConfig)(nil),             // 15: loom.v1.TaskBoardConfig
+	(*ImplicitTaskConfig)(nil),          // 16: loom.v1.ImplicitTaskConfig
+	(*MemoryCompressionBatchSizes)(nil), // 17: loom.v1.MemoryCompressionBatchSizes
+	(*MemoryCompressionConfig)(nil),     // 18: loom.v1.MemoryCompressionConfig
+	(*BehaviorConfig)(nil),              // 19: loom.v1.BehaviorConfig
+	(*PatternConfig)(nil),               // 20: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 21: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 22: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 23: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 24: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 25: loom.v1.SpawnTrigger
+	nil,                                 // 26: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 27: loom.v1.AgentProfile.OverridesEntry
+	(*SkillsConfig)(nil),                // 28: loom.v1.SkillsConfig
+	(DecomposeStrategy)(0),              // 29: loom.v1.DecomposeStrategy
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
-	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
-	8,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
-	11, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
-	16, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	23, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	21, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
-	6,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
-	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
-	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
-	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	25, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
-	6,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
-	4,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
-	7,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
-	9,  // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	10, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	15, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	12, // 17: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
-	13, // 18: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
-	26, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
-	1,  // 20: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	14, // 21: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	17, // 22: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	19, // 23: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 24: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 25: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	24, // 26: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	22, // 27: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 28: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 29: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 30: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	8,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
+	10, // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
+	13, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
+	19, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
+	26, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	24, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	8,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
+	8,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
+	8,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
+	8,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
+	28, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
+	8,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
+	6,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
+	9,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
+	11, // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	12, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	18, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	14, // 17: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
+	15, // 18: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
+	29, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
+	16, // 20: loom.v1.TaskBoardConfig.implicit_tasks:type_name -> loom.v1.ImplicitTaskConfig
+	1,  // 21: loom.v1.ImplicitTaskConfig.mode:type_name -> loom.v1.ImplicitTaskMode
+	2,  // 22: loom.v1.ImplicitTaskConfig.triggers:type_name -> loom.v1.ImplicitTaskTrigger
+	2,  // 23: loom.v1.ImplicitTaskConfig.excluded_triggers:type_name -> loom.v1.ImplicitTaskTrigger
+	3,  // 24: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	17, // 25: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	20, // 26: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	22, // 27: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	5,  // 28: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	5,  // 29: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	27, // 30: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	25, // 31: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	5,  // 32: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	4,  // 33: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	5,  // 34: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2399,8 +2662,8 @@ func file_loom_v1_agent_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   22,
+			NumEnums:      5,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

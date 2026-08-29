@@ -347,6 +347,82 @@ message TaskBoardConfig {
   // Maximum tokens for the task context block injected into the system prompt.
   // Default: 500. Set to 0 to disable context injection.
   int32 context_budget_tokens = 6;
+
+  // Implicit task emission, controlled independently of `enabled` above.
+  //
+  // `enabled` governs whether the AGENT sees the task_board tool and the task
+  // context block. This governs whether the RUNTIME mints a task when a turn
+  // does real work, so that a human-facing timeline has something to attach to
+  // even when the agent never touches tasks itself.
+  //
+  // Unset means implicit emission is ON. It is deliberately opt-out: a task
+  // timeline nobody can see by default is a feature nobody has.
+  ImplicitTaskConfig implicit_tasks = 7;
+}
+
+// ImplicitTaskMode controls whether the runtime mints tasks on its own.
+//
+// UNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot
+// default to true, and an inverted `bool disable_x` field reads badly at every
+// call site, so the tri-state enum carries the default instead. It also means
+// the default can change later without a proto change.
+enum ImplicitTaskMode {
+  // Not set — treated as ENABLED.
+  IMPLICIT_TASK_MODE_UNSPECIFIED = 0;
+  // The runtime mints a task on the first qualifying event of a turn.
+  IMPLICIT_TASK_MODE_ENABLED = 1;
+  // No implicit tasks. Only the agent and explicit API calls create tasks.
+  IMPLICIT_TASK_MODE_DISABLED = 2;
+}
+
+// ImplicitTaskTrigger is an event that can cause the runtime to mint a task.
+//
+// Granularity matters because the triggers have very different cardinality and
+// value. A tool call happens dozens of times a turn; a human-in-the-loop
+// request happens rarely but is the one a human most needs to find. An operator
+// tuning board noise needs to keep the latter while dropping the former.
+enum ImplicitTaskTrigger {
+  IMPLICIT_TASK_TRIGGER_UNSPECIFIED = 0;
+  // The agent invoked a tool.
+  IMPLICIT_TASK_TRIGGER_TOOL_CALL = 1;
+  // A skill activated for this turn.
+  IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION = 2;
+  // The agent asked a human for approval, a decision, input, or review.
+  IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST = 3;
+  // The agent spawned an ephemeral subagent.
+  IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN = 4;
+  // A workflow stage began executing.
+  IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP = 5;
+}
+
+// ImplicitTaskConfig tunes runtime task minting.
+message ImplicitTaskConfig {
+  // Whether the runtime mints tasks. Unset means enabled.
+  ImplicitTaskMode mode = 1;
+
+  // Restricts minting to these triggers. Empty means the built-in default set.
+  // Use this for "only these".
+  repeated ImplicitTaskTrigger triggers = 2;
+
+  // Subtracted from the effective set, applied after `triggers`. Use this for
+  // "everything except these", which otherwise requires enumerating the rest
+  // and silently opting out of any trigger added in a later release.
+  repeated ImplicitTaskTrigger excluded_triggers = 3;
+
+  // Caps implicit tasks per session. 0 means the built-in default. Once the cap
+  // is hit, later turns record no implicit task rather than growing the board
+  // without bound; the count of skipped turns is exported as a metric.
+  int32 max_per_session = 4;
+
+  // Surfaces implicit tasks in the AGENT's task context block and ready front.
+  //
+  // Default false, and that default is load-bearing. The task context block is
+  // rebuilt into the system prompt every turn; if each turn minted a task that
+  // then appeared in that block, the prompt would accumulate the agent's own
+  // bookkeeping turn over turn — the exact context-window growth the task
+  // system's compaction design exists to avoid. Implicit tasks are a rendering
+  // artifact for humans, so by default the agent never sees them.
+  bool agent_visible = 5;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases
