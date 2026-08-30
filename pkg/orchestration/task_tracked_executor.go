@@ -133,7 +133,43 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 	// Record results into tasks regardless of success/failure.
 	t.recordResults(ctx, stageTasks, result, err)
 
+	// Close the root task too. recordResults deliberately walks only stageTasks
+	// — the root is excluded there so it cannot shift the by-index mapping from
+	// agent results to stages — which left it IN_PROGRESS forever after its
+	// children finished. Beyond looking wrong on a board, an open root makes
+	// every stage that depends on it read as BLOCKED in the dependency-graph
+	// query, so the count grew with every run.
+	t.closeRootTask(ctx, boardID, result, err)
+
 	return result, err
+}
+
+// closeRootTask closes the run's root task once its stages have been recorded.
+//
+// Only when still IN_PROGRESS, so a resumed run that already closed it is not
+// reopened and re-closed. Failure is logged: the run's real outcome is already
+// recorded on the stages and in the workflow run row, so a stale root status is
+// cosmetic rather than a reason to fail a completed workflow.
+func (t *TaskTrackedOrchestrator) closeRootTask(
+	ctx context.Context, boardID string, result *loomv1.WorkflowResult, execErr error,
+) {
+	root := t.findRootTask(ctx, boardID)
+	if root == nil || root.Status != loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS {
+		return
+	}
+
+	reason := "workflow completed"
+	switch {
+	case execErr != nil:
+		reason = fmt.Sprintf("workflow failed: %s", execErr.Error())
+	case result == nil:
+		reason = "workflow execution failed"
+	}
+
+	if _, err := t.manager.CloseTask(ctx, root.ID, reason); err != nil {
+		t.logger.Warn("task tracking: failed to close workflow root task",
+			zap.String("task_id", root.ID), zap.Error(err))
+	}
 }
 
 // Orchestrator returns the wrapped orchestrator for direct access.
@@ -211,16 +247,21 @@ func (t *TaskTrackedOrchestrator) createBoardFromPattern(
 	// Failure here is not fatal: without a root task the run proceeds exactly
 	// as it did before, with stage lifecycle and no activity attribution.
 	root, rootErr := t.manager.CreateTask(ctx, &task.Task{
-		Title:            fmt.Sprintf("%s workflow", patternType),
-		BoardID:          board.ID,
-		Category:         loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION,
-		Priority:         loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
-		Status:           loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
-		CreatedVia:       taskctx.CreatedViaImplicit,
-		ClaimedBySession: boardName,
+		Title:      fmt.Sprintf("%s workflow", patternType),
+		BoardID:    board.ID,
+		Category:   loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION,
+		Priority:   loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
+		Status:     loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		CreatedVia: taskctx.CreatedViaImplicit,
+		// ClaimedBySession is deliberately NOT set. A workflow run is not owned
+		// by a conversation session, and an earlier version put the board NAME
+		// in this field — which is a session-id column, so it silently broke any
+		// session-scoped query that matched on it. The board name lives in
+		// metadata instead, where it is a label rather than a false join key.
 		Metadata: map[string]string{
 			workflowRootMetadataKey: "true",
 			"pattern_type":          patternType,
+			"board_name":            boardName,
 		},
 	})
 	if rootErr != nil {
@@ -237,6 +278,34 @@ func (t *TaskTrackedOrchestrator) createBoardFromPattern(
 		zap.Bool("root_task", rootErr == nil))
 
 	return board, tasks, nil
+}
+
+// agentLabel resolves an agent id to something a human can read.
+//
+// A pattern stage carries only the agent's ID, so titles read
+// "Stage 1: 9abdafb6-879d-41f5-a2bf-6922f9991279" — technically accurate and
+// useless on a board. The orchestrator already holds the registered agents (the
+// caller registers them before ExecutePattern runs), so the name is one lookup
+// away.
+//
+// Falls back to a SHORTENED id rather than the full UUID: if the agent is not
+// registered, an eight-character prefix still distinguishes stages from each
+// other without consuming the whole title.
+func (t *TaskTrackedOrchestrator) agentLabel(ctx context.Context, agentID string) string {
+	if agentID == "" {
+		return "unassigned"
+	}
+	if t.inner != nil {
+		if ag, err := t.inner.GetAgent(ctx, agentID); err == nil && ag != nil {
+			if name := ag.GetName(); name != "" {
+				return name
+			}
+		}
+	}
+	if len(agentID) > 8 {
+		return agentID[:8]
+	}
+	return agentID
 }
 
 // workflowRootMetadataKey marks the task that owns a workflow run's activity,
@@ -291,7 +360,7 @@ func (t *TaskTrackedOrchestrator) createPipelineTasks(ctx context.Context, board
 
 	for i, stage := range pipeline.Stages {
 		tk, err := t.manager.CreateTask(ctx, &task.Task{
-			Title:       fmt.Sprintf("Stage %d: %s", i+1, stage.AgentId),
+			Title:       fmt.Sprintf("Stage %d: %s", i+1, t.agentLabel(ctx, stage.AgentId)),
 			Description: stage.PromptTemplate,
 			Objective:   fmt.Sprintf("Complete pipeline stage %d", i+1),
 			BoardID:     boardID,
@@ -383,7 +452,7 @@ func (t *TaskTrackedOrchestrator) createParallelTasks(ctx context.Context, board
 	var tasks []*task.Task
 	for i, agentTask := range par.Tasks {
 		tk, err := t.manager.CreateTask(ctx, &task.Task{
-			Title:       fmt.Sprintf("Parallel task %d: %s", i+1, agentTask.AgentId),
+			Title:       fmt.Sprintf("Parallel task %d: %s", i+1, t.agentLabel(ctx, agentTask.AgentId)),
 			Description: agentTask.Prompt,
 			BoardID:     boardID,
 			Category:    loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION,
@@ -406,7 +475,7 @@ func (t *TaskTrackedOrchestrator) createConditionalTasks(ctx context.Context, bo
 
 	// Classifier task.
 	classifierTk, err := t.manager.CreateTask(ctx, &task.Task{
-		Title:    fmt.Sprintf("Classify: %s", cond.ConditionAgentId),
+		Title:    fmt.Sprintf("Classify: %s", t.agentLabel(ctx, cond.ConditionAgentId)),
 		BoardID:  boardID,
 		Category: loomv1.TaskCategory_TASK_CATEGORY_DECISION,
 		Priority: loomv1.TaskPriority_TASK_PRIORITY_HIGH,
@@ -599,12 +668,27 @@ func (t *TaskTrackedOrchestrator) findResumableBoard(ctx context.Context, patter
 			continue
 		}
 
-		// Check if there are incomplete tasks.
+		// Check if there are incomplete STAGE tasks.
+		//
+		// The root task is skipped on both counts. It is bookkeeping about the
+		// run rather than a step of it, so:
+		//
+		//   - an open root must not make a board look resumable. It is created
+		//     IN_PROGRESS and closed only after the stages are recorded, so a
+		//     crashed, cancelled, or pre-fix run leaves one open forever — and
+		//     that board would then hijack every later run of the same pattern,
+		//     which produced a run with no board and no tasks at all.
+		//   - it must not advance resumeIdx either. resumeIdx is an index into
+		//     the pattern's STAGES; counting a non-stage row would resume the
+		//     next run one stage too far along and silently skip work.
 		hasIncomplete := false
 		resumeIdx := 0
-		for i, tk := range tasks {
+		for _, tk := range tasks {
+			if tk.Metadata[workflowRootMetadataKey] == "true" {
+				continue
+			}
 			if tk.Status == loomv1.TaskStatus_TASK_STATUS_DONE {
-				resumeIdx = i + 1
+				resumeIdx++
 			} else {
 				hasIncomplete = true
 			}

@@ -157,6 +157,28 @@ func (p ImplicitPolicy) ExcludedCreatedVia() []string {
 	return []string{taskctx.CreatedViaImplicit}
 }
 
+// TurnMessageAttributor back-fills a task id onto rows a turn has ALREADY
+// written.
+//
+// It exists because minting is lazy. The task appears on the first tool call,
+// but the user message that asked for the work was written before that — so it
+// lands unattributed, and a timeline built only from write-time stamping begins
+// at the agent's first action and never shows the request that caused it, which
+// is the single most important line for a human reading the task.
+//
+// OPTIONAL by design. This is a capability a host may or may not have (it needs
+// a message table with a task_id column and a turn boundary to scope by), so it
+// is an interface satisfied by assertion rather than a required dependency —
+// hosts without it still get correct write-time attribution for everything
+// after the mint.
+type TurnMessageAttributor interface {
+	// AttributeTurnMessages stamps taskID on the turn's unattributed rows and
+	// reports how many it claimed. Implementations must touch only rows whose
+	// task id is unset, so a row already owned by a real claimed task is never
+	// reassigned.
+	AttributeTurnMessages(ctx context.Context, sessionID, taskID string, turn int64) (int64, error)
+}
+
 // ImplicitEmitter mints at most one task per turn.
 type ImplicitEmitter struct {
 	manager *Manager
@@ -185,6 +207,9 @@ type ImplicitEmitter struct {
 	// forgetBoard drops the entry so the next turn re-probes and re-creates.
 	// The cache is therefore self-healing rather than merely optimistic.
 	boardsKnown map[string]struct{}
+
+	// attributor back-fills pre-mint rows. Nil when the host cannot.
+	attributor TurnMessageAttributor
 }
 
 // NewImplicitEmitter builds an emitter. A nil manager yields an emitter that
@@ -205,6 +230,20 @@ func NewImplicitEmitter(manager *Manager, policy ImplicitPolicy, tracer observab
 		perSession:  map[string]int{},
 		boardsKnown: map[string]struct{}{},
 	}
+}
+
+// SetTurnMessageAttributor installs the optional back-fill hook.
+//
+// A setter rather than a constructor parameter: the attributor needs per-request
+// identity (a user, a tenant) that is not available where the emitter is built,
+// so a host wires it once it has one.
+func (e *ImplicitEmitter) SetTurnMessageAttributor(a TurnMessageAttributor) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.attributor = a
+	e.mu.Unlock()
 }
 
 // Policy returns the resolved policy, for callers that need ExcludedCreatedVia.
@@ -346,6 +385,7 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 			"trigger": r.Trigger.String(),
 		})
 		e.linkToParent(ctx, created.ID, r)
+		e.backfillTurnMessages(ctx, created.ID, r)
 	}
 	return e.bind(ctx, r, created.ID), created, nil
 }
@@ -379,6 +419,36 @@ func (e *ImplicitEmitter) linkToParent(ctx context.Context, childID string, r Tu
 			zap.String("parent_task_id", r.ParentTaskID),
 			zap.Error(err))
 	}
+}
+
+// backfillTurnMessages claims the turn's already-written rows for a new task.
+//
+// Only on first mint: an idempotent re-entry returns a task whose rows were
+// claimed when it was created.
+//
+// Failure is logged, not returned. A turn must never fail over bookkeeping, and
+// a partially attributed timeline is still useful — it just starts at the
+// agent's first action instead of at the request.
+func (e *ImplicitEmitter) backfillTurnMessages(ctx context.Context, taskID string, r TurnRequest) {
+	e.mu.Lock()
+	a := e.attributor
+	e.mu.Unlock()
+	if a == nil || r.SessionID == "" {
+		return
+	}
+
+	claimed, err := a.AttributeTurnMessages(ctx, r.SessionID, taskID, int64(r.TurnIndex))
+	if err != nil {
+		e.logger.Warn("implicit task message back-fill failed; timeline will start at the first tool call",
+			zap.String("task_id", taskID),
+			zap.String("session_id", r.SessionID),
+			zap.Int("turn", r.TurnIndex),
+			zap.Error(err))
+		return
+	}
+	e.logger.Debug("implicit task back-filled turn messages",
+		zap.String("task_id", taskID),
+		zap.Int64("rows", claimed))
 }
 
 // bind attaches the attribution to the context and fills the turn's binding.
