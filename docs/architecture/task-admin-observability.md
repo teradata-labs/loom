@@ -48,7 +48,7 @@ Cross-tenant task queries are the most expensive shape in the schema, measured a
 | Unscoped list, page one | 446 ms |
 | Its `COUNT(*)` half | 262 ms |
 
-Crucially, the tenant-index fix that takes a scoped read from 2,360 ms to 0.16 ms **does not help these** — there is no tenant predicate to index. And cloud's data layer is row-level-security scoped with no bypass path, so cross-tenant reads would need a deliberate `SECURITY DEFINER` escape hatch and a security review, in the same class as the `loom_session_exists` oracle.
+Crucially, indexing the tenant predicate **does not help these** — an unscoped query has no tenant predicate to index. And a multi-tenant deployment's data layer is typically row-level-security scoped with no bypass for the runtime role, so a cross-tenant read needs a deliberate, reviewed escape hatch. That is a security decision, not a query-tuning one.
 
 ## The design: a rollup
 
@@ -72,7 +72,7 @@ task_activity_rollup
 
 ### Why not derive it on read
 
-Because that is the second failed design. A nightly aggregation job over `cloud_tasks` would pay the 446 ms unscoped scan repeatedly and still need the RLS bypass. Writing forward costs one statement per event and needs neither.
+Because that is the second failed design. A nightly aggregation job over the task table would pay the unscoped-scan cost repeatedly for the same answer, and would still need the cross-tenant escape hatch. Writing forward costs one statement per event and needs neither.
 
 ### What it deliberately cannot answer
 
@@ -90,7 +90,7 @@ One route, `admin/tasks`, with three regions:
 
 Plus a session-ID lookup that opens the existing per-task timeline.
 
-Note that up-tera has no admin task surface today, and its only existing "admin" module (`src/features/admin/admin-session-history.ts`) is `localStorage` capped at 20 records — a local convenience list, not a precedent to build on.
+Note that a host application may have no admin task surface to extend. Check before assuming one: a browser-local "recent items" list is a convenience feature, not an observability plane, and is not a precedent to build on.
 
 ## Authorization
 
@@ -107,8 +107,19 @@ Note that up-tera has no admin task surface today, and its only existing "admin"
 
 ## Prerequisites
 
-This surface is worth building only after the read path is sound. In order:
+This surface is worth building only once the read path underneath it is sound.
+The tenant-scoping prerequisite has since been addressed in the deployment that
+owns those tables; the two remaining items are framework-side.
 
-1. Remove the `::text` cast from the `cloud_tasks` RLS policy and add `(user_id, priority, created_at DESC) WHERE deleted_at IS NULL`. Measured 2,360 ms → 0.16 ms for an ordinary user at 1M rows.
-2. Give `buildTaskContext` the board fallback its proto already promises; unset, it issues four unscoped queries before every model call.
-3. Add `, id` to the ORDER BY in both task stores. Measured page overlap today: two rows returned on two adjacent pages, meaning two others returned on neither.
+1. ✅ **Tenant predicate made indexable.** A scoped board read cost time
+   proportional to the whole table rather than to the caller's own rows, because
+   the isolation predicate compared a `uuid` column through a `text` cast and so
+   could not use its index. Fixed, with a composite index matching the shipped
+   sort order. Measured on synthetic data at 1M rows: 2,360 ms → 0.16 ms for a
+   caller owning 194 rows, and 0.12 ms for one owning 194,000 — which is the
+   result that shows the table never had a row-count problem.
+2. 📋 Give `buildTaskContext` the board fallback its proto already promises.
+   Unset, it issues four unscoped queries before every model call.
+3. 📋 Add `, id` to the ORDER BY in both task stores. Both sort on non-unique
+   keys with offset pagination on top; measured page overlap is two rows
+   returned on two adjacent pages, meaning two others returned on neither.
