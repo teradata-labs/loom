@@ -1795,9 +1795,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Session-handle lifecycle (issue #345): MCP tools that mint session
 	// handles get them auto-released when this conversation ends. Agent
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
-	// released a handle — so the runtime owns the cleanup.
+	// released a handle — so the runtime owns the cleanup. A PARKED exit is
+	// the exception: the turn is unfinished, so its handles park with it for
+	// a same-process resume to adopt (pooled embedders drain the slot via
+	// ReleaseParkedHandles instead — see park.go).
 	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
+	turnParkedExit := false
 	defer func() {
+		if turnParkedExit {
+			return
+		}
 		// The auto-release happens outside any tool result, so the ledger
 		// learns about it here instead of through applyLeaseEvents — without
 		// this the next turn would seed RESOURCE_HOLDER for handles this
@@ -1930,6 +1937,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		// the typed terminal unwrapped so embedders detect it with errors.As.
 		var parked *TurnParkedError
 		if errors.As(err, &parked) {
+			// The turn is unfinished — its handles park with it (see the
+			// collector setup above) instead of being released out from
+			// under the resume that will continue this same turn.
+			turnParkedExit = true
+			a.parkHandles(sessionID, handleCollector)
 			span.AddEvent("conversation.parked", map[string]interface{}{
 				"request_id":  parked.RequestID,
 				"duration_ms": duration.Milliseconds(),

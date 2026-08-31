@@ -308,6 +308,53 @@ func isResumedTurn(ctx context.Context) bool {
 	return v
 }
 
+// parkHandles hands the unfinished turn's session handles to whoever resumes
+// it in this process. A parked turn spans two Go calls, and releasing at the
+// park would kill handles the SAME turn is still going to use after the
+// human decides. One slot per session — guardParkedTail admits one parked
+// turn at a time; a re-park by a resume replaces its own adopted collector.
+func (a *Agent) parkHandles(sessionID string, c *mcpadapter.HandleCollector) {
+	a.parkedHandlesMu.Lock()
+	defer a.parkedHandlesMu.Unlock()
+	if a.parkedHandles == nil {
+		a.parkedHandles = make(map[string]*mcpadapter.HandleCollector)
+	}
+	a.parkedHandles[sessionID] = c
+}
+
+// adoptParkedHandles installs the parked turn's collector on ctx when one is
+// waiting, so handles minted before the park stay live through the resume and
+// are released once, at the end of the turn that actually finishes. With none
+// waiting it plants a fresh collector — a resume in a fresh Agent (pooled
+// embedder) or of a turn that minted no handles behaves exactly like chat().
+func (a *Agent) adoptParkedHandles(ctx context.Context, sessionID string) (context.Context, *mcpadapter.HandleCollector) {
+	a.parkedHandlesMu.Lock()
+	c := a.parkedHandles[sessionID]
+	delete(a.parkedHandles, sessionID)
+	a.parkedHandlesMu.Unlock()
+
+	if c == nil {
+		return mcpadapter.WithHandleCollector(ctx)
+	}
+	return mcpadapter.ContextWithHandleCollector(ctx, c), c
+}
+
+// ReleaseParkedHandles is the pooled-embedder seam: an embedder whose Agent
+// instances do not outlive the call adopts nothing at resume, so a parked
+// collector would be unreachable and its handles would leak. Such an embedder
+// calls this at each park terminal to keep handles call-scoped (the resumed
+// turn re-mints on demand). Same-process embedders never call it and keep
+// handle continuity across the gap. No-op when nothing is parked.
+func (a *Agent) ReleaseParkedHandles(sessionID string) {
+	a.parkedHandlesMu.Lock()
+	c := a.parkedHandles[sessionID]
+	delete(a.parkedHandles, sessionID)
+	a.parkedHandlesMu.Unlock()
+	if c != nil {
+		a.leases.apply(sessionID, c.ReleaseAll(zap.L()), nil)
+	}
+}
+
 // isParkQuestion reproduces the pre-scan's question classification at
 // completion time: a registered contact_human whose preflight verdict is not
 // Deny. A contact_human that fails this — policy-denied, or unregistered —
@@ -501,15 +548,18 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Session-handle lifecycle: same per-call ownership as chat() — handles
-	// minted during this call are released when it ends, park exits included.
-	// A parked turn spans calls, and in the pooled-embedder lifecycle (a
-	// fresh Agent per call) a collector carried across the gap would be
-	// unreachable by the next call — a leak, not a continuity. Handles are
-	// therefore scoped to the call everywhere, and a resumed turn re-mints on
-	// demand; cross-call handle continuity is an embedder-owned seam.
-	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
+	// Session-handle lifecycle: the resumed turn ADOPTS the handles its parked
+	// half minted (same-process embedders), so a handle the model is about to
+	// use is still live. A nested park re-parks them; any other exit releases
+	// them, closing out the whole turn's handles exactly once. Pooled
+	// embedders adopt nothing (fresh Agent) and drain each park's slot via
+	// ReleaseParkedHandles instead.
+	ctx, handleCollector := a.adoptParkedHandles(ctx, sessionID)
+	parkedAgain := false
 	defer func() {
+		if parkedAgain {
+			return
+		}
 		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
 	}()
 
@@ -619,7 +669,10 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		var parked *TurnParkedError
 		if errors.As(err, &parked) {
 			// A nested park is a clean exit, not a failure (same contract as
-			// chat()).
+			// chat()). The turn is still unfinished — its handles park with
+			// it rather than being released out from under the next resume.
+			parkedAgain = true
+			a.parkHandles(sessionID, handleCollector)
 			span.AddEvent("conversation.parked", map[string]interface{}{
 				"request_id":  parked.RequestID,
 				"duration_ms": duration.Milliseconds(),

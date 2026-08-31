@@ -160,13 +160,19 @@ declined, not deferred.
 
 ## 4. Session handles across the gap
 
-MCP session handles stay scoped to one call, park exits included: `chat()`
-releases at the park, `ResumeChat` releases at every exit, and a resumed turn
-re-mints handles on demand. A collector carried across the gap would only be
-reachable when the same `Agent` instance serves both calls — in the pooled
-embedder lifecycle (a fresh `Agent` per call) it would leak the handles
-instead. Cross-call handle continuity is therefore an embedder-owned seam,
-alongside the resume transport itself (§6).
+MCP session handles are scoped to one call by default, but a parked turn
+spans two calls — so a park exit PARKS its `HandleCollector` (one slot per
+session; `chat()`'s first park and `ResumeChat`'s nested re-park alike), and
+a resume in the same process adopts it: handles minted before the park stay
+live through the gap and are released once, by the call that actually ends
+the turn.
+
+Adoption only works when one `Agent` instance serves both calls. A pooled
+embedder (a fresh `Agent` per call) adopts nothing, so it drains the slot at
+each park terminal via `Agent.ReleaseParkedHandles(sessionID)` — keeping its
+handles call-scoped with no leak; its resumed turns re-mint on demand. Both
+lifecycles are first-class: continuity for same-process embedders, an
+explicit release seam for pooled ones.
 
 Only one parked turn per session can exist at a time — `guardParkedTail`
 enforces it — so one collector slot per session is the whole contract.

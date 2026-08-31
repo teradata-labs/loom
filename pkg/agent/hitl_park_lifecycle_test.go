@@ -551,3 +551,104 @@ func TestPark_CallIDCollisionCannotReplayAcrossBatches(t *testing.T) {
 		t.Fatalf("drop_table ran %d times under request A's redelivered decision", got)
 	}
 }
+
+// TestPark_HandleContinuityAcrossTheGap — same-process lifecycle: the parked
+// turn's handle collector survives the park (chat's first park AND a nested
+// re-park) and is adopted by the resume, so handles minted before the park
+// are never released mid-turn; the exit that finishes the turn drains the
+// slot. Pooled embedders instead drain explicitly via ReleaseParkedHandles.
+func TestPark_HandleContinuityAcrossTheGap(t *testing.T) {
+	ctx := context.Background()
+
+	parkedCollector := func(f *parkFixture, sessionID string) bool {
+		f.ag.parkedHandlesMu.Lock()
+		defer f.ag.parkedHandlesMu.Unlock()
+		return f.ag.parkedHandles[sessionID] != nil
+	}
+
+	t.Run("first park parks the collector; the finishing resume drains it", func(t *testing.T) {
+		f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+			"read_table", "export_csv")
+		_, err := f.ag.Chat(ctx, "s-handles", "go")
+		var parked *TurnParkedError
+		if !errors.As(err, &parked) {
+			t.Fatalf("expected park, got %v", err)
+		}
+		if !parkedCollector(f, "s-handles") {
+			t.Fatalf("first park released the collector instead of parking it")
+		}
+		hr := f.pendingParked(t, "s-handles")
+		if _, err := f.ag.ResumeChat(ctx, "s-handles", ParkDecision{
+			RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		}, nil); err != nil {
+			t.Fatalf("ResumeChat: %v", err)
+		}
+		if parkedCollector(f, "s-handles") {
+			t.Fatalf("finished turn left a parked collector behind")
+		}
+	})
+
+	t.Run("a nested re-park keeps the slot; the second resume drains it", func(t *testing.T) {
+		responses := []mockLLMResponse{
+			{content: "", toolCalls: []llmtypes.ToolCall{
+				{ID: "a-1", Name: "export_csv", Input: map[string]interface{}{"v": "a"}},
+			}},
+			{content: "", toolCalls: []llmtypes.ToolCall{
+				{ID: "b-1", Name: "drop_table", Input: map[string]interface{}{"v": "b"}},
+			}},
+			{content: "done"},
+		}
+		f := newParkFixture(t,
+			[]shuttle.Hook{scopedAskHook{tool: "export_csv"}, scopedAskHook{tool: "drop_table"}},
+			responses, "export_csv", "drop_table")
+		_, err := f.ag.Chat(ctx, "s-nested-h", "go")
+		var parkedA *TurnParkedError
+		if !errors.As(err, &parkedA) {
+			t.Fatalf("expected park A, got %v", err)
+		}
+		hrA := f.pendingParked(t, "s-nested-h")
+		_, err = f.ag.ResumeChat(ctx, "s-nested-h", ParkDecision{
+			RequestID: hrA.ID, ItemIDs: paramKeys(hrA), Approved: true,
+		}, nil)
+		var parkedB *TurnParkedError
+		if !errors.As(err, &parkedB) {
+			t.Fatalf("expected nested park B, got %v", err)
+		}
+		if !parkedCollector(f, "s-nested-h") {
+			t.Fatalf("nested re-park dropped the collector")
+		}
+		hrB := f.pendingParked(t, "s-nested-h")
+		if _, err := f.ag.ResumeChat(ctx, "s-nested-h", ParkDecision{
+			RequestID: hrB.ID, ItemIDs: paramKeys(hrB), Approved: true,
+		}, nil); err != nil {
+			t.Fatalf("resume B: %v", err)
+		}
+		if parkedCollector(f, "s-nested-h") {
+			t.Fatalf("finished turn left a parked collector behind")
+		}
+	})
+
+	t.Run("ReleaseParkedHandles drains the slot for pooled embedders", func(t *testing.T) {
+		f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+			"read_table", "export_csv")
+		if _, err := f.ag.Chat(ctx, "s-pooled", "go"); err == nil {
+			t.Fatalf("expected park")
+		}
+		if !parkedCollector(f, "s-pooled") {
+			t.Fatalf("park did not park the collector")
+		}
+		f.ag.ReleaseParkedHandles("s-pooled")
+		if parkedCollector(f, "s-pooled") {
+			t.Fatalf("ReleaseParkedHandles left the slot occupied")
+		}
+		// Idempotent: draining an empty slot is a no-op.
+		f.ag.ReleaseParkedHandles("s-pooled")
+		// The resume still works with a fresh collector.
+		hr := f.pendingParked(t, "s-pooled")
+		if _, err := f.ag.ResumeChat(ctx, "s-pooled", ParkDecision{
+			RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		}, nil); err != nil {
+			t.Fatalf("ResumeChat after explicit drain: %v", err)
+		}
+	})
+}
