@@ -221,13 +221,13 @@ type ParentTask struct {
 // Clearing takes BOTH paths that AttributionFromContext consults, or the parent
 // leaks through the one that is missed:
 //
-//	1. the attribution key, overwritten with an empty value — an empty TaskID
-//	   already reads as absent; and
-//	2. the turn Binding, replaced with a fresh unset one. This is the subtle
-//	   half: AttributionFromContext falls back to the binding precisely so a
-//	   context captured before the task existed still sees it, which means the
-//	   parent's filled binding would otherwise remain visible to the child no
-//	   matter what the attribution key says.
+//  1. the attribution key, overwritten with an empty value — an empty TaskID
+//     already reads as absent; and
+//  2. the turn Binding, replaced with a fresh unset one. This is the subtle
+//     half: AttributionFromContext falls back to the binding precisely so a
+//     context captured before the task existed still sees it, which means the
+//     parent's filled binding would otherwise remain visible to the child no
+//     matter what the attribution key says.
 func ContextWithParentTask(ctx context.Context, p ParentTask) context.Context {
 	ctx = context.WithValue(ctx, attributionKey{}, Attribution{})
 	ctx, _ = ContextWithBinding(ctx)
