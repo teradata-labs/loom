@@ -70,23 +70,12 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		return AdmissionResult{Decision: Decision{Kind: NoDecision}}
 	}
 
-	final := Decision{Kind: NoDecision}
-	matched := make([]Hook, 0, len(c.hooks))
-
-	for _, h := range c.hooks {
-		if h == nil {
-			continue
-		}
-		ok, d := evalHook(h, req)
-		if !ok {
-			continue
-		}
-		matched = append(matched, h)
-		final = moreRestrictive(final, d)
-	}
+	final, matched := c.combine(req)
 
 	if final.Kind == Ask {
-		if c.askResolver != nil {
+		if granted, ok := applyAskGrant(req, final); ok {
+			final = granted
+		} else if c.askResolver != nil {
 			final = resolveAsk(c.askResolver, req, final)
 		} else {
 			final = Decision{Kind: Deny, Reason: "tool call requires approval but no approval resolver is configured"}
@@ -103,6 +92,58 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 	}
 
 	return AdmissionResult{Decision: final, AuditDecision: auditDecision}
+}
+
+// Preflight combines hook verdicts exactly as Admit does and resolves an Ask
+// ONLY from a context AskGrant (deterministic, non-blocking); with no grant
+// the Ask is returned as Ask. The blocking resolver is never invoked and no
+// audit decision is computed — audit stamps belong to the real execution
+// pass. Used by the park pre-scan to learn whether a call would hold, without
+// side effects. Nil chain → NoDecision.
+func (c *Chain) Preflight(req AdmissionRequest) Decision {
+	if c == nil {
+		return Decision{Kind: NoDecision}
+	}
+	final, _ := c.combine(req)
+	if final.Kind == Ask {
+		if granted, ok := applyAskGrant(req, final); ok {
+			final = granted
+		}
+	}
+	return final
+}
+
+// combine evaluates every matching hook and folds their verdicts under
+// Deny > Ask > Allow > NoDecision — the shared first half of Admit and
+// Preflight, so the two can never drift.
+func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook) {
+	final := Decision{Kind: NoDecision}
+	matched := make([]Hook, 0, len(c.hooks))
+
+	for _, h := range c.hooks {
+		if h == nil {
+			continue
+		}
+		ok, d := evalHook(h, req)
+		if !ok {
+			continue
+		}
+		matched = append(matched, h)
+		final = moreRestrictive(final, d)
+	}
+	return final, matched
+}
+
+// applyAskGrant resolves an Ask from a context AskGrant when one is installed.
+// The grant lifts only the Ask — combine has already let any Deny dominate.
+func applyAskGrant(req AdmissionRequest, d Decision) (Decision, bool) {
+	if d.Kind != Ask || req.Ctx == nil {
+		return d, false
+	}
+	if g := AskGrantFromContext(req.Ctx); g != nil {
+		return g.Decide(), true
+	}
+	return d, false
 }
 
 // Observe fans a completed tool call out to every post-tool hook. A nil chain

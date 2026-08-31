@@ -231,6 +231,62 @@ func stampAdmissionDecision(result *Result, auditDecision string) {
 	result.Metadata["admission.decision"] = auditDecision
 }
 
+// Preflight reports the admission decision a call would receive, without
+// executing the tool body. With no admission chain AND no permission checker
+// it returns NoDecision immediately — before any registry work — so an
+// ungoverned agent's pre-scan stays a pure pass. Otherwise params are
+// normalized with the same normalizeParametersToSchema call Execute uses; a
+// registry miss attempts tryDynamicRegistration exactly as Execute does —
+// registration is an execution-required side effect that merely happens
+// earlier — and a failed registration returns NoDecision, leaving execution
+// to surface the real error later. An Ask is resolved only by a context
+// AskGrant; without one it is reported as Ask.
+func (e *Executor) Preflight(ctx context.Context, toolName string, params map[string]interface{}) Decision {
+	if e.admissionChain == nil && e.permissionChecker == nil {
+		return Decision{Kind: NoDecision}
+	}
+
+	// Same order as Execute: acquire the tool, normalize, THEN gate. Both
+	// gates must judge the exact params the tool would receive — Execute's own
+	// note: "the matcher must judge the exact params the tool would receive,
+	// or the caller's key spelling would decide whether a binding matches."
+	// Checking raw params here would let Preflight and Execute reach opposite
+	// verdicts on one call, which is precisely what the pre-scan may not do.
+	tool, ok := e.registry.Get(toolName)
+	if !ok {
+		dynamicTool, err := e.tryDynamicRegistration(ctx, toolName)
+		if err != nil || dynamicTool == nil {
+			return Decision{Kind: NoDecision}
+		}
+		tool = dynamicTool
+	}
+
+	normalizedParams := normalizeParametersToSchema(tool, params)
+
+	if e.permissionChecker != nil {
+		if err := e.permissionChecker.CheckPermission(ctx, toolName, normalizedParams); err != nil {
+			return Decision{Kind: Deny, Reason: err.Error()}
+		}
+	}
+	if e.admissionChain == nil {
+		return Decision{Kind: NoDecision}
+	}
+
+	userID := ""
+	if e.identityResolver != nil {
+		userID = e.identityResolver(ctx)
+	}
+	req := AdmissionRequest{
+		Ctx:       ctx,
+		ToolName:  toolName,
+		Params:    normalizedParams,
+		UserID:    userID,
+		SessionID: session.SessionIDFromContext(ctx),
+		State:     e.approvedSet,
+	}
+	return e.admissionChain.Preflight(req)
+}
+
 // Execute executes a tool by name with the given parameters.
 func (e *Executor) Execute(ctx context.Context, toolName string, params map[string]interface{}) (result *Result, err error) {
 	tool, ok := e.registry.Get(toolName)
