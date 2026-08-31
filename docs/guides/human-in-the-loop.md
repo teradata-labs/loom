@@ -9,6 +9,8 @@
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+  - [Keeping a Held Stream Alive](#keeping-a-held-stream-alive)
+  - [Which Progress Event Is an Answerable Card](#which-progress-event-is-an-answerable-card)
 - [Common Tasks](#common-tasks)
   - [Request Approval Before Actions](#request-approval-before-actions)
   - [Request User Input](#request-user-input)
@@ -19,6 +21,7 @@
   - [Example 2: Multi-Choice Decision](#example-2-multi-choice-decision)
 - [Workflow HITL Gates (Durable Checkpoint/Resume)](#workflow-hitl-gates-durable-checkpointresume)
 - [Troubleshooting](#troubleshooting)
+  - [The Turn Hangs After a Human Approves](#the-turn-hangs-after-a-human-approves)
 - [Next Steps](#next-steps)
 
 
@@ -77,6 +80,76 @@ type ContactHumanConfig struct {
     Logger       *zap.Logger          // Logger for structured logging (default: NoOp logger)
 }
 ```
+
+### Keeping a Held Stream Alive
+
+✅ Available
+
+> **Note:** Added after v1.4.0 — available in the next release, not in v1.4.0
+> itself.
+
+A hold blocks the turn until a human answers, and emits nothing in between. A
+streaming caller therefore sees no bytes for the whole window — up to 300s for
+an approval hold, up to your configured `Timeout` for `contact_human` — which
+can be long enough for a load balancer or proxy to trip its idle timeout and
+drop the stream the decision has to come back on.
+
+Under `looms serve` this is handled for you: every hold emits a keep-alive on
+the progress stream every 30s, with no configuration.
+
+When you supply your own `Notifier`, opt in by also implementing `Heartbeater`:
+
+```go
+type webhookNotifier struct{ url string }
+
+func (n *webhookNotifier) Notify(ctx context.Context, req *shuttle.HumanRequest) error {
+    return postJSON(ctx, n.url, req) // the card a human acts on
+}
+
+// Heartbeat is called every 30s while the request is still pending.
+func (n *webhookNotifier) Heartbeat(ctx context.Context) error {
+    return pingKeepAlive(ctx, n.url) // no payload — just traffic
+}
+```
+
+Both hold types — an `ask` admission verdict and `contact_human` — use it on the
+same terms:
+
+- **Opt in, or nothing changes.** A `Notifier` without `Heartbeat` is never
+  called and behaves exactly as before.
+- **Never affects the outcome.** An error returned from `Heartbeat` is ignored,
+  and a heartbeat never delays a decision.
+- **Keep it quick and non-blocking.** `Heartbeat` is called from the waiting
+  turn. An implementation that blocks stalls the hold, so use a timeout and
+  return — never wait on a slow endpoint.
+
+### Which Progress Event Is an Answerable Card
+
+✅ Available
+
+If you are building a client that renders HITL prompts, gate on a **non-empty
+`hitl_request.request_id`**. That id is what
+`AnswerClarificationQuestion` submits against. Three shapes arrive on
+`EXECUTION_STAGE_HUMAN_IN_THE_LOOP` and only one is answerable:
+
+| `hitl_request` | `request_id` | What it is | Show a prompt? |
+|----------------|--------------|------------|----------------|
+| absent | — | Keep-alive; carries no state and may be dropped under load | No |
+| present | empty | Early "a hold is coming" hint, sent before the request is stored | No |
+| present | non-empty | The answerable card | Yes |
+
+```go
+// Correct: only an id-bearing event can accept an answer.
+if p.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_HUMAN_IN_THE_LOOP &&
+    p.GetHitlRequest().GetRequestId() != "" {
+    showPrompt(p.GetHitlRequest())
+}
+```
+
+Prompting on either of the other two gives the human a box with no id to submit
+against: the answer goes nowhere and the hold sits pending until it times out.
+Loom's TUI gates on the id; a client written against `hitl_request != nil` needs
+updating.
 
 ### Request Types
 
@@ -355,7 +428,8 @@ result, _ := tool.Execute(ctx, map[string]interface{}{
 
 ### No Notification Received
 
-The default notifier is no-op. Configure a webhook notifier:
+Under `looms serve` the progress-stream bridge is wired for you. When embedding
+the tool directly the default notifier is no-op — configure one:
 
 ```go
 notifier := shuttle.NewJSONNotifier("https://myapp.com/webhook/hitl")
@@ -363,6 +437,22 @@ tool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
     Notifier: notifier,
 })
 ```
+
+### The Turn Hangs After a Human Approves
+
+Two causes, both fixed but worth recognising in an older client or a custom
+consumer:
+
+1. **The stream was dropped during the hold.** A hold that emits nothing for its
+   whole window can trip a proxy or load balancer idle timeout, so the approval
+   comes back to a stream that no longer exists. Use a notifier that implements
+   [`Heartbeater`](#keeping-a-held-stream-alive) — `looms serve` already does.
+2. **The prompt had no request id.** A client that shows its dialog for any
+   HITL-stage event also shows one for a keep-alive or the early hint, and that
+   dialog has no id to submit against — the human answers, the answer goes
+   nowhere, and the hold times out. Gate on a non-empty
+   `hitl_request.request_id`; see
+   [which one is answerable](#which-progress-event-is-an-answerable-card).
 
 ### Request Not Found After Restart
 

@@ -120,13 +120,19 @@ type hitlAskResolver struct {
 	timeout  time.Duration // how long to block before failing closed
 	poll     time.Duration // store poll interval
 	notifier Notifier      // pending-emit collaborator; nil disables the emit
+	// heartbeat is how often a still-pending hold pokes the notifier when it
+	// implements Heartbeater. Zero disables heartbeating.
+	heartbeat time.Duration
 }
 
 // NewHITLAskResolver builds the Ask resolver wired into ChainDeps.Ask. timeout
 // bounds the turn-blocking wait (default 300s when non-positive); poll is the
 // store poll interval (default 1s, mirroring ContactHumanConfig). notifier is
 // fired once the pending request is stored so the hold surfaces on the progress
-// stream; a nil notifier disables the emit (the hold is unaffected).
+// stream; a nil notifier disables the emit (the hold is unaffected). A notifier
+// that also implements Heartbeater is poked every holdHeartbeatInterval while
+// the hold is still pending, so a byte-silent hold cannot trip a proxy's
+// inactivity timeout; one that does not is never heartbeaten.
 func NewHITLAskResolver(store HumanRequestStore, timeout, poll time.Duration, notifier Notifier) AskResolver {
 	if timeout <= 0 {
 		timeout = 300 * time.Second
@@ -134,7 +140,13 @@ func NewHITLAskResolver(store HumanRequestStore, timeout, poll time.Duration, no
 	if poll <= 0 {
 		poll = 1 * time.Second
 	}
-	return &hitlAskResolver{store: store, timeout: timeout, poll: poll, notifier: notifier}
+	return &hitlAskResolver{
+		store:     store,
+		timeout:   timeout,
+		poll:      poll,
+		notifier:  notifier,
+		heartbeat: holdHeartbeatInterval,
+	}
 }
 
 // Resolve creates a pending "approval" HumanRequest scoped to the call's session
@@ -244,6 +256,11 @@ func (r *hitlAskResolver) wait(ctx context.Context, requestID string, expiresAt 
 	ticker := time.NewTicker(r.poll)
 	defer ticker.Stop()
 
+	// Heartbeating is opt-in by capability — see holdBeater. A notifier that
+	// does not implement Heartbeater (or no notifier at all) yields a beater
+	// that never beats, and the hold stays exactly as silent as it was before.
+	beater := newHoldBeater(r.notifier, r.heartbeat)
+
 	missing := 0
 	for {
 		select {
@@ -267,6 +284,9 @@ func (r *hitlAskResolver) wait(ctx context.Context, requestID string, expiresAt 
 				if missing >= missingRowDenyAfter {
 					return Decision{Kind: Deny, Reason: "approval request no longer exists"}
 				}
+				// The beat still runs on the way out: an unreadable row is
+				// not a reason to let the caller's stream go silent.
+				beater.beat(ctx)
 				continue
 			case err == nil:
 				missing = 0
@@ -280,6 +300,10 @@ func (r *hitlAskResolver) wait(ctx context.Context, requestID string, expiresAt 
 			if time.Now().After(deadline) {
 				return r.expire(ctx, requestID)
 			}
+			// Still pending: keep the caller's stream alive. Best-effort and
+			// last — the heartbeat must never delay a resolution the poll above
+			// already saw, and a notifier error never changes the outcome.
+			beater.beat(ctx)
 		}
 	}
 }

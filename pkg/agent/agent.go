@@ -2798,7 +2798,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		span.SetAttribute("hitl.priority", hitlInfo.Priority)
 
 		// Emit HITL-specific progress event
-		emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
+		emitProgressWithHITL(ctx, StageHumanInTheLoop, hitlStageProgress, "Waiting for human response", toolCall.Name, hitlInfo)
 	} else {
 		// Emit tool-started progress event
 		emitToolStarted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall)

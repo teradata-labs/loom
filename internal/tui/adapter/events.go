@@ -321,6 +321,29 @@ func formatStageName(stage loomv1.ExecutionStage) string {
 	}
 }
 
+// IsAnswerableHITLCard reports whether a progress message should raise the
+// human-facing clarification dialog.
+//
+// A NON-EMPTY hitl_request.request_id is what makes a message a card, because
+// that id is the handle the answer travels back on
+// (AnswerClarificationQuestion). Two other shapes ride the same stage and must
+// not raise a dialog:
+//
+//   - hitl_request absent — a hold heartbeat, liveness traffic only, emitted so
+//     a byte-silent hold cannot trip an intermediary's inactivity timeout.
+//   - hitl_request present with an empty request_id — the conversation loop's
+//     pre-creation ping, raised off a contact_human call before the store row
+//     exists.
+//
+// Raising a dialog on either one gives the human a box whose answer has nowhere
+// to go: the RPC path is skipped for an empty id and there is no AnswerChan on
+// a server-driven question, so it dead-ends on "no communication channel
+// available" while the hold behind it sits pending until it times out.
+func IsAnswerableHITLCard(progress *loomv1.WeaveProgress) bool {
+	return progress.GetStage() == loomv1.ExecutionStage_EXECUTION_STAGE_HUMAN_IN_THE_LOOP &&
+		progress.GetHitlRequest().GetRequestId() != ""
+}
+
 // HITLRequestToPermission converts a HITL request to a permission.PermissionRequest.
 func HITLRequestToPermission(hitl *loomv1.HITLRequestInfo) permission.PermissionRequest {
 	return permission.PermissionRequest{
