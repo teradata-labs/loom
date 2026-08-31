@@ -457,3 +457,97 @@ func TestPark_EmbedderDecidedRowResumes(t *testing.T) {
 		}
 	})
 }
+
+// TestPark_AppliedBatchWithoutFinalReplyResumesToCompletion — the crash
+// window between the batch's last tool row and the continuation's final
+// reply. All rows exist, no final reply: the retry must RE-ENTER the loop so
+// the model sees the results and finishes the turn — refusing it as
+// "already complete" would strand the turn's answer permanently — and must
+// not re-execute any tool body.
+func TestPark_AppliedBatchWithoutFinalReplyResumesToCompletion(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-halfdone", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-halfdone")
+
+	// Simulate the crash window: every batch call already has its tool row
+	// (persisted before the death), but the continuation never ran.
+	sess := f.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-halfdone", f.ag.config.Name, "")
+	for _, callID := range []string{"c-read", "c-write"} {
+		f.ag.appendMessage(ctx, sess, Message{
+			Role: "tool", Content: "ran", ToolUseID: callID,
+			ToolResult: &shuttle.Result{Success: true, Data: "ran"},
+			AgentID:    f.ag.id, Timestamp: time.Now(),
+		}, false)
+	}
+
+	resp, err := f.ag.ResumeChat(ctx, "s-halfdone", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("resume of an applied-but-unfinished turn refused: %v", err)
+	}
+	if resp.Content != "continued" {
+		t.Fatalf("content = %q, want the turn's answer", resp.Content)
+	}
+	// Recovery re-enters the loop; it never re-runs tool bodies.
+	if got := f.tools["export_csv"].runs.Load(); got != 0 {
+		t.Fatalf("export_csv re-ran %d times during recovery", got)
+	}
+	if got := f.tools["read_table"].runs.Load(); got != 0 {
+		t.Fatalf("read_table re-ran %d times during recovery", got)
+	}
+}
+
+// TestPark_CallIDCollisionCannotReplayAcrossBatches — LLM-assigned call IDs
+// can collide across batches (per-response counters). A redelivered decision
+// for request A whose item IDs happen to exist in nested batch B must be
+// refused by CONTENT binding (tool/seq), never applied by ID coincidence.
+func TestPark_CallIDCollisionCannotReplayAcrossBatches(t *testing.T) {
+	responses := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "call_0", Name: "export_csv", Input: map[string]interface{}{"v": "a"}},
+		}},
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "call_0", Name: "drop_table", Input: map[string]interface{}{"v": "b"}},
+		}},
+		{content: "done"},
+	}
+	f := newParkFixture(t,
+		[]shuttle.Hook{scopedAskHook{tool: "export_csv"}, scopedAskHook{tool: "drop_table"}},
+		responses, "export_csv", "drop_table")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-collide", "go")
+	var parkedA *TurnParkedError
+	if !errors.As(err, &parkedA) {
+		t.Fatalf("expected park on batch A, got %v", err)
+	}
+	hrA := f.pendingParked(t, "s-collide")
+
+	_, err = f.ag.ResumeChat(ctx, "s-collide", ParkDecision{
+		RequestID: hrA.ID, ItemIDs: paramKeys(hrA), Approved: true,
+	}, nil)
+	var parkedB *TurnParkedError
+	if !errors.As(err, &parkedB) {
+		t.Fatalf("expected nested park on batch B, got %v", err)
+	}
+
+	// Redeliver A's decision: its item id "call_0" EXISTS in B's batch, but
+	// it describes export_csv — not B's drop_table.
+	_, err = f.ag.ResumeChat(ctx, "s-collide", ParkDecision{
+		RequestID: hrA.ID, ItemIDs: paramKeys(hrA), Approved: true,
+	}, nil)
+	if !errors.Is(err, ErrStaleDecision) {
+		t.Fatalf("colliding redelivery = %v, want ErrStaleDecision", err)
+	}
+	if got := f.tools["drop_table"].runs.Load(); got != 0 {
+		t.Fatalf("drop_table ran %d times under request A's redelivered decision", got)
+	}
+}

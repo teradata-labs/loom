@@ -188,6 +188,42 @@ func parkedItemIDs(hr *shuttle.HumanRequest) []string {
 	return out
 }
 
+// verifyItemBinding checks that every request item still DESCRIBES the tail
+// call it names: same tool, and same batch position when the descriptor
+// carries one. The subset check upstream only proves the IDs exist in the
+// batch — with per-response counter IDs two different batches can share IDs,
+// and an old decision must never execute a new batch's calls by collision.
+func verifyItemBinding(hr *shuttle.HumanRequest, batch Message) error {
+	byID := make(map[string]int, len(batch.ToolCalls))
+	for i, c := range batch.ToolCalls {
+		byID[c.ID] = i
+	}
+	for id, raw := range hr.Params {
+		desc, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		idx, inBatch := byID[id]
+		if !inBatch {
+			continue // subset check upstream already refused if required
+		}
+		if tool, _ := desc["tool"].(string); tool != "" && tool != batch.ToolCalls[idx].Name {
+			return ErrStaleDecision
+		}
+		switch seq := desc["seq"].(type) {
+		case int:
+			if seq != idx {
+				return ErrStaleDecision
+			}
+		case float64: // JSON round-trip through a persistent store
+			if int(seq) != idx {
+				return ErrStaleDecision
+			}
+		}
+	}
+	return nil
+}
+
 // sameIDSet reports whether two id lists describe the same set.
 func sameIDSet(a, b []string) bool {
 	if len(a) != len(b) {
@@ -554,6 +590,15 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		span.AddEvent("resume.refused", map[string]interface{}{"reason": err.Error()})
 		return nil, err
 	}
+	// Content binding, not ID binding alone: LLM-assigned call IDs can
+	// collide across batches (per-response counters), so an old request's
+	// item could name a NEW batch's call by accident. Each item's recorded
+	// tool (and seq, when present) must match the tail call it names, or the
+	// decision belongs to a different batch.
+	if bindErr := verifyItemBinding(hr, batch); bindErr != nil {
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": bindErr.Error()})
+		return nil, bindErr
+	}
 
 	if len(rowless) > 0 {
 		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)
@@ -704,9 +749,11 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 			rowless = append(rowless, c)
 		}
 	}
-	if len(rowless) == 0 {
-		return Message{}, nil, ErrNothingParked
-	}
+	// Every row present but NO final reply: the batch was applied and the
+	// turn died before its continuation (LLM outage, crash). Nothing to
+	// complete — but this is not "already complete": the loop must re-enter
+	// so the model sees the results and produces the turn's answer. Refusing
+	// here would strand the turn's answer permanently.
 	return msgs[k], rowless, nil
 }
 

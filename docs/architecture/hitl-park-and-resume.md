@@ -97,6 +97,12 @@ with `ErrUnknownRequest` before the session is touched.
 Redelivery cannot re-execute a batch in either flow: the applied batch has
 its tool rows and final reply, so a replay lands in the tail-walk terminals
 (`ErrNothingParked`, or `ErrStaleDecision` when a nested park owns the tail).
+The item binding is by CONTENT, not ID alone (`verifyItemBinding`):
+LLM-assigned call IDs can collide across batches (per-response counters), so
+each item's recorded tool and batch position must still describe the tail
+call it names. And an applied batch whose turn died before its final reply
+is NOT refused — the resume re-enters the loop (re-executing nothing) so the
+model sees the results and produces the answer.
 
 ### 3.2 Applying the decision
 
