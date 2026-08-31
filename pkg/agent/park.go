@@ -244,6 +244,23 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// resumedTurnKey marks a context as continuing a turn that already ran the
+// loop's entry work once, before it parked.
+type resumedTurnKey struct{}
+
+// contextWithResumedTurn marks ctx as a resume. Per-TURN entry work in
+// runConversationLoop — graph-memory context injection — must not run twice
+// for one turn just because the loop is entered twice.
+func contextWithResumedTurn(ctx context.Context) context.Context {
+	return context.WithValue(ctx, resumedTurnKey{}, true)
+}
+
+// isResumedTurn reports whether this loop entry is continuing a parked turn.
+func isResumedTurn(ctx context.Context) bool {
+	v, _ := ctx.Value(resumedTurnKey{}).(bool)
+	return v
+}
+
 // parkHandles hands the unfinished turn's session handles to whoever resumes
 // it. A parked turn spans two Go calls, but MCP session handles are scoped to
 // one call (pkg/mcp/adapter: "handles live for exactly one agent message
@@ -504,6 +521,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	if progressCallback != nil {
 		ctx = ContextWithProgressCallback(ctx, progressCallback)
 	}
+	ctx = contextWithResumedTurn(ctx)
 	agentCtx := &agentContext{
 		Context:          ctx,
 		session:          sess,
@@ -606,6 +624,8 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.Status = observability.Status{Code: observability.StatusOK}
+	a.recordConversationMetrics(sessionID, response, duration)
 	return response, nil
 }
 

@@ -2024,7 +2024,20 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		"tokens":          response.Usage.TotalTokens,
 	})
 
-	// Emit metrics
+	a.recordConversationMetrics(sessionID, response, duration)
+
+	return response, nil
+}
+
+// recordConversationMetrics emits the six metrics that describe one completed
+// conversation. Shared by chat() and ResumeChat so a turn that ended at a
+// human decision and finished later is counted exactly like any other — those
+// are the turns carrying human-approved actions, so they are the last ones
+// that should be missing from the metrics backend.
+func (a *Agent) recordConversationMetrics(sessionID string, response *Response, duration time.Duration) {
+	turns, _ := response.Metadata["turns"].(int)
+	toolExecs, _ := response.Metadata["tool_executions"].(int)
+
 	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
 		observability.AttrSessionID: sessionID,
 		"status":                    "success",
@@ -2049,8 +2062,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
-
-	return response, nil
 }
 
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
@@ -2302,8 +2313,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 	}
 
-	// Inject graph memory context (if enabled and available).
-	a.injectGraphMemoryContext(ctx, session)
+	// Inject graph memory context (if enabled and available). A resumed turn
+	// skips it: the loop is being RE-entered for a turn that already got its
+	// context block before it parked, so injecting again would duplicate the
+	// block in the prompt and pay a second recall round-trip per resume.
+	if !isResumedTurn(ctx) {
+		a.injectGraphMemoryContext(ctx, session)
+	}
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
