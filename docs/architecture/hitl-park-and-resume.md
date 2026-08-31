@@ -176,6 +176,22 @@ must not kill a session.
   missing from the metrics backend.
 - 📋 Loop re-entry re-runs graph-memory context injection for the same turn,
   duplicating the injected block and paying a recall round-trip per resume.
-- 📋 `Chain.Preflight` re-evaluates every matching hook, so a stateful host
-  hook (a quota counter) sees each parked call twice.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
+  Whether loom should expose resume over gRPC is a product decision, not an
+  oversight — every other conversation entry point reaches clients through the
+  Weave surface, so the asymmetry is worth a deliberate answer.
+
+## 8. A note on hook evaluation count
+
+The pre-scan asks the admission chain the same question execution asks, so a
+call that parks and then runs evaluates every matching hook **twice** (three
+times for a `contact_human` re-classified at resume). This is safe because
+`Hook.Evaluate` is required to be side-effect free — now stated on the
+interface — with `PostToolHook` as the seam for anything that records. A host
+hook that counts inside `Evaluate` will over-count; that was true before park
+existed, but park is the first caller that makes it likely.
+
+Dynamic registration is not doubled: `tryDynamicRegistration` ends in
+`registry.Register`, so the pre-scan's registration is a hit for the later
+`Execute` rather than a second discovery round-trip. The cost moves earlier,
+it does not repeat.
