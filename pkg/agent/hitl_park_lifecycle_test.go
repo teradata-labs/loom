@@ -139,8 +139,12 @@ func TestPark_DecisionCannotBeReapplied(t *testing.T) {
 		t.Fatalf("export_csv ran %d times on the first resume, want 1", got)
 	}
 
-	if _, err := f.ag.ResumeChat(ctx, "s-once", decision, nil); !errors.Is(err, ErrUnknownRequest) {
-		t.Fatalf("replayed decision = %v, want ErrUnknownRequest", err)
+	// A decided row is still loadable (the embedder-recorded flow depends on
+	// it), so the replay guard is the tail walk: the applied batch has its
+	// rows and a final reply, and the replay lands in ErrNothingParked with
+	// nothing re-executed.
+	if _, err := f.ag.ResumeChat(ctx, "s-once", decision, nil); !errors.Is(err, ErrNothingParked) {
+		t.Fatalf("replayed decision = %v, want ErrNothingParked", err)
 	}
 	if got := f.tools["export_csv"].runs.Load(); got != 1 {
 		t.Fatalf("export_csv ran %d times after the replay, want 1", got)
@@ -187,9 +191,11 @@ func TestPark_UnboundDecisionCannotApproveANestedBatch(t *testing.T) {
 	}
 
 	// A's decision, redelivered with NO item ids, must not touch batch B.
+	// A's row is decided (loadable — the embedder-recorded flow depends on
+	// it), so the binding does the refusing: A's items are not in B's batch.
 	_, err = f.ag.ResumeChat(ctx, "s-bind", ParkDecision{RequestID: reqA, Approved: true}, nil)
-	if !errors.Is(err, ErrUnknownRequest) {
-		t.Fatalf("unbound stale decision = %v, want ErrUnknownRequest", err)
+	if !errors.Is(err, ErrStaleDecision) {
+		t.Fatalf("unbound stale decision = %v, want ErrStaleDecision", err)
 	}
 	if got := f.tools["drop_table"].runs.Load(); got != 0 {
 		t.Fatalf("drop_table ran %d times under request A's decision", got)
@@ -386,4 +392,68 @@ func TestPark_RequiresDurableSessionStore(t *testing.T) {
 	if got := write.runs.Load(); got != 0 {
 		t.Fatalf("export_csv ran %d times with no approval path", got)
 	}
+}
+
+// TestPark_EmbedderDecidedRowResumes pins the embedder-recorded flow: the
+// embedder's respond door decides the row FIRST (its own expiry CAS applies),
+// then resumes with a decision derived from the row. The decided row must
+// load, the row's status must be authoritative over the caller's payload, and
+// ResumeChat must not try to re-close a row that is already closed.
+func TestPark_EmbedderDecidedRowResumes(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("approved row executes the batch", func(t *testing.T) {
+		f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+			"read_table", "export_csv")
+		_, err := f.ag.Chat(ctx, "s-embed-a", "go")
+		var parked *TurnParkedError
+		if !errors.As(err, &parked) {
+			t.Fatalf("expected park, got %v", err)
+		}
+		hr := f.pendingParked(t, "s-embed-a")
+		// The embedder decides the row before resuming — cloud's respond door.
+		if rerr := f.store.RespondToRequest(ctx, hr.ID, "approved", "", "user-1", nil); rerr != nil {
+			t.Fatalf("RespondToRequest: %v", rerr)
+		}
+		resp, err := f.ag.ResumeChat(ctx, "s-embed-a", ParkDecision{
+			RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		}, nil)
+		if err != nil {
+			t.Fatalf("ResumeChat on decided row: %v", err)
+		}
+		if resp.Content != "continued" {
+			t.Fatalf("content = %q", resp.Content)
+		}
+		if got := f.tools["export_csv"].runs.Load(); got != 1 {
+			t.Fatalf("export_csv ran %d times, want 1", got)
+		}
+		// The row keeps the embedder's verdict — ResumeChat did not touch it.
+		after, _ := f.store.Get(ctx, hr.ID)
+		if after == nil || after.Status != "approved" {
+			t.Fatalf("row status after resume = %+v, want approved", after)
+		}
+	})
+
+	t.Run("rejected row refuses even an approving payload", func(t *testing.T) {
+		f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+			"read_table", "export_csv")
+		_, err := f.ag.Chat(ctx, "s-embed-r", "go")
+		var parked *TurnParkedError
+		if !errors.As(err, &parked) {
+			t.Fatalf("expected park, got %v", err)
+		}
+		hr := f.pendingParked(t, "s-embed-r")
+		if rerr := f.store.RespondToRequest(ctx, hr.ID, "rejected", "wrong table", "user-1", nil); rerr != nil {
+			t.Fatalf("RespondToRequest: %v", rerr)
+		}
+		// Hostile/buggy caller says Approved — the row's verdict wins.
+		if _, err := f.ag.ResumeChat(ctx, "s-embed-r", ParkDecision{
+			RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		}, nil); err != nil {
+			t.Fatalf("ResumeChat: %v", err)
+		}
+		if got := f.tools["export_csv"].runs.Load(); got != 0 {
+			t.Fatalf("export_csv ran %d times against a rejected row", got)
+		}
+	})
 }

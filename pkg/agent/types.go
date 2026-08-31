@@ -23,7 +23,6 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
-	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -80,13 +79,6 @@ type Agent struct {
 	// hitlPark, when non-nil, enables HITL park-and-resume: a batch needing a
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
-
-	// parkedHandles holds the MCP session-handle collector of each session's
-	// parked turn, so the resume that finishes that turn adopts its handles
-	// instead of finding them released. One slot per session: guardParkedTail
-	// admits only one parked turn at a time.
-	parkedHandlesMu sync.Mutex
-	parkedHandles   map[string]*mcpadapter.HandleCollector
 
 	// Resolves the caller identity (AdmissionRequest.UserID) from the call
 	// context; injected here because pkg/shuttle cannot import the storage

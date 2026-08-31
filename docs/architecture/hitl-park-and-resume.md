@@ -83,9 +83,20 @@ one session can hold more than one row over its life. A decision bound by a
 caller-supplied list could be applied to a batch it never described simply by
 omitting the list. Binding through the row makes that unrepresentable.
 
-A row that is missing, already closed, or owned by another session is refused
-with `ErrUnknownRequest` before the session is touched — which also means a
-redelivered decision cannot re-execute its batch.
+Two row states resume. A **pending** row is the standalone flow: `ResumeChat`
+is the decision channel and closes the row after applying (§3.3). A
+**decided** row (`approved`/`rejected`/`timeout`) is the embedder-recorded
+flow: the embedder's respond door decided the row first, under its own expiry
+CAS, and the resume applies that recorded verdict — the row's status is
+authoritative over the caller's payload, so a mismatched payload can never
+execute against a rejected row, and expiry is not re-judged at apply time (a
+decision recorded in time stands, however much later the resume runs). A row
+that is missing, owned by another session, or in any other state is refused
+with `ErrUnknownRequest` before the session is touched.
+
+Redelivery cannot re-execute a batch in either flow: the applied batch has
+its tool rows and final reply, so a replay lands in the tail-walk terminals
+(`ErrNothingParked`, or `ErrStaleDecision` when a nested park owns the tail).
 
 ### 3.2 Applying the decision
 
@@ -109,8 +120,10 @@ continuation parks again.
 
 ### 3.3 Closing the row
 
-The row is closed the instant its decision is applied, **before** the loop
-re-entry that may park a new one:
+In the standalone (pending-row) flow, the row is closed the instant its
+decision is applied, **before** the loop re-entry that may park a new one — a
+pre-decided row is already closed by the embedder's respond door and is left
+untouched:
 
 - approved → `RespondToRequest(…, "approved", …)`
 - rejected → `RespondToRequest(…, "rejected", …)`
@@ -141,12 +154,13 @@ declined, not deferred.
 
 ## 4. Session handles across the gap
 
-MCP session handles are scoped to one `chat()` call by default. A parked turn
-spans two calls, so the parked half hands its `HandleCollector` to whoever
-resumes it (`mcpadapter.ContextWithHandleCollector`); a nested park re-parks
-it, and the call that actually ends the turn releases the handles once.
-Without this the park's deferred `ReleaseAll` kills handles the same turn is
-about to use.
+MCP session handles stay scoped to one call, park exits included: `chat()`
+releases at the park, `ResumeChat` releases at every exit, and a resumed turn
+re-mints handles on demand. A collector carried across the gap would only be
+reachable when the same `Agent` instance serves both calls — in the pooled
+embedder lifecycle (a fresh `Agent` per call) it would leak the handles
+instead. Cross-call handle continuity is therefore an embedder-owned seam,
+alongside the resume transport itself (§6).
 
 Only one parked turn per session can exist at a time — `guardParkedTail`
 enforces it — so one collector slot per session is the whole contract.
@@ -171,11 +185,6 @@ must not kill a session.
 
 ## 7. Known gaps
 
-- 📋 A resumed turn does not record the six conversation metrics `chat()`
-  records, so resumed turns — the ones carrying human-approved actions — are
-  missing from the metrics backend.
-- 📋 Loop re-entry re-runs graph-memory context injection for the same turn,
-  duplicating the injected block and paying a recall round-trip per resume.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
