@@ -301,8 +301,13 @@ type SlotState struct {
 	// Aging promotions since scheduler start (a rising rate means the scope is
 	// saturated enough that liveness protection is doing real work).
 	PromotionsTotal int64 `protobuf:"varint,9,opt,name=promotions_total,json=promotionsTotal,proto3" json:"promotions_total,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// True when an operator pinned effective_tokens_per_minute via
+	// SetSchedulerConfig. While pinned, provider header calibration and AIMD
+	// leave the ceiling alone; setting tokens_per_minute back to 0 releases
+	// the pin and resumes calibration.
+	CeilingPinned bool `protobuf:"varint,10,opt,name=ceiling_pinned,json=ceilingPinned,proto3" json:"ceiling_pinned,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SlotState) Reset() {
@@ -396,6 +401,13 @@ func (x *SlotState) GetPromotionsTotal() int64 {
 		return x.PromotionsTotal
 	}
 	return 0
+}
+
+func (x *SlotState) GetCeilingPinned() bool {
+	if x != nil {
+		return x.CeilingPinned
+	}
+	return false
 }
 
 // SlotWaiter describes one parked slot request.
@@ -769,7 +781,7 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x0emax_door_queue\x18\x04 \x01(\x05R\fmaxDoorQueue\x12(\n" +
 	"\x10starvation_age_s\x18\x05 \x01(\x05R\x0estarvationAgeS\x12-\n" +
 	"\x12utilization_target\x18\x06 \x01(\x02R\x11utilizationTarget\x121\n" +
-	"\x14interactive_headroom\x18\a \x01(\x02R\x13interactiveHeadroom\"\xad\x03\n" +
+	"\x14interactive_headroom\x18\a \x01(\x02R\x13interactiveHeadroom\"\xd4\x03\n" +
 	"\tSlotState\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x121\n" +
 	"\x14active_conversations\x18\x02 \x01(\x05R\x13activeConversations\x12'\n" +
@@ -779,7 +791,9 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x1breserved_tokens_outstanding\x18\x06 \x01(\x03R\x19reservedTokensOutstanding\x127\n" +
 	"\tnext_wake\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bnextWake\x12!\n" +
 	"\fgrants_total\x18\b \x01(\x03R\vgrantsTotal\x12)\n" +
-	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\"\x94\x02\n" +
+	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\x12%\n" +
+	"\x0eceiling_pinned\x18\n" +
+	" \x01(\bR\rceilingPinned\"\x94\x02\n" +
 	"\n" +
 	"SlotWaiter\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +

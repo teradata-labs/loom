@@ -448,6 +448,18 @@ type ProgressEvent struct {
 	// HITLRequest contains HITL request details (only when Stage == StageHumanInTheLoop)
 	HITLRequest *HITLRequestInfo
 
+	// Droppable marks an event whose ONLY purpose is to produce traffic — a
+	// HITL hold heartbeat. A transport under backpressure may discard it
+	// rather than block the emitting goroutine: losing one is harmless,
+	// unlike a card, a token chunk, or a tool lifecycle event, all of which
+	// carry state the consumer cannot reconstruct.
+	//
+	// This is what keeps a heartbeat from deepening the very hang it exists to
+	// prevent. A hold emits from the turn goroutine, so a blocking send on a
+	// wedged consumer stalls the poll loop that would otherwise see the human's
+	// decision. Never set this on an event carrying state.
+	Droppable bool
+
 	// Token streaming fields (for real-time LLM response rendering)
 
 	// PartialContent is the accumulated content so far during streaming

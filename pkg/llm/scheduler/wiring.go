@@ -63,6 +63,21 @@ type SlotInfo struct {
 	// resourceHolder is set when the conversation acquires an external
 	// scarce resource (database session handle, MCP slot).
 	resourceHolder atomic.Bool
+	// conversationID and agentName attribute a parked slot request to the
+	// work that is waiting. Observability only; set at install time.
+	conversationID string
+	agentName      string
+}
+
+// WithIdentity records who this turn belongs to, so a parked slot request
+// can be attributed in ListWaiters. Safe to skip — the scheduler behaves
+// identically without it, the waiter is just anonymous.
+func WithIdentity(ctx context.Context, conversationID, agentName string) context.Context {
+	if si := SlotInfoFrom(ctx); si != nil {
+		si.conversationID = conversationID
+		si.agentName = agentName
+	}
+	return ctx
 }
 
 type slotInfoKey struct{}
@@ -155,7 +170,12 @@ func AcquireForCall(ctx context.Context, scope string, reservationTokens int64) 
 	if si == nil {
 		return nil, nil
 	}
+	// Identity rides the request so ListWaiters can attribute a parked call
+	// to a conversation and agent: "59 parked" is not actionable, "these 59
+	// conversations, oldest 26s, all IN_FLIGHT" is.
 	g, err := defaultRegistry.For(scope, Config{}).Acquire(ctx, Request{
+		ConversationID:    si.conversationID,
+		AgentName:         si.agentName,
 		Class:             si.Class(),
 		Origin:            si.origin,
 		ReservationTokens: reservationTokens,

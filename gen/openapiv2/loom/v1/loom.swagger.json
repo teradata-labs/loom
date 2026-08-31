@@ -10057,7 +10057,7 @@
         },
         "hitlRequest": {
           "$ref": "#/definitions/v1HITLRequestInfo",
-          "title": "HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP)"
+          "description": "HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP).\n\nA non-empty hitl_request.request_id is what makes a message an ANSWERABLE\ncard. Consumers MUST key the human-facing prompt off that id, because it is\nthe handle AnswerClarificationQuestion / RespondToRequest take; a prompt\nraised without one cannot deliver its answer, and the hold behind it stays\npending until it times out. Two other shapes ride the same stage and MUST\nNOT raise a prompt:\n\n  - hitl_request ABSENT — a hold heartbeat. A hold is otherwise byte-silent\n    on this stream for its whole window (up to 300s for an approval hold),\n    long enough for an intermediary to trip an inactivity timeout and tear\n    down the stream the decision has to travel back on. These messages\n    exist only to produce traffic and carry no state; they may also be\n    dropped under backpressure, so consumers must not count on receiving\n    every one.\n  - hitl_request PRESENT with an empty request_id — the pre-creation ping\n    the conversation loop emits off a contact_human call before the store\n    row exists. Useful as an early \"a hold is coming\" hint; the answerable\n    card follows once the row is written."
         },
         "partialContent": {
           "type": "string",
