@@ -23,11 +23,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -78,15 +80,27 @@ type parkFixture struct {
 // newParkFixture builds a park-enabled agent: hooks govern via the given
 // chain hooks (no blocking resolver — park mode never wires one), and the
 // scripted LLM issues the given batches then a final text.
+//
+// A real session store is wired because park REQUIRES one: a request row may
+// only be raised against a batch that survives a restart, and Memory's
+// Persist* methods are silent no-ops without a store. A storeless fixture
+// would exercise the feature with its central precondition switched off.
 func newParkFixture(t *testing.T, hooks []shuttle.Hook, responses []mockLLMResponse, toolNames ...string) *parkFixture {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 
+	sessions, err := NewSessionStore(filepath.Join(t.TempDir(), "park.db"), observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	t.Cleanup(func() { _ = sessions.Close() })
+
 	store := shuttle.NewInMemoryHumanRequestStore()
 	opts := []Option{
 		WithConfig(cfg),
+		WithMemory(NewMemoryWithStore(sessions)),
 		WithHITLPark(store, 0, NewProgressNotifier()),
 	}
 	if len(hooks) > 0 {
@@ -394,14 +408,35 @@ func TestPark_ResumeTerminals(t *testing.T) {
 		t.Fatalf("moved-on resume = %v, want ErrNotParkedTail", err)
 	}
 
-	// A fully completed turn has nothing parked.
+	// A request ID that names no pending parked row of this session is
+	// refused before the session is touched at all.
 	done := newParkFixture(t, nil, []mockLLMResponse{{content: "hi"}})
 	if _, err := done.ag.Chat(ctx, "s-done", "hello"); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
 	_, err = done.ag.ResumeChat(ctx, "s-done", ParkDecision{RequestID: "x", Approved: true}, nil)
+	if !errors.Is(err, ErrUnknownRequest) {
+		t.Fatalf("unknown-request resume = %v, want ErrUnknownRequest", err)
+	}
+
+	// A pending row whose turn has ALREADY produced its final assistant reply
+	// has nothing left to finish — even though the batch left rowless calls
+	// behind (the loop's own caps can end a turn that way). Completing them
+	// now would run bodies the finished turn declined to run.
+	fin := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	if _, err := fin.ag.Chat(ctx, "s-fin", "go"); !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	finHR := fin.pendingParked(t, "s-fin")
+	finSess := fin.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-fin", fin.ag.config.Name, "")
+	fin.ag.appendMessage(ctx, finSess, Message{Role: "assistant", Content: "answered anyway", AgentID: fin.ag.id}, false)
+	_, err = fin.ag.ResumeChat(ctx, "s-fin", ParkDecision{RequestID: finHR.ID, Approved: true}, nil)
 	if !errors.Is(err, ErrNothingParked) {
 		t.Fatalf("completed-turn resume = %v, want ErrNothingParked", err)
+	}
+	if got := fin.tools["export_csv"].runs.Load(); got != 0 {
+		t.Fatalf("export_csv ran %d times on a turn that already replied", got)
 	}
 }
 

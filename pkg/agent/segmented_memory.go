@@ -493,17 +493,10 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 }
 
 // GetMessages returns all L1 messages for building conversation context.
-// RawMessages returns a copy of the L1 rows in append order — the same
-// traversal compileLocked renders from — with no rendering, no folding, and
-// no pair synthesis. Read-only view for the park resume walk.
-func (sm *SegmentedMemory) RawMessages() []Message {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	out := make([]Message, len(sm.contextMessages))
-	copy(out, sm.contextMessages)
-	return out
-}
-
+// This is the RAW view: the rows in append order, with no rendering, no
+// folding, and no pair synthesis (that is GetMessagesForLLM/compileLocked,
+// which is what types.Session.GetMessages delegates to when segmented memory
+// is configured).
 func (sm *SegmentedMemory) GetMessages() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

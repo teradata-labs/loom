@@ -246,15 +246,12 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 		return Decision{Kind: NoDecision}
 	}
 
-	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
-			return Decision{Kind: Deny, Reason: err.Error()}
-		}
-	}
-	if e.admissionChain == nil {
-		return Decision{Kind: NoDecision}
-	}
-
+	// Same order as Execute: acquire the tool, normalize, THEN gate. Both
+	// gates must judge the exact params the tool would receive — Execute's own
+	// note: "the matcher must judge the exact params the tool would receive,
+	// or the caller's key spelling would decide whether a binding matches."
+	// Checking raw params here would let Preflight and Execute reach opposite
+	// verdicts on one call, which is precisely what the pre-scan may not do.
 	tool, ok := e.registry.Get(toolName)
 	if !ok {
 		dynamicTool, err := e.tryDynamicRegistration(ctx, toolName)
@@ -265,6 +262,15 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 	}
 
 	normalizedParams := normalizeParametersToSchema(tool, params)
+
+	if e.permissionChecker != nil {
+		if err := e.permissionChecker.CheckPermission(ctx, toolName, normalizedParams); err != nil {
+			return Decision{Kind: Deny, Reason: err.Error()}
+		}
+	}
+	if e.admissionChain == nil {
+		return Decision{Kind: NoDecision}
+	}
 
 	userID := ""
 	if e.identityResolver != nil {

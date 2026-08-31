@@ -2654,7 +2654,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// turn HERE — before anything executes. A non-durable assistant row
 		// skips parking (a request row must never strand against a missing
 		// batch) and the batch dispatches inline, fail-closed.
-		if a.hitlPark != nil && assistantPersisted {
+		//
+		// Durable means BOTH: a store exists, and the write to it did not
+		// fail. PersistMessage returns nil when no store is configured, so
+		// assistantPersisted alone reports success for a batch that was never
+		// written anywhere — exactly the stranding this gate exists to stop.
+		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
 			if parkErr := a.maybeParkBatch(ctx, session, llmResp); parkErr != nil {
 				return nil, parkErr
 			}
