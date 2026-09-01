@@ -28,10 +28,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -68,7 +70,17 @@ func startParkNoopAgent(t *testing.T, parkEnabled bool) *Agent {
 		{content: "all done"},
 	}}
 
-	opts := []Option{WithConfig(cfg)}
+	// A session store on BOTH arms. Park's pre-scan gate requires one (a
+	// request row may not outlive its batch), so a storeless "park enabled"
+	// arm silently runs with the pre-scan off and the differential compares
+	// park-off against park-off — proving nothing.
+	sessions, err := NewSessionStore(filepath.Join(t.TempDir(), "noop.db"), observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	t.Cleanup(func() { _ = sessions.Close() })
+
+	opts := []Option{WithConfig(cfg), WithMemory(NewMemoryWithStore(sessions))}
 	if parkEnabled {
 		opts = append(opts, WithHITLPark(shuttle.NewInMemoryHumanRequestStore(), 0, nil))
 	}
