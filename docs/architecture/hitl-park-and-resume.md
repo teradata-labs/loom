@@ -223,6 +223,18 @@ append point is the authoritative last moment. Store errors fail open with a
 warning — the embedder's own probe is the primary gate, and a store hiccup
 must not kill a session.
 
+A **decided but unapplied** row still holds it. The embedder-recorded flow
+decides the row before calling `ResumeChat`, so between those two moments the
+batch is unapplied while the row is no longer `pending`; matching on status
+alone admitted a new user turn that buried it — silently discarding the
+approval and leaving the history asserting the call never completed. The guard
+asks the tail as well: an assistant batch still missing tool rows is an
+unapplied park whatever the row says.
+
+A **lapsed** row does not hold it. Nothing sweeps parked rows — a park has no
+waiter by design — so matching on `pending` alone let a park nobody ever
+decided refuse every future turn on that session, permanently.
+
 ## 6. What the embedder owns
 
 - Delivering the card to a human and collecting the verdict.
@@ -238,7 +250,27 @@ must not kill a session.
   decision arrives; the embedder-recorded flow has no row left to claim, and
   loom's per-session lock only spans one process.
 
-## 7. Known gaps
+## 7. Binding an approval to what the human saw
+
+`verifyItemBinding` compares each request item against the tail call it names:
+tool, batch position, **and arguments**. The arguments matter most, because the
+other two can carry no information at all — on Gemini `ToolCall.ID` *is* the
+function name (`pkg/llm/gemini/client.go`: "Gemini doesn't provide call IDs"),
+so for a single-call batch the id, the tool name and the seq collapse into one
+fact and every same-tool batch looks identical.
+
+Without the argument check a spent decision — which still loads, since the
+embedder-recorded flow accepts a decided row — re-binds to a LATER batch of the
+same tool and executes arguments nobody approved.
+
+A batch whose call IDs cannot name their calls does not park at all: a
+duplicate ID would collapse two calls into one card descriptor (the human
+approves one action, two run), and an empty ID can never be matched back.
+Providers produce both — Ollama can omit the id, Gemini reuses the function
+name. Such a batch dispatches inline, where an Ask with no resolver fails
+closed.
+
+## 8. Known gaps
 
 - 📋 **Abandoned parks are never reclaimed.** A park nobody decides keeps its
   row (past TTL, `pending`) and its MCP handle collector until something calls
@@ -264,7 +296,7 @@ must not kill a session.
   oversight — every other conversation entry point reaches clients through the
   Weave surface, so the asymmetry is worth a deliberate answer.
 
-## 8. A note on hook evaluation count
+## 9. A note on hook evaluation count
 
 The pre-scan asks the admission chain the same question execution asks, so a
 call that parks and then runs evaluates every matching hook **twice** (three
