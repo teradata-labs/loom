@@ -92,6 +92,7 @@ const (
 	LoomService_PauseSchedule_FullMethodName               = "/loom.v1.LoomService/PauseSchedule"
 	LoomService_ResumeSchedule_FullMethodName              = "/loom.v1.LoomService/ResumeSchedule"
 	LoomService_GetScheduleHistory_FullMethodName          = "/loom.v1.LoomService/GetScheduleHistory"
+	LoomService_CancelWorkflowExecution_FullMethodName     = "/loom.v1.LoomService/CancelWorkflowExecution"
 	LoomService_Publish_FullMethodName                     = "/loom.v1.LoomService/Publish"
 	LoomService_Subscribe_FullMethodName                   = "/loom.v1.LoomService/Subscribe"
 	LoomService_Unsubscribe_FullMethodName                 = "/loom.v1.LoomService/Unsubscribe"
@@ -256,6 +257,18 @@ type LoomServiceClient interface {
 	ResumeSchedule(ctx context.Context, in *ResumeScheduleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// GetScheduleHistory retrieves execution history for a schedule.
 	GetScheduleHistory(ctx context.Context, in *GetScheduleHistoryRequest, opts ...grpc.CallOption) (*GetScheduleHistoryResponse, error)
+	// CancelWorkflowExecution stops an execution that is currently running.
+	//
+	// Pausing a schedule prevents future runs but does nothing about one already
+	// in flight, and max_execution_seconds only detects a stuck run after the
+	// fact. This is the operator's stop button: without it a workflow that hangs
+	// holds its schedule's slot until the timeout expires, and skip_if_running
+	// silently skips every run in the meantime.
+	//
+	// Cancellation is cooperative — the execution's context is cancelled and the
+	// run is recorded as cancelled. Work already committed by earlier stages is
+	// not rolled back.
+	CancelWorkflowExecution(ctx context.Context, in *CancelWorkflowExecutionRequest, opts ...grpc.CallOption) (*CancelWorkflowExecutionResponse, error)
 	// Publish publishes a message to a topic (one-to-many broadcast).
 	Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*PublishResponse, error)
 	// Subscribe subscribes to a topic and receives messages via stream.
@@ -952,6 +965,16 @@ func (c *loomServiceClient) GetScheduleHistory(ctx context.Context, in *GetSched
 	return out, nil
 }
 
+func (c *loomServiceClient) CancelWorkflowExecution(ctx context.Context, in *CancelWorkflowExecutionRequest, opts ...grpc.CallOption) (*CancelWorkflowExecutionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelWorkflowExecutionResponse)
+	err := c.cc.Invoke(ctx, LoomService_CancelWorkflowExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomServiceClient) Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*PublishResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PublishResponse)
@@ -1393,6 +1416,18 @@ type LoomServiceServer interface {
 	ResumeSchedule(context.Context, *ResumeScheduleRequest) (*emptypb.Empty, error)
 	// GetScheduleHistory retrieves execution history for a schedule.
 	GetScheduleHistory(context.Context, *GetScheduleHistoryRequest) (*GetScheduleHistoryResponse, error)
+	// CancelWorkflowExecution stops an execution that is currently running.
+	//
+	// Pausing a schedule prevents future runs but does nothing about one already
+	// in flight, and max_execution_seconds only detects a stuck run after the
+	// fact. This is the operator's stop button: without it a workflow that hangs
+	// holds its schedule's slot until the timeout expires, and skip_if_running
+	// silently skips every run in the meantime.
+	//
+	// Cancellation is cooperative — the execution's context is cancelled and the
+	// run is recorded as cancelled. Work already committed by earlier stages is
+	// not rolled back.
+	CancelWorkflowExecution(context.Context, *CancelWorkflowExecutionRequest) (*CancelWorkflowExecutionResponse, error)
 	// Publish publishes a message to a topic (one-to-many broadcast).
 	Publish(context.Context, *PublishRequest) (*PublishResponse, error)
 	// Subscribe subscribes to a topic and receives messages via stream.
@@ -1637,6 +1672,9 @@ func (UnimplementedLoomServiceServer) ResumeSchedule(context.Context, *ResumeSch
 }
 func (UnimplementedLoomServiceServer) GetScheduleHistory(context.Context, *GetScheduleHistoryRequest) (*GetScheduleHistoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetScheduleHistory not implemented")
+}
+func (UnimplementedLoomServiceServer) CancelWorkflowExecution(context.Context, *CancelWorkflowExecutionRequest) (*CancelWorkflowExecutionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelWorkflowExecution not implemented")
 }
 func (UnimplementedLoomServiceServer) Publish(context.Context, *PublishRequest) (*PublishResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Publish not implemented")
@@ -2755,6 +2793,24 @@ func _LoomService_GetScheduleHistory_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_CancelWorkflowExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelWorkflowExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).CancelWorkflowExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_CancelWorkflowExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).CancelWorkflowExecution(ctx, req.(*CancelWorkflowExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LoomService_Publish_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PublishRequest)
 	if err := dec(in); err != nil {
@@ -3481,6 +3537,10 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetScheduleHistory",
 			Handler:    _LoomService_GetScheduleHistory_Handler,
+		},
+		{
+			MethodName: "CancelWorkflowExecution",
+			Handler:    _LoomService_CancelWorkflowExecution_Handler,
 		},
 		{
 			MethodName: "Publish",

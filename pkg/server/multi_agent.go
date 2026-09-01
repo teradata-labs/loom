@@ -4571,6 +4571,46 @@ func (s *MultiAgentServer) PauseSchedule(ctx context.Context, req *loomv1.PauseS
 
 // ResumeSchedule resumes a paused schedule.
 // The schedule will start executing again according to its cron expression.
+// CancelWorkflowExecution stops an execution that is currently running.
+//
+// Pausing a schedule prevents future runs but leaves one already in flight
+// alone, and max_execution_seconds only notices a stuck run once its deadline
+// passes. This is the stop button in between.
+func (s *MultiAgentServer) CancelWorkflowExecution(ctx context.Context, req *loomv1.CancelWorkflowExecutionRequest) (*loomv1.CancelWorkflowExecutionResponse, error) {
+	if req.ExecutionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "execution_id is required")
+	}
+
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+
+	if sched == nil {
+		return nil, status.Error(codes.FailedPrecondition, "scheduler not configured")
+	}
+
+	cancelled, err := sched.CancelExecution(ctx, req.ExecutionId, req.Reason)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to cancel execution: %v", err)
+	}
+
+	// Not-running is a successful no-op, not an error: an execution that
+	// finished a moment before the request already gave the caller what they
+	// asked for. Reporting NotFound here would make the UI apologise for a race
+	// it won.
+	if !cancelled {
+		return &loomv1.CancelWorkflowExecutionResponse{
+			Cancelled: false,
+			Message:   "execution is not running — it already finished, or never started",
+		}, nil
+	}
+
+	return &loomv1.CancelWorkflowExecutionResponse{
+		Cancelled: true,
+		Message:   "cancellation signalled; the run stops at its next checkpoint",
+	}, nil
+}
+
 func (s *MultiAgentServer) ResumeSchedule(ctx context.Context, req *loomv1.ResumeScheduleRequest) (*emptypb.Empty, error) {
 	if req.ScheduleId == "" {
 		return nil, status.Error(codes.InvalidArgument, "schedule_id is required")

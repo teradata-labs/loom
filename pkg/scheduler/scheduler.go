@@ -37,17 +37,25 @@ type Scheduler struct {
 	mu               sync.RWMutex
 	schedules        map[string]*loomv1.ScheduledWorkflow
 	runningWorkflows map[string]string // schedule_id -> execution_id
-	cronEngine       *cron.Cron
-	cronEntries      map[string]cron.EntryID
-	store            *Store
-	orchestrator     *orchestration.Orchestrator
-	registry         *agent.Registry
-	tracer           observability.Tracer
-	logger           *zap.Logger
-	loader           *Loader
-	stopCh           chan struct{}
-	wg               sync.WaitGroup
-	config           Config
+	// runningCancels holds each in-flight execution's cancel func, keyed by
+	// execution ID. Without it the only way to stop a hung workflow is to wait
+	// out max_execution_seconds, during which skip_if_running silently skips
+	// every scheduled run.
+	runningCancels map[string]context.CancelFunc
+	// cancelReasons records why an execution was cancelled, so the history entry
+	// can distinguish an operator stop from a timeout or a crash.
+	cancelReasons map[string]string
+	cronEngine    *cron.Cron
+	cronEntries   map[string]cron.EntryID
+	store         *Store
+	orchestrator  *orchestration.Orchestrator
+	registry      *agent.Registry
+	tracer        observability.Tracer
+	logger        *zap.Logger
+	loader        *Loader
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	config        Config
 }
 
 // NewScheduler creates a new workflow scheduler.
@@ -78,6 +86,8 @@ func NewScheduler(ctx context.Context, config Config) (*Scheduler, error) {
 	s := &Scheduler{
 		schedules:        make(map[string]*loomv1.ScheduledWorkflow),
 		runningWorkflows: make(map[string]string),
+		runningCancels:   make(map[string]context.CancelFunc),
+		cancelReasons:    make(map[string]string),
 		cronEngine:       cronEngine,
 		cronEntries:      make(map[string]cron.EntryID),
 		store:            store,
@@ -380,6 +390,57 @@ func (s *Scheduler) TriggerNow(ctx context.Context, scheduleID string, skipIfRun
 	return executionID, nil
 }
 
+// CancelExecution stops a running execution.
+//
+// Returns false when no execution with that ID is in flight — already finished,
+// or never started. That is deliberately not an error: someone cancelling a run
+// that just completed has got the outcome they wanted, and turning the race into
+// a failure would only make the UI apologise for succeeding.
+//
+// Cancellation is cooperative. The execution's context is cancelled, which
+// unwinds the orchestrator at its next context check; work already committed by
+// earlier stages is not rolled back. The reason is recorded so the history entry
+// reads as an operator stop rather than a crash.
+func (s *Scheduler) CancelExecution(ctx context.Context, executionID, reason string) (bool, error) {
+	if executionID == "" {
+		return false, fmt.Errorf("execution_id is required")
+	}
+
+	s.mu.Lock()
+	cancel, running := s.runningCancels[executionID]
+	if running {
+		// Recorded before cancelling so executeWorkflow's classification cannot
+		// observe the cancelled context before it can see the reason.
+		s.cancelReasons[executionID] = reason
+	}
+	s.mu.Unlock()
+
+	if !running {
+		return false, nil
+	}
+
+	s.logger.Info("Cancelling workflow execution",
+		zap.String("execution_id", executionID),
+		zap.String("reason", reason))
+
+	cancel()
+	return true, nil
+}
+
+// RunningExecutions returns the execution IDs currently in flight, keyed by
+// schedule ID. Useful for an operations view that needs to offer a stop button
+// only where there is something to stop.
+func (s *Scheduler) RunningExecutions() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]string, len(s.runningWorkflows))
+	for scheduleID, execID := range s.runningWorkflows {
+		out[scheduleID] = execID
+	}
+	return out
+}
+
 // GetSchedule retrieves a schedule by ID.
 func (s *Scheduler) GetSchedule(ctx context.Context, scheduleID string) (*loomv1.ScheduledWorkflow, error) {
 	return s.store.Get(ctx, scheduleID)
@@ -488,6 +549,18 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Publish the cancel func so CancelExecution can reach this run. Registered
+	// after the running-marker above and torn down alongside it.
+	s.mu.Lock()
+	s.runningCancels[executionID] = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.runningCancels, executionID)
+		delete(s.cancelReasons, executionID)
+		s.mu.Unlock()
+	}()
+
 	// Set workflow_id for session continuity in RESUME mode
 	if schedule.Schedule.SessionMode == loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_RESUME {
 		// Use schedule ID as stable workflow_id so agent sessions are deterministic
@@ -524,7 +597,35 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 		WorkflowId:  workflowID,
 	}
 
-	if err != nil {
+	// A cancelled run is not a failed run. Counting an operator's stop as a
+	// failure would corrupt the success rate the UI uses to convey trust, and
+	// would make a deliberately stopped routine look broken.
+	s.mu.RLock()
+	cancelReason, wasCancelled := s.cancelReasons[executionID]
+	s.mu.RUnlock()
+
+	switch {
+	case wasCancelled:
+		execution.Status = "cancelled"
+		if cancelReason != "" {
+			execution.Error = cancelReason
+		} else {
+			execution.Error = "cancelled by operator"
+		}
+
+		s.logger.Info("Workflow execution cancelled",
+			zap.String("schedule_id", schedule.Id),
+			zap.String("execution_id", executionID),
+			zap.String("reason", cancelReason),
+			zap.Int64("duration_ms", duration.Milliseconds()))
+
+		// Move last_status off the previous run's outcome. Without this a
+		// stopped routine reports itself as having last succeeded.
+		if storeErr := s.store.RecordCancelled(ctx, schedule.Id, execution.Error); storeErr != nil {
+			s.logger.Error("Failed to record cancellation", zap.Error(storeErr))
+		}
+
+	case err != nil:
 		execution.Status = "failed"
 		execution.Error = err.Error()
 
@@ -537,7 +638,8 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 		if err := s.store.RecordFailure(ctx, schedule.Id, err.Error()); err != nil {
 			s.logger.Error("Failed to record failure", zap.Error(err))
 		}
-	} else {
+
+	default:
 		execution.Status = "success"
 
 		s.logger.Info("Workflow execution succeeded",

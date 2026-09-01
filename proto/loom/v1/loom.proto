@@ -430,6 +430,24 @@ service LoomService {
     option (google.api.http) = {get: "/v1/workflows/schedules/{schedule_id}/history"};
   }
 
+  // CancelWorkflowExecution stops an execution that is currently running.
+  //
+  // Pausing a schedule prevents future runs but does nothing about one already
+  // in flight, and max_execution_seconds only detects a stuck run after the
+  // fact. This is the operator's stop button: without it a workflow that hangs
+  // holds its schedule's slot until the timeout expires, and skip_if_running
+  // silently skips every run in the meantime.
+  //
+  // Cancellation is cooperative — the execution's context is cancelled and the
+  // run is recorded as cancelled. Work already committed by earlier stages is
+  // not rolled back.
+  rpc CancelWorkflowExecution(CancelWorkflowExecutionRequest) returns (CancelWorkflowExecutionResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows/executions/{execution_id}:cancel"
+      body: "*"
+    };
+  }
+
   // Tri-Modal Communication RPCs
 
   // Broadcast Bus (Pub/Sub) Operations
@@ -2102,6 +2120,28 @@ message GetScheduleHistoryRequest {
 message GetScheduleHistoryResponse {
   // Schedule executions
   repeated ScheduleExecution executions = 1;
+}
+
+// CancelWorkflowExecutionRequest stops a running execution.
+message CancelWorkflowExecutionRequest {
+  // Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id
+  // or by the response to TriggerScheduledWorkflow.
+  string execution_id = 1;
+
+  // Optional human-readable reason, recorded in the execution history so the
+  // record distinguishes an operator stop from a crash.
+  string reason = 2;
+}
+
+// CancelWorkflowExecutionResponse reports what the cancellation did.
+message CancelWorkflowExecutionResponse {
+  // True when a running execution was found and signalled. False means the
+  // execution was already finished or was never running — not an error, since
+  // a user cancelling a run that just completed has got what they wanted.
+  bool cancelled = 1;
+
+  // Human-readable outcome, suitable for showing directly.
+  string message = 2;
 }
 
 // ScheduleExecution represents a single execution of a scheduled workflow.

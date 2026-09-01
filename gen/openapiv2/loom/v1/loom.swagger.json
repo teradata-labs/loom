@@ -2913,6 +2913,47 @@
         ]
       }
     },
+    "/v1/workflows/executions/{executionId}:cancel": {
+      "post": {
+        "summary": "CancelWorkflowExecution stops an execution that is currently running.",
+        "description": "Pausing a schedule prevents future runs but does nothing about one already\nin flight, and max_execution_seconds only detects a stuck run after the\nfact. This is the operator's stop button: without it a workflow that hangs\nholds its schedule's slot until the timeout expires, and skip_if_running\nsilently skips every run in the meantime.\n\nCancellation is cooperative — the execution's context is cancelled and the\nrun is recorded as cancelled. Work already committed by earlier stages is\nnot rolled back.",
+        "operationId": "LoomService_CancelWorkflowExecution",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelWorkflowExecutionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "executionId",
+            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\nor by the response to TriggerScheduledWorkflow.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCancelWorkflowExecutionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/workflows/schedules": {
       "get": {
         "summary": "ListScheduledWorkflows lists all scheduled workflows.",
@@ -3351,6 +3392,16 @@
         }
       },
       "description": "AnswerClarificationRequest provides an answer to a clarification question."
+    },
+    "LoomServiceCancelWorkflowExecutionBody": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable reason, recorded in the execution history so the\nrecord distinguishes an operator stop from a crash."
+        }
+      },
+      "description": "CancelWorkflowExecutionRequest stops a running execution."
     },
     "LoomServicePauseScheduleBody": {
       "type": "object",
@@ -4327,6 +4378,20 @@
         }
       },
       "description": "BusMessage is the envelope for pub/sub messages broadcast to topic subscribers.\nUnlike point-to-point CommunicationMessage, BusMessage is one-to-many."
+    },
+    "v1CancelWorkflowExecutionResponse": {
+      "type": "object",
+      "properties": {
+        "cancelled": {
+          "type": "boolean",
+          "description": "True when a running execution was found and signalled. False means the\nexecution was already finished or was never running — not an error, since\na user cancelling a run that just completed has got what they wanted."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable outcome, suitable for showing directly."
+        }
+      },
+      "description": "CancelWorkflowExecutionResponse reports what the cancellation did."
     },
     "v1CertificateInfo": {
       "type": "object",

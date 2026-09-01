@@ -6901,6 +6901,120 @@ func (x *GetScheduleHistoryResponse) GetExecutions() []*ScheduleExecution {
 	return nil
 }
 
+// CancelWorkflowExecutionRequest stops a running execution.
+type CancelWorkflowExecutionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id
+	// or by the response to TriggerScheduledWorkflow.
+	ExecutionId string `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	// Optional human-readable reason, recorded in the execution history so the
+	// record distinguishes an operator stop from a crash.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelWorkflowExecutionRequest) Reset() {
+	*x = CancelWorkflowExecutionRequest{}
+	mi := &file_loom_v1_loom_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelWorkflowExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelWorkflowExecutionRequest) ProtoMessage() {}
+
+func (x *CancelWorkflowExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_loom_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelWorkflowExecutionRequest.ProtoReflect.Descriptor instead.
+func (*CancelWorkflowExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *CancelWorkflowExecutionRequest) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *CancelWorkflowExecutionRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// CancelWorkflowExecutionResponse reports what the cancellation did.
+type CancelWorkflowExecutionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True when a running execution was found and signalled. False means the
+	// execution was already finished or was never running — not an error, since
+	// a user cancelling a run that just completed has got what they wanted.
+	Cancelled bool `protobuf:"varint,1,opt,name=cancelled,proto3" json:"cancelled,omitempty"`
+	// Human-readable outcome, suitable for showing directly.
+	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelWorkflowExecutionResponse) Reset() {
+	*x = CancelWorkflowExecutionResponse{}
+	mi := &file_loom_v1_loom_proto_msgTypes[89]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelWorkflowExecutionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelWorkflowExecutionResponse) ProtoMessage() {}
+
+func (x *CancelWorkflowExecutionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_loom_proto_msgTypes[89]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelWorkflowExecutionResponse.ProtoReflect.Descriptor instead.
+func (*CancelWorkflowExecutionResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *CancelWorkflowExecutionResponse) GetCancelled() bool {
+	if x != nil {
+		return x.Cancelled
+	}
+	return false
+}
+
+func (x *CancelWorkflowExecutionResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // ScheduleExecution represents a single execution of a scheduled workflow.
 type ScheduleExecution struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6924,7 +7038,7 @@ type ScheduleExecution struct {
 
 func (x *ScheduleExecution) Reset() {
 	*x = ScheduleExecution{}
-	mi := &file_loom_v1_loom_proto_msgTypes[88]
+	mi := &file_loom_v1_loom_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6936,7 +7050,7 @@ func (x *ScheduleExecution) String() string {
 func (*ScheduleExecution) ProtoMessage() {}
 
 func (x *ScheduleExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[88]
+	mi := &file_loom_v1_loom_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6949,7 +7063,7 @@ func (x *ScheduleExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleExecution.ProtoReflect.Descriptor instead.
 func (*ScheduleExecution) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{88}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *ScheduleExecution) GetExecutionId() string {
@@ -7010,7 +7124,7 @@ type GetServerConfigRequest struct {
 
 func (x *GetServerConfigRequest) Reset() {
 	*x = GetServerConfigRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[89]
+	mi := &file_loom_v1_loom_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7022,7 +7136,7 @@ func (x *GetServerConfigRequest) String() string {
 func (*GetServerConfigRequest) ProtoMessage() {}
 
 func (x *GetServerConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[89]
+	mi := &file_loom_v1_loom_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7035,7 +7149,7 @@ func (x *GetServerConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetServerConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetServerConfigRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{89}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{91}
 }
 
 // GetTLSStatusRequest retrieves TLS status.
@@ -7047,7 +7161,7 @@ type GetTLSStatusRequest struct {
 
 func (x *GetTLSStatusRequest) Reset() {
 	*x = GetTLSStatusRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[90]
+	mi := &file_loom_v1_loom_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7059,7 +7173,7 @@ func (x *GetTLSStatusRequest) String() string {
 func (*GetTLSStatusRequest) ProtoMessage() {}
 
 func (x *GetTLSStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[90]
+	mi := &file_loom_v1_loom_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7072,7 +7186,7 @@ func (x *GetTLSStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTLSStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetTLSStatusRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{90}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{92}
 }
 
 // RenewCertificateRequest manually triggers certificate renewal.
@@ -7086,7 +7200,7 @@ type RenewCertificateRequest struct {
 
 func (x *RenewCertificateRequest) Reset() {
 	*x = RenewCertificateRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[91]
+	mi := &file_loom_v1_loom_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7098,7 +7212,7 @@ func (x *RenewCertificateRequest) String() string {
 func (*RenewCertificateRequest) ProtoMessage() {}
 
 func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[91]
+	mi := &file_loom_v1_loom_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7111,7 +7225,7 @@ func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RenewCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{91}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *RenewCertificateRequest) GetForce() bool {
@@ -7136,7 +7250,7 @@ type RenewCertificateResponse struct {
 
 func (x *RenewCertificateResponse) Reset() {
 	*x = RenewCertificateResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[92]
+	mi := &file_loom_v1_loom_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7148,7 +7262,7 @@ func (x *RenewCertificateResponse) String() string {
 func (*RenewCertificateResponse) ProtoMessage() {}
 
 func (x *RenewCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[92]
+	mi := &file_loom_v1_loom_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7161,7 +7275,7 @@ func (x *RenewCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateResponse.ProtoReflect.Descriptor instead.
 func (*RenewCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{92}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *RenewCertificateResponse) GetSuccess() bool {
@@ -7210,7 +7324,7 @@ type SwitchModelRequest struct {
 
 func (x *SwitchModelRequest) Reset() {
 	*x = SwitchModelRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[93]
+	mi := &file_loom_v1_loom_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7222,7 +7336,7 @@ func (x *SwitchModelRequest) String() string {
 func (*SwitchModelRequest) ProtoMessage() {}
 
 func (x *SwitchModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[93]
+	mi := &file_loom_v1_loom_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7235,7 +7349,7 @@ func (x *SwitchModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchModelRequest.ProtoReflect.Descriptor instead.
 func (*SwitchModelRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{93}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *SwitchModelRequest) GetSessionId() string {
@@ -7304,7 +7418,7 @@ type SwitchModelResponse struct {
 
 func (x *SwitchModelResponse) Reset() {
 	*x = SwitchModelResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[94]
+	mi := &file_loom_v1_loom_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7316,7 +7430,7 @@ func (x *SwitchModelResponse) String() string {
 func (*SwitchModelResponse) ProtoMessage() {}
 
 func (x *SwitchModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[94]
+	mi := &file_loom_v1_loom_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7329,7 +7443,7 @@ func (x *SwitchModelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchModelResponse.ProtoReflect.Descriptor instead.
 func (*SwitchModelResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{94}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *SwitchModelResponse) GetSuccess() bool {
@@ -7373,7 +7487,7 @@ type ListAvailableModelsRequest struct {
 
 func (x *ListAvailableModelsRequest) Reset() {
 	*x = ListAvailableModelsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[95]
+	mi := &file_loom_v1_loom_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7385,7 +7499,7 @@ func (x *ListAvailableModelsRequest) String() string {
 func (*ListAvailableModelsRequest) ProtoMessage() {}
 
 func (x *ListAvailableModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[95]
+	mi := &file_loom_v1_loom_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7398,7 +7512,7 @@ func (x *ListAvailableModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAvailableModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListAvailableModelsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{95}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *ListAvailableModelsRequest) GetProviderFilter() string {
@@ -7428,7 +7542,7 @@ type ListAvailableModelsResponse struct {
 
 func (x *ListAvailableModelsResponse) Reset() {
 	*x = ListAvailableModelsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[96]
+	mi := &file_loom_v1_loom_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7440,7 +7554,7 @@ func (x *ListAvailableModelsResponse) String() string {
 func (*ListAvailableModelsResponse) ProtoMessage() {}
 
 func (x *ListAvailableModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[96]
+	mi := &file_loom_v1_loom_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7453,7 +7567,7 @@ func (x *ListAvailableModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAvailableModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListAvailableModelsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{96}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *ListAvailableModelsResponse) GetModels() []*ModelInfo {
@@ -7482,7 +7596,7 @@ type ListProvidersRequest struct {
 
 func (x *ListProvidersRequest) Reset() {
 	*x = ListProvidersRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[97]
+	mi := &file_loom_v1_loom_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7494,7 +7608,7 @@ func (x *ListProvidersRequest) String() string {
 func (*ListProvidersRequest) ProtoMessage() {}
 
 func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[97]
+	mi := &file_loom_v1_loom_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7507,7 +7621,7 @@ func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersRequest.ProtoReflect.Descriptor instead.
 func (*ListProvidersRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{97}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *ListProvidersRequest) GetAgentId() string {
@@ -7535,7 +7649,7 @@ type ListProvidersResponse struct {
 
 func (x *ListProvidersResponse) Reset() {
 	*x = ListProvidersResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[98]
+	mi := &file_loom_v1_loom_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7547,7 +7661,7 @@ func (x *ListProvidersResponse) String() string {
 func (*ListProvidersResponse) ProtoMessage() {}
 
 func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[98]
+	mi := &file_loom_v1_loom_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7560,7 +7674,7 @@ func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersResponse.ProtoReflect.Descriptor instead.
 func (*ListProvidersResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{98}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *ListProvidersResponse) GetProviders() []*ProviderEntry {
@@ -7593,7 +7707,7 @@ type ABTestRequest struct {
 
 func (x *ABTestRequest) Reset() {
 	*x = ABTestRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[99]
+	mi := &file_loom_v1_loom_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7605,7 +7719,7 @@ func (x *ABTestRequest) String() string {
 func (*ABTestRequest) ProtoMessage() {}
 
 func (x *ABTestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[99]
+	mi := &file_loom_v1_loom_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7618,7 +7732,7 @@ func (x *ABTestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ABTestRequest.ProtoReflect.Descriptor instead.
 func (*ABTestRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{99}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *ABTestRequest) GetSessionId() string {
@@ -7675,7 +7789,7 @@ type ABTestEvent struct {
 
 func (x *ABTestEvent) Reset() {
 	*x = ABTestEvent{}
-	mi := &file_loom_v1_loom_proto_msgTypes[100]
+	mi := &file_loom_v1_loom_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7687,7 +7801,7 @@ func (x *ABTestEvent) String() string {
 func (*ABTestEvent) ProtoMessage() {}
 
 func (x *ABTestEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[100]
+	mi := &file_loom_v1_loom_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7700,7 +7814,7 @@ func (x *ABTestEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ABTestEvent.ProtoReflect.Descriptor instead.
 func (*ABTestEvent) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{100}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *ABTestEvent) GetProviderName() string {
@@ -7790,7 +7904,7 @@ type ModelInfo struct {
 
 func (x *ModelInfo) Reset() {
 	*x = ModelInfo{}
-	mi := &file_loom_v1_loom_proto_msgTypes[101]
+	mi := &file_loom_v1_loom_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7802,7 +7916,7 @@ func (x *ModelInfo) String() string {
 func (*ModelInfo) ProtoMessage() {}
 
 func (x *ModelInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[101]
+	mi := &file_loom_v1_loom_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7815,7 +7929,7 @@ func (x *ModelInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelInfo.ProtoReflect.Descriptor instead.
 func (*ModelInfo) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{101}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *ModelInfo) GetId() string {
@@ -7916,7 +8030,7 @@ type ToolPermissionRequest struct {
 
 func (x *ToolPermissionRequest) Reset() {
 	*x = ToolPermissionRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[102]
+	mi := &file_loom_v1_loom_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7928,7 +8042,7 @@ func (x *ToolPermissionRequest) String() string {
 func (*ToolPermissionRequest) ProtoMessage() {}
 
 func (x *ToolPermissionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[102]
+	mi := &file_loom_v1_loom_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7941,7 +8055,7 @@ func (x *ToolPermissionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolPermissionRequest.ProtoReflect.Descriptor instead.
 func (*ToolPermissionRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{102}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *ToolPermissionRequest) GetSessionId() string {
@@ -8003,7 +8117,7 @@ type ToolPermissionResponse struct {
 
 func (x *ToolPermissionResponse) Reset() {
 	*x = ToolPermissionResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[103]
+	mi := &file_loom_v1_loom_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8015,7 +8129,7 @@ func (x *ToolPermissionResponse) String() string {
 func (*ToolPermissionResponse) ProtoMessage() {}
 
 func (x *ToolPermissionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[103]
+	mi := &file_loom_v1_loom_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8028,7 +8142,7 @@ func (x *ToolPermissionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolPermissionResponse.ProtoReflect.Descriptor instead.
 func (*ToolPermissionResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{103}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *ToolPermissionResponse) GetGranted() bool {
@@ -8068,7 +8182,7 @@ type ListMCPServersRequest struct {
 
 func (x *ListMCPServersRequest) Reset() {
 	*x = ListMCPServersRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[104]
+	mi := &file_loom_v1_loom_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8080,7 +8194,7 @@ func (x *ListMCPServersRequest) String() string {
 func (*ListMCPServersRequest) ProtoMessage() {}
 
 func (x *ListMCPServersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[104]
+	mi := &file_loom_v1_loom_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8093,7 +8207,7 @@ func (x *ListMCPServersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServersRequest.ProtoReflect.Descriptor instead.
 func (*ListMCPServersRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{104}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{106}
 }
 
 // ListMCPServersResponse returns MCP servers.
@@ -8109,7 +8223,7 @@ type ListMCPServersResponse struct {
 
 func (x *ListMCPServersResponse) Reset() {
 	*x = ListMCPServersResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[105]
+	mi := &file_loom_v1_loom_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8121,7 +8235,7 @@ func (x *ListMCPServersResponse) String() string {
 func (*ListMCPServersResponse) ProtoMessage() {}
 
 func (x *ListMCPServersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[105]
+	mi := &file_loom_v1_loom_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8134,7 +8248,7 @@ func (x *ListMCPServersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServersResponse.ProtoReflect.Descriptor instead.
 func (*ListMCPServersResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{105}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *ListMCPServersResponse) GetServers() []*MCPServerInfo {
@@ -8162,7 +8276,7 @@ type GetMCPServerRequest struct {
 
 func (x *GetMCPServerRequest) Reset() {
 	*x = GetMCPServerRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[106]
+	mi := &file_loom_v1_loom_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8174,7 +8288,7 @@ func (x *GetMCPServerRequest) String() string {
 func (*GetMCPServerRequest) ProtoMessage() {}
 
 func (x *GetMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[106]
+	mi := &file_loom_v1_loom_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8187,7 +8301,7 @@ func (x *GetMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*GetMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{106}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *GetMCPServerRequest) GetServerName() string {
@@ -8228,7 +8342,7 @@ type MCPServerInfo struct {
 
 func (x *MCPServerInfo) Reset() {
 	*x = MCPServerInfo{}
-	mi := &file_loom_v1_loom_proto_msgTypes[107]
+	mi := &file_loom_v1_loom_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8240,7 +8354,7 @@ func (x *MCPServerInfo) String() string {
 func (*MCPServerInfo) ProtoMessage() {}
 
 func (x *MCPServerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[107]
+	mi := &file_loom_v1_loom_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8253,7 +8367,7 @@ func (x *MCPServerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerInfo.ProtoReflect.Descriptor instead.
 func (*MCPServerInfo) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{107}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *MCPServerInfo) GetName() string {
@@ -8348,7 +8462,7 @@ type ToolFilterConfig struct {
 
 func (x *ToolFilterConfig) Reset() {
 	*x = ToolFilterConfig{}
-	mi := &file_loom_v1_loom_proto_msgTypes[108]
+	mi := &file_loom_v1_loom_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8360,7 +8474,7 @@ func (x *ToolFilterConfig) String() string {
 func (*ToolFilterConfig) ProtoMessage() {}
 
 func (x *ToolFilterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[108]
+	mi := &file_loom_v1_loom_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8373,7 +8487,7 @@ func (x *ToolFilterConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolFilterConfig.ProtoReflect.Descriptor instead.
 func (*ToolFilterConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{108}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *ToolFilterConfig) GetAll() bool {
@@ -8430,7 +8544,7 @@ type AddMCPServerRequest struct {
 
 func (x *AddMCPServerRequest) Reset() {
 	*x = AddMCPServerRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[109]
+	mi := &file_loom_v1_loom_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8442,7 +8556,7 @@ func (x *AddMCPServerRequest) String() string {
 func (*AddMCPServerRequest) ProtoMessage() {}
 
 func (x *AddMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[109]
+	mi := &file_loom_v1_loom_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8455,7 +8569,7 @@ func (x *AddMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*AddMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{109}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *AddMCPServerRequest) GetName() string {
@@ -8557,7 +8671,7 @@ type AddMCPServerResponse struct {
 
 func (x *AddMCPServerResponse) Reset() {
 	*x = AddMCPServerResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[110]
+	mi := &file_loom_v1_loom_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8569,7 +8683,7 @@ func (x *AddMCPServerResponse) String() string {
 func (*AddMCPServerResponse) ProtoMessage() {}
 
 func (x *AddMCPServerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[110]
+	mi := &file_loom_v1_loom_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8582,7 +8696,7 @@ func (x *AddMCPServerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMCPServerResponse.ProtoReflect.Descriptor instead.
 func (*AddMCPServerResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{110}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *AddMCPServerResponse) GetSuccess() bool {
@@ -8641,7 +8755,7 @@ type UpdateMCPServerRequest struct {
 
 func (x *UpdateMCPServerRequest) Reset() {
 	*x = UpdateMCPServerRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[111]
+	mi := &file_loom_v1_loom_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8653,7 +8767,7 @@ func (x *UpdateMCPServerRequest) String() string {
 func (*UpdateMCPServerRequest) ProtoMessage() {}
 
 func (x *UpdateMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[111]
+	mi := &file_loom_v1_loom_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8666,7 +8780,7 @@ func (x *UpdateMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*UpdateMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{111}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *UpdateMCPServerRequest) GetServerName() string {
@@ -8773,7 +8887,7 @@ type DeleteMCPServerRequest struct {
 
 func (x *DeleteMCPServerRequest) Reset() {
 	*x = DeleteMCPServerRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[112]
+	mi := &file_loom_v1_loom_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8785,7 +8899,7 @@ func (x *DeleteMCPServerRequest) String() string {
 func (*DeleteMCPServerRequest) ProtoMessage() {}
 
 func (x *DeleteMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[112]
+	mi := &file_loom_v1_loom_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8798,7 +8912,7 @@ func (x *DeleteMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{112}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *DeleteMCPServerRequest) GetServerName() string {
@@ -8828,7 +8942,7 @@ type DeleteMCPServerResponse struct {
 
 func (x *DeleteMCPServerResponse) Reset() {
 	*x = DeleteMCPServerResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[113]
+	mi := &file_loom_v1_loom_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8840,7 +8954,7 @@ func (x *DeleteMCPServerResponse) String() string {
 func (*DeleteMCPServerResponse) ProtoMessage() {}
 
 func (x *DeleteMCPServerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[113]
+	mi := &file_loom_v1_loom_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8853,7 +8967,7 @@ func (x *DeleteMCPServerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPServerResponse.ProtoReflect.Descriptor instead.
 func (*DeleteMCPServerResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{113}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *DeleteMCPServerResponse) GetSuccess() bool {
@@ -8883,7 +8997,7 @@ type RestartMCPServerRequest struct {
 
 func (x *RestartMCPServerRequest) Reset() {
 	*x = RestartMCPServerRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[114]
+	mi := &file_loom_v1_loom_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8895,7 +9009,7 @@ func (x *RestartMCPServerRequest) String() string {
 func (*RestartMCPServerRequest) ProtoMessage() {}
 
 func (x *RestartMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[114]
+	mi := &file_loom_v1_loom_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8908,7 +9022,7 @@ func (x *RestartMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*RestartMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{114}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *RestartMCPServerRequest) GetServerName() string {
@@ -8934,7 +9048,7 @@ type HealthCheckMCPServersRequest struct {
 
 func (x *HealthCheckMCPServersRequest) Reset() {
 	*x = HealthCheckMCPServersRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[115]
+	mi := &file_loom_v1_loom_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8946,7 +9060,7 @@ func (x *HealthCheckMCPServersRequest) String() string {
 func (*HealthCheckMCPServersRequest) ProtoMessage() {}
 
 func (x *HealthCheckMCPServersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[115]
+	mi := &file_loom_v1_loom_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8959,7 +9073,7 @@ func (x *HealthCheckMCPServersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckMCPServersRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckMCPServersRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{115}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{117}
 }
 
 // HealthCheckMCPServersResponse returns health status.
@@ -8973,7 +9087,7 @@ type HealthCheckMCPServersResponse struct {
 
 func (x *HealthCheckMCPServersResponse) Reset() {
 	*x = HealthCheckMCPServersResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[116]
+	mi := &file_loom_v1_loom_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8985,7 +9099,7 @@ func (x *HealthCheckMCPServersResponse) String() string {
 func (*HealthCheckMCPServersResponse) ProtoMessage() {}
 
 func (x *HealthCheckMCPServersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[116]
+	mi := &file_loom_v1_loom_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8998,7 +9112,7 @@ func (x *HealthCheckMCPServersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckMCPServersResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckMCPServersResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{116}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *HealthCheckMCPServersResponse) GetServers() map[string]*MCPServerHealth {
@@ -9025,7 +9139,7 @@ type MCPServerHealth struct {
 
 func (x *MCPServerHealth) Reset() {
 	*x = MCPServerHealth{}
-	mi := &file_loom_v1_loom_proto_msgTypes[117]
+	mi := &file_loom_v1_loom_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9037,7 +9151,7 @@ func (x *MCPServerHealth) String() string {
 func (*MCPServerHealth) ProtoMessage() {}
 
 func (x *MCPServerHealth) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[117]
+	mi := &file_loom_v1_loom_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9050,7 +9164,7 @@ func (x *MCPServerHealth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerHealth.ProtoReflect.Descriptor instead.
 func (*MCPServerHealth) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{117}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *MCPServerHealth) GetStatus() string {
@@ -9110,7 +9224,7 @@ type TestMCPServerConnectionRequest struct {
 
 func (x *TestMCPServerConnectionRequest) Reset() {
 	*x = TestMCPServerConnectionRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[118]
+	mi := &file_loom_v1_loom_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9122,7 +9236,7 @@ func (x *TestMCPServerConnectionRequest) String() string {
 func (*TestMCPServerConnectionRequest) ProtoMessage() {}
 
 func (x *TestMCPServerConnectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[118]
+	mi := &file_loom_v1_loom_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9135,7 +9249,7 @@ func (x *TestMCPServerConnectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestMCPServerConnectionRequest.ProtoReflect.Descriptor instead.
 func (*TestMCPServerConnectionRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{118}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *TestMCPServerConnectionRequest) GetTransport() string {
@@ -9229,7 +9343,7 @@ type TestMCPServerConnectionResponse struct {
 
 func (x *TestMCPServerConnectionResponse) Reset() {
 	*x = TestMCPServerConnectionResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[119]
+	mi := &file_loom_v1_loom_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9241,7 +9355,7 @@ func (x *TestMCPServerConnectionResponse) String() string {
 func (*TestMCPServerConnectionResponse) ProtoMessage() {}
 
 func (x *TestMCPServerConnectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[119]
+	mi := &file_loom_v1_loom_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9254,7 +9368,7 @@ func (x *TestMCPServerConnectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestMCPServerConnectionResponse.ProtoReflect.Descriptor instead.
 func (*TestMCPServerConnectionResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{119}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *TestMCPServerConnectionResponse) GetSuccess() bool {
@@ -9310,7 +9424,7 @@ type ListMCPServerToolsRequest struct {
 
 func (x *ListMCPServerToolsRequest) Reset() {
 	*x = ListMCPServerToolsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[120]
+	mi := &file_loom_v1_loom_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9322,7 +9436,7 @@ func (x *ListMCPServerToolsRequest) String() string {
 func (*ListMCPServerToolsRequest) ProtoMessage() {}
 
 func (x *ListMCPServerToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[120]
+	mi := &file_loom_v1_loom_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9335,7 +9449,7 @@ func (x *ListMCPServerToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServerToolsRequest.ProtoReflect.Descriptor instead.
 func (*ListMCPServerToolsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{120}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *ListMCPServerToolsRequest) GetServerName() string {
@@ -9360,7 +9474,7 @@ type ListMCPServerToolsResponse struct {
 
 func (x *ListMCPServerToolsResponse) Reset() {
 	*x = ListMCPServerToolsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[121]
+	mi := &file_loom_v1_loom_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9372,7 +9486,7 @@ func (x *ListMCPServerToolsResponse) String() string {
 func (*ListMCPServerToolsResponse) ProtoMessage() {}
 
 func (x *ListMCPServerToolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[121]
+	mi := &file_loom_v1_loom_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9385,7 +9499,7 @@ func (x *ListMCPServerToolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServerToolsResponse.ProtoReflect.Descriptor instead.
 func (*ListMCPServerToolsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{121}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *ListMCPServerToolsResponse) GetTools() []*ToolDefinition {
@@ -9450,7 +9564,7 @@ type Artifact struct {
 
 func (x *Artifact) Reset() {
 	*x = Artifact{}
-	mi := &file_loom_v1_loom_proto_msgTypes[122]
+	mi := &file_loom_v1_loom_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9462,7 +9576,7 @@ func (x *Artifact) String() string {
 func (*Artifact) ProtoMessage() {}
 
 func (x *Artifact) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[122]
+	mi := &file_loom_v1_loom_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9475,7 +9589,7 @@ func (x *Artifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Artifact.ProtoReflect.Descriptor instead.
 func (*Artifact) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{122}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *Artifact) GetId() string {
@@ -9611,7 +9725,7 @@ type ListArtifactsRequest struct {
 
 func (x *ListArtifactsRequest) Reset() {
 	*x = ListArtifactsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[123]
+	mi := &file_loom_v1_loom_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9623,7 +9737,7 @@ func (x *ListArtifactsRequest) String() string {
 func (*ListArtifactsRequest) ProtoMessage() {}
 
 func (x *ListArtifactsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[123]
+	mi := &file_loom_v1_loom_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9636,7 +9750,7 @@ func (x *ListArtifactsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArtifactsRequest.ProtoReflect.Descriptor instead.
 func (*ListArtifactsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{123}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *ListArtifactsRequest) GetSource() string {
@@ -9694,7 +9808,7 @@ type ListArtifactsResponse struct {
 
 func (x *ListArtifactsResponse) Reset() {
 	*x = ListArtifactsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[124]
+	mi := &file_loom_v1_loom_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9706,7 +9820,7 @@ func (x *ListArtifactsResponse) String() string {
 func (*ListArtifactsResponse) ProtoMessage() {}
 
 func (x *ListArtifactsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[124]
+	mi := &file_loom_v1_loom_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9719,7 +9833,7 @@ func (x *ListArtifactsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArtifactsResponse.ProtoReflect.Descriptor instead.
 func (*ListArtifactsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{124}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *ListArtifactsResponse) GetArtifacts() []*Artifact {
@@ -9749,7 +9863,7 @@ type GetArtifactRequest struct {
 
 func (x *GetArtifactRequest) Reset() {
 	*x = GetArtifactRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[125]
+	mi := &file_loom_v1_loom_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9761,7 +9875,7 @@ func (x *GetArtifactRequest) String() string {
 func (*GetArtifactRequest) ProtoMessage() {}
 
 func (x *GetArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[125]
+	mi := &file_loom_v1_loom_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9774,7 +9888,7 @@ func (x *GetArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactRequest.ProtoReflect.Descriptor instead.
 func (*GetArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{125}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *GetArtifactRequest) GetId() string {
@@ -9802,7 +9916,7 @@ type GetArtifactResponse struct {
 
 func (x *GetArtifactResponse) Reset() {
 	*x = GetArtifactResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[126]
+	mi := &file_loom_v1_loom_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9814,7 +9928,7 @@ func (x *GetArtifactResponse) String() string {
 func (*GetArtifactResponse) ProtoMessage() {}
 
 func (x *GetArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[126]
+	mi := &file_loom_v1_loom_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9827,7 +9941,7 @@ func (x *GetArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactResponse.ProtoReflect.Descriptor instead.
 func (*GetArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{126}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *GetArtifactResponse) GetArtifact() *Artifact {
@@ -9858,7 +9972,7 @@ type UploadArtifactRequest struct {
 
 func (x *UploadArtifactRequest) Reset() {
 	*x = UploadArtifactRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[127]
+	mi := &file_loom_v1_loom_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9870,7 +9984,7 @@ func (x *UploadArtifactRequest) String() string {
 func (*UploadArtifactRequest) ProtoMessage() {}
 
 func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[127]
+	mi := &file_loom_v1_loom_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9883,7 +9997,7 @@ func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactRequest.ProtoReflect.Descriptor instead.
 func (*UploadArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{127}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *UploadArtifactRequest) GetName() string {
@@ -9939,7 +10053,7 @@ type UploadArtifactResponse struct {
 
 func (x *UploadArtifactResponse) Reset() {
 	*x = UploadArtifactResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[128]
+	mi := &file_loom_v1_loom_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9951,7 +10065,7 @@ func (x *UploadArtifactResponse) String() string {
 func (*UploadArtifactResponse) ProtoMessage() {}
 
 func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[128]
+	mi := &file_loom_v1_loom_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9964,7 +10078,7 @@ func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactResponse.ProtoReflect.Descriptor instead.
 func (*UploadArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{128}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *UploadArtifactResponse) GetArtifact() *Artifact {
@@ -9987,7 +10101,7 @@ type DeleteArtifactRequest struct {
 
 func (x *DeleteArtifactRequest) Reset() {
 	*x = DeleteArtifactRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[129]
+	mi := &file_loom_v1_loom_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9999,7 +10113,7 @@ func (x *DeleteArtifactRequest) String() string {
 func (*DeleteArtifactRequest) ProtoMessage() {}
 
 func (x *DeleteArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[129]
+	mi := &file_loom_v1_loom_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10012,7 +10126,7 @@ func (x *DeleteArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteArtifactRequest.ProtoReflect.Descriptor instead.
 func (*DeleteArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{129}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *DeleteArtifactRequest) GetId() string {
@@ -10040,7 +10154,7 @@ type DeleteArtifactResponse struct {
 
 func (x *DeleteArtifactResponse) Reset() {
 	*x = DeleteArtifactResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[130]
+	mi := &file_loom_v1_loom_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10052,7 +10166,7 @@ func (x *DeleteArtifactResponse) String() string {
 func (*DeleteArtifactResponse) ProtoMessage() {}
 
 func (x *DeleteArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[130]
+	mi := &file_loom_v1_loom_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10065,7 +10179,7 @@ func (x *DeleteArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteArtifactResponse.ProtoReflect.Descriptor instead.
 func (*DeleteArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{130}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *DeleteArtifactResponse) GetSuccess() bool {
@@ -10088,7 +10202,7 @@ type SearchArtifactsRequest struct {
 
 func (x *SearchArtifactsRequest) Reset() {
 	*x = SearchArtifactsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[131]
+	mi := &file_loom_v1_loom_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10100,7 +10214,7 @@ func (x *SearchArtifactsRequest) String() string {
 func (*SearchArtifactsRequest) ProtoMessage() {}
 
 func (x *SearchArtifactsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[131]
+	mi := &file_loom_v1_loom_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10113,7 +10227,7 @@ func (x *SearchArtifactsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchArtifactsRequest.ProtoReflect.Descriptor instead.
 func (*SearchArtifactsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{131}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *SearchArtifactsRequest) GetQuery() string {
@@ -10141,7 +10255,7 @@ type SearchArtifactsResponse struct {
 
 func (x *SearchArtifactsResponse) Reset() {
 	*x = SearchArtifactsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[132]
+	mi := &file_loom_v1_loom_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10153,7 +10267,7 @@ func (x *SearchArtifactsResponse) String() string {
 func (*SearchArtifactsResponse) ProtoMessage() {}
 
 func (x *SearchArtifactsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[132]
+	mi := &file_loom_v1_loom_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10166,7 +10280,7 @@ func (x *SearchArtifactsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchArtifactsResponse.ProtoReflect.Descriptor instead.
 func (*SearchArtifactsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{132}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *SearchArtifactsResponse) GetArtifacts() []*Artifact {
@@ -10191,7 +10305,7 @@ type GetArtifactContentRequest struct {
 
 func (x *GetArtifactContentRequest) Reset() {
 	*x = GetArtifactContentRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[133]
+	mi := &file_loom_v1_loom_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10203,7 +10317,7 @@ func (x *GetArtifactContentRequest) String() string {
 func (*GetArtifactContentRequest) ProtoMessage() {}
 
 func (x *GetArtifactContentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[133]
+	mi := &file_loom_v1_loom_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10216,7 +10330,7 @@ func (x *GetArtifactContentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactContentRequest.ProtoReflect.Descriptor instead.
 func (*GetArtifactContentRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{133}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *GetArtifactContentRequest) GetId() string {
@@ -10253,7 +10367,7 @@ type GetArtifactContentResponse struct {
 
 func (x *GetArtifactContentResponse) Reset() {
 	*x = GetArtifactContentResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[134]
+	mi := &file_loom_v1_loom_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10265,7 +10379,7 @@ func (x *GetArtifactContentResponse) String() string {
 func (*GetArtifactContentResponse) ProtoMessage() {}
 
 func (x *GetArtifactContentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[134]
+	mi := &file_loom_v1_loom_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10278,7 +10392,7 @@ func (x *GetArtifactContentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactContentResponse.ProtoReflect.Descriptor instead.
 func (*GetArtifactContentResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{134}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *GetArtifactContentResponse) GetContent() []byte {
@@ -10304,7 +10418,7 @@ type GetArtifactStatsRequest struct {
 
 func (x *GetArtifactStatsRequest) Reset() {
 	*x = GetArtifactStatsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[135]
+	mi := &file_loom_v1_loom_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10316,7 +10430,7 @@ func (x *GetArtifactStatsRequest) String() string {
 func (*GetArtifactStatsRequest) ProtoMessage() {}
 
 func (x *GetArtifactStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[135]
+	mi := &file_loom_v1_loom_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10329,7 +10443,7 @@ func (x *GetArtifactStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetArtifactStatsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{135}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{137}
 }
 
 // GetArtifactStatsResponse returns artifact storage stats.
@@ -10351,7 +10465,7 @@ type GetArtifactStatsResponse struct {
 
 func (x *GetArtifactStatsResponse) Reset() {
 	*x = GetArtifactStatsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[136]
+	mi := &file_loom_v1_loom_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10363,7 +10477,7 @@ func (x *GetArtifactStatsResponse) String() string {
 func (*GetArtifactStatsResponse) ProtoMessage() {}
 
 func (x *GetArtifactStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[136]
+	mi := &file_loom_v1_loom_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10376,7 +10490,7 @@ func (x *GetArtifactStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetArtifactStatsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{136}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *GetArtifactStatsResponse) GetTotalFiles() int32 {
@@ -10427,7 +10541,7 @@ type ListAllSessionsRequest struct {
 
 func (x *ListAllSessionsRequest) Reset() {
 	*x = ListAllSessionsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[137]
+	mi := &file_loom_v1_loom_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10439,7 +10553,7 @@ func (x *ListAllSessionsRequest) String() string {
 func (*ListAllSessionsRequest) ProtoMessage() {}
 
 func (x *ListAllSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[137]
+	mi := &file_loom_v1_loom_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10452,7 +10566,7 @@ func (x *ListAllSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAllSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListAllSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{137}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *ListAllSessionsRequest) GetLimit() int32 {
@@ -10482,7 +10596,7 @@ type ListAllSessionsResponse struct {
 
 func (x *ListAllSessionsResponse) Reset() {
 	*x = ListAllSessionsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[138]
+	mi := &file_loom_v1_loom_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10494,7 +10608,7 @@ func (x *ListAllSessionsResponse) String() string {
 func (*ListAllSessionsResponse) ProtoMessage() {}
 
 func (x *ListAllSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[138]
+	mi := &file_loom_v1_loom_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10507,7 +10621,7 @@ func (x *ListAllSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAllSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListAllSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{138}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *ListAllSessionsResponse) GetSessions() []*Session {
@@ -10533,7 +10647,7 @@ type CountSessionsByUserRequest struct {
 
 func (x *CountSessionsByUserRequest) Reset() {
 	*x = CountSessionsByUserRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[139]
+	mi := &file_loom_v1_loom_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10545,7 +10659,7 @@ func (x *CountSessionsByUserRequest) String() string {
 func (*CountSessionsByUserRequest) ProtoMessage() {}
 
 func (x *CountSessionsByUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[139]
+	mi := &file_loom_v1_loom_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10558,7 +10672,7 @@ func (x *CountSessionsByUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CountSessionsByUserRequest.ProtoReflect.Descriptor instead.
 func (*CountSessionsByUserRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{139}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{141}
 }
 
 // CountSessionsByUserResponse returns session counts per user.
@@ -10572,7 +10686,7 @@ type CountSessionsByUserResponse struct {
 
 func (x *CountSessionsByUserResponse) Reset() {
 	*x = CountSessionsByUserResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[140]
+	mi := &file_loom_v1_loom_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10584,7 +10698,7 @@ func (x *CountSessionsByUserResponse) String() string {
 func (*CountSessionsByUserResponse) ProtoMessage() {}
 
 func (x *CountSessionsByUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[140]
+	mi := &file_loom_v1_loom_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10597,7 +10711,7 @@ func (x *CountSessionsByUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CountSessionsByUserResponse.ProtoReflect.Descriptor instead.
 func (*CountSessionsByUserResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{140}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *CountSessionsByUserResponse) GetUserCounts() map[string]int32 {
@@ -10616,7 +10730,7 @@ type GetSystemStatsRequest struct {
 
 func (x *GetSystemStatsRequest) Reset() {
 	*x = GetSystemStatsRequest{}
-	mi := &file_loom_v1_loom_proto_msgTypes[141]
+	mi := &file_loom_v1_loom_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10628,7 +10742,7 @@ func (x *GetSystemStatsRequest) String() string {
 func (*GetSystemStatsRequest) ProtoMessage() {}
 
 func (x *GetSystemStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[141]
+	mi := &file_loom_v1_loom_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10641,7 +10755,7 @@ func (x *GetSystemStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetSystemStatsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{141}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{143}
 }
 
 // GetSystemStatsResponse returns aggregate system statistics.
@@ -10665,7 +10779,7 @@ type GetSystemStatsResponse struct {
 
 func (x *GetSystemStatsResponse) Reset() {
 	*x = GetSystemStatsResponse{}
-	mi := &file_loom_v1_loom_proto_msgTypes[142]
+	mi := &file_loom_v1_loom_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10677,7 +10791,7 @@ func (x *GetSystemStatsResponse) String() string {
 func (*GetSystemStatsResponse) ProtoMessage() {}
 
 func (x *GetSystemStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_loom_proto_msgTypes[142]
+	mi := &file_loom_v1_loom_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10690,7 +10804,7 @@ func (x *GetSystemStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetSystemStatsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_loom_proto_rawDescGZIP(), []int{142}
+	return file_loom_v1_loom_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *GetSystemStatsResponse) GetTotalSessions() int32 {
@@ -11315,7 +11429,13 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x1aGetScheduleHistoryResponse\x12:\n" +
 	"\n" +
 	"executions\x18\x01 \x03(\v2\x1a.loom.v1.ScheduleExecutionR\n" +
-	"executions\"\xe8\x01\n" +
+	"executions\"[\n" +
+	"\x1eCancelWorkflowExecutionRequest\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"Y\n" +
+	"\x1fCancelWorkflowExecutionResponse\x12\x1c\n" +
+	"\tcancelled\x18\x01 \x01(\bR\tcancelled\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xe8\x01\n" +
 	"\x11ScheduleExecution\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x1d\n" +
 	"\n" +
@@ -11667,7 +11787,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x18AB_TEST_MODE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AB_TEST_MODE_SIDE_BY_SIDE\x10\x01\x12\"\n" +
 	"\x1eAB_TEST_MODE_SEQUENTIAL_SCORED\x10\x02\x12\x17\n" +
-	"\x13AB_TEST_MODE_SHADOW\x10\x032\xbeN\n" +
+	"\x13AB_TEST_MODE_SHADOW\x10\x032\xe8O\n" +
 	"\vLoomService\x12L\n" +
 	"\x05Weave\x12\x15.loom.v1.WeaveRequest\x1a\x16.loom.v1.WeaveResponse\"\x14\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/weave\x12[\n" +
 	"\vStreamWeave\x12\x15.loom.v1.WeaveRequest\x1a\x16.loom.v1.WeaveProgress\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/weave:stream0\x01\x12i\n" +
@@ -11734,7 +11854,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x18TriggerScheduledWorkflow\x12(.loom.v1.TriggerScheduledWorkflowRequest\x1a .loom.v1.ExecuteWorkflowResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/workflows/schedules/{schedule_id}:trigger\x12~\n" +
 	"\rPauseSchedule\x12\x1d.loom.v1.PauseScheduleRequest\x1a\x16.google.protobuf.Empty\"6\x82\xd3\xe4\x93\x020:\x01*\"+/v1/workflows/schedules/{schedule_id}:pause\x12\x81\x01\n" +
 	"\x0eResumeSchedule\x12\x1e.loom.v1.ResumeScheduleRequest\x1a\x16.google.protobuf.Empty\"7\x82\xd3\xe4\x93\x021:\x01*\",/v1/workflows/schedules/{schedule_id}:resume\x12\x94\x01\n" +
-	"\x12GetScheduleHistory\x12\".loom.v1.GetScheduleHistoryRequest\x1a#.loom.v1.GetScheduleHistoryResponse\"5\x82\xd3\xe4\x93\x02/\x12-/v1/workflows/schedules/{schedule_id}/history\x12X\n" +
+	"\x12GetScheduleHistory\x12\".loom.v1.GetScheduleHistoryRequest\x1a#.loom.v1.GetScheduleHistoryResponse\"5\x82\xd3\xe4\x93\x02/\x12-/v1/workflows/schedules/{schedule_id}/history\x12\xa7\x01\n" +
+	"\x17CancelWorkflowExecution\x12'.loom.v1.CancelWorkflowExecutionRequest\x1a(.loom.v1.CancelWorkflowExecutionResponse\"9\x82\xd3\xe4\x93\x023:\x01*\"./v1/workflows/executions/{execution_id}:cancel\x12X\n" +
 	"\aPublish\x12\x17.loom.v1.PublishRequest\x1a\x18.loom.v1.PublishResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/bus/publish\x12[\n" +
 	"\tSubscribe\x12\x19.loom.v1.SubscribeRequest\x1a\x13.loom.v1.BusMessage\"\x1c\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/bus/subscribe0\x01\x12h\n" +
 	"\vUnsubscribe\x12\x1b.loom.v1.UnsubscribeRequest\x1a\x1c.loom.v1.UnsubscribeResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/v1/bus/unsubscribe\x12]\n" +
@@ -11785,7 +11906,7 @@ func file_loom_v1_loom_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_loom_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_loom_v1_loom_proto_msgTypes = make([]protoimpl.MessageInfo, 164)
+var file_loom_v1_loom_proto_msgTypes = make([]protoimpl.MessageInfo, 166)
 var file_loom_v1_loom_proto_goTypes = []any{
 	(ExecutionStage)(0),                        // 0: loom.v1.ExecutionStage
 	(StorageLocation)(0),                       // 1: loom.v1.StorageLocation
@@ -11879,156 +12000,158 @@ var file_loom_v1_loom_proto_goTypes = []any{
 	(*ResumeScheduleRequest)(nil),              // 89: loom.v1.ResumeScheduleRequest
 	(*GetScheduleHistoryRequest)(nil),          // 90: loom.v1.GetScheduleHistoryRequest
 	(*GetScheduleHistoryResponse)(nil),         // 91: loom.v1.GetScheduleHistoryResponse
-	(*ScheduleExecution)(nil),                  // 92: loom.v1.ScheduleExecution
-	(*GetServerConfigRequest)(nil),             // 93: loom.v1.GetServerConfigRequest
-	(*GetTLSStatusRequest)(nil),                // 94: loom.v1.GetTLSStatusRequest
-	(*RenewCertificateRequest)(nil),            // 95: loom.v1.RenewCertificateRequest
-	(*RenewCertificateResponse)(nil),           // 96: loom.v1.RenewCertificateResponse
-	(*SwitchModelRequest)(nil),                 // 97: loom.v1.SwitchModelRequest
-	(*SwitchModelResponse)(nil),                // 98: loom.v1.SwitchModelResponse
-	(*ListAvailableModelsRequest)(nil),         // 99: loom.v1.ListAvailableModelsRequest
-	(*ListAvailableModelsResponse)(nil),        // 100: loom.v1.ListAvailableModelsResponse
-	(*ListProvidersRequest)(nil),               // 101: loom.v1.ListProvidersRequest
-	(*ListProvidersResponse)(nil),              // 102: loom.v1.ListProvidersResponse
-	(*ABTestRequest)(nil),                      // 103: loom.v1.ABTestRequest
-	(*ABTestEvent)(nil),                        // 104: loom.v1.ABTestEvent
-	(*ModelInfo)(nil),                          // 105: loom.v1.ModelInfo
-	(*ToolPermissionRequest)(nil),              // 106: loom.v1.ToolPermissionRequest
-	(*ToolPermissionResponse)(nil),             // 107: loom.v1.ToolPermissionResponse
-	(*ListMCPServersRequest)(nil),              // 108: loom.v1.ListMCPServersRequest
-	(*ListMCPServersResponse)(nil),             // 109: loom.v1.ListMCPServersResponse
-	(*GetMCPServerRequest)(nil),                // 110: loom.v1.GetMCPServerRequest
-	(*MCPServerInfo)(nil),                      // 111: loom.v1.MCPServerInfo
-	(*ToolFilterConfig)(nil),                   // 112: loom.v1.ToolFilterConfig
-	(*AddMCPServerRequest)(nil),                // 113: loom.v1.AddMCPServerRequest
-	(*AddMCPServerResponse)(nil),               // 114: loom.v1.AddMCPServerResponse
-	(*UpdateMCPServerRequest)(nil),             // 115: loom.v1.UpdateMCPServerRequest
-	(*DeleteMCPServerRequest)(nil),             // 116: loom.v1.DeleteMCPServerRequest
-	(*DeleteMCPServerResponse)(nil),            // 117: loom.v1.DeleteMCPServerResponse
-	(*RestartMCPServerRequest)(nil),            // 118: loom.v1.RestartMCPServerRequest
-	(*HealthCheckMCPServersRequest)(nil),       // 119: loom.v1.HealthCheckMCPServersRequest
-	(*HealthCheckMCPServersResponse)(nil),      // 120: loom.v1.HealthCheckMCPServersResponse
-	(*MCPServerHealth)(nil),                    // 121: loom.v1.MCPServerHealth
-	(*TestMCPServerConnectionRequest)(nil),     // 122: loom.v1.TestMCPServerConnectionRequest
-	(*TestMCPServerConnectionResponse)(nil),    // 123: loom.v1.TestMCPServerConnectionResponse
-	(*ListMCPServerToolsRequest)(nil),          // 124: loom.v1.ListMCPServerToolsRequest
-	(*ListMCPServerToolsResponse)(nil),         // 125: loom.v1.ListMCPServerToolsResponse
-	(*Artifact)(nil),                           // 126: loom.v1.Artifact
-	(*ListArtifactsRequest)(nil),               // 127: loom.v1.ListArtifactsRequest
-	(*ListArtifactsResponse)(nil),              // 128: loom.v1.ListArtifactsResponse
-	(*GetArtifactRequest)(nil),                 // 129: loom.v1.GetArtifactRequest
-	(*GetArtifactResponse)(nil),                // 130: loom.v1.GetArtifactResponse
-	(*UploadArtifactRequest)(nil),              // 131: loom.v1.UploadArtifactRequest
-	(*UploadArtifactResponse)(nil),             // 132: loom.v1.UploadArtifactResponse
-	(*DeleteArtifactRequest)(nil),              // 133: loom.v1.DeleteArtifactRequest
-	(*DeleteArtifactResponse)(nil),             // 134: loom.v1.DeleteArtifactResponse
-	(*SearchArtifactsRequest)(nil),             // 135: loom.v1.SearchArtifactsRequest
-	(*SearchArtifactsResponse)(nil),            // 136: loom.v1.SearchArtifactsResponse
-	(*GetArtifactContentRequest)(nil),          // 137: loom.v1.GetArtifactContentRequest
-	(*GetArtifactContentResponse)(nil),         // 138: loom.v1.GetArtifactContentResponse
-	(*GetArtifactStatsRequest)(nil),            // 139: loom.v1.GetArtifactStatsRequest
-	(*GetArtifactStatsResponse)(nil),           // 140: loom.v1.GetArtifactStatsResponse
-	(*ListAllSessionsRequest)(nil),             // 141: loom.v1.ListAllSessionsRequest
-	(*ListAllSessionsResponse)(nil),            // 142: loom.v1.ListAllSessionsResponse
-	(*CountSessionsByUserRequest)(nil),         // 143: loom.v1.CountSessionsByUserRequest
-	(*CountSessionsByUserResponse)(nil),        // 144: loom.v1.CountSessionsByUserResponse
-	(*GetSystemStatsRequest)(nil),              // 145: loom.v1.GetSystemStatsRequest
-	(*GetSystemStatsResponse)(nil),             // 146: loom.v1.GetSystemStatsResponse
-	nil,                                        // 147: loom.v1.WeaveRequest.BackendConfigEntry
-	nil,                                        // 148: loom.v1.WeaveRequest.ContextEntry
-	nil,                                        // 149: loom.v1.ExecutionResult.BackendMetadataEntry
-	nil,                                        // 150: loom.v1.DataReference.MetadataEntry
-	nil,                                        // 151: loom.v1.Pattern.BackendHintsEntry
-	nil,                                        // 152: loom.v1.CreateSessionRequest.ConfigEntry
-	nil,                                        // 153: loom.v1.CreateSessionRequest.MetadataEntry
-	nil,                                        // 154: loom.v1.Session.MetadataEntry
-	nil,                                        // 155: loom.v1.Span.AttributesEntry
-	nil,                                        // 156: loom.v1.SpanEvent.AttributesEntry
-	nil,                                        // 157: loom.v1.HealthStatus.ComponentsEntry
-	nil,                                        // 158: loom.v1.AgentInfo.MetadataEntry
-	nil,                                        // 159: loom.v1.ScheduleWorkflowRequest.MetadataEntry
-	nil,                                        // 160: loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
-	nil,                                        // 161: loom.v1.MCPServerInfo.EnvEntry
-	nil,                                        // 162: loom.v1.AddMCPServerRequest.EnvEntry
-	nil,                                        // 163: loom.v1.UpdateMCPServerRequest.EnvEntry
-	nil,                                        // 164: loom.v1.HealthCheckMCPServersResponse.ServersEntry
-	nil,                                        // 165: loom.v1.TestMCPServerConnectionRequest.EnvEntry
-	nil,                                        // 166: loom.v1.Artifact.MetadataEntry
-	nil,                                        // 167: loom.v1.CountSessionsByUserResponse.UserCountsEntry
-	(*timestamppb.Timestamp)(nil),              // 168: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),                    // 169: google.protobuf.Struct
-	(*structpb.Value)(nil),                     // 170: google.protobuf.Value
-	(*ToolExample)(nil),                        // 171: loom.v1.ToolExample
-	(*RateLimitInfo)(nil),                      // 172: loom.v1.RateLimitInfo
-	(*AgentConfig)(nil),                        // 173: loom.v1.AgentConfig
-	(*WorkflowExecution)(nil),                  // 174: loom.v1.WorkflowExecution
-	(*AgentResult)(nil),                        // 175: loom.v1.AgentResult
-	(*WorkflowPattern)(nil),                    // 176: loom.v1.WorkflowPattern
-	(*ScheduleConfig)(nil),                     // 177: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),                  // 178: loom.v1.ScheduledWorkflow
-	(*CertificateInfo)(nil),                    // 179: loom.v1.CertificateInfo
-	(LLMRole)(0),                               // 180: loom.v1.LLMRole
-	(*ProviderEntry)(nil),                      // 181: loom.v1.ProviderEntry
-	(*GetStorageStatusRequest)(nil),            // 182: loom.v1.GetStorageStatusRequest
-	(*RunMigrationRequest)(nil),                // 183: loom.v1.RunMigrationRequest
-	(*ExecuteWorkflowRequest)(nil),             // 184: loom.v1.ExecuteWorkflowRequest
-	(*ListWorkflowsRequest)(nil),               // 185: loom.v1.ListWorkflowsRequest
-	(*PublishRequest)(nil),                     // 186: loom.v1.PublishRequest
-	(*SubscribeRequest)(nil),                   // 187: loom.v1.SubscribeRequest
-	(*UnsubscribeRequest)(nil),                 // 188: loom.v1.UnsubscribeRequest
-	(*ListTopicsRequest)(nil),                  // 189: loom.v1.ListTopicsRequest
-	(*GetTopicStatsRequest)(nil),               // 190: loom.v1.GetTopicStatsRequest
-	(*SendAsyncRequest)(nil),                   // 191: loom.v1.SendAsyncRequest
-	(*SendAndReceiveRequest)(nil),              // 192: loom.v1.SendAndReceiveRequest
-	(*PutSharedMemoryRequest)(nil),             // 193: loom.v1.PutSharedMemoryRequest
-	(*GetSharedMemoryRequest)(nil),             // 194: loom.v1.GetSharedMemoryRequest
-	(*DeleteSharedMemoryRequest)(nil),          // 195: loom.v1.DeleteSharedMemoryRequest
-	(*WatchSharedMemoryRequest)(nil),           // 196: loom.v1.WatchSharedMemoryRequest
-	(*ListSharedMemoryKeysRequest)(nil),        // 197: loom.v1.ListSharedMemoryKeysRequest
-	(*GetSharedMemoryStatsRequest)(nil),        // 198: loom.v1.GetSharedMemoryStatsRequest
-	(*ListUIAppsRequest)(nil),                  // 199: loom.v1.ListUIAppsRequest
-	(*GetUIAppRequest)(nil),                    // 200: loom.v1.GetUIAppRequest
-	(*CreateUIAppRequest)(nil),                 // 201: loom.v1.CreateUIAppRequest
-	(*UpdateUIAppRequest)(nil),                 // 202: loom.v1.UpdateUIAppRequest
-	(*DeleteUIAppRequest)(nil),                 // 203: loom.v1.DeleteUIAppRequest
-	(*ListComponentTypesRequest)(nil),          // 204: loom.v1.ListComponentTypesRequest
-	(*ListAgentPresetsRequest)(nil),            // 205: loom.v1.ListAgentPresetsRequest
-	(*ListWorkflowTemplatesRequest)(nil),       // 206: loom.v1.ListWorkflowTemplatesRequest
-	(*CreateWorkflowFromTemplateRequest)(nil),  // 207: loom.v1.CreateWorkflowFromTemplateRequest
-	(*ServerConfig)(nil),                       // 208: loom.v1.ServerConfig
-	(*TLSStatus)(nil),                          // 209: loom.v1.TLSStatus
-	(*GetStorageStatusResponse)(nil),           // 210: loom.v1.GetStorageStatusResponse
-	(*RunMigrationResponse)(nil),               // 211: loom.v1.RunMigrationResponse
-	(*ExecuteWorkflowResponse)(nil),            // 212: loom.v1.ExecuteWorkflowResponse
-	(*ListWorkflowsResponse)(nil),              // 213: loom.v1.ListWorkflowsResponse
-	(*emptypb.Empty)(nil),                      // 214: google.protobuf.Empty
-	(*PublishResponse)(nil),                    // 215: loom.v1.PublishResponse
-	(*BusMessage)(nil),                         // 216: loom.v1.BusMessage
-	(*UnsubscribeResponse)(nil),                // 217: loom.v1.UnsubscribeResponse
-	(*ListTopicsResponse)(nil),                 // 218: loom.v1.ListTopicsResponse
-	(*TopicStats)(nil),                         // 219: loom.v1.TopicStats
-	(*SendAsyncResponse)(nil),                  // 220: loom.v1.SendAsyncResponse
-	(*SendAndReceiveResponse)(nil),             // 221: loom.v1.SendAndReceiveResponse
-	(*PutSharedMemoryResponse)(nil),            // 222: loom.v1.PutSharedMemoryResponse
-	(*GetSharedMemoryResponse)(nil),            // 223: loom.v1.GetSharedMemoryResponse
-	(*DeleteSharedMemoryResponse)(nil),         // 224: loom.v1.DeleteSharedMemoryResponse
-	(*SharedMemoryValue)(nil),                  // 225: loom.v1.SharedMemoryValue
-	(*ListSharedMemoryKeysResponse)(nil),       // 226: loom.v1.ListSharedMemoryKeysResponse
-	(*SharedMemoryStats)(nil),                  // 227: loom.v1.SharedMemoryStats
-	(*ListUIAppsResponse)(nil),                 // 228: loom.v1.ListUIAppsResponse
-	(*GetUIAppResponse)(nil),                   // 229: loom.v1.GetUIAppResponse
-	(*CreateUIAppResponse)(nil),                // 230: loom.v1.CreateUIAppResponse
-	(*UpdateUIAppResponse)(nil),                // 231: loom.v1.UpdateUIAppResponse
-	(*DeleteUIAppResponse)(nil),                // 232: loom.v1.DeleteUIAppResponse
-	(*ListComponentTypesResponse)(nil),         // 233: loom.v1.ListComponentTypesResponse
-	(*ListAgentPresetsResponse)(nil),           // 234: loom.v1.ListAgentPresetsResponse
-	(*ListWorkflowTemplatesResponse)(nil),      // 235: loom.v1.ListWorkflowTemplatesResponse
-	(*CreateWorkflowFromTemplateResponse)(nil), // 236: loom.v1.CreateWorkflowFromTemplateResponse
+	(*CancelWorkflowExecutionRequest)(nil),     // 92: loom.v1.CancelWorkflowExecutionRequest
+	(*CancelWorkflowExecutionResponse)(nil),    // 93: loom.v1.CancelWorkflowExecutionResponse
+	(*ScheduleExecution)(nil),                  // 94: loom.v1.ScheduleExecution
+	(*GetServerConfigRequest)(nil),             // 95: loom.v1.GetServerConfigRequest
+	(*GetTLSStatusRequest)(nil),                // 96: loom.v1.GetTLSStatusRequest
+	(*RenewCertificateRequest)(nil),            // 97: loom.v1.RenewCertificateRequest
+	(*RenewCertificateResponse)(nil),           // 98: loom.v1.RenewCertificateResponse
+	(*SwitchModelRequest)(nil),                 // 99: loom.v1.SwitchModelRequest
+	(*SwitchModelResponse)(nil),                // 100: loom.v1.SwitchModelResponse
+	(*ListAvailableModelsRequest)(nil),         // 101: loom.v1.ListAvailableModelsRequest
+	(*ListAvailableModelsResponse)(nil),        // 102: loom.v1.ListAvailableModelsResponse
+	(*ListProvidersRequest)(nil),               // 103: loom.v1.ListProvidersRequest
+	(*ListProvidersResponse)(nil),              // 104: loom.v1.ListProvidersResponse
+	(*ABTestRequest)(nil),                      // 105: loom.v1.ABTestRequest
+	(*ABTestEvent)(nil),                        // 106: loom.v1.ABTestEvent
+	(*ModelInfo)(nil),                          // 107: loom.v1.ModelInfo
+	(*ToolPermissionRequest)(nil),              // 108: loom.v1.ToolPermissionRequest
+	(*ToolPermissionResponse)(nil),             // 109: loom.v1.ToolPermissionResponse
+	(*ListMCPServersRequest)(nil),              // 110: loom.v1.ListMCPServersRequest
+	(*ListMCPServersResponse)(nil),             // 111: loom.v1.ListMCPServersResponse
+	(*GetMCPServerRequest)(nil),                // 112: loom.v1.GetMCPServerRequest
+	(*MCPServerInfo)(nil),                      // 113: loom.v1.MCPServerInfo
+	(*ToolFilterConfig)(nil),                   // 114: loom.v1.ToolFilterConfig
+	(*AddMCPServerRequest)(nil),                // 115: loom.v1.AddMCPServerRequest
+	(*AddMCPServerResponse)(nil),               // 116: loom.v1.AddMCPServerResponse
+	(*UpdateMCPServerRequest)(nil),             // 117: loom.v1.UpdateMCPServerRequest
+	(*DeleteMCPServerRequest)(nil),             // 118: loom.v1.DeleteMCPServerRequest
+	(*DeleteMCPServerResponse)(nil),            // 119: loom.v1.DeleteMCPServerResponse
+	(*RestartMCPServerRequest)(nil),            // 120: loom.v1.RestartMCPServerRequest
+	(*HealthCheckMCPServersRequest)(nil),       // 121: loom.v1.HealthCheckMCPServersRequest
+	(*HealthCheckMCPServersResponse)(nil),      // 122: loom.v1.HealthCheckMCPServersResponse
+	(*MCPServerHealth)(nil),                    // 123: loom.v1.MCPServerHealth
+	(*TestMCPServerConnectionRequest)(nil),     // 124: loom.v1.TestMCPServerConnectionRequest
+	(*TestMCPServerConnectionResponse)(nil),    // 125: loom.v1.TestMCPServerConnectionResponse
+	(*ListMCPServerToolsRequest)(nil),          // 126: loom.v1.ListMCPServerToolsRequest
+	(*ListMCPServerToolsResponse)(nil),         // 127: loom.v1.ListMCPServerToolsResponse
+	(*Artifact)(nil),                           // 128: loom.v1.Artifact
+	(*ListArtifactsRequest)(nil),               // 129: loom.v1.ListArtifactsRequest
+	(*ListArtifactsResponse)(nil),              // 130: loom.v1.ListArtifactsResponse
+	(*GetArtifactRequest)(nil),                 // 131: loom.v1.GetArtifactRequest
+	(*GetArtifactResponse)(nil),                // 132: loom.v1.GetArtifactResponse
+	(*UploadArtifactRequest)(nil),              // 133: loom.v1.UploadArtifactRequest
+	(*UploadArtifactResponse)(nil),             // 134: loom.v1.UploadArtifactResponse
+	(*DeleteArtifactRequest)(nil),              // 135: loom.v1.DeleteArtifactRequest
+	(*DeleteArtifactResponse)(nil),             // 136: loom.v1.DeleteArtifactResponse
+	(*SearchArtifactsRequest)(nil),             // 137: loom.v1.SearchArtifactsRequest
+	(*SearchArtifactsResponse)(nil),            // 138: loom.v1.SearchArtifactsResponse
+	(*GetArtifactContentRequest)(nil),          // 139: loom.v1.GetArtifactContentRequest
+	(*GetArtifactContentResponse)(nil),         // 140: loom.v1.GetArtifactContentResponse
+	(*GetArtifactStatsRequest)(nil),            // 141: loom.v1.GetArtifactStatsRequest
+	(*GetArtifactStatsResponse)(nil),           // 142: loom.v1.GetArtifactStatsResponse
+	(*ListAllSessionsRequest)(nil),             // 143: loom.v1.ListAllSessionsRequest
+	(*ListAllSessionsResponse)(nil),            // 144: loom.v1.ListAllSessionsResponse
+	(*CountSessionsByUserRequest)(nil),         // 145: loom.v1.CountSessionsByUserRequest
+	(*CountSessionsByUserResponse)(nil),        // 146: loom.v1.CountSessionsByUserResponse
+	(*GetSystemStatsRequest)(nil),              // 147: loom.v1.GetSystemStatsRequest
+	(*GetSystemStatsResponse)(nil),             // 148: loom.v1.GetSystemStatsResponse
+	nil,                                        // 149: loom.v1.WeaveRequest.BackendConfigEntry
+	nil,                                        // 150: loom.v1.WeaveRequest.ContextEntry
+	nil,                                        // 151: loom.v1.ExecutionResult.BackendMetadataEntry
+	nil,                                        // 152: loom.v1.DataReference.MetadataEntry
+	nil,                                        // 153: loom.v1.Pattern.BackendHintsEntry
+	nil,                                        // 154: loom.v1.CreateSessionRequest.ConfigEntry
+	nil,                                        // 155: loom.v1.CreateSessionRequest.MetadataEntry
+	nil,                                        // 156: loom.v1.Session.MetadataEntry
+	nil,                                        // 157: loom.v1.Span.AttributesEntry
+	nil,                                        // 158: loom.v1.SpanEvent.AttributesEntry
+	nil,                                        // 159: loom.v1.HealthStatus.ComponentsEntry
+	nil,                                        // 160: loom.v1.AgentInfo.MetadataEntry
+	nil,                                        // 161: loom.v1.ScheduleWorkflowRequest.MetadataEntry
+	nil,                                        // 162: loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
+	nil,                                        // 163: loom.v1.MCPServerInfo.EnvEntry
+	nil,                                        // 164: loom.v1.AddMCPServerRequest.EnvEntry
+	nil,                                        // 165: loom.v1.UpdateMCPServerRequest.EnvEntry
+	nil,                                        // 166: loom.v1.HealthCheckMCPServersResponse.ServersEntry
+	nil,                                        // 167: loom.v1.TestMCPServerConnectionRequest.EnvEntry
+	nil,                                        // 168: loom.v1.Artifact.MetadataEntry
+	nil,                                        // 169: loom.v1.CountSessionsByUserResponse.UserCountsEntry
+	(*timestamppb.Timestamp)(nil),              // 170: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                    // 171: google.protobuf.Struct
+	(*structpb.Value)(nil),                     // 172: google.protobuf.Value
+	(*ToolExample)(nil),                        // 173: loom.v1.ToolExample
+	(*RateLimitInfo)(nil),                      // 174: loom.v1.RateLimitInfo
+	(*AgentConfig)(nil),                        // 175: loom.v1.AgentConfig
+	(*WorkflowExecution)(nil),                  // 176: loom.v1.WorkflowExecution
+	(*AgentResult)(nil),                        // 177: loom.v1.AgentResult
+	(*WorkflowPattern)(nil),                    // 178: loom.v1.WorkflowPattern
+	(*ScheduleConfig)(nil),                     // 179: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),                  // 180: loom.v1.ScheduledWorkflow
+	(*CertificateInfo)(nil),                    // 181: loom.v1.CertificateInfo
+	(LLMRole)(0),                               // 182: loom.v1.LLMRole
+	(*ProviderEntry)(nil),                      // 183: loom.v1.ProviderEntry
+	(*GetStorageStatusRequest)(nil),            // 184: loom.v1.GetStorageStatusRequest
+	(*RunMigrationRequest)(nil),                // 185: loom.v1.RunMigrationRequest
+	(*ExecuteWorkflowRequest)(nil),             // 186: loom.v1.ExecuteWorkflowRequest
+	(*ListWorkflowsRequest)(nil),               // 187: loom.v1.ListWorkflowsRequest
+	(*PublishRequest)(nil),                     // 188: loom.v1.PublishRequest
+	(*SubscribeRequest)(nil),                   // 189: loom.v1.SubscribeRequest
+	(*UnsubscribeRequest)(nil),                 // 190: loom.v1.UnsubscribeRequest
+	(*ListTopicsRequest)(nil),                  // 191: loom.v1.ListTopicsRequest
+	(*GetTopicStatsRequest)(nil),               // 192: loom.v1.GetTopicStatsRequest
+	(*SendAsyncRequest)(nil),                   // 193: loom.v1.SendAsyncRequest
+	(*SendAndReceiveRequest)(nil),              // 194: loom.v1.SendAndReceiveRequest
+	(*PutSharedMemoryRequest)(nil),             // 195: loom.v1.PutSharedMemoryRequest
+	(*GetSharedMemoryRequest)(nil),             // 196: loom.v1.GetSharedMemoryRequest
+	(*DeleteSharedMemoryRequest)(nil),          // 197: loom.v1.DeleteSharedMemoryRequest
+	(*WatchSharedMemoryRequest)(nil),           // 198: loom.v1.WatchSharedMemoryRequest
+	(*ListSharedMemoryKeysRequest)(nil),        // 199: loom.v1.ListSharedMemoryKeysRequest
+	(*GetSharedMemoryStatsRequest)(nil),        // 200: loom.v1.GetSharedMemoryStatsRequest
+	(*ListUIAppsRequest)(nil),                  // 201: loom.v1.ListUIAppsRequest
+	(*GetUIAppRequest)(nil),                    // 202: loom.v1.GetUIAppRequest
+	(*CreateUIAppRequest)(nil),                 // 203: loom.v1.CreateUIAppRequest
+	(*UpdateUIAppRequest)(nil),                 // 204: loom.v1.UpdateUIAppRequest
+	(*DeleteUIAppRequest)(nil),                 // 205: loom.v1.DeleteUIAppRequest
+	(*ListComponentTypesRequest)(nil),          // 206: loom.v1.ListComponentTypesRequest
+	(*ListAgentPresetsRequest)(nil),            // 207: loom.v1.ListAgentPresetsRequest
+	(*ListWorkflowTemplatesRequest)(nil),       // 208: loom.v1.ListWorkflowTemplatesRequest
+	(*CreateWorkflowFromTemplateRequest)(nil),  // 209: loom.v1.CreateWorkflowFromTemplateRequest
+	(*ServerConfig)(nil),                       // 210: loom.v1.ServerConfig
+	(*TLSStatus)(nil),                          // 211: loom.v1.TLSStatus
+	(*GetStorageStatusResponse)(nil),           // 212: loom.v1.GetStorageStatusResponse
+	(*RunMigrationResponse)(nil),               // 213: loom.v1.RunMigrationResponse
+	(*ExecuteWorkflowResponse)(nil),            // 214: loom.v1.ExecuteWorkflowResponse
+	(*ListWorkflowsResponse)(nil),              // 215: loom.v1.ListWorkflowsResponse
+	(*emptypb.Empty)(nil),                      // 216: google.protobuf.Empty
+	(*PublishResponse)(nil),                    // 217: loom.v1.PublishResponse
+	(*BusMessage)(nil),                         // 218: loom.v1.BusMessage
+	(*UnsubscribeResponse)(nil),                // 219: loom.v1.UnsubscribeResponse
+	(*ListTopicsResponse)(nil),                 // 220: loom.v1.ListTopicsResponse
+	(*TopicStats)(nil),                         // 221: loom.v1.TopicStats
+	(*SendAsyncResponse)(nil),                  // 222: loom.v1.SendAsyncResponse
+	(*SendAndReceiveResponse)(nil),             // 223: loom.v1.SendAndReceiveResponse
+	(*PutSharedMemoryResponse)(nil),            // 224: loom.v1.PutSharedMemoryResponse
+	(*GetSharedMemoryResponse)(nil),            // 225: loom.v1.GetSharedMemoryResponse
+	(*DeleteSharedMemoryResponse)(nil),         // 226: loom.v1.DeleteSharedMemoryResponse
+	(*SharedMemoryValue)(nil),                  // 227: loom.v1.SharedMemoryValue
+	(*ListSharedMemoryKeysResponse)(nil),       // 228: loom.v1.ListSharedMemoryKeysResponse
+	(*SharedMemoryStats)(nil),                  // 229: loom.v1.SharedMemoryStats
+	(*ListUIAppsResponse)(nil),                 // 230: loom.v1.ListUIAppsResponse
+	(*GetUIAppResponse)(nil),                   // 231: loom.v1.GetUIAppResponse
+	(*CreateUIAppResponse)(nil),                // 232: loom.v1.CreateUIAppResponse
+	(*UpdateUIAppResponse)(nil),                // 233: loom.v1.UpdateUIAppResponse
+	(*DeleteUIAppResponse)(nil),                // 234: loom.v1.DeleteUIAppResponse
+	(*ListComponentTypesResponse)(nil),         // 235: loom.v1.ListComponentTypesResponse
+	(*ListAgentPresetsResponse)(nil),           // 236: loom.v1.ListAgentPresetsResponse
+	(*ListWorkflowTemplatesResponse)(nil),      // 237: loom.v1.ListWorkflowTemplatesResponse
+	(*CreateWorkflowFromTemplateResponse)(nil), // 238: loom.v1.CreateWorkflowFromTemplateResponse
 }
 var file_loom_v1_loom_proto_depIdxs = []int32{
-	147, // 0: loom.v1.WeaveRequest.backend_config:type_name -> loom.v1.WeaveRequest.BackendConfigEntry
-	148, // 1: loom.v1.WeaveRequest.context:type_name -> loom.v1.WeaveRequest.ContextEntry
-	168, // 2: loom.v1.WeaveRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	149, // 0: loom.v1.WeaveRequest.backend_config:type_name -> loom.v1.WeaveRequest.BackendConfigEntry
+	150, // 1: loom.v1.WeaveRequest.context:type_name -> loom.v1.WeaveRequest.ContextEntry
+	170, // 2: loom.v1.WeaveRequest.occurred_at:type_name -> google.protobuf.Timestamp
 	8,   // 3: loom.v1.WeaveResponse.result:type_name -> loom.v1.ExecutionResult
 	14,  // 4: loom.v1.WeaveResponse.cost:type_name -> loom.v1.CostInfo
 	17,  // 5: loom.v1.WeaveResponse.metadata:type_name -> loom.v1.ExecutionMetadata
@@ -12038,13 +12161,13 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	8,   // 9: loom.v1.WeaveProgress.partial_result:type_name -> loom.v1.ExecutionResult
 	7,   // 10: loom.v1.WeaveProgress.hitl_request:type_name -> loom.v1.HITLRequestInfo
 	14,  // 11: loom.v1.WeaveProgress.cost:type_name -> loom.v1.CostInfo
-	169, // 12: loom.v1.WeaveProgress.tool_input:type_name -> google.protobuf.Struct
-	170, // 13: loom.v1.WeaveProgress.tool_result:type_name -> google.protobuf.Value
+	171, // 12: loom.v1.WeaveProgress.tool_input:type_name -> google.protobuf.Struct
+	172, // 13: loom.v1.WeaveProgress.tool_result:type_name -> google.protobuf.Value
 	16,  // 14: loom.v1.WeaveProgress.context_state:type_name -> loom.v1.ContextState
-	149, // 15: loom.v1.ExecutionResult.backend_metadata:type_name -> loom.v1.ExecutionResult.BackendMetadataEntry
+	151, // 15: loom.v1.ExecutionResult.backend_metadata:type_name -> loom.v1.ExecutionResult.BackendMetadataEntry
 	9,   // 16: loom.v1.ExecutionResult.data_reference:type_name -> loom.v1.DataReference
 	1,   // 17: loom.v1.DataReference.location:type_name -> loom.v1.StorageLocation
-	150, // 18: loom.v1.DataReference.metadata:type_name -> loom.v1.DataReference.MetadataEntry
+	152, // 18: loom.v1.DataReference.metadata:type_name -> loom.v1.DataReference.MetadataEntry
 	11,  // 19: loom.v1.SharedMemoryConfig.disk_overflow:type_name -> loom.v1.DiskOverflowConfig
 	12,  // 20: loom.v1.SharedMemoryConfig.compression:type_name -> loom.v1.CompressionConfig
 	13,  // 21: loom.v1.SharedMemoryConfig.cleanup:type_name -> loom.v1.CleanupConfig
@@ -12054,10 +12177,10 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	2,   // 25: loom.v1.PatternUpdateEvent.type:type_name -> loom.v1.PatternUpdateType
 	31,  // 26: loom.v1.Pattern.parameters:type_name -> loom.v1.PatternParameter
 	32,  // 27: loom.v1.Pattern.examples:type_name -> loom.v1.PatternExample
-	151, // 28: loom.v1.Pattern.backend_hints:type_name -> loom.v1.Pattern.BackendHintsEntry
-	152, // 29: loom.v1.CreateSessionRequest.config:type_name -> loom.v1.CreateSessionRequest.ConfigEntry
-	153, // 30: loom.v1.CreateSessionRequest.metadata:type_name -> loom.v1.CreateSessionRequest.MetadataEntry
-	154, // 31: loom.v1.Session.metadata:type_name -> loom.v1.Session.MetadataEntry
+	153, // 28: loom.v1.Pattern.backend_hints:type_name -> loom.v1.Pattern.BackendHintsEntry
+	154, // 29: loom.v1.CreateSessionRequest.config:type_name -> loom.v1.CreateSessionRequest.ConfigEntry
+	155, // 30: loom.v1.CreateSessionRequest.metadata:type_name -> loom.v1.CreateSessionRequest.MetadataEntry
+	156, // 31: loom.v1.Session.metadata:type_name -> loom.v1.Session.MetadataEntry
 	34,  // 32: loom.v1.ListSessionsResponse.sessions:type_name -> loom.v1.Session
 	42,  // 33: loom.v1.SessionUpdate.new_message:type_name -> loom.v1.NewMessageUpdate
 	43,  // 34: loom.v1.SessionUpdate.status_change:type_name -> loom.v1.SessionStatusUpdate
@@ -12070,61 +12193,61 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	53,  // 41: loom.v1.ToolDefinition.use_cases:type_name -> loom.v1.ToolUseCase
 	54,  // 42: loom.v1.ToolDefinition.conflicts:type_name -> loom.v1.ToolConflict
 	55,  // 43: loom.v1.ToolDefinition.alternatives:type_name -> loom.v1.ToolAlternative
-	171, // 44: loom.v1.ToolDefinition.examples:type_name -> loom.v1.ToolExample
+	173, // 44: loom.v1.ToolDefinition.examples:type_name -> loom.v1.ToolExample
 	57,  // 45: loom.v1.ToolDefinition.prerequisites:type_name -> loom.v1.ToolPrerequisite
-	172, // 46: loom.v1.ToolDefinition.rate_limit:type_name -> loom.v1.RateLimitInfo
+	174, // 46: loom.v1.ToolDefinition.rate_limit:type_name -> loom.v1.RateLimitInfo
 	58,  // 47: loom.v1.ToolDefinition.common_errors:type_name -> loom.v1.ToolCommonError
 	56,  // 48: loom.v1.ToolDefinition.complements:type_name -> loom.v1.ToolComplement
 	61,  // 49: loom.v1.Trace.root_span:type_name -> loom.v1.Span
 	61,  // 50: loom.v1.Trace.spans:type_name -> loom.v1.Span
 	14,  // 51: loom.v1.Trace.total_cost:type_name -> loom.v1.CostInfo
-	155, // 52: loom.v1.Span.attributes:type_name -> loom.v1.Span.AttributesEntry
+	157, // 52: loom.v1.Span.attributes:type_name -> loom.v1.Span.AttributesEntry
 	62,  // 53: loom.v1.Span.events:type_name -> loom.v1.SpanEvent
-	156, // 54: loom.v1.SpanEvent.attributes:type_name -> loom.v1.SpanEvent.AttributesEntry
-	157, // 55: loom.v1.HealthStatus.components:type_name -> loom.v1.HealthStatus.ComponentsEntry
-	173, // 56: loom.v1.CreateAgentRequest.config:type_name -> loom.v1.AgentConfig
-	158, // 57: loom.v1.AgentInfo.metadata:type_name -> loom.v1.AgentInfo.MetadataEntry
-	173, // 58: loom.v1.AgentInfo.config:type_name -> loom.v1.AgentConfig
+	158, // 54: loom.v1.SpanEvent.attributes:type_name -> loom.v1.SpanEvent.AttributesEntry
+	159, // 55: loom.v1.HealthStatus.components:type_name -> loom.v1.HealthStatus.ComponentsEntry
+	175, // 56: loom.v1.CreateAgentRequest.config:type_name -> loom.v1.AgentConfig
+	160, // 57: loom.v1.AgentInfo.metadata:type_name -> loom.v1.AgentInfo.MetadataEntry
+	175, // 58: loom.v1.AgentInfo.config:type_name -> loom.v1.AgentConfig
 	67,  // 59: loom.v1.ListAgentsResponse.agents:type_name -> loom.v1.AgentInfo
-	173, // 60: loom.v1.ReloadAgentRequest.config:type_name -> loom.v1.AgentConfig
-	174, // 61: loom.v1.ListWorkflowExecutionsResponse.executions:type_name -> loom.v1.WorkflowExecution
-	175, // 62: loom.v1.WorkflowProgress.partial_results:type_name -> loom.v1.AgentResult
-	176, // 63: loom.v1.ScheduleWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	177, // 64: loom.v1.ScheduleWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
-	159, // 65: loom.v1.ScheduleWorkflowRequest.metadata:type_name -> loom.v1.ScheduleWorkflowRequest.MetadataEntry
-	178, // 66: loom.v1.ScheduleWorkflowResponse.schedule:type_name -> loom.v1.ScheduledWorkflow
-	176, // 67: loom.v1.UpdateScheduledWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	177, // 68: loom.v1.UpdateScheduledWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
-	178, // 69: loom.v1.ListScheduledWorkflowsResponse.schedules:type_name -> loom.v1.ScheduledWorkflow
-	160, // 70: loom.v1.TriggerScheduledWorkflowRequest.variables:type_name -> loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
-	92,  // 71: loom.v1.GetScheduleHistoryResponse.executions:type_name -> loom.v1.ScheduleExecution
-	179, // 72: loom.v1.RenewCertificateResponse.certificate:type_name -> loom.v1.CertificateInfo
-	180, // 73: loom.v1.SwitchModelRequest.role:type_name -> loom.v1.LLMRole
-	105, // 74: loom.v1.SwitchModelResponse.previous_model:type_name -> loom.v1.ModelInfo
-	105, // 75: loom.v1.SwitchModelResponse.new_model:type_name -> loom.v1.ModelInfo
-	105, // 76: loom.v1.ListAvailableModelsResponse.models:type_name -> loom.v1.ModelInfo
-	181, // 77: loom.v1.ListProvidersResponse.providers:type_name -> loom.v1.ProviderEntry
+	175, // 60: loom.v1.ReloadAgentRequest.config:type_name -> loom.v1.AgentConfig
+	176, // 61: loom.v1.ListWorkflowExecutionsResponse.executions:type_name -> loom.v1.WorkflowExecution
+	177, // 62: loom.v1.WorkflowProgress.partial_results:type_name -> loom.v1.AgentResult
+	178, // 63: loom.v1.ScheduleWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	179, // 64: loom.v1.ScheduleWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
+	161, // 65: loom.v1.ScheduleWorkflowRequest.metadata:type_name -> loom.v1.ScheduleWorkflowRequest.MetadataEntry
+	180, // 66: loom.v1.ScheduleWorkflowResponse.schedule:type_name -> loom.v1.ScheduledWorkflow
+	178, // 67: loom.v1.UpdateScheduledWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	179, // 68: loom.v1.UpdateScheduledWorkflowRequest.schedule:type_name -> loom.v1.ScheduleConfig
+	180, // 69: loom.v1.ListScheduledWorkflowsResponse.schedules:type_name -> loom.v1.ScheduledWorkflow
+	162, // 70: loom.v1.TriggerScheduledWorkflowRequest.variables:type_name -> loom.v1.TriggerScheduledWorkflowRequest.VariablesEntry
+	94,  // 71: loom.v1.GetScheduleHistoryResponse.executions:type_name -> loom.v1.ScheduleExecution
+	181, // 72: loom.v1.RenewCertificateResponse.certificate:type_name -> loom.v1.CertificateInfo
+	182, // 73: loom.v1.SwitchModelRequest.role:type_name -> loom.v1.LLMRole
+	107, // 74: loom.v1.SwitchModelResponse.previous_model:type_name -> loom.v1.ModelInfo
+	107, // 75: loom.v1.SwitchModelResponse.new_model:type_name -> loom.v1.ModelInfo
+	107, // 76: loom.v1.ListAvailableModelsResponse.models:type_name -> loom.v1.ModelInfo
+	183, // 77: loom.v1.ListProvidersResponse.providers:type_name -> loom.v1.ProviderEntry
 	3,   // 78: loom.v1.ABTestRequest.mode:type_name -> loom.v1.ABTestMode
-	111, // 79: loom.v1.ListMCPServersResponse.servers:type_name -> loom.v1.MCPServerInfo
-	161, // 80: loom.v1.MCPServerInfo.env:type_name -> loom.v1.MCPServerInfo.EnvEntry
-	162, // 81: loom.v1.AddMCPServerRequest.env:type_name -> loom.v1.AddMCPServerRequest.EnvEntry
-	112, // 82: loom.v1.AddMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
-	111, // 83: loom.v1.AddMCPServerResponse.server:type_name -> loom.v1.MCPServerInfo
-	163, // 84: loom.v1.UpdateMCPServerRequest.env:type_name -> loom.v1.UpdateMCPServerRequest.EnvEntry
-	112, // 85: loom.v1.UpdateMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
-	164, // 86: loom.v1.HealthCheckMCPServersResponse.servers:type_name -> loom.v1.HealthCheckMCPServersResponse.ServersEntry
-	165, // 87: loom.v1.TestMCPServerConnectionRequest.env:type_name -> loom.v1.TestMCPServerConnectionRequest.EnvEntry
-	112, // 88: loom.v1.TestMCPServerConnectionRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	113, // 79: loom.v1.ListMCPServersResponse.servers:type_name -> loom.v1.MCPServerInfo
+	163, // 80: loom.v1.MCPServerInfo.env:type_name -> loom.v1.MCPServerInfo.EnvEntry
+	164, // 81: loom.v1.AddMCPServerRequest.env:type_name -> loom.v1.AddMCPServerRequest.EnvEntry
+	114, // 82: loom.v1.AddMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	113, // 83: loom.v1.AddMCPServerResponse.server:type_name -> loom.v1.MCPServerInfo
+	165, // 84: loom.v1.UpdateMCPServerRequest.env:type_name -> loom.v1.UpdateMCPServerRequest.EnvEntry
+	114, // 85: loom.v1.UpdateMCPServerRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
+	166, // 86: loom.v1.HealthCheckMCPServersResponse.servers:type_name -> loom.v1.HealthCheckMCPServersResponse.ServersEntry
+	167, // 87: loom.v1.TestMCPServerConnectionRequest.env:type_name -> loom.v1.TestMCPServerConnectionRequest.EnvEntry
+	114, // 88: loom.v1.TestMCPServerConnectionRequest.tool_filter:type_name -> loom.v1.ToolFilterConfig
 	52,  // 89: loom.v1.ListMCPServerToolsResponse.tools:type_name -> loom.v1.ToolDefinition
-	166, // 90: loom.v1.Artifact.metadata:type_name -> loom.v1.Artifact.MetadataEntry
-	126, // 91: loom.v1.ListArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
-	126, // 92: loom.v1.GetArtifactResponse.artifact:type_name -> loom.v1.Artifact
-	126, // 93: loom.v1.UploadArtifactResponse.artifact:type_name -> loom.v1.Artifact
-	126, // 94: loom.v1.SearchArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
+	168, // 90: loom.v1.Artifact.metadata:type_name -> loom.v1.Artifact.MetadataEntry
+	128, // 91: loom.v1.ListArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
+	128, // 92: loom.v1.GetArtifactResponse.artifact:type_name -> loom.v1.Artifact
+	128, // 93: loom.v1.UploadArtifactResponse.artifact:type_name -> loom.v1.Artifact
+	128, // 94: loom.v1.SearchArtifactsResponse.artifacts:type_name -> loom.v1.Artifact
 	34,  // 95: loom.v1.ListAllSessionsResponse.sessions:type_name -> loom.v1.Session
-	167, // 96: loom.v1.CountSessionsByUserResponse.user_counts:type_name -> loom.v1.CountSessionsByUserResponse.UserCountsEntry
+	169, // 96: loom.v1.CountSessionsByUserResponse.user_counts:type_name -> loom.v1.CountSessionsByUserResponse.UserCountsEntry
 	65,  // 97: loom.v1.HealthStatus.ComponentsEntry.value:type_name -> loom.v1.ComponentHealth
-	121, // 98: loom.v1.HealthCheckMCPServersResponse.ServersEntry.value:type_name -> loom.v1.MCPServerHealth
+	123, // 98: loom.v1.HealthCheckMCPServersResponse.ServersEntry.value:type_name -> loom.v1.MCPServerHealth
 	4,   // 99: loom.v1.LoomService.Weave:input_type -> loom.v1.WeaveRequest
 	4,   // 100: loom.v1.LoomService.StreamWeave:input_type -> loom.v1.WeaveRequest
 	19,  // 101: loom.v1.LoomService.LoadPatterns:input_type -> loom.v1.LoadPatternsRequest
@@ -12143,11 +12266,11 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	50,  // 114: loom.v1.LoomService.ListTools:input_type -> loom.v1.ListToolsRequest
 	59,  // 115: loom.v1.LoomService.GetTrace:input_type -> loom.v1.GetTraceRequest
 	63,  // 116: loom.v1.LoomService.GetHealth:input_type -> loom.v1.GetHealthRequest
-	93,  // 117: loom.v1.LoomService.GetServerConfig:input_type -> loom.v1.GetServerConfigRequest
-	94,  // 118: loom.v1.LoomService.GetTLSStatus:input_type -> loom.v1.GetTLSStatusRequest
-	95,  // 119: loom.v1.LoomService.RenewCertificate:input_type -> loom.v1.RenewCertificateRequest
-	182, // 120: loom.v1.LoomService.GetStorageStatus:input_type -> loom.v1.GetStorageStatusRequest
-	183, // 121: loom.v1.LoomService.RunMigration:input_type -> loom.v1.RunMigrationRequest
+	95,  // 117: loom.v1.LoomService.GetServerConfig:input_type -> loom.v1.GetServerConfigRequest
+	96,  // 118: loom.v1.LoomService.GetTLSStatus:input_type -> loom.v1.GetTLSStatusRequest
+	97,  // 119: loom.v1.LoomService.RenewCertificate:input_type -> loom.v1.RenewCertificateRequest
+	184, // 120: loom.v1.LoomService.GetStorageStatus:input_type -> loom.v1.GetStorageStatusRequest
+	185, // 121: loom.v1.LoomService.RunMigration:input_type -> loom.v1.RunMigrationRequest
 	66,  // 122: loom.v1.LoomService.CreateAgentFromConfig:input_type -> loom.v1.CreateAgentRequest
 	68,  // 123: loom.v1.LoomService.ListAgents:input_type -> loom.v1.ListAgentsRequest
 	70,  // 124: loom.v1.LoomService.GetAgent:input_type -> loom.v1.GetAgentRequest
@@ -12155,25 +12278,25 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	72,  // 126: loom.v1.LoomService.StopAgent:input_type -> loom.v1.StopAgentRequest
 	73,  // 127: loom.v1.LoomService.DeleteAgent:input_type -> loom.v1.DeleteAgentRequest
 	75,  // 128: loom.v1.LoomService.ReloadAgent:input_type -> loom.v1.ReloadAgentRequest
-	97,  // 129: loom.v1.LoomService.SwitchModel:input_type -> loom.v1.SwitchModelRequest
-	99,  // 130: loom.v1.LoomService.ListAvailableModels:input_type -> loom.v1.ListAvailableModelsRequest
-	101, // 131: loom.v1.LoomService.ListProviders:input_type -> loom.v1.ListProvidersRequest
-	103, // 132: loom.v1.LoomService.ABTest:input_type -> loom.v1.ABTestRequest
-	106, // 133: loom.v1.LoomService.RequestToolPermission:input_type -> loom.v1.ToolPermissionRequest
-	108, // 134: loom.v1.LoomService.ListMCPServers:input_type -> loom.v1.ListMCPServersRequest
-	110, // 135: loom.v1.LoomService.GetMCPServer:input_type -> loom.v1.GetMCPServerRequest
-	113, // 136: loom.v1.LoomService.AddMCPServer:input_type -> loom.v1.AddMCPServerRequest
-	115, // 137: loom.v1.LoomService.UpdateMCPServer:input_type -> loom.v1.UpdateMCPServerRequest
-	116, // 138: loom.v1.LoomService.DeleteMCPServer:input_type -> loom.v1.DeleteMCPServerRequest
-	118, // 139: loom.v1.LoomService.RestartMCPServer:input_type -> loom.v1.RestartMCPServerRequest
-	119, // 140: loom.v1.LoomService.HealthCheckMCPServers:input_type -> loom.v1.HealthCheckMCPServersRequest
-	122, // 141: loom.v1.LoomService.TestMCPServerConnection:input_type -> loom.v1.TestMCPServerConnectionRequest
-	124, // 142: loom.v1.LoomService.ListMCPServerTools:input_type -> loom.v1.ListMCPServerToolsRequest
-	184, // 143: loom.v1.LoomService.ExecuteWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
-	184, // 144: loom.v1.LoomService.StreamWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
+	99,  // 129: loom.v1.LoomService.SwitchModel:input_type -> loom.v1.SwitchModelRequest
+	101, // 130: loom.v1.LoomService.ListAvailableModels:input_type -> loom.v1.ListAvailableModelsRequest
+	103, // 131: loom.v1.LoomService.ListProviders:input_type -> loom.v1.ListProvidersRequest
+	105, // 132: loom.v1.LoomService.ABTest:input_type -> loom.v1.ABTestRequest
+	108, // 133: loom.v1.LoomService.RequestToolPermission:input_type -> loom.v1.ToolPermissionRequest
+	110, // 134: loom.v1.LoomService.ListMCPServers:input_type -> loom.v1.ListMCPServersRequest
+	112, // 135: loom.v1.LoomService.GetMCPServer:input_type -> loom.v1.GetMCPServerRequest
+	115, // 136: loom.v1.LoomService.AddMCPServer:input_type -> loom.v1.AddMCPServerRequest
+	117, // 137: loom.v1.LoomService.UpdateMCPServer:input_type -> loom.v1.UpdateMCPServerRequest
+	118, // 138: loom.v1.LoomService.DeleteMCPServer:input_type -> loom.v1.DeleteMCPServerRequest
+	120, // 139: loom.v1.LoomService.RestartMCPServer:input_type -> loom.v1.RestartMCPServerRequest
+	121, // 140: loom.v1.LoomService.HealthCheckMCPServers:input_type -> loom.v1.HealthCheckMCPServersRequest
+	124, // 141: loom.v1.LoomService.TestMCPServerConnection:input_type -> loom.v1.TestMCPServerConnectionRequest
+	126, // 142: loom.v1.LoomService.ListMCPServerTools:input_type -> loom.v1.ListMCPServerToolsRequest
+	186, // 143: loom.v1.LoomService.ExecuteWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
+	186, // 144: loom.v1.LoomService.StreamWorkflow:input_type -> loom.v1.ExecuteWorkflowRequest
 	76,  // 145: loom.v1.LoomService.GetWorkflowExecution:input_type -> loom.v1.GetWorkflowExecutionRequest
 	77,  // 146: loom.v1.LoomService.ListWorkflowExecutions:input_type -> loom.v1.ListWorkflowExecutionsRequest
-	185, // 147: loom.v1.LoomService.ListWorkflows:input_type -> loom.v1.ListWorkflowsRequest
+	187, // 147: loom.v1.LoomService.ListWorkflows:input_type -> loom.v1.ListWorkflowsRequest
 	80,  // 148: loom.v1.LoomService.ScheduleWorkflow:input_type -> loom.v1.ScheduleWorkflowRequest
 	82,  // 149: loom.v1.LoomService.UpdateScheduledWorkflow:input_type -> loom.v1.UpdateScheduledWorkflowRequest
 	83,  // 150: loom.v1.LoomService.GetScheduledWorkflow:input_type -> loom.v1.GetScheduledWorkflowRequest
@@ -12183,130 +12306,132 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	88,  // 154: loom.v1.LoomService.PauseSchedule:input_type -> loom.v1.PauseScheduleRequest
 	89,  // 155: loom.v1.LoomService.ResumeSchedule:input_type -> loom.v1.ResumeScheduleRequest
 	90,  // 156: loom.v1.LoomService.GetScheduleHistory:input_type -> loom.v1.GetScheduleHistoryRequest
-	186, // 157: loom.v1.LoomService.Publish:input_type -> loom.v1.PublishRequest
-	187, // 158: loom.v1.LoomService.Subscribe:input_type -> loom.v1.SubscribeRequest
-	188, // 159: loom.v1.LoomService.Unsubscribe:input_type -> loom.v1.UnsubscribeRequest
-	189, // 160: loom.v1.LoomService.ListTopics:input_type -> loom.v1.ListTopicsRequest
-	190, // 161: loom.v1.LoomService.GetTopicStats:input_type -> loom.v1.GetTopicStatsRequest
-	191, // 162: loom.v1.LoomService.SendAsync:input_type -> loom.v1.SendAsyncRequest
-	192, // 163: loom.v1.LoomService.SendAndReceive:input_type -> loom.v1.SendAndReceiveRequest
-	193, // 164: loom.v1.LoomService.PutSharedMemory:input_type -> loom.v1.PutSharedMemoryRequest
-	194, // 165: loom.v1.LoomService.GetSharedMemory:input_type -> loom.v1.GetSharedMemoryRequest
-	195, // 166: loom.v1.LoomService.DeleteSharedMemory:input_type -> loom.v1.DeleteSharedMemoryRequest
-	196, // 167: loom.v1.LoomService.WatchSharedMemory:input_type -> loom.v1.WatchSharedMemoryRequest
-	197, // 168: loom.v1.LoomService.ListSharedMemoryKeys:input_type -> loom.v1.ListSharedMemoryKeysRequest
-	198, // 169: loom.v1.LoomService.GetSharedMemoryStats:input_type -> loom.v1.GetSharedMemoryStatsRequest
-	127, // 170: loom.v1.LoomService.ListArtifacts:input_type -> loom.v1.ListArtifactsRequest
-	129, // 171: loom.v1.LoomService.GetArtifact:input_type -> loom.v1.GetArtifactRequest
-	131, // 172: loom.v1.LoomService.UploadArtifact:input_type -> loom.v1.UploadArtifactRequest
-	133, // 173: loom.v1.LoomService.DeleteArtifact:input_type -> loom.v1.DeleteArtifactRequest
-	135, // 174: loom.v1.LoomService.SearchArtifacts:input_type -> loom.v1.SearchArtifactsRequest
-	137, // 175: loom.v1.LoomService.GetArtifactContent:input_type -> loom.v1.GetArtifactContentRequest
-	139, // 176: loom.v1.LoomService.GetArtifactStats:input_type -> loom.v1.GetArtifactStatsRequest
-	199, // 177: loom.v1.LoomService.ListUIApps:input_type -> loom.v1.ListUIAppsRequest
-	200, // 178: loom.v1.LoomService.GetUIApp:input_type -> loom.v1.GetUIAppRequest
-	201, // 179: loom.v1.LoomService.CreateUIApp:input_type -> loom.v1.CreateUIAppRequest
-	202, // 180: loom.v1.LoomService.UpdateUIApp:input_type -> loom.v1.UpdateUIAppRequest
-	203, // 181: loom.v1.LoomService.DeleteUIApp:input_type -> loom.v1.DeleteUIAppRequest
-	204, // 182: loom.v1.LoomService.ListComponentTypes:input_type -> loom.v1.ListComponentTypesRequest
-	205, // 183: loom.v1.LoomService.ListAgentPresets:input_type -> loom.v1.ListAgentPresetsRequest
-	206, // 184: loom.v1.LoomService.ListWorkflowTemplates:input_type -> loom.v1.ListWorkflowTemplatesRequest
-	207, // 185: loom.v1.LoomService.CreateWorkflowFromTemplate:input_type -> loom.v1.CreateWorkflowFromTemplateRequest
-	141, // 186: loom.v1.AdminService.ListAllSessions:input_type -> loom.v1.ListAllSessionsRequest
-	143, // 187: loom.v1.AdminService.CountSessionsByUser:input_type -> loom.v1.CountSessionsByUserRequest
-	145, // 188: loom.v1.AdminService.GetSystemStats:input_type -> loom.v1.GetSystemStatsRequest
-	5,   // 189: loom.v1.LoomService.Weave:output_type -> loom.v1.WeaveResponse
-	6,   // 190: loom.v1.LoomService.StreamWeave:output_type -> loom.v1.WeaveProgress
-	20,  // 191: loom.v1.LoomService.LoadPatterns:output_type -> loom.v1.LoadPatternsResponse
-	22,  // 192: loom.v1.LoomService.ListPatterns:output_type -> loom.v1.ListPatternsResponse
-	30,  // 193: loom.v1.LoomService.GetPattern:output_type -> loom.v1.Pattern
-	25,  // 194: loom.v1.LoomService.CreatePattern:output_type -> loom.v1.CreatePatternResponse
-	27,  // 195: loom.v1.LoomService.StreamPatternUpdates:output_type -> loom.v1.PatternUpdateEvent
-	29,  // 196: loom.v1.LoomService.AnswerClarificationQuestion:output_type -> loom.v1.AnswerClarificationResponse
-	34,  // 197: loom.v1.LoomService.CreateSession:output_type -> loom.v1.Session
-	34,  // 198: loom.v1.LoomService.GetSession:output_type -> loom.v1.Session
-	37,  // 199: loom.v1.LoomService.ListSessions:output_type -> loom.v1.ListSessionsResponse
-	39,  // 200: loom.v1.LoomService.DeleteSession:output_type -> loom.v1.DeleteSessionResponse
-	41,  // 201: loom.v1.LoomService.SubscribeToSession:output_type -> loom.v1.SessionUpdate
-	45,  // 202: loom.v1.LoomService.GetConversationHistory:output_type -> loom.v1.ConversationHistory
-	49,  // 203: loom.v1.LoomService.RegisterTool:output_type -> loom.v1.RegisterToolResponse
-	51,  // 204: loom.v1.LoomService.ListTools:output_type -> loom.v1.ListToolsResponse
-	60,  // 205: loom.v1.LoomService.GetTrace:output_type -> loom.v1.Trace
-	64,  // 206: loom.v1.LoomService.GetHealth:output_type -> loom.v1.HealthStatus
-	208, // 207: loom.v1.LoomService.GetServerConfig:output_type -> loom.v1.ServerConfig
-	209, // 208: loom.v1.LoomService.GetTLSStatus:output_type -> loom.v1.TLSStatus
-	96,  // 209: loom.v1.LoomService.RenewCertificate:output_type -> loom.v1.RenewCertificateResponse
-	210, // 210: loom.v1.LoomService.GetStorageStatus:output_type -> loom.v1.GetStorageStatusResponse
-	211, // 211: loom.v1.LoomService.RunMigration:output_type -> loom.v1.RunMigrationResponse
-	67,  // 212: loom.v1.LoomService.CreateAgentFromConfig:output_type -> loom.v1.AgentInfo
-	69,  // 213: loom.v1.LoomService.ListAgents:output_type -> loom.v1.ListAgentsResponse
-	67,  // 214: loom.v1.LoomService.GetAgent:output_type -> loom.v1.AgentInfo
-	67,  // 215: loom.v1.LoomService.StartAgent:output_type -> loom.v1.AgentInfo
-	67,  // 216: loom.v1.LoomService.StopAgent:output_type -> loom.v1.AgentInfo
-	74,  // 217: loom.v1.LoomService.DeleteAgent:output_type -> loom.v1.DeleteAgentResponse
-	67,  // 218: loom.v1.LoomService.ReloadAgent:output_type -> loom.v1.AgentInfo
-	98,  // 219: loom.v1.LoomService.SwitchModel:output_type -> loom.v1.SwitchModelResponse
-	100, // 220: loom.v1.LoomService.ListAvailableModels:output_type -> loom.v1.ListAvailableModelsResponse
-	102, // 221: loom.v1.LoomService.ListProviders:output_type -> loom.v1.ListProvidersResponse
-	104, // 222: loom.v1.LoomService.ABTest:output_type -> loom.v1.ABTestEvent
-	107, // 223: loom.v1.LoomService.RequestToolPermission:output_type -> loom.v1.ToolPermissionResponse
-	109, // 224: loom.v1.LoomService.ListMCPServers:output_type -> loom.v1.ListMCPServersResponse
-	111, // 225: loom.v1.LoomService.GetMCPServer:output_type -> loom.v1.MCPServerInfo
-	114, // 226: loom.v1.LoomService.AddMCPServer:output_type -> loom.v1.AddMCPServerResponse
-	111, // 227: loom.v1.LoomService.UpdateMCPServer:output_type -> loom.v1.MCPServerInfo
-	117, // 228: loom.v1.LoomService.DeleteMCPServer:output_type -> loom.v1.DeleteMCPServerResponse
-	111, // 229: loom.v1.LoomService.RestartMCPServer:output_type -> loom.v1.MCPServerInfo
-	120, // 230: loom.v1.LoomService.HealthCheckMCPServers:output_type -> loom.v1.HealthCheckMCPServersResponse
-	123, // 231: loom.v1.LoomService.TestMCPServerConnection:output_type -> loom.v1.TestMCPServerConnectionResponse
-	125, // 232: loom.v1.LoomService.ListMCPServerTools:output_type -> loom.v1.ListMCPServerToolsResponse
-	212, // 233: loom.v1.LoomService.ExecuteWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
-	79,  // 234: loom.v1.LoomService.StreamWorkflow:output_type -> loom.v1.WorkflowProgress
-	174, // 235: loom.v1.LoomService.GetWorkflowExecution:output_type -> loom.v1.WorkflowExecution
-	78,  // 236: loom.v1.LoomService.ListWorkflowExecutions:output_type -> loom.v1.ListWorkflowExecutionsResponse
-	213, // 237: loom.v1.LoomService.ListWorkflows:output_type -> loom.v1.ListWorkflowsResponse
-	81,  // 238: loom.v1.LoomService.ScheduleWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
-	81,  // 239: loom.v1.LoomService.UpdateScheduledWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
-	178, // 240: loom.v1.LoomService.GetScheduledWorkflow:output_type -> loom.v1.ScheduledWorkflow
-	85,  // 241: loom.v1.LoomService.ListScheduledWorkflows:output_type -> loom.v1.ListScheduledWorkflowsResponse
-	214, // 242: loom.v1.LoomService.DeleteScheduledWorkflow:output_type -> google.protobuf.Empty
-	212, // 243: loom.v1.LoomService.TriggerScheduledWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
-	214, // 244: loom.v1.LoomService.PauseSchedule:output_type -> google.protobuf.Empty
-	214, // 245: loom.v1.LoomService.ResumeSchedule:output_type -> google.protobuf.Empty
-	91,  // 246: loom.v1.LoomService.GetScheduleHistory:output_type -> loom.v1.GetScheduleHistoryResponse
-	215, // 247: loom.v1.LoomService.Publish:output_type -> loom.v1.PublishResponse
-	216, // 248: loom.v1.LoomService.Subscribe:output_type -> loom.v1.BusMessage
-	217, // 249: loom.v1.LoomService.Unsubscribe:output_type -> loom.v1.UnsubscribeResponse
-	218, // 250: loom.v1.LoomService.ListTopics:output_type -> loom.v1.ListTopicsResponse
-	219, // 251: loom.v1.LoomService.GetTopicStats:output_type -> loom.v1.TopicStats
-	220, // 252: loom.v1.LoomService.SendAsync:output_type -> loom.v1.SendAsyncResponse
-	221, // 253: loom.v1.LoomService.SendAndReceive:output_type -> loom.v1.SendAndReceiveResponse
-	222, // 254: loom.v1.LoomService.PutSharedMemory:output_type -> loom.v1.PutSharedMemoryResponse
-	223, // 255: loom.v1.LoomService.GetSharedMemory:output_type -> loom.v1.GetSharedMemoryResponse
-	224, // 256: loom.v1.LoomService.DeleteSharedMemory:output_type -> loom.v1.DeleteSharedMemoryResponse
-	225, // 257: loom.v1.LoomService.WatchSharedMemory:output_type -> loom.v1.SharedMemoryValue
-	226, // 258: loom.v1.LoomService.ListSharedMemoryKeys:output_type -> loom.v1.ListSharedMemoryKeysResponse
-	227, // 259: loom.v1.LoomService.GetSharedMemoryStats:output_type -> loom.v1.SharedMemoryStats
-	128, // 260: loom.v1.LoomService.ListArtifacts:output_type -> loom.v1.ListArtifactsResponse
-	130, // 261: loom.v1.LoomService.GetArtifact:output_type -> loom.v1.GetArtifactResponse
-	132, // 262: loom.v1.LoomService.UploadArtifact:output_type -> loom.v1.UploadArtifactResponse
-	134, // 263: loom.v1.LoomService.DeleteArtifact:output_type -> loom.v1.DeleteArtifactResponse
-	136, // 264: loom.v1.LoomService.SearchArtifacts:output_type -> loom.v1.SearchArtifactsResponse
-	138, // 265: loom.v1.LoomService.GetArtifactContent:output_type -> loom.v1.GetArtifactContentResponse
-	140, // 266: loom.v1.LoomService.GetArtifactStats:output_type -> loom.v1.GetArtifactStatsResponse
-	228, // 267: loom.v1.LoomService.ListUIApps:output_type -> loom.v1.ListUIAppsResponse
-	229, // 268: loom.v1.LoomService.GetUIApp:output_type -> loom.v1.GetUIAppResponse
-	230, // 269: loom.v1.LoomService.CreateUIApp:output_type -> loom.v1.CreateUIAppResponse
-	231, // 270: loom.v1.LoomService.UpdateUIApp:output_type -> loom.v1.UpdateUIAppResponse
-	232, // 271: loom.v1.LoomService.DeleteUIApp:output_type -> loom.v1.DeleteUIAppResponse
-	233, // 272: loom.v1.LoomService.ListComponentTypes:output_type -> loom.v1.ListComponentTypesResponse
-	234, // 273: loom.v1.LoomService.ListAgentPresets:output_type -> loom.v1.ListAgentPresetsResponse
-	235, // 274: loom.v1.LoomService.ListWorkflowTemplates:output_type -> loom.v1.ListWorkflowTemplatesResponse
-	236, // 275: loom.v1.LoomService.CreateWorkflowFromTemplate:output_type -> loom.v1.CreateWorkflowFromTemplateResponse
-	142, // 276: loom.v1.AdminService.ListAllSessions:output_type -> loom.v1.ListAllSessionsResponse
-	144, // 277: loom.v1.AdminService.CountSessionsByUser:output_type -> loom.v1.CountSessionsByUserResponse
-	146, // 278: loom.v1.AdminService.GetSystemStats:output_type -> loom.v1.GetSystemStatsResponse
-	189, // [189:279] is the sub-list for method output_type
-	99,  // [99:189] is the sub-list for method input_type
+	92,  // 157: loom.v1.LoomService.CancelWorkflowExecution:input_type -> loom.v1.CancelWorkflowExecutionRequest
+	188, // 158: loom.v1.LoomService.Publish:input_type -> loom.v1.PublishRequest
+	189, // 159: loom.v1.LoomService.Subscribe:input_type -> loom.v1.SubscribeRequest
+	190, // 160: loom.v1.LoomService.Unsubscribe:input_type -> loom.v1.UnsubscribeRequest
+	191, // 161: loom.v1.LoomService.ListTopics:input_type -> loom.v1.ListTopicsRequest
+	192, // 162: loom.v1.LoomService.GetTopicStats:input_type -> loom.v1.GetTopicStatsRequest
+	193, // 163: loom.v1.LoomService.SendAsync:input_type -> loom.v1.SendAsyncRequest
+	194, // 164: loom.v1.LoomService.SendAndReceive:input_type -> loom.v1.SendAndReceiveRequest
+	195, // 165: loom.v1.LoomService.PutSharedMemory:input_type -> loom.v1.PutSharedMemoryRequest
+	196, // 166: loom.v1.LoomService.GetSharedMemory:input_type -> loom.v1.GetSharedMemoryRequest
+	197, // 167: loom.v1.LoomService.DeleteSharedMemory:input_type -> loom.v1.DeleteSharedMemoryRequest
+	198, // 168: loom.v1.LoomService.WatchSharedMemory:input_type -> loom.v1.WatchSharedMemoryRequest
+	199, // 169: loom.v1.LoomService.ListSharedMemoryKeys:input_type -> loom.v1.ListSharedMemoryKeysRequest
+	200, // 170: loom.v1.LoomService.GetSharedMemoryStats:input_type -> loom.v1.GetSharedMemoryStatsRequest
+	129, // 171: loom.v1.LoomService.ListArtifacts:input_type -> loom.v1.ListArtifactsRequest
+	131, // 172: loom.v1.LoomService.GetArtifact:input_type -> loom.v1.GetArtifactRequest
+	133, // 173: loom.v1.LoomService.UploadArtifact:input_type -> loom.v1.UploadArtifactRequest
+	135, // 174: loom.v1.LoomService.DeleteArtifact:input_type -> loom.v1.DeleteArtifactRequest
+	137, // 175: loom.v1.LoomService.SearchArtifacts:input_type -> loom.v1.SearchArtifactsRequest
+	139, // 176: loom.v1.LoomService.GetArtifactContent:input_type -> loom.v1.GetArtifactContentRequest
+	141, // 177: loom.v1.LoomService.GetArtifactStats:input_type -> loom.v1.GetArtifactStatsRequest
+	201, // 178: loom.v1.LoomService.ListUIApps:input_type -> loom.v1.ListUIAppsRequest
+	202, // 179: loom.v1.LoomService.GetUIApp:input_type -> loom.v1.GetUIAppRequest
+	203, // 180: loom.v1.LoomService.CreateUIApp:input_type -> loom.v1.CreateUIAppRequest
+	204, // 181: loom.v1.LoomService.UpdateUIApp:input_type -> loom.v1.UpdateUIAppRequest
+	205, // 182: loom.v1.LoomService.DeleteUIApp:input_type -> loom.v1.DeleteUIAppRequest
+	206, // 183: loom.v1.LoomService.ListComponentTypes:input_type -> loom.v1.ListComponentTypesRequest
+	207, // 184: loom.v1.LoomService.ListAgentPresets:input_type -> loom.v1.ListAgentPresetsRequest
+	208, // 185: loom.v1.LoomService.ListWorkflowTemplates:input_type -> loom.v1.ListWorkflowTemplatesRequest
+	209, // 186: loom.v1.LoomService.CreateWorkflowFromTemplate:input_type -> loom.v1.CreateWorkflowFromTemplateRequest
+	143, // 187: loom.v1.AdminService.ListAllSessions:input_type -> loom.v1.ListAllSessionsRequest
+	145, // 188: loom.v1.AdminService.CountSessionsByUser:input_type -> loom.v1.CountSessionsByUserRequest
+	147, // 189: loom.v1.AdminService.GetSystemStats:input_type -> loom.v1.GetSystemStatsRequest
+	5,   // 190: loom.v1.LoomService.Weave:output_type -> loom.v1.WeaveResponse
+	6,   // 191: loom.v1.LoomService.StreamWeave:output_type -> loom.v1.WeaveProgress
+	20,  // 192: loom.v1.LoomService.LoadPatterns:output_type -> loom.v1.LoadPatternsResponse
+	22,  // 193: loom.v1.LoomService.ListPatterns:output_type -> loom.v1.ListPatternsResponse
+	30,  // 194: loom.v1.LoomService.GetPattern:output_type -> loom.v1.Pattern
+	25,  // 195: loom.v1.LoomService.CreatePattern:output_type -> loom.v1.CreatePatternResponse
+	27,  // 196: loom.v1.LoomService.StreamPatternUpdates:output_type -> loom.v1.PatternUpdateEvent
+	29,  // 197: loom.v1.LoomService.AnswerClarificationQuestion:output_type -> loom.v1.AnswerClarificationResponse
+	34,  // 198: loom.v1.LoomService.CreateSession:output_type -> loom.v1.Session
+	34,  // 199: loom.v1.LoomService.GetSession:output_type -> loom.v1.Session
+	37,  // 200: loom.v1.LoomService.ListSessions:output_type -> loom.v1.ListSessionsResponse
+	39,  // 201: loom.v1.LoomService.DeleteSession:output_type -> loom.v1.DeleteSessionResponse
+	41,  // 202: loom.v1.LoomService.SubscribeToSession:output_type -> loom.v1.SessionUpdate
+	45,  // 203: loom.v1.LoomService.GetConversationHistory:output_type -> loom.v1.ConversationHistory
+	49,  // 204: loom.v1.LoomService.RegisterTool:output_type -> loom.v1.RegisterToolResponse
+	51,  // 205: loom.v1.LoomService.ListTools:output_type -> loom.v1.ListToolsResponse
+	60,  // 206: loom.v1.LoomService.GetTrace:output_type -> loom.v1.Trace
+	64,  // 207: loom.v1.LoomService.GetHealth:output_type -> loom.v1.HealthStatus
+	210, // 208: loom.v1.LoomService.GetServerConfig:output_type -> loom.v1.ServerConfig
+	211, // 209: loom.v1.LoomService.GetTLSStatus:output_type -> loom.v1.TLSStatus
+	98,  // 210: loom.v1.LoomService.RenewCertificate:output_type -> loom.v1.RenewCertificateResponse
+	212, // 211: loom.v1.LoomService.GetStorageStatus:output_type -> loom.v1.GetStorageStatusResponse
+	213, // 212: loom.v1.LoomService.RunMigration:output_type -> loom.v1.RunMigrationResponse
+	67,  // 213: loom.v1.LoomService.CreateAgentFromConfig:output_type -> loom.v1.AgentInfo
+	69,  // 214: loom.v1.LoomService.ListAgents:output_type -> loom.v1.ListAgentsResponse
+	67,  // 215: loom.v1.LoomService.GetAgent:output_type -> loom.v1.AgentInfo
+	67,  // 216: loom.v1.LoomService.StartAgent:output_type -> loom.v1.AgentInfo
+	67,  // 217: loom.v1.LoomService.StopAgent:output_type -> loom.v1.AgentInfo
+	74,  // 218: loom.v1.LoomService.DeleteAgent:output_type -> loom.v1.DeleteAgentResponse
+	67,  // 219: loom.v1.LoomService.ReloadAgent:output_type -> loom.v1.AgentInfo
+	100, // 220: loom.v1.LoomService.SwitchModel:output_type -> loom.v1.SwitchModelResponse
+	102, // 221: loom.v1.LoomService.ListAvailableModels:output_type -> loom.v1.ListAvailableModelsResponse
+	104, // 222: loom.v1.LoomService.ListProviders:output_type -> loom.v1.ListProvidersResponse
+	106, // 223: loom.v1.LoomService.ABTest:output_type -> loom.v1.ABTestEvent
+	109, // 224: loom.v1.LoomService.RequestToolPermission:output_type -> loom.v1.ToolPermissionResponse
+	111, // 225: loom.v1.LoomService.ListMCPServers:output_type -> loom.v1.ListMCPServersResponse
+	113, // 226: loom.v1.LoomService.GetMCPServer:output_type -> loom.v1.MCPServerInfo
+	116, // 227: loom.v1.LoomService.AddMCPServer:output_type -> loom.v1.AddMCPServerResponse
+	113, // 228: loom.v1.LoomService.UpdateMCPServer:output_type -> loom.v1.MCPServerInfo
+	119, // 229: loom.v1.LoomService.DeleteMCPServer:output_type -> loom.v1.DeleteMCPServerResponse
+	113, // 230: loom.v1.LoomService.RestartMCPServer:output_type -> loom.v1.MCPServerInfo
+	122, // 231: loom.v1.LoomService.HealthCheckMCPServers:output_type -> loom.v1.HealthCheckMCPServersResponse
+	125, // 232: loom.v1.LoomService.TestMCPServerConnection:output_type -> loom.v1.TestMCPServerConnectionResponse
+	127, // 233: loom.v1.LoomService.ListMCPServerTools:output_type -> loom.v1.ListMCPServerToolsResponse
+	214, // 234: loom.v1.LoomService.ExecuteWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
+	79,  // 235: loom.v1.LoomService.StreamWorkflow:output_type -> loom.v1.WorkflowProgress
+	176, // 236: loom.v1.LoomService.GetWorkflowExecution:output_type -> loom.v1.WorkflowExecution
+	78,  // 237: loom.v1.LoomService.ListWorkflowExecutions:output_type -> loom.v1.ListWorkflowExecutionsResponse
+	215, // 238: loom.v1.LoomService.ListWorkflows:output_type -> loom.v1.ListWorkflowsResponse
+	81,  // 239: loom.v1.LoomService.ScheduleWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
+	81,  // 240: loom.v1.LoomService.UpdateScheduledWorkflow:output_type -> loom.v1.ScheduleWorkflowResponse
+	180, // 241: loom.v1.LoomService.GetScheduledWorkflow:output_type -> loom.v1.ScheduledWorkflow
+	85,  // 242: loom.v1.LoomService.ListScheduledWorkflows:output_type -> loom.v1.ListScheduledWorkflowsResponse
+	216, // 243: loom.v1.LoomService.DeleteScheduledWorkflow:output_type -> google.protobuf.Empty
+	214, // 244: loom.v1.LoomService.TriggerScheduledWorkflow:output_type -> loom.v1.ExecuteWorkflowResponse
+	216, // 245: loom.v1.LoomService.PauseSchedule:output_type -> google.protobuf.Empty
+	216, // 246: loom.v1.LoomService.ResumeSchedule:output_type -> google.protobuf.Empty
+	91,  // 247: loom.v1.LoomService.GetScheduleHistory:output_type -> loom.v1.GetScheduleHistoryResponse
+	93,  // 248: loom.v1.LoomService.CancelWorkflowExecution:output_type -> loom.v1.CancelWorkflowExecutionResponse
+	217, // 249: loom.v1.LoomService.Publish:output_type -> loom.v1.PublishResponse
+	218, // 250: loom.v1.LoomService.Subscribe:output_type -> loom.v1.BusMessage
+	219, // 251: loom.v1.LoomService.Unsubscribe:output_type -> loom.v1.UnsubscribeResponse
+	220, // 252: loom.v1.LoomService.ListTopics:output_type -> loom.v1.ListTopicsResponse
+	221, // 253: loom.v1.LoomService.GetTopicStats:output_type -> loom.v1.TopicStats
+	222, // 254: loom.v1.LoomService.SendAsync:output_type -> loom.v1.SendAsyncResponse
+	223, // 255: loom.v1.LoomService.SendAndReceive:output_type -> loom.v1.SendAndReceiveResponse
+	224, // 256: loom.v1.LoomService.PutSharedMemory:output_type -> loom.v1.PutSharedMemoryResponse
+	225, // 257: loom.v1.LoomService.GetSharedMemory:output_type -> loom.v1.GetSharedMemoryResponse
+	226, // 258: loom.v1.LoomService.DeleteSharedMemory:output_type -> loom.v1.DeleteSharedMemoryResponse
+	227, // 259: loom.v1.LoomService.WatchSharedMemory:output_type -> loom.v1.SharedMemoryValue
+	228, // 260: loom.v1.LoomService.ListSharedMemoryKeys:output_type -> loom.v1.ListSharedMemoryKeysResponse
+	229, // 261: loom.v1.LoomService.GetSharedMemoryStats:output_type -> loom.v1.SharedMemoryStats
+	130, // 262: loom.v1.LoomService.ListArtifacts:output_type -> loom.v1.ListArtifactsResponse
+	132, // 263: loom.v1.LoomService.GetArtifact:output_type -> loom.v1.GetArtifactResponse
+	134, // 264: loom.v1.LoomService.UploadArtifact:output_type -> loom.v1.UploadArtifactResponse
+	136, // 265: loom.v1.LoomService.DeleteArtifact:output_type -> loom.v1.DeleteArtifactResponse
+	138, // 266: loom.v1.LoomService.SearchArtifacts:output_type -> loom.v1.SearchArtifactsResponse
+	140, // 267: loom.v1.LoomService.GetArtifactContent:output_type -> loom.v1.GetArtifactContentResponse
+	142, // 268: loom.v1.LoomService.GetArtifactStats:output_type -> loom.v1.GetArtifactStatsResponse
+	230, // 269: loom.v1.LoomService.ListUIApps:output_type -> loom.v1.ListUIAppsResponse
+	231, // 270: loom.v1.LoomService.GetUIApp:output_type -> loom.v1.GetUIAppResponse
+	232, // 271: loom.v1.LoomService.CreateUIApp:output_type -> loom.v1.CreateUIAppResponse
+	233, // 272: loom.v1.LoomService.UpdateUIApp:output_type -> loom.v1.UpdateUIAppResponse
+	234, // 273: loom.v1.LoomService.DeleteUIApp:output_type -> loom.v1.DeleteUIAppResponse
+	235, // 274: loom.v1.LoomService.ListComponentTypes:output_type -> loom.v1.ListComponentTypesResponse
+	236, // 275: loom.v1.LoomService.ListAgentPresets:output_type -> loom.v1.ListAgentPresetsResponse
+	237, // 276: loom.v1.LoomService.ListWorkflowTemplates:output_type -> loom.v1.ListWorkflowTemplatesResponse
+	238, // 277: loom.v1.LoomService.CreateWorkflowFromTemplate:output_type -> loom.v1.CreateWorkflowFromTemplateResponse
+	144, // 278: loom.v1.AdminService.ListAllSessions:output_type -> loom.v1.ListAllSessionsResponse
+	146, // 279: loom.v1.AdminService.CountSessionsByUser:output_type -> loom.v1.CountSessionsByUserResponse
+	148, // 280: loom.v1.AdminService.GetSystemStats:output_type -> loom.v1.GetSystemStatsResponse
+	190, // [190:281] is the sub-list for method output_type
+	99,  // [99:190] is the sub-list for method input_type
 	99,  // [99:99] is the sub-list for extension type_name
 	99,  // [99:99] is the sub-list for extension extendee
 	0,   // [0:99] is the sub-list for field type_name
@@ -12337,7 +12462,7 @@ func file_loom_v1_loom_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_loom_proto_rawDesc), len(file_loom_v1_loom_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   164,
+			NumMessages:   166,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
