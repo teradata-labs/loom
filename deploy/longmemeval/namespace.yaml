@@ -1,0 +1,5 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${LME_NAMESPACE}

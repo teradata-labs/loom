@@ -1,0 +1,82 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst;
+# LME_* variables from lme.env / lme.env.local).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lme-runner
+  namespace: ${LME_NAMESPACE}
+spec:
+  # Multi-day run: pod restarts are the resume mechanism (chunks with a .done
+  # marker on the results PVC are skipped), so allow generous retries.
+  backoffLimit: 30
+  template:
+    metadata:
+      labels:
+        app: lme-runner
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        loom-role: lme
+      tolerations:
+        - key: loom-role
+          value: lme
+          effect: NoSchedule
+      initContainers:
+        # One-time (cached on the data PVC): fetch the dataset from HuggingFace.
+        - name: download-dataset
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          command: ["/loom-longmemeval"]
+          args: ["download", "--datasets", "${LME_DATASET}", "--data-dir", "/data/longmemeval"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: runner
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          command: ["/bin/bash", "/scripts/run-slices.sh"]
+          env:
+            - name: SERVER
+              value: "lme-server:${LME_GRPC_PORT}"
+            - name: DATASET_FILE
+              value: "/data/longmemeval/${LME_DATASET_FILE}"
+            - name: MODE
+              value: "${LME_MODE}"
+            - name: CONCURRENCY
+              value: "${LME_CONCURRENCY}"
+            - name: CHUNK
+              value: "${LME_CHUNK}"
+            - name: OCCURRED_AT
+              value: "${LME_OCCURRED_AT}"
+            - name: RESULTS_DIR
+              value: "/results"
+            - name: RUN_ID
+              value: "${LME_RUN_ID}"
+            - name: RUN_MANIFEST
+              value: "${LME_RUN_MANIFEST}"
+            - name: ALLOW_MANIFEST_DRIFT
+              value: "${LME_ALLOW_MANIFEST_DRIFT}"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: lme-results
+        - name: data
+          persistentVolumeClaim:
+            claimName: lme-data
+        - name: scripts
+          configMap:
+            name: lme-runner-script
+            defaultMode: 0755
