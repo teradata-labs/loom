@@ -238,8 +238,38 @@ func verifyItemBinding(hr *shuttle.HumanRequest, batch Message) error {
 				return ErrStaleDecision
 			}
 		}
+		// The ARGUMENTS the human saw must be the arguments about to run.
+		// Tool and seq alone can carry no information at all: on Gemini
+		// ToolCall.ID IS the function name (pkg/llm/gemini/client.go —
+		// "Gemini doesn't provide call IDs"), so for a single-call batch id,
+		// tool and seq collapse into one fact and every same-tool batch looks
+		// identical. Without this a spent decision — which still loads, since
+		// the embedder-recorded flow accepts a decided row — re-binds to a
+		// LATER batch of the same tool and executes arguments nobody approved.
+		if !sameParkedParams(desc, batch.ToolCalls[idx]) {
+			return ErrStaleDecision
+		}
 	}
 	return nil
+}
+
+// sameParkedParams reports whether a request item's recorded params still
+// describe the call it names. The descriptor holds either the bounded params
+// map or, when that overflowed, the display digest — compare like with like.
+// A descriptor carrying neither cannot vouch for anything and is refused.
+func sameParkedParams(desc map[string]interface{}, call ToolCall) bool {
+	switch recorded := desc["params"].(type) {
+	case string:
+		// Digest form (params_truncated): compare the same rendering.
+		return recorded == shuttle.SummarizeCall(call.Name, call.Input)
+	case map[string]interface{}:
+		bounded, _ := shuttle.BoundParams(call.Input)
+		a, aerr := json.Marshal(recorded)
+		b, berr := json.Marshal(bounded)
+		return aerr == nil && berr == nil && string(a) == string(b)
+	default:
+		return false
+	}
 }
 
 // sameIDSet reports whether two id lists describe the same set.

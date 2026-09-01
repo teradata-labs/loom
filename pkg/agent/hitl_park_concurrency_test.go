@@ -369,3 +369,62 @@ func TestPark_UnloadableSessionDoesNotDestroyTheApproval(t *testing.T) {
 			"about the turn; a correctly-scoped resume can never complete it now", after.Status)
 	}
 }
+
+// TestPark_SpentDecisionCannotBindALaterBatchOfTheSameTool is the
+// approval-bypass proof. A decided row still LOADS (the embedder-recorded flow
+// needs that), so a redelivered decision is refused only by the item binding —
+// and tool name plus batch position can carry no information at all: on Gemini
+// ToolCall.ID IS the function name, so for a single-call batch id, tool and
+// seq are one fact and every same-tool batch looks identical. The arguments
+// the human actually saw are the only thing that separates them.
+func TestPark_SpentDecisionCannotBindALaterBatchOfTheSameTool(t *testing.T) {
+	// Gemini-shaped: ID == tool name, so the ids collide across turns.
+	responses := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "export_csv", Name: "export_csv", Input: map[string]interface{}{"v": "customers_sample"}},
+		}},
+		{content: "first turn done"},
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "export_csv", Name: "export_csv", Input: map[string]interface{}{"v": "ALL_CUSTOMERS_PII"}},
+		}},
+		{content: "second turn done"},
+	}
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, responses)
+	exp := &countingTool{name: "export_csv"}
+	f.ag.RegisterTool(exp)
+	ctx := context.Background()
+
+	// Turn 1: parks, human approves the SAMPLE export, it runs.
+	_, err := f.ag.Chat(ctx, "s-spent", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr1 := f.pendingParked(t, "s-spent")
+	spent := ParkDecision{RequestID: hr1.ID, ItemIDs: paramKeys(hr1), Approved: true}
+	if _, err := f.ag.ResumeChat(ctx, "s-spent", spent, nil); err != nil {
+		t.Fatalf("resume 1: %v", err)
+	}
+	if got := exp.runs.Load(); got != 1 {
+		t.Fatalf("approved sample export ran %d times, want 1", got)
+	}
+
+	// Turn 2: parks the PII export. Nobody has seen this card.
+	_, err = f.ag.Chat(ctx, "s-spent", "again")
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected second park, got %v", err)
+	}
+
+	// Turn 1's spent decision is redelivered — a retry, a stale Approve click,
+	// an at-least-once queue. It must not authorize turn 2's arguments.
+	_, err = f.ag.ResumeChat(ctx, "s-spent", spent, nil)
+	if err == nil {
+		t.Errorf("APPROVAL BYPASS: a spent decision for {v:customers_sample} was accepted " +
+			"for a batch running {v:ALL_CUSTOMERS_PII}")
+	} else if !errors.Is(err, ErrStaleDecision) {
+		t.Logf("refused with %v", err)
+	}
+	if got := exp.runs.Load(); got != 1 {
+		t.Errorf("APPROVAL BYPASS: export_csv ran %d times; the unapproved PII export executed", got)
+	}
+}
