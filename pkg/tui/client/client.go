@@ -37,6 +37,10 @@ type Client struct {
 	conn   *grpc.ClientConn
 	client loomv1.LoomServiceClient
 	addr   string
+
+	// borrowed marks a conn owned by the caller (see Wrap), so Close leaves it
+	// open rather than tearing down a connection someone else is still using.
+	borrowed bool
 }
 
 // Config holds client configuration.
@@ -158,8 +162,33 @@ func createTLSConfig(cfg Config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// Close closes the client connection.
+// Wrap builds a Client over a connection the caller already holds.
+//
+// A caller that dials Loom itself — because its own generated bindings share
+// the connection — would otherwise have to choose between opening a second
+// connection to the same server or reimplementing this package's methods
+// against a raw stub. Neither is worth it.
+//
+// The returned Client does not own the connection: Close is a no-op, and
+// closing the conn remains the caller's job.
+func Wrap(conn *grpc.ClientConn) *Client {
+	if conn == nil {
+		return nil
+	}
+	return &Client{
+		conn:     conn,
+		client:   loomv1.NewLoomServiceClient(conn),
+		addr:     conn.Target(),
+		borrowed: true,
+	}
+}
+
+// Close closes the client connection, unless the connection was borrowed via
+// Wrap — then closing it belongs to whoever opened it.
 func (c *Client) Close() error {
+	if c.borrowed {
+		return nil
+	}
 	if c.conn != nil {
 		return c.conn.Close()
 	}
