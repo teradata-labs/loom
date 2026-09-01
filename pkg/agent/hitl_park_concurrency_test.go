@@ -594,3 +594,36 @@ func (r *recordingExecStore) saved() []ToolExecution {
 	defer r.mu.Unlock()
 	return append([]ToolExecution(nil), r.execs...)
 }
+
+// TestPark_OperatorRetirementReleasesTheSession — `looms hitl expire` is the
+// operator's one recovery route for a stranded park, and it writes "timeout".
+// The unapplied-tail guard must not hold on that: a timeout is a closure, not
+// a verdict awaiting application, and nobody is coming to apply it. Holding
+// would make the recovery route do nothing.
+func TestPark_OperatorRetirementReleasesTheSession(t *testing.T) {
+	responses := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "c-write", Name: "export_csv", Input: map[string]interface{}{"v": "w"}},
+		}},
+		{content: "unreachable"},
+		{content: "after retirement"},
+	}
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, responses, "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-retire", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-retire")
+
+	// The operator retires it. The batch stays rowless — that is the point.
+	if err := f.store.ExpireRequest(ctx, hr.ID, "operator:someone"); err != nil {
+		t.Fatalf("ExpireRequest: %v", err)
+	}
+
+	if _, err := f.ag.Chat(ctx, "s-retire", "carry on"); err != nil {
+		t.Errorf("session still held after the operator retired the park: %v", err)
+	}
+}

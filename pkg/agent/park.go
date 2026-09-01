@@ -455,6 +455,15 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Ses
 			if r == nil || r.RequestType != "parked" || r.Status == "pending" {
 				continue
 			}
+			// Only a VERDICT awaiting application holds the session. "timeout"
+			// is a closure, not a verdict — it is what `looms hitl expire`
+			// writes to retire a stranded park, and what an expiry sweep
+			// writes. Holding on it would make the operator's one recovery
+			// route do nothing, which is worse than the burial this guard
+			// exists to prevent: nobody is coming to apply it.
+			if r.Status != "approved" && r.Status != "rejected" && r.Status != "responded" {
+				continue
+			}
 			if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
 				continue
 			}
