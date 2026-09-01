@@ -1999,7 +1999,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// until after the loop so the task spans the whole turn, and run even on
 	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
 	// would misreport it as still running.
-	defer a.completeImplicitTask(ctx, taskBinding, implicitCloseReason(response, err))
+	defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err))
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
@@ -3850,6 +3850,13 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// Retire the session's resource leases: a leaked ledger entry on a
 	// deleted session would pin RESOURCE_HOLDER priority forever.
 	a.leases.forget(sessionID)
+	// Drop the implicit emitter's per-session state — its cap counter, any
+	// remaining per-turn memo, and its board entry. Like the approved set
+	// above, those maps stay bounded by live sessions only because every
+	// retirement path frees them. No nil guard: ForgetSession is
+	// nil-receiver-safe, and a.implicitTasks is nil until a task manager is
+	// wired.
+	a.implicitTasks.ForgetSession(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -3878,6 +3885,18 @@ func (a *Agent) ClearAllSessions() {
 	if as := a.executor.ApprovedSet(); as != nil {
 		for _, s := range a.memory.ListSessions() {
 			as.ForgetSession(s.ID)
+		}
+	}
+	// The implicit emitter's per-session maps are bounded the same way, so this
+	// sibling of DeleteSession must retire them too. Also before ClearAll: after
+	// it ListSessions is empty and there is no id left to free by.
+	//
+	// The nil check is not for safety — ForgetSession is nil-receiver-safe — it
+	// avoids walking every live session to no purpose when no task manager is
+	// wired and there is nothing to free.
+	if a.implicitTasks != nil {
+		for _, s := range a.memory.ListSessions() {
+			a.implicitTasks.ForgetSession(s.ID)
 		}
 	}
 	a.memory.ClearAll()

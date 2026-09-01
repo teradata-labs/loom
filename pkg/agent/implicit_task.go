@@ -140,14 +140,33 @@ func turnStartedAt(sess *Session) time.Time {
 	return time.Time{}
 }
 
-// completeImplicitTask closes the turn's recorded task once the conversation
-// loop returns.
+// completeImplicitTask ends the turn for the implicit emitter: it releases the
+// turn's per-turn memo and closes the turn's recorded task, if there is one.
 //
 // The task is opened IN_PROGRESS at the first tool call and nothing else would
 // ever close it — no agent claimed it and no human is working it — so without
 // this every recorded task sits in progress forever and the session panel reads
 // 0/1 done for finished work.
-func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Binding, closeReason string) {
+//
+// This is also the emitter's per-turn teardown hook. It is deferred once in
+// chat() and covers every return point, so the memo release belongs here rather
+// than in a second mechanism that would have to re-establish the same coverage.
+func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Binding, sessionID string, turnIndex int, closeReason string) {
+	// Release the turn's memo FIRST, and unconditionally.
+	//
+	// Before the early returns below, not after: those guards are about whether
+	// there is a TASK TO CLOSE, which is a different question from whether the
+	// turn left an entry in the emitter's per-turn map. Today they agree — the
+	// memo and the binding are filled together — but hanging the memory
+	// reclamation off the close guard would mean any future change to the close
+	// condition silently reintroduces the leak.
+	//
+	// Unconditional is safe and cheap: EndTurn is nil-receiver-safe (so the
+	// a.implicitTasks == nil guard below is not needed for it) and is a single
+	// map delete under the emitter's mutex. A turn that minted nothing has no
+	// entry and the delete is a no-op.
+	a.implicitTasks.EndTurn(sessionID, turnIndex)
+
 	if a.implicitTasks == nil || binding == nil {
 		return
 	}

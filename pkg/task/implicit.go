@@ -480,7 +480,12 @@ func (e *ImplicitEmitter) EndTurn(sessionID string, turnIndex int) {
 	e.mu.Unlock()
 }
 
-// ForgetSession drops all state for a session, including its cap counter.
+// ForgetSession drops all state for a session: its cap counter, its remaining
+// per-turn memos, and its board.
+//
+// Called from every session-retirement path. All three maps are bounded by live
+// sessions ONLY because retirement frees them; without this the emitter grows
+// for the life of the process, which on a long-running server is unbounded.
 func (e *ImplicitEmitter) ForgetSession(sessionID string) {
 	if e == nil {
 		return
@@ -494,6 +499,19 @@ func (e *ImplicitEmitter) ForgetSession(sessionID string) {
 			delete(e.minted, k)
 		}
 	}
+	// Deleting a SESSION id from a BOARD-keyed map is deliberate, not a
+	// category error. maybeRecordImplicitTask defaults the board to the
+	// session id when no DefaultBoardId is configured — the default
+	// configuration — so in that shape the board id IS the session id and
+	// boardsKnown accumulates one entry per session, the same leak as the two
+	// maps above.
+	//
+	// A configured shared board cannot be harmed: its id is an operator-chosen
+	// name, never equal to a session id, so this delete misses it. And even if
+	// a shared board's entry were somehow dropped, the cost is one re-probe in
+	// ensureBoard on the next mint — the cache is an optimisation, not a
+	// correctness requirement.
+	delete(e.boardsKnown, sessionID)
 }
 
 // implicitTitle names the task after what the turn was about, so a board reads
