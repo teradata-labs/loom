@@ -55,6 +55,19 @@ const (
 	// ModeContextStuffing puts all session history directly into one
 	// Weave call as prompt context. Baseline comparison.
 	ModeContextStuffing RunMode = "context-stuffing"
+
+	// ModeConversation replays every haystack turn, in chronological order,
+	// into ONE continuous agent session — user turns as user messages and the
+	// pre-written assistant turns recorded verbatim (generation-free, via
+	// WeaveRequest.replay_assistant_message) rather than regenerated. Unlike the
+	// blob-per-session ingest modes, this drives the memory pipeline the way a
+	// live conversation would: salience accumulates across turns and context
+	// compression fires as the thread grows. The question is asked in the same
+	// thread, where the earliest turns have compressed out of the live window,
+	// so recall runs through graph memory + conversation_memory. Recording the
+	// original assistant turns (never inventing them) preserves the benchmark's
+	// ground truth for assistant-derived questions.
+	ModeConversation RunMode = "conversation"
 )
 
 // RunConfig holds configuration for a benchmark run.
@@ -303,6 +316,8 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		result = r.runMultiSessionWith(ctx, entry, sessions, result, agentID, questionAt)
 	case ModeContextStuffing:
 		result = r.runContextStuffingWith(ctx, entry, sessions, result, agentID, questionAt)
+	case ModeConversation:
+		result = r.runConversationWith(ctx, entry, sessions, result, agentID, questionAt)
 	default:
 		result.Error = fmt.Sprintf("unknown mode: %s", r.config.Mode)
 	}
@@ -388,6 +403,29 @@ func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, oc
 	}
 
 	return resp, nil
+}
+
+// replayTurn records a pre-written (user, assistant) exchange generation-free:
+// the server substitutes the scripted assistant text for the LLM call
+// (WeaveRequest.replay_assistant_message) while still running the full memory
+// pipeline. Anchors both rows at occurredAt. Requires
+// server.allow_assistant_override (replay) and server.allow_time_override
+// (anchoring) on the target server.
+func (r *Runner) replayTurn(ctx context.Context, sessionID, userContent, assistantContent, agentID string, occurredAt time.Time, result *EntryResult) error {
+	req := buildWeaveRequest(sessionID, userContent, agentID, occurredAt)
+	req.ReplayAssistantMessage = assistantContent
+
+	resp, err := r.client.Weave(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	if resp.Cost != nil && resp.Cost.LlmCost != nil {
+		result.InputTokens += int(resp.Cost.LlmCost.InputTokens)
+		result.OutputTokens += int(resp.Cost.LlmCost.OutputTokens)
+	}
+
+	return nil
 }
 
 // createSession creates a session and returns its ID.
@@ -537,6 +575,76 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 	)
 
 	resp, err := r.weave(ctx, sessionID, prompt, agentID, questionAt, &result)
+	if err != nil {
+		result.Error = fmt.Sprintf("ask question: %v", err)
+		return result
+	}
+	result.Hypothesis = resp.Text
+
+	return result
+}
+
+// runConversationWith replays the whole haystack turn-by-turn into ONE
+// continuous agent session, then asks the question in that same thread. Each
+// pre-written (user, assistant) pair is replayed generation-free so the
+// assistant's original words are preserved (ground truth) while the memory
+// pipeline runs as it would live — salience accumulating across turns and
+// compression firing as the thread grows. See ModeConversation.
+func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string, questionAt time.Time) EntryResult {
+	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-conv", entry.QuestionID), agentID)
+	if err != nil {
+		result.Error = fmt.Sprintf("create session: %v", err)
+		return result
+	}
+
+	// Phase 1: replay every turn in chronological order as one thread.
+	// LongMemEval sessions alternate user/assistant; pair each user turn with
+	// the assistant turn that answered it and replay them generation-free.
+	for si, sess := range sessions {
+		occurredAt := r.sessionOccurredAt(sess)
+		turns := sess.Turns
+		i := 0
+		for i < len(turns) {
+			// Skip an anomalous leading assistant turn — a turn without a
+			// preceding user turn cannot be replayed (query is required).
+			if turns[i].Role != "user" {
+				i++
+				continue
+			}
+			user := turns[i]
+			if i+1 < len(turns) && turns[i+1].Role == "assistant" {
+				// The common case: a (user, assistant) pair replayed verbatim.
+				if err := r.replayTurn(ctx, sessionID, user.Content, turns[i+1].Content, agentID, occurredAt, &result); err != nil {
+					result.Error = fmt.Sprintf("replay session %d turn %d: %v", si, i, err)
+					return result
+				}
+				i += 2
+				continue
+			}
+			// A trailing user turn with no assistant reply (rare). There is no
+			// ground-truth assistant content to preserve, so let the agent
+			// generate one — the user content still enters memory.
+			if _, err := r.weave(ctx, sessionID, user.Content, agentID, occurredAt, &result); err != nil {
+				result.Error = fmt.Sprintf("replay session %d trailing user turn %d: %v", si, i, err)
+				return result
+			}
+			i++
+		}
+	}
+
+	// Phase 2: ask the question in the same thread (real generation). By now the
+	// earliest turns have compressed out of the live window, so the answer must
+	// come from graph memory + conversation_memory recall.
+	questionMsg := fmt.Sprintf(
+		"Current date: %s\n\n"+
+			"Based on everything from our conversation so far, answer the following "+
+			"question. Be specific and concise. If you don't have enough "+
+			"information to answer, say \"I don't know.\"\n\n"+
+			"Question: %s",
+		entry.QuestionDate, entry.Question,
+	)
+
+	resp, err := r.weave(ctx, sessionID, questionMsg, agentID, questionAt, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result

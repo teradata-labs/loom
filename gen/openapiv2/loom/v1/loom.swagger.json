@@ -10115,6 +10115,10 @@
           "type": "string",
           "format": "date-time",
           "description": "Historical arrival time for replayed or imported conversations (optional).\nWhen set, every message persisted during this call — the user turn, the\nassistant reply, and tool rows — carries this timestamp instead of the\nserver wall clock, so temporal grounding (compiled-view arrival stamps,\ngraph-memory extraction anchoring) reflects when the conversation\nactually happened rather than when it was ingested.\n\nServers reject this field unless server.allow_time_override is enabled\n(FAILED_PRECONDITION), and reject values in the future beyond a small\nclock-skew allowance (INVALID_ARGUMENT). Live conversations should leave\nit unset."
+        },
+        "replayAssistantMessage": {
+          "type": "string",
+          "description": "Generation-free replay: when set, the agent does NOT call the LLM to\ngenerate a response. Instead it records this text verbatim as the\nassistant's turn and runs the full turn pipeline exactly as a live turn\nwould — context compilation, memory compression (relief/fold),\ngraph-memory extraction, and salience updates. Only generation is skipped.\n\nThis replays a pre-written conversation turn-by-turn while preserving the\nground-truth assistant content (never inventing the assistant's side), so\nthe memory system is exercised under realistic accumulation. It is used by\nthe LongMemEval conversation-replay harness and is typically paired with\noccurred_at to anchor each turn at its historical time.\n\nGated by its own server.allow_assistant_override switch\n(FAILED_PRECONDITION when disabled) — separate from occurred_at's\nserver.allow_time_override, so operators who enabled timestamp anchoring\nhave not implicitly accepted caller-supplied assistant content.\nWhitespace-only values are rejected (INVALID_ARGUMENT). Live\nconversations leave it unset."
         }
       },
       "description": "WeaveRequest initiates a query execution."

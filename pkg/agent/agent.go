@@ -2444,7 +2444,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// context-too-long still comes back (loom's estimate under-counted), shed
 		// and resend once; a second refusal ends the turn with the recoverable
 		// context_exhausted error.
-		llmResp, err := a.chatWithRetry(ctx, withReminder(messages), tools)
+		//
+		// Generation-free replay (WeaveRequest.replay_assistant_message): when a
+		// scripted assistant turn is threaded through the context, substitute it
+		// for the provider call. Relief/compression (above), context compilation,
+		// and graph extraction on the incoming user turn have all already run, so
+		// the memory pipeline is exercised exactly as a live turn — only
+		// generation is skipped. The scripted text carries no tool calls, so the
+		// loop finalizes this turn at the no-tool-calls branch below. An empty
+		// override is ignored (falls through to a normal provider call).
+		var llmResp *LLMResponse
+		var err error
+		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
+			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
+		} else {
+			llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
+		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 				_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)

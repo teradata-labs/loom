@@ -311,9 +311,28 @@ type WeaveRequest struct {
 	// (FAILED_PRECONDITION), and reject values in the future beyond a small
 	// clock-skew allowance (INVALID_ARGUMENT). Live conversations should leave
 	// it unset.
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// Generation-free replay: when set, the agent does NOT call the LLM to
+	// generate a response. Instead it records this text verbatim as the
+	// assistant's turn and runs the full turn pipeline exactly as a live turn
+	// would — context compilation, memory compression (relief/fold),
+	// graph-memory extraction, and salience updates. Only generation is skipped.
+	//
+	// This replays a pre-written conversation turn-by-turn while preserving the
+	// ground-truth assistant content (never inventing the assistant's side), so
+	// the memory system is exercised under realistic accumulation. It is used by
+	// the LongMemEval conversation-replay harness and is typically paired with
+	// occurred_at to anchor each turn at its historical time.
+	//
+	// Gated by its own server.allow_assistant_override switch
+	// (FAILED_PRECONDITION when disabled) — separate from occurred_at's
+	// server.allow_time_override, so operators who enabled timestamp anchoring
+	// have not implicitly accepted caller-supplied assistant content.
+	// Whitespace-only values are rejected (INVALID_ARGUMENT). Live
+	// conversations leave it unset.
+	ReplayAssistantMessage string `protobuf:"bytes,12,opt,name=replay_assistant_message,json=replayAssistantMessage,proto3" json:"replay_assistant_message,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *WeaveRequest) Reset() {
@@ -421,6 +440,13 @@ func (x *WeaveRequest) GetOccurredAt() *timestamppb.Timestamp {
 		return x.OccurredAt
 	}
 	return nil
+}
+
+func (x *WeaveRequest) GetReplayAssistantMessage() string {
+	if x != nil {
+		return x.ReplayAssistantMessage
+	}
+	return ""
 }
 
 // WeaveResponse contains the execution result.
@@ -10739,7 +10765,7 @@ var File_loom_v1_loom_proto protoreflect.FileDescriptor
 
 const file_loom_v1_loom_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\xdd\x04\n" +
+	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\x97\x05\n" +
 	"\fWeaveRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1d\n" +
 	"\n" +
@@ -10755,7 +10781,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\rreset_context\x18\n" +
 	" \x01(\bR\fresetContext\x12;\n" +
 	"\voccurred_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\x1a@\n" +
+	"occurredAt\x128\n" +
+	"\x18replay_assistant_message\x18\f \x01(\tR\x16replayAssistantMessage\x1a@\n" +
 	"\x12BackendConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
