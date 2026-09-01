@@ -124,12 +124,10 @@ The grant lives only on the derived context handed to the parked batch's
 dispatch. The loop re-entry that follows runs ungranted, so a new ask in the
 continuation parks again.
 
-### 3.3 Closing the row
+### 3.3 Claiming the decision
 
-In the standalone (pending-row) flow, the row is closed the instant its
-decision is applied, **before** the loop re-entry that may park a new one — a
-pre-decided row is already closed by the embedder's respond door and is left
-untouched:
+In the standalone (pending-row) flow the row is closed **before the batch
+runs** — it is a claim, not bookkeeping:
 
 - approved → `RespondToRequest(…, "approved", …)`
 - rejected → `RespondToRequest(…, "rejected", …)`
@@ -137,22 +135,61 @@ untouched:
   applied as a refusal whatever it said — an approval must not execute on a
   lapsed authorization.
 
-This is not bookkeeping. `guardParkedTail` refuses a new user turn while a
-parked row is pending, so a decided row left pending wedges the session for
-every later message. Expiry goes through `ExpireRequest` because the store's
-expiry guard is its own and no status payload lifts it.
+The tail walk cannot be the double-application guard on its own. It reads the
+batch's rowless calls *before* any of them execute, so two overlapping resumes
+of one decision both see work to do and both do it — the approved bodies run
+twice, both callers get `nil`, and two tool rows land for one `tool_use_id`,
+which puts duplicate `tool_result` blocks in the next provider request.
+
+Two things make the close a real claim.
+
+**It is judged by reading the row back.** Both store writes are documented
+no-ops that return `nil` when the row is no longer claimable — already
+decided, or expired since it was read. A close judged by its error therefore
+succeeds silently while doing nothing, and since `guardParkedTail` refuses a
+new user turn while a parked row is pending, that wedges the session for every
+later message. If the read-back still shows `pending`, the row lapsed
+mid-flight and is closed through `ExpireRequest` — the one path allowed past
+the store's own expiry guard.
+
+**It carries a claim token.** "No longer pending" does not identify *who*
+closed it: the store admits exactly one claimant and silently no-ops the rest,
+and every loser reads back a non-pending row. Each resume stamps a token into
+`response_data` and proceeds only if the token it reads back is its own.
+
+Claiming first also makes a parked batch **at-most-once**: a crash mid-batch
+leaves the row closed and the remainder unrun. For actions a human gated, not
+running is the safe direction.
+
+**The embedder-recorded flow cannot claim** — its row is already decided by the
+respond door, so there is nothing left to take. A per-session lock is its
+guarantee inside one process; a pooled embedder spreading resumes across
+processes must deliver an already-decided resume at most once itself.
+
+Refusals never damage a live park: handle adoption happens *after* the claim,
+because adopting removes the collector from the parked slot, and a resume
+refused with a bad request id must not release the handles of a turn that is
+still parked.
 
 ### 3.4 Terminals
 
-All are terminal — finish the request's lifecycle, never retry the resume.
+Most are terminal — finish the request's lifecycle and never retry.
+`ErrClaimNotConfirmed` is the exception.
 
-| Error | Meaning |
-|---|---|
-| `ErrParkDisabled` | the agent has no park wiring |
-| `ErrUnknownRequest` | no pending parked row with that ID owns this session |
-| `ErrStaleDecision` | supplied `ItemIDs` do not match the row's items |
-| `ErrNotParkedTail` | a user row of a later turn follows the batch |
-| `ErrNothingParked` | the turn already produced its final reply |
+| Error | Retry? | Meaning |
+|---|---|---|
+| `ErrParkDisabled` | no | the agent has no park wiring |
+| `ErrUnknownRequest` | no | no pending parked row with that ID owns this session — including one another resume already claimed |
+| `ErrStaleDecision` | no | supplied `ItemIDs` do not match the row's items |
+| `ErrNotParkedTail` | no | a user row of a later turn follows the batch |
+| `ErrNothingParked` | no | the turn already produced its final reply |
+| `ErrDecisionExpired` | no | the row lapsed before the decision could be claimed; nothing ran |
+| `ErrClaimNotConfirmed` | **yes** | the claim neither landed nor was confirmed as someone else's; nothing ran |
+
+The two turn-is-dead refusals — `ErrNotParkedTail`, `ErrNothingParked` — close
+a still-pending row on the way out. An unresumable turn whose row stays pending
+holds its session at `guardParkedTail` against a decision that can never be
+applied.
 
 `ErrNothingParked` covers a turn that ended with rowless calls behind it — the
 loop's `MaxToolExecutions` cap can end a turn that way, and those calls were
@@ -193,10 +230,35 @@ must not kill a session.
 - Sweeping rows whose TTL lapsed with nobody deciding. Loom closes a row it is
   handed a decision for; it runs no timer of its own, so an abandoned park
   stays pending until a resume (with any decision) or an external sweep closes
-  it.
+  it. It no longer *holds the session* though — `guardParkedTail` ignores
+  lapsed rows, since nothing sweeps them and a park nobody decided would
+  otherwise refuse every future turn on that session permanently.
+- Delivering an already-decided resume at most once across processes. The
+  standalone flow claims its own row, so it is safe however many times the
+  decision arrives; the embedder-recorded flow has no row left to claim, and
+  loom's per-session lock only spans one process.
 
 ## 7. Known gaps
 
+- 📋 **Abandoned parks are never reclaimed.** A park nobody decides keeps its
+  row (past TTL, `pending`) and its MCP handle collector until something calls
+  `ResumeChat` or an operator runs `looms hitl expire`. The session keeps
+  working; the row and handles leak.
+- 📋 **No restart coverage.** Every test resumes on the same in-process agent,
+  which hits the session cache and never rehydrates from SQLite — so the
+  feature's central premise, that a parked turn survives a restart, is
+  unverified. `locateParkedBatch` depends on a reloaded session reproducing
+  `Turn` stamps, the assistant row's `ToolCalls`, and each tool row's
+  `ToolUseID` exactly.
+- 📋 **The durable row is not the authorization record in the standalone
+  flow.** `ResumeChat` takes `Approved` as a parameter and writes the verdict;
+  the approver is the literal string `"human"`, so nothing records *who*
+  approved. (The embedder-recorded flow does not have this problem — there the
+  row is decided first and its status overrides the payload.)
+- 📋 **`AskGrant` is a blanket context value.** It lifts any `Ask` downstream of
+  the granted call's context, not just that call. No in-tree tool re-enters the
+  executor, so it is unreachable today — but a code-mode or agent-delegation
+  tool would inherit approve-all under one approval.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
