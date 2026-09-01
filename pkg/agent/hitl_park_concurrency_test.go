@@ -324,3 +324,48 @@ func TestPark_UnresumableTurnReleasesTheSession(t *testing.T) {
 		t.Errorf("session still held after the park became unresumable: %v", err)
 	}
 }
+
+// TestPark_UnloadableSessionDoesNotDestroyTheApproval is the destructive-path
+// guard. locateParkedBatch returns ErrNothingParked both for a turn that truly
+// finished AND for a session with no assistant batch at all — and an empty
+// session is reachable with the park perfectly intact, because
+// GetOrCreateSessionWithAgent fails OPEN (a load error yields a fresh empty
+// session under the same ID) and LoadSession is user-scoped. Closing the row
+// on that signal erases the human's decision record for good.
+//
+// Simulated here by resuming a session id that holds a valid row but has no
+// conversation: the refusal must be read-only.
+func TestPark_UnloadableSessionDoesNotDestroyTheApproval(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-lost", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-lost")
+
+	// Re-point the row at a session with no history at all, standing in for a
+	// session the resume could not load.
+	hr.SessionID = "s-lost-empty"
+	if err := f.store.Update(ctx, hr); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if _, err := f.ag.ResumeChat(ctx, "s-lost-empty", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+	}, nil); !errors.Is(err, ErrNothingParked) {
+		t.Fatalf("resume against an empty session = %v, want ErrNothingParked", err)
+	}
+
+	after, gerr := f.store.Get(ctx, hr.ID)
+	if gerr != nil || after == nil {
+		t.Fatalf("Get: %v", gerr)
+	}
+	if after.Status != "pending" {
+		t.Errorf("APPROVAL DESTROYED: row status = %q after a refusal that proved nothing "+
+			"about the turn; a correctly-scoped resume can never complete it now", after.Status)
+	}
+}
