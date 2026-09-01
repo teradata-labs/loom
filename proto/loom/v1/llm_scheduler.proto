@@ -28,7 +28,9 @@ enum SlotPriorityClass {
   SLOT_PRIORITY_CLASS_IN_FLIGHT = 2;
   // Conversation holding an external scarce resource (database session
   // handle, MCP slot): priority inheritance — it is blocking other agents
-  // that are burning LLM budget trying to acquire what it holds.
+  // that are burning LLM budget trying to acquire what it holds. Reached
+  // ONLY by actually holding a lease; starvation aging never promotes a
+  // request into this class (see starvation_age_s).
   SLOT_PRIORITY_CLASS_RESOURCE_HOLDER = 3;
 }
 
@@ -84,9 +86,13 @@ message LLMSchedulerConfig {
   // config (llm.max_door_queue); this per-scope field is not yet read.
   int32 max_door_queue = 4;
 
-  // Seconds after which a waiting slot request is promoted one priority
-  // class. Bounds starvation: any waiter reaches the top class in at most
-  // 2 * starvation_age_s.
+  // Seconds a request may wait before it earns starvation precedence, which
+  // puts it at the head of its band ahead of every non-starved request
+  // regardless of class (oldest starved first). Each further interval
+  // advances its tier. Bounds starvation without rewriting priority class:
+  // waiting longer does not make a request a lease holder, so the
+  // RESOURCE_HOLDER class keeps meaning what it says even in a scope that
+  // has been saturated for a long time.
   int32 starvation_age_s = 5;
 
   // Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
