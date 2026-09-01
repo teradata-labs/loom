@@ -68,6 +68,10 @@ type Attribution struct {
 
 	// ParentAgentID is set when AgentID belongs to an ephemeral agent spawned by
 	// another agent, so a timeline can nest a subagent's work under its spawner.
+	//
+	// Never populated today: its only writer is the implicit emitter copying
+	// TurnRequest.ParentAgentID, and no spawn path sets that. The nesting it
+	// describes is the intent, not current behaviour.
 	ParentAgentID string
 }
 
@@ -211,12 +215,18 @@ type ParentTask struct {
 // ContextWithParentTask marks a context as running on behalf of another task,
 // and REMOVES any attribution the parent had installed.
 //
+// NOT WIRED: no spawn path calls this, so TurnRequest.ParentTaskID is never
+// set and ImplicitEmitter.linkToParent returns early on every real mint — no
+// PARENT_CHILD edge is drawn for a subagent today. The rest of this comment
+// describes the spawn boundary this is built for. The clearing itself is
+// implemented and covered by tests, so it holds the moment a caller arrives.
+//
 // Both halves matter. A spawned agent must not inherit the parent's
 // attribution: EnsureForTurn declines when it finds one ("a real task owns this
 // work"), so an inherited attribution would silently file the child's tool
 // calls under the parent's task and the delegated work would have no task of
 // its own. Stripping it lets the child mint its own; the marker left behind is
-// what lets that mint draw a PARENT_CHILD edge home.
+// what would let that mint draw a PARENT_CHILD edge home.
 //
 // Clearing takes BOTH paths that AttributionFromContext consults, or the parent
 // leaks through the one that is missed:
@@ -239,6 +249,9 @@ func ContextWithParentTask(ctx context.Context, p ParentTask) context.Context {
 
 // ParentTaskFromContext returns the delegating task, if this context was
 // created for a spawned agent.
+//
+// Returns false everywhere outside tests: ContextWithParentTask has no caller
+// yet, so no live context carries the marker.
 func ParentTaskFromContext(ctx context.Context) (ParentTask, bool) {
 	if p, ok := ctx.Value(parentTaskKey{}).(ParentTask); ok && p.TaskID != "" {
 		return p, true

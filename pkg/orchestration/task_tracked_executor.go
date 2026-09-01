@@ -97,6 +97,15 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 			t.logger.Warn("task tracking: failed to load resume tasks",
 				zap.Error(err))
 		}
+		// A board listing holds the root task alongside the stages, and
+		// recordResults maps agent results onto this slice BY INDEX. Reads order
+		// by priority then created_at, and the root shares MEDIUM priority with
+		// Parallel stages and Conditional branches while created_at is only
+		// second-resolution — so where the root falls inside that tie is not
+		// defined by either store. A root anywhere but last takes the stage's
+		// output into its own notes, closes itself, and shifts every later stage
+		// by one, dropping the last stage's output entirely.
+		stageTasks = excludeWorkflowRootTask(stageTasks)
 	}
 
 	// Mark IN_PROGRESS tasks that correspond to stages about to execute.
@@ -139,6 +148,11 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 	// children finished. Beyond looking wrong on a board, an open root makes
 	// every stage that depends on it read as BLOCKED in the dependency-graph
 	// query, so the count grew with every run.
+	//
+	// Both paths enforce that exclusion now: the fresh path because
+	// createBoardFromPattern returns stages only and the root is appended
+	// nowhere, the resume path because it filters the board listing through
+	// excludeWorkflowRootTask before recording anything.
 	t.closeRootTask(ctx, boardID, result, err)
 
 	return result, err
@@ -312,6 +326,31 @@ func (t *TaskTrackedOrchestrator) agentLabel(ctx context.Context, agentID string
 // so a resumed run can find it again without a second lookup table.
 const workflowRootMetadataKey = "workflow_root"
 
+// isWorkflowRootTask reports whether a task is the run's root bookkeeping task
+// rather than one of the pattern's stages.
+//
+// The single definition of that test: the resumability scan, the root lookup,
+// and the resume path's stage filter all depend on it, and a second copy that
+// drifted would leave them disagreeing about what counts as a stage.
+func isWorkflowRootTask(tk *task.Task) bool {
+	return tk != nil && tk.Metadata[workflowRootMetadataKey] == "true"
+}
+
+// excludeWorkflowRootTask returns the stage tasks of a board listing.
+//
+// Relative order is preserved: callers map workflow results onto the result by
+// index, so reordering would corrupt exactly what dropping the root protects.
+func excludeWorkflowRootTask(tasks []*task.Task) []*task.Task {
+	stages := make([]*task.Task, 0, len(tasks))
+	for _, tk := range tasks {
+		if isWorkflowRootTask(tk) {
+			continue
+		}
+		stages = append(stages, tk)
+	}
+	return stages
+}
+
 // linkStagesToRoot records each stage task as a child of the run's root task.
 //
 // PARENT_CHILD rather than BLOCKS: the stages are the run's structure, not its
@@ -346,7 +385,7 @@ func (t *TaskTrackedOrchestrator) findRootTask(ctx context.Context, boardID stri
 		return nil
 	}
 	for _, tk := range tasks {
-		if tk != nil && tk.Metadata[workflowRootMetadataKey] == "true" {
+		if isWorkflowRootTask(tk) {
 			return tk
 		}
 	}
@@ -684,7 +723,7 @@ func (t *TaskTrackedOrchestrator) findResumableBoard(ctx context.Context, patter
 		hasIncomplete := false
 		resumeIdx := 0
 		for _, tk := range tasks {
-			if tk.Metadata[workflowRootMetadataKey] == "true" {
+			if isWorkflowRootTask(tk) {
 				continue
 			}
 			if tk.Status == loomv1.TaskStatus_TASK_STATUS_DONE {

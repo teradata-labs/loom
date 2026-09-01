@@ -298,8 +298,13 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// configured, mirroring the skill emitter above. Without this, implicit
 	// recording only happened where a host explicitly passed
 	// WithImplicitTaskEmitter — so registry-built agents, and every subagent
-	// spawned through them, minted nothing, and the SUBAGENT_SPAWN trigger had
-	// nothing to fire it.
+	// spawned through them, minted nothing.
+	//
+	// This wires the EMITTER, which is what registry-built agents lacked. It does
+	// not make SUBAGENT_SPAWN fire: maybeRecordImplicitTask still only passes
+	// TOOL_CALL, so that trigger remains unused and no subagent-spawn task is
+	// minted from it. Said plainly because the previous wording read as though
+	// this change had closed that too.
 	//
 	// ResolveImplicitPolicy(nil) is the opt-out default: recording on, capped
 	// per session, and the resulting tasks excluded from the agent's own task

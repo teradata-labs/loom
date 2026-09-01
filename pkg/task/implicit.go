@@ -274,18 +274,41 @@ type TurnRequest struct {
 	// A spawned agent gets its OWN session, so nothing in the session record
 	// connects its work back to the agent that asked for it. Without these, a
 	// subagent's task lands on the board as an unexplained sibling. With them,
-	// the mint links child to parent with a PARENT_CHILD edge and stamps
-	// ParentAgentID onto the attribution, so a reader can walk from the
+	// the mint would link child to parent with a PARENT_CHILD edge and stamp
+	// ParentAgentID onto the attribution, so a reader could walk from the
 	// delegating turn into the delegated work.
+	//
+	// NEITHER IS SET TODAY. No spawn path populates them — maybeRecordImplicitTask
+	// builds a TurnRequest without them and only ever passes TOOL_CALL, never
+	// SUBAGENT_SPAWN — so linkToParent returns early on every real mint and no
+	// PARENT_CHILD edge is drawn for a subagent. This is infrastructure awaiting
+	// a caller, not current behaviour; see ContextWithParentTask in pkg/taskctx,
+	// which carries the same note.
 	//
 	// Both are optional; a top-level turn leaves them empty.
 	ParentTaskID  string
 	ParentAgentID string
 }
 
+// sessionKeyPrefix is the shape every one of a session's turn keys begins with,
+// and the ONLY place that shape is written down.
+//
+// It exists because ForgetSession reclaims the per-turn memo by prefix sweep
+// while turnKey mints the keys being swept. Those were built independently, so
+// a change to either format left the sweep matching nothing — reinstating the
+// per-session leak with the emitter otherwise behaving correctly, and therefore
+// silently. Both sides now derive from here.
+//
+// The trailing separator is load-bearing: without it the prefix for session
+// "s1" would also match "s10"'s keys, and retiring one session would drop
+// another's live memo.
+func sessionKeyPrefix(sessionID string) string {
+	return implicitKeyPrefix + sessionID + "|"
+}
+
 // turnKey identifies a turn for memoization and idempotency.
 func turnKey(r TurnRequest) string {
-	return fmt.Sprintf("implicit:sess:%s|turn:%d", r.SessionID, r.TurnIndex)
+	return fmt.Sprintf("%sturn:%d", sessionKeyPrefix(r.SessionID), r.TurnIndex)
 }
 
 // EnsureForTurn returns the implicit task for this turn, minting it on the
@@ -393,6 +416,11 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 // linkToParent records the PARENT_CHILD edge from a delegated turn's task back
 // to the task that delegated it.
 //
+// Reached but inert today: no caller populates TurnRequest.ParentTaskID, so the
+// empty-parent guard below returns before any edge is drawn. See that field's
+// comment. Everything after this paragraph describes what happens once a spawn
+// path supplies one.
+//
 // Only on first mint: the edge is a property of the task's creation, and an
 // idempotent re-entry returns the existing task whose edge already exists.
 //
@@ -493,7 +521,7 @@ func (e *ImplicitEmitter) ForgetSession(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.perSession, sessionID)
-	prefix := fmt.Sprintf("implicit:sess:%s|", sessionID)
+	prefix := sessionKeyPrefix(sessionID)
 	for k := range e.minted {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(e.minted, k)
@@ -698,7 +726,8 @@ func (e *ImplicitEmitter) CompleteForTurn(ctx context.Context, taskID, closeReas
 }
 
 // implicitKeyPrefix is the fixed prefix on every implicit task's idempotency
-// key. See turnKey.
+// key. sessionKeyPrefix and turnKey build the rest of the key on top of it, and
+// isImplicitKey below recognises it, so all three move together.
 const implicitKeyPrefix = "implicit:sess:"
 
 // isImplicitKey reports whether an idempotency key was minted by this emitter.

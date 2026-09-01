@@ -228,3 +228,75 @@ func TestDirectAttributionWinsOverBinding(t *testing.T) {
 		t.Fatalf("explicit attribution must win, got %q", got.TaskID)
 	}
 }
+
+// memoHas reports whether the per-turn memo holds exactly this key. Test-only
+// observability, taking the mutex the emitter's own paths take.
+func (e *ImplicitEmitter) memoHas(key string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.minted[key]
+	return ok
+}
+
+// TestSweepPrefixCannotDriftFromTurnKey guards the seam rather than the
+// symptom.
+//
+// ForgetSession reclaims the per-turn memo by prefix sweep. When that prefix
+// was assembled independently of turnKey, changing either format left the sweep
+// matching nothing: every other behaviour stayed correct and the per-session
+// leak came back unannounced. These assertions fail if the two sides stop
+// agreeing, whichever one moved.
+func TestSweepPrefixCannotDriftFromTurnKey(t *testing.T) {
+	const sess = "sess-1"
+
+	prefix := sessionKeyPrefix(sess)
+	if !strings.HasPrefix(prefix, implicitKeyPrefix) {
+		t.Errorf("sweep prefix %q must start with implicitKeyPrefix %q, or isImplicitKey stops recognising minted keys and CompleteForTurn silently closes nothing",
+			prefix, implicitKeyPrefix)
+	}
+
+	for _, turn := range []int{0, 1, 42} {
+		key := turnKey(TurnRequest{SessionID: sess, TurnIndex: turn})
+		if !strings.HasPrefix(key, prefix) {
+			t.Errorf("ForgetSession sweeps %q but turnKey minted %q; the sweep would match nothing and leak the session's memo",
+				prefix, key)
+		}
+		if len(key) <= len(prefix) {
+			t.Errorf("turn key %q must extend the session prefix %q, not equal it, or turns within a session collide",
+				key, prefix)
+		}
+		if !isImplicitKey(key) {
+			t.Errorf("turnKey minted %q, which isImplicitKey rejects; CompleteForTurn would leave the task IN_PROGRESS forever", key)
+		}
+	}
+
+	// The separator that stops one session's sweep reaching another's keys. Drop
+	// it and forgetting "sess-1" would evict live entries for "sess-10".
+	if other := turnKey(TurnRequest{SessionID: sess + "0", TurnIndex: 0}); strings.HasPrefix(other, prefix) {
+		t.Errorf("sweep prefix %q also matches %q; retiring one session would drop another's memo", prefix, other)
+	}
+}
+
+// TestForgetSessionSweepsTheKeyTurnKeyMinted is the behavioural half: the memo
+// entry a mint really created, named by turnKey, is the entry the sweep really
+// removes. The size-based reclamation tests cannot see which key was dropped.
+func TestForgetSessionSweepsTheKeyTurnKeyMinted(t *testing.T) {
+	e, _ := newLifecycleEmitter(t)
+	const sess = "sess-0"
+
+	mintTurns(t, e, []string{sess}, 2, boardIsSession)
+
+	for _, turn := range []int{0, 1} {
+		if key := turnKey(TurnRequest{SessionID: sess, TurnIndex: turn}); !e.memoHas(key) {
+			t.Fatalf("mint should have memoized %q; the rig or the key format changed", key)
+		}
+	}
+
+	e.ForgetSession(sess)
+
+	for _, turn := range []int{0, 1} {
+		if key := turnKey(TurnRequest{SessionID: sess, TurnIndex: turn}); e.memoHas(key) {
+			t.Errorf("ForgetSession left %q behind: the sweep prefix no longer matches the keys turnKey mints", key)
+		}
+	}
+}

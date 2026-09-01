@@ -8,7 +8,11 @@ import (
 )
 
 // TestContextWithParentTask_ClearsBothAttributionPaths pins the isolation a
-// spawn boundary depends on.
+// spawn boundary will depend on.
+//
+// ContextWithParentTask has no non-test caller yet, so nothing in production
+// exercises this and no PARENT_CHILD edge is drawn for a subagent today. This
+// test is what keeps the invariant intact until a spawn path calls it.
 //
 // AttributionFromContext consults two sources: the attribution value and the
 // turn Binding. A spawn that cleared only the first would leave the parent

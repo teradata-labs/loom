@@ -109,6 +109,20 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 	// than widening the SessionStorage interface keeps downstream implementers
 	// (avmo-tera-cloud has its own) compiling — the same reason CountByStatus is
 	// an optional capability rather than an interface method.
+	//
+	// Two shapes exist for this one concept, and this is the one loom wires. The
+	// other is task.TurnMessageAttributor.AttributeTurnMessages in
+	// pkg/task/implicit.go, keyed by turn index rather than by `since`, which the
+	// emitter calls itself once a host installs it with SetTurnMessageAttributor.
+	// Nothing in this repo calls that setter — only avmo-tera-cloud does — so the
+	// emitter's path is dormant here and the assertion below is the live
+	// back-fill. Neither is dead: dropping the interface breaks the cloud host,
+	// dropping this breaks loom.
+	//
+	// Installing both on one host would run the back-fill twice, and that is
+	// harmless for one specific reason rather than by luck: both UPDATE only rows
+	// whose task_id IS NULL, so the first run leaves the second nothing to claim.
+	// An implementation that ever widens that predicate loses the property.
 	if bf, ok := a.memory.Store().(interface {
 		AttributeTurnMessages(ctx context.Context, sessionID, taskID string, since time.Time) (int64, error)
 	}); ok {
