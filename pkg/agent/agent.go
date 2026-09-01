@@ -1857,7 +1857,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// tail, so a new user turn is refused BEFORE any turn-end side effect
 	// (payload drop, user append) can bury the parked batch. Sits behind the
 	// embedder's admission probe, which races a park landing mid-turn.
-	if err := a.guardParkedTail(ctx, sessionID); err != nil {
+	if err := a.guardParkedTail(ctx, sessionID, session); err != nil {
 		span.AddEvent("conversation.refused_parked", map[string]interface{}{
 			"session_id": sessionID,
 		})

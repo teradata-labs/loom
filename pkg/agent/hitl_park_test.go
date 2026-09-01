@@ -72,9 +72,10 @@ func (h scopedDenyHook) Evaluate(shuttle.AdmissionRequest) shuttle.Decision {
 }
 
 type parkFixture struct {
-	ag    *Agent
-	store *shuttle.InMemoryHumanRequestStore
-	tools map[string]*countingTool
+	ag       *Agent
+	store    *shuttle.InMemoryHumanRequestStore
+	sessions SessionStorage
+	tools    map[string]*countingTool
 }
 
 // newParkFixture builds a park-enabled agent: hooks govern via the given
@@ -114,7 +115,7 @@ func newParkFixture(t *testing.T, hooks []shuttle.Hook, responses []mockLLMRespo
 		ag.RegisterTool(ct)
 		tools[n] = ct
 	}
-	return &parkFixture{ag: ag, store: store, tools: tools}
+	return &parkFixture{ag: ag, store: store, sessions: sessions, tools: tools}
 }
 
 // pendingParked returns the single pending parked request for the session.

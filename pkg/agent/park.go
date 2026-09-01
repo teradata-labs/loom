@@ -190,8 +190,18 @@ func (a *Agent) loadParkedRequest(ctx context.Context, sessionID, requestID stri
 		return hr, false, nil
 	case "approved", "rejected", "timeout":
 		return hr, true, nil
+	case "responded":
+		// The documented status for an input/decision request, and the natural
+		// one for a QUESTION park — the human answered, which is that card's
+		// whole verdict. Refusing it stranded the turn: the row is no longer
+		// pending, so the tail guard used to admit a new turn that buried the
+		// batch. On an APPROVAL card "responded" says nothing about approval,
+		// so it stays refused rather than being read as consent.
+		if hr.Kind == "question" {
+			return hr, true, nil
+		}
+		return nil, false, ErrUnknownRequest
 	default:
-		// "responded" or anything else is not a park verdict.
 		return nil, false, ErrUnknownRequest
 	}
 }
@@ -407,7 +417,7 @@ func (a *Agent) lockSession(sessionID string) func() {
 // parked request. Store errors fail open with a warn — the embedder's own
 // admission probe is the primary gate; this guard closes its race with a park
 // landing mid-turn, and must not turn a store hiccup into a dead session.
-func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
+func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Session) error {
 	if a.hitlPark == nil {
 		return nil
 	}
@@ -432,7 +442,40 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
 		}
 		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
 	}
+
+	// A DECIDED row does not hold the session by status — but the
+	// embedder-recorded flow decides the row BEFORE calling ResumeChat, so
+	// between those two moments the batch is still unapplied and matching on
+	// "pending" alone would admit a new user turn that buries it. The decision
+	// would then be silently discarded and the history would tell the model
+	// the call never completed. Ask the TAIL instead: an assistant batch still
+	// missing tool rows is an unapplied park, whatever the row says.
+	if hr := unappliedParkedTail(sess); hr != nil {
+		for _, r := range reqs {
+			if r == nil || r.RequestType != "parked" || r.Status == "pending" {
+				continue
+			}
+			if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+				continue
+			}
+			return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+		}
+	}
 	return nil
+}
+
+// unappliedParkedTail reports the tail assistant batch when it still has calls
+// with no tool row — the durable shape a park leaves behind. Returns nil when
+// the tail is complete or there is no batch. Read-only.
+func unappliedParkedTail(sess *Session) *Message {
+	if sess == nil {
+		return nil
+	}
+	batch, rowless, err := locateParkedBatch(sess, nil)
+	if err != nil || len(rowless) == 0 {
+		return nil
+	}
+	return &batch
 }
 
 // resumedTurnKey marks a context as continuing a turn that already ran the
@@ -554,6 +597,18 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse)
 	if len(items) == 0 {
 		return nil
 	}
+	// The card is keyed by ToolCall.ID, so an empty or duplicated ID makes the
+	// binding unrepresentable: buildParkParams would collapse two calls into
+	// ONE descriptor (the human approves one action, two run), and an empty ID
+	// can never be matched back to its call. Providers really do produce both
+	// — Ollama can omit the id, and Gemini parallel calls reuse the function
+	// name as the id. Refuse to park; the batch then dispatches inline, where
+	// an Ask with no resolver fails closed.
+	if err := checkParkItemIDs(items); err != nil {
+		zap.L().Warn("not parking a batch whose call IDs cannot bind a decision; dispatching inline",
+			zap.String("session_id", sess.ID), zap.Error(err))
+		return nil
+	}
 
 	now := time.Now()
 	params, truncated := buildParkParams(items)
@@ -609,6 +664,21 @@ func parkKindAndQuestion(items []parkItem) (kind, question string) {
 		return "question", fmt.Sprintf("Answer %d pending question(s)", len(items))
 	}
 	return "approval", fmt.Sprintf("Approve %d pending action(s)?", len(items))
+}
+
+// checkParkItemIDs rejects a batch whose park items cannot be named uniquely.
+func checkParkItemIDs(items []parkItem) error {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		if it.call.ID == "" {
+			return fmt.Errorf("tool call %q has no ID", it.call.Name)
+		}
+		if seen[it.call.ID] {
+			return fmt.Errorf("tool call ID %q appears more than once", it.call.ID)
+		}
+		seen[it.call.ID] = true
+	}
+	return nil
 }
 
 // parkParamsMaxBytes bounds the whole grouped-request params map. Per-item
@@ -1119,6 +1189,13 @@ func (a *Agent) synthesizeParkedResult(ctx Context, sess *Session, call ToolCall
 		ToolName: call.Name,
 		Input:    call.Input,
 		Result:   res,
+	}
+	// A deny must ride every deny, audited or not (shuttle.AdmissionResult.
+	// PersistedDecision). These rows never pass through Executor.Execute, so
+	// nothing else stamps them — and a NULL verdict here is miscounted by the
+	// analytics fallback that keys on admission_decision IS NULL.
+	if res != nil && !res.Success && res.Error != nil && res.Error.Code == "permission_denied" {
+		execution.AdmissionDecision = "deny"
 	}
 	*st.allToolExecutions = append(*st.allToolExecutions, execution)
 	emitToolCompleted(ctx, 60, call, res, nil)

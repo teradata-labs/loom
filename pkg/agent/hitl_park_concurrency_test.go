@@ -320,7 +320,7 @@ func TestPark_UnresumableTurnReleasesTheSession(t *testing.T) {
 	if after == nil || after.Status == "pending" {
 		t.Errorf("unresumable row left pending (%v); the session is wedged at guardParkedTail", after)
 	}
-	if err := f.ag.guardParkedTail(ctx, "s-unres"); err != nil {
+	if err := f.ag.guardParkedTail(ctx, "s-unres", sess); err != nil {
 		t.Errorf("session still held after the park became unresumable: %v", err)
 	}
 }
@@ -427,4 +427,170 @@ func TestPark_SpentDecisionCannotBindALaterBatchOfTheSameTool(t *testing.T) {
 	if got := exp.runs.Load(); got != 1 {
 		t.Errorf("APPROVAL BYPASS: export_csv ran %d times; the unapproved PII export executed", got)
 	}
+}
+
+// TestPark_DecidedButUnappliedParkStillHoldsTheSession — the embedder-recorded
+// flow decides the row BEFORE calling ResumeChat, so between those moments the
+// batch is unapplied while the row is no longer "pending". Matching on status
+// alone admitted a new user turn that buried the batch: the human's approval
+// was silently discarded and the history told the model the call never ran.
+func TestPark_DecidedButUnappliedParkStillHoldsTheSession(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-decided", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-decided")
+
+	// The embedder's respond door decides the row; ResumeChat has NOT run.
+	if err := f.store.RespondToRequest(ctx, hr.ID, "approved", "ok", "human", nil); err != nil {
+		t.Fatalf("RespondToRequest: %v", err)
+	}
+
+	if _, err := f.ag.Chat(ctx, "s-decided", "sneak a new turn in"); !errors.As(err, new(*SessionParkedError)) {
+		t.Errorf("a new turn was admitted over a decided-but-unapplied park (%v); "+
+			"the batch is buried and the approval silently discarded", err)
+	}
+}
+
+// TestPark_QuestionParkAnsweredAsRespondedResumes — "responded" is the
+// documented status for an input/decision request and the natural one for a
+// question card. Refusing it stranded the turn behind a terminal error.
+func TestPark_QuestionParkAnsweredAsRespondedResumes(t *testing.T) {
+	script := []mockLLMResponse{
+		{content: "", toolCalls: []llmtypes.ToolCall{
+			{ID: "c-q", Name: "contact_human", Input: map[string]interface{}{"question": "which env?"}},
+		}},
+		{content: "done"},
+	}
+	f := newParkFixture(t, nil, script, "contact_human")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-resp", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-resp")
+	if hr.Kind != "question" {
+		t.Fatalf("card Kind = %q, want question", hr.Kind)
+	}
+	if err := f.store.RespondToRequest(ctx, hr.ID, "responded", "staging", "human", nil); err != nil {
+		t.Fatalf("RespondToRequest: %v", err)
+	}
+
+	if _, err := f.ag.ResumeChat(ctx, "s-resp", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		Answers: map[string]string{"c-q": "staging"},
+	}, nil); err != nil {
+		t.Fatalf("resume of a responded question park = %v, want success", err)
+	}
+}
+
+// TestPark_UnbindableCallIDsDoNotPark — the card is keyed by ToolCall.ID, so
+// duplicate IDs collapse two calls into ONE descriptor (the human approves one
+// action, two run) and an empty ID can never be matched back. Providers really
+// do produce both. Such a batch must not park; it dispatches inline, where an
+// Ask with no resolver fails closed.
+func TestPark_UnbindableCallIDsDoNotPark(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id1  string
+		id2  string
+	}{
+		{"duplicate ids", "dup", "dup"},
+		{"empty id", "", "c-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := []mockLLMResponse{
+				{content: "", toolCalls: []llmtypes.ToolCall{
+					{ID: tc.id1, Name: "export_csv", Input: map[string]interface{}{"v": "a"}},
+					{ID: tc.id2, Name: "export_csv", Input: map[string]interface{}{"v": "b"}},
+				}},
+				{content: "done"},
+			}
+			f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, script)
+			exp := &countingTool{name: "export_csv"}
+			f.ag.RegisterTool(exp)
+			ctx := context.Background()
+
+			sid := "s-unbindable-" + tc.name
+			_, err := f.ag.Chat(ctx, sid, "go")
+			if errors.As(err, new(*TurnParkedError)) {
+				t.Fatalf("parked a batch whose call IDs cannot bind a decision")
+			}
+			if reqs, _ := f.store.ListBySession(ctx, sid); len(reqs) != 0 {
+				t.Errorf("raised %d card(s) for an unbindable batch", len(reqs))
+			}
+			// Fail-closed inline: no resolver, so the governed body never runs.
+			if got := exp.runs.Load(); got != 0 {
+				t.Errorf("export_csv ran %d times with no approval path", got)
+			}
+		})
+	}
+}
+
+// TestPark_SynthesizedRefusalCarriesItsAuditVerdict — a deny must ride every
+// deny. These rows never pass through Executor.Execute, so nothing else stamps
+// them, and a NULL verdict is miscounted by analytics keying on
+// admission_decision IS NULL.
+func TestPark_SynthesizedRefusalCarriesItsAuditVerdict(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+
+	_, err := f.ag.Chat(ctx, "s-audit", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("expected park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s-audit")
+
+	// A resumed turn's Response.ToolExecutions covers the post-resume loop
+	// only; the parked batch's are authoritative in the PERSISTED records, so
+	// observe those.
+	rec := &recordingExecStore{SessionStorage: f.sessions}
+	f.ag.memory = NewMemoryWithStore(rec)
+
+	if _, err := f.ag.ResumeChat(ctx, "s-audit", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: false,
+		Reason: "rejected by user: not on prod",
+	}, nil); err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+
+	saved := rec.saved()
+	if len(saved) == 0 {
+		t.Fatal("no tool executions persisted for the refused batch")
+	}
+	for _, e := range saved {
+		if e.Result != nil && !e.Result.Success && e.AdmissionDecision != "deny" {
+			t.Errorf("persisted refusal of %s carries AdmissionDecision %q, want \"deny\"",
+				e.ToolName, e.AdmissionDecision)
+		}
+	}
+}
+
+// recordingExecStore captures what actually reaches durable storage.
+type recordingExecStore struct {
+	SessionStorage
+	mu    sync.Mutex
+	execs []ToolExecution
+}
+
+func (r *recordingExecStore) SaveToolExecution(ctx context.Context, sessionID string, exec ToolExecution) error {
+	r.mu.Lock()
+	r.execs = append(r.execs, exec)
+	r.mu.Unlock()
+	return r.SessionStorage.SaveToolExecution(ctx, sessionID, exec)
+}
+
+func (r *recordingExecStore) saved() []ToolExecution {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]ToolExecution(nil), r.execs...)
 }
