@@ -517,7 +517,21 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	// turn ENDED — and only Agent.ResumeChat can continue it. Deciding the row
 	// here would mark it answered while the approved actions never run, and
 	// the model would never learn what the human said.
-	if before, gerr := store.Get(ctx, requestID); gerr == nil && before != nil && before.RequestType == "parked" {
+	// Fail CLOSED: the sqlite and in-memory stores return an error for both
+	// absence and store failure, so a Get hiccup must not skip this guard and
+	// decide a parked row anyway — that is the exact silent wrong outcome the
+	// guard exists to stop.
+	before, gerr := store.Get(ctx, requestID)
+	if gerr != nil || before == nil {
+		fmt.Fprintf(os.Stderr,
+			"Cannot read request %s to check whether it is a parked turn (%v).\n"+
+				"Refusing rather than risk deciding a park the agent must resume.\n",
+			requestID, gerr)
+		span.SetAttribute("success", false)
+		span.SetAttribute("refused", "unverifiable")
+		os.Exit(1)
+	}
+	if before.RequestType == "parked" {
 		fmt.Fprintf(os.Stderr,
 			"Request %s is a PARKED turn: its decision must be applied through the agent's\n"+
 				"ResumeChat entry point, which re-enters the conversation. Responding here would\n"+

@@ -715,8 +715,6 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute("resume.request_id", decision.RequestID)
 	span.SetAttribute("resume.approved", decision.Approved)
 
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-
 	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
 	// current turn. NO user append — resuming is not a new turn. NO graph
 	// extraction goroutine — there is no new user message to extract from.
@@ -772,6 +770,10 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	span.SetAttribute("resume.expired", expired)
 	span.SetAttribute("resume.pre_decided", preDecided)
+
+	// The session is loaded only once the request has been validated: a bogus
+	// or foreign RequestID must not create and persist a session row.
+	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	batch, rowless, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
