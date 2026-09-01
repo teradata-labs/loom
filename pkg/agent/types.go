@@ -87,6 +87,11 @@ type Agent struct {
 	// parked turn at a time). Pooled embedders — a fresh Agent per call, where
 	// adoption can never happen — drain the slot explicitly at each park via
 	// ReleaseParkedHandles, keeping call-scoped semantics with no leak.
+	// sessionLocks serializes resumes per session inside this process, so two
+	// deliveries of one decision cannot both execute its batch.
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*sync.Mutex
+
 	parkedHandlesMu sync.Mutex
 	parkedHandles   map[string]*mcpadapter.HandleCollector
 

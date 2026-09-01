@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,8 +102,9 @@ func (e *SessionParkedError) Error() string {
 	return fmt.Sprintf("session is waiting for a human decision (request %s)", e.RequestID)
 }
 
-// Typed terminals for ResumeChat callers. All are terminal: the caller must
+// Typed terminals for ResumeChat callers. These are terminal: the caller must
 // finish the request's lifecycle and never retry the resume.
+// ErrClaimNotConfirmed, declared below, is the exception — it is retryable.
 var (
 	// ErrNothingParked: the tail turn is fully complete — there is no batch to
 	// finish and no loop to re-enter.
@@ -121,7 +123,15 @@ var (
 	// session. Covers a missing row, a row from another session, and a
 	// non-parked request type — all indistinguishable to a caller by design.
 	ErrUnknownRequest = errors.New("no pending parked request for this session")
+	// ErrDecisionExpired: the row lapsed before the decision could be claimed.
+	// The turn is closed out; nothing ran.
+	ErrDecisionExpired = errors.New("parked request expired before the decision was applied")
 )
+
+// ErrClaimNotConfirmed: the decision could not be claimed and could not be
+// confirmed as claimed by anyone else. RETRYABLE, unlike the terminals above —
+// the row may still be pending, and nothing has been executed.
+var ErrClaimNotConfirmed = errors.New("parked decision claim could not be confirmed")
 
 // ParkDecision is the human's verdict for one parked batch.
 //
@@ -241,6 +251,105 @@ func sameIDSet(a, b []string) bool {
 	return true
 }
 
+// resumeClaimKey is the response-data field carrying the claim token — the
+// only thing that identifies WHICH resume closed the row.
+const resumeClaimKey = "resume_claim"
+
+// claimParkedRequest takes exclusive ownership of a still-pending decision
+// before any of its batch executes, and reports whether this resume is the
+// owner. Standalone flow only: a pre-decided row is already closed and has
+// nothing left to claim.
+func (a *Agent) claimParkedRequest(ctx context.Context, hr *shuttle.HumanRequest, decision ParkDecision, expired bool) error {
+	if expired {
+		// RespondToRequest cannot close a lapsed row — the store's expiry
+		// guard is its own and no status payload lifts it — and ExpireRequest
+		// carries no response data to stamp a claim with. Nothing executes on
+		// this path (every call is refused), so the close only has to happen.
+		if err := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:expiry"); err != nil {
+			return fmt.Errorf("closing lapsed parked request: %w", err)
+		}
+		return nil
+	}
+
+	token := uuid.New().String()
+	status := "rejected"
+	if decision.Approved {
+		status = "approved"
+	}
+	if err := a.hitlPark.store.RespondToRequest(ctx, hr.ID, status, decision.Reason, "human",
+		map[string]interface{}{resumeClaimKey: token}); err != nil {
+		return fmt.Errorf("claiming parked decision: %w", err)
+	}
+
+	// Judge the write by reading the row back — never by its error, which is
+	// nil both when the write landed and when the store refused it as a
+	// deliberate no-op (already decided, or expired since we looked).
+	after, gerr := a.hitlPark.store.Get(ctx, hr.ID)
+	if gerr != nil || after == nil {
+		return fmt.Errorf("verifying parked decision claim: %w", errors.Join(gerr, ErrClaimNotConfirmed))
+	}
+
+	if after.Status == "pending" {
+		// Refused while still pending means the row lapsed between our expiry
+		// check and this write. Close it the one way that works past expiry,
+		// so the session is not left holding a decided-but-open row.
+		if eerr := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:expiry"); eerr != nil {
+			zap.L().Error("parked request could not be closed; the session will refuse new turns until it is",
+				zap.String("session_id", hr.SessionID),
+				zap.String("request_id", hr.ID),
+				zap.Error(eerr))
+			return ErrClaimNotConfirmed
+		}
+		return ErrDecisionExpired
+	}
+
+	// "No longer pending" does NOT mean we are the one who closed it. Under
+	// concurrent claims the store's conditional write admits exactly one and
+	// silently no-ops the rest, and every loser then reads back a non-pending
+	// row. Only the token says who won.
+	if got, _ := after.ResponseData[resumeClaimKey].(string); got != token {
+		return ErrUnknownRequest
+	}
+	return nil
+}
+
+// abandonParkedRequest terminally closes a row whose TURN can no longer be
+// resumed. Without it the row stays pending and guardParkedTail refuses every
+// later message on that session.
+func (a *Agent) abandonParkedRequest(ctx context.Context, hr *shuttle.HumanRequest, cause error) {
+	if err := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:unresumable"); err != nil {
+		zap.L().Error("unresumable parked request could not be closed; the session will refuse new turns until it is",
+			zap.String("session_id", hr.SessionID),
+			zap.String("request_id", hr.ID),
+			zap.NamedError("cause", cause),
+			zap.Error(err))
+		return
+	}
+	zap.L().Warn("closed a parked request whose turn can no longer be resumed",
+		zap.String("session_id", hr.SessionID),
+		zap.String("request_id", hr.ID),
+		zap.NamedError("cause", cause))
+}
+
+// lockSession serializes resumes of one session within this process, and
+// returns the unlock func. One mutex per live session; not pruned, because a
+// mutex is one pointer and sessions are bounded by the host's own lifetime.
+func (a *Agent) lockSession(sessionID string) func() {
+	a.sessionLocksMu.Lock()
+	if a.sessionLocks == nil {
+		a.sessionLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := a.sessionLocks[sessionID]
+	if !ok {
+		mu = &sync.Mutex{}
+		a.sessionLocks[sessionID] = mu
+	}
+	a.sessionLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
 // closeParkedRequest terminally closes the row whose decision was just
 // applied. This is what keeps a session usable: guardParkedTail refuses a new
 // turn while a parked row is pending, so a decided batch whose row stays
@@ -283,10 +392,20 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
 			zap.String("session_id", sessionID), zap.Error(err))
 		return nil
 	}
+	now := time.Now()
 	for _, r := range reqs {
-		if r != nil && r.RequestType == "parked" && r.Status == "pending" {
-			return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
+			continue
 		}
+		// A LAPSED row no longer holds the session. Nothing sweeps parked rows
+		// — a park has no waiter by design, and the only ExpireRequest callers
+		// are the in-turn waiters and the operator CLI — so matching on
+		// "pending" alone lets a park nobody ever decided refuse every future
+		// turn on this session, permanently.
+		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+			continue
+		}
+		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
 	}
 	return nil
 }
@@ -548,20 +667,17 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Session-handle lifecycle: the resumed turn ADOPTS the handles its parked
-	// half minted (same-process embedders), so a handle the model is about to
-	// use is still live. A nested park re-parks them; any other exit releases
-	// them, closing out the whole turn's handles exactly once. Pooled
-	// embedders adopt nothing (fresh Agent) and drain each park's slot via
-	// ReleaseParkedHandles instead.
-	ctx, handleCollector := a.adoptParkedHandles(ctx, sessionID)
-	parkedAgain := false
-	defer func() {
-		if parkedAgain {
-			return
-		}
-		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
-	}()
+	// One resume at a time per session, in this process. The tail walk cannot
+	// be the double-application guard on its own: it reads the batch's rowless
+	// calls BEFORE any of them execute, so two overlapping resumes of one
+	// decision both see work to do and both do it. The pending flow closes
+	// that cross-process too (claimParkedRequest below); the embedder-recorded
+	// flow cannot — its row is already decided, so there is nothing left to
+	// claim — and for that flow this lock is the whole guarantee. A pooled
+	// embedder spreading resumes across processes must deliver an
+	// already-decided resume at most once itself.
+	unlock := a.lockSession(sessionID)
+	defer unlock()
 
 	startTime := time.Now()
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume")
@@ -571,7 +687,6 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute("resume.approved", decision.Approved)
 
 	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-	a.seedLeaseHolding(ctx, sessionID)
 
 	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
 	// current turn. NO user append — resuming is not a new turn. NO graph
@@ -637,6 +752,13 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 
 	batch, rowless, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
+		// The TURN is unresumable — history moved on, or it already replied.
+		// A still-PENDING row for a turn that can never be resumed holds the
+		// session at guardParkedTail forever, so close it on the way out. A
+		// pre-decided row is already closed.
+		if !preDecided {
+			a.abandonParkedRequest(ctx, hr, err)
+		}
 		span.AddEvent("resume.refused", map[string]interface{}{"reason": err.Error()})
 		return nil, err
 	}
@@ -650,16 +772,46 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, bindErr
 	}
 
-	if len(rowless) > 0 {
-		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)
+	// CLAIM the decision BEFORE executing anything, on the standalone flow
+	// where the row is still pending and can therefore serve as the claim.
+	// Closing afterwards is too late twice over: two resumes both get past
+	// the tail walk and both execute, and a close that the store refuses —
+	// because the row lapsed while the batch ran — returns nil, leaving the
+	// row pending and the session refused at guardParkedTail forever.
+	//
+	// Claiming first also makes a parked batch at-most-once: a crash mid-batch
+	// leaves the row closed and the remainder unrun, the safe direction for
+	// actions a human gated. A pre-decided row is already closed by the
+	// embedder's respond door; the session lock is its only guard.
+	if !preDecided {
+		if err := a.claimParkedRequest(ctx, hr, effective, expired); err != nil {
+			span.AddEvent("resume.refused", map[string]interface{}{"reason": err.Error()})
+			return nil, err
+		}
 	}
 
-	// Close the row the moment its decision has been applied — before the
-	// loop re-entry that may park a NEW request. A row left pending here
-	// wedges every later turn at guardParkedTail. A pre-decided row is
-	// already closed (the embedder's respond door decided it).
-	if !preDecided {
-		a.closeParkedRequest(ctx, hr, effective, expired)
+	// Past this line the decision is ours and the turn is ours to finish.
+	// Session-handle lifecycle: adopt the handles the parked half minted
+	// (same-process embedders), so a handle the model is about to use is still
+	// live. Adoption happens HERE, not at entry: it removes the collector from
+	// the parked slot, so adopting before the decision is validated would let
+	// a refused resume release the handles of a turn that is still parked.
+	// A nested park re-parks them; any other exit releases them, closing out
+	// the whole turn's handles exactly once. Pooled embedders adopt nothing
+	// (fresh Agent) and drain each park's slot via ReleaseParkedHandles.
+	ctx, handleCollector := a.adoptParkedHandles(ctx, sessionID)
+	parkedAgain := false
+	defer func() {
+		if parkedAgain {
+			return
+		}
+		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
+	}()
+	a.seedLeaseHolding(ctx, sessionID)
+	agentCtx.Context = ctx
+
+	if len(rowless) > 0 {
+		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
