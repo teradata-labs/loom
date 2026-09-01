@@ -449,3 +449,85 @@ func TestTimeline_ContextReliefFlagsSurface(t *testing.T) {
 		"every event projected from an evicted row must inherit the flag")
 	require.Equal(t, 1, foldedEvents, "the folded row should surface, not be hidden")
 }
+
+// TestTimeline_IsOwnerScoped pins that neither timeline path crosses users.
+//
+// messages is user-scoped but tasks carries no user_id, so both statements join
+// from an unscoped namespace into a scoped one. Filtering on task_id alone
+// returned whatever session that task touched, and the back-fill UPDATE was
+// worse: it needed no task id to be discovered first, so a caller could stamp
+// its own task onto another user's unattributed rows and then read them back
+// through a timeline it now legitimately owned.
+func TestTimeline_IsOwnerScoped(t *testing.T) {
+	store := timelineStore(t)
+
+	userA := types.ContextWithUserID(context.Background(), "user-a")
+	userB := types.ContextWithUserID(context.Background(), "user-b")
+
+	// One session per owner. SaveSession records the owner from the context.
+	require.NoError(t, store.SaveSession(userA, &Session{
+		ID: "sess-a", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+	require.NoError(t, store.SaveSession(userB, &Session{
+		ID: "sess-b", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+
+	// user-a writes a message already attributed to its own task.
+	attributed := task.ContextWithAttribution(userA, task.Attribution{
+		TaskID: "task-a", SessionID: "sess-a", AgentID: "agent-1"})
+	require.NoError(t, store.SaveMessage(attributed, "sess-a", &Message{
+		Role: "user", Content: "private conversation content", Timestamp: time.Now()}, true))
+
+	t.Run("the owner reads its own timeline", func(t *testing.T) {
+		events, err := store.TimelineEvents(userA, "task-a")
+		require.NoError(t, err)
+		require.NotEmpty(t, events, "the owner must still see its own events")
+		found := false
+		for _, e := range events {
+			if e.Detail == "private conversation content" || e.Summary == "private conversation content" {
+				found = true
+			}
+		}
+		assert.True(t, found, "the owner's own content must be readable")
+	})
+
+	t.Run("another user reads nothing, holding the same task id", func(t *testing.T) {
+		// The reproduction: user-b holds task-a's id and previously got the rows.
+		events, err := store.TimelineEvents(userB, "task-a")
+		require.NoError(t, err, "a non-owner gets an empty result, not an error")
+		assert.Empty(t, events, "user-b must not read user-a's conversation")
+	})
+
+	t.Run("an unknown task is indistinguishable from someone else's", func(t *testing.T) {
+		// Absence of a row must not confirm that the task exists.
+		unknown, err := store.TimelineEvents(userB, "task-does-not-exist")
+		require.NoError(t, err)
+		other, err := store.TimelineEvents(userB, "task-a")
+		require.NoError(t, err)
+		assert.Equal(t, len(unknown), len(other),
+			"a non-owner's result must not reveal whether the task exists")
+	})
+
+	t.Run("the back-fill cannot stamp another user's rows", func(t *testing.T) {
+		// user-a writes an UNATTRIBUTED row, the back-fill's target.
+		require.NoError(t, store.SaveMessage(userA, "sess-a", &Message{
+			Role: "user", Content: "user A's unattributed secret", Timestamp: time.Now()}, false))
+
+		// user-b aims its own task at user-a's session. This is the write that
+		// needed no discovery: previously it stamped the row and handed user-b a
+		// readable timeline over it.
+		n, err := store.AttributeTurnMessages(userB, "sess-a", "task-owned-by-b", time.Now().Add(-time.Hour))
+		require.NoError(t, err, "a cross-user back-fill is a no-op, not an error")
+		assert.Zero(t, n, "user-b must not stamp any of user-a's rows")
+
+		// And the consequence the stamp was a means to.
+		leaked, err := store.TimelineEvents(userB, "task-owned-by-b")
+		require.NoError(t, err)
+		assert.Empty(t, leaked, "user-b must not reach user-a's content through its own task")
+	})
+
+	t.Run("the owner's own back-fill still works", func(t *testing.T) {
+		// The predicate must not break the legitimate path it guards.
+		n, err := store.AttributeTurnMessages(userA, "sess-a", "task-a-backfill", time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+		assert.Positive(t, n, "the owner's back-fill must still attribute its rows")
+	})
+}

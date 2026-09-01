@@ -89,13 +89,26 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	// timeline narrower than the record it reads from. COALESCE because these
 	// columns arrive by ALTER TABLE (SessionStore owns this table and
 	// self-migrates), so rows written before a given column existed read NULL.
+	// The owner predicate is not optional here, for a structural reason: messages
+	// is user-scoped but tasks carries no user_id at all, so filtering on task_id
+	// alone joins from an unscoped namespace into a scoped one and returns
+	// whatever session that task happens to touch. Any caller holding a task id —
+	// guessed, logged, or belonging to someone else — would read another user's
+	// conversation. Same predicate loadMessagesLocked uses, and for the same
+	// stated reason: this helper must not become a cross-user read if a caller
+	// forgets to guard.
+	//
+	// A non-owner gets an empty result, which is deliberately indistinguishable
+	// from an unknown task id — the absence of a row must not confirm that the
+	// task exists.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, agent_id, timestamp,
 		       COALESCE(evicted, 0), COALESCE(folded, 0), COALESCE(turn, 0),
 		       COALESCE(token_count, 0), COALESCE(cost_usd, 0)
 		FROM messages
 		WHERE task_id = ?
-		ORDER BY timestamp ASC, id ASC`, taskID)
+		  AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
+		ORDER BY timestamp ASC, id ASC`, taskID, storeUserID(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("timeline: query messages for task %s: %w", taskID, err)
 	}
@@ -324,10 +337,17 @@ func (s *SessionStore) AttributeTurnMessages(ctx context.Context, sessionID, tas
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Owner-scoped for the same reason as the read above, and it matters more
+	// here: a write needs no task id to be discovered first. Without the
+	// predicate, any caller could stamp its own task onto another user's
+	// unattributed rows and then read them back through the timeline it now
+	// legitimately owns — turning a write it was allowed to make into a read it
+	// was not.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE messages SET task_id = ?
-		WHERE session_id = ? AND task_id IS NULL AND timestamp >= ?`,
-		taskID, sessionID, since.Unix())
+		WHERE session_id = ? AND task_id IS NULL AND timestamp >= ?
+		  AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)`,
+		taskID, sessionID, since.Unix(), storeUserID(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return 0, fmt.Errorf("attribute turn messages: %w", err)
