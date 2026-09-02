@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,8 +104,9 @@ func (e *SessionParkedError) Error() string {
 	return fmt.Sprintf("session is waiting for a human decision (request %s)", e.RequestID)
 }
 
-// Typed terminals for ResumeChat callers. All are terminal: the caller must
+// Typed terminals for ResumeChat callers. These are terminal: the caller must
 // finish the request's lifecycle and never retry the resume.
+// ErrClaimNotConfirmed, declared below, is the exception — it is retryable.
 var (
 	// ErrNothingParked: the tail turn is fully complete — there is no batch to
 	// finish and no loop to re-enter.
@@ -123,7 +125,17 @@ var (
 	// session. Covers a missing row, a row from another session, and a
 	// non-parked request type — all indistinguishable to a caller by design.
 	ErrUnknownRequest = errors.New("no pending parked request for this session")
+	// ErrDecisionExpired: the row lapsed before the decision could be claimed.
+	// Nothing ran, and the row is now closed as "timeout" — which the next
+	// resume reads as an embedder-recorded refusal, so retrying DOES finish the
+	// turn with refusal rows. Without a retry the batch stays rowless.
+	ErrDecisionExpired = errors.New("parked request expired before the decision was applied")
 )
+
+// ErrClaimNotConfirmed: the decision could not be claimed and could not be
+// confirmed as claimed by anyone else. RETRYABLE, unlike the terminals above —
+// the row may still be pending, and nothing has been executed.
+var ErrClaimNotConfirmed = errors.New("parked decision claim could not be confirmed")
 
 // ParkDecision is the human's verdict for one parked batch.
 //
@@ -155,9 +167,15 @@ type ParkDecision struct {
 // the decision channel and closes the row after applying. A DECIDED row
 // (approved/rejected/timeout) is the embedder-recorded flow: the embedder's
 // respond door decided the row first — under its own expiry CAS — and the
-// resume applies that recorded verdict. Double-application is not guarded
-// here for either state; the tail walk is the guard (an applied batch has its
-// tool rows, so a replay lands in ErrNothingParked/ErrStaleDecision).
+// resume applies that recorded verdict.
+//
+// The standalone flow CLAIMS the row before applying anything, so it is
+// guarded against double application across agents and processes
+// (claimParkedRequest). The embedder-recorded flow has no row left to claim,
+// so its only guards are the per-Agent session lock and the tail walk (an
+// applied batch has its tool rows, so a later replay lands in
+// ErrNothingParked/ErrStaleDecision) — neither of which covers two Agent
+// instances racing. That is the embedder's obligation.
 func (a *Agent) loadParkedRequest(ctx context.Context, sessionID, requestID string) (hr *shuttle.HumanRequest, preDecided bool, err error) {
 	if requestID == "" {
 		return nil, false, ErrUnknownRequest
@@ -174,8 +192,18 @@ func (a *Agent) loadParkedRequest(ctx context.Context, sessionID, requestID stri
 		return hr, false, nil
 	case "approved", "rejected", "timeout":
 		return hr, true, nil
+	case "responded":
+		// The documented status for an input/decision request, and the natural
+		// one for a QUESTION park — the human answered, which is that card's
+		// whole verdict. Refusing it stranded the turn: the row is no longer
+		// pending, so the tail guard used to admit a new turn that buried the
+		// batch. On an APPROVAL card "responded" says nothing about approval,
+		// so it stays refused rather than being read as consent.
+		if hr.Kind == "question" {
+			return hr, true, nil
+		}
+		return nil, false, ErrUnknownRequest
 	default:
-		// "responded" or anything else is not a park verdict.
 		return nil, false, ErrUnknownRequest
 	}
 }
@@ -222,8 +250,38 @@ func verifyItemBinding(hr *shuttle.HumanRequest, batch Message) error {
 				return ErrStaleDecision
 			}
 		}
+		// The ARGUMENTS the human saw must be the arguments about to run.
+		// Tool and seq alone can carry no information at all: on Gemini
+		// ToolCall.ID IS the function name (pkg/llm/gemini/client.go —
+		// "Gemini doesn't provide call IDs"), so for a single-call batch id,
+		// tool and seq collapse into one fact and every same-tool batch looks
+		// identical. Without this a spent decision — which still loads, since
+		// the embedder-recorded flow accepts a decided row — re-binds to a
+		// LATER batch of the same tool and executes arguments nobody approved.
+		if !sameParkedParams(desc, batch.ToolCalls[idx]) {
+			return ErrStaleDecision
+		}
 	}
 	return nil
+}
+
+// sameParkedParams reports whether a request item's recorded params still
+// describe the call it names. The descriptor holds either the bounded params
+// map or, when that overflowed, the display digest — compare like with like.
+// A descriptor carrying neither cannot vouch for anything and is refused.
+func sameParkedParams(desc map[string]interface{}, call ToolCall) bool {
+	switch recorded := desc["params"].(type) {
+	case string:
+		// Digest form (params_truncated): compare the same rendering.
+		return recorded == shuttle.SummarizeCall(call.Name, call.Input)
+	case map[string]interface{}:
+		bounded, _ := shuttle.BoundParams(call.Input)
+		a, aerr := json.Marshal(recorded)
+		b, berr := json.Marshal(bounded)
+		return aerr == nil && berr == nil && string(a) == string(b)
+	default:
+		return false
+	}
 }
 
 // sameIDSet reports whether two id lists describe the same set.
@@ -243,39 +301,125 @@ func sameIDSet(a, b []string) bool {
 	return true
 }
 
-// closeParkedRequest terminally closes the row whose decision was just
-// applied. This is what keeps a session usable: guardParkedTail refuses a new
-// turn while a parked row is pending, so a decided batch whose row stays
-// pending would wedge the session for every later message.
-//
-// An expired row cannot be resolved — the store's expiry guard is its own and
-// no status payload lifts it — so it is closed through ExpireRequest, the one
-// path allowed to close past expiry. Close failures are logged, not returned:
-// the human's decision has already been applied to the batch, and failing the
-// resume would strand the turn it just completed.
-func (a *Agent) closeParkedRequest(ctx context.Context, hr *shuttle.HumanRequest, decision ParkDecision, expired bool) {
-	var err error
-	switch {
-	case expired:
-		err = a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:expiry")
-	case decision.Approved:
-		err = a.hitlPark.store.RespondToRequest(ctx, hr.ID, "approved", decision.Reason, "human", nil)
-	default:
-		err = a.hitlPark.store.RespondToRequest(ctx, hr.ID, "rejected", decision.Reason, "human", nil)
+// resumeClaimKey is the response-data field carrying the claim token — the
+// only thing that identifies WHICH resume closed the row.
+const resumeClaimKey = "resume_claim"
+
+// claimParkedRequest takes exclusive ownership of a still-pending decision
+// before any of its batch executes, and reports whether this resume is the
+// owner. Standalone flow only: a pre-decided row is already closed and has
+// nothing left to claim.
+func (a *Agent) claimParkedRequest(ctx context.Context, hr *shuttle.HumanRequest, decision ParkDecision, expired bool) error {
+	if expired {
+		// RespondToRequest cannot close a lapsed row — the store's expiry
+		// guard is its own and no status payload lifts it — and ExpireRequest
+		// carries no response data to stamp a claim with. Nothing executes on
+		// this path (every call is refused), so the close only has to happen.
+		if err := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:expiry"); err != nil {
+			// Nothing ran and the row may still be pending: retryable.
+			return fmt.Errorf("closing lapsed parked request: %w: %v", ErrClaimNotConfirmed, err)
+		}
+		// ExpireRequest is a documented no-op returning nil on a row that is no
+		// longer pending, and carries no response data to stamp a token into,
+		// so this path CANNOT tell whether it won the close. Nothing executes
+		// here — every call is refused — so two claimants cost duplicate
+		// synthesized refusal rows, not duplicate side effects. The session
+		// lock covers one Agent; a pooled embedder owns the rest.
+		return nil
 	}
-	if err != nil {
-		zap.L().Error("parked request could not be closed; the session will refuse new turns until it is",
+
+	token := uuid.New().String()
+	status := "rejected"
+	if decision.Approved {
+		status = "approved"
+	}
+	if err := a.hitlPark.store.RespondToRequest(ctx, hr.ID, status, decision.Reason, "human",
+		map[string]interface{}{resumeClaimKey: token}); err != nil {
+		// Nothing ran and the row may still be pending: retryable.
+		return fmt.Errorf("claiming parked decision: %w: %v", ErrClaimNotConfirmed, err)
+	}
+
+	// Judge the write by reading the row back — never by its error, which is
+	// nil both when the write landed and when the store refused it as a
+	// deliberate no-op (already decided, or expired since we looked).
+	after, gerr := a.hitlPark.store.Get(ctx, hr.ID)
+	if gerr != nil || after == nil {
+		return fmt.Errorf("verifying parked decision claim: %w", errors.Join(gerr, ErrClaimNotConfirmed))
+	}
+
+	if after.Status == "pending" {
+		// Refused while still pending means the row lapsed between our expiry
+		// check and this write. Close it the one way that works past expiry,
+		// so the session is not left holding a decided-but-open row.
+		if eerr := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:expiry"); eerr != nil {
+			zap.L().Error("parked request could not be closed; the session will refuse new turns until it is",
+				zap.String("session_id", hr.SessionID),
+				zap.String("request_id", hr.ID),
+				zap.Error(eerr))
+			return ErrClaimNotConfirmed
+		}
+		return ErrDecisionExpired
+	}
+
+	// "No longer pending" does NOT mean we are the one who closed it. Under
+	// concurrent claims the store's conditional write admits exactly one and
+	// silently no-ops the rest, and every loser then reads back a non-pending
+	// row. Only the token says who won.
+	if got, _ := after.ResponseData[resumeClaimKey].(string); got != token {
+		return ErrUnknownRequest
+	}
+	return nil
+}
+
+// abandonParkedRequest terminally closes a row whose TURN can no longer be
+// resumed. Without it the row stays pending and guardParkedTail refuses every
+// later message on that session.
+func (a *Agent) abandonParkedRequest(ctx context.Context, hr *shuttle.HumanRequest, cause error) {
+	if err := a.hitlPark.store.ExpireRequest(ctx, hr.ID, "system:unresumable"); err != nil {
+		zap.L().Error("unresumable parked request could not be closed; the session will refuse new turns until it is",
 			zap.String("session_id", hr.SessionID),
 			zap.String("request_id", hr.ID),
+			zap.NamedError("cause", cause),
 			zap.Error(err))
+		return
 	}
+	// The turn is dead, so its parked handles will never be adopted. Give them
+	// back or the collector sits in parkedHandles until the process ends — and
+	// because ReleaseAll feeds the lease ledger, an orphaned collector leaves
+	// the session marked a lease holder, pinning every LATER turn on it to the
+	// RESOURCE_HOLDER scheduling class.
+	a.ReleaseParkedHandles(hr.SessionID)
+
+	zap.L().Warn("closed a parked request whose turn can no longer be resumed",
+		zap.String("session_id", hr.SessionID),
+		zap.String("request_id", hr.ID),
+		zap.NamedError("cause", cause))
+}
+
+// lockSession serializes resumes of one session within this process, and
+// returns the unlock func. One mutex per live session; not pruned, because a
+// mutex is one pointer and sessions are bounded by the host's own lifetime.
+func (a *Agent) lockSession(sessionID string) func() {
+	a.sessionLocksMu.Lock()
+	if a.sessionLocks == nil {
+		a.sessionLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := a.sessionLocks[sessionID]
+	if !ok {
+		mu = &sync.Mutex{}
+		a.sessionLocks[sessionID] = mu
+	}
+	a.sessionLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // guardParkedTail refuses a new user turn while the session holds a PENDING
 // parked request. Store errors fail open with a warn — the embedder's own
 // admission probe is the primary gate; this guard closes its race with a park
 // landing mid-turn, and must not turn a store hiccup into a dead session.
-func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
+func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Session) error {
 	if a.hitlPark == nil {
 		return nil
 	}
@@ -285,12 +429,64 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string) error {
 			zap.String("session_id", sessionID), zap.Error(err))
 		return nil
 	}
+	now := time.Now()
 	for _, r := range reqs {
-		if r != nil && r.RequestType == "parked" && r.Status == "pending" {
+		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
+			continue
+		}
+		// A LAPSED row no longer holds the session. Nothing sweeps parked rows
+		// — a park has no waiter by design, and the only ExpireRequest callers
+		// are the in-turn waiters and the operator CLI — so matching on
+		// "pending" alone lets a park nobody ever decided refuse every future
+		// turn on this session, permanently.
+		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+			continue
+		}
+		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+	}
+
+	// A DECIDED row does not hold the session by status — but the
+	// embedder-recorded flow decides the row BEFORE calling ResumeChat, so
+	// between those two moments the batch is still unapplied and matching on
+	// "pending" alone would admit a new user turn that buries it. The decision
+	// would then be silently discarded and the history would tell the model
+	// the call never completed. Ask the TAIL instead: an assistant batch still
+	// missing tool rows is an unapplied park, whatever the row says.
+	if hr := unappliedParkedTail(sess); hr != nil {
+		for _, r := range reqs {
+			if r == nil || r.RequestType != "parked" || r.Status == "pending" {
+				continue
+			}
+			// Only a VERDICT awaiting application holds the session. "timeout"
+			// is a closure, not a verdict — it is what `looms hitl expire`
+			// writes to retire a stranded park, and what an expiry sweep
+			// writes. Holding on it would make the operator's one recovery
+			// route do nothing, which is worse than the burial this guard
+			// exists to prevent: nobody is coming to apply it.
+			if r.Status != "approved" && r.Status != "rejected" && r.Status != "responded" {
+				continue
+			}
+			if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+				continue
+			}
 			return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
 		}
 	}
 	return nil
+}
+
+// unappliedParkedTail reports the tail assistant batch when it still has calls
+// with no tool row — the durable shape a park leaves behind. Returns nil when
+// the tail is complete or there is no batch. Read-only.
+func unappliedParkedTail(sess *Session) *Message {
+	if sess == nil {
+		return nil
+	}
+	batch, rowless, err := locateParkedBatch(sess, nil)
+	if err != nil || len(rowless) == 0 {
+		return nil
+	}
+	return &batch
 }
 
 // resumedTurnKey marks a context as continuing a turn that already ran the
@@ -412,6 +608,18 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse)
 	if len(items) == 0 {
 		return nil
 	}
+	// The card is keyed by ToolCall.ID, so an empty or duplicated ID makes the
+	// binding unrepresentable: buildParkParams would collapse two calls into
+	// ONE descriptor (the human approves one action, two run), and an empty ID
+	// can never be matched back to its call. Providers really do produce both
+	// — Ollama can omit the id, and Gemini parallel calls reuse the function
+	// name as the id. Refuse to park; the batch then dispatches inline, where
+	// an Ask with no resolver fails closed.
+	if err := checkParkItemIDs(items); err != nil {
+		zap.L().Warn("not parking a batch whose call IDs cannot bind a decision; dispatching inline",
+			zap.String("session_id", sess.ID), zap.Error(err))
+		return nil
+	}
 
 	// Record this turn's task NOW, on the HUMAN_REQUEST trigger.
 	//
@@ -486,6 +694,21 @@ func parkKindAndQuestion(items []parkItem) (kind, question string) {
 		return "question", fmt.Sprintf("Answer %d pending question(s)", len(items))
 	}
 	return "approval", fmt.Sprintf("Approve %d pending action(s)?", len(items))
+}
+
+// checkParkItemIDs rejects a batch whose park items cannot be named uniquely.
+func checkParkItemIDs(items []parkItem) error {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		if it.call.ID == "" {
+			return fmt.Errorf("tool call %q has no ID", it.call.Name)
+		}
+		if seen[it.call.ID] {
+			return fmt.Errorf("tool call ID %q appears more than once", it.call.ID)
+		}
+		seen[it.call.ID] = true
+	}
+	return nil
 }
 
 // parkParamsMaxBytes bounds the whole grouped-request params map. Per-item
@@ -569,20 +792,21 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Session-handle lifecycle: the resumed turn ADOPTS the handles its parked
-	// half minted (same-process embedders), so a handle the model is about to
-	// use is still live. A nested park re-parks them; any other exit releases
-	// them, closing out the whole turn's handles exactly once. Pooled
-	// embedders adopt nothing (fresh Agent) and drain each park's slot via
-	// ReleaseParkedHandles instead.
-	ctx, handleCollector := a.adoptParkedHandles(ctx, sessionID)
-	parkedAgain := false
-	defer func() {
-		if parkedAgain {
-			return
-		}
-		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
-	}()
+	// One resume at a time per session, PER AGENT INSTANCE. The tail walk
+	// cannot be the double-application guard on its own: it reads the batch's
+	// rowless calls BEFORE any of them execute, so two overlapping resumes of
+	// one decision both see work to do and both do it.
+	//
+	// Scope matters here, and this lock is the weaker half. sessionLocks lives
+	// on the Agent, so two Agents share nothing — and a pooled embedder builds
+	// a fresh Agent per call (the pattern ReleaseParkedHandles exists for).
+	// The standalone flow does not depend on it: claimParkedRequest below takes
+	// the ROW, which holds across agents and processes. The embedder-recorded
+	// flow has no row left to claim, so this lock is all it gets — meaning an
+	// embedder that pools agents, or spreads resumes across processes, must
+	// deliver an already-decided resume at most once itself.
+	unlock := a.lockSession(sessionID)
+	defer unlock()
 
 	startTime := time.Now()
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume")
@@ -590,9 +814,6 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("resume.request_id", decision.RequestID)
 	span.SetAttribute("resume.approved", decision.Approved)
-
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-	a.seedLeaseHolding(ctx, sessionID)
 
 	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
 	// current turn. NO user append — resuming is not a new turn. NO graph
@@ -611,23 +832,13 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// out of the record was the one a person had explicitly authorised, which is
 	// the opposite of the ordering a timeline should have.
 	//
-	// The binding starts empty and is filled below, once the batch is known to
-	// be resumable. Turn index and user message come from the parked tail, and
-	// they matter beyond decoration: the turn index is half the emitter's
-	// idempotency key, so recovering the SAME index is what makes the resume
-	// rebind to the task the parked half recorded instead of describing a
-	// different turn.
-	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
+	// The binding is attached HERE, before any further context derivation, so
+	// the collector-bearing ctx the agentContext is later built from already
+	// carries it — writers that capture a derived context read the attribution
+	// through this binding the moment it is filled. It starts empty and is
+	// filled only after every refusal gate below, the claim included. The turn
+	// identity itself is recovered further down, once the session is loaded.
 	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
-	agentCtx := &agentContext{
-		Context:          ctx,
-		session:          sess,
-		tracer:           a.tracer,
-		progressCallback: progressCallback,
-		taskBinding:      taskBinding,
-		turnIndex:        turnIndex,
-		userMessage:      turnUserMessage,
-	}
 
 	// The request row — not the caller's payload — is the batch binding. Its
 	// params keys ARE the items the human saw; a caller-supplied ItemIDs list
@@ -676,8 +887,40 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute("resume.expired", expired)
 	span.SetAttribute("resume.pre_decided", preDecided)
 
+	// The session is loaded only once the request has been validated: a bogus
+	// or foreign RequestID must not create and persist a session row.
+	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// The parked turn's index and opening message, from the same tail rows
+	// locateParkedBatch anchors on — so the two cannot disagree about which turn
+	// is being resumed. The index is half the emitter's idempotency key:
+	// recovering the SAME index is what makes the resume rebind to the task the
+	// parked half recorded instead of describing a different turn.
+	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
+
 	batch, rowless, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
+		// Close the row ONLY on positive evidence that the turn is dead:
+		// ErrNotParkedTail means a later turn's user row is physically present
+		// after the batch, so the decision can never be applied.
+		//
+		// ErrNothingParked and ErrStaleDecision are absence of evidence, not
+		// evidence of death, and closing on them destroys a valid approval. An
+		// empty session yields ErrNothingParked, and an empty session is
+		// reachable with the park perfectly intact:
+		// GetOrCreateSessionWithAgent fails OPEN — on a load error it builds a
+		// fresh empty session under the same ID — and LoadSession is
+		// user-scoped (`WHERE id = ? AND user_id = ?`), so a transient store
+		// error, or a resume whose ctx carries a different identity than the
+		// session's owner, both land here. Expiring the row there erases the
+		// human's decision record for good.
+		//
+		// Leaving a row pending is recoverable: guardParkedTail ignores lapsed
+		// rows, so it stops holding the session at its TTL, and an operator can
+		// close it with `looms hitl expire`. Erasing an approval is not.
+		if !preDecided && errors.Is(err, ErrNotParkedTail) {
+			a.abandonParkedRequest(ctx, hr, err)
+		}
 		span.AddEvent("resume.refused", map[string]interface{}{"reason": err.Error()})
 		return nil, err
 	}
@@ -691,7 +934,59 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, bindErr
 	}
 
-	// Fill the turn's binding before anything the decision produces is written.
+	// CLAIM the decision BEFORE executing anything, on the standalone flow
+	// where the row is still pending and can therefore serve as the claim.
+	// Closing afterwards is too late twice over: two resumes both get past
+	// the tail walk and both execute, and a close that the store refuses —
+	// because the row lapsed while the batch ran — returns nil, leaving the
+	// row pending and the session refused at guardParkedTail forever.
+	//
+	// Claiming first also makes a parked batch at-most-once: a crash mid-batch
+	// leaves the row closed and the remainder unrun, the safe direction for
+	// actions a human gated. A pre-decided row is already closed by the
+	// embedder's respond door; the session lock is its only guard.
+	if !preDecided {
+		if err := a.claimParkedRequest(ctx, hr, effective, expired); err != nil {
+			span.AddEvent("resume.refused", map[string]interface{}{"reason": err.Error()})
+			return nil, err
+		}
+	}
+
+	// Past this line the decision is ours and the turn is ours to finish.
+	// Session-handle lifecycle: adopt the handles the parked half minted
+	// (same-process embedders), so a handle the model is about to use is still
+	// live. Adoption happens HERE, not at entry: it removes the collector from
+	// the parked slot, so adopting before the decision is validated would let
+	// a refused resume release the handles of a turn that is still parked.
+	// A nested park re-parks them; any other exit releases them, closing out
+	// the whole turn's handles exactly once. Pooled embedders adopt nothing
+	// (fresh Agent) and drain each park's slot via ReleaseParkedHandles.
+	ctx, handleCollector := a.adoptParkedHandles(ctx, sessionID)
+	parkedAgain := false
+	defer func() {
+		if parkedAgain {
+			return
+		}
+		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
+	}()
+	a.seedLeaseHolding(ctx, sessionID)
+
+	// Built HERE so it can only ever carry the collector-bearing ctx —
+	// constructing it earlier and re-pointing .Context afterwards works only
+	// as long as nothing in between reads it, which is not a property the next
+	// person moving code through this function should have to preserve.
+	agentCtx := &agentContext{
+		Context:          ctx,
+		session:          sess,
+		tracer:           a.tracer,
+		progressCallback: progressCallback,
+		taskBinding:      taskBinding,
+		turnIndex:        turnIndex,
+		userMessage:      turnUserMessage,
+	}
+
+	// Fill the turn's binding before anything the decision produces is written —
+	// completeParkedBatch below is the first writer.
 	//
 	// HUMAN_REQUEST is the honest trigger — a human decision is what resumed
 	// this turn — and it is the same trigger the park fired, so the emitter's
@@ -701,21 +996,13 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// Either way this binds rather than mints, so the rows on both sides of the
 	// gap carry one task id.
 	//
-	// After the guards, not before them: a resume that is about to be refused
-	// (stale decision, moved-on history) must not leave a task behind for a turn
-	// it never continued.
+	// After every refusal gate, the CLAIM included: a resume that loses the
+	// claim race, or is refused for a stale decision or moved-on history, must
+	// not leave a task behind for a turn it never continued.
 	a.maybeRecordImplicitTask(agentCtx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
 
 	if len(rowless) > 0 {
 		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)
-	}
-
-	// Close the row the moment its decision has been applied — before the
-	// loop re-entry that may park a NEW request. A row left pending here
-	// wedges every later turn at guardParkedTail. A pre-decided row is
-	// already closed (the embedder's respond door decided it).
-	if !preDecided {
-		a.closeParkedRequest(ctx, hr, effective, expired)
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
@@ -1028,6 +1315,13 @@ func (a *Agent) synthesizeParkedResult(ctx Context, sess *Session, call ToolCall
 		ToolName: call.Name,
 		Input:    call.Input,
 		Result:   res,
+	}
+	// A deny must ride every deny, audited or not (shuttle.AdmissionResult.
+	// PersistedDecision). These rows never pass through Executor.Execute, so
+	// nothing else stamps them — and a NULL verdict here is miscounted by the
+	// analytics fallback that keys on admission_decision IS NULL.
+	if res != nil && !res.Success && res.Error != nil && res.Error.Code == "permission_denied" {
+		execution.AdmissionDecision = "deny"
 	}
 	*st.allToolExecutions = append(*st.allToolExecutions, execution)
 	emitToolCompleted(ctx, 60, call, res, nil)

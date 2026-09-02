@@ -423,6 +423,21 @@ func runHitlExpire(cmd *cobra.Command, args []string) {
 	if operator == "" {
 		operator = "operator"
 	}
+
+	// Expiring a PARKED row is legitimate — it is the retirement route for a
+	// stranded park — but it does not finish the turn. The batch keeps its
+	// unpaired tool calls, and the model is later shown "the call did not
+	// complete" for actions a human may well have approved. Say so, rather
+	// than printing an unqualified success.
+	if before, gerr := store.Get(ctx, requestID); gerr == nil && before != nil && before.RequestType == "parked" {
+		fmt.Fprintf(os.Stderr,
+			"Note: %s is a PARKED turn. Expiring it releases the session, but does NOT\n"+
+				"complete the turn — its tool calls stay unanswered and the agent will report\n"+
+				"them as never completed. Prefer resuming through the embedder that raised\n"+
+				"it (session %s) when that is still possible.\n\n",
+			requestID, before.SessionID)
+	}
+
 	if err := store.ExpireRequest(ctx, requestID, "operator:"+operator); err != nil {
 		span.RecordError(err)
 		span.SetAttribute("success", false)
@@ -517,7 +532,21 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	// turn ENDED — and only Agent.ResumeChat can continue it. Deciding the row
 	// here would mark it answered while the approved actions never run, and
 	// the model would never learn what the human said.
-	if before, gerr := store.Get(ctx, requestID); gerr == nil && before != nil && before.RequestType == "parked" {
+	// Fail CLOSED: the sqlite and in-memory stores return an error for both
+	// absence and store failure, so a Get hiccup must not skip this guard and
+	// decide a parked row anyway — that is the exact silent wrong outcome the
+	// guard exists to stop.
+	before, gerr := store.Get(ctx, requestID)
+	if gerr != nil || before == nil {
+		fmt.Fprintf(os.Stderr,
+			"Cannot read request %s to check whether it is a parked turn (%v).\n"+
+				"Refusing rather than risk deciding a park the agent must resume.\n",
+			requestID, gerr)
+		span.SetAttribute("success", false)
+		span.SetAttribute("refused", "unverifiable")
+		os.Exit(1)
+	}
+	if before.RequestType == "parked" {
 		fmt.Fprintf(os.Stderr,
 			"Request %s is a PARKED turn: its decision must be applied through the agent's\n"+
 				"ResumeChat entry point, which re-enters the conversation. Responding here would\n"+

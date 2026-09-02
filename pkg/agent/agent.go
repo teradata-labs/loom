@@ -1930,7 +1930,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// tail, so a new user turn is refused BEFORE any turn-end side effect
 	// (payload drop, user append) can bury the parked batch. Sits behind the
 	// embedder's admission probe, which races a park landing mid-turn.
-	if err := a.guardParkedTail(ctx, sessionID); err != nil {
+	if err := a.guardParkedTail(ctx, sessionID, session); err != nil {
 		span.AddEvent("conversation.refused_parked", map[string]interface{}{
 			"session_id": sessionID,
 		})
@@ -2445,7 +2445,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// skips it: the loop is being RE-entered for a turn that already got its
 	// context block before it parked, so injecting again would duplicate the
 	// block in the prompt and pay a second recall round-trip per resume.
-	if !isResumedTurn(ctx) {
+	// A resumed turn already ran this once — but only if the block SURVIVED.
+	// injectGraphMemoryContext appends through Session.AddMessage, which is
+	// in-memory only and never persisted, so a resume in a fresh process finds
+	// nothing there. Suppressing on "is a resume" alone would leave exactly
+	// the turn carrying the human-approved action with no recall at all.
+	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
 		a.injectGraphMemoryContext(ctx, session)
 	}
 
@@ -3398,6 +3403,22 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
+// graphMemoryContextMarker opens the injected graph-memory block, and is how a
+// resumed turn tells "already injected" from "injected in a process that is
+// gone" — the block lives only in memory (Session.AddMessage is not persisted).
+const graphMemoryContextMarker = "[Graph Memory Context]"
+
+// hasGraphMemoryContext reports whether this session still carries an injected
+// graph-memory block.
+func hasGraphMemoryContext(session *types.Session) bool {
+	for _, m := range session.GetMessages() {
+		if strings.HasPrefix(m.Content, graphMemoryContextMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // injectGraphMemoryContext queries graph memory for the current topic and injects
 // relevant context into the conversation as a system message.
 func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
@@ -3552,7 +3573,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: "[Graph Memory Context]\n" + sb.String(),
+		Content: graphMemoryContextMarker + "\n" + sb.String(),
 	})
 	outcome = "injected"
 }
