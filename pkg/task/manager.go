@@ -155,6 +155,66 @@ func (m *Manager) CreateTaskIdempotent(ctx context.Context, t *Task) (*Task, boo
 	return created, true, nil
 }
 
+// countFallbackPageSize is the page size used when a store cannot aggregate.
+const countFallbackPageSize = 500
+
+// countFallbackMaxPages bounds the fallback scan. At the default page size this
+// covers 250k tasks; beyond that the count is reported as reached-the-bound
+// rather than silently wrong.
+const countFallbackMaxPages = 500
+
+// CountByStatus returns per-status task counts.
+//
+// Uses the store's aggregate when it implements StatusCounter — one query,
+// independent of board size. Otherwise pages through ListTasks and accumulates,
+// which is slower but still exact; the previous implementation fetched a single
+// capped page and silently under-reported any board larger than the cap.
+func (m *Manager) CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.count_by_status")
+	defer m.tracer.EndSpan(span)
+
+	if counter, ok := m.store.(StatusCounter); ok {
+		span.SetAttribute("path", "aggregate")
+		return counter.CountByStatus(ctx, opts)
+	}
+
+	span.SetAttribute("path", "paged_fallback")
+	return m.countByStatusPaged(ctx, opts)
+}
+
+// countByStatusPaged accumulates counts by walking every matching task.
+//
+// Correct but O(n) in rows transferred. A store that cares about this path
+// should implement StatusCounter; the log line below says so explicitly rather
+// than letting the cost stay invisible.
+func (m *Manager) countByStatusPaged(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
+	var counts StatusCounts
+
+	for page := 0; page < countFallbackMaxPages; page++ {
+		batch, _, err := m.store.ListTasks(ctx, ListTasksOpts{
+			BoardID:           opts.BoardID,
+			ExcludeCreatedVia: opts.ExcludeCreatedVia,
+			Limit:             countFallbackPageSize,
+			Offset:            page * countFallbackPageSize,
+		})
+		if err != nil {
+			return StatusCounts{}, fmt.Errorf("count by status (paged): %w", err)
+		}
+		for _, t := range batch {
+			counts.Add(t.Status, 1)
+		}
+		if len(batch) < countFallbackPageSize {
+			return counts, nil
+		}
+	}
+
+	m.logger.Warn("count by status hit the fallback page bound; counts may be short",
+		zap.String("board_id", opts.BoardID),
+		zap.Int("max_rows", countFallbackPageSize*countFallbackMaxPages),
+		zap.String("remedy", "implement task.StatusCounter on the store"))
+	return counts, nil
+}
+
 // GetTask retrieves a task by ID and populates ChildIDs.
 func (m *Manager) GetTask(ctx context.Context, id string) (*Task, error) {
 	t, err := m.store.GetTask(ctx, id)

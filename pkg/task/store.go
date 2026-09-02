@@ -134,6 +134,15 @@ type Task struct {
 	// emitter. Empty for tasks created by other paths. The persistence layer
 	// enforces uniqueness on non-empty values via a partial unique index.
 	SkillIdempotencyKey string
+
+	// CreatedVia records how the task came to exist: one of the CreatedVia*
+	// constants in pkg/taskctx (user, agent, decompose, skill_template,
+	// workflow, implicit). Empty on tasks predating the column.
+	//
+	// It is not only provenance. CreatedViaImplicit marks a task the runtime
+	// minted so a turn's work has somewhere to hang, and those are excluded
+	// from the agent's own task context — see ListTasksOpts.ExcludeCreatedVia.
+	CreatedVia string
 }
 
 // TaskDependency is a directed edge in the task dependency graph.
@@ -203,6 +212,74 @@ type ListTasksOpts struct {
 	// (priority ASC, created_at ASC). Windowed consumers that must keep the
 	// most recent tasks when the window truncates set this.
 	NewestFirst bool
+	// ExcludeCreatedVia omits tasks whose created_via matches any of these
+	// values. Filtering happens in SQL, not after the fetch, because the
+	// caller that needs it most — the agent's per-turn context build — reads
+	// with a limit of 1000 and would otherwise pay for rows it discards.
+	//
+	// This is the mechanism that keeps runtime-minted tasks out of the prompt.
+	ExcludeCreatedVia []string
+}
+
+// StatusCounter is an OPTIONAL capability a TaskStore may implement to answer
+// status counts with a single aggregate query instead of a row scan.
+//
+// It is deliberately not part of TaskStore. TaskStore has implementations
+// outside this repository — avmo-tera-cloud's UserScopedTaskStore asserts
+// `var _ task.TaskStore` — so adding a method to that interface breaks every
+// downstream implementer at their next version bump. Optional capabilities are
+// how a framework adds a fast path without that cost; the standard library uses
+// the same shape for io.ReaderFrom and http.Flusher.
+//
+// Manager.CountByStatus type-asserts for this and falls back to paging when a
+// store does not provide it, so correctness never depends on it — only speed.
+type StatusCounter interface {
+	CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error)
+}
+
+// CountByStatusOpts scopes a status aggregate.
+type CountByStatusOpts struct {
+	// BoardID restricts the count to one board. Empty counts every board.
+	BoardID string
+
+	// ExcludeCreatedVia omits tasks by creation source, so the counts an agent
+	// sees match the tasks an agent sees. See ListTasksOpts.ExcludeCreatedVia.
+	ExcludeCreatedVia []string
+}
+
+// StatusCounts holds per-status task counts.
+//
+// A struct rather than a map: it maps one-to-one onto loomv1.TaskBoardStats and
+// onto the prompt's stats line, needs no allocation, and cannot carry a status
+// the callers do not know how to render.
+type StatusCounts struct {
+	Total      int
+	Open       int
+	InProgress int
+	Blocked    int
+	Done       int
+	Deferred   int
+	Cancelled  int
+}
+
+// Add records n tasks in the given status. Unknown statuses count toward Total
+// only, so a status added to the enum later inflates no specific bucket.
+func (c *StatusCounts) Add(status loomv1.TaskStatus, n int) {
+	c.Total += n
+	switch status {
+	case loomv1.TaskStatus_TASK_STATUS_OPEN:
+		c.Open += n
+	case loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS:
+		c.InProgress += n
+	case loomv1.TaskStatus_TASK_STATUS_BLOCKED:
+		c.Blocked += n
+	case loomv1.TaskStatus_TASK_STATUS_DONE:
+		c.Done += n
+	case loomv1.TaskStatus_TASK_STATUS_DEFERRED:
+		c.Deferred += n
+	case loomv1.TaskStatus_TASK_STATUS_CANCELLED:
+		c.Cancelled += n
+	}
 }
 
 // ReadyFrontOpts configures ready front queries.
@@ -210,4 +287,8 @@ type ReadyFrontOpts struct {
 	AgentID     string
 	MinPriority loomv1.TaskPriority
 	MaxResults  int
+
+	// ExcludeCreatedVia omits tasks by creation source. See
+	// ListTasksOpts.ExcludeCreatedVia.
+	ExcludeCreatedVia []string
 }

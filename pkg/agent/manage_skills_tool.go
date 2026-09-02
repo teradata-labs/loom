@@ -50,6 +50,15 @@ type ManageSkillsTool struct {
 	// Per-mutation debug carrier, set by the agent after construction. When its
 	// switch is on, each load emits a debug log; nil or off is a no-op.
 	ctxDebug *contextDebug
+
+	// emitSkillTasks materializes the loaded skill's task_template onto the
+	// agent's task board. Set by the agent after construction; nil is a no-op.
+	// Invoked only for a skill that was not already active for this session.
+	//
+	// The agent's implementation (Agent.emitSkillTasksAsync) returns before the
+	// writes happen and reports its own failures, so load neither waits for the
+	// board to fill nor fails when it does not.
+	emitSkillTasks func(ctx context.Context, sessionID string, skill *skills.Skill)
 }
 
 // NewManageSkillsTool constructs the manage_skills builtin. enforceTools is the
@@ -118,7 +127,7 @@ func (t *ManageSkillsTool) Execute(ctx context.Context, params map[string]interf
 	switch action {
 	case "load":
 		name, _ := params["name"].(string)
-		return t.load(sessionID, name)
+		return t.load(ctx, sessionID, name)
 	case "list":
 		return t.list(sessionID)
 	default:
@@ -133,8 +142,10 @@ func (t *ManageSkillsTool) Execute(ctx context.Context, params map[string]interf
 }
 
 // load activates a skill for the session and returns its body plus a structured
-// activation marker. High-risk skills are gated on approval.
-func (t *ManageSkillsTool) load(sessionID, name string) (*shuttle.Result, error) {
+// activation marker. High-risk skills are gated on approval. ctx carries the
+// values the detached task emit needs (session, and any tenant identity the
+// storage layer reads); load itself performs no context-bound I/O.
+func (t *ManageSkillsTool) load(ctx context.Context, sessionID, name string) (*shuttle.Result, error) {
 	if name == "" {
 		return &shuttle.Result{
 			Success: false,
@@ -176,13 +187,35 @@ func (t *ManageSkillsTool) load(sessionID, name string) (*shuttle.Result, error)
 		}, nil
 	}
 
-	activeBefore := len(t.orch.GetActiveSkills(sessionID))
+	// One read of the pre-activation set serves both the debug delta below and
+	// the was-it-already-active decision that gates task emission.
+	beforeSet := t.orch.GetActiveSkills(sessionID)
+	activeBefore := len(beforeSet)
+	wasActive := false
+	for _, as := range beforeSet {
+		if as != nil && as.Skill != nil && as.Skill.Name == name {
+			wasActive = true
+			break
+		}
+	}
+
 	active := t.orch.ActivatePinned(sessionID, skill, "manual_load", name, 1.0)
 
 	// Wire the skill's required tools for this session. The loop re-projects the
 	// advertised tool set per provider call, so they surface this turn.
 	if t.enforceRequiredSkillTools != nil {
 		t.enforceRequiredSkillTools(sessionID)
+	}
+
+	// Materialize the skill's task_template, once per (skill, session).
+	//
+	// The per-name check above is what decides that, and the active-set LENGTH
+	// cannot substitute for it: ActivatePinned replaces a same-name activation
+	// in place, so re-loading an already-active skill leaves the count
+	// unchanged, while loading any different skill raises it. Only the name
+	// comparison separates a genuinely new activation from a repeat.
+	if !wasActive && t.emitSkillTasks != nil {
+		t.emitSkillTasks(ctx, sessionID, skill)
 	}
 
 	body := skill.FormatForLLM()

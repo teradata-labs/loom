@@ -148,6 +148,11 @@ type Message struct {
 	// "perfect place" (ROM, summary, and the last message before any current-turn
 	// offload stub); each provider client honors it.
 	CacheBreakpoint bool
+	// TaskID attributes this message to the task that was claimed when it was
+	// written. Empty is the normal case — not every turn runs under a task —
+	// and is persisted as NULL. Stamped from the ambient task attribution on
+	// the context; see pkg/task.Attribution.
+	TaskID string
 
 	// Timestamp when the message was created
 	Timestamp time.Time

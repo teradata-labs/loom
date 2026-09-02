@@ -97,12 +97,13 @@ type Registry struct {
 
 	// taskManager + taskDecomposer are the server-level task subsystem
 	// handles injected by cmd_serve.go. When set, every agent built through
-	// buildAgent gets WithTaskBoard wired so the skills-overhaul Phase D
-	// (task emission) path can fire. The agent's per-config
+	// buildAgent gets WithTaskBoard wired so the skill task emitter can fire
+	// on a manage_skills load. The agent's per-config
 	// memory.task_board.enabled flag controls only tool surfacing
 	// (task_board builtin + kanban prompt supplement + in-context
-	// injection) — emission and the sticky-while-open-tasks checker are
-	// always-on whenever a manager is present. Protected by mu.
+	// injection) — emission (on a new skill activation) and the
+	// sticky-while-open-tasks checker are wired whenever a manager is
+	// present. Protected by mu.
 	taskManager    *task.Manager
 	taskDecomposer *task.Decomposer
 
@@ -761,12 +762,14 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, r.BuildSkillsOptions(skillsConfig, classifierLLM, llmProvider, config.Name)...)
 	}
 
-	// Wire the task subsystem whenever the registry has a manager, so the
-	// skills-overhaul task emitter (Phase D) is reachable for every agent
-	// built through this path. The per-agent memory.task_board.enabled flag
+	// Wire the task subsystem whenever the registry has a manager, so the skill
+	// task emitter is reachable for every agent built through this path. It
+	// fires on a manage_skills load, for a skill that was not already active
+	// for the session, on a goroutine detached from the turn
+	// (Agent.emitSkillTasksAsync). The per-agent memory.task_board.enabled flag
 	// continues to gate *tool surfacing* downstream
 	// (Agent.checkAndRegisterTaskBoardTool, taskBoardPromptSupplement,
-	// buildTaskContext) — emission is unconditional once a manager is wired.
+	// buildTaskContext) — emission needs only a manager and an activation.
 	//
 	// We synthesize a disabled TaskBoardConfig when the agent did not
 	// declare one, so a.taskBoardConfig is never nil. That keeps the

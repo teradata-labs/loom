@@ -33,10 +33,12 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -619,6 +621,25 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse)
 		return nil
 	}
 
+	// Record this turn's task NOW, on the HUMAN_REQUEST trigger.
+	//
+	// A turn whose first action needs a human decision returns from here before
+	// dispatchOneCall ever runs, so its TOOL_CALL trigger never fires and the
+	// turn recorded nothing at all — no task, and therefore no timeline for the
+	// one turn shape a human is most likely to go looking for, because they were
+	// the one asked to decide something in it. dispatchOneCall's TOOL_CALL
+	// comment already assumes this trigger fires here; it simply never did.
+	//
+	// Before the Store call, not after: the park row is written under the turn's
+	// ambient attribution, so the human request the person sees hangs off the
+	// same task as the work around it. A store failure below fails the turn with
+	// a task already recorded, which is accurate — the turn ended, and it ended
+	// badly.
+	//
+	// A no-op when the turn already recorded a task (work-then-park): the
+	// binding is filled and every trigger after the first short circuits.
+	a.maybeRecordImplicitTask(ctx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
+
 	now := time.Now()
 	params, truncated := buildParkParams(items)
 	kind, question := parkKindAndQuestion(items)
@@ -803,6 +824,22 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	ctx = contextWithResumedTurn(ctx)
 
+	// Re-establish the parked turn's task identity.
+	//
+	// A resume built its context with no binding, no turn index and no user
+	// message, so everything written after the human's decision — the approved
+	// tool's own row above all — landed with a NULL task_id. The row that fell
+	// out of the record was the one a person had explicitly authorised, which is
+	// the opposite of the ordering a timeline should have.
+	//
+	// The binding is attached HERE, before any further context derivation, so
+	// the collector-bearing ctx the agentContext is later built from already
+	// carries it — writers that capture a derived context read the attribution
+	// through this binding the moment it is filled. It starts empty and is
+	// filled only after every refusal gate below, the claim included. The turn
+	// identity itself is recovered further down, once the session is loaded.
+	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
+
 	// The request row — not the caller's payload — is the batch binding. Its
 	// params keys ARE the items the human saw; a caller-supplied ItemIDs list
 	// is honored only as a cross-check.
@@ -853,6 +890,13 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// The session is loaded only once the request has been validated: a bogus
 	// or foreign RequestID must not create and persist a session row.
 	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// The parked turn's index and opening message, from the same tail rows
+	// locateParkedBatch anchors on — so the two cannot disagree about which turn
+	// is being resumed. The index is half the emitter's idempotency key:
+	// recovering the SAME index is what makes the resume rebind to the task the
+	// parked half recorded instead of describing a different turn.
+	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
 
 	batch, rowless, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
@@ -908,6 +952,32 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		}
 	}
 
+	// Restore the parked turn's DURABLE task identity, before any context this
+	// turn derives. The park row carries the task it blocked (stamped at Store
+	// time from the turn's attribution), and that row — not a fresh emission —
+	// is the identity a resume should continue: re-minting through the
+	// policy-gated HUMAN_REQUEST trigger re-derives what the park already
+	// decided, and gets it wrong twice. A turn parked under a REAL claimed task
+	// resumed under a fresh implicit one; and a policy that declines on the
+	// resuming agent (mode off after a restart, cap spent, trigger excluded)
+	// left the approved rows unattributed and the parked task open forever.
+	// The emitter rebind below survives as the fallback for legacy rows written
+	// before the task_id column existed.
+	//
+	// Seeding the binding is enough for the close as well: completeImplicitTask
+	// closes through CompleteForTurn, whose implicit-key guard skips a task the
+	// emitter did not mint — so restoring an explicit task's identity attributes
+	// the resumed rows without stealing that task's lifecycle from its owner.
+	if hr.TaskID != "" {
+		attr := taskctx.Attribution{
+			TaskID:    hr.TaskID,
+			SessionID: sessionID,
+			AgentID:   a.id,
+		}
+		taskBinding.Set(attr)
+		ctx = taskctx.ContextWithAttribution(ctx, attr)
+	}
+
 	// Past this line the decision is ours and the turn is ours to finish.
 	// Session-handle lifecycle: adopt the handles the parked half minted
 	// (same-process embedders), so a handle the model is about to use is still
@@ -936,6 +1006,32 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		session:          sess,
 		tracer:           a.tracer,
 		progressCallback: progressCallback,
+		taskBinding:      taskBinding,
+		turnIndex:        turnIndex,
+		userMessage:      turnUserMessage,
+	}
+
+	// Fill the turn's binding before anything the decision produces is written —
+	// completeParkedBatch below is the first writer.
+	//
+	// HUMAN_REQUEST is the honest trigger — a human decision is what resumed
+	// this turn — and it is the same trigger the park fired, so the emitter's
+	// key resolves to the task the parked half recorded: in-process through the
+	// per-turn memo the park deliberately did not release, and after a restart
+	// through CreateTaskIdempotent, which looks the key up before it creates.
+	// Either way this binds rather than mints, so the rows on both sides of the
+	// gap carry one task id.
+	//
+	// After every refusal gate, the CLAIM included: a resume that loses the
+	// claim race, or is refused for a stale decision or moved-on history, must
+	// not leave a task behind for a turn it never continued.
+	//
+	// Legacy fallback only: a park row that carries its task id has already
+	// seeded the binding above (and maybeRecordImplicitTask would decline on a
+	// filled binding anyway — this guard just says out loud that the durable id
+	// is the primary path and the emitter is the fallback).
+	if hr.TaskID == "" {
+		a.maybeRecordImplicitTask(agentCtx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
 	}
 
 	if len(rowless) > 0 {
@@ -943,6 +1039,17 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
+
+	// The mirror of chat()'s deferred close, which a park skips: this is where
+	// the turn finally ends, so this is where its recorded task closes and its
+	// per-turn memo is released.
+	//
+	// A NESTED park is skipped for exactly the reason the first one was — the
+	// turn is still unfinished, and the next resume rebinds through the memo.
+	var parkedTerminal *TurnParkedError
+	if !errors.As(err, &parkedTerminal) {
+		defer a.completeImplicitTask(ctx, taskBinding, sessionID, int(turnIndex), implicitCloseReason(response, err))
+	}
 
 	duration := time.Since(startTime)
 	if err != nil {
@@ -1014,6 +1121,37 @@ func rawSessionMessages(sess *Session) []Message {
 		}
 	}
 	return sess.GetMessages()
+}
+
+// parkedTurnIdentity recovers the turn number and opening user message of the
+// turn that parked, so a resume can describe the same turn its parked half did.
+//
+// The turn number comes from the tail assistant batch — the same row
+// locateParkedBatch anchors on, walked the same way, so the two cannot disagree
+// about which turn is being resumed.
+//
+// The user message is the FIRST user row of that turn, not the last. The loop
+// appends further user-role rows WITHIN a turn (sidecar drain, empty-response
+// nudge, hygiene fixup, synthesis prompt), all stamped with the same turn; the
+// request that opened the turn is the one a board row should be named after.
+//
+// A session with no assistant batch yields turn 0 and no message. Nothing acts
+// on that: the callers' guards refuse such a resume before the identity is used.
+func parkedTurnIdentity(sess *Session) (turnIndex int64, userMessage string) {
+	msgs := rawSessionMessages(sess)
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+			turnIndex = msgs[i].Turn
+			break
+		}
+	}
+	for _, m := range msgs {
+		if m.Role == "user" && m.Turn == turnIndex {
+			return turnIndex, m.Content
+		}
+	}
+	return turnIndex, ""
 }
 
 // locateParkedBatch finds the tail tool batch and validates the decision
@@ -1142,6 +1280,18 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		session:          sess,
 		tracer:           ctx.Tracer(),
 		progressCallback: ctx.ProgressCallback(),
+	}
+	// The grant context is a DERIVED context, so it must not lose the turn's
+	// task identity on the way. The ambient attribution rides the embedded
+	// context.Context and would survive on its own, but the per-turn fields live
+	// on the concrete agentContext: without them the approved call's own
+	// TOOL_CALL trigger sees no binding and declines, which matters in the one
+	// configuration where the HUMAN_REQUEST rebind above did not fire (an
+	// operator who excluded that trigger but kept TOOL_CALL).
+	if tc, ok := ctx.(taskTurnContext); ok {
+		grantCtx.taskBinding = tc.TaskBinding()
+		grantCtx.turnIndex = tc.TurnIndex()
+		grantCtx.userMessage = tc.UserMessage()
 	}
 	granted := make(map[string]bool, len(itemIDs))
 	for _, id := range itemIDs {
