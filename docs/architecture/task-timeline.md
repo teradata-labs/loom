@@ -442,7 +442,7 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 | `tasks.created_via` (SQLite 000009, Postgres 000014) | ✅ Migration written |
 | `TimelineEvent` / `TimelineSource` / `TimelineReader` | ✅ Implemented |
 | `messages` projection incl. tool call/result reconstruction | ✅ Implemented, 5 tests |
-| `human_requests` projection | ✅ Implemented, 2 tests |
+| `human_requests` projection | ⚠️ Partial — projection + `TimelineSource` written and covered by 2 tests, but `ListByTask` has **no production implementation**: both tests supply fakes, and `SQLiteHumanRequestStore` writes `task_id` without ever selecting by it. A consumer wiring the documented reader against the built-in stores gets no HITL events, silently. |
 | `task_history` projection | ✅ Implemented |
 | Merge, tie-break stability, filters, limits, partial failure | ✅ 9 tests |
 | Read benchmark | ✅ 2.14 ms / 400 events |
