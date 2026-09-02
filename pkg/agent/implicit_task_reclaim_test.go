@@ -19,6 +19,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	sqlitestore "github.com/teradata-labs/loom/pkg/storage/sqlite"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // The implicit emitter's per-session and per-turn maps are freed only by
@@ -167,4 +168,41 @@ func TestCompleteImplicitTask_ReleasesTurnMemo(t *testing.T) {
 	if again.ID != first.ID {
 		t.Errorf("releasing the memo must not mint a duplicate task: got %s, want %s", again.ID, first.ID)
 	}
+}
+
+// TestCompleteImplicitTask_SurvivesACanceledRequestContext pins the close
+// against the one turn shape most likely to need it.
+//
+// completeImplicitTask runs deferred, so when the turn ended BECAUSE the caller
+// canceled, the request context is already dead by the time the close runs.
+// CompleteForTurn's own GetTask then failed on the dead context and returned
+// silently — leaving the task IN_PROGRESS forever, on exactly the turn whose
+// close reason says "canceled". The close now runs on a bounded context derived
+// with WithoutCancel.
+func TestCompleteImplicitTask_SurvivesACanceledRequestContext(t *testing.T) {
+	r := newReclaimRig(t, 0)
+
+	// Mint through a bound context, the way a real turn does.
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx, binding := taskctx.ContextWithBinding(ctx)
+	_, created, err := r.emitter.EnsureForTurn(ctx, task.TurnRequest{
+		SessionID:   "sess-cancel",
+		AgentID:     "agent-1",
+		BoardID:     "sess-cancel",
+		TurnIndex:   0,
+		Trigger:     loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		UserMessage: "do the thing",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	// The caller cancels; the turn unwinds; the deferred close runs LAST, on
+	// the context the cancellation already killed.
+	cancel()
+	r.agent.completeImplicitTask(ctx, binding, "sess-cancel", 0, "Turn canceled by the caller.")
+
+	got, err := r.agent.taskManager.GetTask(context.Background(), created.ID)
+	require.NoError(t, err)
+	require.True(t, task.IsTerminal(got.Status),
+		"a canceled turn's task must still close; got status %s", task.StatusName(got.Status))
 }

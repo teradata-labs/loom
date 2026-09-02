@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -182,5 +183,15 @@ func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Bindi
 		// only talked.
 		return
 	}
+	// The close must survive the request context. This runs deferred, so when
+	// the turn ended BECAUSE the caller canceled (or its deadline lapsed), ctx
+	// is already dead here — CompleteForTurn's own GetTask fails on it and
+	// returns silently, and the one turn shape whose close reason says
+	// "canceled" is exactly the one whose task stayed IN_PROGRESS forever.
+	// WithoutCancel keeps the context's values (user identity above all — the
+	// store's owner predicates read it) while shedding the cancellation; the
+	// fresh deadline keeps the cleanup bounded instead of unbounded.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	a.implicitTasks.CompleteForTurn(ctx, attr.TaskID, closeReason)
 }
