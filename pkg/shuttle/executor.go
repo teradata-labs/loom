@@ -235,7 +235,7 @@ func stampAdmissionDecision(result *Result, auditDecision string) {
 // executing the tool body. With no admission chain AND no permission checker
 // it returns NoDecision immediately — before any registry work — so an
 // ungoverned agent's pre-scan stays a pure pass. Otherwise params are
-// normalized with the same normalizeParametersToSchema call Execute uses; a
+// normalized with the same NormalizeParametersToSchema call Execute uses; a
 // registry miss attempts tryDynamicRegistration exactly as Execute does —
 // registration is an execution-required side effect that merely happens
 // earlier — and a failed registration returns NoDecision, leaving execution
@@ -261,7 +261,7 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 		tool = dynamicTool
 	}
 
-	normalizedParams := normalizeParametersToSchema(tool, params)
+	normalizedParams := NormalizeParametersToSchema(tool, params)
 
 	if e.permissionChecker != nil {
 		if err := e.permissionChecker.CheckPermission(ctx, toolName, normalizedParams); err != nil {
@@ -305,7 +305,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// Normalize parameters BEFORE admission so the chain and the tool body see
 	// one map: the matcher must judge the exact params the tool would receive,
 	// or the caller's key spelling would decide whether a binding matches.
-	normalizedParams := normalizeParametersToSchema(tool, params)
+	normalizedParams := NormalizeParametersToSchema(tool, params)
 
 	// Stamp the audit verdict at every exit — success, deny, and each error
 	// return — through the one deferred call (the key is reserved: with no
@@ -384,7 +384,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[string]interface{}) (result *Result, err error) {
 	// Normalize parameters BEFORE admission so the chain and the tool body see
 	// one map (same invariant as Execute).
-	normalizedParams := normalizeParametersToSchema(tool, params)
+	normalizedParams := NormalizeParametersToSchema(tool, params)
 
 	// Stamp the audit verdict at every exit through the one deferred call.
 	var adm AdmissionResult
@@ -604,9 +604,19 @@ func (e *Executor) Stats() ExecutorStats {
 	}
 }
 
-// normalizeParametersToSchema attempts to normalize parameter names to match the tool's schema.
+// NormalizeParametersToSchema attempts to normalize parameter names to match the tool's schema.
 // This handles the common issue where LLMs use snake_case but tools expect camelCase (or vice versa).
-func normalizeParametersToSchema(tool Tool, params map[string]interface{}) map[string]interface{} {
+//
+// It is exported because a caller that reasons about a tool call BEFORE dispatch
+// has to see the same parameter map Execute will actually run, or it draws
+// conclusions the executor then contradicts. The output-token circuit breaker in
+// pkg/agent is one such caller: judged against raw provider key spelling, an
+// executable snake_case call reads as missing its required camelCase property.
+//
+// Note this normalizes ROOT keys only, against schema.Properties. Nested keys are
+// passed through untouched, so a caller inspecting nested requirements must not
+// normalize them either, or it will disagree with what the tool receives.
+func NormalizeParametersToSchema(tool Tool, params map[string]interface{}) map[string]interface{} {
 	if len(params) == 0 {
 		return params
 	}
