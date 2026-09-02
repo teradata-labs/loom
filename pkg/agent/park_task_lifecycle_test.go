@@ -31,6 +31,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -305,4 +306,83 @@ func TestPark_FirstActionParkThenApproveClosesTheTask(t *testing.T) {
 	after := r.onlyTask(t, "s-first-approve")
 	require.Equal(t, parkedTask.ID, after.ID, "the resume rebinds; it does not re-mint")
 	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, after.Status)
+}
+
+// TestInlineContactHuman_FiresHumanRequestTrigger covers the NON-parked HITL
+// path: no WithHITLPark, so maybeParkBatch's gate (a.hitlPark != nil) never
+// admits the batch and contact_human dispatches inline, answered in-turn by a
+// resolver polling the request store.
+//
+// That path fired no trigger at all: maybeParkBatch's HUMAN_REQUEST emission is
+// behind the park gate, and dispatchOneCall's TOOL_CALL emission sits on the
+// non-HITL branch of the contact_human check. So a supported configuration
+// never fired the default HUMAN_REQUEST trigger, and a turn whose FIRST action
+// asked a human recorded nothing — the same first-action gap the park path had.
+func TestInlineContactHuman_FiresHumanRequestTrigger(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+
+	sessions, err := NewSessionStore(filepath.Join(dir, "sessions.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessions.Close() })
+
+	mgr := task.NewManager(
+		sqlitestore.NewTaskStore(openMigratedTaskDB(t, filepath.Join(dir, "tasks.db")),
+			observability.NewNoOpTracer()),
+		nil, observability.NewNoOpTracer(), nil)
+
+	// Deliberately NO WithHITLPark: this is the legacy in-turn configuration.
+	ag := NewAgent(&mockBackend{}, &mockToolCallingLLM{responses: []mockLLMResponse{
+		{toolCalls: []llmtypes.ToolCall{
+			{ID: "c-ask", Name: "contact_human", Input: map[string]interface{}{"question": "which db?"}},
+		}},
+		{content: "done, used staging"},
+	}},
+		WithConfig(cfg),
+		WithMemory(NewMemoryWithStore(sessions)),
+		WithTaskBoard(mgr, nil, &loomv1.TaskBoardConfig{}),
+	)
+
+	hrStore := shuttle.NewInMemoryHumanRequestStore()
+	ag.RegisterTool(shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+		Store:        hrStore,
+		Notifier:     NewProgressNotifier(),
+		Timeout:      3 * time.Second,
+		PollInterval: 5 * time.Millisecond,
+	}))
+	// Answer the pending request from the background, the way a reviewer would.
+	// (respondOnce lives in the external agent_test package; this file is the
+	// internal one.)
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if pending, err := hrStore.ListPending(context.Background()); err == nil && len(pending) > 0 {
+				_ = hrStore.RespondToRequest(context.Background(),
+					pending[0].ID, "responded", "use staging", "reviewer@example.com", nil)
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	_, err = ag.Chat(context.Background(), "s-inline", "which database should I use?")
+	require.NoError(t, err, "the resolver answers in-turn; the turn completes normally")
+
+	tasks, _, err := mgr.ListTasks(context.Background(), task.ListTasksOpts{
+		BoardID: "s-inline", Limit: 10})
+	require.NoError(t, err)
+	if len(tasks) == 0 {
+		t.Fatal("an in-turn contact_human as the turn's first action recorded no task: " +
+			"neither park's HUMAN_REQUEST (gate not armed) nor dispatch's TOOL_CALL " +
+			"(other branch) fired")
+	}
+	require.Len(t, tasks, 1, "one turn records exactly one task")
+	require.Equal(t, "implicit", tasks[0].CreatedVia)
+	require.Equal(t, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST.String(),
+		tasks[0].Metadata["implicit_trigger"],
+		"the recording trigger names what happened: a human was asked")
+	require.True(t, task.IsTerminal(tasks[0].Status),
+		"the turn finished normally, so its task is closed")
 }

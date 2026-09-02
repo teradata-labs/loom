@@ -2936,6 +2936,17 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 
 	// Check if this is a HITL request (contact_human tool)
 	if toolCall.Name == "contact_human" {
+		// Record this turn's task before the human is asked, on the trigger that
+		// names what is happening. This is the NON-PARKED path — a registered
+		// in-turn resolver answers inside the turn, so maybeParkBatch never ran
+		// and its HUMAN_REQUEST emission never fired. Without this, a supported
+		// HITL configuration never fires the default HUMAN_REQUEST trigger at
+		// all, and a turn whose FIRST action asks a human records nothing — the
+		// same first-action gap the park path had. No race with the TOOL_CALL
+		// emission below: that is the other branch of this if, and the emitter
+		// memoizes per turn regardless.
+		a.maybeRecordImplicitTask(ctx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
+
 		// Extract HITL request details from tool input
 		hitlInfo := extractHITLInfo(toolCall.Input)
 
