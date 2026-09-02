@@ -7,7 +7,6 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -133,9 +132,9 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 	// whose task_id IS NULL, so the first run leaves the second nothing to claim.
 	// An implementation that ever widens that predicate loses the property.
 	if bf, ok := a.memory.Store().(interface {
-		AttributeTurnMessages(ctx context.Context, sessionID, taskID string, since time.Time) (int64, error)
+		AttributeTurnMessages(ctx context.Context, sessionID, taskID string, turn int64) (int64, error)
 	}); ok {
-		if _, err := bf.AttributeTurnMessages(ctx, sess.ID, created.ID, turnStartedAt(sess)); err != nil {
+		if _, err := bf.AttributeTurnMessages(ctx, sess.ID, created.ID, tc.TurnIndex()); err != nil {
 			zap.L().Debug("implicit task back-fill failed",
 				zap.String("task_id", created.ID), zap.Error(err))
 		}
@@ -145,22 +144,6 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 		zap.String("task_id", created.ID),
 		zap.String("trigger", trigger.String()),
 		zap.Int64("turn", tc.TurnIndex()))
-}
-
-// turnStartedAt returns a lower time bound for the current turn's messages,
-// used to scope the back-fill.
-//
-// The session's last message is the turn's own opening user message (the hook
-// runs before any assistant row is persisted), so its timestamp is the boundary.
-// An empty session falls back to the zero time, which claims nothing.
-func turnStartedAt(sess *Session) time.Time {
-	msgs := sess.Messages
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			return msgs[i].Timestamp
-		}
-	}
-	return time.Time{}
 }
 
 // completeImplicitTask ends the turn for the implicit emitter: it releases the

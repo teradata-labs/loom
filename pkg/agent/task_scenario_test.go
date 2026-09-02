@@ -82,7 +82,7 @@ func TestScenario_EndToEnd(t *testing.T) {
 	// Back-fill: the user message was written before the task existed, so it
 	// carries a NULL task_id. Without this the timeline starts at the agent's
 	// first action and never shows what was asked.
-	claimed, err := sessions.AttributeTurnMessages(turnCtx, "sess-42", minted.ID, base)
+	claimed, err := sessions.AttributeTurnMessages(turnCtx, "sess-42", minted.ID, 1)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), claimed, "the turn's user message must be claimed retroactively")
 

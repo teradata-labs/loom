@@ -514,7 +514,7 @@ func TestTimeline_IsOwnerScoped(t *testing.T) {
 		// user-b aims its own task at user-a's session. This is the write that
 		// needed no discovery: previously it stamped the row and handed user-b a
 		// readable timeline over it.
-		n, err := store.AttributeTurnMessages(userB, "sess-a", "task-owned-by-b", time.Now().Add(-time.Hour))
+		n, err := store.AttributeTurnMessages(userB, "sess-a", "task-owned-by-b", 1)
 		require.NoError(t, err, "a cross-user back-fill is a no-op, not an error")
 		assert.Zero(t, n, "user-b must not stamp any of user-a's rows")
 
@@ -526,8 +526,52 @@ func TestTimeline_IsOwnerScoped(t *testing.T) {
 
 	t.Run("the owner's own back-fill still works", func(t *testing.T) {
 		// The predicate must not break the legitimate path it guards.
-		n, err := store.AttributeTurnMessages(userA, "sess-a", "task-a-backfill", time.Now().Add(-time.Hour))
+		n, err := store.AttributeTurnMessages(userA, "sess-a", "task-a-backfill", 1)
 		require.NoError(t, err)
 		assert.Positive(t, n, "the owner's back-fill must still attribute its rows")
 	})
+}
+
+// TestTimeline_BackfillCannotClaimThePrecedingTurn pins the back-fill's
+// ownership boundary to the row's turn, not its timestamp.
+//
+// Messages persist timestamps at whole-second precision, so a turn that minted
+// no task, followed within the same second by a tool-using turn, put both
+// turns' rows inside the later back-fill's time window — and the later task
+// claimed a conversation it had nothing to do with. The turn column is the
+// boundary the attribution system already keys on, so it is the boundary here.
+func TestTimeline_BackfillCannotClaimThePrecedingTurn(t *testing.T) {
+	store := timelineStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.SaveSession(ctx, &Session{
+		ID: "sess-1", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+
+	// Turn 1: a conversational exchange that mints nothing. Same wall-clock
+	// second as turn 2 below — the collision that broke the time bound.
+	now := time.Now()
+	require.NoError(t, store.SaveMessage(ctx, "sess-1", &Message{
+		Role: "user", Content: "just chatting", Timestamp: now}, true))
+	require.NoError(t, store.SaveMessage(ctx, "sess-1", &Message{
+		Role: "assistant", Content: "sure", Timestamp: now}, false))
+
+	// Turn 2: asks for work; its task back-fills.
+	require.NoError(t, store.SaveMessage(ctx, "sess-1", &Message{
+		Role: "user", Content: "do the work", Timestamp: now}, true))
+
+	n, err := store.AttributeTurnMessages(ctx, "sess-1", "task-turn-2", 2)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n,
+		"the back-fill claims exactly its own turn's row, not the previous turn's two")
+
+	// The previous turn's rows stay unattributed — they belong to no task.
+	events, err := store.TimelineEvents(ctx, "task-turn-2")
+	require.NoError(t, err)
+	for _, e := range events {
+		assert.NotContains(t, e.Detail, "just chatting",
+			"turn 1's conversation must not appear in turn 2's timeline")
+		assert.NotContains(t, e.Summary, "just chatting",
+			"turn 1's conversation must not appear in turn 2's timeline")
+	}
+	require.NotEmpty(t, events, "turn 2's own row is claimed and readable")
 }

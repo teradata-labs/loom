@@ -323,10 +323,19 @@ func firstLine(s string, maxLen int) string {
 // board row on "thanks, that worked". So the task stays lazy and this back-fills
 // instead: one UPDATE, once per turn, only when a task is actually minted.
 //
-// `since` bounds it to the current turn. Only rows with a NULL task_id are
-// touched, so a message already attributed to a real claimed task is never
-// stolen.
-func (s *SessionStore) AttributeTurnMessages(ctx context.Context, sessionID, taskID string, since time.Time) (int64, error) {
+// `turn` bounds it to the current turn — the row's own turn column, derived at
+// insert, not a timestamp. A timestamp bound was the first shape here, and it
+// had a real hole: messages persist timestamps at whole-second precision, so an
+// unattributed turn followed within the same second by a tool-using turn let the
+// later task claim BOTH turns' rows. The turn column is the identity the rest of
+// the attribution system already keys on ((session, turn) is half the emitter's
+// idempotency key), so it is the ownership boundary here too. This signature now
+// matches task.TurnMessageAttributor exactly — the two back-fill shapes the
+// maybeRecordImplicitTask comment describes share one contract.
+//
+// Only rows with a NULL task_id are touched, so a message already attributed to
+// a real claimed task is never stolen.
+func (s *SessionStore) AttributeTurnMessages(ctx context.Context, sessionID, taskID string, turn int64) (int64, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.attribute_turn_messages")
 	defer s.tracer.EndSpan(span)
 
@@ -345,9 +354,9 @@ func (s *SessionStore) AttributeTurnMessages(ctx context.Context, sessionID, tas
 	// was not.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE messages SET task_id = ?
-		WHERE session_id = ? AND task_id IS NULL AND timestamp >= ?
+		WHERE session_id = ? AND task_id IS NULL AND turn = ?
 		  AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)`,
-		taskID, sessionID, since.Unix(), storeUserID(ctx))
+		taskID, sessionID, turn, storeUserID(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return 0, fmt.Errorf("attribute turn messages: %w", err)
