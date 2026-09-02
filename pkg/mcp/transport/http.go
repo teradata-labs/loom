@@ -25,6 +25,7 @@ import (
 
 	"github.com/r3labs/sse/v2"
 	"go.uber.org/zap"
+	backoff "gopkg.in/cenkalti/backoff.v1"
 )
 
 // HTTPTransport implements Transport over HTTP/SSE.
@@ -44,6 +45,14 @@ type HTTPTransport struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	// subscribeCancel/subscribeDone let Close terminate the background SSE
+	// subscribe goroutine (below) promptly and wait for it to exit, instead
+	// of leaving it to run until its own connect timeout. An uncancelled
+	// leaked goroutine can outlive the transport and race anything that
+	// later mutates shared HTTP state (e.g. http.DefaultTransport).
+	subscribeCancel context.CancelFunc
+	subscribeDone   chan struct{}
 
 	logger *zap.Logger
 }
@@ -77,6 +86,19 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		sseClient.Headers[k] = v
 	}
 
+	subscribeCtx, subscribeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	// sse.Client's default reconnect backoff (backoff.v1's RetryNotify) does
+	// NOT observe SubscribeWithContext's ctx unless the BackOff itself is
+	// context-aware: with a plain *backoff.ExponentialBackOff, cancelling
+	// subscribeCtx only fails the in-flight HTTP attempt, and the retry loop
+	// keeps going on its own schedule for up to the default 15-minute
+	// MaxElapsedTime. Binding ReconnectStrategy to subscribeCtx makes
+	// cancellation (from the 5s timeout above, or from Close below) stop
+	// retries immediately instead of leaving Close waiting on subscribeDone
+	// for minutes.
+	sseClient.ReconnectStrategy = backoff.WithContext(backoff.NewExponentialBackOff(), subscribeCtx)
+
 	t := &HTTPTransport{
 		endpoint:  config.Endpoint,
 		headers:   config.Headers,
@@ -84,9 +106,11 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second, // Prevent hanging on unreachable servers
 		},
-		events: make(chan []byte, 100),
-		errors: make(chan error, 1),
-		logger: logger,
+		events:          make(chan []byte, 100),
+		errors:          make(chan error, 1),
+		subscribeCancel: subscribeCancel,
+		subscribeDone:   make(chan struct{}),
+		logger:          logger,
 	}
 
 	// Setup disconnect handler
@@ -101,8 +125,9 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 	// Subscribe to SSE events asynchronously with timeout
 	// This prevents blocking if the server is unreachable
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx := subscribeCtx
+		defer subscribeCancel()
+		defer close(t.subscribeDone)
 
 		logger.Debug("Attempting SSE subscription", zap.String("endpoint", config.Endpoint+config.SSEPath))
 
@@ -192,6 +217,14 @@ func (h *HTTPTransport) Close() error {
 	h.closed = true
 
 	h.logger.Info("closing HTTP/SSE transport")
+
+	// Stop the background SSE-subscribe goroutine and wait for it to exit
+	// before returning, so no subscribe-related HTTP activity can run after
+	// Close returns (it previously kept running independently until its own
+	// 5s connect timeout, which could leak past the caller's lifecycle and
+	// race anything that later mutates shared HTTP state).
+	h.subscribeCancel()
+	<-h.subscribeDone
 
 	// The channels are deliberately never closed: the SSE subscription
 	// callback sends into h.events from the sse library's goroutine, which
