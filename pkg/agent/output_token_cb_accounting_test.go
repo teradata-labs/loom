@@ -70,18 +70,33 @@ func (m *scriptedStopReasonLLM) Name() string  { return "scripted-stop-reason" }
 func (m *scriptedStopReasonLLM) Model() string { return "scripted-v1" }
 
 // schemaTool is a no-op tool with a caller-supplied input schema, so a test can
-// state exactly whether the tool requires arguments.
+// state exactly what the tool demands — including through composite branches,
+// which MCP tool schemas use and which a root-only "required" check misses.
 type schemaTool struct {
 	name     string
 	required []string
 	props    map[string]*shuttle.JSONSchema
+	oneOf    []*shuttle.JSONSchema
+	anyOf    []*shuttle.JSONSchema
+	allOf    []*shuttle.JSONSchema
+	noSchema bool
 }
 
 func (t *schemaTool) Name() string        { return t.name }
 func (t *schemaTool) Description() string { return "test tool " + t.name }
 func (t *schemaTool) Backend() string     { return "" }
 func (t *schemaTool) InputSchema() *shuttle.JSONSchema {
-	return &shuttle.JSONSchema{Type: "object", Properties: t.props, Required: t.required}
+	if t.noSchema {
+		return nil
+	}
+	return &shuttle.JSONSchema{
+		Type:       "object",
+		Properties: t.props,
+		Required:   t.required,
+		OneOf:      t.oneOf,
+		AnyOf:      t.anyOf,
+		AllOf:      t.allOf,
+	}
 }
 func (t *schemaTool) Execute(_ context.Context, _ map[string]interface{}) (*shuttle.Result, error) {
 	return &shuttle.Result{Success: true, Data: "ok"}, nil
@@ -289,8 +304,238 @@ func TestDetectEmptyToolCall_SchemaAware(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := detectEmptyToolCall(tt.toolCalls, tools); got != tt.want {
-				t.Errorf("detectEmptyToolCall() = %v, want %v", got, tt.want)
+			if got := classifyToolCalls(tt.toolCalls, tools) == toolCallStateIncomplete; got != tt.want {
+				t.Errorf("classifyToolCalls() incomplete = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// requiresSQL is the tool used by the containment tests below: one required
+// property, so an input lacking it is incomplete however populated it looks.
+func requiresSQL() *schemaTool {
+	return &schemaTool{
+		name:     "run_query",
+		required: []string{"sql"},
+		props:    map[string]*shuttle.JSONSchema{"sql": {Type: "string"}, "limit": {Type: "number"}},
+	}
+}
+
+func truncatedCall() scriptedResponse {
+	return scriptedResponse{
+		toolCalls:  []llmtypes.ToolCall{{ID: "t-empty", Name: "run_query", Input: map[string]interface{}{}}},
+		stopReason: "max_tokens",
+	}
+}
+
+// alternate builds a script that interleaves a and b, n times each.
+func alternate(a, b scriptedResponse, n int) []scriptedResponse {
+	var script []scriptedResponse
+	for i := 0; i < n; i++ {
+		script = append(script, a, b)
+	}
+	return script
+}
+
+// TestOutputTokenCB_MalformedArgsDoNotClear is the containment regression for
+// the reset path.
+//
+// When a tool call's arguments JSON does not parse, the OpenAI and Azure OpenAI
+// clients store the partial string as Input{"_raw": ...} — which is exactly what
+// truncation at max_tokens looks like on those providers, and which the old
+// emptiness heuristic read as a fully populated input. Clearing on "not visibly
+// empty" therefore let an alternating stream of broken calls reset the counter
+// forever, disarming the breaker on the providers whose truncation is most
+// visible. The breaker must still fire.
+func TestOutputTokenCB_MalformedArgsDoNotClear(t *testing.T) {
+	malformed := scriptedResponse{
+		toolCalls: []llmtypes.ToolCall{
+			// A partial arguments string, cut off mid-JSON.
+			{ID: "t-raw", Name: "run_query", Input: map[string]interface{}{"_raw": `{"sql":`}},
+		},
+		stopReason: "max_tokens",
+	}
+
+	llm := &scriptedStopReasonLLM{responses: alternate(truncatedCall(), malformed, 6)}
+	ag := newOutputCBAgent(t, 3, llm, requiresSQL())
+
+	_, err := ag.Chat(context.Background(), "s-malformed", "go")
+	if !isCircuitBreakerErr(err) {
+		t.Fatalf("breaker must still fire when the non-empty turns are unparseable arguments, got err=%v", err)
+	}
+}
+
+// TestOutputTokenCB_MissingRequiredKeyDoesNotClear is the same containment
+// property for a call that parsed cleanly but stopped before emitting the
+// property its schema demands.
+func TestOutputTokenCB_MissingRequiredKeyDoesNotClear(t *testing.T) {
+	missingRequired := scriptedResponse{
+		toolCalls: []llmtypes.ToolCall{
+			// "limit" is real and non-falsy, but the required "sql" never arrived.
+			{ID: "t-partial", Name: "run_query", Input: map[string]interface{}{"limit": 5}},
+		},
+		stopReason: "max_tokens",
+	}
+
+	llm := &scriptedStopReasonLLM{responses: alternate(truncatedCall(), missingRequired, 6)}
+	ag := newOutputCBAgent(t, 3, llm, requiresSQL())
+
+	_, err := ag.Chat(context.Background(), "s-missing-required", "go")
+	if !isCircuitBreakerErr(err) {
+		t.Fatalf("breaker must still fire when the non-empty turns omit a required property, got err=%v", err)
+	}
+}
+
+// TestOutputTokenCB_IndeterminateToolCallDoesNotClear covers the third state: a
+// call whose completeness cannot be established must not count as truncation,
+// but must not clear a run either — clearing asserts progress that has not been
+// demonstrated.
+func TestOutputTokenCB_IndeterminateToolCallDoesNotClear(t *testing.T) {
+	// Advertises no schema, so nothing can be checked against it.
+	opaque := &schemaTool{name: "opaque_tool", noSchema: true}
+
+	indeterminate := scriptedResponse{
+		toolCalls: []llmtypes.ToolCall{
+			{ID: "t-opaque", Name: "opaque_tool", Input: map[string]interface{}{"anything": "here"}},
+		},
+		stopReason: "max_tokens",
+	}
+
+	llm := &scriptedStopReasonLLM{responses: alternate(truncatedCall(), indeterminate, 6)}
+	ag := newOutputCBAgent(t, 3, llm, requiresSQL(), opaque)
+
+	_, err := ag.Chat(context.Background(), "s-indeterminate", "go")
+	if !isCircuitBreakerErr(err) {
+		t.Fatalf("an unverifiable call must not clear a truncation run, got err=%v", err)
+	}
+}
+
+// TestClassifyToolCall_CompositeSchemas covers the requirement forms a
+// root-level "required" check alone misses. MCP tool schemas use these.
+func TestClassifyToolCall_CompositeSchemas(t *testing.T) {
+	// Each branch demands a different property, and the root demands nothing —
+	// so a root-only check would call this tool argument-less and wave {} through.
+	oneOfTool := &schemaTool{
+		name: "by_id_or_name",
+		props: map[string]*shuttle.JSONSchema{
+			"id":   {Type: "string"},
+			"name": {Type: "string"},
+		},
+		oneOf: []*shuttle.JSONSchema{
+			{Required: []string{"id"}},
+			{Required: []string{"name"}},
+		},
+	}
+	anyOfTool := &schemaTool{
+		name:  "by_any",
+		anyOf: []*shuttle.JSONSchema{{Required: []string{"a"}}, {Required: []string{"b"}}},
+	}
+	allOfTool := &schemaTool{
+		name:  "needs_both",
+		allOf: []*shuttle.JSONSchema{{Required: []string{"a"}}, {Required: []string{"b"}}},
+	}
+	tools := []shuttle.Tool{oneOfTool, anyOfTool, allOfTool}
+
+	tests := []struct {
+		name string
+		call ToolCall
+		want toolCallState
+		why  string
+	}{
+		{
+			name: "oneOf with no properties at all is incomplete",
+			call: ToolCall{Name: "by_id_or_name", Input: map[string]interface{}{}},
+			want: toolCallStateIncomplete,
+			why:  "every branch demands a property, so {} satisfies none of them",
+		},
+		{
+			name: "oneOf with one branch satisfied is complete",
+			call: ToolCall{Name: "by_id_or_name", Input: map[string]interface{}{"id": "abc"}},
+			want: toolCallStateComplete,
+			why:  "satisfying a single branch is a finished call",
+		},
+		{
+			name: "oneOf with the other branch satisfied is complete",
+			call: ToolCall{Name: "by_id_or_name", Input: map[string]interface{}{"name": "abc"}},
+			want: toolCallStateComplete,
+			why:  "branch order must not matter",
+		},
+		{
+			name: "anyOf with no branch satisfied is incomplete",
+			call: ToolCall{Name: "by_any", Input: map[string]interface{}{"unrelated": "x"}},
+			want: toolCallStateIncomplete,
+			why:  "a populated input that satisfies nothing is not progress",
+		},
+		{
+			name: "allOf with only one branch satisfied is incomplete",
+			call: ToolCall{Name: "needs_both", Input: map[string]interface{}{"a": 1}},
+			want: toolCallStateIncomplete,
+			why:  "allOf demands every branch",
+		},
+		{
+			name: "allOf fully satisfied is complete",
+			call: ToolCall{Name: "needs_both", Input: map[string]interface{}{"a": 1, "b": 2}},
+			want: toolCallStateComplete,
+			why:  "both branches met",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyToolCall(tt.call, tools); got != tt.want {
+				t.Errorf("classifyToolCall() = %v, want %v — %s", got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// TestClassifyToolCall_RawMarkerAlwaysIncomplete pins the parse-failure marker
+// as a positive incompleteness signal, ahead of every other consideration —
+// including on a tool that demands nothing, where an empty input would
+// otherwise be perfectly valid.
+func TestClassifyToolCall_RawMarkerAlwaysIncomplete(t *testing.T) {
+	tools := []shuttle.Tool{
+		requiresSQL(),
+		&schemaTool{name: "list_skills"},
+		&schemaTool{name: "opaque_tool", noSchema: true},
+	}
+
+	for _, name := range []string{"run_query", "list_skills", "opaque_tool", "never_advertised"} {
+		t.Run(name, func(t *testing.T) {
+			call := ToolCall{Name: name, Input: map[string]interface{}{"_raw": `{"sql":`}}
+			if got := classifyToolCall(call, tools); got != toolCallStateIncomplete {
+				t.Errorf("classifyToolCall(%q with _raw) = %v, want incomplete", name, got)
+			}
+		})
+	}
+}
+
+// TestClassifyToolCalls_Aggregation states how a turn's verdict is combined
+// across several calls: incomplete dominates, then unknown, and only an
+// all-complete turn is complete.
+func TestClassifyToolCalls_Aggregation(t *testing.T) {
+	tools := []shuttle.Tool{requiresSQL(), &schemaTool{name: "opaque_tool", noSchema: true}}
+
+	good := ToolCall{Name: "run_query", Input: map[string]interface{}{"sql": "SELECT 1"}}
+	bad := ToolCall{Name: "run_query", Input: map[string]interface{}{}}
+	opaque := ToolCall{Name: "opaque_tool", Input: map[string]interface{}{"x": 1}}
+
+	tests := []struct {
+		name  string
+		calls []ToolCall
+		want  toolCallState
+	}{
+		{"no calls at all", nil, toolCallStateComplete},
+		{"all complete", []ToolCall{good, good}, toolCallStateComplete},
+		{"one incomplete dominates", []ToolCall{good, bad}, toolCallStateIncomplete},
+		{"incomplete outranks unknown", []ToolCall{opaque, bad}, toolCallStateIncomplete},
+		{"unknown outranks complete", []ToolCall{good, opaque}, toolCallStateUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyToolCalls(tt.calls, tools); got != tt.want {
+				t.Errorf("classifyToolCalls() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -2530,9 +2530,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			if llmResp.StopReason == "max_tokens" {
-				// tools is this provider call's advertised set, so a tool that
-				// takes no arguments is not mistaken for a truncated call.
-				hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls, tools)
+				// tools is this provider call's advertised set, so a call can be
+				// checked against the schema it was advertised with: a tool that
+				// takes no arguments is not mistaken for a truncated call, and a
+				// call missing what its schema demands is not mistaken for a
+				// complete one.
+				toolState := classifyToolCalls(llmResp.ToolCalls, tools)
+				hasEmptyToolCall := toolState == toolCallStateIncomplete
 
 				switch {
 				case threshold < 0:
@@ -2579,12 +2583,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						"output_tokens": llmResp.Usage.OutputTokens,
 					})
 
-				default:
-					// max_tokens with non-truncated tool calls. These calls are
-					// complete and executable, so the turn IS forward progress
-					// and the run of consecutive truncated turns ends here —
-					// the same reasoning the zero-tool-call branch above
-					// applies to a complete text response.
+				case toolState == toolCallStateComplete:
+					// max_tokens, and every call carries everything its schema
+					// demands. These calls are executable, so the turn IS
+					// forward progress and the run of consecutive truncated
+					// turns ends here — the same reasoning the zero-tool-call
+					// branch above applies to a complete text response.
 					//
 					// This previously neither counted nor cleared, which made
 					// outputTokenExhaustions a lifetime tally instead of the
@@ -2597,9 +2601,30 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// introduced to fix (see
 					// TestOutputTokenCB_SessionAccumulation_Regression), in the
 					// one branch that fix did not cover.
+					//
+					// Clearing is gated on COMPLETE rather than on "not
+					// visibly empty": a malformed call reaches this switch with
+					// a populated-looking input (the OpenAI and Azure clients
+					// store an unparseable arguments string as {"_raw": ...}),
+					// and treating that as progress would let an alternating
+					// stream of broken calls reset the counter forever and
+					// disarm the breaker on exactly the providers whose
+					// truncation is most visible.
 					failureTracker.clearOutputTokenExhaustion()
 
-					span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
+					span.AddEvent("output_token.complete_toolcall_cleared", map[string]interface{}{
+						"stop_reason":     llmResp.StopReason,
+						"tool_call_count": len(llmResp.ToolCalls),
+					})
+
+				default:
+					// toolCallStateUnknown: max_tokens with calls whose
+					// completeness cannot be established (an unadvertised tool,
+					// or one advertising no schema). Don't count — there is no
+					// evidence of truncation — but don't clear either, because
+					// clearing asserts progress we cannot demonstrate. This is
+					// the pre-existing conservative behavior of this branch.
+					span.AddEvent("output_token.indeterminate_toolcall", map[string]interface{}{
 						"stop_reason":        llmResp.StopReason,
 						"tool_call_count":    len(llmResp.ToolCalls),
 						"has_empty_toolcall": hasEmptyToolCall,

@@ -243,50 +243,8 @@ func (t *consecutiveFailureTracker) checkOutputTokenCircuitBreaker(threshold int
 	return fmt.Errorf("%s", msg)
 }
 
-// detectEmptyToolCall checks if any tool call has an empty Input object.
-// This is a strong indicator that the LLM output was truncated mid-generation.
-// Returns true if empty tool call detected.
-//
-// tools is the advertised tool set for the current provider call, used to tell a
-// genuinely argument-less call apart from a truncated one: a tool that requires
-// no arguments is EXPECTED to be invoked with an empty input, so emptiness says
-// nothing about truncation for it. Pass nil to skip that check and apply the
-// emptiness heuristics to every call (the historical behavior).
-func detectEmptyToolCall(toolCalls []ToolCall, tools []shuttle.Tool) bool {
-	for _, tc := range toolCalls {
-		// A no-argument tool call is complete as it stands. Without this, every
-		// invocation of a tool like list_skills or a bare status/list call read
-		// as truncated, and on a turn that also hit max_tokens it counted
-		// toward the output-token circuit breaker — 8 of them failed the whole
-		// message even though nothing was ever truncated.
-		if !toolRequiresArguments(tc.Name, tools) {
-			continue
-		}
-
-		// Check if Input is empty or only has zero values
-		if len(tc.Input) == 0 {
-			return true
-		}
-
-		// Check if all values are empty/zero
-		allEmpty := true
-		for _, v := range tc.Input {
-			if v != nil && v != "" && v != 0 && v != false {
-				allEmpty = false
-				break
-			}
-		}
-
-		if allEmpty {
-			return true
-		}
-	}
-
-	return false
-}
-
 // toolRequiresArguments reports whether the named tool's advertised schema
-// declares at least one required parameter.
+// demands any property, at the root or through a composite branch.
 //
 // It answers true for a tool it cannot describe — an unknown name, or one with
 // no schema — so the emptiness heuristics in detectEmptyToolCall still apply
@@ -294,15 +252,180 @@ func detectEmptyToolCall(toolCalls []ToolCall, tools []shuttle.Tool) bool {
 // characterize keeps the pre-existing truncation detection rather than being
 // waved through.
 func toolRequiresArguments(name string, tools []shuttle.Tool) bool {
+	schema, ok := advertisedSchema(name, tools)
+	if !ok || schema == nil {
+		return true
+	}
+	return schemaDemandsProperty(schema, 0)
+}
+
+// advertisedSchema returns the input schema the named tool was advertised with.
+// ok is false when the tool is not in the advertised set at all, which is a
+// different state from a tool that advertises no schema.
+func advertisedSchema(name string, tools []shuttle.Tool) (schema *shuttle.JSONSchema, ok bool) {
 	for _, t := range tools {
 		if t == nil || t.Name() != name {
 			continue
 		}
-		schema := t.InputSchema()
-		if schema == nil {
-			return true
+		return t.InputSchema(), true
+	}
+	return nil, false
+}
+
+// maxSchemaDepth bounds composite-branch recursion. Tool schemas arrive from
+// MCP servers and other third parties, so nesting is not under our control.
+const maxSchemaDepth = 16
+
+// schemaDemandsProperty reports whether schema requires at least one property,
+// counting composite branches: a schema with an empty root "required" can still
+// demand a property through oneOf/anyOf/allOf, which MCP tools do use.
+func schemaDemandsProperty(schema *shuttle.JSONSchema, depth int) bool {
+	if schema == nil || depth > maxSchemaDepth {
+		return false
+	}
+	if len(schema.Required) > 0 {
+		return true
+	}
+	for _, branches := range [][]*shuttle.JSONSchema{schema.OneOf, schema.AnyOf, schema.AllOf} {
+		for _, b := range branches {
+			if schemaDemandsProperty(b, depth+1) {
+				return true
+			}
 		}
-		return len(schema.Required) > 0
+	}
+	return false
+}
+
+// schemaRequirementsMet reports whether input carries every property schema
+// demands. Root "required" always applies; allOf branches must all be met;
+// oneOf/anyOf need at least one met branch.
+//
+// oneOf is checked as "at least one" rather than JSON Schema's "exactly one".
+// The question here is only whether the model finished emitting the arguments,
+// and answering it in the permissive direction keeps a well-formed call from
+// being read as truncated.
+func schemaRequirementsMet(schema *shuttle.JSONSchema, input map[string]interface{}, depth int) bool {
+	if schema == nil || depth > maxSchemaDepth {
+		return true
+	}
+	for _, key := range schema.Required {
+		if _, present := input[key]; !present {
+			return false
+		}
+	}
+	for _, b := range schema.AllOf {
+		if !schemaRequirementsMet(b, input, depth+1) {
+			return false
+		}
+	}
+	for _, branches := range [][]*shuttle.JSONSchema{schema.OneOf, schema.AnyOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		met := false
+		for _, b := range branches {
+			if schemaRequirementsMet(b, input, depth+1) {
+				met = true
+				break
+			}
+		}
+		if !met {
+			return false
+		}
+	}
+	return true
+}
+
+// providerRawArgsKey is the marker the OpenAI and Azure OpenAI clients store
+// when a tool call's arguments JSON does not parse: pkg/llm/openai/client.go and
+// pkg/llm/azureopenai/client.go both fall back to Input{"_raw": <partial>} on
+// both their non-streaming and streaming paths.
+//
+// That is precisely what a call truncated at max_tokens looks like on those
+// providers — a partial arguments string that never closed — so the marker is a
+// positive signal of an INCOMPLETE call, even though the resulting map is
+// non-empty and would otherwise read as fully populated.
+const providerRawArgsKey = "_raw"
+
+// toolCallState is how much can be established about the tool calls on a
+// max_tokens turn. The three states exist because "not visibly empty" is not
+// the same as "known to be complete", and the circuit breaker must only treat
+// the latter as forward progress.
+type toolCallState int
+
+const (
+	// toolCallStateUnknown: completeness could not be established — the tool was
+	// not in the advertised set, or advertised no schema to check against.
+	toolCallStateUnknown toolCallState = iota
+	// toolCallStateComplete: every call carries everything its schema demands.
+	toolCallStateComplete
+	// toolCallStateIncomplete: at least one call is truncated or malformed.
+	toolCallStateIncomplete
+)
+
+// classifyToolCalls aggregates the per-call verdicts for a turn: any incomplete
+// call makes the turn incomplete; otherwise any unestablished call makes it
+// unknown; only an all-complete turn is complete.
+func classifyToolCalls(toolCalls []ToolCall, tools []shuttle.Tool) toolCallState {
+	state := toolCallStateComplete
+	for _, tc := range toolCalls {
+		switch classifyToolCall(tc, tools) {
+		case toolCallStateIncomplete:
+			return toolCallStateIncomplete
+		case toolCallStateUnknown:
+			state = toolCallStateUnknown
+		case toolCallStateComplete:
+			// leave state as-is
+		}
+	}
+	return state
+}
+
+// classifyToolCall establishes what can be said about a single tool call.
+func classifyToolCall(tc ToolCall, tools []shuttle.Tool) toolCallState {
+	// The provider could not parse the arguments at all. This is checked before
+	// anything else, and regardless of what the tool requires: an argument-less
+	// tool never produces a parse failure, so a _raw marker on one is still a
+	// broken call.
+	if _, raw := tc.Input[providerRawArgsKey]; raw {
+		return toolCallStateIncomplete
+	}
+
+	schema, advertised := advertisedSchema(tc.Name, tools)
+	if !advertised || schema == nil {
+		// Nothing to check against. Keep the historical emptiness heuristic so
+		// detection does not weaken, but never report completeness we cannot
+		// establish — an unknown call must not clear a truncation run.
+		if inputLooksEmpty(tc.Input) {
+			return toolCallStateIncomplete
+		}
+		return toolCallStateUnknown
+	}
+
+	if !schemaDemandsProperty(schema, 0) {
+		// An argument-less tool is expected to be called with an empty input,
+		// so emptiness says nothing about truncation for it.
+		return toolCallStateComplete
+	}
+	if !schemaRequirementsMet(schema, tc.Input, 0) {
+		return toolCallStateIncomplete
+	}
+	if inputLooksEmpty(tc.Input) {
+		return toolCallStateIncomplete
+	}
+	return toolCallStateComplete
+}
+
+// inputLooksEmpty is the historical truncation heuristic: an absent input, or
+// one whose values are all zero-valued.
+func inputLooksEmpty(input map[string]interface{}) bool {
+	if len(input) == 0 {
+		return true
+	}
+	for _, v := range input {
+		if v != nil && v != "" && v != 0 && v != false {
+			return false
+		}
 	}
 	return true
 }
