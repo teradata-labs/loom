@@ -952,6 +952,32 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		}
 	}
 
+	// Restore the parked turn's DURABLE task identity, before any context this
+	// turn derives. The park row carries the task it blocked (stamped at Store
+	// time from the turn's attribution), and that row — not a fresh emission —
+	// is the identity a resume should continue: re-minting through the
+	// policy-gated HUMAN_REQUEST trigger re-derives what the park already
+	// decided, and gets it wrong twice. A turn parked under a REAL claimed task
+	// resumed under a fresh implicit one; and a policy that declines on the
+	// resuming agent (mode off after a restart, cap spent, trigger excluded)
+	// left the approved rows unattributed and the parked task open forever.
+	// The emitter rebind below survives as the fallback for legacy rows written
+	// before the task_id column existed.
+	//
+	// Seeding the binding is enough for the close as well: completeImplicitTask
+	// closes through CompleteForTurn, whose implicit-key guard skips a task the
+	// emitter did not mint — so restoring an explicit task's identity attributes
+	// the resumed rows without stealing that task's lifecycle from its owner.
+	if hr.TaskID != "" {
+		attr := taskctx.Attribution{
+			TaskID:    hr.TaskID,
+			SessionID: sessionID,
+			AgentID:   a.id,
+		}
+		taskBinding.Set(attr)
+		ctx = taskctx.ContextWithAttribution(ctx, attr)
+	}
+
 	// Past this line the decision is ours and the turn is ours to finish.
 	// Session-handle lifecycle: adopt the handles the parked half minted
 	// (same-process embedders), so a handle the model is about to use is still
@@ -999,7 +1025,14 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// After every refusal gate, the CLAIM included: a resume that loses the
 	// claim race, or is refused for a stale decision or moved-on history, must
 	// not leave a task behind for a turn it never continued.
-	a.maybeRecordImplicitTask(agentCtx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
+	//
+	// Legacy fallback only: a park row that carries its task id has already
+	// seeded the binding above (and maybeRecordImplicitTask would decline on a
+	// filled binding anyway — this guard just says out loud that the durable id
+	// is the primary path and the emitter is the fallback).
+	if hr.TaskID == "" {
+		a.maybeRecordImplicitTask(agentCtx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
+	}
 
 	if len(rowless) > 0 {
 		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)

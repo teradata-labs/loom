@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // AC1: RespondToRequest is a member of the HumanRequestStore interface, and the
@@ -694,4 +695,76 @@ func TestSQLiteHumanStore_CloseIsClean(t *testing.T) {
 	require.NoError(t, store.Close())
 	_, statErr := os.Stat(filepath.Join(t.TempDir()))
 	require.NoError(t, statErr)
+}
+
+// TestSQLiteHumanStore_TaskIDRoundTrips pins the read side of task
+// attribution. The INSERT wrote task_id from the start; Get and the two List
+// queries never selected it, so every read handed back TaskID == "" and the one
+// consumer that needs it — ResumeChat, seeding the resumed turn's binding from
+// the row — could not tell an attributed park from an unattributed one.
+func TestSQLiteHumanStore_TaskIDRoundTrips(t *testing.T) {
+	store, err := NewSQLiteHumanRequestStore(SQLiteConfig{Path: filepath.Join(t.TempDir(), "hitl.db")})
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	base := func(id string) *HumanRequest {
+		return &HumanRequest{ID: id, AgentID: "a", SessionID: "s", Question: "q",
+			RequestType: "parked", Priority: "normal", Status: "pending",
+			CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
+	}
+
+	// Explicit TaskID survives the round trip.
+	explicit := base("r-explicit")
+	explicit.TaskID = "task-explicit"
+	require.NoError(t, store.Store(ctx, explicit))
+	got, err := store.Get(ctx, "r-explicit")
+	require.NoError(t, err)
+	require.Equal(t, "task-explicit", got.TaskID)
+
+	// Ambient attribution is captured at Store and read back — the shape a real
+	// park takes, where the turn's task rides the context, not the struct.
+	ambient := taskctx.ContextWithAttribution(ctx, taskctx.Attribution{
+		TaskID: "task-ambient", SessionID: "s"})
+	require.NoError(t, store.Store(ambient, base("r-ambient")))
+	got, err = store.Get(ctx, "r-ambient")
+	require.NoError(t, err)
+	require.Equal(t, "task-ambient", got.TaskID)
+
+	// The list paths read it back too — ListBySession is what a resume-side
+	// audit walks.
+	bySession, err := store.ListBySession(ctx, "s")
+	require.NoError(t, err)
+	seen := map[string]string{}
+	for _, hr := range bySession {
+		seen[hr.ID] = hr.TaskID
+	}
+	require.Equal(t, "task-explicit", seen["r-explicit"])
+	require.Equal(t, "task-ambient", seen["r-ambient"])
+
+	// No task is not an error: TaskID reads back empty, same as a legacy row.
+	require.NoError(t, store.Store(ctx, base("r-none")))
+	got, err = store.Get(ctx, "r-none")
+	require.NoError(t, err)
+	require.Empty(t, got.TaskID)
+}
+
+// TestInMemoryHumanStore_CapturesAmbientTaskID holds the two stores to one
+// attribution rule: explicit TaskID wins, ambient attribution is the fallback.
+// Without it the same park writes an attributed row in SQLite and an
+// unattributed one in memory, and the resume's binding seed silently works in
+// one deployment and not the other.
+func TestInMemoryHumanStore_CapturesAmbientTaskID(t *testing.T) {
+	store := NewInMemoryHumanRequestStore()
+	ctx := taskctx.ContextWithAttribution(context.Background(), taskctx.Attribution{
+		TaskID: "task-ambient", SessionID: "s"})
+
+	require.NoError(t, store.Store(ctx, &HumanRequest{
+		ID: "r1", AgentID: "a", SessionID: "s", Question: "q",
+		RequestType: "parked", Priority: "normal", Status: "pending",
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}))
+
+	got, err := store.Get(context.Background(), "r1")
+	require.NoError(t, err)
+	require.Equal(t, "task-ambient", got.TaskID)
 }

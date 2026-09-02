@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"go.uber.org/zap"
 )
 
@@ -584,7 +585,17 @@ func (s *InMemoryHumanRequestStore) Store(ctx context.Context, req *HumanRequest
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.requests[req.ID] = cloneHumanRequest(req)
+	stored := cloneHumanRequest(req)
+	// Attribute the request to the task it blocks, the same rule the SQLite
+	// store applies: an explicit TaskID wins, otherwise take the ambient
+	// attribution. Without this the two stores diverge — the same park writes
+	// an attributed row in SQLite and an unattributed one here — and everything
+	// that reads TaskID back (the resume's binding seed above all) behaves
+	// differently per store.
+	if stored.TaskID == "" {
+		stored.TaskID = taskctx.TaskIDFromContext(ctx)
+	}
+	s.requests[req.ID] = stored
 	return nil
 }
 

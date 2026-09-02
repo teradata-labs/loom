@@ -261,7 +261,8 @@ func (s *SQLiteHumanRequestStore) Get(ctx context.Context, id string) (*HumanReq
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
 			   status, response, response_data_json, responded_at, responded_by,
-			   kind, summary, params_json, params_truncated
+			   kind, summary, params_json, params_truncated,
+			   task_id
 		FROM human_requests
 		WHERE id = ?
 	`
@@ -357,7 +358,8 @@ func (s *SQLiteHumanRequestStore) ListPending(ctx context.Context) ([]*HumanRequ
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
 			   status, response, response_data_json, responded_at, responded_by,
-			   kind, summary, params_json, params_truncated
+			   kind, summary, params_json, params_truncated,
+			   task_id
 		FROM human_requests
 		WHERE status = 'pending'
 		ORDER BY created_at ASC
@@ -405,7 +407,8 @@ func (s *SQLiteHumanRequestStore) ListBySession(ctx context.Context, sessionID s
 		SELECT id, agent_id, session_id, question, context_json,
 			   request_type, priority, timeout_ms, created_at, expires_at,
 			   status, response, response_data_json, responded_at, responded_by,
-			   kind, summary, params_json, params_truncated
+			   kind, summary, params_json, params_truncated,
+			   task_id
 		FROM human_requests
 		WHERE session_id = ?
 		ORDER BY created_at DESC
@@ -562,12 +565,16 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 	var respondedAtMs sql.NullInt64
 	var kind, summary, paramsJSON sql.NullString
 	var paramsTruncated sql.NullBool
+	// NULL for rows written before the task_id ALTER, and for requests raised
+	// outside any task. Reads back as "" either way.
+	var taskID sql.NullString
 
 	err := row.Scan(
 		&req.ID, &req.AgentID, &req.SessionID, &req.Question, &contextJSON,
 		&req.RequestType, &req.Priority, &timeoutMs, &createdAtMs, &expiresAtMs,
 		&req.Status, &req.Response, &responseDataJSON, &respondedAtMs, &req.RespondedBy,
 		&kind, &summary, &paramsJSON, &paramsTruncated,
+		&taskID,
 	)
 
 	if err != nil {
@@ -586,6 +593,8 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 			return nil, fmt.Errorf("failed to unmarshal response data: %w", err)
 		}
 	}
+
+	req.TaskID = taskID.String
 
 	// Convert Unix milliseconds to time
 	req.CreatedAt = time.UnixMilli(createdAtMs)

@@ -386,3 +386,67 @@ func TestInlineContactHuman_FiresHumanRequestTrigger(t *testing.T) {
 	require.True(t, task.IsTerminal(tasks[0].Status),
 		"the turn finished normally, so its task is closed")
 }
+
+// TestPark_ResumeRestoresTheDurableTaskID pins the resume's PRIMARY identity
+// source: the task id on the park row itself, not a fresh policy-gated
+// emission.
+//
+// The emitter rebind re-derives at resume time what the park already decided,
+// and a policy that declines on the RESUMING agent — implicit recording turned
+// off after a restart, a spent session cap, an excluded trigger — left the
+// approved rows unattributed and the parked task open forever. The scenario
+// here is the restart shape: agent B, restored over agent A's stores with
+// implicit recording disabled, resumes A's parked turn. B could never re-mint;
+// only the durable id on the row can restore the identity.
+func TestPark_ResumeRestoresTheDurableTaskID(t *testing.T) {
+	r := newParkTaskRig(t, workThenParkScript(), "read_table", "export_csv")
+
+	hr := r.parkAndAssert(t, "s-restore", "read then export")
+	before := r.onlyTask(t, "s-restore")
+	require.Equal(t, before.ID, hr.TaskID,
+		"rig sanity: the park row carries the task it blocked — the write side "+
+			"stamps it from the turn's attribution")
+
+	// Agent B: the same session store, park store and task manager — a restart —
+	// but with implicit recording DISABLED, so the emitter fallback can mint
+	// nothing and the durable id is the only identity source.
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	restored := NewAgent(&mockBackend{}, &mockToolCallingLLM{responses: []mockLLMResponse{
+		{content: "exported"},
+	}},
+		WithConfig(cfg),
+		WithMemory(NewMemoryWithStore(r.sessions)),
+		WithHITLPark(r.park, 0, NewProgressNotifier()),
+		WithAdmissionHooks(shuttle.NewChain([]shuttle.Hook{scopedAskHook{tool: "export_csv"}}, nil, nil)),
+		WithTaskBoard(r.tasks, nil, &loomv1.TaskBoardConfig{
+			ImplicitTasks: &loomv1.ImplicitTaskConfig{
+				Mode: loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED,
+			},
+		}),
+	)
+	ct := &countingTool{name: "export_csv"}
+	restored.RegisterTool(ct)
+	restored.RegisterTool(&countingTool{name: "read_table"})
+
+	resp, err := restored.ResumeChat(context.Background(), "s-restore",
+		ParkDecision{RequestID: hr.ID, Approved: true}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.EqualValues(t, 1, ct.runs.Load(), "rig sanity: the approved action ran on the restored agent")
+
+	byUse := r.taskIDByToolUse(t, "s-restore")
+	if byUse["c-write"] == "" {
+		t.Fatal("the approved row is unattributed on a restored agent whose policy declines: " +
+			"the resume must seed the binding from the park row's durable task id, " +
+			"not re-derive it through the policy-gated emitter")
+	}
+	require.Equal(t, before.ID, byUse["c-write"],
+		"the durable id restores the SAME task, not a fresh one")
+
+	after := r.onlyTask(t, "s-restore")
+	require.Equal(t, before.ID, after.ID, "no second task was minted")
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, after.Status,
+		"the resumed turn terminated, so the parked task finally closes")
+}
