@@ -1750,7 +1750,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		hitlStore,
 		askTimeout,
 		time.Second,
-		nil,
+		hitlNotifier(),
 	)
 	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
 	if err != nil {
@@ -2142,9 +2142,10 @@ func runServe(cmd *cobra.Command, args []string) {
 					for _, toolName := range cfg.Tools.Builtin {
 						if toolName == "contact_human" {
 							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-								Store:  hitlStore,
-								Tracer: tracer,
-								Logger: logger,
+								Store:    hitlStore,
+								Notifier: hitlNotifier(),
+								Tracer:   tracer,
+								Logger:   logger,
 							})
 							ag.RegisterTool(humanTool)
 							logger.Info("    Auto-registered contact_human tool (shared HITL store)",
@@ -3394,9 +3395,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				for _, toolName := range agentConfig.Tools.Builtin {
 					if toolName == "contact_human" {
 						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-							Store:  hitlStore,
-							Tracer: tracer,
-							Logger: logger,
+							Store:    hitlStore,
+							Notifier: hitlNotifier(),
+							Tracer:   tracer,
+							Logger:   logger,
 						})
 						newAgent.RegisterTool(humanTool)
 						logger.Info("  Auto-registered contact_human tool (shared HITL store)",

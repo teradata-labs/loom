@@ -23,6 +23,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -75,6 +76,25 @@ type Agent struct {
 
 	// Admission hook chain consulted before every tool body runs
 	admissionChain *shuttle.Chain
+
+	// hitlPark, when non-nil, enables HITL park-and-resume: a batch needing a
+	// human decision ends the turn (TurnParkedError) instead of holding it.
+	hitlPark *hitlParkConfig
+
+	// parkedHandles holds the MCP session-handle collector of each session's
+	// parked turn, so a same-process resume adopts its handles instead of
+	// finding them released. One slot per session; guardParkedTail now
+	// admits a new turn once a park LAPSES, so a second park can overwrite the
+	// slot — abandonParkedRequest releases before closing a dead turn's row. Pooled embedders — a fresh Agent per call, where
+	// adoption can never happen — drain the slot explicitly at each park via
+	// ReleaseParkedHandles, keeping call-scoped semantics with no leak.
+	// sessionLocks serializes resumes per session inside this process, so two
+	// deliveries of one decision cannot both execute its batch.
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*sync.Mutex
+
+	parkedHandlesMu sync.Mutex
+	parkedHandles   map[string]*mcpadapter.HandleCollector
 
 	// Resolves the caller identity (AdmissionRequest.UserID) from the call
 	// context; injected here because pkg/shuttle cannot import the storage

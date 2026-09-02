@@ -1794,9 +1794,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Session-handle lifecycle (issue #345): MCP tools that mint session
 	// handles get them auto-released when this conversation ends. Agent
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
-	// released a handle — so the runtime owns the cleanup.
+	// released a handle — so the runtime owns the cleanup. A PARKED exit is
+	// the exception: the turn is unfinished, so its handles park with it for
+	// a same-process resume to adopt (pooled embedders drain the slot via
+	// ReleaseParkedHandles instead — see park.go).
 	ctx, handleCollector := mcpadapter.WithHandleCollector(ctx)
+	turnParkedExit := false
 	defer func() {
+		if turnParkedExit {
+			return
+		}
 		// The auto-release happens outside any tool result, so the ledger
 		// learns about it here instead of through applyLeaseEvents — without
 		// this the next turn would seed RESOURCE_HOLDER for handles this
@@ -1845,6 +1852,17 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// it, so the ledger re-marks the fresh one the server installed.
 	a.seedLeaseHolding(ctx, sessionID)
 
+	// Append-point park guard: a pending parked decision owns the session
+	// tail, so a new user turn is refused BEFORE any turn-end side effect
+	// (payload drop, user append) can bury the parked batch. Sits behind the
+	// embedder's admission probe, which races a park landing mid-turn.
+	if err := a.guardParkedTail(ctx, sessionID, session); err != nil {
+		span.AddEvent("conversation.refused_parked", map[string]interface{}{
+			"session_id": sessionID,
+		})
+		return nil, err
+	}
+
 	// TURN END for the previous turn (HLD §1, §7.3): a new turn is starting —
 	// in-memory full payloads are replaced by their persisted-row form and the
 	// in-turn SQLite is dropped. Rows and summary versions are all that remains.
@@ -1868,7 +1886,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// in the Timestamp field; per-turn temporal grounding ("today", "this month")
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
-	userMsg := a.appendMessage(ctx, session, Message{
+	userMsg, _ := a.appendMessage(ctx, session, Message{
 		Role:          "user",
 		Content:       userMessage,
 		ContentBlocks: p.contentBlocks,
@@ -1912,6 +1930,29 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	duration := time.Since(startTime)
 
 	if err != nil {
+		// A parked turn is a clean exit, not a failure: the batch's assistant
+		// row and the grouped human request are durable, nothing executed,
+		// and ResumeChat continues the turn when the decision arrives. Return
+		// the typed terminal unwrapped so embedders detect it with errors.As.
+		var parked *TurnParkedError
+		if errors.As(err, &parked) {
+			// The turn is unfinished — its handles park with it (see the
+			// collector setup above) instead of being released out from
+			// under the resume that will continue this same turn.
+			turnParkedExit = true
+			a.parkHandles(sessionID, handleCollector)
+			span.AddEvent("conversation.parked", map[string]interface{}{
+				"request_id":  parked.RequestID,
+				"duration_ms": duration.Milliseconds(),
+			})
+			if perr := a.memory.PersistSession(ctx, session); perr != nil {
+				zap.L().Warn("Failed to persist session at park",
+					zap.String("session_id", sessionID),
+					zap.Error(perr))
+			}
+			return nil, parked
+		}
+
 		span.Status = observability.Status{
 			Code:    observability.StatusError,
 			Message: err.Error(),
@@ -1994,7 +2035,20 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		"tokens":          response.Usage.TotalTokens,
 	})
 
-	// Emit metrics
+	a.recordConversationMetrics(sessionID, response, duration)
+
+	return response, nil
+}
+
+// recordConversationMetrics emits the six metrics that describe one completed
+// conversation. Shared by chat() and ResumeChat so a turn that ended at a
+// human decision and finished later is counted exactly like any other — those
+// are the turns carrying human-approved actions, so they are the last ones
+// that should be missing from the metrics backend.
+func (a *Agent) recordConversationMetrics(sessionID string, response *Response, duration time.Duration) {
+	turns, _ := response.Metadata["turns"].(int)
+	toolExecs, _ := response.Metadata["tool_executions"].(int)
+
 	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
 		observability.AttrSessionID: sessionID,
 		"status":                    "success",
@@ -2019,8 +2073,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
-
-	return response, nil
 }
 
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
@@ -2029,7 +2081,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 // full natural form. Nothing is examined, sized, flagged, or transformed at
 // arrival. turnStart is true only at the Chat() entry — the only
 // turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
-func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) Message {
+func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
 	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
 	// anchors every row persisted during the call at the conversation's
 	// historical time; without one, the caller-stamped wall clock stands.
@@ -2045,7 +2097,9 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	}
 	msg.Turn = t
 
+	persisted := true
 	if err := a.memory.PersistMessage(ctx, session.ID, &msg, turnStart); err != nil {
+		persisted = false
 		zap.L().Warn("Failed to persist message",
 			zap.String("session_id", session.ID),
 			zap.String("role", msg.Role),
@@ -2053,7 +2107,7 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	}
 
 	session.AddMessage(ctx, msg)
-	return msg
+	return msg, persisted
 }
 
 // Response represents the agent's response to a user message.
@@ -2270,8 +2324,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 	}
 
-	// Inject graph memory context (if enabled and available).
-	a.injectGraphMemoryContext(ctx, session)
+	// Inject graph memory context (if enabled and available). A resumed turn
+	// skips it: the loop is being RE-entered for a turn that already got its
+	// context block before it parked, so injecting again would duplicate the
+	// block in the prompt and pay a second recall round-trip per resume.
+	// A resumed turn already ran this once — but only if the block SURVIVED.
+	// injectGraphMemoryContext appends through Session.AddMessage, which is
+	// in-memory only and never persisted, so a resume in a fresh process finds
+	// nothing there. Suppressing on "is a resume" alone would leave exactly
+	// the turn carrying the human-approved action with no recall at all.
+	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
+		a.injectGraphMemoryContext(ctx, session)
+	}
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
@@ -2607,7 +2671,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
-		a.appendMessage(ctx, session, Message{
+		_, assistantPersisted := a.appendMessage(ctx, session, Message{
 			Role:       "assistant",
 			Content:    llmResp.Content,
 			ToolCalls:  llmResp.ToolCalls,
@@ -2617,285 +2681,58 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Timestamp:  time.Now(),
 		}, false)
 
+		// HITL park pre-scan (park.go): with park enabled and the batch's
+		// assistant row durable, a batch needing a human decision ends the
+		// turn HERE — before anything executes. A non-durable assistant row
+		// skips parking (a request row must never strand against a missing
+		// batch) and the batch dispatches inline, fail-closed.
+		//
+		// Durable means BOTH: a store exists, and the write to it did not
+		// fail. PersistMessage returns nil when no store is configured, so
+		// assistantPersisted alone reports success for a batch that was never
+		// written anywhere — exactly the stranding this gate exists to stop.
+		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp); parkErr != nil {
+				return nil, parkErr
+			}
+		}
+
 		// Execute tool calls with per-turn cap and deduplication.
 		// MaxIterations limits how many tool calls are executed from a single
 		// LLM response. Excess calls get "turn_limit_exceeded" error results.
 		// Identical calls (same name + input) within a turn reuse the first result.
+		//
+		// The per-call body lives in dispatchOneCall (shared verbatim with
+		// ResumeChat's parked-batch completion); batchState carries the
+		// loop-level counters it reads and writes.
 		maxPerTurn := a.config.MaxIterations
 		if maxPerTurn <= 0 {
 			maxPerTurn = 10 // default
 		}
-		turnToolCount := 0
-		turnDedup := make(map[string]*shuttle.Result) // dedup key → result
-
-		// pendingSidecars: text_body sidecar messages (e.g. skill body from
-		// manage_skills(load)) buffered across the whole tool batch. Draining
-		// them AFTER every tool_result in the batch has been appended keeps
-		// each tool_use adjacent to its tool_result — required by Anthropic's
-		// "tool_use ids must be followed by tool_result blocks" pairing rule
-		// when the model fires multiple tools in parallel.
-		var pendingSidecars []Message
+		st := &batchState{
+			span:               span,
+			turnCount:          turnCount,
+			batchLen:           len(llmResp.ToolCalls),
+			maxPerTurn:         maxPerTurn,
+			toolExecutionCount: &toolExecutionCount,
+			allToolExecutions:  &allToolExecutions,
+			tools:              &tools,
+			recovery:           recovery,
+			turnDedup:          make(map[string]*shuttle.Result),
+		}
 
 		for i, toolCall := range llmResp.ToolCalls {
 			if toolExecutionCount >= a.config.MaxToolExecutions {
 				break
 			}
-
-			// Per-turn cap: skip remaining calls with an error result
-			if turnToolCount >= maxPerTurn {
-				a.appendMessage(ctx, session, Message{
-					Role:      "tool",
-					Content:   fmt.Sprintf("turn_limit_exceeded — per-turn tool call limit (%d) reached. Synthesize a response from the results you have.", maxPerTurn),
-					ToolUseID: toolCall.ID,
-					ToolResult: &shuttle.Result{
-						Success: false,
-						Error: &shuttle.Error{
-							Code:    "turn_limit_exceeded",
-							Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", maxPerTurn, i+1, len(llmResp.ToolCalls)),
-						},
-					},
-					AgentID:   a.id,
-					Timestamp: time.Now(),
-				}, false)
-				toolExecutionCount++
-				continue
-			}
-
-			// Deduplication: compute canonical key from tool name + sorted JSON input
-			dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
-			if cachedResult, ok := turnDedup[dedupKey]; ok {
-				a.appendMessage(ctx, session, Message{
-					Role:       "tool",
-					Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
-					ToolUseID:  toolCall.ID,
-					ToolResult: cachedResult,
-					AgentID:    a.id,
-					Timestamp:  time.Now(),
-				}, false)
-				allToolExecutions = append(allToolExecutions, ToolExecution{
-					ToolName: toolCall.Name,
-					Input:    toolCall.Input,
-					Result:   cachedResult,
-				})
-				toolExecutionCount++
-				turnToolCount++
-				continue
-			}
-
-			turnToolCount++
-			toolExecutionCount++
-
-			// Check if this is a HITL request (contact_human tool)
-			if toolCall.Name == "contact_human" {
-				// Extract HITL request details from tool input
-				hitlInfo := extractHITLInfo(toolCall.Input)
-
-				// Add instrumentation for HITL request
-				span.AddEvent("hitl.request_detected", map[string]interface{}{
-					"question":     hitlInfo.Question,
-					"request_type": hitlInfo.RequestType,
-					"priority":     hitlInfo.Priority,
-					"timeout":      hitlInfo.Timeout.String(),
-				})
-				span.SetAttribute("hitl.active", true)
-				span.SetAttribute("hitl.question", hitlInfo.Question)
-				span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
-				span.SetAttribute("hitl.priority", hitlInfo.Priority)
-
-				// Emit HITL-specific progress event
-				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
-			} else {
-				// Emit tool-started progress event
-				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
-			}
-
-			// Execute tool with tracing — always created
-			_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
-			toolSpan.SetAttribute("tool_name", toolCall.Name)
-
-			// Execute with self-correction (circuit breaker + SQL correction)
-			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
-
-			// Tier 1: if tool CB fired, disable tool and inject synthetic result.
-			if err != nil && strings.Contains(err.Error(), "circuit breaker open") && recovery != nil {
-				_, syntheticResult := recovery.recoverToolCB(ctx, toolCall.Name, &tools)
-				result = syntheticResult
-				err = nil
-			}
-
-			// Record tool execution on conversation_loop span
-			{
-				toolSuccess := err == nil && (result == nil || result.Success)
-				toolEvent := map[string]interface{}{
-					"turn":      turnCount,
-					"tool_name": toolCall.Name,
-					"success":   toolSuccess,
-					"index":     i + 1,
-					"total":     len(llmResp.ToolCalls),
-				}
-				if err != nil {
-					toolEvent["error"] = err.Error()
-				} else if result != nil && !result.Success && result.Error != nil {
-					toolEvent["error"] = result.Error.Message
-				}
-				if result != nil {
-					toolEvent["execution_time_ms"] = result.ExecutionTimeMs
-				}
-				span.AddEvent("turn.tool_execution", toolEvent)
-			}
-
-			// Add instrumentation for HITL completion
-			if toolCall.Name == "contact_human" {
-				if err != nil {
-					span.AddEvent("hitl.request_failed", map[string]interface{}{
-						"error": err.Error(),
-					})
-				} else if result != nil {
-					// Extract response status from result
-					status := "unknown"
-					if result.Data != nil {
-						if dataMap, ok := result.Data.(map[string]interface{}); ok {
-							if s, ok := dataMap["status"].(string); ok {
-								status = s
-							}
-						}
-					}
-					span.AddEvent("hitl.request_completed", map[string]interface{}{
-						"status":            status,
-						"execution_time_ms": result.ExecutionTimeMs,
-					})
-					span.SetAttribute("hitl.status", status)
-				}
-			}
-
-			// Record tool execution results on span
-			{
-				success := err == nil && (result == nil || result.Success)
-
-				if err != nil {
-					toolSpan.RecordError(err)
-				} else if result != nil && !result.Success && result.Error != nil {
-					toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
-					toolSpan.SetAttribute("error.code", result.Error.Code)
-					toolSpan.SetAttribute("error.message", result.Error.Message)
-				}
-
-				toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
-				if result != nil {
-					toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
-				}
-				ctx.Tracer().EndSpan(toolSpan)
-			}
-
-			// Record execution
-			execution := ToolExecution{
-				ToolName:          toolCall.Name,
-				Input:             toolCall.Input,
-				Result:            result,
-				Error:             err,
-				AdmissionDecision: admissionDecisionOf(result),
-			}
-			allToolExecutions = append(allToolExecutions, execution)
-
-			// Cache result for dedup (only cache successful results or tool errors —
-			// not Go-level errors which may be transient).
-			if result != nil {
-				turnDedup[dedupKey] = result
-			}
-
-			// Emit tool-completed progress event
-			emitToolCompleted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall, result, err)
-
-			// Persist tool execution
-			if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
-				// Log but don't fail
-				toolSpan.RecordError(persistErr)
-			}
-
-			// === FEATURE INTEGRATION: Consecutive Failure Tracking ===
-			var escalationMsg string
-			if failureTracker, ok := session.FailureTracker.(*consecutiveFailureTracker); ok && failureTracker != nil && session.SegmentedMem != nil {
-				if err != nil {
-					// Track failure
-					errorType := extractErrorType(result)
-					if errorType == "" && result != nil && result.Error != nil && result.Error.Message != "" {
-						errorType = "execution_error"
-					} else if errorType == "" {
-						errorType = "unknown_error"
-					}
-
-					failureCount := failureTracker.record(toolCall.Name, toolCall.Input, errorType)
-					escalationMsg = failureTracker.getEscalationMessage(failureCount, 2)
-
-					if escalationMsg != "" {
-						span.AddEvent("failure.escalated", map[string]interface{}{
-							"tool":          toolCall.Name,
-							"failure_count": failureCount,
-						})
-					}
-				} else {
-					// Clear failures on success
-					failureTracker.clear(toolCall.Name, toolCall.Input)
-
-					span.AddEvent("failure.cleared", map[string]interface{}{
-						"tool": toolCall.Name,
-					})
-				}
-			}
-
-			// Format tool result with escalation if needed
-			formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
-			if escalationMsg != "" {
-				formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
-			}
-
-			// Add tool result to conversation
-			a.appendMessage(ctx, session, Message{
-				Role:       "tool",
-				Content:    formattedResult,
-				ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
-				ToolResult: result,
-				AgentID:    a.id, // Track which agent executed this tool
-				Timestamp:  time.Now(),
-			}, false)
-
-			// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
-			// — the skill body belongs under the user-instruction slot, not the
-			// tool-result data slot), BUFFER it. Sidecars from an entire tool
-			// batch are appended AFTER every tool_result in the batch, so
-			// tool_use↔tool_result adjacency is preserved (Anthropic pairing).
-			if result != nil && result.Metadata != nil {
-				if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
-					pendingSidecars = append(pendingSidecars, Message{
-						Role:      "user",
-						Content:   textBody,
-						AgentID:   a.id,
-						Timestamp: time.Now(),
-					})
-				}
-			}
-
-			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
-			// After each tool execution, check if we should extract graph memories.
-			// Skip when the tool IS graph_memory — explicit use is higher quality.
-			if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
-				a.graphToolExecutionsSinceExtraction++
-				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
-					a.graphExtractionWG.Add(1)
-					go func() {
-						defer a.graphExtractionWG.Done()
-						a.extractGraphMemoryAsync(ctx, session.ID)
-					}()
-					a.graphToolExecutionsSinceExtraction = 0
-				}
-			}
+			a.dispatchOneCall(ctx, session, toolCall, i, st)
 		}
 
 		// Drain buffered text_body sidecars from this batch AFTER every
 		// tool_result is in place. Order within the batch preserved so a
 		// multi-load turn (rare but possible) still stamps its bodies in
 		// call order.
-		for _, sidecar := range pendingSidecars {
+		for _, sidecar := range st.pendingSidecars {
 			// Sidecars never advance the turn and hold no special status beyond
 			// that (HLD §4.5).
 			a.appendMessage(ctx, session, sidecar, false)
@@ -2905,7 +2742,292 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
+	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions)
+}
 
+// batchState carries the loop-level state the per-call dispatch body reads
+// and writes: whole-loop budgets and records by pointer, per-batch dedup,
+// per-batch sidecar buffer, and the span/counters the body's events cite.
+type batchState struct {
+	span       *observability.Span
+	turnCount  int
+	batchLen   int
+	maxPerTurn int
+
+	toolExecutionCount *int
+	allToolExecutions  *[]ToolExecution
+	tools              *[]shuttle.Tool
+	recovery           *recoveryOrchestrator
+
+	turnToolCount   int
+	turnDedup       map[string]*shuttle.Result
+	pendingSidecars []Message
+}
+
+// dispatchOneCall runs one call of a tool batch through the full per-call
+// ceremony — caps, dedup, progress emits, spans, execution with
+// self-correction, recovery, persistence, failure tracking, the tool row,
+// and sidecar buffering. The body is the conversation loop's original batch
+// body, moved verbatim; ResumeChat's parked-batch completion calls the same
+// function so the two paths cannot drift.
+func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
+	span := st.span
+
+	// Per-turn cap: skip remaining calls with an error result
+	if st.turnToolCount >= st.maxPerTurn {
+		a.appendMessage(ctx, session, Message{
+			Role:      "tool",
+			Content:   fmt.Sprintf("turn_limit_exceeded — per-turn tool call limit (%d) reached. Synthesize a response from the results you have.", st.maxPerTurn),
+			ToolUseID: toolCall.ID,
+			ToolResult: &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "turn_limit_exceeded",
+					Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", st.maxPerTurn, i+1, st.batchLen),
+				},
+			},
+			AgentID:   a.id,
+			Timestamp: time.Now(),
+		}, false)
+		*st.toolExecutionCount++
+		return
+	}
+
+	// Deduplication: compute canonical key from tool name + sorted JSON input
+	dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
+	if cachedResult, ok := st.turnDedup[dedupKey]; ok {
+		a.appendMessage(ctx, session, Message{
+			Role:       "tool",
+			Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
+			ToolUseID:  toolCall.ID,
+			ToolResult: cachedResult,
+			AgentID:    a.id,
+			Timestamp:  time.Now(),
+		}, false)
+		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
+			ToolName: toolCall.Name,
+			Input:    toolCall.Input,
+			Result:   cachedResult,
+		})
+		*st.toolExecutionCount++
+		st.turnToolCount++
+		return
+	}
+
+	st.turnToolCount++
+	*st.toolExecutionCount++
+
+	// Check if this is a HITL request (contact_human tool)
+	if toolCall.Name == "contact_human" {
+		// Extract HITL request details from tool input
+		hitlInfo := extractHITLInfo(toolCall.Input)
+
+		// Add instrumentation for HITL request
+		span.AddEvent("hitl.request_detected", map[string]interface{}{
+			"question":     hitlInfo.Question,
+			"request_type": hitlInfo.RequestType,
+			"priority":     hitlInfo.Priority,
+			"timeout":      hitlInfo.Timeout.String(),
+		})
+		span.SetAttribute("hitl.active", true)
+		span.SetAttribute("hitl.question", hitlInfo.Question)
+		span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
+		span.SetAttribute("hitl.priority", hitlInfo.Priority)
+
+		// Emit HITL-specific progress event
+		emitProgressWithHITL(ctx, StageHumanInTheLoop, hitlStageProgress, "Waiting for human response", toolCall.Name, hitlInfo)
+	} else {
+		// Emit tool-started progress event
+		emitToolStarted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall)
+	}
+
+	// Execute tool with tracing — always created
+	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
+	toolSpan.SetAttribute("tool_name", toolCall.Name)
+
+	// Execute with self-correction (circuit breaker + SQL correction)
+	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+
+	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
+	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
+		_, syntheticResult := st.recovery.recoverToolCB(ctx, toolCall.Name, st.tools)
+		result = syntheticResult
+		err = nil
+	}
+
+	// Record tool execution on conversation_loop span
+	{
+		toolSuccess := err == nil && (result == nil || result.Success)
+		toolEvent := map[string]interface{}{
+			"turn":      st.turnCount,
+			"tool_name": toolCall.Name,
+			"success":   toolSuccess,
+			"index":     i + 1,
+			"total":     st.batchLen,
+		}
+		if err != nil {
+			toolEvent["error"] = err.Error()
+		} else if result != nil && !result.Success && result.Error != nil {
+			toolEvent["error"] = result.Error.Message
+		}
+		if result != nil {
+			toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+		}
+		span.AddEvent("turn.tool_execution", toolEvent)
+	}
+
+	// Add instrumentation for HITL completion
+	if toolCall.Name == "contact_human" {
+		if err != nil {
+			span.AddEvent("hitl.request_failed", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else if result != nil {
+			// Extract response status from result
+			status := "unknown"
+			if result.Data != nil {
+				if dataMap, ok := result.Data.(map[string]interface{}); ok {
+					if s, ok := dataMap["status"].(string); ok {
+						status = s
+					}
+				}
+			}
+			span.AddEvent("hitl.request_completed", map[string]interface{}{
+				"status":            status,
+				"execution_time_ms": result.ExecutionTimeMs,
+			})
+			span.SetAttribute("hitl.status", status)
+		}
+	}
+
+	// Record tool execution results on span
+	{
+		success := err == nil && (result == nil || result.Success)
+
+		if err != nil {
+			toolSpan.RecordError(err)
+		} else if result != nil && !result.Success && result.Error != nil {
+			toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
+			toolSpan.SetAttribute("error.code", result.Error.Code)
+			toolSpan.SetAttribute("error.message", result.Error.Message)
+		}
+
+		toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
+		if result != nil {
+			toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+		}
+		ctx.Tracer().EndSpan(toolSpan)
+	}
+
+	// Record execution
+	execution := ToolExecution{
+		ToolName:          toolCall.Name,
+		Input:             toolCall.Input,
+		Result:            result,
+		Error:             err,
+		AdmissionDecision: admissionDecisionOf(result),
+	}
+	*st.allToolExecutions = append(*st.allToolExecutions, execution)
+
+	// Cache result for dedup (only cache successful results or tool errors —
+	// not Go-level errors which may be transient).
+	if result != nil {
+		st.turnDedup[dedupKey] = result
+	}
+
+	// Emit tool-completed progress event
+	emitToolCompleted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall, result, err)
+
+	// Persist tool execution
+	if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
+		// Log but don't fail
+		toolSpan.RecordError(persistErr)
+	}
+
+	// === FEATURE INTEGRATION: Consecutive Failure Tracking ===
+	var escalationMsg string
+	if failureTracker, ok := session.FailureTracker.(*consecutiveFailureTracker); ok && failureTracker != nil && session.SegmentedMem != nil {
+		if err != nil {
+			// Track failure
+			errorType := extractErrorType(result)
+			if errorType == "" && result != nil && result.Error != nil && result.Error.Message != "" {
+				errorType = "execution_error"
+			} else if errorType == "" {
+				errorType = "unknown_error"
+			}
+
+			failureCount := failureTracker.record(toolCall.Name, toolCall.Input, errorType)
+			escalationMsg = failureTracker.getEscalationMessage(failureCount, 2)
+
+			if escalationMsg != "" {
+				span.AddEvent("failure.escalated", map[string]interface{}{
+					"tool":          toolCall.Name,
+					"failure_count": failureCount,
+				})
+			}
+		} else {
+			// Clear failures on success
+			failureTracker.clear(toolCall.Name, toolCall.Input)
+
+			span.AddEvent("failure.cleared", map[string]interface{}{
+				"tool": toolCall.Name,
+			})
+		}
+	}
+
+	// Format tool result with escalation if needed
+	formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
+	if escalationMsg != "" {
+		formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
+	}
+
+	// Add tool result to conversation
+	a.appendMessage(ctx, session, Message{
+		Role:       "tool",
+		Content:    formattedResult,
+		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
+		ToolResult: result,
+		AgentID:    a.id, // Track which agent executed this tool
+		Timestamp:  time.Now(),
+	}, false)
+
+	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
+	// — the skill body belongs under the user-instruction slot, not the
+	// tool-result data slot), BUFFER it. Sidecars from an entire tool
+	// batch are appended AFTER every tool_result in the batch, so
+	// tool_use↔tool_result adjacency is preserved (Anthropic pairing).
+	if result != nil && result.Metadata != nil {
+		if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
+			st.pendingSidecars = append(st.pendingSidecars, Message{
+				Role:      "user",
+				Content:   textBody,
+				AgentID:   a.id,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
+	// After each tool execution, check if we should extract graph memories.
+	// Skip when the tool IS graph_memory — explicit use is higher quality.
+	if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
+		a.graphToolExecutionsSinceExtraction++
+		if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
+			a.graphExtractionWG.Add(1)
+			go func() {
+				defer a.graphExtractionWG.Done()
+				a.extractGraphMemoryAsync(ctx, session.ID)
+			}()
+			a.graphToolExecutionsSinceExtraction = 0
+		}
+	}
+}
+
+// synthesizeFinalResponse makes the final tool-free LLM call after the
+// conversation loop exhausts its turn/execution budget, so the agent yields
+// meaningful output instead of a generic limit error. Moved verbatim from
+// the loop tail when the batch body was extracted into dispatchOneCall.
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3155,6 +3277,22 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
+// graphMemoryContextMarker opens the injected graph-memory block, and is how a
+// resumed turn tells "already injected" from "injected in a process that is
+// gone" — the block lives only in memory (Session.AddMessage is not persisted).
+const graphMemoryContextMarker = "[Graph Memory Context]"
+
+// hasGraphMemoryContext reports whether this session still carries an injected
+// graph-memory block.
+func hasGraphMemoryContext(session *types.Session) bool {
+	for _, m := range session.GetMessages() {
+		if strings.HasPrefix(m.Content, graphMemoryContextMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // injectGraphMemoryContext queries graph memory for the current topic and injects
 // relevant context into the conversation as a system message.
 func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
@@ -3309,7 +3447,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: "[Graph Memory Context]\n" + sb.String(),
+		Content: graphMemoryContextMarker + "\n" + sb.String(),
 	})
 	outcome = "injected"
 }

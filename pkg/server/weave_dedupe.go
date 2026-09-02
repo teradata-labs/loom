@@ -323,12 +323,15 @@ func slotOriginFromMetadata(ctx context.Context) loomv1.SlotOrigin {
 // bypassed entry point would run unscheduled — jumping every parked waiter —
 // while its 429s still lower the scope's shared calibrated ceiling through
 // the funnel's capacity observers.
-func installTurnSlotInfo(ctx context.Context, resumed bool) context.Context {
+func installTurnSlotInfo(ctx context.Context, resumed bool, sessionID, agentName string) context.Context {
 	var priorCalls int64
 	if resumed {
 		priorCalls = 1
 	}
-	return llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), priorCalls)
+	ctx = llmscheduler.WithSlotInfo(ctx, slotOriginFromMetadata(ctx), priorCalls)
+	// Attribution is observability only: a parked slot request that names its
+	// conversation is actionable, an anonymous one is a number.
+	return llmscheduler.WithIdentity(ctx, sessionID, agentName)
 }
 
 // doorParkLogThreshold separates the un-parked fast path (a mutex

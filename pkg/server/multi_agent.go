@@ -936,7 +936,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// client's own report — gRPC metadata "loom-slot-origin"; a resumed
 	// session classifies IN_FLIGHT from its first call). Installed on every
 	// turn-executing entry point, unary and streaming alike.
-	ctx = installTurnSlotInfo(ctx, sessionResumed)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, req.GetAgentId())
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.
@@ -1163,7 +1163,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// means a human at a terminal is waiting on this single turn. The stamp
 	// is per-request — edge-triggered, never a conversation-lifetime mark. A
 	// resumed session classifies IN_FLIGHT from its first call of the turn.
-	ctx = installTurnSlotInfo(ctx, sessionResumed)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, req.GetAgentId())
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.
@@ -1234,13 +1234,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	progressChan := make(chan agent.ProgressEvent, 10)
 
 	// Create progress callback that sends events to channel
-	progressCallback := func(event agent.ProgressEvent) {
-		select {
-		case progressChan <- event:
-		case <-stream.Context().Done():
-			// Context cancelled, stop sending
-		}
-	}
+	progressCallback := newProgressSender(progressChan, stream.Context().Done())
 
 	// Execute agent with progress callback
 	go func() {
