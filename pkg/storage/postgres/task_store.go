@@ -303,15 +303,16 @@ func (s *TaskStore) SetAcceptanceCriteria(ctx context.Context, taskID, criteria 
 			return fmt.Errorf("set acceptance criteria: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
-			// Disambiguate "locked" from "no such task".
+			// Disambiguate "locked" from "no such task". Only a proven missing
+			// row may report not-found: the previous shape treated ANY probe
+			// failure as absence, so an I/O error here read as "task not
+			// found" — an outage narrated as a settled fact, to the one caller
+			// (the agent's task_board tool) that repeats this message verbatim.
 			var existingID string
 			gerr := tx.QueryRow(ctx,
 				`SELECT id FROM tasks WHERE id = $1 AND deleted_at IS NULL`, taskID,
 			).Scan(&existingID)
-			if gerr != nil {
-				return fmt.Errorf("set acceptance criteria: task %s not found: %w", taskID, gerr)
-			}
-			return fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
+			return classifyCriteriaProbe(gerr, taskID)
 		}
 		row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, taskID)
 		result, err = pgScanTask(row)
@@ -321,6 +322,23 @@ func (s *TaskStore) SetAcceptanceCriteria(ctx context.Context, taskID, criteria 
 		return nil, err
 	}
 	return result, nil
+}
+
+// classifyCriteriaProbe maps the existence probe's outcome to the caller-facing
+// error, and is a named function so the split is unit-testable without a live
+// database. Only a PROVEN missing row (pgx.ErrNoRows) may say "not found"; any
+// other probe failure is a verification error, because the one real consumer —
+// the agent's task_board tool — repeats this message to the model verbatim, and
+// an outage narrated as an absent task made the agent re-plan around work that
+// existed.
+func classifyCriteriaProbe(gerr error, taskID string) error {
+	if errors.Is(gerr, pgx.ErrNoRows) {
+		return fmt.Errorf("set acceptance criteria: task %s not found", taskID)
+	}
+	if gerr != nil {
+		return fmt.Errorf("set acceptance criteria: verifying task %s: %w", taskID, gerr)
+	}
+	return fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
 }
 
 func (s *TaskStore) DeleteTask(ctx context.Context, id string) error {
