@@ -240,12 +240,44 @@ type MemoryConfigYAML struct {
 
 // TaskBoardConfigYAML represents task board configuration in YAML.
 type TaskBoardConfigYAML struct {
-	Enabled             *bool  `yaml:"enabled"`
-	AutoDecompose       bool   `yaml:"auto_decompose"`
-	MaxDepth            int    `yaml:"max_depth"`
-	DefaultBoardID      string `yaml:"default_board_id"`
-	DefaultStrategy     int    `yaml:"default_strategy"`
-	ContextBudgetTokens int    `yaml:"context_budget_tokens"`
+	Enabled             *bool                    `yaml:"enabled"`
+	AutoDecompose       bool                     `yaml:"auto_decompose"`
+	MaxDepth            int                      `yaml:"max_depth"`
+	DefaultBoardID      string                   `yaml:"default_board_id"`
+	DefaultStrategy     int                      `yaml:"default_strategy"`
+	ContextBudgetTokens int                      `yaml:"context_budget_tokens"`
+	ImplicitTasks       *ImplicitTasksConfigYAML `yaml:"implicit_tasks"`
+}
+
+// ImplicitTasksConfigYAML represents runtime task minting configuration in YAML.
+//
+// It maps onto TaskBoardConfig.implicit_tasks, the proto message the runtime
+// already resolves in NewAgent. Without this struct the whole message was
+// unreachable from an agent YAML file: the documented knobs existed in the
+// proto and in the resolver and had no way in, so the only expressible policy
+// was the default.
+//
+// Note that `enabled` on the parent gates the AGENT's task_board tool and
+// context block, while this gates whether the RUNTIME mints a task at all —
+// they are deliberately independent, so a board-less agent can still be
+// recorded for a human-facing timeline.
+type ImplicitTasksConfigYAML struct {
+	// Mode is "enabled"/"on", "disabled"/"off", or empty for the proto default
+	// (which is enabled — implicit recording is opt-out).
+	Mode string `yaml:"mode"`
+	// Triggers restricts minting to these events ("only these"). Empty leaves
+	// the built-in default set.
+	Triggers []string `yaml:"triggers"`
+	// ExcludedTriggers is subtracted from the effective set after Triggers
+	// ("everything except these").
+	ExcludedTriggers []string `yaml:"excluded_triggers"`
+	// MaxPerSession caps implicit tasks per session; 0 means the built-in
+	// default.
+	MaxPerSession int `yaml:"max_per_session"`
+	// AgentVisible surfaces implicit tasks in the agent's own task context
+	// block and ready front. Default false, and that default is load-bearing —
+	// see the field's comment in agent_config.proto.
+	AgentVisible bool `yaml:"agent_visible"`
 }
 
 // GraphMemoryConfigYAML represents graph memory configuration in YAML.
@@ -1039,6 +1071,76 @@ func parseTaskBoardConfig(yaml *TaskBoardConfigYAML) *loomv1.TaskBoardConfig {
 		DefaultBoardId:      yaml.DefaultBoardID,
 		DefaultStrategy:     loomv1.DecomposeStrategy(yaml.DefaultStrategy),
 		ContextBudgetTokens: contextBudget,
+		ImplicitTasks:       parseImplicitTasksConfig(yaml.ImplicitTasks),
+	}
+}
+
+// parseImplicitTasksConfig converts YAML implicit task config to proto.
+//
+// nil in, nil out: an absent block must resolve to the proto default rather
+// than to a zero-valued message, because ResolveImplicitPolicy distinguishes
+// them — a present message with an empty trigger list still means "the default
+// set", but the caller has to be able to say nothing at all.
+func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTaskConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	cfg := &loomv1.ImplicitTaskConfig{
+		AgentVisible: yaml.AgentVisible,
+	}
+	if v, err := safeInt32(yaml.MaxPerSession, "TaskBoard.ImplicitTasks.MaxPerSession"); err == nil && v > 0 {
+		cfg.MaxPerSession = v
+	}
+
+	// Mode and triggers are spelled by NAME rather than by enum number, the
+	// same choice memory_compression.workload_profile makes. An unrecognised
+	// spelling falls back to unset, which for mode means the proto default
+	// (enabled) and for a trigger means the name is dropped — and a trigger
+	// list that names nothing recognisable resolves to no triggers at all,
+	// which ResolveImplicitPolicy treats as disabled. Both directions are
+	// documented rather than silently different.
+	switch strings.ToLower(yaml.Mode) {
+	case "enabled", "on":
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_ENABLED
+	case "disabled", "off":
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED
+	default:
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_UNSPECIFIED
+	}
+
+	for _, name := range yaml.Triggers {
+		if tr := parseImplicitTaskTrigger(name); tr != loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			cfg.Triggers = append(cfg.Triggers, tr)
+		}
+	}
+	for _, name := range yaml.ExcludedTriggers {
+		if tr := parseImplicitTaskTrigger(name); tr != loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
+		}
+	}
+	return cfg
+}
+
+// parseImplicitTaskTrigger maps a YAML trigger name to its enum value. The
+// bare name and the full enum name both parse, so a config copied out of the
+// proto still loads. UNSPECIFIED means "not a trigger name".
+func parseImplicitTaskTrigger(name string) loomv1.ImplicitTaskTrigger {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	n = strings.TrimPrefix(n, "IMPLICIT_TASK_TRIGGER_")
+	switch n {
+	case "TOOL_CALL":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL
+	case "SKILL_ACTIVATION":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION
+	case "HUMAN_REQUEST":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST
+	case "SUBAGENT_SPAWN":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN
+	case "WORKFLOW_STEP":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP
+	default:
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED
 	}
 }
 

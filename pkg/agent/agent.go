@@ -301,16 +301,28 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// spawned through them, minted nothing.
 	//
 	// This wires the EMITTER, which is what registry-built agents lacked. It does
-	// not make SUBAGENT_SPAWN fire: maybeRecordImplicitTask still only passes
-	// TOOL_CALL, so that trigger remains unused and no subagent-spawn task is
-	// minted from it. Said plainly because the previous wording read as though
-	// this change had closed that too.
+	// not make SUBAGENT_SPAWN fire: the runtime passes TOOL_CALL (dispatchOneCall)
+	// and HUMAN_REQUEST (maybeParkBatch) and nothing else, so SUBAGENT_SPAWN,
+	// SKILL_ACTIVATION and WORKFLOW_STEP remain unused and no subagent-spawn task
+	// is minted from that trigger. Said plainly because the previous wording read
+	// as though this change had closed that too.
 	//
-	// ResolveImplicitPolicy(nil) is the opt-out default: recording on, capped
-	// per session, and the resulting tasks excluded from the agent's own task
-	// queries so they cost no context. A host that wants different triggers or
-	// wants recording off passes WithImplicitTaskEmitter explicitly, which
-	// preempts this.
+	// The policy is resolved from the agent's OWN task board config. Passing nil
+	// here — the hardcoded default — made every knob the proto advertises inert
+	// on this path: mode, triggers, excluded_triggers and max_per_session were
+	// all ignored, so `mode: DISABLED` still minted a task. A feature that
+	// writes durable rows by default needs an off switch that works. It also
+	// split one policy in two, because buildTaskContext resolves the real config
+	// for ExcludedCreatedVia — emitter and renderer could disagree about the
+	// same setting.
+	//
+	// Reading it here needs no reordering: options are applied at the top of
+	// NewAgent, so taskBoardConfig is already final, and GetImplicitTasks is the
+	// generated nil-safe getter. An agent that says nothing about tasks still
+	// resolves to the opt-out default — recording on, capped per session, and
+	// the resulting tasks excluded from the agent's own task queries so they
+	// cost no context. A host that wants something the proto cannot express
+	// passes WithImplicitTaskEmitter explicitly, which preempts this.
 	//
 	// Cost is bounded by construction: EnsureForTurn memoizes on
 	// (session, turn) behind an in-memory check that runs before any query, so
@@ -318,7 +330,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// at all on turns that don't.
 	if a.implicitTasks == nil && a.taskManager != nil {
 		a.implicitTasks = task.NewImplicitEmitter(
-			a.taskManager, task.ResolveImplicitPolicy(nil), a.tracer, zap.L())
+			a.taskManager,
+			task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks()),
+			a.tracer, zap.L())
 	}
 
 	// Install the sticky-while-open-tasks checker on the orchestrator
@@ -2004,7 +2018,27 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// until after the loop so the task spans the whole turn, and run even on
 	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
 	// would misreport it as still running.
-	defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err))
+	//
+	// A PARK is the exception, and the exception lives HERE, at the call site,
+	// rather than inside completeImplicitTask. A parked turn has not finished:
+	// it is waiting for a human, and the action they were asked to approve has
+	// not run. Closing it here reported the opposite twice over — the row went
+	// DONE, and implicitCloseReason reads TurnParkedError as a failure, so the
+	// board said "Turn ended with an error." about work that had not started.
+	// ResumeChat closes the turn when it actually terminates.
+	//
+	// Placing the exception at the call site is what preserves
+	// completeImplicitTask's own rule that it releases the per-turn memo FIRST
+	// and unconditionally. That rule is about its own early returns, which ask
+	// whether there is a task to CLOSE and never whether the turn ended; a park
+	// is the latter question, so the honest answer is not to call the function
+	// at all. Withholding the memo is required in its own right: the memo is
+	// what the resume rebinds through, so a turn that keeps running keeps its
+	// entry until the turn that finishes releases it.
+	var parkedHere *TurnParkedError
+	if !errors.As(err, &parkedHere) {
+		defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err))
+	}
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
