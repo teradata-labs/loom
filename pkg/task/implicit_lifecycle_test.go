@@ -41,6 +41,13 @@ type lifecycleStore struct {
 	nextID int
 }
 
+// taskCount reports how many distinct tasks the store holds, under its lock.
+func (s *lifecycleStore) taskCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byKey)
+}
+
 func newLifecycleStore() *lifecycleStore {
 	return &lifecycleStore{
 		byKey:  map[string]*Task{},
@@ -368,5 +375,72 @@ func TestImplicitEmitter_ReclamationIsRaceFree(t *testing.T) {
 	if minted, perSession, boards := e.sizes(); minted != 0 || perSession != 0 || boards != 0 {
 		t.Errorf("emitter must be empty after every session is forgotten: minted=%d perSession=%d boards=%d",
 			minted, perSession, boards)
+	}
+}
+
+// mintAt runs one turn with an explicit session epoch and returns the task it
+// resolved to — minted fresh or rebound through the durable key.
+func mintAt(t *testing.T, e *ImplicitEmitter, sid string, turn int, epoch int64, msg string) *Task {
+	t.Helper()
+	_, created, err := e.EnsureForTurn(context.Background(), TurnRequest{
+		SessionID:    sid,
+		AgentID:      "agent-1",
+		BoardID:      sid,
+		TurnIndex:    turn,
+		SessionEpoch: epoch,
+		Trigger:      trToolCall,
+		UserMessage:  msg,
+	})
+	if err != nil {
+		t.Fatalf("EnsureForTurn(%s, turn %d, epoch %d): %v", sid, turn, epoch, err)
+	}
+	if created == nil {
+		t.Fatalf("EnsureForTurn(%s, turn %d, epoch %d) resolved no task; the rig must resolve one on every turn", sid, turn, epoch)
+	}
+	return created
+}
+
+// TestImplicitEmitter_RecreatedSessionDoesNotInheritThePriorTask reproduces the
+// review finding: session ids come from outside and may be reused, and the
+// durable idempotency key was only (session, turn) — so a session deleted and
+// recreated under the same id started again at turn 0, matched the OLD key, and
+// CreateTaskIdempotent handed the new conversation its predecessor's terminal
+// task. New messages then attached to a task marked DONE before they existed,
+// titled with the previous conversation's opening message.
+//
+// SessionEpoch is the fix: the durable key now carries the session's creation
+// time, so a recreated id is a new incarnation with fresh keys — while the SAME
+// incarnation restored after a process restart keeps its keys and rebinds,
+// which is what a resume-after-restart requires. Both directions are asserted,
+// because either alone can be satisfied by a broken implementation: never
+// rebinding passes the first, always rebinding passes the second.
+func TestImplicitEmitter_RecreatedSessionDoesNotInheritThePriorTask(t *testing.T) {
+	e, store := newLifecycleEmitter(t)
+
+	// First incarnation: mint at turn 0, and the conversation ends.
+	first := mintAt(t, e, "sess-reuse", 0, 1_000, "first conversation")
+	e.CompleteForTurn(context.Background(), first.ID, "done")
+	e.ForgetSession("sess-reuse")
+
+	// Same id recreated: a NEW conversation, new CreatedAt, back at turn 0.
+	second := mintAt(t, e, "sess-reuse", 0, 2_000, "second conversation")
+	if second.ID == first.ID {
+		t.Fatalf("a recreated session id rebound to the prior incarnation's terminal task %s (title %q)", first.ID, first.Title)
+	}
+	if second.Title != "second conversation" {
+		t.Errorf("new task title = %q; a fresh incarnation is named after the NEW conversation's opening message", second.Title)
+	}
+	if n := store.taskCount(); n < 2 {
+		t.Errorf("store holds %d task(s), want 2: both conversations must exist as distinct tasks", n)
+	}
+
+	// The other direction: the SAME incarnation after a process restart.
+	// ForgetSession stands in for the restart (memory gone, durable rows kept):
+	// the restored session carries the same CreatedAt, so the same key, so the
+	// turn rebinds to ITS OWN task rather than minting a duplicate.
+	e.ForgetSession("sess-reuse")
+	rebound := mintAt(t, e, "sess-reuse", 0, 2_000, "second conversation")
+	if rebound.ID != second.ID {
+		t.Errorf("the same incarnation restored after a restart minted %s, want a rebind to its own task %s", rebound.ID, second.ID)
 	}
 }

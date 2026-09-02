@@ -81,13 +81,22 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 		boardID = sess.ID
 	}
 
+	// SessionEpoch carries the session incarnation into the idempotency key,
+	// so a recreated session id cannot rebind new work to a prior
+	// conversation's terminal task. CreatedAt is durable and restored, which
+	// is what lets a resume after a process restart still find its own turn.
+	epoch := int64(0)
+	if !sess.CreatedAt.IsZero() {
+		epoch = sess.CreatedAt.Unix()
+	}
 	_, created, err := a.implicitTasks.EnsureForTurn(ctx, task.TurnRequest{
-		SessionID:   sess.ID,
-		AgentID:     a.id,
-		BoardID:     boardID,
-		TurnIndex:   int(tc.TurnIndex()),
-		Trigger:     trigger,
-		UserMessage: tc.UserMessage(),
+		SessionID:    sess.ID,
+		AgentID:      a.id,
+		BoardID:      boardID,
+		TurnIndex:    int(tc.TurnIndex()),
+		SessionEpoch: epoch,
+		Trigger:      trigger,
+		UserMessage:  tc.UserMessage(),
 	})
 	if err != nil {
 		// Never fatal: a turn must not fail because its bookkeeping row could

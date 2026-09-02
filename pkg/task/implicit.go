@@ -17,6 +17,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -262,6 +263,24 @@ type TurnRequest struct {
 	// TurnIndex distinguishes turns within a session. It is part of the
 	// idempotency key, so it must be stable for the whole turn.
 	TurnIndex int
+	// SessionEpoch distinguishes INCARNATIONS of a session id — the session's
+	// durable creation time, in Unix seconds.
+	//
+	// It exists because the durable idempotency key must not outlive the
+	// conversation it described. Session ids come from outside, and a caller
+	// that deletes a session may reuse its id: without an incarnation
+	// component the new conversation's turn 0 resolves to the OLD
+	// conversation's turn-0 key, and CreateTaskIdempotent hands back a
+	// terminal task titled with the previous conversation's opening message.
+	// New work then attaches to a task marked DONE before it began.
+	//
+	// The session's creation time is the incarnation: deletion + recreation
+	// yields a fresh CreatedAt and therefore fresh keys, while a process
+	// restart restores the SAME CreatedAt and therefore rebinds — which is
+	// exactly the split a resume-after-restart needs. Zero (the caller has no
+	// session timestamp) is a valid stable epoch, so older callers and tests
+	// that never set it keep single-incarnation behaviour.
+	SessionEpoch int64
 	// Trigger is the event asking for a task.
 	Trigger loomv1.ImplicitTaskTrigger
 	// UserMessage seeds the title, so a human scanning the board sees what the
@@ -307,8 +326,12 @@ func sessionKeyPrefix(sessionID string) string {
 }
 
 // turnKey identifies a turn for memoization and idempotency.
+//
+// The epoch sits AFTER the session prefix on purpose: ForgetSession sweeps by
+// sessionKeyPrefix, and a session's retirement must reclaim every incarnation's
+// memos, not only the current one's.
 func turnKey(r TurnRequest) string {
-	return fmt.Sprintf("%sturn:%d", sessionKeyPrefix(r.SessionID), r.TurnIndex)
+	return fmt.Sprintf("%sepoch:%d|turn:%d", sessionKeyPrefix(r.SessionID), r.SessionEpoch, r.TurnIndex)
 }
 
 // EnsureForTurn returns the implicit task for this turn, minting it on the
@@ -342,6 +365,16 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.mu.Unlock()
 		return e.bind(ctx, r, id), nil, nil
 	}
+	// MaxPerSession is an IN-PROCESS noise guard, decided deliberately rather
+	// than left as an accident: it bounds how much one conversation can grow a
+	// board between restarts, and it is NOT a durable quota. A process restart
+	// grants a fresh budget; deleting a session resets its counter
+	// (ForgetSession — and the reclaim tests assert that on purpose); and a
+	// recreated session id is a new incarnation (SessionEpoch), so a fresh
+	// budget there is correct, not a leak. A durable quota would need a
+	// per-incarnation count against the store and a decision about what
+	// deletion means for it — a different feature, not a stricter version of
+	// this one.
 	if e.policy.MaxPerSession > 0 && e.perSession[r.SessionID] >= e.policy.MaxPerSession {
 		e.mu.Unlock()
 		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "session_cap"})
@@ -503,8 +536,20 @@ func (e *ImplicitEmitter) EndTurn(sessionID string, turnIndex int) {
 	if e == nil {
 		return
 	}
+	// Epoch-agnostic on purpose: the caller knows which session and turn ended,
+	// not which incarnation minted the memo, and a turn index only ever belongs
+	// to one incarnation of a live session — any same-turn entry from a prior
+	// incarnation is garbage this delete is welcome to take with it. Matching by
+	// prefix and suffix instead of reconstructing the exact key is what lets the
+	// epoch stay out of every EndTurn caller's signature.
+	prefix := sessionKeyPrefix(sessionID)
+	suffix := fmt.Sprintf("|turn:%d", turnIndex)
 	e.mu.Lock()
-	delete(e.minted, turnKey(TurnRequest{SessionID: sessionID, TurnIndex: turnIndex}))
+	for k := range e.minted {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
+			delete(e.minted, k)
+		}
+	}
 	e.mu.Unlock()
 }
 
