@@ -2530,7 +2530,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			if llmResp.StopReason == "max_tokens" {
-				hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls)
+				// tools is this provider call's advertised set, so a tool that
+				// takes no arguments is not mistaken for a truncated call.
+				hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls, tools)
 
 				switch {
 				case threshold < 0:
@@ -2578,8 +2580,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					})
 
 				default:
-					// max_tokens with non-truncated tool calls: agent may still make progress
-					// on the next turn. Don't count, don't clear — let it continue.
+					// max_tokens with non-truncated tool calls. These calls are
+					// complete and executable, so the turn IS forward progress
+					// and the run of consecutive truncated turns ends here —
+					// the same reasoning the zero-tool-call branch above
+					// applies to a complete text response.
+					//
+					// This previously neither counted nor cleared, which made
+					// outputTokenExhaustions a lifetime tally instead of the
+					// consecutive count the threshold is documented against: a
+					// session under sustained output pressure never got a
+					// clearing turn, so truncated turns scattered among
+					// productive ones still summed to the threshold and failed
+					// the whole message. That is the same defect class as the
+					// verbose-text-response regression this switch was
+					// introduced to fix (see
+					// TestOutputTokenCB_SessionAccumulation_Regression), in the
+					// one branch that fix did not cover.
+					failureTracker.clearOutputTokenExhaustion()
+
 					span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
 						"stop_reason":        llmResp.StopReason,
 						"tool_call_count":    len(llmResp.ToolCalls),

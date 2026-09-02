@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // failureSignature uniquely identifies a tool call failure for tracking consecutive failures.
@@ -244,8 +246,23 @@ func (t *consecutiveFailureTracker) checkOutputTokenCircuitBreaker(threshold int
 // detectEmptyToolCall checks if any tool call has an empty Input object.
 // This is a strong indicator that the LLM output was truncated mid-generation.
 // Returns true if empty tool call detected.
-func detectEmptyToolCall(toolCalls []ToolCall) bool {
+//
+// tools is the advertised tool set for the current provider call, used to tell a
+// genuinely argument-less call apart from a truncated one: a tool that requires
+// no arguments is EXPECTED to be invoked with an empty input, so emptiness says
+// nothing about truncation for it. Pass nil to skip that check and apply the
+// emptiness heuristics to every call (the historical behavior).
+func detectEmptyToolCall(toolCalls []ToolCall, tools []shuttle.Tool) bool {
 	for _, tc := range toolCalls {
+		// A no-argument tool call is complete as it stands. Without this, every
+		// invocation of a tool like list_skills or a bare status/list call read
+		// as truncated, and on a turn that also hit max_tokens it counted
+		// toward the output-token circuit breaker — 8 of them failed the whole
+		// message even though nothing was ever truncated.
+		if !toolRequiresArguments(tc.Name, tools) {
+			continue
+		}
+
 		// Check if Input is empty or only has zero values
 		if len(tc.Input) == 0 {
 			return true
@@ -266,6 +283,28 @@ func detectEmptyToolCall(toolCalls []ToolCall) bool {
 	}
 
 	return false
+}
+
+// toolRequiresArguments reports whether the named tool's advertised schema
+// declares at least one required parameter.
+//
+// It answers true for a tool it cannot describe — an unknown name, or one with
+// no schema — so the emptiness heuristics in detectEmptyToolCall still apply
+// unchanged there. That is the conservative direction: a call we cannot
+// characterize keeps the pre-existing truncation detection rather than being
+// waved through.
+func toolRequiresArguments(name string, tools []shuttle.Tool) bool {
+	for _, t := range tools {
+		if t == nil || t.Name() != name {
+			continue
+		}
+		schema := t.InputSchema()
+		if schema == nil {
+			return true
+		}
+		return len(schema.Required) > 0
+	}
+	return true
 }
 
 // TokenBudgetConfig holds configuration for token budget management.
