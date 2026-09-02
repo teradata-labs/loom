@@ -281,10 +281,22 @@ func (t *TaskBoardTool) executeDecompose(ctx context.Context, input map[string]i
 	})
 }
 
+// excludedVia resolves the created_via values this agent's reads must omit —
+// the same resolution buildTaskContext applies to the context block. The
+// task_board tool is the agent's OTHER window onto the board, and it must obey
+// the same visibility contract: with agent_visible=false (the default), a
+// `task_board list` call could otherwise mint an implicit task for its own turn
+// and immediately hand that bookkeeping row back to the model, which is
+// precisely the self-reference the exclusion exists to stop.
+func (t *TaskBoardTool) excludedVia() []string {
+	return task.ResolveImplicitPolicy(t.config.GetImplicitTasks()).ExcludedCreatedVia()
+}
+
 func (t *TaskBoardTool) executeReady(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
 	boardID := t.resolveBoard(input)
 	tasks, err := t.manager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
-		MaxResults: 10,
+		MaxResults:        10,
+		ExcludeCreatedVia: t.excludedVia(),
 	})
 	if err != nil {
 		return errorResult("STORE_ERROR", err.Error()), nil
@@ -670,9 +682,10 @@ func (t *TaskBoardTool) executeCreate(ctx context.Context, input map[string]inte
 func (t *TaskBoardTool) executeList(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
 	boardID := t.resolveBoard(input)
 	opts := task.ListTasksOpts{
-		BoardID: boardID,
-		Query:   getStr(input, "query"),
-		Limit:   20,
+		BoardID:           boardID,
+		Query:             getStr(input, "query"),
+		Limit:             20,
+		ExcludeCreatedVia: t.excludedVia(),
 	}
 
 	if s := getStr(input, "status"); s != "" {
@@ -790,11 +803,27 @@ func (t *TaskBoardTool) executeBoard(ctx context.Context, input map[string]inter
 		return errorResult("NOT_FOUND", err.Error()), nil
 	}
 
-	// Get stats by counting tasks per status.
-	allTasks, total, _ := t.manager.ListTasks(ctx, task.ListTasksOpts{BoardID: boardID, Limit: 1000})
-	stats := map[string]int{"total": total}
-	for _, tk := range allTasks {
-		stats[task.StatusName(tk.Status)]++
+	// Stats through the aggregate, with the same visibility exclusion as every
+	// other read on this tool. The previous shape — list up to 1000 full rows
+	// and count them here — had both of the problems buildTaskContext's stats
+	// already fixed: it ignored the created_via exclusion (an agent_visible=false
+	// board still reported its bookkeeping rows in the totals), and it truncated
+	// silently past 1000 tasks.
+	counts, err := t.manager.CountByStatus(ctx, task.CountByStatusOpts{
+		BoardID:           boardID,
+		ExcludeCreatedVia: t.excludedVia(),
+	})
+	if err != nil {
+		return errorResult("STORE_ERROR", err.Error()), nil
+	}
+	stats := map[string]int{
+		"total": counts.Total,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_OPEN):        counts.Open,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS): counts.InProgress,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_BLOCKED):     counts.Blocked,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DONE):        counts.Done,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DEFERRED):    counts.Deferred,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_CANCELLED):   counts.Cancelled,
 	}
 
 	return jsonResult(map[string]interface{}{
