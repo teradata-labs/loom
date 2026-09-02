@@ -311,8 +311,21 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		prompt = injectRevisionFeedback(prompt, state.revisionFeedback, state.revisionSource)
 		state.revisionFeedback = ""
 
-		// Execute stage with agent span
-		result, model, err := e.executeStageWithSpan(ctx, workflowID, stage, prompt, stageNum)
+		// Execute stage with agent span. Capability leveling is opt-in per
+		// stage: with no leveling policy (or one that is disabled) this is the
+		// unchanged path, and the stage's OutputPolicy stays unenforced exactly
+		// as it was before leveling existed.
+		var (
+			result         *loomv1.AgentResult
+			model          string
+			err            error
+			levelingReport *LevelingReport
+		)
+		if stage.GetLevelingPolicy().GetEnabled() {
+			result, model, levelingReport, err = e.executeStageWithLeveling(ctx, workflowID, stage, prompt, stageNum)
+		} else {
+			result, model, err = e.executeStageWithSpan(ctx, workflowID, stage, prompt, stageNum)
+		}
 
 		e.orchestrator.tracer.EndSpan(stageSpan)
 
@@ -344,53 +357,60 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 			PartialResults: allResults,
 		})
 
-		// Validate output — schema first (cheap), then LLM validation (expensive)
-		var validationFailure string
+		if levelingReport != nil {
+			// Leveling already validated (and, where configured, retried and
+			// escalated) against this stage's contract. Running the legacy block
+			// too would validate the same output a second time.
+			validationWarnings = append(validationWarnings, levelingStageWarnings(stage, stageNum, levelingReport)...)
+		} else {
+			// Validate output — schema first (cheap), then LLM validation (expensive)
+			var validationFailure string
 
-		if stage.OutputSchema != "" {
-			extractedJSON, schemaErr := e.validateStageOutputSchema(result.Output, stage.OutputSchema)
-			if schemaErr != nil {
-				validationFailure = fmt.Sprintf("JSON Schema validation failed: %s", schemaErr.Error())
-			} else if extractedJSON != result.Output {
-				// Normalize output: replace prose+JSON with just the extracted JSON
-				// so downstream stages receive clean structured data.
-				result.Output = extractedJSON
-				allResults[len(allResults)-1].Output = extractedJSON
-				stageOutputs[len(stageOutputs)-1] = extractedJSON
+			if stage.OutputSchema != "" {
+				extractedJSON, schemaErr := e.validateStageOutputSchema(result.Output, stage.OutputSchema)
+				if schemaErr != nil {
+					validationFailure = fmt.Sprintf("JSON Schema validation failed: %s", schemaErr.Error())
+				} else if extractedJSON != result.Output {
+					// Normalize output: replace prose+JSON with just the extracted JSON
+					// so downstream stages receive clean structured data.
+					result.Output = extractedJSON
+					allResults[len(allResults)-1].Output = extractedJSON
+					stageOutputs[len(stageOutputs)-1] = extractedJSON
+				}
 			}
-		}
 
-		if validationFailure == "" && stage.ValidationPrompt != "" {
-			valid, err := e.validateStageOutput(ctx, workflowID, stage, result.Output, stageNum)
-			if err != nil {
-				e.orchestrator.logger.Warn("Stage validation error",
-					zap.Int("stage", stageNum),
-					zap.Error(err))
-			} else if !valid {
-				validationFailure = fmt.Sprintf("LLM validation failed against criteria: %s", stage.ValidationPrompt)
+			if validationFailure == "" && stage.ValidationPrompt != "" {
+				valid, valErr := e.validateStageOutput(ctx, workflowID, stage, result.Output, stageNum)
+				if valErr != nil {
+					e.orchestrator.logger.Warn("Stage validation error",
+						zap.Int("stage", stageNum),
+						zap.Error(valErr))
+				} else if !valid {
+					validationFailure = fmt.Sprintf("LLM validation failed against criteria: %s", stage.ValidationPrompt)
+				}
 			}
-		}
 
-		if validationFailure != "" {
-			if stage.RetryPolicy != nil && stage.RetryPolicy.MaxRetries > 0 {
-				// Pass prior stage outputs (excluding current failed output) to avoid
-				// leaking the failed output into {{history}} in the retry prompt.
-				priorOutputs := stageOutputs[:len(stageOutputs)-1]
-				retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
-				if retryResult != nil {
-					result = retryResult
-					allResults[len(allResults)-1] = result
-					stageOutputs[len(stageOutputs)-1] = result.Output
-					if retryModel != "" {
-						modelsUsed[stage.AgentId] = retryModel
+			if validationFailure != "" {
+				if stage.RetryPolicy != nil && stage.RetryPolicy.MaxRetries > 0 {
+					// Pass prior stage outputs (excluding current failed output) to avoid
+					// leaking the failed output into {{history}} in the retry prompt.
+					priorOutputs := stageOutputs[:len(stageOutputs)-1]
+					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
+					if retryResult != nil {
+						result = retryResult
+						allResults[len(allResults)-1] = result
+						stageOutputs[len(stageOutputs)-1] = result.Output
+						if retryModel != "" {
+							modelsUsed[stage.AgentId] = retryModel
+						}
+					} else {
+						// Graceful degradation: retries exhausted, continue with unvalidated output
+						validationWarnings = append(validationWarnings,
+							fmt.Sprintf("stage %d (%s): %s", stageNum, stage.AgentId, validationFailure))
 					}
 				} else {
-					// Graceful degradation: retries exhausted, continue with unvalidated output
-					validationWarnings = append(validationWarnings,
-						fmt.Sprintf("stage %d (%s): %s", stageNum, stage.AgentId, validationFailure))
+					return nil, fmt.Errorf("stage %d output validation failed: %s", stageNum, validationFailure)
 				}
-			} else {
-				return nil, fmt.Errorf("stage %d output validation failed: %s", stageNum, validationFailure)
 			}
 		}
 
@@ -633,22 +653,42 @@ func (e *PipelineExecutor) buildHistoryString(outputs []string) string {
 	return builder.String()
 }
 
-// executeStageWithSpan runs a single pipeline stage with comprehensive observability.
+// executeStageWithSpan runs a single pipeline stage with agent-level tracing.
 func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID string, stage *loomv1.PipelineStage, prompt string, stageNum int) (*loomv1.AgentResult, string, error) {
-	startTime := time.Now()
-
 	// Get agent from orchestrator
 	ag, err := e.orchestrator.GetAgent(ctx, stage.AgentId)
 	if err != nil {
 		return nil, "", err
 	}
 
+	// Generate unique session ID for this pipeline stage
+	sessionID := e.stageSessionID(workflowID, stage, stageNum)
+
+	return e.runStageAgent(ctx, ag, stage, sessionID, prompt, stageNum)
+}
+
+// stageSessionID is the session ID a stage's first (or only) chat runs under.
+func (e *PipelineExecutor) stageSessionID(workflowID string, stage *loomv1.PipelineStage, stageNum int) string {
+	return fmt.Sprintf("%s-stage%d-%s", workflowID, stageNum, stage.AgentId)
+}
+
+// runStageAgent runs one stage chat under an agent span and builds its
+// AgentResult. sessionID is a parameter rather than derived here so the output
+// validator (and, through it, capability leveling) can drive retries in a fresh
+// or continued session while every attempt keeps the same tracing and metadata.
+func (e *PipelineExecutor) runStageAgent(
+	ctx context.Context,
+	ag *agent.Agent,
+	stage *loomv1.PipelineStage,
+	sessionID string,
+	prompt string,
+	stageNum int,
+) (*loomv1.AgentResult, string, error) {
+	startTime := time.Now()
+
 	// Create trace span for agent execution
 	ctx, agentSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("pipeline.agent.%s", stage.AgentId))
 	defer e.orchestrator.tracer.EndSpan(agentSpan)
-
-	// Generate unique session ID for this pipeline stage
-	sessionID := fmt.Sprintf("%s-stage%d-%s", workflowID, stageNum, stage.AgentId)
 
 	if agentSpan != nil {
 		agentSpan.SetAttribute("agent.id", stage.AgentId)
@@ -660,7 +700,10 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 	// Execute agent conversation. If a progress callback exists in the
 	// context, use ChatWithProgress so tool calls and thinking stream
 	// through to the caller (e.g., workflow UI).
-	var response *agent.Response
+	var (
+		response *agent.Response
+		err      error
+	)
 	if progressCb := agent.ProgressCallbackFromContext(ctx); progressCb != nil {
 		response, err = ag.ChatWithProgress(ctx, sessionID, prompt, progressCb)
 	} else {
@@ -712,6 +755,94 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 	}
 
 	return result, model, nil
+}
+
+// executeStageWithLeveling runs a stage through the capability-leveling
+// executor. It is reached only when stage.leveling_policy.enabled is true, so
+// the stage's OutputPolicy is enforced here (and only here) because leveling
+// was explicitly asked for.
+//
+// The returned report is non-nil on success and describes what leveling did;
+// the caller turns it into validation warnings. The base session ID handed to
+// the executor is the stage's own session ID, so the first attempt runs in
+// exactly the session a non-leveled stage would have used.
+func (e *PipelineExecutor) executeStageWithLeveling(
+	ctx context.Context,
+	workflowID string,
+	stage *loomv1.PipelineStage,
+	prompt string,
+	stageNum int,
+) (*loomv1.AgentResult, string, *LevelingReport, error) {
+	policy, err := LevelingPolicyFromProto(stage.GetLevelingPolicy())
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
+	}
+	outputPolicy := effectiveLevelingOutputPolicy(stage)
+	if err := validateLevelingOutputPolicy(outputPolicy); err != nil {
+		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
+	}
+	if stage.ValidationPrompt != "" {
+		return nil, "", nil, fmt.Errorf(
+			"stage %d (%s): leveling_policy cannot be combined with the legacy validation_prompt — leveling has no semantic-prompt signal, so the criteria would be silently dropped; move the criteria into output_policy.output_schema or disable leveling on this stage",
+			stageNum, stage.AgentId)
+	}
+
+	ag, err := e.orchestrator.GetAgent(ctx, stage.AgentId)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	sessionID := e.stageSessionID(workflowID, stage, stageNum)
+	primary := LevelingRung{
+		Provider: ag.GetLLMProviderName(),
+		Model:    ag.GetLLMModel(),
+		Execute: func(ctx context.Context, attemptSessionID, attemptPrompt string) (*loomv1.AgentResult, error) {
+			result, _, execErr := e.runStageAgent(ctx, ag, stage, attemptSessionID, attemptPrompt, stageNum)
+			return result, execErr
+		},
+		Feedback: func(ctx context.Context, attemptSessionID, feedback string) (*loomv1.AgentResult, error) {
+			result, _, execErr := e.runStageAgent(ctx, ag, stage, attemptSessionID, feedback, stageNum)
+			return result, execErr
+		},
+	}
+
+	ladder, err := resolveLevelingLadder(ag, stage.AgentId, primary, stage.GetLevelingPolicy().GetLadder())
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
+	}
+
+	leveler := NewLevelingExecutor(nil, policy, e.orchestrator.tracer, e.orchestrator.logger)
+	result, report, err := leveler.Execute(ctx, outputPolicy, ladder, prompt, sessionID)
+	if err != nil {
+		return nil, "", report, err
+	}
+	backfillLevelingResultMetadata(result, map[string]string{
+		"stage":      fmt.Sprintf("%d", stageNum),
+		"agent_name": ag.GetName(),
+	})
+	adoptLevelingCost(result, report)
+	return result, levelingWinningModel(result, ag.GetLLMModel()), report, nil
+}
+
+// levelingStageWarnings turns a leveling report into the stage-prefixed
+// validation warnings the pipeline result carries. A report with Passed=false
+// is graceful degradation, not an error: the executor already exhausted the
+// rungs or the cost ceiling and returned the best output it obtained.
+func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *LevelingReport) []string {
+	warnings := make([]string, 0, len(report.Warnings)+1)
+	for _, w := range report.Warnings {
+		warnings = append(warnings, fmt.Sprintf("stage %d (%s): %s", stageNum, stage.AgentId, w))
+	}
+	if !report.Passed {
+		cause := "leveling exhausted its rungs"
+		if report.ShortCircuited {
+			cause = "leveling short-circuited on a strong primary and did not escalate"
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"stage %d (%s): continuing with unvalidated output — %s (tier=%s, escalations=%d, budget_exhausted=%t)",
+			stageNum, stage.AgentId, cause, report.Tier.String(), report.Escalations, report.BudgetExhausted))
+	}
+	return warnings
 }
 
 // validateStageOutput validates a stage's output using the validation prompt.

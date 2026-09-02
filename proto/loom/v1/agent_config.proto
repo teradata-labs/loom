@@ -146,6 +146,19 @@ message LLMConfig {
   // Client-side rate limiting configuration.
   // When nil, rate limiting is enabled with provider-appropriate defaults.
   LLMRateLimitConfig rate_limit = 10;
+
+  // Sampling seed for reproducible generations.
+  // Explicitly optional so that "not set" (sampling stays random, provider
+  // default) is distinguishable from an explicit seed of 0, which some
+  // providers accept as a real seed value.
+  //
+  // Honored by: ollama, and only on the agent-registry construction path
+  // (pkg/agent/registry.go, which passes it into ollama.Config). Providers
+  // other than ollama ignore it. The looms serve path builds clients from
+  // factory.FactoryConfig, which does not carry a seed field, so a seed set in
+  // agent YAML has no effect there — wiring it through the factory is an open
+  // follow-up, not a shipped behavior.
+  optional int64 seed = 11;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.

@@ -3986,6 +3986,39 @@ func (a *Agent) GetLLMForRole(role loomv1.LLMRole) LLMProvider {
 	return a.llm
 }
 
+// GetLLMForRoleStrict returns the LLM explicitly configured for a role and
+// reports whether one exists. Unlike GetLLMForRole it does not fall back to the
+// main agent LLM, so a caller can tell "this role has its own model" from "this
+// role would be served by the agent's own model".
+//
+// It exists for capability-leveling ladder resolution: a ladder rung naming a
+// role is asking for a different model than the primary, and silently resolving
+// it to the primary's own LLM would build a ladder whose rungs are all the same
+// model — escalation that spends a call and cannot improve anything. Callers
+// wanting the fallback should keep using GetLLMForRole.
+//
+// AGENT and UNSPECIFIED name the agent's own LLM rather than a role LLM, so
+// they resolve to the main LLM when one is set.
+func (a *Agent) GetLLMForRoleStrict(role loomv1.LLMRole) (LLMProvider, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	var llm LLMProvider
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		llm = a.judgeLLM
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		llm = a.orchestratorLLM
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		llm = a.classifierLLM
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		llm = a.compressorLLM
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		llm = a.llm
+	}
+	return llm, llm != nil
+}
+
 // SetLLMProviderForRole sets the LLM provider for a specific role.
 // For COMPRESSOR role, also updates memory's LLM provider.
 // For AGENT/UNSPECIFIED role, delegates to SetLLMProvider.
