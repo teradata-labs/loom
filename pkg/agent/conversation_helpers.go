@@ -243,22 +243,6 @@ func (t *consecutiveFailureTracker) checkOutputTokenCircuitBreaker(threshold int
 	return fmt.Errorf("%s", msg)
 }
 
-// toolRequiresArguments reports whether the named tool's advertised schema
-// demands any property, at the root or through a composite branch.
-//
-// It answers true for a tool it cannot describe — an unknown name, or one with
-// no schema — so the emptiness heuristics in detectEmptyToolCall still apply
-// unchanged there. That is the conservative direction: a call we cannot
-// characterize keeps the pre-existing truncation detection rather than being
-// waved through.
-func toolRequiresArguments(name string, tools []shuttle.Tool) bool {
-	schema, ok := advertisedSchema(name, tools)
-	if !ok || schema == nil {
-		return true
-	}
-	return schemaDemandsProperty(schema, 0)
-}
-
 // advertisedSchema returns the input schema the named tool was advertised with.
 // ok is false when the tool is not in the advertised set at all, which is a
 // different state from a tool that advertises no schema.
@@ -272,13 +256,31 @@ func advertisedSchema(name string, tools []shuttle.Tool) (schema *shuttle.JSONSc
 	return nil, false
 }
 
-// maxSchemaDepth bounds composite-branch recursion. Tool schemas arrive from
-// MCP servers and other third parties, so nesting is not under our control.
+// advertisedTool returns the tool the call names, so the caller can reuse the
+// executor's own parameter normalization against it.
+func advertisedTool(name string, tools []shuttle.Tool) shuttle.Tool {
+	for _, t := range tools {
+		if t != nil && t.Name() == name {
+			return t
+		}
+	}
+	return nil
+}
+
+// maxSchemaDepth bounds schema recursion. Tool schemas arrive from MCP servers
+// and other third parties, so nesting is not under our control. Exhausting the
+// bound yields toolCallStateUnknown, never complete: past it nothing has been
+// established, and saying otherwise would clear a run on an unread schema.
 const maxSchemaDepth = 16
 
-// schemaDemandsProperty reports whether schema requires at least one property,
-// counting composite branches: a schema with an empty root "required" can still
-// demand a property through oneOf/anyOf/allOf, which MCP tools do use.
+// schemaDemandsProperty reports whether schema requires at least one property at
+// its own level, counting composite branches: a schema with an empty root
+// "required" can still demand a property through oneOf/anyOf/allOf, which MCP
+// tools do use.
+//
+// This is deliberately a question about THIS level only — it decides whether an
+// empty input is acceptable for the call. Nested requirements bite only when the
+// value carrying them is actually present, which checkAgainstSchema handles.
 func schemaDemandsProperty(schema *shuttle.JSONSchema, depth int) bool {
 	if schema == nil || depth > maxSchemaDepth {
 		return false
@@ -296,44 +298,123 @@ func schemaDemandsProperty(schema *shuttle.JSONSchema, depth int) bool {
 	return false
 }
 
-// schemaRequirementsMet reports whether input carries every property schema
-// demands. Root "required" always applies; allOf branches must all be met;
-// oneOf/anyOf need at least one met branch.
+// checkAgainstSchema decides how much can be established about value under
+// schema, descending through present properties and array items.
 //
-// oneOf is checked as "at least one" rather than JSON Schema's "exactly one".
-// The question here is only whether the model finished emitting the arguments,
-// and answering it in the permissive direction keeps a well-formed call from
-// being read as truncated.
-func schemaRequirementsMet(schema *shuttle.JSONSchema, input map[string]interface{}, depth int) bool {
-	if schema == nil || depth > maxSchemaDepth {
-		return true
+// Descending matters: a root-only check positively reports "complete" for input
+// whose nested objects are missing what they demand, and the accounting above
+// treats complete as forward progress. The visualization tool is the concrete
+// case — its root requires "datasets", but each dataset item requires "name" and
+// "data", so {"datasets":[{}], ...} passes a root-only check and is rejected by
+// the tool itself.
+//
+// Only structural presence is checked. Semantic constraints (enum, pattern,
+// range) are NOT evidence that the model stopped emitting mid-call, and treating
+// a violated one as truncation would fire the breaker on a complete answer.
+func checkAgainstSchema(schema *shuttle.JSONSchema, value interface{}, depth int) toolCallState {
+	if schema == nil {
+		return toolCallStateComplete
 	}
+	if depth > maxSchemaDepth {
+		return toolCallStateUnknown
+	}
+
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return checkObject(schema, v, depth)
+	case []interface{}:
+		if schema.Items == nil {
+			return toolCallStateComplete
+		}
+		state := toolCallStateComplete
+		for _, item := range v {
+			switch checkAgainstSchema(schema.Items, item, depth+1) {
+			case toolCallStateIncomplete:
+				return toolCallStateIncomplete
+			case toolCallStateUnknown:
+				state = toolCallStateUnknown
+			case toolCallStateComplete:
+			}
+		}
+		return state
+	default:
+		// A scalar, or a shape this walker does not model. If the schema demands
+		// properties of it, the value cannot satisfy them and nothing can be
+		// established; otherwise there is nothing to check.
+		if schemaDemandsProperty(schema, depth) {
+			return toolCallStateUnknown
+		}
+		return toolCallStateComplete
+	}
+}
+
+// checkObject applies one schema node to one object value: its own required
+// keys, its composite branches, then each present property in turn.
+func checkObject(schema *shuttle.JSONSchema, obj map[string]interface{}, depth int) toolCallState {
 	for _, key := range schema.Required {
-		if _, present := input[key]; !present {
-			return false
+		if _, present := obj[key]; !present {
+			return toolCallStateIncomplete
 		}
 	}
+
+	state := toolCallStateComplete
+	demote := func(s toolCallState) bool {
+		switch s {
+		case toolCallStateIncomplete:
+			return true
+		case toolCallStateUnknown:
+			state = toolCallStateUnknown
+		case toolCallStateComplete:
+		}
+		return false
+	}
+
 	for _, b := range schema.AllOf {
-		if !schemaRequirementsMet(b, input, depth+1) {
-			return false
+		if demote(checkAgainstSchema(b, obj, depth+1)) {
+			return toolCallStateIncomplete
 		}
 	}
 	for _, branches := range [][]*shuttle.JSONSchema{schema.OneOf, schema.AnyOf} {
 		if len(branches) == 0 {
 			continue
 		}
-		met := false
+		// At least one branch must hold. oneOf is checked as "at least one"
+		// rather than JSON Schema's "exactly one": the question is only whether
+		// the model finished emitting arguments, and the permissive direction
+		// keeps a well-formed call from reading as truncated.
+		best := toolCallStateIncomplete
 		for _, b := range branches {
-			if schemaRequirementsMet(b, input, depth+1) {
-				met = true
-				break
+			switch checkAgainstSchema(b, obj, depth+1) {
+			case toolCallStateComplete:
+				best = toolCallStateComplete
+			case toolCallStateUnknown:
+				if best != toolCallStateComplete {
+					best = toolCallStateUnknown
+				}
+			case toolCallStateIncomplete:
 			}
 		}
-		if !met {
-			return false
+		if best == toolCallStateIncomplete {
+			return toolCallStateIncomplete
+		}
+		if best == toolCallStateUnknown {
+			state = toolCallStateUnknown
 		}
 	}
-	return true
+
+	// Descend into the properties that are actually present. An absent optional
+	// property carries no requirement; an absent required one was caught above.
+	for key, sub := range schema.Properties {
+		val, present := obj[key]
+		if !present {
+			continue
+		}
+		if demote(checkAgainstSchema(sub, val, depth+1)) {
+			return toolCallStateIncomplete
+		}
+	}
+
+	return state
 }
 
 // providerRawArgsKey is the marker the OpenAI and Azure OpenAI clients store
@@ -345,7 +426,35 @@ func schemaRequirementsMet(schema *shuttle.JSONSchema, input map[string]interfac
 // providers — a partial arguments string that never closed — so the marker is a
 // positive signal of an INCOMPLETE call, even though the resulting map is
 // non-empty and would otherwise read as fully populated.
+//
+// The name is not reserved by JSON Schema or by the Tool contract, so it is only
+// read as a marker when the advertised schema does not itself define a property
+// called "_raw"; a tool that legitimately takes one keeps its own meaning.
 const providerRawArgsKey = "_raw"
+
+// schemaDefinesRawKey reports whether the schema declares "_raw" as a real
+// property of its own, at the root or in a composite branch.
+func schemaDefinesRawKey(schema *shuttle.JSONSchema, depth int) bool {
+	if schema == nil || depth > maxSchemaDepth {
+		return false
+	}
+	if _, ok := schema.Properties[providerRawArgsKey]; ok {
+		return true
+	}
+	for _, key := range schema.Required {
+		if key == providerRawArgsKey {
+			return true
+		}
+	}
+	for _, branches := range [][]*shuttle.JSONSchema{schema.OneOf, schema.AnyOf, schema.AllOf} {
+		for _, b := range branches {
+			if schemaDefinesRawKey(b, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // toolCallState is how much can be established about the tool calls on a
 // max_tokens turn. The three states exist because "not visibly empty" is not
@@ -355,7 +464,8 @@ type toolCallState int
 
 const (
 	// toolCallStateUnknown: completeness could not be established — the tool was
-	// not in the advertised set, or advertised no schema to check against.
+	// not in the advertised set, advertised no schema, or carries a shape this
+	// walker cannot read.
 	toolCallStateUnknown toolCallState = iota
 	// toolCallStateComplete: every call carries everything its schema demands.
 	toolCallStateComplete
@@ -383,16 +493,21 @@ func classifyToolCalls(toolCalls []ToolCall, tools []shuttle.Tool) toolCallState
 
 // classifyToolCall establishes what can be said about a single tool call.
 func classifyToolCall(tc ToolCall, tools []shuttle.Tool) toolCallState {
-	// The provider could not parse the arguments at all. This is checked before
-	// anything else, and regardless of what the tool requires: an argument-less
-	// tool never produces a parse failure, so a _raw marker on one is still a
-	// broken call.
-	if _, raw := tc.Input[providerRawArgsKey]; raw {
+	tool := advertisedTool(tc.Name, tools)
+	var schema *shuttle.JSONSchema
+	if tool != nil {
+		schema = tool.InputSchema()
+	}
+
+	// The provider could not parse the arguments at all. Checked before anything
+	// else, and regardless of what the tool demands: an argument-less tool never
+	// produces a parse failure, so the marker still means a broken call. Skipped
+	// only when the tool genuinely declares a "_raw" property of its own.
+	if _, raw := tc.Input[providerRawArgsKey]; raw && !schemaDefinesRawKey(schema, 0) {
 		return toolCallStateIncomplete
 	}
 
-	schema, advertised := advertisedSchema(tc.Name, tools)
-	if !advertised || schema == nil {
+	if tool == nil || schema == nil {
 		// Nothing to check against. Keep the historical emptiness heuristic so
 		// detection does not weaken, but never report completeness we cannot
 		// establish — an unknown call must not clear a truncation run.
@@ -402,18 +517,25 @@ func classifyToolCall(tc ToolCall, tools []shuttle.Tool) toolCallState {
 		return toolCallStateUnknown
 	}
 
+	// Judge the same parameter map the executor will run. Execute normalizes
+	// root keys to the schema's spelling before dispatch, so a call sending
+	// snake_case for a camelCase property executes fine; checking raw keys here
+	// would count that executable call as incomplete and fire the breaker on
+	// exactly the productive turns this accounting exists to protect.
+	input := shuttle.NormalizeParametersToSchema(tool, tc.Input)
+
 	if !schemaDemandsProperty(schema, 0) {
-		// An argument-less tool is expected to be called with an empty input,
-		// so emptiness says nothing about truncation for it.
-		return toolCallStateComplete
-	}
-	if !schemaRequirementsMet(schema, tc.Input, 0) {
+		// An argument-less tool is expected to be called with an empty input, so
+		// emptiness says nothing about truncation for it. Its nested content, if
+		// any, is still checked below.
+		if len(input) == 0 {
+			return toolCallStateComplete
+		}
+	} else if inputLooksEmpty(input) {
 		return toolCallStateIncomplete
 	}
-	if inputLooksEmpty(tc.Input) {
-		return toolCallStateIncomplete
-	}
-	return toolCallStateComplete
+
+	return checkAgainstSchema(schema, map[string]interface{}(input), 0)
 }
 
 // inputLooksEmpty is the historical truncation heuristic: an absent input, or
