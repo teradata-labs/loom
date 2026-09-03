@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
@@ -103,6 +104,16 @@ type Config struct {
 
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
+
+	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
+	// skills into the agents/skills directories on startup. Set to true for runtime
+	// pods that should only serve the explicitly configured agent(s).
+	SkipEmbeddedAgents bool `mapstructure:"skip_embedded_agents"`
+
+	// PatternsDir is the server-level directory containing pattern YAML files.
+	// Per-agent metadata["patterns_dir"] overrides this; agents fall back to
+	// $LOOM_DATA_DIR/patterns when both are empty.
+	PatternsDir string `mapstructure:"patterns_dir"`
 }
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
@@ -609,7 +620,7 @@ type ObservabilityConfig struct {
 	// OTel mode — exports to any OTLP HTTP backend (Opik, Jaeger, Tempo, etc.)
 	OTLPEndpoint     string            `mapstructure:"otlp_endpoint"`      // Full OTLP HTTP URL
 	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
-	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Skip TLS (local dev only)
+	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Use plaintext HTTP (local dev only)
 	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
 }
 
@@ -1111,6 +1122,8 @@ func setDefaults() {
 	viper.SetDefault("server.enable_reflection", true)
 	viper.SetDefault("server.insecure_admin", false)
 	viper.SetDefault("server.allow_time_override", false)
+	viper.SetDefault("skip_embedded_agents", false)
+	viper.SetDefault("patterns_dir", "")
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1751,9 +1764,11 @@ func (c *Config) Validate() error {
 			}
 			// Note: HawkAPIKey is optional - not required for local Hawk installations
 		case "otel":
-			// OTel mode: validate endpoint
-			if c.Observability.OTLPEndpoint == "" {
-				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel")
+			// OTel mode: validate endpoint — also accept the platform env var
+			// injected by AgentOpsCore at deploy time (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).
+			// cmd_serve.go will apply this override before building the tracer.
+			if c.Observability.OTLPEndpoint == "" && observability.ResolveOTLPEndpointEnv() == "" {
+				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel (set otlp_endpoint, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_ENDPOINT, or LOOM_OTLP_ENDPOINT)")
 			}
 		case "none":
 			// No-op mode: no validation needed

@@ -58,13 +58,19 @@ type StreamableHTTPTransport struct {
 	// Configuration
 	enableSessions bool
 	headers        map[string]string // custom headers (e.g. Authorization) sent on every request
+	transport      *http.Transport   // stored for CloseIdleConnections on Close
 }
 
 // StreamableHTTPConfig configures streamable-http transport.
 type StreamableHTTPConfig struct {
-	Endpoint       string            // MCP endpoint URL
-	Headers        map[string]string // Custom headers
-	EnableSessions bool              // Enable session management
+	Endpoint string            // MCP endpoint URL
+	Headers  map[string]string // Custom headers
+	// EnableSessions is a no-op. MCP 2026-07-28 moved session management to
+	// server-side header injection (Mcp-Session-Id); this client always
+	// captures and threads the session ID when the server sends it. The field
+	// is retained so existing configs load without error. It is removed after
+	// the deprecation window (2027-07-28).
+	EnableSessions bool
 	// EnableResumption is a no-op. SSE resumption never had a read path in
 	// Loom (no Last-Event-ID was ever sent) and the 2026-07-28 revision
 	// removes resumption from the protocol; the field is retained only so
@@ -87,13 +93,27 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
+	// Prefer a Clone of http.DefaultTransport so we inherit proxy/TLS settings.
+	// If DefaultTransport has been replaced by a wrapper (e.g. otel or mTLS
+	// RoundTripper), keep the wrapper as-is rather than discarding it.
+	var clientTransport http.RoundTripper
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		clientTransport = base.Clone()
+	} else {
+		logger.Warn("http.DefaultTransport is not *http.Transport; using it as-is (otel/mTLS wrappers preserved)")
+		clientTransport = http.DefaultTransport
+	}
+	// httpTransport is used only for CloseIdleConnections; fall back to nil when
+	// the transport is a wrapped RoundTripper that doesn't expose the method.
+	httpTransport, _ := clientTransport.(*http.Transport)
+
 	if config.EnableResumption {
 		logger.Warn("enable_resumption is deprecated and has no effect: SSE resumption was removed by MCP 2026-07-28 and never had a read path in this client")
 	}
 
 	t := &StreamableHTTPTransport{
 		endpoint:       config.Endpoint,
-		client:         &http.Client{},
+		client:         &http.Client{Transport: clientTransport},
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -102,6 +122,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 		streamCancel:   streamCancel,
 		enableSessions: config.EnableSessions,
 		headers:        config.Headers,
+		transport:      httpTransport,
 	}
 
 	logger.Info("Streamable HTTP transport created", zap.String("endpoint", config.Endpoint))
@@ -179,15 +200,13 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		return err
 	}
 
-	// Adopt a session ID whenever a legacy server mints one and none is held.
-	// Only the initialize response carries this header (2026-07-28 servers
-	// never send it), but which POST that is depends on probe order — the
-	// server/discover probe precedes initialize on auto-negotiated
-	// connections, so gating on "first request" would discard the session and
-	// break every subsequent call against strict legacy session servers. This
-	// also re-adopts a fresh session after ErrSessionExpired cleared the old
-	// one and the client re-initialized.
-	if t.enableSessions && !t.sessionMgr.HasSession() {
+	// Capture Mcp-Session-Id whenever the server issues one and no session is
+	// held yet. Per the MCP spec, if the server issues a session ID the client
+	// MUST echo it on every subsequent request; session-based servers such as
+	// Atlassian's remote MCP reject follow-up notifications without it.
+	// Note: session IDs are captured regardless of enable_sessions; the flag is
+	// retained for config compatibility but has no runtime effect.
+	if !t.sessionMgr.HasSession() {
 		if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
 			if err := t.sessionMgr.SetSessionID(sessionID); err != nil {
 				t.logger.Warn("Invalid session ID from server", zap.Error(err))
@@ -199,8 +218,12 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 
 	// Notification acknowledgments (202/204) carry no body and no content
 	// type; falling through to the Content-Type switch would reject them as
-	// unexpected.
+	// unexpected. Requests (JSON-RPC messages with an id) must receive a
+	// response body; a bare 202 for a request indicates a server bug.
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+		if isJSONRPCRequest(message) {
+			return fmt.Errorf("unexpected %d response for JSON-RPC request", resp.StatusCode)
+		}
 		t.logger.Debug("Notification accepted")
 		return nil
 	}
@@ -292,11 +315,17 @@ func (t *StreamableHTTPTransport) Close() error {
 	// Wait for streams to finish
 	t.activeStreams.Wait()
 
-	// Terminate session if enabled
-	if t.enableSessions && t.sessionMgr.HasSession() {
+	// Terminate the server session before closing idle connections so the
+	// DELETE request can reuse a pooled connection rather than opening a new
+	// one into an already-drained pool.
+	if t.sessionMgr.HasSession() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = t.terminateSession(ctx) // Best effort
+	}
+
+	if t.transport != nil {
+		t.transport.CloseIdleConnections()
 	}
 
 	// The message channels are deliberately never closed: Send delivers into
@@ -460,19 +489,13 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	// Legacy (2025-03-26..2025-11-25) session expiry: a 404 while holding a
-	// session means the server dropped it.
-	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
-		t.logger.Warn("Session expired (404), clearing session")
-		t.sessionMgr.ClearSession()
-		return true, ErrSessionExpired
-	}
-
 	// 2026-07-28 servers carry JSON-RPC error responses in HTTP 4xx bodies
 	// (unknown method → 404 with -32601, version problems → 400 with -32022,
 	// header mismatch → 400 with -32020). Deliver them as protocol messages
 	// so the pending request receives the typed JSON-RPC error instead of a
-	// transport failure.
+	// transport failure. This MUST be checked before the session-expiry branch
+	// below, because a 404 with a JSON-RPC -32601 error (method not found) is
+	// NOT a session expiry — it is a normal protocol error response.
 	if isJSONRPCErrorResponse(body) {
 		select {
 		case t.messages <- body:
@@ -482,7 +505,30 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 		}
 	}
 
+	// Legacy (2025-03-26..2025-11-25) session expiry: a 404 while holding a
+	// session means the server dropped it. Only fires when the body is NOT a
+	// JSON-RPC error (handled above).
+	if resp.StatusCode == http.StatusNotFound && t.sessionMgr.HasSession() {
+		t.logger.Warn("Session expired (404), clearing session")
+		t.sessionMgr.ClearSession()
+		return true, ErrSessionExpired
+	}
+
 	return true, &HTTPStatusError{Code: resp.StatusCode, Body: body}
+}
+
+// isJSONRPCRequest reports whether msg is a JSON-RPC request: it must have
+// both a method and a non-null id. Responses also carry ids, so probing
+// only for id would misclassify client responses to server-initiated requests.
+func isJSONRPCRequest(msg []byte) bool {
+	var probe struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(msg, &probe); err != nil {
+		return false
+	}
+	return probe.Method != "" && len(probe.ID) > 0 && string(probe.ID) != "null"
 }
 
 // isJSONRPCErrorResponse reports whether body is a routable JSON-RPC error
@@ -510,6 +556,7 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 		return err
 	}
 
+	// Add custom headers
 	for k, v := range t.headers {
 		req.Header.Set(k, v)
 	}

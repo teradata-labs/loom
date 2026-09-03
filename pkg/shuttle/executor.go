@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -162,6 +163,30 @@ func (e *Executor) SetMCPManager(manager MCPManager) {
 // SetBuiltinToolProvider configures the builtin tool provider for dynamic builtin tool registration.
 func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 	e.builtinToolProvider = provider
+}
+
+// CanonicalToolName returns the registered tool's own name for a lookup key.
+// Registry aliases point at the same Tool instance, so this keeps permissions,
+// admission, and circuit breakers keyed consistently with direct calls.
+// When the name is not found by direct lookup, a local suffix scan is tried
+// (same logic as tryDynamicRegistration) so callers get the server-qualified
+// name even for suffix or sanitized-name inputs.
+func (e *Executor) CanonicalToolName(name string) string {
+	if tool, ok := e.registry.Get(name); ok {
+		return tool.Name()
+	}
+	suffix := ":" + name
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		n := t.Name()
+		if strings.HasSuffix(n, suffix) || strings.ReplaceAll(n, ":", "_") == name {
+			matches = append(matches, t)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].Name()
+	}
+	return name
 }
 
 // admit runs the admission gates for a tool call. It returns the request handed
@@ -317,10 +342,23 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// dynamic registration) so an externally-resolved tool is governed at the
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, toolName, normalizedParams)
+	//
+	// Check both the requested name (alias/unqualified) and the canonical name
+	// so that deny rules written against either form are effective. Without this,
+	// a deny rule on the unqualified name would be inert once the tool is
+	// resolved to its server-qualified canonical name.
+	canonicalName := tool.Name()
+	req, admRes, denied := e.admit(ctx, canonicalName, normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
+	}
+	if toolName != canonicalName {
+		_, admRes2, denied2 := e.admit(ctx, toolName, normalizedParams)
+		if denied2 != nil {
+			adm = admRes2
+			return denied2, nil
+		}
 	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat
@@ -676,6 +714,38 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	// Fast path: the tool may already be registered locally under its
+	// server-qualified name (e.g., "teradata-aiop-mcp-server:base_readQuery")
+	// while the LLM called it using either:
+	//   - the plain unprefixed name ("base_readQuery"), because the ROM or
+	//     tool_search result returned the unprefixed form, or
+	//   - the LLM-sanitized qualified name ("teradata-aiop-mcp-server_base_readQuery"),
+	//     since some providers reject ':' in tool names (see llm.SanitizeToolName)
+	//     and the caller re-derived the sanitized form from an earlier turn
+	//     instead of using the provider's reverse-mapped original name.
+	// Scan the local registry first before hitting the external tool registry.
+	suffix := ":" + toolName
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		name := t.Name()
+		if strings.HasSuffix(name, suffix) || strings.ReplaceAll(name, ":", "_") == toolName {
+			matches = append(matches, t)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
+	if len(matches) == 1 {
+		// Register an alias so subsequent calls skip this scan.
+		e.registry.RegisterAlias(toolName, matches[0])
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, len(matches))
+		for i, match := range matches {
+			names[i] = match.Name()
+		}
+		return nil, fmt.Errorf("ambiguous tool name %q matches %s", toolName, strings.Join(names, ", "))
+	}
+
 	// Check if tool registry is configured
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")

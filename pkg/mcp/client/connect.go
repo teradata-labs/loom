@@ -37,6 +37,11 @@ import (
 // era signal there.
 var errProbeTimeout = errors.New("server/discover probe timed out without a response")
 
+// errNoSupportedVersions is returned when a server responds to server/discover
+// but includes no SupportedVersions — the response is a legacy initialize
+// handshake format, indicating a pre-2026 server.
+var errNoSupportedVersions = errors.New("server/discover returned no supported versions")
+
 // InputRequiredNotSupportedError is returned when a server answers with an
 // MRTR interim result (resultType "input_required") and this client has no
 // MRTR driver configured. The MRTR retry loop (migration Phase 4) replaces
@@ -101,7 +106,7 @@ func (c *Client) connectAuto(ctx context.Context, clientInfo protocol.Implementa
 	disc, err := c.discover(ctx)
 	if err != nil {
 		timedOutLegacy := errors.Is(err, errProbeTimeout) && !c.transportCarriesHeaders()
-		if isLegacyServerSignal(err) || timedOutLegacy {
+		if isLegacyServerSignal(err) || timedOutLegacy || errors.Is(err, errNoSupportedVersions) {
 			c.logger.Debug("server/discover answered as a pre-2026 server; falling back to initialize handshake",
 				zap.Error(err))
 			return c.Initialize(ctx, clientInfo)
@@ -301,7 +306,7 @@ func (c *Client) discover(ctx context.Context) (*protocol.DiscoverResult, error)
 		return nil, fmt.Errorf("failed to parse server/discover result: %w", err)
 	}
 	if len(result.SupportedVersions) == 0 {
-		return nil, fmt.Errorf("server/discover returned no supported versions")
+		return nil, errNoSupportedVersions
 	}
 	return &result, nil
 }

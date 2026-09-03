@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
+
+### Added
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly for non-request messages; for JSON-RPC requests, 202 is now treated as an error since the spec requires a response body.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
+
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
+#### OTLP Runtime Integration
+- `applyOTLPEnvOverride` on both `looms serve` and `looms workflow` paths so the platform can enable tracing by injecting `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+- In-process parent-linkage test added to the OTLP test suite.
+
 ## [1.4.0] - 2026-08-12
 
 ### Breaking Changes

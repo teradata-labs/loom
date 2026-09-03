@@ -549,13 +549,27 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 
 	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
+
+	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
+	// injected, force observability on. See applyOTLPEnvOverride for full details.
+	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
+
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
 		if mode == "" {
-			if config.Observability.HawkEndpoint != "" {
+			if config.Observability.OTLPEndpoint != "" {
+				mode = "otel"
+			} else if config.Observability.HawkEndpoint != "" {
 				mode = "service"
 			} else {
 				mode = "embedded"
+			}
+		}
+
+		if otlpEnv != "" {
+			if mode != "otel" {
+				logOTLPModeOverride(logger, mode, otlpEnv)
+				mode = "otel"
 			}
 		}
 
@@ -606,6 +620,37 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 			} else {
 				tracer = hawkTracer
 				logger.Info("Observability enabled for workflow", zap.String("endpoint", config.Observability.HawkEndpoint))
+			}
+
+		case "otel":
+			logger.Info("Observability enabled with OTLP export",
+				zap.String("endpoint", config.Observability.OTLPEndpoint))
+			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
+				Endpoint:       config.Observability.OTLPEndpoint,
+				Headers:        config.Observability.OTLPHeaders,
+				Insecure:       config.Observability.OTLPInsecure,
+				ServiceName:    "looms-workflow",
+				ServiceVersion: rootCmd.Version,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
+				SpanFilter: observability.SpanFilterConfig{
+					IncludePrefixes: config.Observability.OTLPIncludeSpans,
+				},
+			})
+			if err != nil {
+				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = otelTracer
+				rt.closers = append(rt.closers, func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := otelTracer.Shutdown(ctx); err != nil {
+						logger.Warn("Failed to shut down OTLP tracer", zap.Error(err))
+					}
+				})
 			}
 
 		default:

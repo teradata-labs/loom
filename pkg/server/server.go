@@ -612,7 +612,10 @@ func (s *Server) GetTrace(ctx context.Context, req *loomv1.GetTraceRequest) (*lo
 	return nil, status.Error(codes.Unimplemented, "trace retrieval not yet implemented")
 }
 
-// GetHealth performs a health check by pinging each configured LLM provider.
+// GetHealth performs a health check against each configured LLM provider,
+// preferring each provider's lightweight HealthCheck (see pingProvider in
+// health.go) over a real chat completion so transient LLM latency/rate
+// limits don't falsely report a live agent as unhealthy.
 // Returns per-component status in the components map with keys like "llm.agent", "llm.judge", etc.
 // Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
 func (s *Server) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
@@ -627,9 +630,7 @@ func (s *Server) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*
 
 		// Send minimal health check with short timeout
 		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := llmProvider.Chat(checkCtx, []types.Message{
-			{Role: "user", Content: "ping"},
-		}, nil)
+		err := pingProvider(checkCtx, llmProvider)
 		cancel()
 
 		latency := time.Since(start).Milliseconds()

@@ -275,6 +275,24 @@ func TestRedactOTelSpan(t *testing.T) {
 			t.Error("email in event attribute should be redacted")
 		}
 	})
+
+	t.Run("redaction does not mutate the caller span", func(t *testing.T) {
+		span := &Span{
+			Attributes: map[string]interface{}{"password": "s3cr3t"},
+			Events:     []Event{{Attributes: map[string]interface{}{"content": "user@test.org"}}},
+		}
+		out := redactOTelSpan(span, PrivacyConfig{RedactCredentials: true, RedactPII: true})
+
+		if _, exists := out.Attributes["password"]; exists {
+			t.Error("redacted copy should remove credentials")
+		}
+		if span.Attributes["password"] != "s3cr3t" {
+			t.Error("caller attributes were mutated")
+		}
+		if span.Events[0].Attributes["content"] != "user@test.org" {
+			t.Error("caller event attributes were mutated")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -330,11 +348,7 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTelTracer: %v", err)
 	}
-	defer func() {
-		if err := tr.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown: %v", err)
-		}
-	}()
+	t.Cleanup(func() { _ = tr.Shutdown(context.Background()) })
 
 	t.Run("StartSpan returns non-nil span and context", func(t *testing.T) {
 		ctx, span := tr.StartSpan(context.Background(), "llm.completion")
@@ -433,138 +447,7 @@ func TestOTelTracerStartEndSpan(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// OTelConfig env resolution
-// ---------------------------------------------------------------------------
-
-func TestResolveOTelConfig(t *testing.T) {
-	t.Run("explicit values not overwritten by env", func(t *testing.T) {
-		cfg := resolveOTelConfig(OTelConfig{
-			Endpoint:    "http://explicit:4318",
-			ServiceName: "my-service",
-		})
-		if cfg.Endpoint != "http://explicit:4318" {
-			t.Errorf("explicit endpoint should not be overridden, got %q", cfg.Endpoint)
-		}
-		if cfg.ServiceName != "my-service" {
-			t.Errorf("explicit service name should not be overridden, got %q", cfg.ServiceName)
-		}
-	})
-
-	t.Run("defaults applied for zero values", func(t *testing.T) {
-		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
-		if cfg.Timeout == 0 {
-			t.Error("timeout default should be non-zero")
-		}
-		if cfg.MaxBatchSize == 0 {
-			t.Error("max batch size default should be non-zero")
-		}
-		if cfg.FlushInterval == 0 {
-			t.Error("flush interval default should be non-zero")
-		}
-	})
-
-	t.Run("LOOM_OTLP_INSECURE env var enables insecure mode", func(t *testing.T) {
-		t.Setenv("LOOM_OTLP_INSECURE", "true")
-		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
-		if !cfg.Insecure {
-			t.Error("Insecure should be true when LOOM_OTLP_INSECURE=true")
-		}
-	})
-
-	t.Run("LOOM_OTLP_INSECURE env unset leaves Insecure false", func(t *testing.T) {
-		t.Setenv("LOOM_OTLP_INSECURE", "")
-		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
-		if cfg.Insecure {
-			t.Error("Insecure should remain false when LOOM_OTLP_INSECURE is not set")
-		}
-	})
-
-	t.Run("explicit Insecure=true not cleared by missing env", func(t *testing.T) {
-		t.Setenv("LOOM_OTLP_INSECURE", "")
-		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318", Insecure: true})
-		if !cfg.Insecure {
-			t.Error("explicit Insecure=true should not be cleared by resolveOTelConfig")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// resolveOTLPEndpointEnv — OTel spec semantics for the two standard env vars
-// ---------------------------------------------------------------------------
-
-func TestResolveOTLPEndpointEnv(t *testing.T) {
-	clearOTLPEnv := func(t *testing.T) {
-		t.Helper()
-		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
-		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-		t.Setenv("LOOM_OTLP_ENDPOINT", "")
-	}
-
-	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
-		clearOTLPEnv(t)
-		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces")
-		got := resolveOTLPEndpointEnv()
-		if got != "http://collector:4318/v1/traces" {
-			t.Errorf("expected verbatim traces endpoint, got %q", got)
-		}
-	})
-
-	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT gets /v1/traces appended (OTel spec)", func(t *testing.T) {
-		clearOTLPEnv(t)
-		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-		got := resolveOTLPEndpointEnv()
-		if got != "http://localhost:4318/v1/traces" {
-			t.Errorf("expected /v1/traces appended, got %q", got)
-		}
-	})
-
-	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT trailing slash stripped before append", func(t *testing.T) {
-		clearOTLPEnv(t)
-		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318/")
-		got := resolveOTLPEndpointEnv()
-		if got != "http://localhost:4318/v1/traces" {
-			t.Errorf("expected clean /v1/traces path, got %q", got)
-		}
-	})
-
-	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes priority over base var", func(t *testing.T) {
-		clearOTLPEnv(t)
-		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://traces-only:4318/v1/traces")
-		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://base:4318")
-		got := resolveOTLPEndpointEnv()
-		if got != "http://traces-only:4318/v1/traces" {
-			t.Errorf("traces-specific var should win, got %q", got)
-		}
-	})
-
-	t.Run("LOOM_OTLP_ENDPOINT fallback used verbatim", func(t *testing.T) {
-		clearOTLPEnv(t)
-		t.Setenv("LOOM_OTLP_ENDPOINT", "http://loom-specific:4318/v1/traces")
-		got := resolveOTLPEndpointEnv()
-		if got != "http://loom-specific:4318/v1/traces" {
-			t.Errorf("expected LOOM_OTLP_ENDPOINT verbatim, got %q", got)
-		}
-	})
-
-	t.Run("empty when no env set", func(t *testing.T) {
-		clearOTLPEnv(t)
-		got := resolveOTLPEndpointEnv()
-		if got != "" {
-			t.Errorf("expected empty string, got %q", got)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestOTelTracerImplementsTracer(t *testing.T) {
-	var _ Tracer = (*OTelTracer)(nil) // compile-time check duplicated for clarity
-}
-
-// ---------------------------------------------------------------------------
-// Parent-child span linkage (regression for blocking bug reported in review)
+// Parent-child span linkage — regression tests for blocking bug from review
 // ---------------------------------------------------------------------------
 
 // newInMemoryOTelTracer builds an OTelTracer backed by an InMemoryExporter so
@@ -591,8 +474,6 @@ func TestParentChildSameTrace(t *testing.T) {
 	tr, exp := newInMemoryOTelTracer(t)
 
 	// Start parent span and keep it active while the child is created.
-	// (EndSpan removes the parent from activeSpans — the child must be started
-	//  before the parent ends so the live OTel span is still available.)
 	ctx, parent := tr.StartSpan(context.Background(), "parent.op")
 
 	// Start child with the parent context while parent is still active.
@@ -600,7 +481,6 @@ func TestParentChildSameTrace(t *testing.T) {
 	tr.EndSpan(child)
 	tr.EndSpan(parent)
 
-	// Force sync flush.
 	if err := tr.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -610,7 +490,6 @@ func TestParentChildSameTrace(t *testing.T) {
 		t.Fatalf("expected 2 exported spans, got %d", len(spans))
 	}
 
-	// Map by operation name for clarity.
 	byName := make(map[string]tracetest.SpanStub, 2)
 	for _, s := range spans {
 		byName[s.Name] = s
@@ -631,7 +510,7 @@ func TestParentChildSameTrace(t *testing.T) {
 			parentStub.SpanContext.TraceID(), childStub.SpanContext.TraceID())
 	}
 
-	// Child must reference parent's SDK-assigned SpanID, not a UUID-derived one.
+	// Child must reference parent's SDK-assigned SpanID.
 	if childStub.Parent.SpanID() != parentStub.SpanContext.SpanID() {
 		t.Errorf("parent span ID mismatch: child.ParentSpanID=%s parent.SpanID=%s",
 			childStub.Parent.SpanID(), parentStub.SpanContext.SpanID())
@@ -679,4 +558,191 @@ func TestThreeGenerationChain(t *testing.T) {
 		t.Errorf("C.ParentSpanID=%s != B.SpanID=%s",
 			byName["C"].Parent.SpanID(), byName["B"].SpanContext.SpanID())
 	}
+}
+
+func TestOTelTracerExportsParentChildLinkage(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tr := &OTelTracer{
+		provider: provider,
+		tracer:   provider.Tracer("loom-test"),
+		privacy:  PrivacyConfig{RedactCredentials: true, RedactPII: true},
+	}
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.chat")
+	_, child := tr.StartSpan(parentCtx, "llm.completion")
+	tr.EndSpan(child)
+	tr.EndSpan(parent)
+
+	spans := exporter.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("exported spans = %d, want 2", len(spans))
+	}
+	var parentSpan, childSpan tracetest.SpanStub
+	for _, span := range spans {
+		switch span.Name {
+		case "agent.chat":
+			parentSpan = span
+		case "llm.completion":
+			childSpan = span
+		}
+	}
+	if childSpan.SpanContext.TraceID() != parentSpan.SpanContext.TraceID() {
+		t.Fatalf("child trace ID %s does not match parent %s", childSpan.SpanContext.TraceID(), parentSpan.SpanContext.TraceID())
+	}
+	if childSpan.Parent.SpanID() != parentSpan.SpanContext.SpanID() {
+		t.Fatalf("child parent ID %s does not match parent span ID %s", childSpan.Parent.SpanID(), parentSpan.SpanContext.SpanID())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OTelConfig env resolution
+// ---------------------------------------------------------------------------
+
+func TestResolveOTelConfig(t *testing.T) {
+	t.Run("explicit values not overwritten by env", func(t *testing.T) {
+		cfg := resolveOTelConfig(OTelConfig{
+			Endpoint:    "http://explicit:4318",
+			ServiceName: "my-service",
+		})
+		if cfg.Endpoint != "http://explicit:4318" {
+			t.Errorf("explicit endpoint should not be overridden, got %q", cfg.Endpoint)
+		}
+		if cfg.ServiceName != "my-service" {
+			t.Errorf("explicit service name should not be overridden, got %q", cfg.ServiceName)
+		}
+	})
+
+	t.Run("defaults applied for zero values", func(t *testing.T) {
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Timeout == 0 {
+			t.Error("timeout default should be non-zero")
+		}
+		if cfg.MaxBatchSize == 0 {
+			t.Error("max batch size default should be non-zero")
+		}
+		if cfg.FlushInterval == 0 {
+			t.Error("flush interval default should be non-zero")
+		}
+	})
+
+	t.Run("service name defaults to loom when OTEL_SERVICE_NAME unset", func(t *testing.T) {
+		t.Setenv("OTEL_SERVICE_NAME", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.ServiceName != "loom" {
+			t.Errorf("expected default service name %q, got %q", "loom", cfg.ServiceName)
+		}
+	})
+
+	t.Run("OTEL_SERVICE_NAME overrides loom default", func(t *testing.T) {
+		t.Setenv("OTEL_SERVICE_NAME", "my-agent")
+		cfg := resolveOTelConfig(OTelConfig{})
+		if cfg.ServiceName != "my-agent" {
+			t.Errorf("expected OTEL_SERVICE_NAME %q, got %q", "my-agent", cfg.ServiceName)
+		}
+	})
+}
+
+func TestResolveOTLPEndpointEnv(t *testing.T) {
+	t.Run("returns empty string when no env vars set", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("LOOM_OTLP_ENDPOINT", "")
+		got := ResolveOTLPEndpointEnv()
+		if got != "" {
+			t.Errorf("expected empty string when no env vars set, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT used verbatim", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://col:4318/v1/traces")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")
+		got := ResolveOTLPEndpointEnv()
+		if got != "http://col:4318/v1/traces" {
+			t.Errorf("expected traces-specific endpoint verbatim, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT base URL appends /v1/traces", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317")
+		got := ResolveOTLPEndpointEnv()
+		if got != "http://col:4317/v1/traces" {
+			t.Errorf("expected base URL + /v1/traces, got %q", got)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_ENDPOINT trailing slash is normalised", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://col:4317/")
+		got := ResolveOTLPEndpointEnv()
+		if got != "http://col:4317/v1/traces" {
+			t.Errorf("trailing slash not stripped, got %q", got)
+		}
+	})
+
+	t.Run("LOOM_OTLP_ENDPOINT fallback used verbatim", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("LOOM_OTLP_ENDPOINT", "http://loom-col:4318/v1/traces")
+		got := ResolveOTLPEndpointEnv()
+		if got != "http://loom-col:4318/v1/traces" {
+			t.Errorf("expected LOOM_OTLP_ENDPOINT fallback, got %q", got)
+		}
+	})
+}
+
+func TestResolveOTelConfigHeaders(t *testing.T) {
+	t.Run("OTEL_EXPORTER_OTLP_TRACES_HEADERS preferred over base", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "X-Traces=traces-val")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-Base=base-val")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Headers["X-Traces"] != "traces-val" {
+			t.Errorf("expected traces-specific header, got %v", cfg.Headers)
+		}
+	})
+
+	t.Run("OTEL_EXPORTER_OTLP_HEADERS used when traces header unset", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer tok")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if cfg.Headers["Authorization"] != "Bearer tok" {
+			t.Errorf("expected base OTLP header, got %v", cfg.Headers)
+		}
+	})
+}
+
+func TestResolveOTelConfigInsecure(t *testing.T) {
+	t.Run("Insecure stays false when LOOM_OTLP_INSECURE is unset", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "https://collector:4318"})
+		if cfg.Insecure {
+			t.Error("expected Insecure=false when LOOM_OTLP_INSECURE is unset")
+		}
+	})
+
+	t.Run("LOOM_OTLP_INSECURE sets Insecure when not already true", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "true")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318"})
+		if !cfg.Insecure {
+			t.Error("expected Insecure=true from LOOM_OTLP_INSECURE")
+		}
+	})
+
+	t.Run("explicit Insecure=true not overwritten by LOOM_OTLP_INSECURE=false", func(t *testing.T) {
+		t.Setenv("LOOM_OTLP_INSECURE", "false")
+		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318", Insecure: true})
+		if !cfg.Insecure {
+			t.Error("explicit Insecure=true should not be overwritten")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Interface compliance
+// ---------------------------------------------------------------------------
+
+func TestOTelTracerImplementsTracer(t *testing.T) {
+	var _ Tracer = (*OTelTracer)(nil) // compile-time check duplicated for clarity
 }

@@ -71,29 +71,55 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// ListTools returns all registered tools.
+// ListTools returns all registered tools, deduplicated by Tool.Name().
+//
+// The registry intentionally allows the same underlying Tool instance to be
+// stored under multiple map keys — e.g. RegisterAlias registers a plain
+// alias key ("base_readQuery") pointing at a Tool already registered under
+// its canonical, server-qualified key ("mcp-server:base_readQuery") so
+// lookups work regardless of which form the LLM uses. But Tool.Name() is
+// fixed on the Tool instance itself and doesn't change per registry key, so
+// naively iterating the map would return that same Tool (with the same
+// Name()) once per alias. Callers use ListTools() to build the tool schema
+// sent to the LLM API, and providers like Anthropic/Claude reject a
+// request whose tools have duplicate names ("Tool names must be unique"),
+// so dedup here by Name() to guarantee at most one schema entry per tool.
 func (r *Registry) ListTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	seen := make(map[string]struct{}, len(r.tools))
 	tools := make([]Tool, 0, len(r.tools))
 	for _, tool := range r.tools {
+		name := tool.Name()
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
 		tools = append(tools, tool)
 	}
 	return tools
 }
 
-// ListByBackend returns all tools for a specific backend.
+// ListByBackend returns all tools for a specific backend, deduplicated by
+// Tool.Name() for the same reason as ListTools (see its comment).
 // Pass empty string to get backend-agnostic tools.
 func (r *Registry) ListByBackend(backend string) []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	seen := make(map[string]struct{})
 	var tools []Tool
 	for _, tool := range r.tools {
-		if tool.Backend() == backend || tool.Backend() == "" {
-			tools = append(tools, tool)
+		if tool.Backend() != backend && tool.Backend() != "" {
+			continue
 		}
+		name := tool.Name()
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, tool)
 	}
 	return tools
 }
@@ -102,7 +128,30 @@ func (r *Registry) ListByBackend(backend string) []Tool {
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	canonicalName := name
+	if tool, ok := r.tools[name]; ok {
+		canonicalName = tool.Name()
+	}
+	for key, tool := range r.tools {
+		if key == name || tool.Name() == canonicalName {
+			delete(r.tools, key)
+		}
+	}
+}
+
+// RegisterAlias registers an existing tool under an additional alias name.
+// This allows callers to look up a tool by both its canonical prefixed name
+// (e.g. "teradata-aiop:base_databaseList") and a plain alias
+// (e.g. "base_databaseList") without duplicating the tool implementation.
+//
+// Known limitation: aliases are permanent once registered. If a second MCP
+// server later registers a tool with the same unqualified name, the alias
+// still routes to the first winner. The ambiguity guard in
+// tryDynamicRegistration only fires on the initial resolution pass.
+func (r *Registry) RegisterAlias(alias string, tool Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[alias] = tool
 }
 
 // Count returns the number of registered tools.

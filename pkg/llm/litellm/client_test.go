@@ -134,6 +134,35 @@ func TestNewClient_CustomConfig(t *testing.T) {
 	assert.Equal(t, "litellm", c.Name())
 }
 
+func TestClientHealthCheckUsesLivelinessEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, http.MethodGet, request.Method)
+		assert.Equal(t, "/health/liveliness", request.URL.Path)
+		assert.Equal(t, "Bearer sk-health", request.Header.Get("Authorization"))
+		assert.Equal(t, "tenant-a", request.Header.Get("X-Tenant"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		Endpoint:     server.URL,
+		APIKey:       "sk-health",
+		ExtraHeaders: map[string]string{"X-Tenant": "tenant-a"},
+	})
+	require.NoError(t, client.HealthCheck(context.Background()))
+}
+
+func TestClientHealthCheckRejectsUnhealthyProxy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "/health/liveliness", request.URL.Path)
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL})
+	assert.ErrorContains(t, client.HealthCheck(context.Background()), "status 503")
+}
+
 // TestClient_Chat_SimpleText verifies a successful round-trip for a plain text response.
 func TestClient_Chat_SimpleText(t *testing.T) {
 	srv := newTestServer(t, "Hello from LiteLLM!")
@@ -203,14 +232,6 @@ func TestClient_Chat_ErrorResponse(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
-}
-
-// TestClient_HealthCheck_NoHealthChecker verifies that HealthCheck returns nil when the
-// inner client does not implement the optional interface (should not panic).
-func TestClient_HealthCheck_NoHealthChecker(t *testing.T) {
-	c := NewClient(Config{Endpoint: "http://localhost:4000"})
-	// HealthCheck either delegates or returns nil — must not panic.
-	_ = c.HealthCheck(context.Background())
 }
 
 // TestClient_ChatStream_SimpleText verifies streaming returns a valid response.
