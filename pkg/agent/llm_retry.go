@@ -28,13 +28,14 @@ import (
 
 // IsSyntheticWireUserRole reports whether role is a persisted Loom-internal
 // role that must be delivered to the LLM as user-turn content — the
-// skill-body sidecar or a hygiene retry injection — as opposed to the
-// literal end user. Exported so pkg/server's live-streaming gate
-// (isNewMessageUpdateRole) shares this definition instead of maintaining
-// the same two-string set independently.
+// skill-body sidecar, a hygiene retry injection, an empty-response retry
+// nudge, or a synthesis prompt — as opposed to the literal end user.
+// Exported so pkg/server's live-streaming gate (isNewMessageUpdateRole)
+// shares this definition instead of maintaining the same string set
+// independently.
 func IsSyntheticWireUserRole(role string) bool {
 	switch role {
-	case "skill_body", "hygiene_injection":
+	case "skill_body", "hygiene_injection", "empty_response_retry", "synthesis_prompt":
 		return true
 	default:
 		return false

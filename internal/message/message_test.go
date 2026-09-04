@@ -26,4 +26,10 @@ func TestSyntheticRoles_MatchPersistedStrings(t *testing.T) {
 	if HygieneInjection != "hygiene_injection" {
 		t.Fatalf("HygieneInjection = %q, want %q", HygieneInjection, "hygiene_injection")
 	}
+	if EmptyResponseRetry != "empty_response_retry" {
+		t.Fatalf("EmptyResponseRetry = %q, want %q", EmptyResponseRetry, "empty_response_retry")
+	}
+	if SynthesisPrompt != "synthesis_prompt" {
+		t.Fatalf("SynthesisPrompt = %q, want %q", SynthesisPrompt, "synthesis_prompt")
+	}
 }

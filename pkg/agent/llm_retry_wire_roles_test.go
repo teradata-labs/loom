@@ -40,8 +40,9 @@ func (w *wireRoleRecorderLLM) Chat(_ context.Context, messages []Message, _ []sh
 func (w *wireRoleRecorderLLM) Name() string  { return "wire-role-recorder" }
 func (w *wireRoleRecorderLLM) Model() string { return "wire-role-recorder-model" }
 
-// The provider must see skill_body and hygiene_injection as "user" — the
-// LLM-attention optimization this whole design exists to preserve.
+// The provider must see skill_body, hygiene_injection, empty_response_retry,
+// and synthesis_prompt as "user" — the LLM-attention optimization this whole
+// design exists to preserve.
 func TestChatWithRetry_FoldsSyntheticRolesToUserOnWire(t *testing.T) {
 	llm := &wireRoleRecorderLLM{}
 	a := &Agent{id: "wire-role-test", llm: llm, config: &Config{}}
@@ -51,16 +52,20 @@ func TestChatWithRetry_FoldsSyntheticRolesToUserOnWire(t *testing.T) {
 		{Role: "system", Content: "rom"},
 		{Role: "skill_body", Content: "## Skill: SQL Optimization"},
 		{Role: "hygiene_injection", Content: "fix your last response"},
+		{Role: "empty_response_retry", Content: "your previous response was empty"},
+		{Role: "synthesis_prompt", Content: "you must provide your final answer now"},
 		{Role: "assistant", Content: "ok"},
 	}
 
 	_, err := a.chatWithRetry(ctx, input, nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"system", "user", "user", "assistant"}, llm.lastRoles)
+	require.Equal(t, []string{"system", "user", "user", "user", "user", "assistant"}, llm.lastRoles)
 
 	// The caller's slice must be untouched — the fold builds a copy.
 	require.Equal(t, "skill_body", input[1].Role, "fold must not mutate the caller's slice")
 	require.Equal(t, "hygiene_injection", input[2].Role, "fold must not mutate the caller's slice")
+	require.Equal(t, "empty_response_retry", input[3].Role, "fold must not mutate the caller's slice")
+	require.Equal(t, "synthesis_prompt", input[4].Role, "fold must not mutate the caller's slice")
 }
 
 // The common case — no synthetic roles present — must not allocate a

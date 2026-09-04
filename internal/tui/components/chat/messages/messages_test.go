@@ -58,6 +58,34 @@ func TestMessageCmp_HygieneInjection_RendersAsSyntheticNote(t *testing.T) {
 	}
 }
 
+func TestMessageCmp_EmptyResponseRetry_RendersAsSyntheticNote(t *testing.T) {
+	msg := newTestMessage(t, message.EmptyResponseRetry, "Your previous response was empty. Please provide a response.")
+	cmp := NewMessageCmp(msg)
+	cmp.SetSize(80, 20)
+
+	out := cmp.View()
+	if !strings.Contains(out, "Retry requested") {
+		t.Errorf("expected a retry-requested label, got: %s", out)
+	}
+	if !strings.Contains(out, "previous response was empty") {
+		t.Errorf("expected the empty-response retry content, got: %s", out)
+	}
+}
+
+func TestMessageCmp_SynthesisPrompt_RendersAsSyntheticNote(t *testing.T) {
+	msg := newTestMessage(t, message.SynthesisPrompt, "You must provide your final answer NOW with whatever information you have gathered so far.")
+	cmp := NewMessageCmp(msg)
+	cmp.SetSize(80, 20)
+
+	out := cmp.View()
+	if !strings.Contains(out, "Synthesis requested") {
+		t.Errorf("expected a synthesis-requested label, got: %s", out)
+	}
+	if !strings.Contains(out, "final answer NOW") {
+		t.Errorf("expected the synthesis prompt content, got: %s", out)
+	}
+}
+
 // A synthetic note is never a focus target — unlike the user bubble and the
 // assistant content block, focusing it must not change its rendering.
 func TestMessageCmp_SkillBody_FocusHasNoEffect(t *testing.T) {

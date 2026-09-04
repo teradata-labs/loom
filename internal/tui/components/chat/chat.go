@@ -376,7 +376,7 @@ func (m *messageListCmp) handleNewMessage(msg message.Message) tea.Cmd {
 		return m.handleNewUserMessage(msg)
 	case message.Assistant:
 		return m.handleNewAssistantMessage(msg)
-	case message.SkillBody, message.HygieneInjection:
+	case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
 		return m.handleNewSyntheticMessage(msg)
 	case message.Tool:
 		return m.handleToolMessage(msg)
@@ -611,7 +611,7 @@ func (m *messageListCmp) convertMessagesToUI(sessionMessages []message.Message, 
 			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
 				uiMessages = append(uiMessages, messages.NewAssistantSection(msg, time.Unix(m.lastUserMessageTime, 0)))
 			}
-		case message.SkillBody, message.HygieneInjection:
+		case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
 			// Synthetic content, not the human's turn — do not touch
 			// lastUserMessageTime, which anchors the assistant response timer
 			// to the real user's send time.

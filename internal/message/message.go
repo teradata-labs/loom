@@ -38,6 +38,16 @@ const (
 	// HygieneInjection is an end-of-turn hygiene retry nudge. Same
 	// wire-folding treatment as SkillBody, different producer.
 	HygieneInjection Role = "hygiene_injection"
+
+	// EmptyResponseRetry is the one-shot nudge appended when the LLM
+	// returns an empty response, asking it to try again. Same
+	// wire-folding treatment as SkillBody, different producer.
+	EmptyResponseRetry Role = "empty_response_retry"
+
+	// SynthesisPrompt is the forced-final-answer request appended when the
+	// turn/execution budget is exhausted. Same wire-folding treatment as
+	// SkillBody, different producer.
+	SynthesisPrompt Role = "synthesis_prompt"
 )
 
 // FinishReason represents the reason a message finished.
