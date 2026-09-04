@@ -44,6 +44,7 @@ func newWorkflowTestServer(t *testing.T) (*MultiAgentServer, string) {
 		Logger:    zaptest.NewLogger(t),
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = reg.Close() })
 	s := &MultiAgentServer{logger: zaptest.NewLogger(t)}
 	s.SetAgentRegistry(reg)
 	return s, dir
