@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -207,8 +208,15 @@ func TestFileReadTool_Execute_Base64Encoding(t *testing.T) {
 func TestFileReadTool_Execute_SensitivePath(t *testing.T) {
 	tool := NewFileReadTool("")
 
+	// "/etc/shadow" isn't a rooted absolute path in Go's Windows semantics
+	// (no drive letter), so use the platform's own sensitive-path fixture.
+	blockedPath := "/etc/shadow"
+	if runtime.GOOS == "windows" {
+		blockedPath = `C:\Windows\System32\config\SAM`
+	}
+
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"path": "/etc/shadow",
+		"path": blockedPath,
 	})
 
 	require.NoError(t, err)
