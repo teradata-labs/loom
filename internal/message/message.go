@@ -29,6 +29,15 @@ const (
 	Assistant Role = "assistant"
 	Tool      Role = "tool"
 	System    Role = "system"
+
+	// SkillBody is a loaded skill's full instructions, injected by
+	// manage_skills as a sidecar. Reaches the LLM as user-turn content
+	// (folded in pkg/agent.normalizeWireRoles) but is not the human's turn.
+	SkillBody Role = "skill_body"
+
+	// HygieneInjection is an end-of-turn hygiene retry nudge. Same
+	// wire-folding treatment as SkillBody, different producer.
+	HygieneInjection Role = "hygiene_injection"
 )
 
 // FinishReason represents the reason a message finished.
