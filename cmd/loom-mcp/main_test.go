@@ -51,9 +51,10 @@ func TestBuildLogger_ToFile(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 
-	logger, err := buildLogger(logPath, "info")
+	logger, closer, err := buildLogger(logPath, "info")
 	require.NoError(t, err)
 	require.NotNil(t, logger)
+	t.Cleanup(func() { _ = closer.Close() })
 
 	// Write a log entry and verify it lands in the file
 	logger.Info("hello from test")
@@ -68,9 +69,10 @@ func TestBuildLogger_ToStderr(t *testing.T) {
 	// When logFile is empty, buildLogger should succeed and not panic.
 	// It writes to stderr, which we can't easily capture, but we can
 	// verify the logger is usable.
-	logger, err := buildLogger("", "debug")
+	logger, closer, err := buildLogger("", "debug")
 	require.NoError(t, err)
 	require.NotNil(t, logger)
+	t.Cleanup(func() { _ = closer.Close() })
 
 	// Should not panic
 	logger.Debug("stderr test")
@@ -78,7 +80,7 @@ func TestBuildLogger_ToStderr(t *testing.T) {
 
 func TestBuildLogger_InvalidPath(t *testing.T) {
 	// A path inside a non-existent directory should return an error.
-	_, err := buildLogger("/no/such/directory/test.log", "info")
+	_, _, err := buildLogger("/no/such/directory/test.log", "info")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "open log file")
 }
@@ -95,8 +97,9 @@ func TestBuildLogger_NeverUsesStdout(t *testing.T) {
 	require.NoError(t, err)
 	os.Stdout = stdoutW
 
-	logger, err := buildLogger(logPath, "info")
+	logger, closer, err := buildLogger(logPath, "info")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = closer.Close() })
 
 	logger.Info("should go to file only")
 	logger.Error("error should also go to file only")
@@ -157,8 +160,9 @@ func TestBuildLogger_LevelFiltering(t *testing.T) {
 			dir := t.TempDir()
 			logPath := filepath.Join(dir, "test.log")
 
-			logger, err := buildLogger(logPath, tt.level)
+			logger, closer, err := buildLogger(logPath, tt.level)
 			require.NoError(t, err)
+			t.Cleanup(func() { _ = closer.Close() })
 
 			tt.logFunc(logger)
 			_ = logger.Sync()
