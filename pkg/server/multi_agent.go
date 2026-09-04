@@ -4623,6 +4623,23 @@ func (s *MultiAgentServer) GetScheduleHistory(ctx context.Context, req *loomv1.G
 	}, nil
 }
 
+// isNewMessageUpdateRole reports whether a persisted message role should
+// produce a SessionUpdate_NewMessage on the live WeaveProgress stream.
+// skill_body and hygiene_injection are synthetic (agent-authored) content,
+// not the literal end user, but a streaming consumer still needs to see
+// them arrive in real time with their own role — the same way
+// GetConversationHistory already returns them (server.go:547-567).
+// Delegates the synthetic-role check to agent.IsSyntheticWireUserRole
+// rather than re-declaring that two-string set here.
+func isNewMessageUpdateRole(role string) bool {
+	switch role {
+	case "assistant", "user", "tool":
+		return true
+	default:
+		return agent.IsSyntheticWireUserRole(role)
+	}
+}
+
 // SubscribeToSession subscribes to real-time updates for a session.
 // Streams updates when new messages arrive in the session conversation.
 // This allows clients to receive asynchronous responses from workflow coordinators
@@ -4718,7 +4735,7 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 				}
 
 				// Populate based on message role
-				if msg.Role == "assistant" || msg.Role == "user" || msg.Role == "tool" {
+				if isNewMessageUpdateRole(msg.Role) {
 					update.UpdateType = &loomv1.SessionUpdate_NewMessage{
 						NewMessage: &loomv1.NewMessageUpdate{
 							Role:             msg.Role,
