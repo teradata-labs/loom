@@ -2647,7 +2647,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
-					Role:      "user",
+					Role:      "empty_response_retry",
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
 					AgentID:   a.id,
 					Timestamp: time.Now(),
@@ -3044,7 +3044,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	if result != nil && result.Metadata != nil {
 		if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
 			st.pendingSidecars = append(st.pendingSidecars, Message{
-				Role:      "user",
+				Role:      "skill_body",
 				Content:   textBody,
 				AgentID:   a.id,
 				Timestamp: time.Now(),
@@ -3077,7 +3077,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	a.appendMessage(ctx, session, Message{
-		Role:      "user",
+		Role:      "synthesis_prompt",
 		Content:   synthesisPrompt,
 		AgentID:   a.id, // Track which agent created this synthesis request
 		Timestamp: time.Now(),
