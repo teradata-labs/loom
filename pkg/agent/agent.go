@@ -3044,7 +3044,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	if result != nil && result.Metadata != nil {
 		if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
 			st.pendingSidecars = append(st.pendingSidecars, Message{
-				Role:      "user",
+				Role:      "skill_body",
 				Content:   textBody,
 				AgentID:   a.id,
 				Timestamp: time.Now(),
