@@ -49,6 +49,13 @@ func (s *MultiAgentServer) ListArtifacts(ctx context.Context, req *loomv1.ListAr
 		filter.Tags = req.Tags
 	}
 
+	// Session scoping. The store has supported this since sessions were
+	// introduced; the request message could not express it until now, which is
+	// why remote surfaces could not render a per-session file listing.
+	if req.SessionId != "" {
+		filter.SessionID = &req.SessionId
+	}
+
 	// Apply default limit
 	if filter.Limit == 0 {
 		filter.Limit = 50
@@ -84,8 +91,13 @@ func (s *MultiAgentServer) GetArtifact(ctx context.Context, req *loomv1.GetArtif
 	if req.Id != "" {
 		art, err = s.artifactStore.Get(ctx, req.Id)
 	} else if req.Name != "" {
-		// Extract session ID from context for scoped lookup
-		sessionID := session.SessionIDFromContext(ctx)
+		// Names are only unique within a session. An explicit session_id on the
+		// request wins; otherwise fall back to the session carried in the call
+		// context, which is how in-session callers have always been scoped.
+		sessionID := req.SessionId
+		if sessionID == "" {
+			sessionID = session.SessionIDFromContext(ctx)
+		}
 		art, err = s.artifactStore.GetByName(ctx, req.Name, sessionID)
 	} else {
 		return nil, status.Error(codes.InvalidArgument, "either id or name must be provided")
@@ -487,6 +499,7 @@ func artifactToProto(art *artifacts.Artifact) *loomv1.Artifact {
 		AccessCount:   types.SafeInt32(art.AccessCount),
 		Tags:          art.Tags,
 		Metadata:      art.Metadata,
+		SessionId:     art.SessionID,
 	}
 
 	if art.LastAccessedAt != nil {

@@ -2675,6 +2675,12 @@ message Artifact {
 
   // Soft delete timestamp (Unix seconds, optional)
   int64 deleted_at = 16;
+
+  // Session this artifact belongs to. Empty for artifacts created outside a
+  // session (user uploads, pre-session tooling). The store has recorded this
+  // since sessions were introduced; it was simply never put on the wire, which
+  // left remote clients unable to tell whose files they were looking at.
+  string session_id = 17;
 }
 
 // ListArtifactsRequest lists artifacts with optional filtering.
@@ -2696,6 +2702,13 @@ message ListArtifactsRequest {
 
   // Include soft-deleted artifacts
   bool include_deleted = 6;
+
+  // Filter to artifacts belonging to one session (optional). Unset means no
+  // session filtering, preserving existing behaviour. This is what lets a
+  // remote surface render "the files this session produced" — the local
+  // artifact store has always supported it (artifacts.Filter.SessionID); the
+  // request message could not express it.
+  string session_id = 7;
 }
 
 // ListArtifactsResponse returns a list of artifacts.
@@ -2714,6 +2727,12 @@ message GetArtifactRequest {
 
   // Artifact name (alternative lookup if ID not provided)
   string name = 2;
+
+  // Session to scope a name lookup to (optional). Names are only unique within
+  // a session, so a bare name lookup from a remote client is ambiguous without
+  // this. Ignored when id is set. Unset falls back to the session carried in
+  // the call context, preserving existing behaviour for in-session callers.
+  string session_id = 3;
 }
 
 // GetArtifactResponse returns artifact metadata.
