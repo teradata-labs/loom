@@ -2754,6 +2754,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if maxPerTurn <= 0 {
 			maxPerTurn = 10 // default
 		}
+		batchIDCount := make(map[string]int, len(llmResp.ToolCalls))
+		for _, c := range llmResp.ToolCalls {
+			batchIDCount[c.ID]++
+		}
 		st := &batchState{
 			span:               span,
 			turnCount:          turnCount,
@@ -2764,6 +2768,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
+			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
+			batchIDCount:       batchIDCount,
 		}
 
 		for i, toolCall := range llmResp.ToolCalls {
@@ -2781,6 +2787,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Sidecars never advance the turn and hold no special status beyond
 			// that (HLD §4.5).
 			a.appendMessage(ctx, session, sidecar, false)
+		}
+
+		// Resource-await park (park_resource.go): calls held during dispatch
+		// end the turn HERE, after every other call's row and sidecar landed.
+		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
+			return nil, parkErr
 		}
 	}
 
@@ -2807,6 +2819,15 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+
+	// Resource-await park (park_resource.go). parkableTail mirrors the
+	// pre-scan's durability gate and is set ONLY by the conversation loop —
+	// the resume path leaves it false, so completions never nest a resource
+	// park. batchIDCount guards descriptor bindability; awaitHeld carries the
+	// calls whose rows are withheld for maybeParkResourceBatch.
+	parkableTail bool
+	batchIDCount map[string]int
+	awaitHeld    []heldAwait
 }
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
@@ -2964,6 +2985,27 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		ctx.Tracer().EndSpan(toolSpan)
 	}
 
+	// Resource-await hold (park_resource.go): a successful result asking to be
+	// awaited is withheld from the transcript — no execution record, no tool
+	// row — so the batch tail stays rowless for the park that follows the
+	// batch loop. Every refusal path falls through to the normal commit.
+	if a.maybeHoldForResourceAwait(ctx, session, toolCall, i, st, result, err) {
+		return
+	}
+
+	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// commitToolRow is the commit tail of dispatchOneCall — execution record,
+// dedup cache, persistence, failure tracking, the tool row, and sidecar
+// buffering — extracted so the resource-await un-hold path (a park row that
+// failed to persist) can commit a withheld result identically, just later.
+// toolSpan may be nil on that deferred path; the span ended with the original
+// dispatch.
+func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, st *batchState, result *shuttle.Result, err error, toolSpan *observability.Span) {
+	span := st.span
+	dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
+
 	// Record execution
 	execution := ToolExecution{
 		ToolName:          toolCall.Name,
@@ -2986,7 +3028,9 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	// Persist tool execution
 	if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
 		// Log but don't fail
-		toolSpan.RecordError(persistErr)
+		if toolSpan != nil {
+			toolSpan.RecordError(persistErr)
+		}
 	}
 
 	// === FEATURE INTEGRATION: Consecutive Failure Tracking ===

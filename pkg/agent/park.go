@@ -153,6 +153,14 @@ type ParkDecision struct {
 	Approved  bool
 	Reason    string
 	Answers   map[string]string
+
+	// Results maps resource-item ToolCall.IDs to the payload injected verbatim
+	// as that call's successful result Data on an approved resume — the
+	// embedder composes it from the awaited resource's terminal content
+	// (resource-await park, park_resource.go). Ignored for approval/question
+	// items. Like Answers, it rides the caller's payload in both flows; the
+	// row's status still decides Approved.
+	Results map[string]interface{}
 }
 
 // loadParkedRequest resolves the decision's request to a parked row that
@@ -572,8 +580,9 @@ func (a *Agent) isParkQuestion(ctx Context, call ToolCall) bool {
 type parkItem struct {
 	call     ToolCall
 	seq      int
-	kind     string // "approval" | "question"
+	kind     string // "approval" | "question" | "resource"
 	question string
+	uri      string // resource items only: the awaited resource
 }
 
 // maybeParkBatch is the pre-scan: every call of the batch — contact_human
@@ -661,10 +670,20 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse)
 // model's own question verbatim; anything mixed is an approval over the batch.
 func parkKindAndQuestion(items []parkItem) (kind, question string) {
 	questions := 0
+	resources := 0
 	for _, it := range items {
 		if it.kind == "question" {
 			questions++
 		}
+		if it.kind == "resource" {
+			resources++
+		}
+	}
+	// A resource card asks the human for nothing — it reports a wait. Only an
+	// all-resource batch renders as one (the pre-scan and the post-dispatch
+	// hold can never mix kinds in one row today; defensive all-or-approval).
+	if resources == len(items) {
+		return "resource", fmt.Sprintf("Waiting for %d background operation(s) to complete", len(items))
 	}
 	if questions == len(items) {
 		if len(items) == 1 && items[0].question != "" {
@@ -716,6 +735,9 @@ func buildParkParams(items []parkItem) (map[string]interface{}, bool) {
 		}
 		if it.kind == "question" {
 			desc["question"] = it.question
+		}
+		if it.kind == "resource" {
+			desc["uri"] = it.uri
 		}
 		out[it.call.ID] = desc
 	}
@@ -939,7 +961,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	if len(rowless) > 0 {
-		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs)
+		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs, parkedItemKinds(hr))
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
@@ -1103,7 +1125,7 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 // dispatch ungranted, so an ask that appeared while the turn waited — a host
 // gate that trips on budget, quota, or time of day — parks or fails closed
 // exactly as it would in a fresh turn instead of being silently admitted.
-func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, decision ParkDecision, itemIDs []string) {
+func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, decision ParkDecision, itemIDs []string, kinds map[string]string) {
 	maxPerTurn := a.config.MaxIterations
 	if maxPerTurn <= 0 {
 		maxPerTurn = 10
@@ -1150,6 +1172,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 
 	for _, call := range rowless {
 		switch {
+		case kinds[call.ID] == "resource":
+			// The call's tool body already RAN when the turn parked — every
+			// resource arm synthesizes, none dispatches, whatever the decision
+			// payload claims (re-execution would double a job start).
+			a.completeResourceItem(ctx, sess, call, decision, st)
 		case !decision.Approved:
 			reason := decision.Reason
 			if reason == "" {
