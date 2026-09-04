@@ -164,6 +164,9 @@ func TestOnSkillEviction_CalledOnEviction(t *testing.T) {
 	)
 
 	o.ActivateSkill("sess-1", &Skill{Name: "a"}, "test", "", 0.1)
+	// Ensure real wall-clock time elapses before eviction so activeFor is
+	// deterministically nonzero regardless of the OS clock's tick resolution.
+	time.Sleep(2 * time.Millisecond)
 	o.ActivateSkill("sess-1", &Skill{Name: "b"}, "test", "", 0.7)
 	// This should evict "a" (lowest confidence).
 	o.ActivateSkill("sess-1", &Skill{Name: "c"}, "test", "", 0.9)
