@@ -113,8 +113,20 @@ type MessageQueue struct {
 	totalFailed   atomic.Int64
 	totalExpired  atomic.Int64
 
+	// idSeq disambiguates IDs minted within the same clock tick. time.Now()'s
+	// resolution varies by OS/hardware; a tight loop can call UnixNano() faster
+	// than the clock advances, which previously produced colliding message IDs.
+	idSeq atomic.Uint64
+
 	// Lifecycle
 	closed atomic.Bool
+}
+
+// nextID returns a process-unique, monotonically distinguishable ID: the
+// current time plus a per-queue sequence number, so two IDs minted within the
+// same clock tick never collide regardless of OS timer resolution.
+func (q *MessageQueue) nextID(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), q.idSeq.Add(1))
 }
 
 // NewMessageQueue creates a new message queue with SQLite persistence.
@@ -227,7 +239,7 @@ func (q *MessageQueue) Enqueue(ctx context.Context, msg *QueueMessage) error {
 
 	// Set defaults
 	if msg.ID == "" {
-		msg.ID = fmt.Sprintf("qmsg-%d", time.Now().UnixNano())
+		msg.ID = q.nextID("qmsg")
 	}
 	if msg.EnqueuedAt.IsZero() {
 		msg.EnqueuedAt = time.Now()
@@ -707,7 +719,7 @@ const DefaultQueueTimeout = 30
 // It creates a QueueMessage and enqueues it for the destination agent.
 func (q *MessageQueue) Send(ctx context.Context, fromAgent, toAgent, messageType string, payload *loomv1.MessagePayload, metadata map[string]string) (string, error) {
 	msg := &QueueMessage{
-		ID:          fmt.Sprintf("%s-%d", toAgent, time.Now().UnixNano()),
+		ID:          q.nextID(toAgent),
 		ToAgent:     toAgent,
 		FromAgent:   fromAgent,
 		MessageType: messageType,
@@ -752,7 +764,7 @@ func (q *MessageQueue) SendAndReceive(ctx context.Context, fromAgent, toAgent, m
 	start := time.Now()
 
 	// Generate unique correlation ID
-	correlationID := fmt.Sprintf("corr-%s-%d", fromAgent, time.Now().UnixNano())
+	correlationID := q.nextID("corr-" + fromAgent)
 	if span != nil {
 		span.SetAttribute("correlation_id", correlationID)
 	}
@@ -775,7 +787,7 @@ func (q *MessageQueue) SendAndReceive(ctx context.Context, fromAgent, toAgent, m
 
 	// Send request message with correlation ID
 	msg := &QueueMessage{
-		ID:            fmt.Sprintf("%s-req-%d", toAgent, time.Now().UnixNano()),
+		ID:            q.nextID(toAgent + "-req"),
 		ToAgent:       toAgent,
 		FromAgent:     fromAgent,
 		MessageType:   messageType,

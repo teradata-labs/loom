@@ -708,11 +708,15 @@ func isBlockedWorkingDir(path string) bool {
 		"C:\\Windows\\WinSxS",
 	}
 
-	cleanPath := filepath.Clean(path)
+	// filepath.Clean renders the OS-native separator (backslash on Windows), so
+	// compare on a slash-normalized form; otherwise the Unix entries above never
+	// match a cleaned Windows path and vice versa.
+	cleanPath := filepath.ToSlash(filepath.Clean(path))
 
 	// Check exact match or prefix
 	for _, blocked := range blockedDirs {
-		if cleanPath == blocked || strings.HasPrefix(cleanPath, blocked+string(filepath.Separator)) {
+		blockedSlash := filepath.ToSlash(blocked)
+		if cleanPath == blockedSlash || strings.HasPrefix(cleanPath, blockedSlash+"/") {
 			return true
 		}
 	}

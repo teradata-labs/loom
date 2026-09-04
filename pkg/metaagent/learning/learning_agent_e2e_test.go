@@ -17,7 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -37,8 +37,7 @@ func TestEndToEnd_FullLearningLoop(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 
 	// Setup database
-	dbPath := fmt.Sprintf("/tmp/loom-e2e-test-%d.db", time.Now().UnixNano())
-	defer func() { _ = os.Remove(dbPath) }()
+	dbPath := filepath.Join(t.TempDir(), "loom-e2e-test.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
@@ -51,6 +50,7 @@ func TestEndToEnd_FullLearningLoop(t *testing.T) {
 	// Create metrics collector
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	defer func() { _ = collector.Close() }()
 
 	// Create learning engine
 	engine := NewLearningEngine(collector, tracer)
@@ -266,8 +266,7 @@ func TestEndToEnd_AutonomyLevels(t *testing.T) {
 	for _, tt := range autonomyTests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup
-			dbPath := fmt.Sprintf("/tmp/loom-e2e-autonomy-%s-%d.db", tt.name, time.Now().UnixNano())
-			defer func() { _ = os.Remove(dbPath) }()
+			dbPath := filepath.Join(t.TempDir(), fmt.Sprintf("loom-e2e-autonomy-%s.db", tt.name))
 
 			db, err := sql.Open("sqlite3", dbPath)
 			require.NoError(t, err)
@@ -278,6 +277,7 @@ func TestEndToEnd_AutonomyLevels(t *testing.T) {
 
 			collector, err := NewMetricsCollector(dbPath, tracer)
 			require.NoError(t, err)
+			defer func() { _ = collector.Close() }()
 
 			engine := NewLearningEngine(collector, tracer)
 
@@ -302,8 +302,7 @@ func TestEndToEnd_CircuitBreaker(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 
 	// Setup
-	dbPath := fmt.Sprintf("/tmp/loom-e2e-circuit-%d.db", time.Now().UnixNano())
-	defer func() { _ = os.Remove(dbPath) }()
+	dbPath := filepath.Join(t.TempDir(), "loom-e2e-circuit.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
@@ -314,6 +313,7 @@ func TestEndToEnd_CircuitBreaker(t *testing.T) {
 
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -342,8 +342,7 @@ func TestEndToEnd_ConcurrentOperations(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 
 	// Setup
-	dbPath := fmt.Sprintf("/tmp/loom-e2e-concurrent-%d.db", time.Now().UnixNano())
-	defer func() { _ = os.Remove(dbPath) }()
+	dbPath := filepath.Join(t.TempDir(), "loom-e2e-concurrent.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
@@ -354,6 +353,7 @@ func TestEndToEnd_ConcurrentOperations(t *testing.T) {
 
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -416,8 +416,7 @@ func TestEndToEnd_Dogfooding(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 
 	// Setup
-	dbPath := fmt.Sprintf("/tmp/loom-e2e-dogfood-%d.db", time.Now().UnixNano())
-	defer func() { _ = os.Remove(dbPath) }()
+	dbPath := filepath.Join(t.TempDir(), "loom-e2e-dogfood.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
@@ -428,6 +427,7 @@ func TestEndToEnd_Dogfooding(t *testing.T) {
 
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 

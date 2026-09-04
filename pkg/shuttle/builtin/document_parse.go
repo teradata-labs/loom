@@ -285,7 +285,10 @@ func (t *DocumentParseTool) cleanPath(path string) (string, error) {
 	// Clean the path
 	cleanPath := filepath.Clean(path)
 
-	// Security check: prevent access to sensitive system directories
+	// Security check: prevent access to sensitive system directories.
+	// filepath.Clean renders the OS-native separator (backslash on Windows),
+	// so compare on a slash-normalized form -- otherwise these Unix entries
+	// never match a cleaned Windows path.
 	blacklistedPaths := []string{
 		"/etc",
 		"/bin",
@@ -296,10 +299,13 @@ func (t *DocumentParseTool) cleanPath(path string) (string, error) {
 		"/Library/Security",
 		"/private/etc",
 		"/private/var/root",
+		"C:/Windows/System32",
+		"C:/Windows/SysWOW64",
 	}
 
+	slashPath := filepath.ToSlash(cleanPath)
 	for _, blocked := range blacklistedPaths {
-		if strings.HasPrefix(cleanPath, blocked) {
+		if strings.HasPrefix(slashPath, blocked) {
 			return "", fmt.Errorf("access denied to system directory: %s", blocked)
 		}
 	}
