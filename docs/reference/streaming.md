@@ -1092,7 +1092,7 @@ message SessionStatusUpdate {
 Sent when a new message is added to the session conversation (e.g., from a sub-agent response, tool result, or user input).
 
 **Fields**:
-- `role`: Message role - `user`, `assistant`, or `tool` (only these roles are sent)
+- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, or `hygiene_injection` (only these roles are sent). `skill_body` and `hygiene_injection` are synthetic, agent-authored roles — a loaded skill's instructions and a hygiene-retry nudge, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
 - `content`: The message text
 - `message_timestamp`: When the message was created (Unix timestamp)
 - `tool_name`: 🚧 Defined in proto but not yet populated by the server implementation
