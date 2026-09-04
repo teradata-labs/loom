@@ -140,10 +140,11 @@ func (m *messageCmp) View() string {
 		return m.style().PaddingLeft(1).Render(m.anim.View())
 	}
 	if m.message.ID != "" {
-		// this is a user or assistant message
 		switch m.message.Role {
 		case message.User:
 			return m.renderUserMessage()
+		case message.SkillBody, message.HygieneInjection:
+			return m.renderSyntheticNote()
 		default:
 			return m.renderAssistantMessage()
 		}
@@ -178,9 +179,14 @@ func (msg *messageCmp) style() lipgloss.Style {
 	}
 
 	style := t.S().Text
-	if msg.message.Role == message.User {
+	switch msg.message.Role {
+	case message.User:
 		style = style.PaddingLeft(1).BorderLeft(true).BorderStyle(borderStyle).BorderForeground(t.Primary)
-	} else {
+	case message.SkillBody, message.HygieneInjection:
+		// Always the plain, unfocused shape — a synthetic note is never the
+		// focus target a human bubble or assistant block can be.
+		style = style.PaddingLeft(2)
+	default:
 		if msg.focused {
 			style = style.PaddingLeft(1).BorderLeft(true).BorderStyle(borderStyle).BorderForeground(t.GreenDark)
 		} else {
@@ -269,6 +275,22 @@ func (m *messageCmp) renderUserMessage() string {
 
 	joined := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return m.style().Render(joined)
+}
+
+// renderSyntheticNote renders a skill-body or hygiene-injection message: a
+// muted, single-style note distinct from both the human bubble and the
+// assistant content block, since neither the user nor the assistant
+// authored it.
+func (m *messageCmp) renderSyntheticNote() string {
+	t := styles.CurrentTheme()
+	label := "Skill loaded"
+	if m.message.Role == message.HygieneInjection {
+		label = "Hygiene retry requested"
+	}
+	noteStyle := t.S().Base.Foreground(t.FgHalfMuted)
+	header := noteStyle.Bold(true).Render(label)
+	body := noteStyle.Render(m.toMarkdown(m.message.Content().String()))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body)
 }
 
 // toMarkdown converts text content to rendered markdown using the configured renderer
