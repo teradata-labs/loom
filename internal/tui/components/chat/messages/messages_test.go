@@ -57,3 +57,19 @@ func TestMessageCmp_HygieneInjection_RendersAsSyntheticNote(t *testing.T) {
 		t.Errorf("expected the injection content, got: %s", out)
 	}
 }
+
+// A synthetic note is never a focus target — unlike the user bubble and the
+// assistant content block, focusing it must not change its rendering.
+func TestMessageCmp_SkillBody_FocusHasNoEffect(t *testing.T) {
+	msg := newTestMessage(t, message.SkillBody, "## Skill: SQL Optimization")
+	cmp := NewMessageCmp(msg)
+	cmp.SetSize(80, 20)
+
+	unfocused := cmp.View()
+	cmp.Focus()
+	focused := cmp.View()
+
+	if unfocused != focused {
+		t.Errorf("expected synthetic note rendering to be focus-independent, got different output:\nunfocused: %q\nfocused:   %q", unfocused, focused)
+	}
+}

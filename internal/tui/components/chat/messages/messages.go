@@ -290,7 +290,8 @@ func (m *messageCmp) renderSyntheticNote() string {
 	noteStyle := t.S().Base.Foreground(t.FgHalfMuted)
 	header := noteStyle.Bold(true).Render(label)
 	body := noteStyle.Render(m.toMarkdown(m.message.Content().String()))
-	return lipgloss.JoinVertical(lipgloss.Left, header, body)
+	joined := lipgloss.JoinVertical(lipgloss.Left, header, body)
+	return m.style().Render(joined)
 }
 
 // toMarkdown converts text content to rendered markdown using the configured renderer
