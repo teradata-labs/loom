@@ -339,9 +339,10 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 		data, err := os.ReadFile(cleanPath) // #nosec G304 -- path validated above
 		if err == nil {
 			relPath := path
-			if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {
-				relPath = strings.TrimPrefix(path, lib.patternsDir)
-				relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+			if lib.patternsDir != "" {
+				if rel, relErr := filepath.Rel(lib.patternsDir, path); relErr == nil {
+					relPath = rel
+				}
 			}
 			pattern, err := lib.parsePattern(data, name, relPath)
 			if err != nil {
@@ -543,11 +544,16 @@ func (lib *Library) indexFilesystem() []PatternSummary {
 
 		name := strings.TrimSuffix(filepath.Base(path), ".yaml")
 
-		// Compute relative path from patternsDir
+		// Compute relative path from patternsDir. filepath.Rel (unlike a
+		// string-prefix trim) is separator-agnostic, so this holds even
+		// though lib.patternsDir is stored verbatim as given by the caller
+		// (e.g. "../../patterns") while WalkDir renders path with the OS
+		// native separator.
 		relPath := path
-		if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {
-			relPath = strings.TrimPrefix(path, lib.patternsDir)
-			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+		if lib.patternsDir != "" {
+			if rel, relErr := filepath.Rel(lib.patternsDir, path); relErr == nil {
+				relPath = rel
+			}
 		}
 
 		// Cache the path for this pattern
