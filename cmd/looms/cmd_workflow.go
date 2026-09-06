@@ -308,9 +308,9 @@ func runResume(cmd *cobra.Command, args []string) {
 
 	// checkpointPath is tried as a local file first; if no file exists there,
 	// loadCheckpoint treats the same argument as a WorkflowId and looks it up
-	// in rt.storageBackend instead (see this task's "Design correction" note
-	// — a workflow's ID cannot be derived from a file path, it is either
-	// user-set in the YAML or a random UUID minted at run time).
+	// in rt.storageBackend instead — a workflow's ID cannot be derived from a
+	// file path, it is either user-set in the YAML or a random UUID minted at
+	// run time.
 	ckpt, err := loadCheckpoint(context.Background(), rt.storageBackend, checkpointPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Failed to load checkpoint: %v\n", err)
@@ -399,7 +399,12 @@ func handleWorkflowOutcome(rt *workflowRuntime, workflowPath string, result *loo
 // (different machine, wiped container). The store write is best-effort: a
 // failure there is logged, not fatal, since the file write already made the
 // checkpoint durable for the existing resume path.
-func persistCheckpoint(ctx context.Context, sb backend.StorageBackend, path string, ckpt *loomv1.WorkflowCheckpoint) error {
+//
+// logger must be the caller's own *zap.Logger (e.g. rt.logger), not the
+// global zap.L() — the `looms workflow` commands never call
+// zap.ReplaceGlobals (only cmd_serve.go does), so zap.L() resolves to a Nop
+// logger here and would silently discard this warning.
+func persistCheckpoint(ctx context.Context, sb backend.StorageBackend, logger *zap.Logger, path string, ckpt *loomv1.WorkflowCheckpoint) error {
 	data, err := proto.Marshal(ckpt)
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
@@ -412,7 +417,7 @@ func persistCheckpoint(ctx context.Context, sb backend.StorageBackend, path stri
 		if csp, ok := sb.(backend.CheckpointStoreProvider); ok {
 			if cs := csp.CheckpointStore(); cs != nil {
 				if err := cs.SaveCheckpoint(types.ContextWithUserID(ctx, "default-user"), ckpt); err != nil {
-					zap.L().Warn("failed to persist workflow checkpoint to storage backend; local file still written",
+					logger.Warn("failed to persist workflow checkpoint to storage backend; local file still written",
 						zap.String("workflow_id", ckpt.GetWorkflowId()), zap.Error(err))
 				}
 			}
@@ -463,7 +468,7 @@ func writeCheckpointAndPrintGate(rt *workflowRuntime, workflowPath string, ckpt 
 		base := strings.TrimSuffix(filepath.Base(workflowPath), filepath.Ext(workflowPath))
 		path = base + ".checkpoint.pb"
 	}
-	if err := persistCheckpoint(context.Background(), rt.storageBackend, path, ckpt); err != nil {
+	if err := persistCheckpoint(context.Background(), rt.storageBackend, rt.logger, path, ckpt); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Failed to persist checkpoint: %v\n", err)
 		os.Exit(1)
 	}
