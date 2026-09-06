@@ -22,6 +22,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -87,7 +88,7 @@ func TestPersistCheckpoint_FallsBackToFileWhenNoStore(t *testing.T) {
 	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-fallback-test"}
 
 	// nil storageBackend simulates buildWorkflowStorageBackend having failed.
-	if err := persistCheckpoint(context.Background(), nil, path, ckpt); err != nil {
+	if err := persistCheckpoint(context.Background(), nil, zap.NewNop(), path, ckpt); err != nil {
 		t.Fatalf("persistCheckpoint: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func TestPersistCheckpoint_WritesBothStoreAndFileWhenStoreAvailable(t *testing.T
 	path := dir + "/test.checkpoint.pb"
 	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-store-test"}
 
-	if err := persistCheckpoint(context.Background(), sb, path, ckpt); err != nil {
+	if err := persistCheckpoint(context.Background(), sb, zap.NewNop(), path, ckpt); err != nil {
 		t.Fatalf("persistCheckpoint: %v", err)
 	}
 
