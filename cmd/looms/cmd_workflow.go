@@ -41,6 +41,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -151,6 +152,11 @@ gated output, then resume with exactly one decision flag:
 The workflow file must be IDENTICAL to the one the run started with — the
 checkpoint records a fingerprint of the definition and refuses to resume a
 changed workflow.
+
+If the checkpoint file no longer exists (e.g. resuming on a different
+machine, or after the local file was lost), pass the workflow ID printed at
+suspend time instead of a file path — it will be looked up in the configured
+storage backend, when one is available.
 
 Examples:
   looms workflow resume create-table.yaml create-table.checkpoint.pb --approve
@@ -274,7 +280,7 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	}
 
 	result, err := rt.orchestrator.ExecutePattern(ctx, pattern)
-	handleWorkflowOutcome(filePath, result, err, time.Since(startTime))
+	handleWorkflowOutcome(rt, filePath, result, err, time.Since(startTime))
 }
 
 // runResume resumes a workflow suspended at a HITL gate.
@@ -293,14 +299,21 @@ func runResume(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	ckptData, err := os.ReadFile(filepath.Clean(checkpointPath))
+	rt, err := setupWorkflowRuntime(pattern, false)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to read checkpoint: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
-	ckpt := &loomv1.WorkflowCheckpoint{}
-	if err := proto.Unmarshal(ckptData, ckpt); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Invalid checkpoint file: %v\n", err)
+	defer rt.Close()
+
+	// checkpointPath is tried as a local file first; if no file exists there,
+	// loadCheckpoint treats the same argument as a WorkflowId and looks it up
+	// in rt.storageBackend instead (see this task's "Design correction" note
+	// — a workflow's ID cannot be derived from a file path, it is either
+	// user-set in the YAML or a random UUID minted at run time).
+	ckpt, err := loadCheckpoint(context.Background(), rt.storageBackend, checkpointPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to load checkpoint: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -310,18 +323,10 @@ func runResume(cmd *cobra.Command, args []string) {
 	fmt.Printf("   Pending gate: stage %d (%s), decision: %s\n",
 		gate.GetStageNumber(), gate.GetStageAgentId(), decision.Action.String())
 
-	// A rejection needs no agents or LLM — short-circuit before runtime setup.
 	if decision.Action == loomv1.GateAction_GATE_ACTION_REJECT {
 		fmt.Printf("\n🛑 Workflow rejected at gate on stage %s. No further stages executed.\n", gate.GetStageAgentId())
 		return
 	}
-
-	rt, err := setupWorkflowRuntime(pattern, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
-		os.Exit(1)
-	}
-	defer rt.Close()
 
 	fmt.Println("\n⚡ Resuming workflow...")
 	startTime := time.Now()
@@ -334,7 +339,7 @@ func runResume(cmd *cobra.Command, args []string) {
 	}
 
 	result, err := rt.orchestrator.ResumeWorkflow(ctx, pattern, ckpt, decision)
-	handleWorkflowOutcome(workflowPath, result, err, time.Since(startTime))
+	handleWorkflowOutcome(rt, workflowPath, result, err, time.Since(startTime))
 }
 
 // buildResumeDecision maps the resume flags to a GateDecision, requiring
@@ -365,10 +370,10 @@ func buildResumeDecision() (*loomv1.GateDecision, error) {
 
 // handleWorkflowOutcome prints the result of a run/resume, handling HITL
 // suspension (write checkpoint + resume instructions) and rejection.
-func handleWorkflowOutcome(workflowPath string, result *loomv1.WorkflowResult, err error, duration time.Duration) {
+func handleWorkflowOutcome(rt *workflowRuntime, workflowPath string, result *loomv1.WorkflowResult, err error, duration time.Duration) {
 	var suspended *orchestration.WorkflowSuspended
 	if errors.As(err, &suspended) {
-		writeCheckpointAndPrintGate(workflowPath, suspended.Checkpoint)
+		writeCheckpointAndPrintGate(rt, workflowPath, suspended.Checkpoint)
 		return
 	}
 	var rejected *orchestration.GateRejected
@@ -386,21 +391,80 @@ func handleWorkflowOutcome(workflowPath string, result *loomv1.WorkflowResult, e
 	printWorkflowResult(result, duration)
 }
 
+// persistCheckpoint saves ckpt to the local file at path, and additionally to
+// the StorageBackend's CheckpointStore when one is available. Both are
+// written (not either/or) when a store exists: the file preserves today's
+// same-machine resume path unchanged, and the store additionally makes ckpt
+// recoverable by WorkflowId alone if the local file is later unavailable
+// (different machine, wiped container). The store write is best-effort: a
+// failure there is logged, not fatal, since the file write already made the
+// checkpoint durable for the existing resume path.
+func persistCheckpoint(ctx context.Context, sb backend.StorageBackend, path string, ckpt *loomv1.WorkflowCheckpoint) error {
+	data, err := proto.Marshal(ckpt)
+	if err != nil {
+		return fmt.Errorf("failed to marshal checkpoint: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write checkpoint %s: %w", path, err)
+	}
+
+	if sb != nil {
+		if csp, ok := sb.(backend.CheckpointStoreProvider); ok {
+			if cs := csp.CheckpointStore(); cs != nil {
+				if err := cs.SaveCheckpoint(types.ContextWithUserID(ctx, "default-user"), ckpt); err != nil {
+					zap.L().Warn("failed to persist workflow checkpoint to storage backend; local file still written",
+						zap.String("workflow_id", ckpt.GetWorkflowId()), zap.Error(err))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// loadCheckpoint resolves checkpointArg as a local file path first (the
+// existing behavior, unchanged): if a file exists there, it is read and
+// returned. If no file exists at that path, checkpointArg is instead treated
+// as a WorkflowId and looked up in sb's CheckpointStore, if one is available
+// — this is the disaster-recovery path, for a resume attempted where the
+// original local checkpoint file no longer exists.
+func loadCheckpoint(ctx context.Context, sb backend.StorageBackend, checkpointArg string) (*loomv1.WorkflowCheckpoint, error) {
+	if data, err := os.ReadFile(filepath.Clean(checkpointArg)); err == nil {
+		ckpt := &loomv1.WorkflowCheckpoint{}
+		if err := proto.Unmarshal(data, ckpt); err != nil {
+			return nil, fmt.Errorf("invalid checkpoint file: %w", err)
+		}
+		return ckpt, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("failed to read checkpoint file %s: %w", checkpointArg, err)
+	}
+
+	if sb == nil {
+		return nil, fmt.Errorf("no checkpoint file found at %s, and no storage backend is configured to look up a workflow ID instead", checkpointArg)
+	}
+	csp, ok := sb.(backend.CheckpointStoreProvider)
+	if !ok || csp.CheckpointStore() == nil {
+		return nil, fmt.Errorf("no checkpoint file found at %s, and the configured storage backend does not support checkpoint lookup", checkpointArg)
+	}
+	ckpt, err := csp.CheckpointStore().LoadCheckpoint(types.ContextWithUserID(ctx, "default-user"), checkpointArg)
+	if err != nil {
+		return nil, err
+	}
+	if ckpt == nil {
+		return nil, fmt.Errorf("no checkpoint file at %s, and no checkpoint found for workflow ID %q in the storage backend", checkpointArg, checkpointArg)
+	}
+	return ckpt, nil
+}
+
 // writeCheckpointAndPrintGate persists a suspension checkpoint and prints the
 // pending gate with resume instructions.
-func writeCheckpointAndPrintGate(workflowPath string, ckpt *loomv1.WorkflowCheckpoint) {
+func writeCheckpointAndPrintGate(rt *workflowRuntime, workflowPath string, ckpt *loomv1.WorkflowCheckpoint) {
 	path := workflowSuspendTo
 	if path == "" {
 		base := strings.TrimSuffix(filepath.Base(workflowPath), filepath.Ext(workflowPath))
 		path = base + ".checkpoint.pb"
 	}
-	data, err := proto.Marshal(ckpt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to marshal checkpoint: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to write checkpoint %s: %v\n", path, err)
+	if err := persistCheckpoint(context.Background(), rt.storageBackend, path, ckpt); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to persist checkpoint: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -417,6 +481,9 @@ func writeCheckpointAndPrintGate(workflowPath string, ckpt *loomv1.WorkflowCheck
 	fmt.Println(output)
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Printf("\n💾 Checkpoint written: %s\n", path)
+	if rt.storageBackend != nil {
+		fmt.Printf("   Workflow ID (for store-based resume if this file is lost): %s\n", ckpt.GetWorkflowId())
+	}
 	fmt.Println("\nResume with one of:")
 	fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, path)
 	fmt.Printf("  looms workflow resume %s %s --revise \"<feedback>\"\n", workflowPath, path)
