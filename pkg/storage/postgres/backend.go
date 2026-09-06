@@ -24,9 +24,9 @@ import (
 	"github.com/teradata-labs/loom/internal/pgxdriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
 )
@@ -119,7 +119,7 @@ func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 }
 
 // CheckpointStore implements backend.CheckpointStoreProvider.
-func (b *Backend) CheckpointStore() orchestration.CheckpointStore {
+func (b *Backend) CheckpointStore() checkpoint.CheckpointStore {
 	return b.checkpointStore
 }
 
