@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
 )
@@ -86,6 +87,14 @@ type GraphMemoryProvider interface {
 type TaskStoreProvider interface {
 	// TaskStore returns the task store, or nil if not available.
 	TaskStore() task.TaskStore
+}
+
+// CheckpointStoreProvider is an optional interface that StorageBackend
+// implementations may satisfy to provide durable WorkflowCheckpoint storage.
+// Only backends with the workflow_checkpoints migration applied implement this.
+type CheckpointStoreProvider interface {
+	// CheckpointStore returns the checkpoint store, or nil if not available.
+	CheckpointStore() orchestration.CheckpointStore
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.
