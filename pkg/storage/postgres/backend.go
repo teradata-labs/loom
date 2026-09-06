@@ -26,6 +26,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
 )
@@ -42,6 +43,7 @@ type Backend struct {
 	humanRequestStore *HumanRequestStore
 	taskStore         *TaskStore
 	graphMemoryStore  *GraphMemoryStore
+	checkpointStore   *CheckpointStore
 	migrator          *Migrator
 	tracer            observability.Tracer
 	logger            *zap.Logger
@@ -84,6 +86,7 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		humanRequestStore: NewHumanRequestStore(pool, tracer),
 		taskStore:         NewTaskStore(pool, tracer),
 		graphMemoryStore:  NewGraphMemoryStore(pool, tc, tracer),
+		checkpointStore:   NewCheckpointStore(pool, tracer),
 		migrator:          migrator,
 		tracer:            tracer,
 		logger:            logger,
@@ -113,6 +116,11 @@ func (b *Backend) TaskStore() task.TaskStore {
 // GraphMemoryStore implements backend.GraphMemoryProvider.
 func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 	return b.graphMemoryStore
+}
+
+// CheckpointStore implements backend.CheckpointStoreProvider.
+func (b *Backend) CheckpointStore() orchestration.CheckpointStore {
+	return b.checkpointStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.
