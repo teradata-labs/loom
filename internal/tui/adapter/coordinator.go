@@ -218,8 +218,10 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 				lastContent = progress.PartialContent
 			}
 
-			// Check for HITL (Human-In-The-Loop) request and emit clarification question
-			if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_HUMAN_IN_THE_LOOP && progress.HitlRequest != nil {
+			// Check for HITL (Human-In-The-Loop) request and emit clarification
+			// question. Heartbeats and the pre-creation ping ride this same
+			// stage and must not raise a dialog — see IsAnswerableHITLCard.
+			if IsAnswerableHITLCard(progress) {
 				// Convert HITLRequestInfo to metaagent.Question
 				question := &metaagent.Question{
 					ID:      progress.HitlRequest.RequestId,

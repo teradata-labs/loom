@@ -170,13 +170,14 @@ type LLMSchedulerConfig struct {
 	ReservationTokensPerCall int32 `protobuf:"varint,2,opt,name=reservation_tokens_per_call,json=reservationTokensPerCall,proto3" json:"reservation_tokens_per_call,omitempty"`
 	// Ceiling on concurrently active (admitted, not parked) conversations.
 	// 0 = derive from measured capacity; see the design doc for the formula.
-	// Enforced only when door admission is enabled; the door layer is not yet
-	// wired, so this field is currently ignored.
+	// The door gate is wired process-wide and configured at boot via looms
+	// config (llm.max_active_conversations); this per-scope field is not yet
+	// read.
 	MaxActiveConversations int32 `protobuf:"varint,3,opt,name=max_active_conversations,json=maxActiveConversations,proto3" json:"max_active_conversations,omitempty"`
 	// Door-queue depth beyond which new conversations are rejected with
 	// RESOURCE_EXHAUSTED instead of queued.
-	// Enforced only when door admission is enabled; the door layer is not yet
-	// wired, so this field is currently ignored.
+	// The door gate is wired process-wide and configured at boot via looms
+	// config (llm.max_door_queue); this per-scope field is not yet read.
 	MaxDoorQueue int32 `protobuf:"varint,4,opt,name=max_door_queue,json=maxDoorQueue,proto3" json:"max_door_queue,omitempty"`
 	// Seconds after which a waiting slot request is promoted one priority
 	// class. Bounds starvation: any waiter reaches the top class in at most
@@ -277,14 +278,16 @@ type SlotState struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The provider quota scope this scheduler protects.
 	Scope string `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
-	// Conversations currently holding at least one grant or eligible to
-	// request one. Populated when door admission is enabled (door layer not
-	// yet wired).
+	// Conversation turns currently admitted through the process-wide door
+	// gate. Populated from the door gate's live counters; the door is one gate
+	// in front of every scope, so all scopes report the same value. Zero when
+	// door admission is disabled (llm.max_active_conversations = 0).
 	ActiveConversations int32 `protobuf:"varint,2,opt,name=active_conversations,json=activeConversations,proto3" json:"active_conversations,omitempty"`
 	// Slot requests currently parked waiting for capacity.
 	ParkedRequests int32 `protobuf:"varint,3,opt,name=parked_requests,json=parkedRequests,proto3" json:"parked_requests,omitempty"`
-	// Conversations queued at the admission door. Populated when door
-	// admission is enabled (door layer not yet wired).
+	// Conversation turns parked at the admission door. Populated from the
+	// process-wide door gate's live counters (same value on every scope);
+	// zero when door admission is disabled or nothing is queued.
 	DoorQueueDepth int32 `protobuf:"varint,4,opt,name=door_queue_depth,json=doorQueueDepth,proto3" json:"door_queue_depth,omitempty"`
 	// Effective tokens-per-minute after provider-telemetry calibration (or
 	// AIMD for signal-free providers). This is the enforced number.
@@ -298,8 +301,13 @@ type SlotState struct {
 	// Aging promotions since scheduler start (a rising rate means the scope is
 	// saturated enough that liveness protection is doing real work).
 	PromotionsTotal int64 `protobuf:"varint,9,opt,name=promotions_total,json=promotionsTotal,proto3" json:"promotions_total,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// True when an operator pinned effective_tokens_per_minute via
+	// SetSchedulerConfig. While pinned, provider header calibration and AIMD
+	// leave the ceiling alone; setting tokens_per_minute back to 0 releases
+	// the pin and resumes calibration.
+	CeilingPinned bool `protobuf:"varint,10,opt,name=ceiling_pinned,json=ceilingPinned,proto3" json:"ceiling_pinned,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SlotState) Reset() {
@@ -393,6 +401,13 @@ func (x *SlotState) GetPromotionsTotal() int64 {
 		return x.PromotionsTotal
 	}
 	return 0
+}
+
+func (x *SlotState) GetCeilingPinned() bool {
+	if x != nil {
+		return x.CeilingPinned
+	}
+	return false
 }
 
 // SlotWaiter describes one parked slot request.
@@ -766,7 +781,7 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x0emax_door_queue\x18\x04 \x01(\x05R\fmaxDoorQueue\x12(\n" +
 	"\x10starvation_age_s\x18\x05 \x01(\x05R\x0estarvationAgeS\x12-\n" +
 	"\x12utilization_target\x18\x06 \x01(\x02R\x11utilizationTarget\x121\n" +
-	"\x14interactive_headroom\x18\a \x01(\x02R\x13interactiveHeadroom\"\xad\x03\n" +
+	"\x14interactive_headroom\x18\a \x01(\x02R\x13interactiveHeadroom\"\xd4\x03\n" +
 	"\tSlotState\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x121\n" +
 	"\x14active_conversations\x18\x02 \x01(\x05R\x13activeConversations\x12'\n" +
@@ -776,7 +791,9 @@ const file_loom_v1_llm_scheduler_proto_rawDesc = "" +
 	"\x1breserved_tokens_outstanding\x18\x06 \x01(\x03R\x19reservedTokensOutstanding\x127\n" +
 	"\tnext_wake\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bnextWake\x12!\n" +
 	"\fgrants_total\x18\b \x01(\x03R\vgrantsTotal\x12)\n" +
-	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\"\x94\x02\n" +
+	"\x10promotions_total\x18\t \x01(\x03R\x0fpromotionsTotal\x12%\n" +
+	"\x0eceiling_pinned\x18\n" +
+	" \x01(\bR\rceilingPinned\"\x94\x02\n" +
 	"\n" +
 	"SlotWaiter\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +

@@ -22,7 +22,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // registers "sqlite3" driver
+	"github.com/teradata-labs/loom/internal/sqlitedriver" // registers "sqlite3" driver
 )
 
 // Backup creates a safe online backup of a SQLite database using VACUUM INTO.
@@ -33,15 +33,14 @@ import (
 func Backup(dbPath string) (backupPath string, err error) {
 	backupPath = dbPath + ".backup." + time.Now().Format("20060102T150405")
 
-	srcDB, err := sql.Open("sqlite3", dbPath)
+	// busy_timeout rides in the DSN so it is guaranteed to apply to the
+	// connection that runs VACUUM INTO (an Exec-then-Exec sequence could land
+	// on two different pooled connections).
+	srcDB, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return "", fmt.Errorf("backup: open source database %q: %w", dbPath, err)
 	}
 	defer func() { _ = srcDB.Close() }()
-
-	if _, err := srcDB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		return "", fmt.Errorf("backup: set busy_timeout on %q: %w", dbPath, err)
-	}
 
 	if _, err := srcDB.Exec("VACUUM INTO ?", backupPath); err != nil {
 		_ = os.Remove(backupPath) // best-effort cleanup
@@ -64,7 +63,7 @@ func Backup(dbPath string) (backupPath string, err error) {
 // VerifyBackup opens a SQLite database file and runs PRAGMA integrity_check to
 // confirm the file is a valid, uncorrupted SQLite database.
 func VerifyBackup(backupPath string) error {
-	db, err := sql.Open("sqlite3", backupPath)
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(backupPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return fmt.Errorf("verify backup: open %q: %w", backupPath, err)
 	}

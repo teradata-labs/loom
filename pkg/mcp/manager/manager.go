@@ -54,6 +54,10 @@ type watcherHandle struct {
 	done chan struct{}
 }
 
+// Logger returns the manager's structured logger (never nil), so
+// registration paths can hand adapters a real logger instead of a no-op.
+func (m *Manager) Logger() *zap.Logger { return m.logger }
+
 // NewManager creates a new MCP manager.
 func NewManager(config Config, logger *zap.Logger) (*Manager, error) {
 	if err := config.Validate(); err != nil {

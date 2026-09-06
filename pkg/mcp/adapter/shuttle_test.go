@@ -339,6 +339,52 @@ func TestConvertMCPContent_Mixed(t *testing.T) {
 	assert.Equal(t, "text/plain", resultSlice[3]["mimeType"])
 }
 
+// TestConvertMCPContent_ResourceLink: resource_link content on a successful
+// result keeps its uri/name (issue #343 uses links on errors, but servers
+// also return them on success — dropping them left an empty content item).
+func TestConvertMCPContent_ResourceLink(t *testing.T) {
+	content := []protocol.Content{
+		{
+			Type: "text",
+			Text: "See the linked resource:",
+		},
+		{
+			Type:     "resource_link",
+			URI:      "test://slots",
+			Name:     "availability",
+			MimeType: "application/json",
+		},
+	}
+
+	result := convertMCPContent(content)
+	resultSlice, ok := result.([]map[string]interface{})
+	require.True(t, ok)
+	require.Len(t, resultSlice, 2)
+
+	assert.Equal(t, "resource_link", resultSlice[1]["type"])
+	assert.Equal(t, "test://slots", resultSlice[1]["uri"])
+	assert.Equal(t, "availability", resultSlice[1]["name"])
+	assert.Equal(t, "application/json", resultSlice[1]["mimeType"])
+}
+
+// TestConvertMCPContent_ResourceLinkMinimal: optional fields stay absent
+// instead of appearing as empty strings.
+func TestConvertMCPContent_ResourceLinkMinimal(t *testing.T) {
+	content := []protocol.Content{
+		{Type: "text", Text: "link:"},
+		{Type: "resource_link", URI: "test://slots"},
+	}
+
+	result := convertMCPContent(content)
+	resultSlice, ok := result.([]map[string]interface{})
+	require.True(t, ok)
+	require.Len(t, resultSlice, 2)
+
+	assert.Equal(t, "test://slots", resultSlice[1]["uri"])
+	assert.NotContains(t, resultSlice[1], "name")
+	assert.NotContains(t, resultSlice[1], "mimeType")
+}
+
 func TestConvertMCPContent_UnknownType(t *testing.T) {
 	content := []protocol.Content{
 		{

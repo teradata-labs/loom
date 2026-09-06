@@ -7,6 +7,7 @@ package scheduler
 
 import (
 	"context"
+	"go.uber.org/zap"
 	"sync"
 	"testing"
 	"time"
@@ -532,4 +533,82 @@ func TestAcquireAfterCloseGrantsImmediately(t *testing.T) {
 	assert.Equal(t, int64(0), st.ReservedTokensOutstanding,
 		"Close-time and post-Close grants must flow through grantLocked accounting")
 	assert.Equal(t, int64(2), st.GrantsTotal)
+}
+
+// TestOperatorCeilingSurvivesHeaderCalibration pins the override contract: an
+// operator sets a ceiling to drain a scope or to reproduce contention, and
+// the provider's very next successful response must not silently undo it.
+func TestOperatorCeilingSurvivesHeaderCalibration(t *testing.T) {
+	s := New("scope", Config{})
+	defer s.Close()
+
+	s.SetConfig(600_000, 0, 0, 0)
+	require.True(t, s.State().CeilingPinned, "an explicit ceiling is pinned")
+	require.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute)
+
+	// The provider says 1.5M on the next response — exactly what clobbered
+	// the override before.
+	s.UpdateFromHeaders(1_500_000, 1_499_000, 0)
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"header calibration must not move a pinned ceiling")
+
+	// AIMD must not move it either, in either direction.
+	s.ObserveThrottle(0)
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"a throttle must not halve a pinned ceiling")
+	s.ObserveSuccess()
+	assert.Equal(t, int64(600_000), s.State().EffectiveTokensPerMinute,
+		"AIMD must not grow a pinned ceiling")
+
+	// 0 releases the pin and hands the scope back to calibration.
+	s.SetConfig(0, 0, 0, 0)
+	assert.False(t, s.State().CeilingPinned)
+	s.UpdateFromHeaders(1_500_000, 1_499_000, 0)
+	assert.Equal(t, int64(1_500_000), s.State().EffectiveTokensPerMinute,
+		"released scopes calibrate again")
+}
+
+// TestListWaitersAllScopes pins the empty-scope contract: an operator asking
+// "who is parked?" without naming a scope must get every scope's waiters,
+// matching GetSlotState. It returned nothing before, while the state view
+// reported a non-zero parked count — a contradiction between two views of
+// the same queue.
+func TestListWaitersAllScopes(t *testing.T) {
+	prev := Enabled()
+	SetEnabled(true)
+	defer SetEnabled(prev)
+
+	reg := NewRegistry(zap.NewNop())
+	defer reg.Close()
+	svc := NewService(reg)
+
+	// A tight ceiling plus one outstanding grant: the scope is no longer idle,
+	// so the work-conserving escape valve (which always admits the head of an
+	// idle scope) does not apply and the second request genuinely parks.
+	sched := reg.For("scope-a", Config{TokensPerMinute: 10_000})
+	sched.SetConfig(10_000, 0, 0, 0)
+
+	held, err := sched.Acquire(context.Background(), Request{ConversationID: "holder", ReservationTokens: 9_000})
+	require.NoError(t, err)
+	require.NotNil(t, held)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_, _ = sched.Acquire(ctx, Request{ConversationID: "conv-1", AgentName: "agent-1", ReservationTokens: 9_000})
+	}()
+	require.Eventually(t, func() bool { return sched.State().ParkedRequests > 0 },
+		2*time.Second, 10*time.Millisecond, "the request must park")
+
+	all, err := svc.ListWaiters(context.Background(), &loomv1.ListWaitersRequest{})
+	require.NoError(t, err)
+	require.Len(t, all.Waiters, 1, "empty scope must list every scope's waiters")
+	assert.Equal(t, "conv-1", all.Waiters[0].ConversationId, "the waiter must be attributable")
+	assert.Equal(t, "agent-1", all.Waiters[0].AgentName)
+
+	scoped, err := svc.ListWaiters(context.Background(), &loomv1.ListWaitersRequest{Scope: "scope-a"})
+	require.NoError(t, err)
+	assert.Len(t, scoped.Waiters, 1, "naming the scope still works")
+
+	cancel()
+	held.Release(0)
 }

@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver (encryption when CGO available)
+	"github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver (encryption when CGO available)
 )
 
 // SQLiteStorage provides persistent trace storage using SQLite.
@@ -38,13 +38,43 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 		return nil, fmt.Errorf("database path cannot be empty")
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite3", dbPath)
+	// Open the database in WAL mode with a busy timeout. Both settings ride
+	// in the DSN so they reach EVERY pooled connection: busy_timeout is a
+	// per-connection setting, so a post-open db.Exec configures only the one
+	// connection that happens to run it (see internal/sqlitedriver). No
+	// post-open "PRAGMA journal_mode" Exec is used here — journal_mode is a
+	// persistent database-level setting so either form works, but the DSN
+	// keeps the intent with the open call and covers a fresh database file
+	// without a follow-up statement.
+	//
+	// WAL is the structural half of the fix for issue #370. In SQLite's
+	// default rollback-journal mode every writer takes an EXCLUSIVE lock on
+	// the whole file across its fsync and readers block writers outright, so
+	// with 10 pooled connections all writing spans the lock is held
+	// essentially continuously under fleet load: writers burned the full 5s
+	// busy_timeout and still lost (~1,486 "failed to store eval run" in one
+	// 512-agent run). Under WAL, readers never block the writer and commits
+	// append to the -wal file, which collapses the write lock's duty cycle.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           true,
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Configure connection pool
+	// Configure connection pool.
+	//
+	// 10 connections stays right under WAL. SQLite allows exactly one writer
+	// at a time in any journal mode, so a narrower pool would not buy write
+	// throughput; what the extra connections buy is that the read path
+	// (CalculateEvalMetrics runs a full aggregate scan over eval_runs) runs
+	// concurrently with writers instead of blocking them, which is precisely
+	// what WAL enables and what rollback-journal mode did not. Serialising
+	// writers in Go instead (a write mutex or a 1-connection write pool) was
+	// considered and rejected: it trades SQLite's busy handler for a Go queue
+	// without changing write throughput, and TestSQLiteConcurrentWriters
+	// shows the busy handler no longer loses under WAL.
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)

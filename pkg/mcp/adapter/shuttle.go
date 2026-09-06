@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -284,18 +285,53 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 
 	// Call MCP tool with camelCase parameters
 	mcpResultInterface, err := a.client.CallTool(ctx, a.tool.Name, restoredParams)
+	if err != nil {
+		// The mechanism is chosen once, on the first error: a resource-wait
+		// retry that then fails with a backpressure hint (or a freeze
+		// re-invoke that fails with a resource link) surfaces that second
+		// error to the model rather than chaining waits — deliberate
+		// recursion bounding, one wait mechanism per tool call.
+		if isBackpressure(err) {
+			// Backpressure freeze (issue #354): capacity flow control never
+			// reaches the model — the call re-invokes, parked server-side
+			// via the error's wait_param when named, until capacity frees
+			// or the conversation's deadline expires.
+			mcpResultInterface, err = a.awaitBackpressure(ctx, restoredParams, err)
+		} else {
+			// Park-and-wake (issue #343): a failure that links a resource
+			// parks here and retries when the resource updates; otherwise
+			// unchanged.
+			mcpResultInterface, err = a.awaitLinkedResource(ctx, restoredParams, err)
+		}
+	}
 	executionTime := time.Since(startTime).Milliseconds()
 
 	if err != nil {
 		// Convert error to shuttle.Result with error
+		shuttleErr := &shuttle.Error{
+			Code:       "MCP_CALL_FAILED",
+			Message:    err.Error(),
+			Retryable:  true,
+			Suggestion: "Check MCP server logs for details",
+		}
+		// A capacity condition that outlived the freeze (budget exhausted,
+		// or a hint that arrived with no wait mechanism) carries its hint
+		// onto the generic contract, so consumers outside pkg/mcp — the
+		// agent loop, observability — read flow control without knowing MCP.
+		var terr *client.ToolResultError
+		if errors.As(err, &terr) {
+			if hint := terr.Backpressure(); hint != nil {
+				shuttleErr.SetBackpressure(shuttle.BackpressureHint{
+					Code:        hint.Code,
+					RetryAfterS: hint.RetryAfterS,
+					WaitParam:   hint.WaitParam,
+					MaxWaitS:    hint.MaxWaitS,
+				})
+			}
+		}
 		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "MCP_CALL_FAILED",
-				Message:    err.Error(),
-				Retryable:  true,
-				Suggestion: "Check MCP server logs for details",
-			},
+			Success:         false,
+			Error:           shuttleErr,
 			ExecutionTimeMs: executionTime,
 		}, nil // Return nil error since we wrapped it in Result.Error
 	}
@@ -319,6 +355,12 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// only size logic, so no second bound may cut the payload upstream here.
 	data := convertMCPContent(mcpResult.Content)
 
+	// Session-handle lifecycle (issue #345): collect minted handles for
+	// end-of-conversation auto-release; drop ones the agent released itself.
+	// The events ride out on the Result so the agent's lease ledger and the
+	// LLM slot scheduler learn about the lease generically.
+	leaseEvents := trackSessionHandles(ctx, a, params, data)
+
 	// Cache schema results (#4: Schema Caching)
 	if a.isSchemaLookupTool() {
 		cacheKey := a.buildSchemaCacheKey(restoredParams)
@@ -332,12 +374,16 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 		"tool_name":  a.tool.Name,
 	}
 
-	return &shuttle.Result{
+	result := &shuttle.Result{
 		Success:         true,
 		Data:            data,
 		ExecutionTimeMs: executionTime,
 		Metadata:        metadata,
-	}, nil
+	}
+	for _, ev := range leaseEvents {
+		shuttle.AppendLeaseEvent(result, ev)
+	}
+	return result, nil
 }
 
 // Backend implements shuttle.Tool
@@ -385,6 +431,17 @@ func convertMCPContent(content []protocol.Content) interface{} {
 			if c.Resource != nil {
 				item["uri"] = c.Resource.URI
 				item["mimeType"] = c.Resource.MimeType
+			}
+		case "resource_link":
+			// A reference to a server resource without its contents
+			// (2025-06-18+): preserve uri/name so the agent can see and act
+			// on the link instead of receiving an empty content item.
+			item["uri"] = c.URI
+			if c.Name != "" {
+				item["name"] = c.Name
+			}
+			if c.MimeType != "" {
+				item["mimeType"] = c.MimeType
 			}
 		}
 

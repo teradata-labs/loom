@@ -556,7 +556,26 @@ type WeaveProgress struct {
 	Timestamp int64 `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// Partial result (available at certain stages)
 	PartialResult *ExecutionResult `protobuf:"bytes,6,opt,name=partial_result,json=partialResult,proto3" json:"partial_result,omitempty"`
-	// HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP)
+	// HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP).
+	//
+	// A non-empty hitl_request.request_id is what makes a message an ANSWERABLE
+	// card. Consumers MUST key the human-facing prompt off that id, because it is
+	// the handle AnswerClarificationQuestion / RespondToRequest take; a prompt
+	// raised without one cannot deliver its answer, and the hold behind it stays
+	// pending until it times out. Two other shapes ride the same stage and MUST
+	// NOT raise a prompt:
+	//
+	//   - hitl_request ABSENT — a hold heartbeat. A hold is otherwise byte-silent
+	//     on this stream for its whole window (up to 300s for an approval hold),
+	//     long enough for an intermediary to trip an inactivity timeout and tear
+	//     down the stream the decision has to travel back on. These messages
+	//     exist only to produce traffic and carry no state; they may also be
+	//     dropped under backpressure, so consumers must not count on receiving
+	//     every one.
+	//   - hitl_request PRESENT with an empty request_id — the pre-creation ping
+	//     the conversation loop emits off a contact_human call before the store
+	//     row exists. Useful as an early "a hold is coming" hint; the answerable
+	//     card follows once the row is written.
 	HitlRequest *HITLRequestInfo `protobuf:"bytes,7,opt,name=hitl_request,json=hitlRequest,proto3" json:"hitl_request,omitempty"`
 	// Token streaming fields
 	// Accumulated content so far (for streaming responses)

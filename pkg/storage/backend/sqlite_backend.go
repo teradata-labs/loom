@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -95,8 +96,18 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		)
 	}
 
+	// Shared DSN: busy_timeout and foreign_keys are per-connection settings,
+	// so they must ride in the DSN to reach every pooled connection.
+	// sqlitedriver.DSN renders the active driver's parameter syntax
+	// (mattn-style under CGO, _pragma-style under modernc).
+	dsn := sqlitedriver.DSN(dbPath, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           true,
+		ForeignKeys:   true,
+	})
+
 	// Create migrator for versioned schema management
-	migratorDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL")
+	migratorDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for migrator: %w", err),
@@ -117,7 +128,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	}
 
 	// Create graph memory store (uses same DB path, separate connection).
-	graphMemDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
+	graphMemDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for graph memory: %w", err),
@@ -131,7 +142,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	graphMemoryStore := sqlite.NewGraphMemoryStore(graphMemDB, tc, tracer)
 
 	// Create task store (uses same DB path, separate connection).
-	taskDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
+	taskDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for task store: %w", err),
@@ -215,7 +226,7 @@ func (b *SQLiteBackend) Migrator() *sqlite.Migrator {
 
 // Ping verifies the SQLite database is accessible.
 func (b *SQLiteBackend) Ping(ctx context.Context) error {
-	db, err := sql.Open("sqlite3", b.dbPath)
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(b.dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return fmt.Errorf("SQLite ping failed: %w", err)
 	}

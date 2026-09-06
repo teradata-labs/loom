@@ -127,11 +127,16 @@ type CallToolResult struct {
 
 // Content represents different types of content (text, image, resource)
 type Content struct {
-	Type     string       `json:"type"` // "text", "image", "resource"
+	Type     string       `json:"type"` // "text", "image", "resource", "resource_link"
 	Text     string       `json:"text,omitempty"`
 	Data     string       `json:"data,omitempty"`     // Base64 for images
 	MimeType string       `json:"mimeType,omitempty"` // For images/resources
 	Resource *ResourceRef `json:"resource,omitempty"` // For resource type
+	// URI and Name carry resource_link content (2025-06-18+): a reference to
+	// a server resource without its contents. On a failed tool result a
+	// linked resource marks a watchable retry condition (issue #343).
+	URI  string `json:"uri,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // ResourceRef references a resource

@@ -100,19 +100,27 @@ func NewService(reg *Registry) *Service {
 	return &Service{reg: reg}
 }
 
-// GetSlotState returns the live state of one scope, or all scopes.
+// GetSlotState returns the live state of one scope, or all scopes. Every
+// returned state also carries the process-wide door gate's live counters
+// (active_conversations / door_queue_depth): the door is one gate in front
+// of every scope, so all scopes report the same values.
 func (s *Service) GetSlotState(_ context.Context, req *loomv1.GetSlotStateRequest) (*loomv1.GetSlotStateResponse, error) {
 	resp := &loomv1.GetSlotStateResponse{}
 	if scope := req.GetScope(); scope != "" {
 		if sched, ok := s.reg.Get(scope); ok {
 			resp.States = append(resp.States, sched.State())
 		}
-		return resp, nil
-	}
-	for _, scope := range s.reg.Scopes() {
-		if sched, ok := s.reg.Get(scope); ok {
-			resp.States = append(resp.States, sched.State())
+	} else {
+		for _, scope := range s.reg.Scopes() {
+			if sched, ok := s.reg.Get(scope); ok {
+				resp.States = append(resp.States, sched.State())
+			}
 		}
+	}
+	doorActive, doorQueued := Door().DoorState()
+	for _, st := range resp.States {
+		st.ActiveConversations = int32(doorActive) // #nosec G115 -- bounded by the operator-set ceiling
+		st.DoorQueueDepth = int32(doorQueued)      // #nosec G115 -- bounded by the operator-set queue cap / live request count
 	}
 	return resp, nil
 }
@@ -120,8 +128,19 @@ func (s *Service) GetSlotState(_ context.Context, req *loomv1.GetSlotStateReques
 // ListWaiters returns the parked slot requests of a scope.
 func (s *Service) ListWaiters(_ context.Context, req *loomv1.ListWaitersRequest) (*loomv1.ListWaitersResponse, error) {
 	resp := &loomv1.ListWaitersResponse{}
-	if sched, ok := s.reg.Get(req.GetScope()); ok {
-		resp.Waiters = sched.Waiters()
+	if scope := req.GetScope(); scope != "" {
+		if sched, ok := s.reg.Get(scope); ok {
+			resp.Waiters = sched.Waiters()
+		}
+		return resp, nil
+	}
+	// Empty scope means every scope, matching GetSlotState. Without this an
+	// operator asking "who is parked?" with no scope gets an empty list
+	// while the state view reports a non-zero parked count.
+	for _, scope := range s.reg.Scopes() {
+		if sched, ok := s.reg.Get(scope); ok {
+			resp.Waiters = append(resp.Waiters, sched.Waiters()...)
+		}
 	}
 	return resp, nil
 }

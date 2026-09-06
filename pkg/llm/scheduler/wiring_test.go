@@ -7,6 +7,7 @@ package scheduler
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,6 +64,79 @@ func TestWithSlotInfoPriorCallsSeedsInFlight(t *testing.T) {
 	si := SlotInfoFrom(ctx)
 	require.NotNil(t, si)
 	assert.Equal(t, int64(7), si.calls.Load())
+}
+
+func TestSlotInfoClass(t *testing.T) {
+	tests := []struct {
+		name       string
+		priorCalls int64
+		holding    bool
+		want       loomv1.SlotPriorityClass
+	}{
+		{"fresh conversation is NEW", 0, false, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW},
+		{"mid-task conversation is IN_FLIGHT", 1, false, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT},
+		{"lease outranks NEW", 0, true, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER},
+		{"lease outranks IN_FLIGHT", 5, true, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := WithSlotInfoHolding(context.Background(), loomv1.SlotOrigin_SLOT_ORIGIN_BATCH, tt.priorCalls, tt.holding)
+			si := SlotInfoFrom(ctx)
+			require.NotNil(t, si)
+			assert.Equal(t, tt.want, si.Class())
+		})
+	}
+}
+
+func TestUnmarkResourceHolder(t *testing.T) {
+	t.Run("no SlotInfo is a no-op", func(t *testing.T) {
+		UnmarkResourceHolder(context.Background())
+	})
+
+	t.Run("mark then unmark restores the call-count class", func(t *testing.T) {
+		ctx := WithSlotInfo(context.Background(), loomv1.SlotOrigin_SLOT_ORIGIN_BATCH, 1)
+		si := SlotInfoFrom(ctx)
+		require.NotNil(t, si)
+
+		MarkResourceHolder(ctx)
+		assert.Equal(t, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER, si.Class())
+
+		UnmarkResourceHolder(ctx)
+		assert.Equal(t, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT, si.Class())
+	})
+
+	t.Run("unmark without a prior mark stays unmarked", func(t *testing.T) {
+		ctx := WithSlotInfo(context.Background(), loomv1.SlotOrigin_SLOT_ORIGIN_BATCH, 0)
+		UnmarkResourceHolder(ctx)
+		assert.Equal(t, loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW, SlotInfoFrom(ctx).Class())
+	})
+}
+
+// Mark, unmark, and classification race on the shared per-turn SlotInfo:
+// tool results flip the holder flag while LLM acquisitions read it.
+func TestMarkUnmarkClassConcurrent(t *testing.T) {
+	ctx := WithSlotInfo(context.Background(), loomv1.SlotOrigin_SLOT_ORIGIN_BATCH, 0)
+	si := SlotInfoFrom(ctx)
+	require.NotNil(t, si)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				switch n % 3 {
+				case 0:
+					MarkResourceHolder(ctx)
+				case 1:
+					UnmarkResourceHolder(ctx)
+				default:
+					_ = si.Class()
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 type scopedStub struct{ scope string }

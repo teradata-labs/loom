@@ -685,6 +685,14 @@ func (m *Memory) ClearAll() {
 	m.sessions = make(map[string]*Session)
 }
 
+// HasStore reports whether a persistent session store is configured. Every
+// Persist* method is a silent no-op returning nil without one, so a caller
+// that needs a message to be DURABLE — not merely "persisted without error" —
+// has to ask this separately. The HITL park pre-scan is the case: it may only
+// raise a durable request row for a batch that will still exist after a
+// restart.
+func (m *Memory) HasStore() bool { return m.store != nil }
+
 // PersistSession saves a session to persistent storage if configured.
 func (m *Memory) PersistSession(ctx context.Context, session *Session) error {
 	if m.store == nil {

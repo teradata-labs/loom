@@ -29,7 +29,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/teradata-labs/loom/embedded"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -1051,6 +1051,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// construction: clients attach their CapacityObserver at build time,
 	// and agents are loaded well before gRPC service registration.
 	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+	llmscheduler.SetDoorLimits(config.LLM.MaxActiveConversations, config.LLM.MaxDoorQueue)
 
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
@@ -1687,7 +1688,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		hitlStore,
 		askTimeout,
 		time.Second,
-		nil,
+		hitlNotifier(),
 	)
 	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
 	if err != nil {
@@ -2077,9 +2078,10 @@ func runServe(cmd *cobra.Command, args []string) {
 					for _, toolName := range cfg.Tools.Builtin {
 						if toolName == "contact_human" {
 							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-								Store:  hitlStore,
-								Tracer: tracer,
-								Logger: logger,
+								Store:    hitlStore,
+								Notifier: hitlNotifier(),
+								Tracer:   tracer,
+								Logger:   logger,
 							})
 							ag.RegisterTool(humanTool)
 							logger.Info("    Auto-registered contact_human tool (shared HITL store)",
@@ -2739,7 +2741,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		if learningDBPath == "" {
 			learningDBPath = filepath.Join(loomconfig.GetLoomDataDir(), "learning.db")
 		}
-		learningDB, err := sql.Open("sqlite3", learningDBPath)
+		// busy_timeout rides in the DSN so every pooled connection waits on
+		// lock contention instead of failing instantly with SQLITE_BUSY.
+		learningDB, err := sql.Open("sqlite3", sqlitedriver.DSN(learningDBPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 		if err != nil {
 			logger.Fatal("Failed to open database for learning agent", zap.Error(err))
 		}
@@ -3325,9 +3329,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				for _, toolName := range agentConfig.Tools.Builtin {
 					if toolName == "contact_human" {
 						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-							Store:  hitlStore,
-							Tracer: tracer,
-							Logger: logger,
+							Store:    hitlStore,
+							Notifier: hitlNotifier(),
+							Tracer:   tracer,
+							Logger:   logger,
 						})
 						newAgent.RegisterTool(humanTool)
 						logger.Info("  Auto-registered contact_human tool (shared HITL store)",

@@ -26,7 +26,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -120,8 +120,10 @@ func New(cfg Config) (*Registry, error) {
 		cfg.Logger = zap.NewNop()
 	}
 
-	// Open SQLite database with FTS5 support
-	db, err := sql.Open("sqlite3", cfg.DBPath)
+	// Open SQLite database with FTS5 support. busy_timeout rides in the DSN
+	// so every pooled connection waits on lock contention instead of failing
+	// instantly with SQLITE_BUSY.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(cfg.DBPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
