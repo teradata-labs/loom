@@ -3,7 +3,13 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-package orchestration
+// Package checkpoint defines the CheckpointStore interface for persisting
+// and retrieving WorkflowCheckpoint records. It is a leaf package with no
+// internal loom imports beyond the generated proto, mirroring pkg/task's
+// TaskStore interface, so storage backends can implement it without pulling
+// in heavier packages (in particular pkg/orchestration, which itself depends
+// on pkg/agent).
+package checkpoint
 
 import (
 	"context"
@@ -13,9 +19,10 @@ import (
 
 // CheckpointStore persists and retrieves WorkflowCheckpoint records keyed by
 // workflow ID. It gives stage-boundary HITL-gate resume (see hitl_gate.go,
-// resume.go) a durable home beyond a caller-managed local file: the CLI's
-// checkpoint file (cmd/looms/cmd_workflow.go) remains a fallback for
-// environments with no StorageBackend, not the primary persistence mechanism.
+// resume.go in pkg/orchestration) a durable home beyond a caller-managed
+// local file: the CLI's checkpoint file (cmd/looms/cmd_workflow.go) remains
+// a fallback for environments with no StorageBackend, not the primary
+// persistence mechanism.
 //
 // LoadCheckpoint returns (nil, nil) for a workflow ID with no saved
 // checkpoint, matching the no-error-on-absence convention used elsewhere in
