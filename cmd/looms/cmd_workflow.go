@@ -40,6 +40,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -506,9 +507,10 @@ func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGa
 // workflowRuntime bundles the orchestrator and everything it depends on for a
 // CLI workflow execution, plus the teardown for those dependencies.
 type workflowRuntime struct {
-	orchestrator *orchestration.Orchestrator
-	logger       *zap.Logger
-	closers      []func()
+	orchestrator   *orchestration.Orchestrator
+	logger         *zap.Logger
+	storageBackend backend.StorageBackend // nil if construction failed; callers must check
+	closers        []func()
 }
 
 // Close tears down runtime dependencies in reverse construction order.
@@ -516,6 +518,25 @@ func (rt *workflowRuntime) Close() {
 	for i := len(rt.closers) - 1; i >= 0; i-- {
 		rt.closers[i]()
 	}
+}
+
+// buildWorkflowStorageBackend constructs the StorageBackend workflow
+// checkpoints are persisted to, using the exact same config-driven
+// construction cmd_serve.go uses for the server. Defaults to SQLite with no
+// configuration required, matching backend.NewStorageBackend's own default.
+func buildWorkflowStorageBackend(ctx context.Context, tracer observability.Tracer) (backend.StorageBackend, error) {
+	storageCfg := config.BuildProtoStorageConfig()
+	sb, err := backend.NewStorageBackend(ctx, storageCfg, tracer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage backend: %w", err)
+	}
+	if config.Storage.Migration.AutoMigrate {
+		if err := sb.Migrate(ctx); err != nil {
+			_ = sb.Close()
+			return nil, fmt.Errorf("failed to run storage migrations: %w", err)
+		}
+	}
+	return sb, nil
 }
 
 // setupWorkflowRuntime creates the LLM provider, observability, stores, agent
@@ -649,6 +670,16 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		}
 	} else {
 		tracer = observability.NewNoOpTracer()
+	}
+
+	storageBackend, err := buildWorkflowStorageBackend(context.Background(), tracer)
+	if err != nil {
+		// Checkpoint persistence degrades to the CLI-local file (existing
+		// behavior); this must not block workflow execution.
+		logger.Warn("Failed to create storage backend; workflow checkpoints will use the local file fallback only", zap.Error(err))
+	} else {
+		rt.storageBackend = storageBackend
+		rt.closers = append(rt.closers, func() { _ = storageBackend.Close() })
 	}
 
 	// Create session store for telemetry
