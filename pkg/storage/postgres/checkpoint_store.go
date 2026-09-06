@@ -23,11 +23,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/teradata-labs/loom/pkg/orchestration"
 )
 
-// CheckpointStore implements orchestration.CheckpointStore using PostgreSQL.
+// CheckpointStore implements checkpoint.CheckpointStore using PostgreSQL.
 type CheckpointStore struct {
 	pool   *pgxpool.Pool
 	tracer observability.Tracer
@@ -118,5 +118,5 @@ func (s *CheckpointStore) LoadCheckpoint(ctx context.Context, workflowID string)
 	return ckpt, nil
 }
 
-// Compile-time check: CheckpointStore implements orchestration.CheckpointStore.
-var _ orchestration.CheckpointStore = (*CheckpointStore)(nil)
+// Compile-time check: CheckpointStore implements checkpoint.CheckpointStore.
+var _ checkpoint.CheckpointStore = (*CheckpointStore)(nil)

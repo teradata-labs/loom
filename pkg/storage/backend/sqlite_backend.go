@@ -23,9 +23,9 @@ import (
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/sqlite"
@@ -42,7 +42,7 @@ type SQLiteBackend struct {
 	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
 	taskStore         task.TaskStore
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
-	checkpointStore   orchestration.CheckpointStore
+	checkpointStore   checkpoint.CheckpointStore
 	checkpointDB      *sql.DB // owned connection for checkpoint store; closed in Close()
 	migrator          *sqlite.Migrator
 	migratorDB        *sql.DB // owned connection backing migrator; closed in Close()
@@ -307,7 +307,7 @@ func (b *SQLiteBackend) TaskStore() task.TaskStore {
 }
 
 // CheckpointStore implements CheckpointStoreProvider.
-func (b *SQLiteBackend) CheckpointStore() orchestration.CheckpointStore {
+func (b *SQLiteBackend) CheckpointStore() checkpoint.CheckpointStore {
 	return b.checkpointStore
 }
 

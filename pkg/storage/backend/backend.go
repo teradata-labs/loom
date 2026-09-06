@@ -23,8 +23,8 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/memory"
-	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
 )
@@ -94,7 +94,7 @@ type TaskStoreProvider interface {
 // Only backends with the workflow_checkpoints migration applied implement this.
 type CheckpointStoreProvider interface {
 	// CheckpointStore returns the checkpoint store, or nil if not available.
-	CheckpointStore() orchestration.CheckpointStore
+	CheckpointStore() checkpoint.CheckpointStore
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.
