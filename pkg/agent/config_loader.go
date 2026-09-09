@@ -8,6 +8,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+
+	"go.uber.org/zap"
 	"math"
 	"os"
 	"path/filepath"
@@ -1089,35 +1091,54 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 	cfg := &loomv1.ImplicitTaskConfig{
 		AgentVisible: yaml.AgentVisible,
 	}
+
+	// This block is the OFF SWITCH for a feature that writes durable rows by
+	// default, so it fails CLOSED: any value that is present but unparseable —
+	// a typo'd mode, an unrecognised trigger name, a negative cap — disables
+	// emission entirely and warns, rather than silently resolving to some
+	// default. The earlier shape dropped unrecognised trigger names, and a
+	// list that named nothing recognisable left cfg.Triggers empty — which
+	// ResolveImplicitPolicy reads as "no override, use the defaults", so
+	// `triggers: [tol_call]` WIDENED the policy to all three default triggers:
+	// failing open, in the opposite direction from what an operator narrowing
+	// emission intended.
+	failClosed := func(field, value string) *loomv1.ImplicitTaskConfig {
+		zap.L().Warn("implicit_tasks config is unparseable; disabling implicit task emission (fail closed)",
+			zap.String("field", field), zap.String("value", value))
+		return &loomv1.ImplicitTaskConfig{Mode: loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED}
+	}
+
+	if yaml.MaxPerSession < 0 {
+		return failClosed("max_per_session", fmt.Sprintf("%d", yaml.MaxPerSession))
+	}
 	if v, err := safeInt32(yaml.MaxPerSession, "TaskBoard.ImplicitTasks.MaxPerSession"); err == nil && v > 0 {
 		cfg.MaxPerSession = v
 	}
 
-	// Mode and triggers are spelled by NAME rather than by enum number, the
-	// same choice memory_compression.workload_profile makes. An unrecognised
-	// spelling falls back to unset, which for mode means the proto default
-	// (enabled) and for a trigger means the name is dropped — and a trigger
-	// list that names nothing recognisable resolves to no triggers at all,
-	// which ResolveImplicitPolicy treats as disabled. Both directions are
-	// documented rather than silently different.
 	switch strings.ToLower(yaml.Mode) {
 	case "enabled", "on":
 		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_ENABLED
 	case "disabled", "off":
 		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED
-	default:
+	case "":
 		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_UNSPECIFIED
+	default:
+		return failClosed("mode", yaml.Mode)
 	}
 
 	for _, name := range yaml.Triggers {
-		if tr := parseImplicitTaskTrigger(name); tr != loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
-			cfg.Triggers = append(cfg.Triggers, tr)
+		tr := parseImplicitTaskTrigger(name)
+		if tr == loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			return failClosed("triggers", name)
 		}
+		cfg.Triggers = append(cfg.Triggers, tr)
 	}
 	for _, name := range yaml.ExcludedTriggers {
-		if tr := parseImplicitTaskTrigger(name); tr != loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
-			cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
+		tr := parseImplicitTaskTrigger(name)
+		if tr == loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			return failClosed("excluded_triggers", name)
 		}
+		cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
 	}
 	return cfg
 }

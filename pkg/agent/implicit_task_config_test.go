@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -166,7 +167,7 @@ func TestImplicitTasks_YAMLRoundTrip(t *testing.T) {
 		ImplicitTasks: &ImplicitTasksConfigYAML{
 			Mode:             "disabled",
 			Triggers:         []string{"tool_call", "IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST"},
-			ExcludedTriggers: []string{"human_request", "not_a_trigger"},
+			ExcludedTriggers: []string{"human_request"},
 			MaxPerSession:    7,
 			AgentVisible:     true,
 		},
@@ -179,7 +180,7 @@ func TestImplicitTasks_YAMLRoundTrip(t *testing.T) {
 	}, cfg.ImplicitTasks.Triggers, "bare and fully-qualified enum names both parse")
 	require.Equal(t, []loomv1.ImplicitTaskTrigger{
 		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST,
-	}, cfg.ImplicitTasks.ExcludedTriggers, "an unrecognised name is dropped, not mapped to UNSPECIFIED")
+	}, cfg.ImplicitTasks.ExcludedTriggers, "the excluded list parses; an unrecognised name now fails the whole block closed (covered separately)")
 	require.EqualValues(t, 7, cfg.ImplicitTasks.MaxPerSession)
 	require.True(t, cfg.ImplicitTasks.AgentVisible)
 
@@ -191,4 +192,42 @@ func TestImplicitTasks_YAMLRoundTrip(t *testing.T) {
 
 	// An absent block stays absent: nil, not a zero-valued message.
 	require.Nil(t, parseTaskBoardConfig(&TaskBoardConfigYAML{}).ImplicitTasks)
+}
+
+// TestImplicitTasks_UnparseableConfigFailsClosed pins the round-4 finding: this
+// block is the off switch for a feature that writes durable rows by default,
+// and an unparseable value used to fail OPEN — `triggers: [tol_call]` dropped
+// the unrecognised name, left cfg.Triggers empty, and ResolveImplicitPolicy
+// read that as "use the defaults": an operator narrowing emission to one
+// trigger silently got all three. A typo'd mode fell back to UNSPECIFIED
+// (enabled), and max_per_session: -1 resolved to the default cap. All three
+// shapes now disable emission entirely.
+func TestImplicitTasks_UnparseableConfigFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml *ImplicitTasksConfigYAML
+	}{
+		{"typo'd trigger", &ImplicitTasksConfigYAML{Triggers: []string{"tol_call"}}},
+		{"typo'd excluded trigger", &ImplicitTasksConfigYAML{ExcludedTriggers: []string{"tool_cal"}}},
+		{"typo'd mode", &ImplicitTasksConfigYAML{Mode: "offf"}},
+		{"negative cap", &ImplicitTasksConfigYAML{MaxPerSession: -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := parseImplicitTasksConfig(tc.yaml)
+			require.NotNil(t, cfg)
+			policy := task.ResolveImplicitPolicy(cfg)
+			assert.False(t, policy.Enabled,
+				"present-but-unparseable config must disable emission, not widen it")
+		})
+	}
+
+	t.Run("a valid narrowing still narrows", func(t *testing.T) {
+		cfg := parseImplicitTasksConfig(&ImplicitTasksConfigYAML{Triggers: []string{"tool_call"}})
+		policy := task.ResolveImplicitPolicy(cfg)
+		require.True(t, policy.Enabled)
+		assert.True(t, policy.Allows(loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL))
+		assert.False(t, policy.Allows(loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST),
+			"narrowing to one trigger must exclude the other defaults")
+	})
 }
