@@ -46,8 +46,11 @@ const skillTaskEmitTimeout = 30 * time.Second
 // the template (see skillTaskEmitTimeout) to the user's wait for a response.
 //
 // Every value the goroutine needs is captured here, in the caller's goroutine,
-// so the goroutine reads only its own locals — no Agent field is touched
-// concurrently with a turn.
+// so the goroutine reads only its own locals. The CAPTURE itself takes
+// a.mu.RLock for the two Agent fields it snapshots (a.id, a.llm): both have
+// live mutators (SetID, SetLLMProvider — the latter documented as mid-session
+// model switching), so an unsynchronized read here was a data race on the
+// tool-call goroutine even though the emit goroutine never touched the Agent.
 //
 // Callers must only invoke this for a genuinely new activation. Emission is
 // idempotent via SkillIdempotencyKey, so a repeat is harmless, but it is a
@@ -89,12 +92,20 @@ func (a *Agent) emitSkillTasksAsync(ctx context.Context, sessionID string, skill
 		boardID = a.taskBoardConfig.DefaultBoardId
 	}
 
+	// Snapshot the two mutable Agent fields under the lock that their setters
+	// hold. See the function comment: the goroutine below reads only locals,
+	// and these two lines are what make that claim true of the capture too.
+	a.mu.RLock()
+	agentID := a.id
+	llm := a.llm
+	a.mu.RUnlock()
+
 	req := skilltasks.EmitRequest{
 		Skill:             skill,
 		SessionID:         sessionID,
-		AgentID:           a.id,
+		AgentID:           agentID,
 		BoardID:           boardID,
-		LLM:               a.llm,
+		LLM:               llm,
 		AgentTasksEnabled: agentTasksEnabled,
 	}
 

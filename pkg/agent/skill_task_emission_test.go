@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -468,4 +469,39 @@ func TestSkillTaskEmission_SkippedWithoutSessionID(t *testing.T) {
 		context.Background(), "skill:"+emitSkillName+"|sess:|step:0")
 	require.NoError(t, err)
 	assert.Nil(t, probe, "no task may be keyed to the empty session")
+}
+
+// TestSkillTaskEmission_CaptureRacesSetters is the reviewer's round-4
+// reproduction: the capture in emitSkillTasksAsync reads a.id and a.llm, both
+// of which have live mutators (SetID; SetLLMProvider is documented mid-session
+// model switching). The capture now snapshots both under a.mu.RLock; before
+// that, this test fails under -race with writes in SetLLMProvider/SetID racing
+// reads in emitSkillTasksAsync. Nothing else in the suite calls a setter
+// concurrently with a skill load, which is exactly why three -race-clean
+// rounds never saw it.
+func TestSkillTaskEmission_CaptureRacesSetters(t *testing.T) {
+	r := newEmissionRig(t, emissionRigOpts{boardEnabled: true})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			r.agent.SetID(fmt.Sprintf("agent-%d", i))
+			r.agent.SetLLMProvider(&countingLLM{})
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		r.loadSkill(t, fmt.Sprintf("sess-race-%d", i), emitSkillName)
+	}
+	close(stop)
+	wg.Wait()
+	r.agent.skillTaskEmits.Wait()
 }
