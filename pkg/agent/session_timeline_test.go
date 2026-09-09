@@ -631,3 +631,46 @@ func TestTimeline_SurvivesANullContentRow(t *testing.T) {
 	require.Len(t, events, 1, "the good row still projects")
 	assert.Equal(t, "a good row", events[0].Detail)
 }
+
+// TestTimeline_ToolResultsCarryTheirToolName pins the pairing the TimelineEvent
+// contract documents: ToolName set on calls AND results. There was no pairing
+// code at all — every result rendered as an anonymous "Tool returned", so on a
+// human audit surface a destructive tool's outcome carried no identity. Three
+// parallel calls in one assistant row plus three same-second results must each
+// resolve to their own name via tool_use_id.
+func TestTimeline_ToolResultsCarryTheirToolName(t *testing.T) {
+	store := timelineStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.SaveSession(ctx, &Session{
+		ID: "sess-pair", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+	attributed := task.ContextWithAttribution(ctx, task.Attribution{
+		TaskID: "task-pair", SessionID: "sess-pair", AgentID: "agent-1"})
+
+	now := time.Now()
+	require.NoError(t, store.SaveMessage(attributed, "sess-pair", &Message{
+		Role: "assistant", Content: "running three tools", Timestamp: now,
+		ToolCalls: []ToolCall{
+			{ID: "tc-1", Name: "grep", Input: map[string]interface{}{"q": "a"}},
+			{ID: "tc-2", Name: "read_file", Input: map[string]interface{}{"p": "b"}},
+			{ID: "tc-3", Name: "drop_table", Input: map[string]interface{}{"t": "prod_orders"}},
+		}}, true))
+	for _, id := range []string{"tc-1", "tc-2", "tc-3"} {
+		require.NoError(t, store.SaveMessage(attributed, "sess-pair", &Message{
+			Role: "tool", Content: "output for " + id, ToolUseID: id, Timestamp: now}, false))
+	}
+
+	events, err := store.TimelineEvents(ctx, "task-pair")
+	require.NoError(t, err)
+
+	wantNames := map[string]string{"tc-1": "grep", "tc-2": "read_file", "tc-3": "drop_table"}
+	results := 0
+	for _, e := range events {
+		if e.Kind != task.TimelineKindToolResult {
+			continue
+		}
+		results++
+		require.Equal(t, wantNames[e.ToolUseID], e.ToolName,
+			"result %s must carry its call's tool name, not render anonymously", e.ToolUseID)
+	}
+	require.Equal(t, 3, results, "all three parallel results project")
+}

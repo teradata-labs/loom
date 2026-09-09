@@ -119,6 +119,13 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	defer func() { _ = rows.Close() }()
 
 	var events []task.TimelineEvent
+	// toolNames pairs results to their calls: a result row carries only
+	// tool_use_id, and the call's name lives in a DIFFERENT row (the assistant
+	// message's tool_calls_json). Rows scan in timestamp order and a result
+	// always follows its call, so a same-scan map is sufficient — and without
+	// it every result event rendered as an anonymous "Tool returned", which on
+	// a human audit surface left a destructive tool's outcome with no identity.
+	toolNames := map[string]string{}
 	order := 0
 	for rows.Next() {
 		var (
@@ -183,12 +190,12 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 			// One event per tool invocation on this message.
 			if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 				events = append(events,
-					toolCallEvents(toolCallsJSON.String, occurred, agentID.String, sourceID, rowOrder)...)
+					toolCallEvents(toolCallsJSON.String, occurred, agentID.String, sourceID, rowOrder, toolNames)...)
 			}
 
 		case "tool":
 			events = append(events,
-				toolResultEvent(toolResultRaw, toolUseID, contentStr, occurred, agentID.String, sourceID, rowOrder))
+				toolResultEvent(toolResultRaw, toolUseID, contentStr, occurred, agentID.String, sourceID, rowOrder, toolNames))
 
 		case "user":
 			events = append(events, task.TimelineEvent{
@@ -216,7 +223,7 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 // toolCallEvents expands an assistant message's tool_calls_json into one event
 // per invocation. A malformed blob yields no events rather than failing the
 // whole timeline — a single unparseable row should not blank the view.
-func toolCallEvents(raw string, occurred time.Time, agentID, sourceID string, rowOrder int) []task.TimelineEvent {
+func toolCallEvents(raw string, occurred time.Time, agentID, sourceID string, rowOrder int, toolNames map[string]string) []task.TimelineEvent {
 	var calls []struct {
 		ID    string                 `json:"ID"`
 		Name  string                 `json:"Name"`
@@ -228,6 +235,9 @@ func toolCallEvents(raw string, occurred time.Time, agentID, sourceID string, ro
 
 	out := make([]task.TimelineEvent, 0, len(calls))
 	for _, c := range calls {
+		if c.ID != "" && toolNames != nil {
+			toolNames[c.ID] = c.Name
+		}
 		detail := ""
 		if len(c.Input) > 0 {
 			if b, err := json.Marshal(c.Input); err == nil {
@@ -257,12 +267,17 @@ func toolCallEvents(raw string, occurred time.Time, agentID, sourceID string, ro
 // and duration without any new instrumentation. When it is absent or
 // unparseable, the message content is used as the payload and the outcome is
 // reported as unknown rather than guessed.
-func toolResultEvent(raw, toolUseID sql.NullString, content string, occurred time.Time, agentID, sourceID string, rowOrder int) task.TimelineEvent {
+func toolResultEvent(raw, toolUseID sql.NullString, content string, occurred time.Time, agentID, sourceID string, rowOrder int, toolNames map[string]string) task.TimelineEvent {
 	ev := task.TimelineEvent{
-		Kind:        task.TimelineKindToolResult,
-		OccurredAt:  occurred,
-		AgentID:     agentID,
-		ToolUseID:   toolUseID.String,
+		Kind:       task.TimelineKindToolResult,
+		OccurredAt: occurred,
+		AgentID:    agentID,
+		ToolUseID:  toolUseID.String,
+		// The pairing the TimelineEvent contract promises: ToolName is set for
+		// calls AND results. An unknown id (orphaned result, or a call row this
+		// task cannot see) reads as "" — visible in the render as anonymous,
+		// which for an orphan is the truth.
+		ToolName:    toolNames[toolUseID.String],
 		Detail:      content,
 		SourceTable: messageTimelineSource,
 		SourceID:    sourceID,
