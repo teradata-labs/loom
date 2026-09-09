@@ -9,8 +9,11 @@
 --
 -- See docs/architecture/task-activity.md. Postgres can do this in one migration
 -- where SQLite cannot, because ADD COLUMN IF NOT EXISTS exists here — but the
--- table-existence guard is still required: a pre-migration database may have
--- had 000001 baselined rather than executed.
+-- table-existence guard is still required. Not for baselining — that is a
+-- SQLite-only path (sqlite/migrator.go); the PostgreSQL migrator has none — but
+-- because the guarded shape is reachable by an operator hand-stamping
+-- schema_migrations, which validateAppliedMigrations permits: it checks version
+-- presence, not table presence.
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_via TEXT NOT NULL DEFAULT '';
 
