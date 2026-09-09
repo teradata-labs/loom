@@ -270,3 +270,24 @@ func TestAttribution_RoundTripAndAbsence(t *testing.T) {
 		t.Error("attribution with no TaskID must be reported as absent")
 	}
 }
+
+// TestRenderTimeline_BrokenIsNotEmpty pins the round-4 finding: with every
+// source failing, Events is empty and the renderer used to return the bare
+// empty-timeline string — a completely broken read byte-identical to a task
+// with no activity, the exact confusion the design doc forbids.
+func TestRenderTimeline_BrokenIsNotEmpty(t *testing.T) {
+	broken := RenderTimeline(&TimelineResult{
+		PartialSources: []string{"messages", "human_requests", "task_history"},
+	}, RenderOpts{})
+	empty := RenderTimeline(&TimelineResult{}, RenderOpts{})
+
+	if broken == empty {
+		t.Fatalf("a fully-failed timeline renders byte-identically to an empty one:\n%q", broken)
+	}
+	if !strings.Contains(broken, "sources failed") {
+		t.Errorf("the failure banner must precede the empty-timeline text; got %q", broken)
+	}
+	if !strings.Contains(broken, "no recorded activity") {
+		t.Errorf("the empty-timeline text still renders after the banner; got %q", broken)
+	}
+}

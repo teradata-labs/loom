@@ -317,7 +317,15 @@ func (t *TaskTrackedOrchestrator) agentLabel(ctx context.Context, agentID string
 		}
 	}
 	if len(agentID) > 8 {
-		return agentID[:8]
+		// Byte-slicing can cut a rune in half, and this value lands in a task
+		// TITLE — a proto string field, and invalid UTF-8 fails proto.Marshal
+		// for the whole list response, not just the row. Back off to a rune
+		// boundary the way implicitTitle does.
+		cut := 8
+		for cut > 0 && agentID[cut]&0xC0 == 0x80 {
+			cut--
+		}
+		return agentID[:cut]
 	}
 	return agentID
 }

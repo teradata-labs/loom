@@ -28,8 +28,22 @@ type RenderOpts struct {
 // reviewed as text before any pixels are designed. A UI should consume
 // TimelineEvent directly rather than parsing this.
 func RenderTimeline(res *TimelineResult, opts RenderOpts) string {
-	if res == nil || len(res.Events) == 0 {
+	if res == nil {
 		return "(no recorded activity for this task)\n"
+	}
+	// The failure banner comes BEFORE the empty-check, deliberately: with every
+	// source failing, Events is empty, and returning the bare empty-timeline
+	// string made a completely broken read byte-identical to a task with no
+	// activity — the exact confusion the design doc forbids ("distinguish
+	// 'nothing' from 'broken', and never let the two look alike"). This is the
+	// reference renderer consumers copy, so the ordering here is load-bearing.
+	if len(res.Events) == 0 {
+		var head strings.Builder
+		if len(res.PartialSources) > 0 {
+			fmt.Fprintf(&head, "⚠ incomplete — these sources failed: %s\n",
+				strings.Join(res.PartialSources, ", "))
+		}
+		return head.String() + "(no recorded activity for this task)\n"
 	}
 
 	var b strings.Builder

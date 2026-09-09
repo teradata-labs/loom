@@ -6,6 +6,9 @@
 package orchestration
 
 import (
+	"context"
+	"unicode/utf8"
+
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -89,4 +92,22 @@ func TestIsWorkflowRootTask(t *testing.T) {
 	assert.False(t, isWorkflowRootTask(&task.Task{
 		Metadata: map[string]string{workflowRootMetadataKey: "TRUE"},
 	}), "the marker is exactly \"true\"; anything else is a stage")
+}
+
+// TestAgentLabel_TruncationIsRuneSafe pins the round-4 finding against the
+// REAL function, not a copy of its loop: stage agent ids are often names, and
+// the 8-byte label lands in a task TITLE — a proto string field, where invalid
+// UTF-8 fails proto.Marshal for the whole list response rather than one row.
+// Byte-slicing mid-rune produced exactly that on both reviewer reproductions.
+func TestAgentLabel_TruncationIsRuneSafe(t *testing.T) {
+	tr := &TaskTrackedOrchestrator{}
+	for _, in := range []string{"データ処理エージェント", "abcdefgé-x", "abcdefgh-plain"} {
+		got := tr.agentLabel(context.Background(), in)
+		if !utf8.ValidString(got) {
+			t.Errorf("agentLabel(%q) = %q — invalid UTF-8 headed for a proto string", in, got)
+		}
+		if got == "" {
+			t.Errorf("agentLabel(%q) truncated to nothing", in)
+		}
+	}
 }
