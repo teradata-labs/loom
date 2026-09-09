@@ -247,6 +247,13 @@ func (s *SessionStore) initSchema() error {
 	END;
 
 	CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+	-- Partial: task_id is NULL for most rows, so the NULL majority costs nothing
+	-- to index. This line covers the FRESH-database path: task_id is in the
+	-- CREATE TABLE above, so the self-migration's ALTER (and the index creation
+	-- riding it) never runs on a new install — without this line, the timeline's
+	-- central performance claim (cost proportional to the task, not the session)
+	-- was false on every fresh database and true only on upgraded ones.
+	CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, timestamp) WHERE task_id IS NOT NULL;
 	CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON tool_executions(session_id);
 	CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_snapshots_session ON memory_snapshots(session_id, created_at);

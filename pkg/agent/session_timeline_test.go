@@ -575,3 +575,27 @@ func TestTimeline_BackfillCannotClaimThePrecedingTurn(t *testing.T) {
 	}
 	require.NotEmpty(t, events, "turn 2's own row is claimed and readable")
 }
+
+// TestTimeline_TaskIndexExistsOnAFreshDatabase pins the fresh-install path for
+// idx_messages_task. The index used to be created only by the self-migration's
+// ALTER branch — which never runs on a new database, because task_id is already
+// in the CREATE TABLE — so every fresh install ran timeline reads as full table
+// scans (measured 11x slower at 200k rows) while every upgraded one had the
+// index, and no test could see the difference.
+func TestTimeline_TaskIndexExistsOnAFreshDatabase(t *testing.T) {
+	store := timelineStore(t) // a brand-new database, never upgraded
+
+	rows, err := store.db.Query(
+		`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages'`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var names []string
+	for rows.Next() {
+		var n string
+		require.NoError(t, rows.Scan(&n))
+		names = append(names, n)
+	}
+	require.NoError(t, rows.Err())
+	assert.Contains(t, names, "idx_messages_task",
+		"a fresh database must carry the timeline index, not only an upgraded one")
+}
