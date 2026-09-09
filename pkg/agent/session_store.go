@@ -247,13 +247,6 @@ func (s *SessionStore) initSchema() error {
 	END;
 
 	CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-	-- Partial: task_id is NULL for most rows, so the NULL majority costs nothing
-	-- to index. This line covers the FRESH-database path: task_id is in the
-	-- CREATE TABLE above, so the self-migration's ALTER (and the index creation
-	-- riding it) never runs on a new install — without this line, the timeline's
-	-- central performance claim (cost proportional to the task, not the session)
-	-- was false on every fresh database and true only on upgraded ones.
-	CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, timestamp) WHERE task_id IS NOT NULL;
 	CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON tool_executions(session_id);
 	CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_snapshots_session ON memory_snapshots(session_id, created_at);
@@ -496,6 +489,21 @@ func (s *SessionStore) initSchema() error {
 	if span != nil {
 		span.SetAttribute("tables_created", "3")
 	}
+
+	// idx_messages_task is created HERE, after the column pass, and not in the
+	// static DDL block: on a fresh database task_id is in the CREATE TABLE, but
+	// on a legacy upgrade the column arrives via the ALTER above — and the
+	// static block runs before it, so a static CREATE INDEX failed the whole
+	// initSchema on every pre-task_id database ("no such column"). Running it
+	// unconditionally after the pass covers both paths; before this line the
+	// index existed only on upgraded databases and the fresh-install timeline
+	// read was a full table scan (11x slower at 200k rows). Partial: task_id is
+	// NULL for most rows, so the NULL majority costs nothing to index.
+	if _, err := s.db.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, timestamp) WHERE task_id IS NOT NULL"); err != nil {
+		return fmt.Errorf("failed to create idx_messages_task: %w", err)
+	}
+
 	return nil
 }
 
