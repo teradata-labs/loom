@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -205,4 +206,30 @@ func TestCompleteImplicitTask_SurvivesACanceledRequestContext(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, task.IsTerminal(got.Status),
 		"a canceled turn's task must still close; got status %s", task.StatusName(got.Status))
+}
+
+// TestSessionEpoch_ResolvesWithinOneSecond pins the round-4 finding (b): the
+// epoch was CreatedAt.Unix(), so deleting and recreating a session id inside
+// one wall-clock second derived EQUAL epochs — byte-identical to "same
+// incarnation restored", and the new conversation's turn 0 rebound to the dead
+// task. Two incarnations created in the same second but different clock ticks
+// must resolve to different epochs; under the old second-resolution derivation
+// this fails.
+func TestSessionEpoch_ResolvesWithinOneSecond(t *testing.T) {
+	first := time.Now()
+	second := first.Add(50 * time.Microsecond) // same wall second, different tick
+	if first.Unix() != second.Unix() {
+		// A second boundary landed between them; shift both inside one second.
+		base := time.Now().Truncate(time.Second).Add(100 * time.Millisecond)
+		first, second = base, base.Add(50*time.Microsecond)
+	}
+
+	a := sessionEpoch(&Session{ID: "s", CreatedAt: first})
+	b := sessionEpoch(&Session{ID: "s", CreatedAt: second})
+	if a == b {
+		t.Fatalf("two incarnations inside one second derived the same epoch (%d): a same-second delete-and-recreate rebinds new work to the dead task", a)
+	}
+	if got := sessionEpoch(nil); got != 0 {
+		t.Fatalf("nil session must derive epoch 0, got %d", got)
+	}
 }

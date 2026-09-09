@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/taskctx"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // Implicit task emission makes the task the default unit of record.
@@ -383,7 +384,26 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 			zap.Int("cap", e.policy.MaxPerSession))
 		return ctx, nil, nil
 	}
+	// RESERVE the slot under the same lock that checked it. The previous shape
+	// was check-then-act with three store round trips in between, so every
+	// concurrent turn of one session cleared the check before any of them
+	// incremented — a cap of 1 admitted 16 concurrent mints. The reservation is
+	// released on every path below that does not keep a NEW row.
+	reserved := e.policy.MaxPerSession > 0
+	if reserved {
+		e.perSession[r.SessionID]++
+	}
 	e.mu.Unlock()
+	release := func() {
+		if !reserved {
+			return
+		}
+		e.mu.Lock()
+		if e.perSession[r.SessionID] > 0 {
+			e.perSession[r.SessionID]--
+		}
+		e.mu.Unlock()
+	}
 
 	// The board must exist before the task references it: tasks.board_id carries
 	// a foreign key, so creating a task against a missing board fails with an
@@ -392,6 +412,7 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 	// solve this the same way; skipping it here was a real bug, because the
 	// board id defaults to the session id and no board row exists under that id.
 	if err := e.ensureBoard(ctx, r.BoardID); err != nil {
+		release()
 		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "board_unavailable"})
 		e.logger.Warn("implicit task skipped: board could not be ensured",
 			zap.String("board_id", r.BoardID), zap.Error(err))
@@ -418,22 +439,52 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		},
 	})
 	if err != nil {
+		// The most likely create failure is losing a same-key race: Manager's
+		// CreateTaskIdempotent is lookup-then-insert with no retry, and the
+		// unique index on the key makes the loser's insert fail even though a
+		// perfectly good row for this turn now exists. The file header promises
+		// concurrent triggers converge on one row, so the loser re-probes the
+		// key and binds the winner instead of declining — its writers' rows
+		// would otherwise go unattributed for no reason a reader could see.
+		if winner, gerr := e.manager.GetTaskByIdempotencyKey(ctx, key); gerr == nil && winner != nil {
+			release() // the winner's mint was counted by the winner
+			if IsTerminal(winner.Status) {
+				return ctx, nil, e.declineSpentKey(r, winner)
+			}
+			e.mu.Lock()
+			e.minted[key] = winner.ID
+			e.mu.Unlock()
+			return e.bind(ctx, r, winner.ID), nil, nil
+		}
+		release()
 		// Emission is best-effort: a turn must not fail because its bookkeeping
 		// row could not be written.
 		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "create_failed"})
-		// The board cache may have vouched for a board that is gone; drop it so
-		// the next turn re-probes instead of failing identically forever.
+		// Only a GENUINE failure reaches here — the key re-probe above found
+		// nothing — so the board cache may really have vouched for a board that
+		// is gone; drop it so the next turn re-probes. A bare idempotency-key
+		// conflict no longer evicts a healthy (possibly shared) board.
 		e.forgetBoard(r.BoardID)
 		e.logger.Warn("implicit task creation failed; continuing without one",
 			zap.String("session_id", r.SessionID), zap.Error(err))
 		return ctx, nil, nil
 	}
 
+	if !isNew {
+		release() // an existing row: our reservation minted nothing
+		// Never bind new work to a task that already finished. A spent key is
+		// reachable by a live turn (a turn-index rewind on a storeless session,
+		// or a same-instant delete-and-recreate of a session id), and binding
+		// it silently files this turn's rows under a task that closed before
+		// they existed — CompleteForTurn's IsTerminal guard then declines to
+		// touch it, so the mis-attribution would be permanent and unlogged.
+		if IsTerminal(created.Status) {
+			return ctx, nil, e.declineSpentKey(r, created)
+		}
+	}
+
 	e.mu.Lock()
 	e.minted[key] = created.ID
-	if isNew {
-		e.perSession[r.SessionID]++
-	}
 	e.mu.Unlock()
 
 	if isNew {
@@ -444,6 +495,19 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.backfillTurnMessages(ctx, created.ID, r)
 	}
 	return e.bind(ctx, r, created.ID), created, nil
+}
+
+// declineSpentKey refuses to bind a live turn to a task that already finished,
+// and says so out loud — the silent alternative filed new work under a closed
+// task, permanently and invisibly. Returns nil so emission stays best-effort.
+func (e *ImplicitEmitter) declineSpentKey(r TurnRequest, spent *Task) error {
+	e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "spent_key"})
+	e.logger.Warn("implicit task skipped: idempotency key resolves to a finished task; refusing to bind new work to it",
+		zap.String("session_id", r.SessionID),
+		zap.Int("turn", r.TurnIndex),
+		zap.String("task_id", spent.ID),
+		zap.String("status", StatusName(spent.Status)))
+	return nil
 }
 
 // linkToParent records the PARENT_CHILD edge from a delegated turn's task back
@@ -584,7 +648,12 @@ func (e *ImplicitEmitter) ForgetSession(sessionID string) {
 	// a shared board's entry were somehow dropped, the cost is one re-probe in
 	// ensureBoard on the next mint — the cache is an optimisation, not a
 	// correctness requirement.
-	delete(e.boardsKnown, sessionID)
+	boardSuffix := "\x00" + sessionID
+	for k := range e.boardsKnown {
+		if strings.HasSuffix(k, boardSuffix) {
+			delete(e.boardsKnown, k)
+		}
+	}
 }
 
 // implicitTitle names the task after what the turn was about, so a board reads
@@ -662,14 +731,15 @@ func (e *ImplicitEmitter) ensureBoard(ctx context.Context, boardID string) error
 	}
 	// Already confirmed this process: skip the probe entirely. This is the
 	// steady state for every turn of a session after its first.
+	cacheKey := boardCacheKey(ctx, boardID)
 	e.mu.Lock()
-	_, known := e.boardsKnown[boardID]
+	_, known := e.boardsKnown[cacheKey]
 	e.mu.Unlock()
 	if known {
 		return nil
 	}
 	if _, err := e.manager.GetBoard(ctx, boardID); err == nil {
-		e.rememberBoard(boardID)
+		e.rememberBoard(cacheKey)
 		return nil
 	}
 	if _, err := e.manager.CreateBoard(ctx, &TaskBoard{
@@ -677,24 +747,38 @@ func (e *ImplicitEmitter) ensureBoard(ctx context.Context, boardID string) error
 		Name: "Session work",
 	}); err != nil {
 		if _, gerr := e.manager.GetBoard(ctx, boardID); gerr == nil {
-			e.rememberBoard(boardID)
+			e.rememberBoard(cacheKey)
 			return nil
 		}
 		return err
 	}
-	e.rememberBoard(boardID)
+	e.rememberBoard(cacheKey)
 	e.logger.Info("implicit emitter: auto-created board",
 		zap.String("board_id", boardID))
 	return nil
 }
 
-// rememberBoard records that a board is known to exist.
-func (e *ImplicitEmitter) rememberBoard(boardID string) {
-	if boardID == "" {
+// boardCacheKey scopes the board-existence cache by the caller's identity.
+//
+// The cache used to be keyed by board id alone, and under a downstream
+// per-user RLS deployment that let it vouch across tenants: with an
+// operator-configured shared default_board_id, tenant A's first mint created
+// and cached the board, tenant B's mint then skipped the probe, and B's
+// CreateTask succeeded anyway because FK checks bypass RLS — leaving B's task
+// referencing a board row B cannot see and A can delete. On loom's own
+// single-identity stores the user id is empty and the key degenerates to the
+// board id, preserving the previous behavior exactly.
+func boardCacheKey(ctx context.Context, boardID string) string {
+	return types.UserIDFromContext(ctx) + "\x00" + boardID
+}
+
+// rememberBoard records that a board is known to exist for one identity.
+func (e *ImplicitEmitter) rememberBoard(cacheKey string) {
+	if cacheKey == "\x00" { // empty board id under an empty identity
 		return
 	}
 	e.mu.Lock()
-	e.boardsKnown[boardID] = struct{}{}
+	e.boardsKnown[cacheKey] = struct{}{}
 	e.mu.Unlock()
 }
 
@@ -708,8 +792,16 @@ func (e *ImplicitEmitter) forgetBoard(boardID string) {
 	if boardID == "" {
 		return
 	}
+	// Identity-agnostic sweep: the failure that triggers this says nothing
+	// about WHICH identity's view is stale, so every cached vouching for this
+	// board id is dropped and the next mint re-probes.
+	suffix := "\x00" + boardID
 	e.mu.Lock()
-	delete(e.boardsKnown, boardID)
+	for k := range e.boardsKnown {
+		if strings.HasSuffix(k, suffix) {
+			delete(e.boardsKnown, k)
+		}
+	}
 	e.mu.Unlock()
 }
 

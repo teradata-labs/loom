@@ -85,10 +85,7 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 	// so a recreated session id cannot rebind new work to a prior
 	// conversation's terminal task. CreatedAt is durable and restored, which
 	// is what lets a resume after a process restart still find its own turn.
-	epoch := int64(0)
-	if !sess.CreatedAt.IsZero() {
-		epoch = sess.CreatedAt.Unix()
-	}
+	epoch := sessionEpoch(sess)
 	_, created, err := a.implicitTasks.EnsureForTurn(ctx, task.TurnRequest{
 		SessionID:    sess.ID,
 		AgentID:      a.id,
@@ -145,6 +142,25 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 		zap.String("task_id", created.ID),
 		zap.String("trigger", trigger.String()),
 		zap.Int64("turn", tc.TurnIndex()))
+}
+
+// sessionEpoch derives the incarnation component of the implicit idempotency
+// key from the session's durable creation time.
+//
+// Nanosecond resolution, deliberately: at second resolution a
+// delete-and-recreate of a session id inside one wall-clock second was
+// byte-identical to "same incarnation restored after a restart", which the
+// emitter is designed to rebind — and create/turn/delete/recreate is a normal
+// harness loop shape that fits easily in a second. The remaining collision
+// window is one clock tick, which a real recreation (two store writes apart)
+// cannot fit inside. It stays derived from CreatedAt rather than a random
+// nonce because a restart must re-derive the SAME epoch to rebind its own
+// parked turns.
+func sessionEpoch(sess *Session) int64 {
+	if sess == nil || sess.CreatedAt.IsZero() {
+		return 0
+	}
+	return sess.CreatedAt.UnixNano()
 }
 
 // completeImplicitTask ends the turn for the implicit emitter: it releases the

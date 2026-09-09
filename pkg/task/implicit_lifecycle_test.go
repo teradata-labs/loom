@@ -8,8 +8,12 @@ package task
 import (
 	"context"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/taskctx"
+	"github.com/teradata-labs/loom/pkg/types"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -103,7 +107,19 @@ func (s *lifecycleStore) boardCount() int {
 }
 
 // Unused interface methods — stubs to satisfy TaskStore.
-func (s *lifecycleStore) GetTask(context.Context, string) (*Task, error) { return nil, nil }
+// GetTask is REAL in this fake for the same reason CloseTask is: a nil return
+// made CompleteForTurn bail before its close, so a "completed" task silently
+// stayed open and any test about spent keys asserted against nothing.
+func (s *lifecycleStore) GetTask(_ context.Context, id string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.byKey {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
 func (s *lifecycleStore) HasOpenSkillTasks(context.Context, string, string) (bool, error) {
 	return false, nil
 }
@@ -126,7 +142,22 @@ func (s *lifecycleStore) ClaimTask(context.Context, string, string, string) (*Ta
 func (s *lifecycleStore) ReleaseTask(context.Context, string, string) (*Task, error) {
 	return nil, nil
 }
-func (s *lifecycleStore) CloseTask(context.Context, string, string) (*Task, error) { return nil, nil }
+
+// CloseTask is REAL in this fake — a no-op here made a spent-key test pass
+// against a task that never actually closed, the exact fixture-supplied-
+// invariant failure the round-4 review called out in two other tests.
+func (s *lifecycleStore) CloseTask(_ context.Context, id, reason string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.byKey {
+		if t.ID == id {
+			t.Status = loomv1.TaskStatus_TASK_STATUS_DONE
+			t.CloseReason = reason
+			return t, nil
+		}
+	}
+	return nil, nil
+}
 func (s *lifecycleStore) TransitionTask(context.Context, string, loomv1.TaskStatus) (*Task, error) {
 	return nil, nil
 }
@@ -170,7 +201,7 @@ func (e *ImplicitEmitter) capFor(sessionID string) int {
 func (e *ImplicitEmitter) knowsBoard(boardID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, ok := e.boardsKnown[boardID]
+	_, ok := e.boardsKnown[boardCacheKey(context.Background(), boardID)]
 	return ok
 }
 
@@ -417,13 +448,33 @@ func mintAt(t *testing.T, e *ImplicitEmitter, sid string, turn int, epoch int64,
 func TestImplicitEmitter_RecreatedSessionDoesNotInheritThePriorTask(t *testing.T) {
 	e, store := newLifecycleEmitter(t)
 
+	// Epochs are derived here EXACTLY as production derives them —
+	// CreatedAt.UnixNano() of two back-to-back creations — rather than
+	// hard-coded, because the hard-coded version proved vacuous: at the old
+	// second resolution (CreatedAt.Unix()), a delete-and-recreate inside one
+	// wall-clock second produced EQUAL epochs and rebound to the dead task,
+	// while the test's invented 1000/2000 sailed past. The assertion below
+	// fails if the derivation ever coarsens again.
+	epochFirst := time.Now().UnixNano()
+	epochSecond := time.Now().UnixNano()
+	// Two back-to-back Now() calls CAN land on one clock tick (observed on
+	// macOS: ~500ns granularity), so wait out the tick the way any real
+	// recreation does — deleting and recreating a session writes to a store,
+	// which no platform completes inside one tick. What this loop documents is
+	// that the epoch's collision window is now one clock tick, down from one
+	// SECOND — the old resolution, at which a same-second delete-and-recreate
+	// (a normal harness loop shape) rebound new work to the dead task.
+	for epochSecond == epochFirst {
+		epochSecond = time.Now().UnixNano()
+	}
+
 	// First incarnation: mint at turn 0, and the conversation ends.
-	first := mintAt(t, e, "sess-reuse", 0, 1_000, "first conversation")
+	first := mintAt(t, e, "sess-reuse", 0, epochFirst, "first conversation")
 	e.CompleteForTurn(context.Background(), first.ID, "done")
 	e.ForgetSession("sess-reuse")
 
 	// Same id recreated: a NEW conversation, new CreatedAt, back at turn 0.
-	second := mintAt(t, e, "sess-reuse", 0, 2_000, "second conversation")
+	second := mintAt(t, e, "sess-reuse", 0, epochSecond, "second conversation")
 	if second.ID == first.ID {
 		t.Fatalf("a recreated session id rebound to the prior incarnation's terminal task %s (title %q)", first.ID, first.Title)
 	}
@@ -439,8 +490,179 @@ func TestImplicitEmitter_RecreatedSessionDoesNotInheritThePriorTask(t *testing.T
 	// the restored session carries the same CreatedAt, so the same key, so the
 	// turn rebinds to ITS OWN task rather than minting a duplicate.
 	e.ForgetSession("sess-reuse")
-	rebound := mintAt(t, e, "sess-reuse", 0, 2_000, "second conversation")
+	rebound := mintAt(t, e, "sess-reuse", 0, epochSecond, "second conversation")
 	if rebound.ID != second.ID {
 		t.Errorf("the same incarnation restored after a restart minted %s, want a rebind to its own task %s", rebound.ID, second.ID)
+	}
+}
+
+// --- round-4 emitter concurrency and integrity ------------------------------
+
+// TestImplicitEmitter_CapHoldsUnderConcurrentTurns: the cap check used to be
+// check-then-act with three store round trips between the read and the
+// increment, so every concurrent turn of one session cleared the check before
+// any of them incremented — a cap of 1 admitted 16 concurrent mints. The slot
+// is now RESERVED under the same lock that checks it.
+func TestImplicitEmitter_CapHoldsUnderConcurrentTurns(t *testing.T) {
+	store := newLifecycleStore()
+	mgr := NewManager(store, nil, nil, zap.NewNop())
+	e := NewImplicitEmitter(mgr, ResolveImplicitPolicy(&loomv1.ImplicitTaskConfig{
+		MaxPerSession: 1,
+	}), nil, zap.NewNop())
+
+	var wg sync.WaitGroup
+	for turn := 0; turn < 16; turn++ {
+		wg.Add(1)
+		go func(turn int) {
+			defer wg.Done()
+			_, _, err := e.EnsureForTurn(context.Background(), TurnRequest{
+				SessionID:   "sess-cap",
+				AgentID:     "agent-1",
+				BoardID:     "sess-cap",
+				TurnIndex:   turn,
+				Trigger:     trToolCall,
+				UserMessage: "concurrent work",
+			})
+			if err != nil {
+				t.Errorf("EnsureForTurn(turn %d): %v", turn, err)
+			}
+		}(turn)
+	}
+	wg.Wait()
+
+	if n := store.taskCount(); n != 1 {
+		t.Fatalf("cap of 1 admitted %d tasks under 16 concurrent turns; the reservation must hold the cap in-process", n)
+	}
+}
+
+// raceLoserStore simulates losing the create race for one idempotency key: the
+// FIRST GetTaskByIdempotencyKey (Manager's pre-lookup) misses, CreateTask then
+// fails the unique constraint, and every LATER lookup returns the winner —
+// exactly the interleaving two concurrent same-turn triggers produce.
+type raceLoserStore struct {
+	*lifecycleStore
+	winner    *Task
+	lookups   int32
+	created   int32
+	boardGets int32
+}
+
+func (s *raceLoserStore) GetTaskByIdempotencyKey(ctx context.Context, key string) (*Task, error) {
+	if atomic.AddInt32(&s.lookups, 1) == 1 {
+		return nil, nil // the pre-lookup ran before the winner's insert landed
+	}
+	return s.winner, nil
+}
+
+func (s *raceLoserStore) CreateTask(ctx context.Context, t *Task) (*Task, error) {
+	atomic.AddInt32(&s.created, 1)
+	return nil, fmt.Errorf("UNIQUE constraint failed: tasks.skill_idempotency_key")
+}
+
+func (s *raceLoserStore) GetBoard(ctx context.Context, id string) (*TaskBoard, error) {
+	atomic.AddInt32(&s.boardGets, 1)
+	return s.lifecycleStore.GetBoard(ctx, id)
+}
+
+// TestImplicitEmitter_CreateRaceLoserConvergesOnTheWinner: the loser's insert
+// fails the unique constraint even though a good row for this turn now exists.
+// The loser must re-probe the key and bind the winner — its writers' rows went
+// unattributed before — and a bare key conflict must NOT evict the board from
+// the cache (that eviction was for genuinely-broken boards, and it was firing
+// on every lost race, including against operator-configured shared boards).
+func TestImplicitEmitter_CreateRaceLoserConvergesOnTheWinner(t *testing.T) {
+	inner := newLifecycleStore()
+	mgr0 := NewManager(inner, nil, nil, zap.NewNop())
+	_, err := mgr0.CreateBoard(context.Background(), &TaskBoard{ID: "sess-race", Name: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := &Task{ID: "task-winner", Title: "the winner",
+		Status: loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, SkillIdempotencyKey: "k"}
+	store := &raceLoserStore{lifecycleStore: inner, winner: winner}
+	mgr := NewManager(store, nil, nil, zap.NewNop())
+	e := NewImplicitEmitter(mgr, ResolveImplicitPolicy(nil), nil, zap.NewNop())
+
+	ctx, binding := taskctx.ContextWithBinding(context.Background())
+	_, created, err := e.EnsureForTurn(ctx, TurnRequest{
+		SessionID: "sess-race", AgentID: "agent-1", BoardID: "sess-race",
+		TurnIndex: 0, Trigger: trToolCall, UserMessage: "raced work",
+	})
+	if err != nil {
+		t.Fatalf("the loser must not error: %v", err)
+	}
+	if created != nil {
+		t.Fatalf("the loser minted nothing; created = %v", created)
+	}
+	attr, ok := binding.Get()
+	if !ok || attr.TaskID != "task-winner" {
+		t.Fatalf("the loser must bind the winner's row; binding = %+v ok=%v", attr, ok)
+	}
+	if !e.knowsBoard("sess-race") {
+		t.Fatal("a bare idempotency-key conflict must not evict a healthy board from the cache")
+	}
+}
+
+// TestImplicitEmitter_SpentKeyIsDeclinedNotRebound: CreateTaskIdempotent hands
+// back an existing row when the key already resolves, and the emitter used to
+// bind it with no status check — so a live turn hitting a spent key filed its
+// rows under a task that closed before they existed, silently and permanently
+// (CompleteForTurn's IsTerminal guard then declines to correct it). A terminal
+// row now declines the bind and logs.
+func TestImplicitEmitter_SpentKeyIsDeclinedNotRebound(t *testing.T) {
+	e, _ := newLifecycleEmitter(t)
+
+	first := mintAt(t, e, "sess-spent", 0, 42, "the first conversation")
+	e.CompleteForTurn(context.Background(), first.ID, "done")
+	e.ForgetSession("sess-spent") // memory gone; the durable key remains
+
+	ctx, binding := taskctx.ContextWithBinding(context.Background())
+	_, created, err := e.EnsureForTurn(ctx, TurnRequest{
+		SessionID: "sess-spent", AgentID: "agent-1", BoardID: "sess-spent",
+		TurnIndex: 0, SessionEpoch: 42, // the same incarnation, the same key
+		Trigger: trToolCall, UserMessage: "new work on a spent key",
+	})
+	if err != nil {
+		t.Fatalf("declining is not an error: %v", err)
+	}
+	if created != nil {
+		t.Fatalf("nothing must be minted on a spent key; got %v", created.ID)
+	}
+	if attr, ok := binding.Get(); ok {
+		t.Fatalf("new work must NOT bind to the finished task; bound %s", attr.TaskID)
+	}
+}
+
+// TestImplicitEmitter_BoardCacheIsScopedByIdentity: the cache used to be keyed
+// by board id alone, so with an operator-configured shared default_board_id,
+// tenant A's first mint cached the board and tenant B's mint skipped the probe
+// entirely — under downstream per-user RLS, B's task then referenced a board
+// row B cannot see. The cache key now carries the caller's identity, so B's
+// first mint probes for itself.
+func TestImplicitEmitter_BoardCacheIsScopedByIdentity(t *testing.T) {
+	inner := newLifecycleStore()
+	store := &raceLoserStore{lifecycleStore: inner} // reused only for its GetBoard counter
+	store.winner = nil
+	mgr := NewManager(store, nil, nil, zap.NewNop())
+	e := NewImplicitEmitter(mgr, ResolveImplicitPolicy(nil), nil, zap.NewNop())
+
+	ctxA := types.ContextWithUserID(context.Background(), "tenant-a")
+	ctxB := types.ContextWithUserID(context.Background(), "tenant-b")
+
+	if err := e.ensureBoard(ctxA, "shared-board"); err != nil {
+		t.Fatal(err)
+	}
+	probesAfterA := atomic.LoadInt32(&store.boardGets)
+	if err := e.ensureBoard(ctxA, "shared-board"); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&store.boardGets); got != probesAfterA {
+		t.Fatalf("A's second mint must hit the cache; probes went %d -> %d", probesAfterA, got)
+	}
+	if err := e.ensureBoard(ctxB, "shared-board"); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&store.boardGets); got == probesAfterA {
+		t.Fatal("B's first mint must PROBE for its own identity, not ride A's cache entry")
 	}
 }
