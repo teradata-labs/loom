@@ -86,9 +86,13 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	// evicted, folded, turn, token_count and cost_usd are read even though the
 	// projection below does not branch on them: they are per-row facts the
 	// conversation loop already wrote, and dropping them here is what made the
-	// timeline narrower than the record it reads from. COALESCE because these
-	// columns arrive by ALTER TABLE (SessionStore owns this table and
-	// self-migrates), so rows written before a given column existed read NULL.
+	// timeline narrower than the record it reads from. The COALESCEs on
+	// token_count and cost_usd cover pre-column rows; evicted, folded and turn
+	// are NOT NULL DEFAULT 0 on both the CREATE TABLE and the ALTER, so their
+	// COALESCE is belt-and-braces only. The one column that genuinely can be
+	// NULL is content — scanned through sql.NullString below, because one NULL
+	// content row otherwise fails the whole scan and the projection returns
+	// zero events for the task: a full record misreported as an empty one.
 	// The owner predicate is not optional here, for a structural reason: messages
 	// is user-scoped but tasks carries no user_id at all, so filtering on task_id
 	// alone joins from an unscoped namespace into a scoped one and returns
@@ -119,7 +123,8 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	for rows.Next() {
 		var (
 			msgID                                   int64
-			role, content                           string
+			role                                    string
+			content                                 sql.NullString
 			toolCallsJSON, toolUseID, toolResultRaw sql.NullString
 			agentID                                 sql.NullString
 			ts                                      int64
@@ -132,6 +137,9 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 			&evicted, &folded, &turn, &tokenCount, &costUSD); err != nil {
 			return nil, fmt.Errorf("timeline: scan message: %w", err)
 		}
+		// Unwrap once: a NULL content row reads as the empty string, the same
+		// rendering an empty message gets.
+		contentStr := content.String
 
 		// Per-row context facts, stamped onto every event this row produces.
 		// One assistant message can yield a narrative event plus several tool
@@ -160,12 +168,12 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 		case "assistant":
 			// Narrative text, when the assistant said something rather than
 			// only calling tools.
-			if strings.TrimSpace(content) != "" {
+			if strings.TrimSpace(contentStr) != "" {
 				events = append(events, task.TimelineEvent{
 					Kind:        task.TimelineKindAssistant,
 					OccurredAt:  occurred,
-					Summary:     firstLine(content, 120),
-					Detail:      content,
+					Summary:     firstLine(contentStr, 120),
+					Detail:      contentStr,
 					AgentID:     agentID.String,
 					SourceTable: messageTimelineSource,
 					SourceID:    sourceID,
@@ -180,14 +188,14 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 
 		case "tool":
 			events = append(events,
-				toolResultEvent(toolResultRaw, toolUseID, content, occurred, agentID.String, sourceID, rowOrder))
+				toolResultEvent(toolResultRaw, toolUseID, contentStr, occurred, agentID.String, sourceID, rowOrder))
 
 		case "user":
 			events = append(events, task.TimelineEvent{
 				Kind:        task.TimelineKindUser,
 				OccurredAt:  occurred,
-				Summary:     firstLine(content, 120),
-				Detail:      content,
+				Summary:     firstLine(contentStr, 120),
+				Detail:      contentStr,
 				SourceTable: messageTimelineSource,
 				SourceID:    sourceID,
 				SourceOrder: rowOrder,

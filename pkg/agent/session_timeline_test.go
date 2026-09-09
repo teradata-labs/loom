@@ -599,3 +599,35 @@ func TestTimeline_TaskIndexExistsOnAFreshDatabase(t *testing.T) {
 	assert.Contains(t, names, "idx_messages_task",
 		"a fresh database must carry the timeline index, not only an upgraded one")
 }
+
+// TestTimeline_SurvivesANullContentRow: messages.content is nullable, and one
+// NULL row used to fail the entire scan — 20 good rows plus one NULL yielded
+// zero events with PartialSources=[messages], which the reference renderer then
+// printed as "(no recorded activity for this task)": a full record misreported
+// as an empty one.
+func TestTimeline_SurvivesANullContentRow(t *testing.T) {
+	store := timelineStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.SaveSession(ctx, &Session{
+		ID: "sess-null", AgentID: "agent-1", CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+
+	attributed := task.ContextWithAttribution(ctx, task.Attribution{
+		TaskID: "task-null", SessionID: "sess-null", AgentID: "agent-1"})
+	require.NoError(t, store.SaveMessage(attributed, "sess-null", &Message{
+		Role: "user", Content: "a good row", Timestamp: time.Now()}, true))
+
+	// Force a genuinely NULL content cell, the shape SaveMessage never writes
+	// but the column permits and other writers have produced.
+	_, err := store.db.Exec(
+		`INSERT INTO messages (session_id, role, content, task_id, timestamp) VALUES (?, ?, NULL, ?, ?)`,
+		"sess-null", "assistant", "task-null", time.Now().Unix())
+	require.NoError(t, err)
+
+	events, err := store.TimelineEvents(ctx, "task-null")
+	require.NoError(t, err, "one NULL content row must not fail the projection")
+	// The NULL-content assistant row carries no tool calls either, so it
+	// legitimately projects no narrative event — the property under test is
+	// that it no longer takes the GOOD rows down with it.
+	require.Len(t, events, 1, "the good row still projects")
+	assert.Equal(t, "a good row", events[0].Detail)
+}
