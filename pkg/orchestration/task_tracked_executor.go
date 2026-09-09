@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
@@ -87,24 +89,20 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 		t.logger.Info("task tracking: resuming from prior execution",
 			zap.String("board_id", boardID),
 			zap.Int("resume_stage", resumeStage))
-		// Load existing tasks for the board.
+		// Load existing tasks for the board — paged, because a single
+		// Limit:100 read silently dropped stages 100+ from the mapping.
 		var err error
-		stageTasks, _, err = t.manager.ListTasks(ctx, task.ListTasksOpts{
-			BoardID: boardID,
-			Limit:   100,
-		})
+		stageTasks, err = t.listAllBoardTasks(ctx, boardID)
 		if err != nil {
 			t.logger.Warn("task tracking: failed to load resume tasks",
 				zap.Error(err))
 		}
-		// A board listing holds the root task alongside the stages, and
-		// recordResults maps agent results onto this slice BY INDEX. Reads order
-		// by priority then created_at, and the root shares MEDIUM priority with
-		// Parallel stages and Conditional branches while created_at is only
-		// second-resolution — so where the root falls inside that tie is not
-		// defined by either store. A root anywhere but last takes the stage's
-		// output into its own notes, closes itself, and shifts every later stage
-		// by one, dropping the last stage's output entirely.
+		// The root is excluded so it cannot appear in the stage slice at all,
+		// and result mapping is by each row's stage_index metadata rather than
+		// by position — the listing's (priority, created_at) order has no
+		// unique tiebreak at second resolution, so position was undefined for
+		// any same-second rows of equal priority and actively wrong whenever a
+		// higher-priority structural row sorted first.
 		stageTasks = excludeWorkflowRootTask(stageTasks)
 	}
 
@@ -158,29 +156,72 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 	return result, err
 }
 
-// closeRootTask closes the run's root task once its stages have been recorded.
+// closeRootTask settles the run's terminal bookkeeping once its stages have
+// been recorded: the root row, and any structural rows the run left open.
 //
-// Only when still IN_PROGRESS, so a resumed run that already closed it is not
-// reopened and re-closed. Failure is logged: the run's real outcome is already
-// recorded on the stages and in the workflow run row, so a stale root status is
-// cosmetic rather than a reason to fail a completed workflow.
+// On a bounded, cancellation-proof context: this runs after the workflow ended,
+// and when the run ended BECAUSE the caller cancelled, the request context is
+// already dead — findRootTask's ListTasks failed on it and returned nil, so
+// every cancelled run leaked a board plus a permanently-IN_PROGRESS root that
+// findResumableBoard could never reclaim. Same treatment the agent turn's
+// close got (WithoutCancel keeps the context's values; the deadline keeps
+// cleanup bounded).
+//
+// A failed run is CANCELLED, not closed: CloseTask records DONE unconditionally
+// and feeds graph memory a completion, so a failed workflow taught the memory
+// that this work succeeds and the board showed a green root over dead stages.
+//
+// Root only when still IN_PROGRESS, so a resumed run that already closed it is
+// not reopened and re-closed. Errors are logged, not returned — but note the
+// stages are only a truthful record of the failure because markStagesInProgress
+// keeps the claimed rows fresh; with stale OPEN statuses the failure branch of
+// recordResults cancelled nothing.
 func (t *TaskTrackedOrchestrator) closeRootTask(
 	ctx context.Context, boardID string, result *loomv1.WorkflowResult, execErr error,
 ) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	failed := execErr != nil || result == nil
+
+	// Structural rows (merge, decision, branches) close as a side effect of
+	// the run completing — nothing else ever closes them, and while one stayed
+	// open, findResumableBoard read the board as unfinished work and the next
+	// run of the same pattern recorded nothing at all (reproduced for
+	// fork_join, swarm and conditional). On failure they stay open: the board
+	// is genuinely unfinished and resumable.
+	if !failed {
+		if all, err := t.listAllBoardTasks(ctx, boardID); err == nil {
+			for _, tk := range all {
+				if tk.Metadata[structuralMetadataKey] != "true" || task.IsTerminal(tk.Status) {
+					continue
+				}
+				if _, err := t.manager.CloseTask(ctx, tk.ID, "completed as part of the workflow run"); err != nil {
+					t.logger.Warn("task tracking: failed to close structural task",
+						zap.String("task_id", tk.ID), zap.Error(err))
+				}
+			}
+		}
+	}
+
 	root := t.findRootTask(ctx, boardID)
 	if root == nil || root.Status != loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS {
 		return
 	}
 
-	reason := "workflow completed"
-	switch {
-	case execErr != nil:
-		reason = fmt.Sprintf("workflow failed: %s", execErr.Error())
-	case result == nil:
-		reason = "workflow execution failed"
+	if failed {
+		reason := "workflow execution failed"
+		if execErr != nil {
+			reason = fmt.Sprintf("workflow failed: %s", execErr.Error())
+		}
+		if _, err := t.manager.CancelTask(ctx, root.ID, reason); err != nil {
+			t.logger.Warn("task tracking: failed to cancel workflow root task",
+				zap.String("task_id", root.ID), zap.Error(err))
+		}
+		return
 	}
 
-	if _, err := t.manager.CloseTask(ctx, root.ID, reason); err != nil {
+	if _, err := t.manager.CloseTask(ctx, root.ID, "workflow completed"); err != nil {
 		t.logger.Warn("task tracking: failed to close workflow root task",
 			zap.String("task_id", root.ID), zap.Error(err))
 	}
@@ -334,6 +375,66 @@ func (t *TaskTrackedOrchestrator) agentLabel(ctx context.Context, agentID string
 // so a resumed run can find it again without a second lookup table.
 const workflowRootMetadataKey = "workflow_root"
 
+// stageIndexMetadataKey carries a task's position in the pattern's AGENT
+// RESULT order. It is the one reliable mapping key between
+// WorkflowResult.AgentResults and the board's rows: store listings order by
+// (priority, created_at) with second-resolution timestamps and no unique
+// tiebreak, so positional mapping over a listing mis-pairs whenever a
+// same-second row of a different priority sorts first — a fork_join's HIGH
+// merge task sorted ahead of the forks and consumed a fork's result.
+// Only rows that an agent result closes carry it.
+const stageIndexMetadataKey = "stage_index"
+
+// structuralMetadataKey marks rows that mirror the pattern's SHAPE rather than
+// an agent's work: a fork_join's merge, a swarm's decision, a conditional's
+// branches. No agent result maps to them, so a run is never "incomplete"
+// because one is open — they close as a side effect of the run completing.
+// Without this distinction, three of the seven pattern types re-read as
+// resumable after every successful run, and the next run recorded nothing.
+const structuralMetadataKey = "workflow_structural"
+
+// isStageTask reports whether an agent result is expected to close this row.
+func isStageTask(tk *task.Task) bool {
+	if tk == nil || tk.Metadata == nil {
+		return false
+	}
+	_, ok := tk.Metadata[stageIndexMetadataKey]
+	return ok
+}
+
+// stageIndexOf returns the row's agent-result index, or -1.
+func stageIndexOf(tk *task.Task) int {
+	if tk == nil || tk.Metadata == nil {
+		return -1
+	}
+	n, err := strconv.Atoi(tk.Metadata[stageIndexMetadataKey])
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// listAllBoardTasks pages through a board's rows. The single Limit:100 read it
+// replaces did two bad things at scale: findRootTask missed a MEDIUM root that
+// sorted behind 100+ CRITICAL/HIGH stage rows, and the resume listing silently
+// dropped stages 100+ from the mapping.
+func (t *TaskTrackedOrchestrator) listAllBoardTasks(ctx context.Context, boardID string) ([]*task.Task, error) {
+	const page = 100
+	var all []*task.Task
+	for offset := 0; ; offset += page {
+		batch, _, err := t.manager.ListTasks(ctx, task.ListTasksOpts{
+			BoardID: boardID, Limit: page, Offset: offset,
+		})
+		if err != nil {
+			return all, err
+		}
+		all = append(all, batch...)
+		if len(batch) < page {
+			return all, nil
+		}
+	}
+}
+
 // isWorkflowRootTask reports whether a task is the run's root bookkeeping task
 // rather than one of the pattern's stages.
 //
@@ -388,7 +489,10 @@ func (t *TaskTrackedOrchestrator) linkStagesToRoot(ctx context.Context, root *ta
 // metadata because the board is created before any task exists, so its metadata
 // cannot name one.
 func (t *TaskTrackedOrchestrator) findRootTask(ctx context.Context, boardID string) *task.Task {
-	tasks, _, err := t.manager.ListTasks(ctx, task.ListTasksOpts{BoardID: boardID, Limit: 100})
+	// Paged: the MEDIUM root sorts behind every CRITICAL/HIGH stage row, so a
+	// single Limit:100 read missed it on any board with 100+ stages (a
+	// 120-agent swarm) — the root was then neither attributed nor closed.
+	tasks, err := t.listAllBoardTasks(ctx, boardID)
 	if err != nil {
 		return nil
 	}
@@ -456,7 +560,10 @@ func (t *TaskTrackedOrchestrator) createForkJoinTasks(ctx context.Context, board
 			Priority:    loomv1.TaskPriority_TASK_PRIORITY_HIGH,
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "fork-join", "parallel"},
-			Metadata:    map[string]string{"agent_id": agentID},
+			Metadata: map[string]string{
+				"agent_id":            agentID,
+				stageIndexMetadataKey: strconv.Itoa(i),
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create fork task %d: %w", i+1, err)
@@ -473,7 +580,10 @@ func (t *TaskTrackedOrchestrator) createForkJoinTasks(ctx context.Context, board
 		Priority: loomv1.TaskPriority_TASK_PRIORITY_HIGH,
 		Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
 		Tags:     []string{"workflow", "fork-join", "merge"},
-		Metadata: map[string]string{"merge_strategy": fj.MergeStrategy.String()},
+		Metadata: map[string]string{
+			"merge_strategy":      fj.MergeStrategy.String(),
+			structuralMetadataKey: "true",
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create merge task: %w", err)
@@ -506,7 +616,10 @@ func (t *TaskTrackedOrchestrator) createParallelTasks(ctx context.Context, board
 			Priority:    loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "parallel"},
-			Metadata:    map[string]string{"agent_id": agentTask.AgentId},
+			Metadata: map[string]string{
+				"agent_id":            agentTask.AgentId,
+				stageIndexMetadataKey: strconv.Itoa(i),
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create parallel task %d: %w", i+1, err)
@@ -528,7 +641,10 @@ func (t *TaskTrackedOrchestrator) createConditionalTasks(ctx context.Context, bo
 		Priority: loomv1.TaskPriority_TASK_PRIORITY_HIGH,
 		Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
 		Tags:     []string{"workflow", "conditional", "classifier"},
-		Metadata: map[string]string{"agent_id": cond.ConditionAgentId},
+		Metadata: map[string]string{
+			"agent_id":            cond.ConditionAgentId,
+			stageIndexMetadataKey: "0",
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create classifier task: %w", err)
@@ -544,7 +660,15 @@ func (t *TaskTrackedOrchestrator) createConditionalTasks(ctx context.Context, bo
 			Priority: loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
 			Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:     []string{"workflow", "conditional", "branch", branchKey},
-			Metadata: map[string]string{"branch_key": branchKey},
+			// Structural: a branch is a nested PATTERN, not one agent's stage —
+			// no single agent result maps to it, and the range over a Go map
+			// above makes branch creation order random, so positional mapping
+			// here was nondeterministic even on a fresh run. Branch rows close
+			// as a side effect of the run completing.
+			Metadata: map[string]string{
+				"branch_key":          branchKey,
+				structuralMetadataKey: "true",
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create branch task %s: %w", branchKey, err)
@@ -578,7 +702,10 @@ func (t *TaskTrackedOrchestrator) createSwarmTasks(ctx context.Context, boardID 
 			Priority:    loomv1.TaskPriority_TASK_PRIORITY_HIGH,
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "swarm", "vote"},
-			Metadata:    map[string]string{"agent_id": agentID},
+			Metadata: map[string]string{
+				"agent_id":            agentID,
+				stageIndexMetadataKey: strconv.Itoa(i),
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create vote task %d: %w", i+1, err)
@@ -595,6 +722,7 @@ func (t *TaskTrackedOrchestrator) createSwarmTasks(ctx context.Context, boardID 
 		Priority: loomv1.TaskPriority_TASK_PRIORITY_CRITICAL,
 		Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
 		Tags:     []string{"workflow", "swarm", "decision"},
+		Metadata: map[string]string{structuralMetadataKey: "true"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create decision task: %w", err)
@@ -627,15 +755,17 @@ func (t *TaskTrackedOrchestrator) recordResults(
 	execErr error,
 ) {
 	if result == nil {
-		// Workflow failed entirely — mark all IN_PROGRESS tasks as failed.
+		// Workflow failed entirely. CANCEL rather than close: CloseTask records
+		// DONE and feeds graph memory a completion, so a failed run taught the
+		// memory that this work succeeds.
 		for _, tk := range stageTasks {
 			if tk.Status == loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS {
 				reason := "workflow execution failed"
 				if execErr != nil {
 					reason = fmt.Sprintf("workflow failed: %s", execErr.Error())
 				}
-				if _, err := t.manager.CloseTask(ctx, tk.ID, reason); err != nil {
-					t.logger.Warn("task tracking: failed to close task on error",
+				if _, err := t.manager.CancelTask(ctx, tk.ID, reason); err != nil {
+					t.logger.Warn("task tracking: failed to cancel task on error",
 						zap.String("task_id", tk.ID), zap.Error(err))
 				}
 			}
@@ -643,12 +773,38 @@ func (t *TaskTrackedOrchestrator) recordResults(
 		return
 	}
 
-	// Map agent results to tasks by index or agent_id.
-	for i, agentResult := range result.AgentResults {
-		if i >= len(stageTasks) {
-			break
+	// Map agent results to tasks by the result's OWN agent id, never by
+	// position in a listing. Two orderings conspired against positional
+	// mapping: the listing orders by (priority, created_at) with no unique
+	// tiebreak, so a fork_join's HIGH merge row sorted ahead of the forks and
+	// consumed fork agent 1's result (the round-4 reproduction); and for the
+	// concurrent patterns AgentResults arrive in COMPLETION order, so even a
+	// correctly-sorted stage slice mis-pairs whenever the second agent
+	// finishes first. The result names its agent; stage rows record theirs at
+	// creation; stage_index only breaks ties when one agent appears in
+	// several stages (each result then claims the earliest unclaimed row).
+	stageRows := make([]*task.Task, 0, len(stageTasks))
+	for _, tk := range stageTasks {
+		if isStageTask(tk) {
+			stageRows = append(stageRows, tk)
 		}
-		tk := stageTasks[i]
+	}
+	sort.Slice(stageRows, func(a, b int) bool { return stageIndexOf(stageRows[a]) < stageIndexOf(stageRows[b]) })
+	claimRow := func(agentID string) *task.Task {
+		for i, tk := range stageRows {
+			if tk == nil || tk.Metadata["agent_id"] != agentID {
+				continue
+			}
+			stageRows[i] = nil
+			return tk
+		}
+		return nil
+	}
+	for _, agentResult := range result.AgentResults {
+		tk := claimRow(agentResult.AgentId)
+		if tk == nil {
+			continue
+		}
 
 		// Skip tasks already closed (from resume).
 		if tk.Status == loomv1.TaskStatus_TASK_STATUS_DONE {
@@ -680,15 +836,29 @@ func (t *TaskTrackedOrchestrator) recordResults(
 // Resume Support
 // =============================================================================
 
-// markStagesInProgress transitions OPEN tasks to IN_PROGRESS before execution.
+// markStagesInProgress transitions OPEN stage tasks to IN_PROGRESS before
+// execution. Structural rows (merge, decision, branches) are left OPEN — no
+// agent is about to execute them, and claiming them made a completed run's
+// board read as abandoned work.
+//
+// The claimed row is written BACK into the slice: discarding ClaimTask's
+// return left every element's Status a stale OPEN, so recordResults' failure
+// branch — which only cancels rows it believes are IN_PROGRESS — cancelled
+// nothing on a fresh failed run, and a DONE root sat over OPEN stages.
 func (t *TaskTrackedOrchestrator) markStagesInProgress(ctx context.Context, tasks []*task.Task, patternType string) {
-	for _, tk := range tasks {
-		if tk.Status == loomv1.TaskStatus_TASK_STATUS_OPEN {
-			if _, err := t.manager.ClaimTask(ctx, tk.ID, "workflow:"+patternType, "workflow-executor"); err != nil {
-				// Non-fatal — task may already be claimed or blocked.
-				t.logger.Debug("task tracking: could not claim task",
-					zap.String("task_id", tk.ID), zap.Error(err))
-			}
+	for i, tk := range tasks {
+		if !isStageTask(tk) || tk.Status != loomv1.TaskStatus_TASK_STATUS_OPEN {
+			continue
+		}
+		claimed, err := t.manager.ClaimTask(ctx, tk.ID, "workflow:"+patternType, "workflow-executor")
+		if err != nil {
+			// Non-fatal — task may already be claimed or blocked.
+			t.logger.Debug("task tracking: could not claim task",
+				zap.String("task_id", tk.ID), zap.Error(err))
+			continue
+		}
+		if claimed != nil {
+			tasks[i] = claimed
 		}
 	}
 }
@@ -707,10 +877,7 @@ func (t *TaskTrackedOrchestrator) findResumableBoard(ctx context.Context, patter
 			continue
 		}
 
-		tasks, _, err := t.manager.ListTasks(ctx, task.ListTasksOpts{
-			BoardID: b.ID,
-			Limit:   100,
-		})
+		tasks, err := t.listAllBoardTasks(ctx, b.ID)
 		if err != nil || len(tasks) == 0 {
 			continue
 		}
@@ -728,10 +895,16 @@ func (t *TaskTrackedOrchestrator) findResumableBoard(ctx context.Context, patter
 		//   - it must not advance resumeIdx either. resumeIdx is an index into
 		//     the pattern's STAGES; counting a non-stage row would resume the
 		//     next run one stage too far along and silently skip work.
+		// Only STAGE rows (those an agent result closes) decide resumability.
+		// Structural rows — a fork_join's merge, a swarm's decision, a
+		// conditional's branches — have no agent result and used to stay open
+		// after a successful run, so those three pattern types read as
+		// resumable forever: the next run adopted the finished board, its
+		// outputs mapped onto already-DONE rows, and it recorded nothing.
 		hasIncomplete := false
 		resumeIdx := 0
 		for _, tk := range tasks {
-			if isWorkflowRootTask(tk) {
+			if !isStageTask(tk) {
 				continue
 			}
 			if tk.Status == loomv1.TaskStatus_TASK_STATUS_DONE {
