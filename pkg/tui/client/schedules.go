@@ -218,25 +218,31 @@ func (c *Client) GetWorkflowExecution(ctx context.Context, executionID string) (
 	return c.client.GetWorkflowExecution(ctx, req)
 }
 
-// CancelExecution stops a workflow execution that is currently running.
+// CancelScheduledExecution stops a scheduled execution that is in flight.
 //
-// The boolean in the response distinguishes "signalled" from "there was nothing
-// to signal" — an execution that finished a moment earlier is not an error, so
-// callers should report the message rather than treating false as a failure.
+// The ID must be one the scheduler minted — the current_execution_id on a
+// schedule, or the ID returned by a manual trigger. An ID the scheduler has
+// never seen, including one from a direct workflow execution, surfaces as a
+// gRPC error with code NotFound.
+//
+// The boolean distinguishes "signaled" from "there was nothing to signal": a
+// false with a message means the execution had already finished before the
+// request, which is not an error, so callers should report the message rather
+// than treating false as a failure.
 //
 // Cancellation is cooperative: the run stops at its next context check, so a
 // caller that wants to show the final state should re-read the schedule's
 // history rather than assume the run has already ended.
-func (c *Client) CancelExecution(ctx context.Context, executionID, reason string) (bool, string, error) {
-	req := &loomv1.CancelWorkflowExecutionRequest{
+func (c *Client) CancelScheduledExecution(ctx context.Context, executionID, reason string) (canceled bool, message string, err error) {
+	req := &loomv1.CancelScheduledExecutionRequest{
 		ExecutionId: executionID,
 		Reason:      reason,
 	}
 
-	resp, err := c.client.CancelWorkflowExecution(ctx, req)
+	resp, err := c.client.CancelScheduledExecution(ctx, req)
 	if err != nil {
 		return false, "", err
 	}
 
-	return resp.GetCancelled(), resp.GetMessage(), nil
+	return resp.GetCanceled(), resp.GetMessage(), nil
 }

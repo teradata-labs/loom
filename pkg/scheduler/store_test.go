@@ -547,12 +547,12 @@ func createTestSchedule(id, workflowName string) *loomv1.ScheduledWorkflow {
 	}
 }
 
-// A cancelled run must move last_status off the previous run's outcome.
+// A canceled run must move last_status off the previous run's outcome.
 //
 // This is the failure this test exists to prevent: RecordSuccess and
-// RecordFailure both set last_status, so a cancelled run that called neither
+// RecordFailure both set last_status, so a canceled run that called neither
 // would leave a just-stopped routine reporting that it last succeeded.
-func TestStore_RecordCancelled(t *testing.T) {
+func TestStore_RecordCanceled(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
 	defer func() { _ = store.Close() }()
@@ -580,19 +580,19 @@ func TestStore_RecordCancelled(t *testing.T) {
 	successTotal := after.Stats.TotalExecutions
 	successCount := after.Stats.SuccessfulExecutions
 
-	require.NoError(t, store.RecordCancelled(ctx, schedule.Id, "stopped by operator"))
+	require.NoError(t, store.RecordCanceled(ctx, schedule.Id, "stopped by operator"))
 
 	got, err := store.Get(ctx, schedule.Id)
 	require.NoError(t, err)
 
-	assert.Equal(t, "cancelled", got.Stats.LastStatus,
+	assert.Equal(t, "canceled", got.Stats.LastStatus,
 		"last_status still shows the previous run; a stopped routine would report success")
 	assert.Equal(t, "stopped by operator", got.Stats.LastError)
 
-	// A cancelled run reached no verdict, so it must not inflate the counters
+	// A canceled run reached no verdict, so it must not inflate the counters
 	// consumers derive a success rate from — same treatment as a skip.
 	assert.Equal(t, successTotal, got.Stats.TotalExecutions,
-		"a cancelled run should not count as an execution")
+		"a canceled run should not count as an execution")
 	assert.Equal(t, successCount, got.Stats.SuccessfulExecutions)
 	assert.Equal(t, int32(0), got.Stats.FailedExecutions,
 		"a cancellation must not be counted as a failure")

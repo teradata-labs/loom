@@ -4745,14 +4745,21 @@ func (s *MultiAgentServer) PauseSchedule(ctx context.Context, req *loomv1.PauseS
 	return &emptypb.Empty{}, nil
 }
 
-// ResumeSchedule resumes a paused schedule.
-// The schedule will start executing again according to its cron expression.
-// CancelWorkflowExecution stops an execution that is currently running.
+// CancelScheduledExecution stops a scheduled execution that is in flight.
 //
 // Pausing a schedule prevents future runs but leaves one already in flight
 // alone, and max_execution_seconds only notices a stuck run once its deadline
 // passes. This is the stop button in between.
-func (s *MultiAgentServer) CancelWorkflowExecution(ctx context.Context, req *loomv1.CancelWorkflowExecutionRequest) (*loomv1.CancelWorkflowExecutionResponse, error) {
+//
+// Scope: only executions the scheduler minted. An execution ID from
+// ExecuteWorkflow or StreamWorkflow lives in the workflowStore namespace that
+// GetWorkflowExecution reads, and returns NotFound here rather than being
+// silently reported as already finished.
+//
+// No CLI or TUI surface invokes this yet: the schedule RPC family has no CLI
+// commands at all, so wiring one up is a follow-up for the family rather than
+// for this RPC alone.
+func (s *MultiAgentServer) CancelScheduledExecution(ctx context.Context, req *loomv1.CancelScheduledExecutionRequest) (*loomv1.CancelScheduledExecutionResponse, error) {
 	if req.ExecutionId == "" {
 		return nil, status.Error(codes.InvalidArgument, "execution_id is required")
 	}
@@ -4765,28 +4772,47 @@ func (s *MultiAgentServer) CancelWorkflowExecution(ctx context.Context, req *loo
 		return nil, status.Error(codes.FailedPrecondition, "scheduler not configured")
 	}
 
-	cancelled, err := sched.CancelExecution(ctx, req.ExecutionId, req.Reason)
+	outcome, err := sched.CancelExecution(ctx, req.ExecutionId, req.Reason)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to cancel execution: %v", err)
 	}
 
-	// Not-running is a successful no-op, not an error: an execution that
-	// finished a moment before the request already gave the caller what they
-	// asked for. Reporting NotFound here would make the UI apologise for a race
-	// it won.
-	if !cancelled {
-		return &loomv1.CancelWorkflowExecutionResponse{
-			Cancelled: false,
-			Message:   "execution is not running — it already finished, or never started",
-		}, nil
-	}
+	switch outcome {
+	case scheduler.CancelOutcomeNotFound:
+		// The scheduler has never heard of this ID, in flight or in history.
+		// Saying "already finished" here would be a lie an operator acts on, so
+		// name the namespace boundary instead.
+		return nil, status.Errorf(codes.NotFound,
+			"no scheduled execution %q, in flight or in history; execution IDs returned by "+
+				"ExecuteWorkflow or StreamWorkflow are a different namespace and cannot be canceled here",
+			req.ExecutionId)
 
-	return &loomv1.CancelWorkflowExecutionResponse{
-		Cancelled: true,
-		Message:   "cancellation signalled; the run stops at its next checkpoint",
-	}, nil
+	case scheduler.CancelOutcomeAlreadyFinished:
+		// A successful no-op, not an error: an execution that reached its
+		// verdict a moment before the request already gave the caller what they
+		// asked for. Reporting an error here would make the UI apologize for a
+		// race it won.
+		return &loomv1.CancelScheduledExecutionResponse{
+			Canceled: false,
+			Message:  "execution already finished before the request; its recorded outcome stands",
+		}, nil
+
+	case scheduler.CancelOutcomeSignaled:
+		return &loomv1.CancelScheduledExecutionResponse{
+			Canceled: true,
+			Message:  "cancellation signaled; the run stops at its next checkpoint and is recorded as canceled",
+		}, nil
+
+	default:
+		// A new outcome the scheduler grew and this handler has not learned.
+		// Mapping it onto one of the cases above would report a state that was
+		// never observed, so fail loudly instead.
+		return nil, status.Errorf(codes.Internal, "unhandled cancel outcome %v", outcome)
+	}
 }
 
+// ResumeSchedule resumes a paused schedule.
+// The schedule will start executing again according to its cron expression.
 func (s *MultiAgentServer) ResumeSchedule(ctx context.Context, req *loomv1.ResumeScheduleRequest) (*emptypb.Empty, error) {
 	if req.ScheduleId == "" {
 		return nil, status.Error(codes.InvalidArgument, "schedule_id is required")

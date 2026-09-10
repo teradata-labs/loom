@@ -2927,47 +2927,6 @@
         ]
       }
     },
-    "/v1/workflows/executions/{executionId}:cancel": {
-      "post": {
-        "summary": "CancelWorkflowExecution stops an execution that is currently running.",
-        "description": "Pausing a schedule prevents future runs but does nothing about one already\nin flight, and max_execution_seconds only detects a stuck run after the\nfact. This is the operator's stop button: without it a workflow that hangs\nholds its schedule's slot until the timeout expires, and skip_if_running\nsilently skips every run in the meantime.\n\nCancellation is cooperative — the execution's context is cancelled and the\nrun is recorded as cancelled. Work already committed by earlier stages is\nnot rolled back.",
-        "operationId": "LoomService_CancelWorkflowExecution",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1CancelWorkflowExecutionResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "executionId",
-            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\nor by the response to TriggerScheduledWorkflow.",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/LoomServiceCancelWorkflowExecutionBody"
-            }
-          }
-        ],
-        "tags": [
-          "LoomService"
-        ]
-      }
-    },
     "/v1/workflows/schedules": {
       "get": {
         "summary": "ListScheduledWorkflows lists all scheduled workflows.",
@@ -3039,6 +2998,47 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1ScheduleWorkflowRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/workflows/schedules/executions/{executionId}:cancel": {
+      "post": {
+        "summary": "CancelScheduledExecution stops a scheduled execution that is in flight.",
+        "description": "Pausing a schedule prevents future runs but does nothing about one already\nin flight, and max_execution_seconds only detects a stuck run after the\nfact. This is the operator's stop button: without it a workflow that hangs\nholds its schedule's slot until the timeout expires, and skip_if_running\nsilently skips every run in the meantime.\n\nScope: this cancels executions minted by the scheduler — the IDs reported\nin ScheduledWorkflow.current_execution_id and in the response to\nTriggerScheduledWorkflow. Execution IDs from ExecuteWorkflow and\nStreamWorkflow live in a different namespace (the one GetWorkflowExecution\nand ListWorkflowExecutions read) and cannot be canceled here; passing one\nreturns NOT_FOUND.\n\nNOT_FOUND means no scheduled execution with that ID exists, neither in\nflight nor in the schedule's history. A response with canceled = false and\na message means the execution was found but had already reached its verdict\nbefore the request arrived; that is deliberately not an error, because a\ncaller stopping a run that just finished got the state it asked for.\n\nCancellation is cooperative — the execution's context is canceled and the\nrun is recorded as canceled once it unwinds. Work already committed by\nearlier stages is not rolled back.\n\nAuthorization: like the sibling schedule RPCs (PauseSchedule,\nResumeSchedule, DeleteScheduledWorkflow, TriggerScheduledWorkflow), this\nperforms no ownership check — the scheduled_workflows table has no owner\ncolumn, so there is nothing to check against. Any caller that reaches the\nservice can stop any scheduled execution. Adding ownership is a follow-up\nfor the whole schedule surface rather than something this one RPC can\nsolve; it is recorded here so the gap is not mistaken for an oversight.",
+        "operationId": "LoomService_CancelScheduledExecution",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelScheduledExecutionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "executionId",
+            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\nor by the response to TriggerScheduledWorkflow. An ID that names no\nscheduled execution — in flight or in history — returns NOT_FOUND.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCancelScheduledExecutionBody"
             }
           }
         ],
@@ -3407,7 +3407,7 @@
       },
       "description": "AnswerClarificationRequest provides an answer to a clarification question."
     },
-    "LoomServiceCancelWorkflowExecutionBody": {
+    "LoomServiceCancelScheduledExecutionBody": {
       "type": "object",
       "properties": {
         "reason": {
@@ -3415,7 +3415,7 @@
           "description": "Optional human-readable reason, recorded in the execution history so the\nrecord distinguishes an operator stop from a crash."
         }
       },
-      "description": "CancelWorkflowExecutionRequest stops a running execution."
+      "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
     "LoomServicePauseScheduleBody": {
       "type": "object",
@@ -4401,19 +4401,19 @@
       },
       "description": "BusMessage is the envelope for pub/sub messages broadcast to topic subscribers.\nUnlike point-to-point CommunicationMessage, BusMessage is one-to-many."
     },
-    "v1CancelWorkflowExecutionResponse": {
+    "v1CancelScheduledExecutionResponse": {
       "type": "object",
       "properties": {
-        "cancelled": {
+        "canceled": {
           "type": "boolean",
-          "description": "True when a running execution was found and signalled. False means the\nexecution was already finished or was never running — not an error, since\na user cancelling a run that just completed has got what they wanted."
+          "description": "True when the execution was in flight and its context was canceled; the\nrun is recorded as canceled once it unwinds. False means the execution had\nalready reached its verdict before the request arrived, so nothing was\nsignaled and the recorded outcome stands — not an error, since a caller\nstopping a run that just completed got the state it asked for.\n\nCancellation is cooperative: true says the signal was delivered, not that\nthe run has stopped yet, and work already committed is not rolled back."
         },
         "message": {
           "type": "string",
-          "description": "Human-readable outcome, suitable for showing directly."
+          "description": "Human-readable outcome, suitable for showing directly. It is the only thing\nthat distinguishes \"signaled\" from \"already finished\" beyond the boolean."
         }
       },
-      "description": "CancelWorkflowExecutionResponse reports what the cancellation did."
+      "description": "CancelScheduledExecutionResponse reports what the cancellation did.\n\nReaching this message at all means the execution exists in the scheduler's\nnamespace; an unknown ID is a NOT_FOUND error instead."
     },
     "v1CertificateInfo": {
       "type": "object",
@@ -7953,7 +7953,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Status: \"success\", \"failed\", \"skipped\""
+          "description": "Status: \"success\", \"failed\", \"skipped\", \"canceled\"\nThe US spelling matches WorkflowStatus \"canceled\" in the workflow-execution\nnamespace, so both surfaces report the same word for the same outcome."
         },
         "error": {
           "type": "string",
@@ -7996,7 +7996,7 @@
         },
         "lastStatus": {
           "type": "string",
-          "title": "Last execution status: \"success\", \"failed\", \"skipped\""
+          "title": "Last execution status: \"success\", \"failed\", \"skipped\", \"canceled\""
         },
         "lastError": {
           "type": "string",

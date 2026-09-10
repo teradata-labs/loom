@@ -430,7 +430,7 @@ service LoomService {
     option (google.api.http) = {get: "/v1/workflows/schedules/{schedule_id}/history"};
   }
 
-  // CancelWorkflowExecution stops an execution that is currently running.
+  // CancelScheduledExecution stops a scheduled execution that is in flight.
   //
   // Pausing a schedule prevents future runs but does nothing about one already
   // in flight, and max_execution_seconds only detects a stuck run after the
@@ -438,12 +438,33 @@ service LoomService {
   // holds its schedule's slot until the timeout expires, and skip_if_running
   // silently skips every run in the meantime.
   //
-  // Cancellation is cooperative — the execution's context is cancelled and the
-  // run is recorded as cancelled. Work already committed by earlier stages is
-  // not rolled back.
-  rpc CancelWorkflowExecution(CancelWorkflowExecutionRequest) returns (CancelWorkflowExecutionResponse) {
+  // Scope: this cancels executions minted by the scheduler — the IDs reported
+  // in ScheduledWorkflow.current_execution_id and in the response to
+  // TriggerScheduledWorkflow. Execution IDs from ExecuteWorkflow and
+  // StreamWorkflow live in a different namespace (the one GetWorkflowExecution
+  // and ListWorkflowExecutions read) and cannot be canceled here; passing one
+  // returns NOT_FOUND.
+  //
+  // NOT_FOUND means no scheduled execution with that ID exists, neither in
+  // flight nor in the schedule's history. A response with canceled = false and
+  // a message means the execution was found but had already reached its verdict
+  // before the request arrived; that is deliberately not an error, because a
+  // caller stopping a run that just finished got the state it asked for.
+  //
+  // Cancellation is cooperative — the execution's context is canceled and the
+  // run is recorded as canceled once it unwinds. Work already committed by
+  // earlier stages is not rolled back.
+  //
+  // Authorization: like the sibling schedule RPCs (PauseSchedule,
+  // ResumeSchedule, DeleteScheduledWorkflow, TriggerScheduledWorkflow), this
+  // performs no ownership check — the scheduled_workflows table has no owner
+  // column, so there is nothing to check against. Any caller that reaches the
+  // service can stop any scheduled execution. Adding ownership is a follow-up
+  // for the whole schedule surface rather than something this one RPC can
+  // solve; it is recorded here so the gap is not mistaken for an oversight.
+  rpc CancelScheduledExecution(CancelScheduledExecutionRequest) returns (CancelScheduledExecutionResponse) {
     option (google.api.http) = {
-      post: "/v1/workflows/executions/{execution_id}:cancel"
+      post: "/v1/workflows/schedules/executions/{execution_id}:cancel"
       body: "*"
     };
   }
@@ -2122,10 +2143,15 @@ message GetScheduleHistoryResponse {
   repeated ScheduleExecution executions = 1;
 }
 
-// CancelWorkflowExecutionRequest stops a running execution.
-message CancelWorkflowExecutionRequest {
+// CancelScheduledExecutionRequest stops a scheduled execution that is in
+// flight.
+//
+// The ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and
+// StreamWorkflow belong to a different namespace and yield NOT_FOUND.
+message CancelScheduledExecutionRequest {
   // Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id
-  // or by the response to TriggerScheduledWorkflow.
+  // or by the response to TriggerScheduledWorkflow. An ID that names no
+  // scheduled execution — in flight or in history — returns NOT_FOUND.
   string execution_id = 1;
 
   // Optional human-readable reason, recorded in the execution history so the
@@ -2133,14 +2159,23 @@ message CancelWorkflowExecutionRequest {
   string reason = 2;
 }
 
-// CancelWorkflowExecutionResponse reports what the cancellation did.
-message CancelWorkflowExecutionResponse {
-  // True when a running execution was found and signalled. False means the
-  // execution was already finished or was never running — not an error, since
-  // a user cancelling a run that just completed has got what they wanted.
-  bool cancelled = 1;
+// CancelScheduledExecutionResponse reports what the cancellation did.
+//
+// Reaching this message at all means the execution exists in the scheduler's
+// namespace; an unknown ID is a NOT_FOUND error instead.
+message CancelScheduledExecutionResponse {
+  // True when the execution was in flight and its context was canceled; the
+  // run is recorded as canceled once it unwinds. False means the execution had
+  // already reached its verdict before the request arrived, so nothing was
+  // signaled and the recorded outcome stands — not an error, since a caller
+  // stopping a run that just completed got the state it asked for.
+  //
+  // Cancellation is cooperative: true says the signal was delivered, not that
+  // the run has stopped yet, and work already committed is not rolled back.
+  bool canceled = 1;
 
-  // Human-readable outcome, suitable for showing directly.
+  // Human-readable outcome, suitable for showing directly. It is the only thing
+  // that distinguishes "signaled" from "already finished" beyond the boolean.
   string message = 2;
 }
 
@@ -2155,7 +2190,9 @@ message ScheduleExecution {
   // Completed at timestamp (Unix seconds)
   int64 completed_at = 3;
 
-  // Status: "success", "failed", "skipped"
+  // Status: "success", "failed", "skipped", "canceled"
+  // The US spelling matches WorkflowStatus "canceled" in the workflow-execution
+  // namespace, so both surfaces report the same word for the same outcome.
   string status = 4;
 
   // Error message (if failed)

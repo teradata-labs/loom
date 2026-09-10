@@ -840,3 +840,118 @@ func TestGetScheduleHistory_Success(t *testing.T) {
 	// History should be empty since we haven't executed yet
 	assert.Equal(t, 0, len(histResp.Executions))
 }
+
+// TestCancelScheduledExecution_Validation covers the three outcomes an operator
+// can reach without a run in flight: a missing ID, a server with no scheduler,
+// and an ID the scheduler has never seen. The last one is the point of the RPC's
+// rename — an unknown ID must be NotFound, not a cheerful "already finished",
+// because IDs from ExecuteWorkflow/StreamWorkflow are a different namespace.
+func TestCancelScheduledExecution_Validation(t *testing.T) {
+	tests := []struct {
+		name           string
+		req            *loomv1.CancelScheduledExecutionRequest
+		setupScheduler bool
+		expectCode     codes.Code
+		expectError    string
+	}{
+		{
+			name:           "missing execution_id",
+			req:            &loomv1.CancelScheduledExecutionRequest{ExecutionId: ""},
+			setupScheduler: true,
+			expectCode:     codes.InvalidArgument,
+			expectError:    "execution_id is required",
+		},
+		{
+			name:           "scheduler not configured",
+			req:            &loomv1.CancelScheduledExecutionRequest{ExecutionId: "exec-1"},
+			setupScheduler: false,
+			expectCode:     codes.FailedPrecondition,
+			expectError:    "scheduler not configured",
+		},
+		{
+			name:           "unknown execution_id",
+			req:            &loomv1.CancelScheduledExecutionRequest{ExecutionId: "exec-never-existed"},
+			setupScheduler: true,
+			expectCode:     codes.NotFound,
+			expectError:    "no scheduled execution",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var server *MultiAgentServer
+			if tt.setupScheduler {
+				server, _ = setupTestSchedulerServer(t)
+			} else {
+				// Server without scheduler
+				server = &MultiAgentServer{
+					agents:        make(map[string]*agent.Agent),
+					workflowStore: NewWorkflowStore(),
+				}
+			}
+
+			_, err := server.CancelScheduledExecution(context.Background(), tt.req)
+
+			require.Error(t, err)
+			st, ok := status.FromError(err)
+			require.True(t, ok, "Expected gRPC status error")
+			assert.Equal(t, tt.expectCode, st.Code(), "Status code mismatch")
+			assert.Contains(t, st.Message(), tt.expectError, "Error message mismatch")
+		})
+	}
+}
+
+// TestCancelScheduledExecution_AlreadyFinished covers the one response the
+// handler returns without an error: the execution exists in the scheduler's
+// history but had already reached its verdict. That is deliberately a
+// successful no-op — an operator stopping a run that just ended got the state
+// they asked for — and the recorded outcome must be left alone.
+func TestCancelScheduledExecution_AlreadyFinished(t *testing.T) {
+	server, sched := setupTestSchedulerServer(t)
+	ctx := context.Background()
+
+	// An empty pipeline is rejected by the orchestrator before anything runs,
+	// so the execution reaches a deterministic verdict without an LLM.
+	schedule := &loomv1.ScheduledWorkflow{
+		Id:           "sched-finished",
+		WorkflowName: "finishes-at-once",
+		Pattern: &loomv1.WorkflowPattern{
+			Pattern: &loomv1.WorkflowPattern_Pipeline{
+				Pipeline: &loomv1.PipelinePattern{},
+			},
+		},
+		Schedule: &loomv1.ScheduleConfig{
+			Cron:    "0 0 * * *",
+			Enabled: true,
+		},
+	}
+	require.NoError(t, sched.AddSchedule(ctx, schedule))
+
+	trig, err := server.TriggerScheduledWorkflow(ctx, &loomv1.TriggerScheduledWorkflowRequest{
+		ScheduleId: schedule.Id,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, trig.ExecutionId)
+
+	// Wait for the run to be recorded before cancelling it.
+	require.Eventually(t, func() bool {
+		hist, err := server.GetScheduleHistory(ctx, &loomv1.GetScheduleHistoryRequest{ScheduleId: schedule.Id})
+		return err == nil && len(hist.Executions) == 1
+	}, 5*time.Second, 5*time.Millisecond, "the triggered run never recorded a verdict")
+
+	resp, err := server.CancelScheduledExecution(ctx, &loomv1.CancelScheduledExecutionRequest{
+		ExecutionId: trig.ExecutionId,
+		Reason:      "operator stop",
+	})
+	require.NoError(t, err, "cancelling a finished execution must not be an error")
+	assert.False(t, resp.Canceled)
+	assert.Contains(t, resp.Message, "already finished")
+
+	// The verdict the run reached on its own must still be what history shows.
+	hist, err := server.GetScheduleHistory(ctx, &loomv1.GetScheduleHistoryRequest{ScheduleId: schedule.Id})
+	require.NoError(t, err)
+	require.Len(t, hist.Executions, 1)
+	assert.Equal(t, trig.ExecutionId, hist.Executions[0].ExecutionId)
+	assert.Equal(t, "failed", hist.Executions[0].Status,
+		"a late cancel must not relabel a finished run")
+}

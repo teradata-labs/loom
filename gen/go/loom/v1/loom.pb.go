@@ -6901,11 +6901,16 @@ func (x *GetScheduleHistoryResponse) GetExecutions() []*ScheduleExecution {
 	return nil
 }
 
-// CancelWorkflowExecutionRequest stops a running execution.
-type CancelWorkflowExecutionRequest struct {
+// CancelScheduledExecutionRequest stops a scheduled execution that is in
+// flight.
+//
+// The ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and
+// StreamWorkflow belong to a different namespace and yield NOT_FOUND.
+type CancelScheduledExecutionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id
-	// or by the response to TriggerScheduledWorkflow.
+	// or by the response to TriggerScheduledWorkflow. An ID that names no
+	// scheduled execution — in flight or in history — returns NOT_FOUND.
 	ExecutionId string `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
 	// Optional human-readable reason, recorded in the execution history so the
 	// record distinguishes an operator stop from a crash.
@@ -6914,20 +6919,20 @@ type CancelWorkflowExecutionRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CancelWorkflowExecutionRequest) Reset() {
-	*x = CancelWorkflowExecutionRequest{}
+func (x *CancelScheduledExecutionRequest) Reset() {
+	*x = CancelScheduledExecutionRequest{}
 	mi := &file_loom_v1_loom_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CancelWorkflowExecutionRequest) String() string {
+func (x *CancelScheduledExecutionRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CancelWorkflowExecutionRequest) ProtoMessage() {}
+func (*CancelScheduledExecutionRequest) ProtoMessage() {}
 
-func (x *CancelWorkflowExecutionRequest) ProtoReflect() protoreflect.Message {
+func (x *CancelScheduledExecutionRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_loom_v1_loom_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -6939,52 +6944,61 @@ func (x *CancelWorkflowExecutionRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CancelWorkflowExecutionRequest.ProtoReflect.Descriptor instead.
-func (*CancelWorkflowExecutionRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CancelScheduledExecutionRequest.ProtoReflect.Descriptor instead.
+func (*CancelScheduledExecutionRequest) Descriptor() ([]byte, []int) {
 	return file_loom_v1_loom_proto_rawDescGZIP(), []int{88}
 }
 
-func (x *CancelWorkflowExecutionRequest) GetExecutionId() string {
+func (x *CancelScheduledExecutionRequest) GetExecutionId() string {
 	if x != nil {
 		return x.ExecutionId
 	}
 	return ""
 }
 
-func (x *CancelWorkflowExecutionRequest) GetReason() string {
+func (x *CancelScheduledExecutionRequest) GetReason() string {
 	if x != nil {
 		return x.Reason
 	}
 	return ""
 }
 
-// CancelWorkflowExecutionResponse reports what the cancellation did.
-type CancelWorkflowExecutionResponse struct {
+// CancelScheduledExecutionResponse reports what the cancellation did.
+//
+// Reaching this message at all means the execution exists in the scheduler's
+// namespace; an unknown ID is a NOT_FOUND error instead.
+type CancelScheduledExecutionResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// True when a running execution was found and signalled. False means the
-	// execution was already finished or was never running — not an error, since
-	// a user cancelling a run that just completed has got what they wanted.
-	Cancelled bool `protobuf:"varint,1,opt,name=cancelled,proto3" json:"cancelled,omitempty"`
-	// Human-readable outcome, suitable for showing directly.
+	// True when the execution was in flight and its context was canceled; the
+	// run is recorded as canceled once it unwinds. False means the execution had
+	// already reached its verdict before the request arrived, so nothing was
+	// signaled and the recorded outcome stands — not an error, since a caller
+	// stopping a run that just completed got the state it asked for.
+	//
+	// Cancellation is cooperative: true says the signal was delivered, not that
+	// the run has stopped yet, and work already committed is not rolled back.
+	Canceled bool `protobuf:"varint,1,opt,name=canceled,proto3" json:"canceled,omitempty"`
+	// Human-readable outcome, suitable for showing directly. It is the only thing
+	// that distinguishes "signaled" from "already finished" beyond the boolean.
 	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CancelWorkflowExecutionResponse) Reset() {
-	*x = CancelWorkflowExecutionResponse{}
+func (x *CancelScheduledExecutionResponse) Reset() {
+	*x = CancelScheduledExecutionResponse{}
 	mi := &file_loom_v1_loom_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CancelWorkflowExecutionResponse) String() string {
+func (x *CancelScheduledExecutionResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CancelWorkflowExecutionResponse) ProtoMessage() {}
+func (*CancelScheduledExecutionResponse) ProtoMessage() {}
 
-func (x *CancelWorkflowExecutionResponse) ProtoReflect() protoreflect.Message {
+func (x *CancelScheduledExecutionResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_loom_v1_loom_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -6996,19 +7010,19 @@ func (x *CancelWorkflowExecutionResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CancelWorkflowExecutionResponse.ProtoReflect.Descriptor instead.
-func (*CancelWorkflowExecutionResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CancelScheduledExecutionResponse.ProtoReflect.Descriptor instead.
+func (*CancelScheduledExecutionResponse) Descriptor() ([]byte, []int) {
 	return file_loom_v1_loom_proto_rawDescGZIP(), []int{89}
 }
 
-func (x *CancelWorkflowExecutionResponse) GetCancelled() bool {
+func (x *CancelScheduledExecutionResponse) GetCanceled() bool {
 	if x != nil {
-		return x.Cancelled
+		return x.Canceled
 	}
 	return false
 }
 
-func (x *CancelWorkflowExecutionResponse) GetMessage() string {
+func (x *CancelScheduledExecutionResponse) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
@@ -7024,7 +7038,9 @@ type ScheduleExecution struct {
 	StartedAt int64 `protobuf:"varint,2,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	// Completed at timestamp (Unix seconds)
 	CompletedAt int64 `protobuf:"varint,3,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
-	// Status: "success", "failed", "skipped"
+	// Status: "success", "failed", "skipped", "canceled"
+	// The US spelling matches WorkflowStatus "canceled" in the workflow-execution
+	// namespace, so both surfaces report the same word for the same outcome.
 	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	// Error message (if failed)
 	Error string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
@@ -11466,12 +11482,12 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x1aGetScheduleHistoryResponse\x12:\n" +
 	"\n" +
 	"executions\x18\x01 \x03(\v2\x1a.loom.v1.ScheduleExecutionR\n" +
-	"executions\"[\n" +
-	"\x1eCancelWorkflowExecutionRequest\x12!\n" +
+	"executions\"\\\n" +
+	"\x1fCancelScheduledExecutionRequest\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"Y\n" +
-	"\x1fCancelWorkflowExecutionResponse\x12\x1c\n" +
-	"\tcancelled\x18\x01 \x01(\bR\tcancelled\x12\x18\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"X\n" +
+	" CancelScheduledExecutionResponse\x12\x1a\n" +
+	"\bcanceled\x18\x01 \x01(\bR\bcanceled\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\xe8\x01\n" +
 	"\x11ScheduleExecution\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x1d\n" +
@@ -11830,7 +11846,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x18AB_TEST_MODE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AB_TEST_MODE_SIDE_BY_SIDE\x10\x01\x12\"\n" +
 	"\x1eAB_TEST_MODE_SEQUENTIAL_SCORED\x10\x02\x12\x17\n" +
-	"\x13AB_TEST_MODE_SHADOW\x10\x032\xe8O\n" +
+	"\x13AB_TEST_MODE_SHADOW\x10\x032\xf5O\n" +
 	"\vLoomService\x12L\n" +
 	"\x05Weave\x12\x15.loom.v1.WeaveRequest\x1a\x16.loom.v1.WeaveResponse\"\x14\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/weave\x12[\n" +
 	"\vStreamWeave\x12\x15.loom.v1.WeaveRequest\x1a\x16.loom.v1.WeaveProgress\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/weave:stream0\x01\x12i\n" +
@@ -11897,8 +11913,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x18TriggerScheduledWorkflow\x12(.loom.v1.TriggerScheduledWorkflowRequest\x1a .loom.v1.ExecuteWorkflowResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/workflows/schedules/{schedule_id}:trigger\x12~\n" +
 	"\rPauseSchedule\x12\x1d.loom.v1.PauseScheduleRequest\x1a\x16.google.protobuf.Empty\"6\x82\xd3\xe4\x93\x020:\x01*\"+/v1/workflows/schedules/{schedule_id}:pause\x12\x81\x01\n" +
 	"\x0eResumeSchedule\x12\x1e.loom.v1.ResumeScheduleRequest\x1a\x16.google.protobuf.Empty\"7\x82\xd3\xe4\x93\x021:\x01*\",/v1/workflows/schedules/{schedule_id}:resume\x12\x94\x01\n" +
-	"\x12GetScheduleHistory\x12\".loom.v1.GetScheduleHistoryRequest\x1a#.loom.v1.GetScheduleHistoryResponse\"5\x82\xd3\xe4\x93\x02/\x12-/v1/workflows/schedules/{schedule_id}/history\x12\xa7\x01\n" +
-	"\x17CancelWorkflowExecution\x12'.loom.v1.CancelWorkflowExecutionRequest\x1a(.loom.v1.CancelWorkflowExecutionResponse\"9\x82\xd3\xe4\x93\x023:\x01*\"./v1/workflows/executions/{execution_id}:cancel\x12X\n" +
+	"\x12GetScheduleHistory\x12\".loom.v1.GetScheduleHistoryRequest\x1a#.loom.v1.GetScheduleHistoryResponse\"5\x82\xd3\xe4\x93\x02/\x12-/v1/workflows/schedules/{schedule_id}/history\x12\xb4\x01\n" +
+	"\x18CancelScheduledExecution\x12(.loom.v1.CancelScheduledExecutionRequest\x1a).loom.v1.CancelScheduledExecutionResponse\"C\x82\xd3\xe4\x93\x02=:\x01*\"8/v1/workflows/schedules/executions/{execution_id}:cancel\x12X\n" +
 	"\aPublish\x12\x17.loom.v1.PublishRequest\x1a\x18.loom.v1.PublishResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/bus/publish\x12[\n" +
 	"\tSubscribe\x12\x19.loom.v1.SubscribeRequest\x1a\x13.loom.v1.BusMessage\"\x1c\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/bus/subscribe0\x01\x12h\n" +
 	"\vUnsubscribe\x12\x1b.loom.v1.UnsubscribeRequest\x1a\x1c.loom.v1.UnsubscribeResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/v1/bus/unsubscribe\x12]\n" +
@@ -12043,8 +12059,8 @@ var file_loom_v1_loom_proto_goTypes = []any{
 	(*ResumeScheduleRequest)(nil),              // 89: loom.v1.ResumeScheduleRequest
 	(*GetScheduleHistoryRequest)(nil),          // 90: loom.v1.GetScheduleHistoryRequest
 	(*GetScheduleHistoryResponse)(nil),         // 91: loom.v1.GetScheduleHistoryResponse
-	(*CancelWorkflowExecutionRequest)(nil),     // 92: loom.v1.CancelWorkflowExecutionRequest
-	(*CancelWorkflowExecutionResponse)(nil),    // 93: loom.v1.CancelWorkflowExecutionResponse
+	(*CancelScheduledExecutionRequest)(nil),    // 92: loom.v1.CancelScheduledExecutionRequest
+	(*CancelScheduledExecutionResponse)(nil),   // 93: loom.v1.CancelScheduledExecutionResponse
 	(*ScheduleExecution)(nil),                  // 94: loom.v1.ScheduleExecution
 	(*GetServerConfigRequest)(nil),             // 95: loom.v1.GetServerConfigRequest
 	(*GetTLSStatusRequest)(nil),                // 96: loom.v1.GetTLSStatusRequest
@@ -12349,7 +12365,7 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	88,  // 154: loom.v1.LoomService.PauseSchedule:input_type -> loom.v1.PauseScheduleRequest
 	89,  // 155: loom.v1.LoomService.ResumeSchedule:input_type -> loom.v1.ResumeScheduleRequest
 	90,  // 156: loom.v1.LoomService.GetScheduleHistory:input_type -> loom.v1.GetScheduleHistoryRequest
-	92,  // 157: loom.v1.LoomService.CancelWorkflowExecution:input_type -> loom.v1.CancelWorkflowExecutionRequest
+	92,  // 157: loom.v1.LoomService.CancelScheduledExecution:input_type -> loom.v1.CancelScheduledExecutionRequest
 	188, // 158: loom.v1.LoomService.Publish:input_type -> loom.v1.PublishRequest
 	189, // 159: loom.v1.LoomService.Subscribe:input_type -> loom.v1.SubscribeRequest
 	190, // 160: loom.v1.LoomService.Unsubscribe:input_type -> loom.v1.UnsubscribeRequest
@@ -12440,7 +12456,7 @@ var file_loom_v1_loom_proto_depIdxs = []int32{
 	216, // 245: loom.v1.LoomService.PauseSchedule:output_type -> google.protobuf.Empty
 	216, // 246: loom.v1.LoomService.ResumeSchedule:output_type -> google.protobuf.Empty
 	91,  // 247: loom.v1.LoomService.GetScheduleHistory:output_type -> loom.v1.GetScheduleHistoryResponse
-	93,  // 248: loom.v1.LoomService.CancelWorkflowExecution:output_type -> loom.v1.CancelWorkflowExecutionResponse
+	93,  // 248: loom.v1.LoomService.CancelScheduledExecution:output_type -> loom.v1.CancelScheduledExecutionResponse
 	217, // 249: loom.v1.LoomService.Publish:output_type -> loom.v1.PublishResponse
 	218, // 250: loom.v1.LoomService.Subscribe:output_type -> loom.v1.BusMessage
 	219, // 251: loom.v1.LoomService.Unsubscribe:output_type -> loom.v1.UnsubscribeResponse
