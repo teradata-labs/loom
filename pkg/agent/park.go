@@ -398,10 +398,30 @@ func (a *Agent) abandonParkedRequest(ctx context.Context, hr *shuttle.HumanReque
 	// RESOURCE_HOLDER scheduling class.
 	a.ReleaseParkedHandles(hr.SessionID)
 
+	// The turn is explicitly declared dead here, so its task must not stay
+	// IN_PROGRESS — this function used to retire the ROW and orphan the TASK,
+	// the same leak the lapsed-TTL path had (round-5 M2 named both).
+	a.settleAbandonedParkTask(ctx, hr,
+		"The turn that raised this request can no longer be resumed; it was abandoned.")
+
 	zap.L().Warn("closed a parked request whose turn can no longer be resumed",
 		zap.String("session_id", hr.SessionID),
 		zap.String("request_id", hr.ID),
 		zap.NamedError("cause", cause))
+}
+
+// settleAbandonedParkTask closes an abandoned park's implicit task and releases
+// its memo entry — the shared tail of the two paths that declare a parked turn
+// finished without a resume (a lapsed TTL, an unresumable row). CompleteForTurn's
+// implicit-key guard keeps explicit tasks' lifecycles with their owners; a
+// legacy row without a task id settles nothing, since the task cannot be found
+// from here.
+func (a *Agent) settleAbandonedParkTask(ctx context.Context, hr *shuttle.HumanRequest, reason string) {
+	if hr.TaskID == "" {
+		return
+	}
+	a.implicitTasks.AbortForTurn(ctx, hr.TaskID, reason)
+	a.implicitTasks.ReleaseTaskMemo(hr.SessionID, hr.TaskID)
 }
 
 // lockSession serializes resumes of one session within this process, and
@@ -448,7 +468,7 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Ses
 		// "pending" alone lets a park nobody ever decided refuse every future
 		// turn on this session, permanently.
 		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
-			a.reclaimLapsedPark(ctx, sessionID, r)
+			a.reclaimLapsedPark(ctx, r)
 			continue
 		}
 		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
@@ -1071,7 +1091,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// turn is still unfinished, and the next resume rebinds through the memo.
 	var parkedTerminal *TurnParkedError
 	if !errors.As(err, &parkedTerminal) {
-		defer a.completeImplicitTask(ctx, taskBinding, sessionID, int(turnIndex), implicitCloseReason(response, err))
+		defer a.completeImplicitTask(ctx, taskBinding, sessionID, int(turnIndex), implicitCloseReason(response, err), err != nil)
 	}
 
 	duration := time.Since(startTime)
@@ -1142,20 +1162,14 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 // the guard only consults pending rows, and "timeout" is the same closure the
 // operator CLI writes. Each step fails open with a warn, matching the guard's
 // own ethos: bookkeeping must not cost the user their session.
-func (a *Agent) reclaimLapsedPark(ctx context.Context, sessionID string, r *shuttle.HumanRequest) {
+func (a *Agent) reclaimLapsedPark(ctx context.Context, r *shuttle.HumanRequest) {
 	if err := a.hitlPark.store.ExpireRequest(ctx, r.ID, "system:lapsed-park-reclaim"); err != nil {
 		zap.L().Warn("lapsed-park reclaim: could not expire the row; will retry on the next turn",
 			zap.String("request_id", r.ID), zap.Error(err))
 		return
 	}
-	if r.TaskID == "" {
-		// A legacy row from before parked rows carried their task id: the row
-		// is retired, but the task (if any) cannot be found from here.
-		return
-	}
-	a.implicitTasks.CompleteForTurn(ctx, r.TaskID,
+	a.settleAbandonedParkTask(ctx, r,
 		"Human decision expired unanswered; the turn was abandoned.")
-	a.implicitTasks.ReleaseTaskMemo(sessionID, r.TaskID)
 }
 
 // rawSessionMessages returns the session's L1 rows in append order.

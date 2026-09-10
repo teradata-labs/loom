@@ -487,3 +487,33 @@ func TestPark_LapsedParkReclaimsItsTaskOnTheNextTurn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, "pending", after.Status, "the lapsed row must be expired, not re-reclaimed every turn")
 }
+
+// TestPark_AbandonedParkSettlesItsTask pins round-5 M2's second path: when a
+// resume finds the tail has moved on (ErrNotParkedTail), abandonParkedRequest
+// terminally closes the ROW and declares the turn dead — but used to orphan
+// the TASK, leaving it IN_PROGRESS forever with its memo entry held until
+// DeleteSession. The abandonment now settles both, through the same tail the
+// lapsed-TTL reclamation uses.
+func TestPark_AbandonedParkSettlesItsTask(t *testing.T) {
+	r := newParkTaskRig(t, append(firstActionParkScript(),
+		mockLLMResponse{content: "later turn"}), "export_csv")
+	ctx := context.Background()
+
+	hr := r.parkAndAssert(t, "s-abandon", "export the table")
+	parked := r.onlyTask(t, "s-abandon")
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, parked.Status)
+
+	// History moves on: a user row of a LATER turn lands after the batch, so
+	// the decision can never be applied.
+	sess := r.ag.memory.GetOrCreateSessionWithAgent(ctx, "s-abandon", r.ag.config.Name, "")
+	r.ag.appendMessage(ctx, sess, Message{Role: "user", Content: "new message", AgentID: r.ag.id}, true)
+
+	_, err := r.ag.ResumeChat(ctx, "s-abandon", ParkDecision{RequestID: hr.ID, Approved: true}, nil)
+	require.ErrorIs(t, err, ErrNotParkedTail)
+
+	got, err := r.tasks.GetTask(ctx, parked.ID)
+	require.NoError(t, err)
+	require.True(t, task.IsTerminal(got.Status),
+		"a turn declared dead must not leave its task IN_PROGRESS; got %s", task.StatusName(got.Status))
+	require.Contains(t, got.CloseReason, "abandoned")
+}

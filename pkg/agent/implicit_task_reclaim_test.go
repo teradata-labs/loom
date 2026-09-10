@@ -156,7 +156,7 @@ func TestCompleteImplicitTask_ReleasesTurnMemo(t *testing.T) {
 	require.NotNil(t, first, "first turn mints")
 	require.Nil(t, r.mint(t, sid, 0), "a second trigger in the same turn must hit the memo (rig sanity)")
 
-	r.agent.completeImplicitTask(context.Background(), nil, sid, 0, "done")
+	r.agent.completeImplicitTask(context.Background(), nil, sid, 0, "done", false)
 
 	again := r.mint(t, sid, 0)
 	if again == nil {
@@ -200,7 +200,7 @@ func TestCompleteImplicitTask_SurvivesACanceledRequestContext(t *testing.T) {
 	// The caller cancels; the turn unwinds; the deferred close runs LAST, on
 	// the context the cancellation already killed.
 	cancel()
-	r.agent.completeImplicitTask(ctx, binding, "sess-cancel", 0, "Turn canceled by the caller.")
+	r.agent.completeImplicitTask(ctx, binding, "sess-cancel", 0, "Turn canceled by the caller.", false)
 
 	got, err := r.agent.taskManager.GetTask(context.Background(), created.ID)
 	require.NoError(t, err)
@@ -232,4 +232,28 @@ func TestSessionEpoch_ResolvesWithinOneSecond(t *testing.T) {
 	if got := sessionEpoch(nil); got != 0 {
 		t.Fatalf("nil session must derive epoch 0, got %d", got)
 	}
+}
+
+// TestCompleteImplicitTask_FailedTurnIsCancelledNotDone pins round-5 m6: a
+// turn that ended in an error used to close its task DONE with only the
+// free-text reason distinguishing failure from success — StatusCounts.Done
+// conflated the two, and every failed turn fed graph memory a completion.
+func TestCompleteImplicitTask_FailedTurnIsCancelledNotDone(t *testing.T) {
+	r := newReclaimRig(t, 0)
+	ctx, binding := taskctx.ContextWithBinding(context.Background())
+	_, created, err := r.emitter.EnsureForTurn(ctx, task.TurnRequest{
+		SessionID: "sess-fail", AgentID: "agent-1", BoardID: "sess-fail",
+		TurnIndex: 0, Trigger: loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		UserMessage: "doomed work",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	r.agent.completeImplicitTask(ctx, binding, "sess-fail", 0, "Turn ended with an error.", true)
+
+	got, err := r.agent.taskManager.GetTask(context.Background(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_CANCELLED, got.Status,
+		"a failed turn must not be recorded as a completion")
+	require.Contains(t, got.CloseReason, "error")
 }

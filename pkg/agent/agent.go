@@ -2037,7 +2037,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// entry until the turn that finishes releases it.
 	var parkedHere *TurnParkedError
 	if !errors.As(err, &parkedHere) {
-		defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err))
+		defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err), err != nil)
 	}
 
 	a.checkAndRegisterGraphMemoryTool()

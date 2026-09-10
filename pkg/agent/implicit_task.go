@@ -86,9 +86,16 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 	// conversation's terminal task. CreatedAt is durable and restored, which
 	// is what lets a resume after a process restart still find its own turn.
 	epoch := sessionEpoch(sess)
+	// a.id has a live mutator (SetID, under a.mu) and this runs on the
+	// tool-call goroutine — the identical race b5c3684e fixed in the skill
+	// emitter's capture, left unguarded here until the round-5 review paired
+	// the two sites.
+	a.mu.RLock()
+	agentID := a.id
+	a.mu.RUnlock()
 	_, created, err := a.implicitTasks.EnsureForTurn(ctx, task.TurnRequest{
 		SessionID:    sess.ID,
-		AgentID:      a.id,
+		AgentID:      agentID,
 		BoardID:      boardID,
 		TurnIndex:    int(tc.TurnIndex()),
 		SessionEpoch: epoch,
@@ -174,7 +181,7 @@ func sessionEpoch(sess *Session) int64 {
 // This is also the emitter's per-turn teardown hook. It is deferred once in
 // chat() and covers every return point, so the memo release belongs here rather
 // than in a second mechanism that would have to re-establish the same coverage.
-func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Binding, sessionID string, turnIndex int, closeReason string) {
+func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Binding, sessionID string, turnIndex int, closeReason string, failed bool) {
 	// Release the turn's memo FIRST, and unconditionally.
 	//
 	// Before the early returns below, not after: those guards are about whether
@@ -209,5 +216,12 @@ func (a *Agent) completeImplicitTask(ctx context.Context, binding *taskctx.Bindi
 	// fresh deadline keeps the cleanup bounded instead of unbounded.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	// A failed turn is CANCELLED, not closed: DONE conflated success and
+	// failure in StatusCounts, and every failed turn fed graph memory a
+	// completion (round-5 m6).
+	if failed {
+		a.implicitTasks.AbortForTurn(ctx, attr.TaskID, closeReason)
+		return
+	}
 	a.implicitTasks.CompleteForTurn(ctx, attr.TaskID, closeReason)
 }

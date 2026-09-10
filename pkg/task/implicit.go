@@ -883,6 +883,40 @@ func (e *ImplicitEmitter) CompleteForTurn(ctx context.Context, taskID, closeReas
 	e.tracer.RecordMetric(MetricImplicitTaskClosed, 1, nil)
 }
 
+// AbortForTurn is CompleteForTurn's failure-shaped twin: the same guards (only
+// a runtime-recorded task, only while still open), but the terminal transition
+// is CANCELLED via Manager.CancelTask rather than DONE. It exists because a
+// turn that ended in an error used to close its task DONE with only the
+// free-text reason distinguishing failure from success — StatusCounts.Done
+// conflated the two, and every failed turn fed graph memory a completion.
+func (e *ImplicitEmitter) AbortForTurn(ctx context.Context, taskID, reason string) {
+	if e == nil || e.manager == nil || taskID == "" {
+		return
+	}
+	existing, err := e.manager.GetTask(ctx, taskID)
+	if err != nil || existing == nil {
+		return
+	}
+	if !isImplicitKey(existing.SkillIdempotencyKey) {
+		e.logger.Debug("implicit abort skipped: not a runtime-recorded task",
+			zap.String("task_id", taskID))
+		return
+	}
+	if IsTerminal(existing.Status) {
+		return
+	}
+	if reason == "" {
+		reason = "Turn ended with an error."
+	}
+	if _, err := e.manager.CancelTask(ctx, taskID, reason); err != nil {
+		e.tracer.RecordMetric(MetricImplicitTaskSkipped, 1, map[string]string{"reason": "abort_failed"})
+		e.logger.Warn("implicit task abort failed; task stays in progress",
+			zap.String("task_id", taskID), zap.Error(err))
+		return
+	}
+	e.tracer.RecordMetric(MetricImplicitTaskClosed, 1, map[string]string{"outcome": "cancelled"})
+}
+
 // implicitKeyPrefix is the fixed prefix on every implicit task's idempotency
 // key. sessionKeyPrefix and turnKey build the rest of the key on top of it, and
 // isImplicitKey below recognises it, so all three move together.
