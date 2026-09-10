@@ -391,8 +391,15 @@ type Task struct {
 	OutputPolicy *OutputPolicy `protobuf:"bytes,27,opt,name=output_policy,json=outputPolicy,proto3" json:"output_policy,omitempty"`
 	// Freeform effort estimate (e.g., "5 min", "2 hours", "multi-session").
 	EstimatedEffort string `protobuf:"bytes,28,opt,name=estimated_effort,json=estimatedEffort,proto3" json:"estimated_effort,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// How the task came to exist. Values are the taskctx.CreatedVia* constants:
+	// "user", "agent", "decompose", "skill_template", "workflow", or "implicit"
+	// (minted by the runtime to record a working turn). Empty on rows written
+	// before provenance was recorded. The agent's own task queries already
+	// exclude "implicit"; this field lets API and UI consumers of ListTasks and
+	// GetBoard draw the same line, which they could not before it existed.
+	CreatedVia    string `protobuf:"bytes,29,opt,name=created_via,json=createdVia,proto3" json:"created_via,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Task) Reset() {
@@ -617,6 +624,13 @@ func (x *Task) GetOutputPolicy() *OutputPolicy {
 func (x *Task) GetEstimatedEffort() string {
 	if x != nil {
 		return x.EstimatedEffort
+	}
+	return ""
+}
+
+func (x *Task) GetCreatedVia() string {
+	if x != nil {
+		return x.CreatedVia
 	}
 	return ""
 }
@@ -3194,7 +3208,7 @@ var File_loom_v1_task_proto protoreflect.FileDescriptor
 
 const file_loom_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/task.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bloom/v1/collaboration.proto\"\xbc\b\n" +
+	"\x12loom/v1/task.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bloom/v1/collaboration.proto\"\xdd\b\n" +
 	"\x04Task\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -3228,7 +3242,9 @@ const file_loom_v1_task_proto_rawDesc = "" +
 	"\x10compaction_level\x18\x19 \x01(\x05R\x0fcompactionLevel\x12+\n" +
 	"\x11compacted_summary\x18\x1a \x01(\tR\x10compactedSummary\x12:\n" +
 	"\routput_policy\x18\x1b \x01(\v2\x15.loom.v1.OutputPolicyR\foutputPolicy\x12)\n" +
-	"\x10estimated_effort\x18\x1c \x01(\tR\x0festimatedEffort\x1a;\n" +
+	"\x10estimated_effort\x18\x1c \x01(\tR\x0festimatedEffort\x12\x1f\n" +
+	"\vcreated_via\x18\x1d \x01(\tR\n" +
+	"createdVia\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x02\n" +

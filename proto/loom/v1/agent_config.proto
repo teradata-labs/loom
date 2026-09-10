@@ -381,17 +381,30 @@ enum ImplicitTaskMode {
 // value. A tool call happens dozens of times a turn; a human-in-the-loop
 // request happens rarely but is the one a human most needs to find. An operator
 // tuning board noise needs to keep the latter while dropping the former.
+//
+// Status per value is stated on the value. Only the ✅ triggers are fired by the
+// runtime today; the 📋 ones parse, validate and resolve, but no code path
+// passes them to the emitter yet, so selecting only those records nothing (the
+// agent logs a warning when the resolved set cannot fire).
 enum ImplicitTaskTrigger {
+  // Not a trigger. Load-bearing for fail-closed config parsing: an
+  // unrecognised trigger name resolves to this and disables emission, and the
+  // policy resolver drops it from any trigger set.
   IMPLICIT_TASK_TRIGGER_UNSPECIFIED = 0;
-  // The agent invoked a tool.
+  // ✅ Fired: the agent invoked a tool.
   IMPLICIT_TASK_TRIGGER_TOOL_CALL = 1;
-  // A skill activated for this turn.
+  // 📋 Not yet fired by the runtime: a skill activated for this turn. The
+  // skills task emitter already creates tasks on activation, which is why this
+  // is outside the default set.
   IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION = 2;
-  // The agent asked a human for approval, a decision, input, or review.
+  // ✅ Fired: the agent asked a human for approval, a decision, input, or
+  // review.
   IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST = 3;
-  // The agent spawned an ephemeral subagent.
+  // 📋 Not yet fired by the runtime: the agent spawned an ephemeral subagent.
   IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN = 4;
-  // A workflow stage began executing.
+  // 📋 Not yet fired by the runtime: a workflow stage began executing. The
+  // task-tracked orchestrator already creates a task per stage, which is why
+  // this is outside the default set.
   IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP = 5;
 }
 

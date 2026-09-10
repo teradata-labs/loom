@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -112,6 +113,14 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, req *loomv1.CreateTask
 		return nil, status.Error(codes.InvalidArgument, "task is required")
 	}
 	t := protoToTask(req.Task)
+	// Provenance for the API surface. The task_board tool stamps "agent" and
+	// the runtime stamps "implicit"; a task created over the RPC by a person or
+	// a client on their behalf had no stamp at all, so API-created rows were
+	// indistinguishable from pre-provenance legacy rows. A client that knows
+	// better (an importer replaying "workflow" rows, say) may set it explicitly.
+	if t.CreatedVia == "" {
+		t.CreatedVia = taskctx.CreatedViaUser
+	}
 	created, err := s.manager.CreateTask(ctx, t)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create task: %v", err)
@@ -289,6 +298,7 @@ func taskToProto(t *task.Task) *loomv1.Task {
 		CompactionLevel:    int32(t.CompactionLevel), // #nosec G115
 		CompactedSummary:   t.CompactedSummary,
 		EstimatedEffort:    t.EstimatedEffort,
+		CreatedVia:         t.CreatedVia,
 		CreatedAt:          t.CreatedAt.UnixMilli(),
 		UpdatedAt:          t.UpdatedAt.UnixMilli(),
 	}
@@ -329,6 +339,7 @@ func protoToTask(p *loomv1.Task) *task.Task {
 		Metadata:           p.Metadata,
 		BoardID:            p.BoardId,
 		EstimatedEffort:    p.EstimatedEffort,
+		CreatedVia:         p.CreatedVia,
 	}
 }
 
