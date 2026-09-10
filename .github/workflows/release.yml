@@ -87,7 +87,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           body: |
             ## What's Changed
@@ -297,7 +297,7 @@ jobs:
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             ${{ matrix.output }}.tar.gz
@@ -308,7 +308,7 @@ jobs:
 
       - name: Upload release assets (Windows)
         if: matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             ${{ matrix.output }}.zip
@@ -392,7 +392,7 @@ jobs:
           echo "✅ Combined package checksum signed"
 
       - name: Upload combined package
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             loom-windows-x64.zip

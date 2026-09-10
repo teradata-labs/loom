@@ -81,6 +81,12 @@ type Agent struct {
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
 
+	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
+	// park: a successful tool result carrying AwaitResource ends the turn
+	// parked until the named resource reaches a terminal state. Requires
+	// hitlPark (the same durable-row machinery finishes the turn).
+	resourceAwait ResourceAwaitHandler
+
 	// parkedHandles holds the MCP session-handle collector of each session's
 	// parked turn, so a same-process resume adopts its handles instead of
 	// finding them released. One slot per session; guardParkedTail now

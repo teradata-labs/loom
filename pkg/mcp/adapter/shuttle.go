@@ -380,6 +380,13 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 		ExecutionTimeMs: executionTime,
 		Metadata:        metadata,
 	}
+	// Success-path long-running-job marker (protocol.MetaAwaitResource): the
+	// server says this result's real outcome is the named resource's terminal
+	// state. Stamped onto the generic contract so the agent loop can park the
+	// turn without knowing MCP; ignored by agents with no await handler.
+	if uri := protocol.AwaitResourceURI(mcpResult.Meta); uri != "" {
+		result.AwaitResource = &shuttle.AwaitResource{URI: uri}
+	}
 	for _, ev := range leaseEvents {
 		shuttle.AppendLeaseEvent(result, ev)
 	}

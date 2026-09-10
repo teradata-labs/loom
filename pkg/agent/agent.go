@@ -2754,6 +2754,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if maxPerTurn <= 0 {
 			maxPerTurn = 10 // default
 		}
+		batchIDCount := make(map[string]int, len(llmResp.ToolCalls))
+		for _, c := range llmResp.ToolCalls {
+			batchIDCount[c.ID]++
+		}
 		st := &batchState{
 			span:               span,
 			turnCount:          turnCount,
@@ -2764,6 +2768,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
+			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
+			batchIDCount:       batchIDCount,
 		}
 
 		for i, toolCall := range llmResp.ToolCalls {
@@ -2781,6 +2787,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Sidecars never advance the turn and hold no special status beyond
 			// that (HLD §4.5).
 			a.appendMessage(ctx, session, sidecar, false)
+		}
+
+		// Resource-await park (park_resource.go): calls held during dispatch
+		// end the turn HERE, after every other call's row and sidecar landed.
+		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
+			return nil, parkErr
 		}
 	}
 
@@ -2807,6 +2819,15 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+
+	// Resource-await park (park_resource.go). parkableTail mirrors the
+	// pre-scan's durability gate and is set ONLY by the conversation loop —
+	// the resume path leaves it false, so completions never nest a resource
+	// park. batchIDCount guards descriptor bindability; awaitHeld carries the
+	// calls whose rows are withheld for maybeParkResourceBatch.
+	parkableTail bool
+	batchIDCount map[string]int
+	awaitHeld    []heldAwait
 }
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
@@ -2964,6 +2985,27 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		ctx.Tracer().EndSpan(toolSpan)
 	}
 
+	// Resource-await hold (park_resource.go): a successful result asking to be
+	// awaited is withheld from the transcript — no execution record, no tool
+	// row — so the batch tail stays rowless for the park that follows the
+	// batch loop. Every refusal path falls through to the normal commit.
+	if a.maybeHoldForResourceAwait(ctx, session, toolCall, i, st, result, err) {
+		return
+	}
+
+	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// commitToolRow is the commit tail of dispatchOneCall — execution record,
+// dedup cache, persistence, failure tracking, the tool row, and sidecar
+// buffering — extracted so the resource-await un-hold path (a park row that
+// failed to persist) can commit a withheld result identically, just later.
+// toolSpan may be nil on that deferred path; the span ended with the original
+// dispatch.
+func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, st *batchState, result *shuttle.Result, err error, toolSpan *observability.Span) {
+	span := st.span
+	dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
+
 	// Record execution
 	execution := ToolExecution{
 		ToolName:          toolCall.Name,
@@ -2986,7 +3028,9 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	// Persist tool execution
 	if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
 		// Log but don't fail
-		toolSpan.RecordError(persistErr)
+		if toolSpan != nil {
+			toolSpan.RecordError(persistErr)
+		}
 	}
 
 	// === FEATURE INTEGRATION: Consecutive Failure Tracking ===
@@ -3984,6 +4028,39 @@ func (a *Agent) GetLLMForRole(role loomv1.LLMRole) LLMProvider {
 		// Fall through to return main LLM
 	}
 	return a.llm
+}
+
+// GetLLMForRoleStrict returns the LLM explicitly configured for a role and
+// reports whether one exists. Unlike GetLLMForRole it does not fall back to the
+// main agent LLM, so a caller can tell "this role has its own model" from "this
+// role would be served by the agent's own model".
+//
+// It exists for capability-leveling ladder resolution: a ladder rung naming a
+// role is asking for a different model than the primary, and silently resolving
+// it to the primary's own LLM would build a ladder whose rungs are all the same
+// model — escalation that spends a call and cannot improve anything. Callers
+// wanting the fallback should keep using GetLLMForRole.
+//
+// AGENT and UNSPECIFIED name the agent's own LLM rather than a role LLM, so
+// they resolve to the main LLM when one is set.
+func (a *Agent) GetLLMForRoleStrict(role loomv1.LLMRole) (LLMProvider, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	var llm LLMProvider
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		llm = a.judgeLLM
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		llm = a.orchestratorLLM
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		llm = a.classifierLLM
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		llm = a.compressorLLM
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		llm = a.llm
+	}
+	return llm, llm != nil
 }
 
 // SetLLMProviderForRole sets the LLM provider for a specific role.

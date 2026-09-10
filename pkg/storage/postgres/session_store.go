@@ -923,6 +923,42 @@ func (s *SessionStore) SoftDeleteSession(ctx context.Context, sessionID string) 
 	return s.DeleteSession(ctx, sessionID)
 }
 
+// CallerOwnsSession reports whether sessionID belongs to the caller, counting
+// soft-deleted sessions.
+//
+// This exists because DeleteSession is a soft delete while a session's
+// artifacts outlive it: purge_soft_deleted reaps artifacts by their own
+// deleted_at, and the artifacts.session_id CASCADE only fires on the later
+// hard purge. LoadSession and SessionExists both filter `deleted_at IS NULL`,
+// so during the grace window neither can tell an owner's just-deleted session
+// from one that never existed — which would leave the owner able to list those
+// artifacts unfiltered but not scoped to the session that produced them.
+//
+// Owner-scoped like every other read here, so a true result is proof of the
+// caller's own ownership and never discloses a foreign session's existence.
+// This is an authorization primitive, not a data read: it returns no session
+// data (compare SessionStorage.SessionExists).
+func (s *SessionStore) CallerOwnsSession(ctx context.Context, sessionID string) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.caller_owns_session")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	var owns bool
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		return tx.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2)",
+			sessionID, userID,
+		).Scan(&owns)
+	})
+	if err != nil {
+		span.RecordError(err)
+		return false, fmt.Errorf("failed to check session ownership: %w", err)
+	}
+	span.SetAttribute("owns", owns)
+	return owns, nil
+}
+
 // RestoreSession restores a soft-deleted session by clearing deleted_at.
 func (s *SessionStore) RestoreSession(ctx context.Context, sessionID string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.restore_session")

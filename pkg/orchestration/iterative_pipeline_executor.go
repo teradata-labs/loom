@@ -79,14 +79,15 @@ type IterativePipelineExecutor struct {
 // iterativeResumeState carries checkpoint-rehydrated loop state into
 // executeWithRestarts.
 type iterativeResumeState struct {
-	startStageIndex int
-	iteration       int
-	currentInput    string
-	stageOutputs    map[string]string // agent_id -> truncated output
-	fullOutputs     map[string]string // agent_id -> full output
-	allResults      []*loomv1.AgentResult
-	modelsUsed      map[string]string
-	snapshots       []*loomv1.CheckpointStageSnapshot // ordered, for context replay
+	startStageIndex    int
+	iteration          int
+	currentInput       string
+	stageOutputs       map[string]string // agent_id -> truncated output
+	fullOutputs        map[string]string // agent_id -> full output
+	allResults         []*loomv1.AgentResult
+	modelsUsed         map[string]string
+	validationWarnings []string
+	snapshots          []*loomv1.CheckpointStageSnapshot // ordered, for context replay
 }
 
 // NewIterativePipelineExecutor creates a new iterative pipeline executor.
@@ -223,6 +224,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	stageOutputs := make(map[string]string) // stage_id -> output
 	allResults := make([]*loomv1.AgentResult, 0)
 	modelsUsed := make(map[string]string)
+	// Warnings from stages that produced an output their contract rejected.
+	// Only capability-leveled stages record them here; the restart-policy path
+	// reports its failures through the logger, as it always has.
+	var validationWarnings []string
 
 	e.currentIteration = 1
 
@@ -231,6 +236,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		stageOutputs = e.resume.stageOutputs
 		allResults = e.resume.allResults
 		modelsUsed = e.resume.modelsUsed
+		validationWarnings = e.resume.validationWarnings
 		e.fullOutputs = e.resume.fullOutputs
 		if e.resume.iteration > 0 {
 			e.currentIteration = e.resume.iteration
@@ -320,96 +326,40 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		}
 		e.orchestrator.tracer.EndSpan(promptSpan)
 
-		// Execute stage with retry logic for validation failures
 		executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 
-		// Retry configuration from restart policy
-		// Read directly from proto to detect explicit 0 (skip validation)
-		protoMaxRetries := int(e.pattern.RestartPolicy.MaxValidationRetries)
-		skipValidation := (e.pattern.RestartPolicy != nil && protoMaxRetries == 0)
-
-		maxRetries := protoMaxRetries
-		if !skipValidation && maxRetries == 0 {
-			maxRetries = 2 // Default if not explicitly set to 0
-		}
 		var result *loomv1.AgentResult
 		var model string
 		var validationErr error
 
-		for retryNum := 0; retryNum <= maxRetries; retryNum++ {
-			// Use retry-specific session ID for fresh context
-			retryWorkflowID := workflowID
-			if retryNum > 0 {
-				retryWorkflowID = fmt.Sprintf("%s-retry%d", workflowID, retryNum)
-			}
-
-			// Build prompt with validation feedback on retries
-			currentPrompt := prompt
-			if retryNum > 0 && validationErr != nil {
-				currentPrompt = e.buildRetryPrompt(prompt, validationErr, retryNum)
-			}
-
-			// Execute stage
+		// Capability leveling is opt-in per stage and, when enabled, owns this
+		// stage's validation and retries — the same branch the plain pipeline
+		// takes. It enforces the stage's OutputPolicy, retries on the primary
+		// and escalates up the ladder; running the restart-policy loop as well
+		// would validate the same output a second time against a different
+		// contract, and pay for the retries twice.
+		if stage.GetLevelingPolicy().GetEnabled() {
+			var levelingReport *LevelingReport
 			var err error
-			result, model, err = executor.executeStageWithSpan(execCtx, retryWorkflowID, stage, currentPrompt, stageNum)
+			result, model, levelingReport, err = executor.executeStageWithLeveling(execCtx, workflowID, stage, prompt, stageNum)
 			if err != nil {
 				return nil, fmt.Errorf("stage %d (iteration %d) failed: %w", stageNum, e.currentIteration, err)
 			}
-
-			// Log actual output for debugging (truncate to 500 chars)
-			outputPreview := result.Output
-			if len(outputPreview) > 500 {
-				outputPreview = outputPreview[:500] + "... (truncated)"
+			validationWarnings = append(validationWarnings, levelingStageWarnings(stage, stageNum, levelingReport)...)
+			if !levelingReport.Passed {
+				// Recorded, not fatal: leveling already returned the best output
+				// it obtained, and the warnings above say so. Naming it here
+				// keeps the structured-context span from reporting an output
+				// that failed its contract as validated.
+				validationErr = fmt.Errorf("capability leveling did not satisfy the stage contract (tier=%s, escalations=%d, budget_exhausted=%t)",
+					levelingReport.Tier.String(), levelingReport.Escalations, levelingReport.BudgetExhausted)
 			}
-			e.orchestrator.logger.Debug("Stage output received",
-				zap.String("stage_id", stage.AgentId),
-				zap.Int("stage_num", stageNum),
-				zap.Int("retry_num", retryNum),
-				zap.Int("output_length", len(result.Output)),
-				zap.String("output_preview", outputPreview))
-
-			// Skip validation if max_validation_retries is explicitly set to 0
-			// This allows two-agent pipelines where Stage Na outputs conversationally
-			// and Stage Nb handles XML/JSON formatting
-			if skipValidation {
-				e.orchestrator.logger.Debug("Skipping validation (max_validation_retries: 0)",
-					zap.String("stage_id", stage.AgentId),
-					zap.Int("stage_num", stageNum))
-				break
-			}
-
-			// Validate output structure (zero cost check)
-			validationErr = ValidateOutputStructure(result.Output)
-			if validationErr == nil {
-				// Validation passed!
-				if retryNum > 0 {
-					e.orchestrator.logger.Info("Stage output validation passed after retry",
-						zap.String("stage_id", stage.AgentId),
-						zap.Int("stage_num", stageNum),
-						zap.Int("retry_num", retryNum))
-				}
-				break
-			}
-
-			// Validation failed
-			if retryNum < maxRetries {
-				e.orchestrator.logger.Warn("Stage output validation failed, retrying with fresh context",
-					zap.String("stage_id", stage.AgentId),
-					zap.Int("stage_num", stageNum),
-					zap.Int("retry_num", retryNum+1),
-					zap.Int("max_retries", maxRetries),
-					zap.Error(validationErr))
-				// Continue to next retry iteration
-				continue
-			} else {
-				// Max retries reached
-				e.orchestrator.logger.Error("Stage output failed structure validation after max retries",
-					zap.String("stage_id", stage.AgentId),
-					zap.Int("stage_num", stageNum),
-					zap.Int("retries_attempted", maxRetries),
-					zap.Error(validationErr),
-					zap.String("hint", "Agent must output valid JSON or XML with required structure"))
-				// Continue workflow with failed validation
+		} else {
+			var err error
+			result, model, validationErr, err = e.executeStageWithValidationRetries(
+				execCtx, executor, workflowID, stage, stageNum, prompt)
+			if err != nil {
+				return nil, err
 			}
 		}
 
@@ -524,7 +474,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 				return nil, gateErr
 			}
 			if decision == nil {
-				ckpt, ckptErr := e.buildCheckpoint(ctx, workflowID, gateReq, stageIndex, stageOutputs, allResults, modelsUsed)
+				ckpt, ckptErr := e.buildCheckpoint(ctx, workflowID, gateReq, stageIndex, stageOutputs, allResults, modelsUsed, validationWarnings)
 				if ckptErr != nil {
 					return nil, ckptErr
 				}
@@ -711,18 +661,25 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	cost := executor.calculateCost(allResults)
 
+	metadata := map[string]string{
+		"stage_count":      fmt.Sprintf("%d", len(e.pattern.Pipeline.Stages)),
+		"max_iterations":   fmt.Sprintf("%d", maxIterations),
+		"iterations_used":  fmt.Sprintf("%d", e.currentIteration),
+		"restarts_enabled": fmt.Sprintf("%t", e.pattern.RestartPolicy.Enabled),
+	}
+	// Same key and format the plain pipeline uses, so a consumer reads leveling
+	// warnings the same way whichever pipeline executor ran.
+	if len(validationWarnings) > 0 {
+		metadata["validation_warnings"] = strings.Join(validationWarnings, "; ")
+	}
+
 	return &loomv1.WorkflowResult{
 		PatternType:  "iterative_pipeline",
 		AgentResults: allResults,
 		MergedOutput: finalOutput,
-		Metadata: map[string]string{
-			"stage_count":      fmt.Sprintf("%d", len(e.pattern.Pipeline.Stages)),
-			"max_iterations":   fmt.Sprintf("%d", maxIterations),
-			"iterations_used":  fmt.Sprintf("%d", e.currentIteration),
-			"restarts_enabled": fmt.Sprintf("%t", e.pattern.RestartPolicy.Enabled),
-		},
-		Cost:       cost,
-		ModelsUsed: modelsUsed,
+		Metadata:     metadata,
+		Cost:         cost,
+		ModelsUsed:   modelsUsed,
 	}, nil
 }
 
@@ -1160,6 +1117,117 @@ func (e *IterativePipelineExecutor) validateRestartRequest(req *loomv1.RestartRe
 	return nil
 }
 
+// executeStageWithValidationRetries runs one stage under the restart policy's
+// structure-validation retry loop — the path taken when the stage has no
+// capability-leveling policy. It is the loop that lived inline in
+// executeWithRestarts, extracted unchanged so the leveling branch could be a
+// branch rather than a second copy of the surrounding bookkeeping.
+//
+// The returns are deliberately split: the third is the final validation verdict
+// on the output (recorded, non-fatal — the workflow continues with an
+// unvalidated output, which is the documented behavior), and the fourth is a
+// genuine execution failure that ends the workflow.
+func (e *IterativePipelineExecutor) executeStageWithValidationRetries(
+	ctx context.Context,
+	executor *PipelineExecutor,
+	workflowID string,
+	stage *loomv1.PipelineStage,
+	stageNum int,
+	prompt string,
+) (*loomv1.AgentResult, string, error, error) {
+	// Retry configuration from restart policy.
+	// Read directly from proto to detect explicit 0 (skip validation).
+	protoMaxRetries := int(e.pattern.RestartPolicy.MaxValidationRetries)
+	skipValidation := (e.pattern.RestartPolicy != nil && protoMaxRetries == 0)
+
+	maxRetries := protoMaxRetries
+	if !skipValidation && maxRetries == 0 {
+		maxRetries = 2 // Default if not explicitly set to 0
+	}
+
+	var result *loomv1.AgentResult
+	var model string
+	var validationErr error
+
+	for retryNum := 0; retryNum <= maxRetries; retryNum++ {
+		// Use retry-specific session ID for fresh context
+		retryWorkflowID := workflowID
+		if retryNum > 0 {
+			retryWorkflowID = fmt.Sprintf("%s-retry%d", workflowID, retryNum)
+		}
+
+		// Build prompt with validation feedback on retries
+		currentPrompt := prompt
+		if retryNum > 0 && validationErr != nil {
+			currentPrompt = e.buildRetryPrompt(prompt, validationErr, retryNum)
+		}
+
+		// Execute stage
+		var err error
+		result, model, err = executor.executeStageWithSpan(ctx, retryWorkflowID, stage, currentPrompt, stageNum)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("stage %d (iteration %d) failed: %w", stageNum, e.currentIteration, err)
+		}
+
+		// Log actual output for debugging (truncate to 500 chars)
+		outputPreview := result.Output
+		if len(outputPreview) > 500 {
+			outputPreview = outputPreview[:500] + "... (truncated)"
+		}
+		e.orchestrator.logger.Debug("Stage output received",
+			zap.String("stage_id", stage.AgentId),
+			zap.Int("stage_num", stageNum),
+			zap.Int("retry_num", retryNum),
+			zap.Int("output_length", len(result.Output)),
+			zap.String("output_preview", outputPreview))
+
+		// Skip validation if max_validation_retries is explicitly set to 0
+		// This allows two-agent pipelines where Stage Na outputs conversationally
+		// and Stage Nb handles XML/JSON formatting
+		if skipValidation {
+			e.orchestrator.logger.Debug("Skipping validation (max_validation_retries: 0)",
+				zap.String("stage_id", stage.AgentId),
+				zap.Int("stage_num", stageNum))
+			break
+		}
+
+		// Validate output structure (zero cost check)
+		validationErr = ValidateOutputStructure(result.Output)
+		if validationErr == nil {
+			// Validation passed!
+			if retryNum > 0 {
+				e.orchestrator.logger.Info("Stage output validation passed after retry",
+					zap.String("stage_id", stage.AgentId),
+					zap.Int("stage_num", stageNum),
+					zap.Int("retry_num", retryNum))
+			}
+			break
+		}
+
+		// Validation failed
+		if retryNum < maxRetries {
+			e.orchestrator.logger.Warn("Stage output validation failed, retrying with fresh context",
+				zap.String("stage_id", stage.AgentId),
+				zap.Int("stage_num", stageNum),
+				zap.Int("retry_num", retryNum+1),
+				zap.Int("max_retries", maxRetries),
+				zap.Error(validationErr))
+			// Continue to next retry iteration
+			continue
+		}
+		// Max retries reached
+		e.orchestrator.logger.Error("Stage output failed structure validation after max retries",
+			zap.String("stage_id", stage.AgentId),
+			zap.Int("stage_num", stageNum),
+			zap.Int("retries_attempted", maxRetries),
+			zap.Error(validationErr),
+			zap.String("hint", "Agent must output valid JSON or XML with required structure"))
+		// Continue workflow with failed validation
+	}
+
+	return result, model, validationErr, nil
+}
+
 // buildRetryPrompt constructs a retry prompt with validation error feedback.
 func (e *IterativePipelineExecutor) buildRetryPrompt(originalPrompt string, validationErr error, retryNum int) string {
 	return fmt.Sprintf(`⚠️ VALIDATION ERROR - RETRY %d
@@ -1370,6 +1438,7 @@ func (e *IterativePipelineExecutor) buildCheckpoint(
 	stageOutputs map[string]string,
 	allResults []*loomv1.AgentResult,
 	modelsUsed map[string]string,
+	validationWarnings []string,
 ) (*loomv1.WorkflowCheckpoint, error) {
 	fp, err := iterativePatternFingerprint(e.pattern)
 	if err != nil {
@@ -1400,6 +1469,7 @@ func (e *IterativePipelineExecutor) buildCheckpoint(
 		StageSnapshots:     snaps,
 		AllResults:         allResults,
 		ModelsUsed:         modelsUsed,
+		ValidationWarnings: validationWarnings,
 		Iteration:          types.SafeInt32(e.currentIteration),
 		GateRevisionCounts: e.gateRevisions,
 		PendingGate:        gateReq,
@@ -1441,12 +1511,13 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 	}
 
 	state := &iterativeResumeState{
-		iteration:    int(ckpt.Iteration),
-		stageOutputs: make(map[string]string),
-		fullOutputs:  make(map[string]string),
-		allResults:   ckpt.AllResults,
-		modelsUsed:   ckpt.ModelsUsed,
-		snapshots:    ckpt.StageSnapshots,
+		iteration:          int(ckpt.Iteration),
+		stageOutputs:       make(map[string]string),
+		fullOutputs:        make(map[string]string),
+		allResults:         ckpt.AllResults,
+		modelsUsed:         ckpt.ModelsUsed,
+		validationWarnings: ckpt.ValidationWarnings,
+		snapshots:          ckpt.StageSnapshots,
 	}
 	if state.modelsUsed == nil {
 		state.modelsUsed = make(map[string]string)
