@@ -418,6 +418,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		Context:         make(map[string]interface{}),
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
+		Incarnation:     time.Now().UnixNano(),
 		SegmentedMem:    segMem,
 		FailureTracker:  newConsecutiveFailureTracker(),
 	}

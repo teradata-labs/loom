@@ -257,3 +257,51 @@ func TestCompleteImplicitTask_FailedTurnIsCancelledNotDone(t *testing.T) {
 		"a failed turn must not be recorded as a completion")
 	require.Contains(t, got.CloseReason, "error")
 }
+
+// TestSessionEpoch_SurvivesTheStoreRoundTrip is Ed's MINOR-002 regression,
+// store-backed as he asked: CreatedAt persists at SECOND resolution
+// (SaveSession writes Unix(), the load rebuilds with time.Unix(v, 0)), so the
+// nano-derived epoch silently coarsened after any restart — a same-second
+// delete-and-recreate then derived the dead incarnation's key, and the
+// terminal guard declined the NEW conversation's task instead of recording
+// it. The persisted Incarnation nonce is what the epoch now prefers, and it
+// must survive save → delete → recreate → reload with the two incarnations
+// distinct even inside one wall-clock second.
+func TestSessionEpoch_SurvivesTheStoreRoundTrip(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "sessions.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	now := time.Now()
+	first := &Session{ID: "sess-reuse", AgentID: "agent-1",
+		CreatedAt: now, UpdatedAt: now, Incarnation: now.UnixNano()}
+	require.NoError(t, store.SaveSession(ctx, first))
+
+	reloaded, err := store.LoadSession(ctx, "sess-reuse")
+	require.NoError(t, err)
+	require.Equal(t, first.Incarnation, reloaded.Incarnation,
+		"the incarnation must survive the round trip verbatim — CreatedAt does not")
+	require.Equal(t, sessionEpoch(first), sessionEpoch(reloaded),
+		"a restart must re-derive the SAME epoch, or a restored session cannot rebind its own turns")
+
+	// Delete and recreate the same id inside the same wall-clock SECOND: the
+	// exact shape that collided at second resolution.
+	require.NoError(t, store.DeleteSession(ctx, "sess-reuse"))
+	now2 := time.Now()
+	if now2.Unix() != now.Unix() {
+		// A second boundary slipped between the two creations; pin both into
+		// one second — the collision window under test.
+		now2 = now.Add(100 * time.Microsecond)
+	}
+	second := &Session{ID: "sess-reuse", AgentID: "agent-1",
+		CreatedAt: now2, UpdatedAt: now2, Incarnation: now2.UnixNano()}
+	require.NoError(t, store.SaveSession(ctx, second))
+
+	reloaded2, err := store.LoadSession(ctx, "sess-reuse")
+	require.NoError(t, err)
+	require.Equal(t, now.Unix(), reloaded2.CreatedAt.Unix(),
+		"rig sanity: both incarnations share one wall-clock second, the shape CreatedAt cannot distinguish")
+	require.NotEqual(t, sessionEpoch(reloaded), sessionEpoch(reloaded2),
+		"a same-second recreate reloaded from the store must derive a NEW epoch — at CreatedAt resolution it derived the dead incarnation's key and the new conversation's task was declined")
+}

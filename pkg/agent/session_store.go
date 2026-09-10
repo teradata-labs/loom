@@ -168,6 +168,7 @@ func (s *SessionStore) initSchema() error {
 		parent_session_id TEXT,
 		context_json TEXT,
 		created_at INTEGER NOT NULL,
+		incarnation INTEGER,
 		updated_at INTEGER NOT NULL,
 		total_cost_usd REAL DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
@@ -362,7 +363,8 @@ func (s *SessionStore) initSchema() error {
 		// task_id attributes a message to the task claimed when it was written,
 		// so a task's timeline can be reconstructed from the rows that already
 		// record the work. NULL for ordinary chat.
-		"task_id": "ALTER TABLE messages ADD COLUMN task_id TEXT",
+		"incarnation": "ALTER TABLE sessions ADD COLUMN incarnation INTEGER",
+		"task_id":     "ALTER TABLE messages ADD COLUMN task_id TEXT",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
@@ -526,8 +528,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	// different user is left untouched (the DO UPDATE WHERE clause fails), so
 	// a caller cannot overwrite another user's session by reusing its ID.
 	query := `
-		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, user_id, incarnation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			agent_id = excluded.agent_id,
@@ -573,6 +575,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.TotalCostUSD,
 		session.TotalTokens,
 		owner,
+		session.Incarnation,
 	)
 	s.mu.Unlock()
 
@@ -601,7 +604,8 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens,
+		       COALESCE(incarnation, 0)
 		FROM sessions
 		WHERE id = ? AND user_id = ?
 	`
@@ -623,6 +627,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 		&updatedAt,
 		&session.TotalCostUSD,
 		&session.TotalTokens,
+		&session.Incarnation,
 	)
 
 	// Populate optional fields from nullable database values

@@ -164,7 +164,22 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 // nonce because a restart must re-derive the SAME epoch to rebind its own
 // parked turns.
 func sessionEpoch(sess *Session) int64 {
-	if sess == nil || sess.CreatedAt.IsZero() {
+	if sess == nil {
+		return 0
+	}
+	// The persisted incarnation is preferred: CreatedAt survives a store round
+	// trip at SECOND resolution only (SaveSession writes Unix(), the load
+	// rebuilds with time.Unix(v, 0)), so after a restart the nano-derived
+	// epoch silently coarsened back to the second-resolution collision this
+	// epoch exists to prevent — a same-second delete-and-recreate then derived
+	// the dead incarnation's key, and the terminal guard declined the new
+	// conversation's task instead of recording it. Incarnation is stamped once
+	// at creation, persisted verbatim, and never updated; zero (a legacy row,
+	// or a backend that does not persist it) falls back to CreatedAt.
+	if sess.Incarnation != 0 {
+		return sess.Incarnation
+	}
+	if sess.CreatedAt.IsZero() {
 		return 0
 	}
 	return sess.CreatedAt.UnixNano()
