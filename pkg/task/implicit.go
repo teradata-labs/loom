@@ -617,6 +617,27 @@ func (e *ImplicitEmitter) EndTurn(sessionID string, turnIndex int) {
 	e.mu.Unlock()
 }
 
+// ReleaseTaskMemo drops any per-turn memo entry of this session that points at
+// the given task. It exists for the lapsed-park reclamation: the caller there
+// holds the parked row's durable task id but not the turn index that minted it
+// (the session has moved on through arbitrarily many turns since), and without
+// a release each park-then-lapse cycle left one entry in e.minted for the life
+// of the session — the exact growth EndTurn exists to prevent, on the one path
+// that skipped EndTurn by design.
+func (e *ImplicitEmitter) ReleaseTaskMemo(sessionID, taskID string) {
+	if e == nil || sessionID == "" || taskID == "" {
+		return
+	}
+	prefix := sessionKeyPrefix(sessionID)
+	e.mu.Lock()
+	for k, id := range e.minted {
+		if id == taskID && strings.HasPrefix(k, prefix) {
+			delete(e.minted, k)
+		}
+	}
+	e.mu.Unlock()
+}
+
 // ForgetSession drops all state for a session: its cap counter, its remaining
 // per-turn memos, and its board.
 //

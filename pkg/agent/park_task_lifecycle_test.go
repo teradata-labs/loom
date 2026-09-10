@@ -450,3 +450,40 @@ func TestPark_ResumeRestoresTheDurableTaskID(t *testing.T) {
 	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, after.Status,
 		"the resumed turn terminated, so the parked task finally closes")
 }
+
+// TestPark_LapsedParkReclaimsItsTaskOnTheNextTurn pins the round-4 leak: a
+// park skips the close and withholds the memo for the RESUME — but a lapsed
+// row can never be resumed (the claim requires a live expiry), and
+// guardParkedTail deliberately admits the next turn past it. Each
+// park-then-lapse cycle therefore left a task IN_PROGRESS forever inside a
+// live session. The guard's lapsed-admission branch now settles the
+// bookkeeping: the row is expired (one-shot), the task closes, the memo is
+// released.
+func TestPark_LapsedParkReclaimsItsTaskOnTheNextTurn(t *testing.T) {
+	r := newParkTaskRig(t, append(firstActionParkScript(),
+		mockLLMResponse{content: "carrying on"}), "export_csv")
+
+	hr := r.parkAndAssert(t, "s-lapse", "export the table")
+	parked := r.onlyTask(t, "s-lapse")
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS, parked.Status)
+
+	// The human never answers and the window lapses.
+	hr.ExpiresAt = time.Now().Add(-time.Minute)
+	require.NoError(t, r.park.Update(context.Background(), hr))
+
+	// The next user turn is admitted past the lapsed park — and the admission
+	// is now also the reclamation point.
+	_, err := r.ag.Chat(context.Background(), "s-lapse", "never mind, do something else")
+	require.NoError(t, err, "a lapsed park no longer holds the session")
+
+	got, err := r.tasks.GetTask(context.Background(), parked.ID)
+	require.NoError(t, err)
+	require.True(t, task.IsTerminal(got.Status),
+		"the abandoned turn's task must not stay IN_PROGRESS forever; got %s", task.StatusName(got.Status))
+	require.Contains(t, got.CloseReason, "expired unanswered")
+
+	// One-shot: the row itself is retired, so the guard stops consulting it.
+	after, err := r.park.Get(context.Background(), hr.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, "pending", after.Status, "the lapsed row must be expired, not re-reclaimed every turn")
+}

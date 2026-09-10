@@ -448,6 +448,7 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Ses
 		// "pending" alone lets a park nobody ever decided refuse every future
 		// turn on this session, permanently.
 		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+			a.reclaimLapsedPark(ctx, sessionID, r)
 			continue
 		}
 		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
@@ -1127,6 +1128,34 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.Status = observability.Status{Code: observability.StatusOK}
 	a.recordConversationMetrics(sessionID, response, duration)
 	return response, nil
+}
+
+// reclaimLapsedPark settles the bookkeeping a lapsed park abandoned. The park
+// deliberately skipped the turn's close AND the memo release — the resume was
+// going to do both — but a lapsed row can never be resumed (the claim requires
+// expires_at in the future), so without this each park-then-lapse cycle left a
+// task stuck IN_PROGRESS forever and one memo entry leaked per cycle inside a
+// live session. This runs at the one place that already decides a lapsed park
+// no longer holds the session.
+//
+// Order matters: the row is EXPIRED first, so the reclamation is one-shot —
+// the guard only consults pending rows, and "timeout" is the same closure the
+// operator CLI writes. Each step fails open with a warn, matching the guard's
+// own ethos: bookkeeping must not cost the user their session.
+func (a *Agent) reclaimLapsedPark(ctx context.Context, sessionID string, r *shuttle.HumanRequest) {
+	if err := a.hitlPark.store.ExpireRequest(ctx, r.ID, "system:lapsed-park-reclaim"); err != nil {
+		zap.L().Warn("lapsed-park reclaim: could not expire the row; will retry on the next turn",
+			zap.String("request_id", r.ID), zap.Error(err))
+		return
+	}
+	if r.TaskID == "" {
+		// A legacy row from before parked rows carried their task id: the row
+		// is retired, but the task (if any) cannot be found from here.
+		return
+	}
+	a.implicitTasks.CompleteForTurn(ctx, r.TaskID,
+		"Human decision expired unanswered; the turn was abandoned.")
+	a.implicitTasks.ReleaseTaskMemo(sessionID, r.TaskID)
 }
 
 // rawSessionMessages returns the session's L1 rows in append order.

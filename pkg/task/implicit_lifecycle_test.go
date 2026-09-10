@@ -666,3 +666,24 @@ func TestImplicitEmitter_BoardCacheIsScopedByIdentity(t *testing.T) {
 		t.Fatal("B's first mint must PROBE for its own identity, not ride A's cache entry")
 	}
 }
+
+// TestReleaseTaskMemo_DropsOnlyTheNamedTask: the lapsed-park reclamation holds
+// a task id but not the turn index that minted it, so the release sweeps the
+// session's memo entries by VALUE. Other turns' memos must survive.
+func TestReleaseTaskMemo_DropsOnlyTheNamedTask(t *testing.T) {
+	e, _ := newLifecycleEmitter(t)
+	t0 := mintAt(t, e, "sess-rel", 0, 7, "turn zero")
+	t1 := mintAt(t, e, "sess-rel", 1, 7, "turn one")
+
+	if m, _, _ := e.sizes(); m != 2 {
+		t.Fatalf("rig sanity: two memo entries, got %d", m)
+	}
+	e.ReleaseTaskMemo("sess-rel", t0.ID)
+	if m, _, _ := e.sizes(); m != 1 {
+		t.Fatalf("releasing one task must drop exactly its entry; memo len = %d", m)
+	}
+	e.ReleaseTaskMemo("other-session", t1.ID)
+	if m, _, _ := e.sizes(); m != 1 {
+		t.Fatal("a release scoped to another session must not touch this one's memo")
+	}
+}
