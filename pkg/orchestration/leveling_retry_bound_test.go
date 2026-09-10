@@ -113,9 +113,13 @@ func TestLevelingNegativeRetryBoundReturnsResult(t *testing.T) {
 func TestPipelineLevelingRejectsNegativeRetryBound(t *testing.T) {
 	t.Parallel()
 
+	// Each case carries one contract shape only: with leveling enabled, a
+	// unified output_policy beside the legacy fields is its own rejection
+	// (the legacy-contract conflict), and would fire before the bound check.
 	tests := []struct {
 		name         string
 		outputPolicy *loomv1.OutputPolicy
+		legacySchema string
 		retryPolicy  *loomv1.OutputRetryPolicy
 	}{
 		{
@@ -126,8 +130,9 @@ func TestPipelineLevelingRejectsNegativeRetryBound(t *testing.T) {
 			},
 		},
 		{
-			name:        "legacy retry_policy synthesized into a contract",
-			retryPolicy: &loomv1.OutputRetryPolicy{MaxRetries: -1},
+			name:         "legacy retry_policy synthesized into a contract",
+			legacySchema: lvlSchema,
+			retryPolicy:  &loomv1.OutputRetryPolicy{MaxRetries: -1},
 		},
 	}
 
@@ -144,7 +149,7 @@ func TestPipelineLevelingRejectsNegativeRetryBound(t *testing.T) {
 			result, err := runLevelingPipeline(t, orch, &loomv1.PipelineStage{
 				AgentId:        "worker",
 				PromptTemplate: "{{previous}}",
-				OutputSchema:   lvlSchema,
+				OutputSchema:   tt.legacySchema,
 				OutputPolicy:   tt.outputPolicy,
 				RetryPolicy:    tt.retryPolicy,
 				LevelingPolicy: &loomv1.LevelingPolicy{Enabled: true},

@@ -55,6 +55,16 @@ func TestBaseModelID(t *testing.T) {
 			"ft:gpt-4o-mini-2024-07-18:acme::abc123",
 			"ft:gpt-4o-mini-2024-07-18:acme:",
 		},
+		{
+			"bedrock inference-profile version suffix stripped",
+			"us.anthropic.claude-opus-4-6-v1:0",
+			"us.anthropic.claude-opus-4-6-v1",
+		},
+		{
+			"bedrock global inference-profile version suffix stripped",
+			"global.anthropic.claude-opus-4-7-v1:0",
+			"global.anthropic.claude-opus-4-7-v1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -105,6 +115,72 @@ func TestLookupTagFallback(t *testing.T) {
 			}
 			require.NotNil(t, got, "expected %q to resolve", tt.modelID)
 			assert.Equal(t, tt.wantID, got.Id)
+		})
+	}
+}
+
+// TestLookupTagFallbackBedrockInferenceProfile is the other provider the
+// fallback changes: a Bedrock inference-profile ID carries a ":0" version
+// suffix, and the catalog holds one 4.6 entry keyed without it. That ID used to
+// miss the catalog outright and now resolves to the suffix-free entry, so the
+// context window and output cap come from the catalog rather than from a
+// caller's own default.
+//
+// No t.Parallel: this reads the process-wide default source that the Register
+// tests in this file swap out.
+func TestLookupTagFallbackBedrockInferenceProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		modelID string
+		// wantID is "" when the lookup must miss.
+		wantID            string
+		wantContextWindow int32
+		wantMaxOutput     int32
+	}{
+		{
+			name:              "version-suffixed id resolves to the suffix-free entry",
+			modelID:           "us.anthropic.claude-opus-4-6-v1:0",
+			wantID:            "us.anthropic.claude-opus-4-6-v1",
+			wantContextWindow: 1_000_000,
+			wantMaxOutput:     128_000,
+		},
+		{
+			name:              "the suffix-free id it falls back to still resolves exactly",
+			modelID:           "us.anthropic.claude-opus-4-6-v1",
+			wantID:            "us.anthropic.claude-opus-4-6-v1",
+			wantContextWindow: 1_000_000,
+			wantMaxOutput:     128_000,
+		},
+		{
+			// The 4.7 entries are keyed WITH the suffix, so this is an exact
+			// hit and the fallback never runs.
+			name:              "id stored with its suffix is an exact hit",
+			modelID:           "us.anthropic.claude-opus-4-7-v1:0",
+			wantID:            "us.anthropic.claude-opus-4-7-v1:0",
+			wantContextWindow: 1_000_000,
+			wantMaxOutput:     128_000,
+		},
+		{
+			name:    "unknown model with a version suffix still misses",
+			modelID: "us.anthropic.claude-opus-9-9-v1:0",
+		},
+		{
+			name:    "suffix stripping is not prefix matching",
+			modelID: "us.anthropic.claude-opus-4-6:0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Lookup("bedrock", tt.modelID)
+			if tt.wantID == "" {
+				assert.Nil(t, got, "expected %q to be absent from the catalog", tt.modelID)
+				return
+			}
+			require.NotNil(t, got, "expected %q to resolve", tt.modelID)
+			assert.Equal(t, tt.wantID, got.Id)
+			assert.Equal(t, tt.wantContextWindow, got.ContextWindow)
+			assert.Equal(t, tt.wantMaxOutput, got.MaxOutputTokens)
 		})
 	}
 }

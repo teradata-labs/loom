@@ -46,12 +46,13 @@ func warnContext(entry observer.LoggedEntry) map[string]string {
 	return rendered
 }
 
-// TestWorkflowYAMLRetryPolicyLegacyShapesStayLoadable pins the three retry_policy
-// shapes that loaded before the strict scalar helpers and must keep loading, each
-// with a warning that names the offending value and what it resolved to.
+// TestWorkflowYAMLRetryPolicyLegacyShapesStayLoadable pins the max_retries and
+// retry-only-key shapes that loaded before the strict scalar helpers and must
+// keep loading, each with a warning that names the offending value and what it
+// resolved to. include_valid_values has its own test below.
 //
 // The shapes are tolerated because rejecting them would break configs that
-// already run: the strict version of this loader turned three silently-accepted
+// already run: the strict version of this loader turned silently-accepted
 // documents into load failures. The warning is the difference from the original
 // silence — the value is still accepted the way it always was, but no longer
 // without a trace.
@@ -152,6 +153,80 @@ func TestWorkflowYAMLRetryPolicyLegacyShapesStayLoadable(t *testing.T) {
 	}
 }
 
+// TestWorkflowYAMLRetryPolicyIncludeValidValuesTolerance pins the fourth
+// tolerated shape: a present but non-bool include_valid_values is ignored and
+// the field resolves to its default true, which is exactly where the pre-helper
+// bool assertion left it. The value is never parsed from a string, so
+// include_valid_values: "false" does not turn the default off.
+func TestWorkflowYAMLRetryPolicyIncludeValidValuesTolerance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		body                   string
+		wantIncludeValidValues bool
+		wantWarnFields         map[string]string
+	}{
+		{
+			name:                   "string value is ignored, default true survives",
+			body:                   "      retry_policy:\n        max_retries: 1\n        include_valid_values: \"false\"\n",
+			wantIncludeValidValues: true,
+			wantWarnFields: map[string]string{
+				"field":       "spec.stages[0].retry_policy.include_valid_values",
+				"yaml_type":   "string",
+				"resolved_to": "true (default)",
+			},
+		},
+		{
+			name:                   "int value is ignored, default true survives",
+			body:                   "      retry_policy:\n        max_retries: 1\n        include_valid_values: 1\n",
+			wantIncludeValidValues: true,
+			wantWarnFields: map[string]string{
+				"field":       "spec.stages[0].retry_policy.include_valid_values",
+				"yaml_type":   "int",
+				"resolved_to": "true (default)",
+			},
+		},
+		{
+			name:                   "explicit false is honored without a warning",
+			body:                   "      retry_policy:\n        max_retries: 1\n        include_valid_values: false\n",
+			wantIncludeValidValues: false,
+		},
+		{
+			name:                   "absent key resolves to true without a warning",
+			body:                   "      retry_policy:\n        max_retries: 1\n",
+			wantIncludeValidValues: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stage, entries, err := loadRetryStageWithLogger(t, tt.body)
+			require.NoError(t, err, "a non-bool include_valid_values must not fail the load")
+			require.NotNil(t, stage.RetryPolicy, "max_retries: 1 keeps the policy")
+			assert.Equal(t, tt.wantIncludeValidValues,
+				stage.GetRetryPolicy().GetIncludeValidValues())
+
+			if tt.wantWarnFields == nil {
+				assert.Empty(t, entries, "a well-typed or absent value warns about nothing")
+				return
+			}
+
+			require.Len(t, entries, 1, "exactly one warning, naming the ignored value")
+			assert.Equal(t, zapcore.WarnLevel, entries[0].Level)
+			assert.Equal(t,
+				"workflow retry_policy.include_valid_values is not a boolean: ignoring it as if the key were absent",
+				entries[0].Message)
+			context := warnContext(entries[0])
+			for key, want := range tt.wantWarnFields {
+				assert.Equal(t, want, context[key], "warning field %q", key)
+			}
+		})
+	}
+}
+
 // TestWorkflowYAMLRetryPolicyToleranceWarnsPerOffendingValue pins that the
 // tolerances compose: a string max_retries alongside a retry-only key warns twice
 // — once for the ignored value and once for the dropped policy — because an
@@ -216,7 +291,7 @@ spec:
 }
 
 // TestWorkflowYAMLRetryPolicyStrictnessSurvivesTolerance is the boundary: the
-// tolerance is a list of three shapes with legacy configs behind them, not a
+// tolerance is a list of four shapes with legacy configs behind them, not a
 // general leniency. Every other malformation in the block still fails the load,
 // and so does every malformation in a leveling block — that surface has no
 // pre-existing configs to keep loading.
@@ -265,7 +340,7 @@ func TestWorkflowYAMLRetryPolicyStrictnessSurvivesTolerance(t *testing.T) {
 			t.Parallel()
 
 			_, entries, err := loadRetryStageWithLogger(t, tt.body)
-			require.Error(t, err, "only the three legacy shapes are tolerated")
+			require.Error(t, err, "only the four legacy shapes are tolerated")
 			require.ErrorIs(t, err, ErrInvalidWorkflow)
 			assert.Contains(t, err.Error(), tt.contains)
 			assert.Empty(t, entries, "a load error is reported as an error, not as a warning")
@@ -275,7 +350,7 @@ func TestWorkflowYAMLRetryPolicyStrictnessSurvivesTolerance(t *testing.T) {
 
 // TestWorkflowYAMLRetryPolicyToleranceWithoutLogger pins that the warnings are
 // optional and the tolerance is not: the logger-free entry points every current
-// caller uses must accept the same three shapes, with the same results, and
+// caller uses must accept the same four shapes, with the same results, and
 // without a nil-logger panic.
 func TestWorkflowYAMLRetryPolicyToleranceWithoutLogger(t *testing.T) {
 	t.Parallel()
@@ -302,5 +377,14 @@ func TestWorkflowYAMLRetryPolicyToleranceWithoutLogger(t *testing.T) {
 		stage, err := loadLevelingStage(t, "      retry_policy:\n        feedback_template: \"fix it\"\n")
 		require.NoError(t, err)
 		assert.Nil(t, stage.RetryPolicy)
+	})
+
+	t.Run("non-bool include_valid_values", func(t *testing.T) {
+		t.Parallel()
+
+		stage, err := loadLevelingStage(t,
+			"      retry_policy:\n        max_retries: 1\n        include_valid_values: \"false\"\n")
+		require.NoError(t, err)
+		assert.True(t, stage.GetRetryPolicy().GetIncludeValidValues())
 	})
 }

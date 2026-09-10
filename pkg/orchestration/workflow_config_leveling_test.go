@@ -395,7 +395,31 @@ func TestWorkflowYAMLLevelingErrors(t *testing.T) {
 		{
 			name:     "unknown role",
 			body:     "      leveling:\n        enabled: true\n        ladder:\n          - role: wizard\n",
-			contains: []string{`role "wizard" is not a known LLM role`, "orchestrator", "LLM_ROLE_ORCHESTRATOR"},
+			contains: []string{`role "wizard" is not a known LLM role`, "valid: judge, orchestrator, classifier, compressor", "LLM_ROLE_ORCHESTRATOR"},
+		},
+		{
+			// role: agent parses (it is a real enum value) and is then rejected
+			// for what it names: the agent's own LLM, so a rung that spends a
+			// call on the model that just failed.
+			name:     "role agent names the primary's own LLM",
+			body:     "      leveling:\n        enabled: true\n        ladder:\n          - role: agent\n",
+			contains: []string{"rung 1 role LLM_ROLE_AGENT names the agent's own LLM", "must be a different model than the primary"},
+		},
+		{
+			// With leveling on only output_policy is enforced; a legacy
+			// output_schema beside it would stop validating with no diagnostic.
+			name: "output_policy plus legacy output_schema",
+			body: "      output_schema: '{\"type\":\"object\"}'\n" +
+				"      output_policy:\n        output_schema: '{\"type\":\"object\"}'\n" +
+				"      leveling:\n        enabled: true\n",
+			contains: []string{"spec.stages[0].leveling cannot be combined with output_policy AND the legacy output_schema/retry_policy", "silently dropped"},
+		},
+		{
+			name: "output_policy plus legacy retry_policy",
+			body: "      retry_policy:\n        max_retries: 1\n" +
+				"      output_policy:\n        output_schema: '{\"type\":\"object\"}'\n" +
+				"      leveling:\n        enabled: true\n",
+			contains: []string{"legacy output_schema/retry_policy"},
 		},
 		{
 			name:     "explicit unspecified role is not a rung",
@@ -425,6 +449,9 @@ func TestWorkflowYAMLLevelingErrors(t *testing.T) {
 			_, taskErr := loadLevelingTask(t, tt.body)
 			require.Error(t, taskErr)
 			assert.Contains(t, taskErr.Error(), "spec.tasks[0]")
+			for _, want := range tt.contains {
+				assert.Contains(t, taskErr.Error(), strings.Replace(want, "spec.stages[0]", "spec.tasks[0]", 1))
+			}
 		})
 	}
 }
@@ -479,18 +506,25 @@ func TestWorkflowYAMLLevelingTypeErrorsFireEvenWhenDisabled(t *testing.T) {
 
 // TestWorkflowYAMLLevelingRoleForms proves the short form and the full enum name
 // both resolve, in any case and with '-' for '_'.
+//
+// "agent" parses like the others — it is a real enum value — but names the
+// agent's own LLM, so an enabled ladder rejects it (TestWorkflowYAMLLevelingErrors
+// pins the message). The parse is pinned here with enabled: false, where the
+// semantic checks do not run, so a change to parseLLMRoleName and a change to
+// the ladder's rejection rule stay distinguishable.
 func TestWorkflowYAMLLevelingRoleForms(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		yamlValue string
 		want      loomv1.LLMRole
+		disabled  bool
 	}{
 		{yamlValue: "orchestrator", want: loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR},
 		{yamlValue: "LLM_ROLE_ORCHESTRATOR", want: loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR},
 		{yamlValue: "llm_role_orchestrator", want: loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR},
 		{yamlValue: "Judge", want: loomv1.LLMRole_LLM_ROLE_JUDGE},
-		{yamlValue: "agent", want: loomv1.LLMRole_LLM_ROLE_AGENT},
+		{yamlValue: "agent", want: loomv1.LLMRole_LLM_ROLE_AGENT, disabled: true},
 		{yamlValue: "classifier", want: loomv1.LLMRole_LLM_ROLE_CLASSIFIER},
 		{yamlValue: "compressor", want: loomv1.LLMRole_LLM_ROLE_COMPRESSOR},
 		{yamlValue: "llm-role-compressor", want: loomv1.LLMRole_LLM_ROLE_COMPRESSOR},
@@ -500,8 +534,12 @@ func TestWorkflowYAMLLevelingRoleForms(t *testing.T) {
 		t.Run(tt.yamlValue, func(t *testing.T) {
 			t.Parallel()
 
+			enabled := "true"
+			if tt.disabled {
+				enabled = "false"
+			}
 			stage, err := loadLevelingStage(t,
-				"      leveling:\n        enabled: true\n        ladder:\n          - role: "+tt.yamlValue+"\n")
+				"      leveling:\n        enabled: "+enabled+"\n        ladder:\n          - role: "+tt.yamlValue+"\n")
 			require.NoError(t, err)
 
 			ladder := stage.GetLevelingPolicy().GetLadder()

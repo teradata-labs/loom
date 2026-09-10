@@ -15,6 +15,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -777,7 +778,10 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
 	}
-	outputPolicy := effectiveLevelingOutputPolicy(stage)
+	outputPolicy, err := effectiveLevelingOutputPolicy(stage)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
+	}
 	if err := validateLevelingOutputPolicy(outputPolicy); err != nil {
 		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
 	}
@@ -806,7 +810,7 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 		},
 	}
 
-	ladder, err := resolveLevelingLadder(ag, stage.AgentId, primary, stage.GetLevelingPolicy().GetLadder())
+	ladder, err := resolveLevelingLadder(ag, stage.AgentId, primary, stage.GetLevelingPolicy().GetLadder(), e.orchestrator.tracer)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("stage %d (%s): %w", stageNum, stage.AgentId, err)
 	}
@@ -828,6 +832,14 @@ func (e *PipelineExecutor) executeStageWithLeveling(
 // validation warnings the pipeline result carries. A report with Passed=false
 // is graceful degradation, not an error: the executor already exhausted the
 // rungs or the cost ceiling and returned the best output it obtained.
+//
+// A short circuit has two quite different causes and the warning names which
+// one happened: a primary the catalog places at mid or frontier is strong
+// enough that escalating is not expected to help, while an unclassified primary
+// short-circuits because the catalog has no entry for it — nothing was measured
+// about its capability, so calling it "strong" would tell the operator the
+// opposite of the truth. Adding the model to the catalog (or setting
+// tier_policies for the unknown tier) is what turns that case into a decision.
 func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *LevelingReport) []string {
 	warnings := make([]string, 0, len(report.Warnings)+1)
 	for _, w := range report.Warnings {
@@ -835,7 +847,10 @@ func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *Le
 	}
 	if !report.Passed {
 		cause := "leveling exhausted its rungs"
-		if report.ShortCircuited {
+		switch {
+		case report.ShortCircuited && report.Tier == catalog.TierUnknown:
+			cause = "leveling short-circuited on an unclassified primary (model not in the catalog) and did not escalate"
+		case report.ShortCircuited:
 			cause = "leveling short-circuited on a strong primary and did not escalate"
 		}
 		warnings = append(warnings, fmt.Sprintf(

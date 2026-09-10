@@ -348,7 +348,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 		},
 	}
 
-	ladder, err := resolveLevelingLadder(ag, task.AgentId, primary, task.GetLevelingPolicy().GetLadder())
+	ladder, err := resolveLevelingLadder(ag, task.AgentId, primary, task.GetLevelingPolicy().GetLadder(), e.orchestrator.tracer)
 	if err != nil {
 		return nil, "", fmt.Errorf("task %d (%s): %w", taskIndex, task.AgentId, err)
 	}

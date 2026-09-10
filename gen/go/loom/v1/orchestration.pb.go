@@ -739,6 +739,18 @@ type PipelineStage struct {
 	// decides whether to escalate. When this field is absent or disabled the
 	// stage behaves exactly as before, including leaving output_policy
 	// unenforced by the pipeline executor.
+	//
+	// When leveling is enabled and the output never satisfies the contract
+	// (retries and ladder exhausted, or the tier short-circuited) the stage
+	// CONTINUES with the best output obtained plus a validation warning —
+	// graceful degradation, not a stage failure. Without leveling, a stage
+	// whose legacy output_schema fails and that carries no retry_policy fails
+	// the stage.
+	//
+	// Combining leveling_policy with the legacy validation_prompt is
+	// rejected, as is combining it with output_policy plus the legacy
+	// output_schema/retry_policy on the same stage: either shape would
+	// silently drop the legacy contract.
 	LevelingPolicy *LevelingPolicy `protobuf:"bytes,8,opt,name=leveling_policy,json=levelingPolicy,proto3" json:"leveling_policy,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1849,6 +1861,11 @@ type AgentTask struct {
 	// decides whether to escalate. When this field is absent or disabled the
 	// task behaves exactly as before, including leaving output_policy
 	// unenforced by the executor.
+	//
+	// When leveling is enabled and the output never satisfies the contract
+	// (retries and ladder exhausted, or the tier short-circuited) the task
+	// CONTINUES with the best output obtained plus a validation warning —
+	// graceful degradation, not a task failure.
 	LevelingPolicy *LevelingPolicy `protobuf:"bytes,5,opt,name=leveling_policy,json=levelingPolicy,proto3" json:"leveling_policy,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1921,6 +1938,16 @@ func (x *AgentTask) GetLevelingPolicy() *LevelingPolicy {
 
 // LevelingRung is one step of a capability-leveling escalation ladder — a
 // stronger model tried when a weaker primary's output fails validation.
+//
+// A rung is executed as a one-shot LLMProvider.Chat call: no tools, no
+// system prompt, no session and no memory. A stage whose contract depends on
+// tool use cannot be rescued by escalation.
+//
+// A rung that resolves to the primary's own model — including
+// role = LLM_ROLE_AGENT, which names the agent's own LLM — is rejected at
+// load and at execution. A rung the catalog classifies below the primary's
+// tier runs, but is reported with a warning. Rung tiers are not otherwise
+// enforced: tier is derived from catalog pricing.
 type LevelingRung struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Provider name, used to resolve the rung's LLM from the executing agent's
@@ -1930,8 +1957,11 @@ type LevelingRung struct {
 	// the resolved role LLM reports its own model.
 	Model string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
 	// Optional: resolve the rung's LLM from the executing agent's role LLMs
-	// (Agent.GetLLMForRole). Takes precedence over the provider pool lookup
-	// when set to a value other than LLM_ROLE_UNSPECIFIED.
+	// via Agent.GetLLMForRoleStrict — no fallback to the agent's own LLM, so a
+	// role carrying no LLM of its own is a config error rather than a rung
+	// pointing back at the primary. Takes precedence over the provider pool
+	// lookup when set to a value other than LLM_ROLE_UNSPECIFIED.
+	// LLM_ROLE_AGENT is rejected: it names the agent's own LLM.
 	Role          LLMRole `protobuf:"varint,3,opt,name=role,proto3,enum=loom.v1.LLMRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2042,6 +2072,11 @@ func (x *LevelingTierPolicy) GetRetryBudget() int32 {
 // absent policy or enabled=false leaves executor behavior unchanged,
 // including leaving any OutputPolicy on the same stage/task unenforced
 // (matching pre-leveling behavior).
+//
+// When leveling is enabled and the output never satisfies the contract —
+// retries and ladder exhausted, or the tier short-circuited — the stage or
+// task CONTINUES with the best output obtained plus a validation warning
+// (graceful degradation). It does not fail the workflow.
 type LevelingPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Leveling is off unless explicitly true.
@@ -2052,8 +2087,24 @@ type LevelingPolicy struct {
 	// Ladder rungs allowed beyond the primary. When unset, defaults to 1.
 	// 0 disables escalation while keeping per-tier retry/coercion active.
 	MaxEscalations *int32 `protobuf:"varint,3,opt,name=max_escalations,json=maxEscalations,proto3,oneof" json:"max_escalations,omitempty"`
-	// Hard cost ceiling in USD across all leveling-visible LLM calls
-	// (attempts on every rung plus judge spend). 0 = no ceiling.
+	// Cost gate in USD applied between actions, not a hard cap. 0 = no gate.
+	//
+	// Before each same-model retry, each escalation rung and each judge call
+	// the spend accounted for so far is compared against this ceiling, and the
+	// action is skipped when the ceiling is already reached. The action in
+	// progress is never interrupted, so the ceiling is normally overshot by
+	// the cost of one call.
+	//
+	// The running total is a floor on real spend rather than an exact figure:
+	// per-attempt cost is read from the returned AgentResult, which carries
+	// the final LLM response's usage, so an attempt that ran a tool loop
+	// reports less than it spent and the gate can admit a call that a precise
+	// accounting would have blocked.
+	//
+	// A judge call skipped by the ceiling accepts the output unexamined, with
+	// a warning in the leveling report.
+	//
+	// Use it to bound runaway escalation, not to guarantee a billing limit.
 	MaxCostUsd float64 `protobuf:"fixed64,4,opt,name=max_cost_usd,json=maxCostUsd,proto3" json:"max_cost_usd,omitempty"`
 	// Escalation ladder beyond the primary model, tried in order.
 	Ladder []*LevelingRung `protobuf:"bytes,5,rep,name=ladder,proto3" json:"ladder,omitempty"`
@@ -2064,7 +2115,13 @@ type LevelingPolicy struct {
 	// classified mid. 0 = built-in default (1.5).
 	MidMinOutputCostUsd float64 `protobuf:"fixed64,7,opt,name=mid_min_output_cost_usd,json=midMinOutputCostUsd,proto3" json:"mid_min_output_cost_usd,omitempty"`
 	// Per-tier knob overrides keyed by tier name: "local", "small-open",
-	// "mid", "frontier", "unknown". Absent tiers use built-in defaults.
+	// "mid", "frontier", "unknown". Absent tiers use the built-in defaults:
+	// local 2, small-open 2, mid 1, frontier 0, unknown 0.
+	//
+	// An entry applies on every tier, including the tiers that short-circuit
+	// (frontier, unknown, and mid when short_circuit_mid is true):
+	// short-circuiting skips the ladder and the judge, not the tier's
+	// retry_budget.
 	TierPolicies  map[string]*LevelingTierPolicy `protobuf:"bytes,8,rep,name=tier_policies,json=tierPolicies,proto3" json:"tier_policies,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

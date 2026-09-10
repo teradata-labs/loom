@@ -117,13 +117,15 @@ func TestPipelineOutputPolicyInertWithoutLeveling(t *testing.T) {
 }
 
 // TestPipelineLevelingFrontierShortCircuits proves an enabled policy on a
-// strong primary adds no LLM calls: no judge, no rung, one agent call.
+// strong primary adds no LLM calls: no judge, no rung, one agent call. The rung
+// is a different frontier model from the primary — a rung resolving to the
+// primary's own model is rejected at resolution, before the short circuit.
 func TestPipelineLevelingFrontierShortCircuits(t *testing.T) {
 	t.Parallel()
 
 	orch := newLevelingTestOrchestrator(t)
 	llm := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0.9, lvlInvalidJSON)
-	escalation := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0.9, lvlValidJSON)
+	escalation := newLvlMockLLM(lvlFrontierProvider, "claude-opus-4-7-next", 0.9, lvlValidJSON)
 	registerLevelingAgent(t, orch, "worker", llm,
 		map[string]agent.LLMProvider{"strong": escalation})
 
@@ -354,6 +356,45 @@ func TestPipelineLevelingConfigErrors(t *testing.T) {
 			},
 			wantMsg: []string{"nowhere", "provider pool"},
 		},
+		{
+			// Raw proto bypasses the YAML loader, so the executor must make
+			// the same call the loader does: with leveling on, only
+			// output_policy is enforced, and a legacy schema alongside it
+			// would go from enforced to silently unenforced.
+			name: "output_policy plus legacy output_schema is rejected",
+			stage: &loomv1.PipelineStage{
+				AgentId:        "worker",
+				PromptTemplate: "{{previous}}",
+				OutputSchema:   lvlSchema,
+				OutputPolicy:   &loomv1.OutputPolicy{OutputSchema: lvlSchema},
+				LevelingPolicy: &loomv1.LevelingPolicy{Enabled: true},
+			},
+			wantMsg: []string{"leveling_policy", "output_policy", "legacy output_schema/retry_policy", "silently dropped"},
+		},
+		{
+			name: "output_policy plus legacy retry_policy is rejected",
+			stage: &loomv1.PipelineStage{
+				AgentId:        "worker",
+				PromptTemplate: "{{previous}}",
+				RetryPolicy:    &loomv1.OutputRetryPolicy{MaxRetries: 1},
+				OutputPolicy:   &loomv1.OutputPolicy{OutputSchema: lvlSchema},
+				LevelingPolicy: &loomv1.LevelingPolicy{Enabled: true},
+			},
+			wantMsg: []string{"legacy output_schema/retry_policy"},
+		},
+		{
+			name: "role agent rung is rejected before any call",
+			stage: &loomv1.PipelineStage{
+				AgentId:        "worker",
+				PromptTemplate: "{{previous}}",
+				OutputPolicy:   &loomv1.OutputPolicy{OutputSchema: lvlSchema},
+				LevelingPolicy: &loomv1.LevelingPolicy{
+					Enabled: true,
+					Ladder:  []*loomv1.LevelingRung{{Role: loomv1.LLMRole_LLM_ROLE_AGENT}},
+				},
+			},
+			wantMsg: []string{"rung 1 role LLM_ROLE_AGENT names the agent's own LLM"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -440,8 +481,14 @@ func TestParallelOutputPolicyInertWithoutLeveling(t *testing.T) {
 
 // TestParallelLevelingEscalatesPerTask exercises two concurrent tasks, each with
 // its own enabled policy and ladder, under the race detector.
+//
+// The strong task's rung is a different frontier model from its primary: a rung
+// that resolves to the primary's own model is a config error now, even on a
+// task that short-circuits and would never have dispatched it.
 func TestParallelLevelingEscalatesPerTask(t *testing.T) {
 	t.Parallel()
+
+	const strongRungModel = "claude-opus-4-7-next"
 
 	orch := newLevelingTestOrchestrator(t)
 
@@ -451,14 +498,14 @@ func TestParallelLevelingEscalatesPerTask(t *testing.T) {
 		map[string]agent.LLMProvider{"frontier": weakRung})
 
 	strong := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0.9, lvlInvalidJSON)
-	strongRung := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0.9, lvlValidJSON)
+	strongRung := newLvlMockLLM(lvlFrontierProvider, strongRungModel, 0.9, lvlValidJSON)
 	registerLevelingAgent(t, orch, "strong", strong,
 		map[string]agent.LLMProvider{"frontier": strongRung})
 
-	policy := func() *loomv1.LevelingPolicy {
+	policy := func(rungModel string) *loomv1.LevelingPolicy {
 		return &loomv1.LevelingPolicy{
 			Enabled: true,
-			Ladder:  []*loomv1.LevelingRung{{Provider: "frontier", Model: lvlFrontierModel}},
+			Ladder:  []*loomv1.LevelingRung{{Provider: "frontier", Model: rungModel}},
 		}
 	}
 
@@ -467,13 +514,13 @@ func TestParallelLevelingEscalatesPerTask(t *testing.T) {
 			AgentId:        "weak",
 			Prompt:         "task one",
 			OutputPolicy:   &loomv1.OutputPolicy{OutputSchema: lvlSchema},
-			LevelingPolicy: policy(),
+			LevelingPolicy: policy(lvlFrontierModel),
 		},
 		&loomv1.AgentTask{
 			AgentId:        "strong",
 			Prompt:         "task two",
 			OutputPolicy:   &loomv1.OutputPolicy{OutputSchema: lvlSchema},
-			LevelingPolicy: policy(),
+			LevelingPolicy: policy(strongRungModel),
 		},
 	)
 

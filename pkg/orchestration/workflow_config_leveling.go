@@ -47,6 +47,16 @@ const removedTierPolicyAggressiveCoercionKey = "aggressive_coercion"
 // inside it, so it is read off the enclosing stage map.
 const levelingValidationPromptKey = "validation_prompt"
 
+// The unified contract block and the legacy per-stage contract pair. Like
+// levelingValidationPromptKey these are siblings of the leveling block, read off
+// the enclosing stage map: with leveling enabled only output_policy is
+// enforced, so carrying both is a conflict rather than a precedence question.
+const (
+	levelingOutputPolicyKey       = "output_policy"
+	levelingLegacyOutputSchemaKey = "output_schema"
+	levelingLegacyRetryPolicyKey  = "retry_policy"
+)
+
 // llmRoleEnumPrefix is the generated enum's value prefix, stripped when
 // accepting the short form of a role name and re-added when parsing one.
 const llmRoleEnumPrefix = "LLM_ROLE_"
@@ -85,12 +95,47 @@ const retrySessionModeEnumPrefix = "RETRY_SESSION_MODE_"
 //
 // Type errors (wrong YAML shape or scalar type) always fail the load. Semantic
 // errors — negative bounds, unknown tier names, a rung naming neither a role
-// nor a provider, a validation_prompt on the same stage — fail the load only
-// when enabled is true, by running the freshly built proto through
-// LevelingPolicyFromProto and the ladder-shape check the executors use. That
-// reuses the executors' rules and messages instead of duplicating them, and it
-// mirrors LevelingPolicyFromProto's own rule that a policy which was never
-// enabled can never fail conversion.
+// nor a provider, a rung naming role: agent, a validation_prompt on the same
+// stage, an output_policy carrying the legacy output_schema/retry_policy pair
+// as well — fail the load only when enabled is true, by running the freshly
+// built proto through LevelingPolicyFromProto and the ladder-shape check the
+// executors use. That reuses the executors' rules and messages instead of
+// duplicating them, and it mirrors LevelingPolicyFromProto's own rule that a
+// policy which was never enabled can never fail conversion.
+//
+// # What an escalation rung is, and is not
+//
+// A rung is one `LLMProvider.Chat` call: one prompt, one response. It runs with
+// no tools, no system prompt and no session or memory, so a stage that needs
+// tool use to do its job cannot be rescued by escalating — the rung has no way
+// to reach the tools the primary had. Only the stage's contract
+// (output_policy.output_schema) decides whether the rung's answer is adopted.
+//
+// # What the ladder rejects, and what it merely warns about
+//
+// A rung that resolves to the primary's own model is a load error, including
+// `role: agent` (which names the agent's own LLM by definition) and a
+// provider/model pair equal to the primary's: escalating to the model that just
+// failed spends a call that cannot answer differently. A rung the catalog places
+// below the primary's tier is allowed and runs with a warning — the catalog's
+// pricing-derived tiers are a heuristic, not a capability proof, so a
+// deliberately cheaper rung stays possible.
+//
+// # Failure semantics with leveling enabled
+//
+// A leveled stage whose output never satisfies the contract does not fail the
+// workflow: the best output obtained is returned and the run records a
+// validation_warnings entry (graceful degradation). That differs from a
+// non-leveled stage, where a legacy output_schema failure with no retry_policy
+// fails the stage outright. Enabling leveling therefore trades a hard failure
+// for a warning, which is worth knowing before turning it on for a stage whose
+// downstream consumers assume valid input.
+//
+// # tier_policies applies to every tier
+//
+// tier_policies is read for the primary's tier whatever that tier is, including
+// the tiers that short-circuit: short-circuiting skips the ladder and the judge,
+// not the tier's own retry_budget.
 //
 // YAML shape:
 //
@@ -101,13 +146,22 @@ const retrySessionModeEnumPrefix = "RETRY_SESSION_MODE_"
 //	  max_cost_usd: 0.50                   # optional; 0 = no ceiling
 //	  frontier_min_output_cost_usd: 10.0   # optional; 0 = built-in default
 //	  mid_min_output_cost_usd: 1.5         # optional; 0 = built-in default
-//	  ladder:                              # optional
+//	  ladder:                              # optional; each rung is ONE bare
+//	                                       # Chat call: no tools, no system
+//	                                       # prompt, no session or memory
 //	    - provider: ollama                 # resolved from the agent's provider pool
 //	      model: deepseek-r1:latest
-//	    - role: orchestrator               # or LLM_ROLE_ORCHESTRATOR
+//	    - role: orchestrator               # or LLM_ROLE_ORCHESTRATOR; a role
+//	                                       # with an LLM of its own. role: agent
+//	                                       # (and any rung resolving to the
+//	                                       # primary's own provider/model) is a
+//	                                       # load error; a rung the catalog
+//	                                       # tiers below the primary runs with a
+//	                                       # warning
 //	  tier_policies:                       # optional; keys: unknown, local,
-//	    local:                             # small-open, mid, frontier
-//	      retry_budget: 2
+//	    local:                             # small-open, mid, frontier. Read for
+//	      retry_budget: 2                  # every tier, short-circuiting ones
+//	                                       # included
 func parseLevelingPolicy(enclosing map[string]interface{}, path string) (*loomv1.LevelingPolicy, error) {
 	raw, key, err := levelingBlockValue(enclosing, path)
 	if err != nil {
@@ -179,6 +233,9 @@ func parseLevelingPolicy(enclosing map[string]interface{}, path string) (*loomv1
 		if err := validateLevelingValidationPromptConflict(enclosing, path); err != nil {
 			return nil, err
 		}
+		if err := validateLevelingLegacyContractConflict(enclosing, path); err != nil {
+			return nil, err
+		}
 	}
 
 	return policy, nil
@@ -227,6 +284,39 @@ func validateLevelingValidationPromptConflict(enclosing map[string]interface{}, 
 		path, levelingValidationPromptKey)
 }
 
+// validateLevelingLegacyContractConflict rejects a stage that carries enabled
+// leveling, a unified output_policy, and the legacy output_schema/retry_policy
+// pair as well.
+//
+// On the leveled path only output_policy is enforced —
+// effectiveLevelingOutputPolicy returns it and the executor skips the legacy
+// validation block entirely — so a stage that had a working legacy schema would
+// stop validating against it the moment leveling was enabled, with no
+// diagnostic. That executor-side check stays (a raw-proto workflow never passes
+// through this loader); this is the load-time half, sharing its wording through
+// levelingLegacyContractConflictMessage.
+//
+// The keys are read with the same tolerant casts their own parsers use, so a
+// wrong type is reported by the parser that owns the key rather than as a
+// leveling problem, and a null retry_policy is not a contract.
+//
+// Parallel tasks carry no legacy contract at all: convertParallelPattern builds
+// an AgentTask from agent_id, prompt, metadata, output_policy and the leveling
+// block only, so output_schema/retry_policy on a task map are keys the task
+// surface never converts — the same reason the validation_prompt check above is
+// a no-op for tasks.
+func validateLevelingLegacyContractConflict(enclosing map[string]interface{}, path string) error {
+	if enclosing[levelingOutputPolicyKey] == nil {
+		return nil
+	}
+	legacySchema, _ := enclosing[levelingLegacyOutputSchemaKey].(string)
+	hasLegacyRetryPolicy := enclosing[levelingLegacyRetryPolicyKey] != nil
+	if legacySchema == "" && !hasLegacyRetryPolicy {
+		return nil
+	}
+	return fmt.Errorf("%s %s", path, levelingLegacyContractConflictMessage)
+}
+
 // parseLevelingLadder parses the optional escalation ladder. Rung resolution
 // (provider pool / role lookup) needs an executing agent and stays in
 // resolveLevelingLadder; only the shape is checked here.
@@ -265,7 +355,7 @@ func parseLevelingLadder(block map[string]interface{}, path string) ([]*loomv1.L
 			role, ok := parseLLMRoleName(roleName)
 			if !ok {
 				return nil, fmt.Errorf("%s.role %q is not a known LLM role (valid: %s; the full enum name such as LLM_ROLE_ORCHESTRATOR is also accepted)",
-					rungPath, roleName, strings.Join(llmRoleShortNames(), ", "))
+					rungPath, roleName, strings.Join(levelingRungRoleShortNames(), ", "))
 			}
 			rung.Role = role
 		}
@@ -384,6 +474,24 @@ func parseLLMRoleName(name string) (loomv1.LLMRole, bool) {
 // to build error messages.
 func llmRoleShortNames() []string {
 	return enumShortNames(loomv1.LLMRole_name, llmRoleEnumPrefix)
+}
+
+// levelingRungRoleShortNames is llmRoleShortNames without "agent": that role
+// names the agent's own LLM, and a rung asking for it is rejected one check
+// later (validateLevelingLadderShape). Listing it as valid in the unknown-role
+// error would send the reader straight into the next error, so the ladder's
+// messages advertise only the roles a rung can actually use.
+func levelingRungRoleShortNames() []string {
+	agentShort := strings.ToLower(strings.TrimPrefix(
+		loomv1.LLMRole_LLM_ROLE_AGENT.String(), llmRoleEnumPrefix))
+	all := llmRoleShortNames()
+	names := make([]string, 0, len(all))
+	for _, name := range all {
+		if name != agentShort {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // parseRetrySessionMode resolves a YAML session_mode to a RetrySessionMode,

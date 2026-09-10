@@ -97,6 +97,12 @@ func TestWorkflowYAMLParallelTaskOutputPolicyNotAnObject(t *testing.T) {
 
 // TestWorkflowYAMLRetryPolicyFieldTypeErrors covers the stage-level retry_policy
 // scalar gates that the extended-fields test does not reach.
+//
+// include_valid_values is deliberately absent: a non-bool value there loaded
+// before the strict helpers (the bool assertion fell through and left the
+// default) and is tolerated with a warning rather than rejected —
+// TestWorkflowYAMLRetryPolicyIncludeValidValuesTolerance pins that. The keys
+// below never loaded with a wrong type, so they stay hard errors.
 func TestWorkflowYAMLRetryPolicyFieldTypeErrors(t *testing.T) {
 	t.Parallel()
 
@@ -105,11 +111,6 @@ func TestWorkflowYAMLRetryPolicyFieldTypeErrors(t *testing.T) {
 		body     string
 		contains []string
 	}{
-		{
-			name:     "include_valid_values not a boolean",
-			body:     "      retry_policy:\n        max_retries: 1\n        include_valid_values: maybe\n",
-			contains: []string{"spec.stages[0].retry_policy.include_valid_values must be a boolean"},
-		},
 		{
 			name:     "session_mode not a string",
 			body:     "      retry_policy:\n        max_retries: 1\n        session_mode: 7\n",

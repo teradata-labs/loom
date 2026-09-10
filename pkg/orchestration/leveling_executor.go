@@ -17,15 +17,24 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
+// levelingJudgeReasonSpanChars caps how much of a judge's rejection reason is
+// copied onto its span. A reason is free-form model text and can run long; the
+// leading sentence is what a trace reader needs.
+const levelingJudgeReasonSpanChars = 200
+
 // LevelingJudge is an optional LLM-backed quality signal. It is invoked only
 // when no free (non-LLM) failure signal is available. costUSD is the judge's
 // own spend and counts against LevelingPolicy.MaxCostUSD.
 type LevelingJudge func(ctx context.Context, prompt, output string) (pass bool, reason string, costUSD float64, err error)
 
-// TierPolicy holds per-tier leveling knobs.
+// TierPolicy holds per-tier leveling knobs. Every tier has one, the tiers that
+// short-circuit included: short-circuiting skips the ladder and the judge, not
+// the tier's own retry budget.
 type TierPolicy struct {
 	// RetryBudget is the same-model retry count applied when the caller's
-	// OutputPolicy carries no RetryPolicy of its own.
+	// OutputPolicy carries no RetryPolicy of its own. It is honored on both
+	// executor paths, so a frontier or unclassified primary retries too when
+	// its tier is configured for it.
 	RetryBudget int
 }
 
@@ -36,6 +45,11 @@ type TierPolicy struct {
 // that asking again fixes. Stronger tiers get none: a frontier model that fails
 // a schema is unlikely to be rescued by asking again, so paying for a retry is
 // waste.
+//
+// The frontier and unknown entries are live rather than decorative. They are
+// read on the short-circuit path as well, and their zero value is what makes a
+// strong or unclassified primary cost exactly one call by default. Override
+// either one and that tier retries its own model before the executor gives up.
 //
 // Free JSON extraction is not a per-tier knob. It costs nothing, it is what the
 // pre-leveling pipeline always did to a stage output, and a tier that turned it
@@ -83,7 +97,9 @@ type LevelingPolicy struct {
 	// nothing on schema-bearing workflows.
 	Judge LevelingJudge
 	// TierPolicies overrides DefaultTierPolicies() per tier; a tier absent from
-	// this map falls back to its built-in entry. nil uses the defaults.
+	// this map falls back to its built-in entry. nil uses the defaults. Every
+	// tier's entry is honored, including the tiers that short-circuit — the
+	// retry budget is the one leveling knob that outlives a short circuit.
 	TierPolicies map[catalog.ModelTier]TierPolicy
 	// Thresholds shifts the pricing cutoffs used to classify the primary rung.
 	// The zero value means the catalog's built-in cutoffs, so leaving this
@@ -187,6 +203,19 @@ func (e *LevelingExecutor) Execute(
 		return nil, nil, fmt.Errorf("leveling: ladder is empty, need at least a primary rung")
 	}
 
+	// A rung's Execute is the only way to reach its model, so a nil one is a
+	// wiring mistake that would panic the moment the rung is dispatched. The
+	// whole ladder is checked here, before either path below is entered, so a
+	// Go caller that forgot to populate a rung gets a named field back rather
+	// than a nil func call — and gets it even with leveling disabled, where
+	// only ladder[0] is ever touched.
+	for i := range ladder {
+		if ladder[i].Execute == nil {
+			return nil, nil, fmt.Errorf("leveling: rung %d (%s/%s) has no Execute function",
+				i, ladder[i].Provider, ladder[i].Model)
+		}
+	}
+
 	// Disabled path. No span, no catalog lookup, no wrapping closures, no
 	// judge — one call into the validator and nothing else. With leveling off
 	// this is byte-for-byte the behavior of not having this executor at all.
@@ -216,10 +245,18 @@ func (e *LevelingExecutor) Execute(
 	// entire cost of the enabled-but-short-circuiting path.
 	report.Tier = catalog.TierOfWith(ladder[0].Provider, ladder[0].Model, e.policy.Thresholds)
 
-	// Short-circuit: the primary is already strong enough that leveling has
-	// nothing to add, or it is unclassified and we refuse to guess. Either way
-	// no judge runs and no rung beyond the primary is touched.
+	// Short-circuit: the primary is already strong enough that the ladder has
+	// nothing to add, or it is unclassified and we refuse to guess. What that
+	// skips is the ladder and the judge — no rung beyond the primary is touched
+	// and no judge runs. It does not skip the tier's own retry budget: the tier
+	// policies carry live entries for frontier and unknown, both zero, so a
+	// caller who leaves them alone gets the historical single call and a caller
+	// who configures a retry_budget for those tiers gets the retries they asked
+	// for instead of a knob that silently does nothing.
 	if e.shouldShortCircuit(report.Tier) {
+		tierPolicy := e.tierPolicyFor(report.Tier)
+		effPolicy := effectiveOutputPolicy(outputPolicy, tierPolicy)
+
 		// Running cost total, the same wrapper the active path uses: the
 		// validator may run several attempts here too, and the report must
 		// account for all of them rather than only the one it returned.
@@ -230,12 +267,17 @@ func (e *LevelingExecutor) Execute(
 		// and the ladder, not the fence-stripping the pre-leveling pipeline
 		// always did — refusing it here would make a schema stricter under
 		// leveling than without it. Its own verdict is the report's.
+		//
+		// The budget hook is the active path's, so retries spent here obey
+		// MaxCostUSD exactly as the rungs below it do.
 		result, outcome, err := e.validator.ValidateAndRetry(
-			ctx, outputPolicy, wrappedExecute, wrappedFeedback, prompt, workflowID,
-			schemaCoercion(outputPolicy.GetOutputSchema()), nil)
+			ctx, effPolicy, wrappedExecute, wrappedFeedback, prompt, workflowID,
+			schemaCoercion(effPolicy.GetOutputSchema()),
+			func() bool { return !e.budgetExceeded(total) })
 		report.ShortCircuited = true
 		report.Warnings = append(report.Warnings, outcome.Warnings...)
 		report.CoercionApplied = outcome.CoercionApplied
+		report.BudgetExhausted = outcome.BudgetExhausted
 		report.TotalCostUSD = total
 		if err != nil {
 			return result, report, err
@@ -243,6 +285,7 @@ func (e *LevelingExecutor) Execute(
 		report.Passed = outcome.Passed
 		e.logger.Debug("leveling short-circuited",
 			zap.String("tier", report.Tier.String()),
+			zap.Int("tier_retry_budget", tierPolicy.RetryBudget),
 			zap.Bool("passed", report.Passed))
 		return result, report, nil
 	}
@@ -292,6 +335,17 @@ func (e *LevelingExecutor) Execute(
 	var finalRungResult *loomv1.AgentResult
 	reason := verdict.reason
 	for i := 1; i < len(ladder); i++ {
+		// A cancelled context makes every remaining rung fire, fail, and be
+		// written off, leaving the caller a non-error "exhausted" report for a
+		// run that was called off. Cancellation is an error here for the same
+		// reason it is one inside ValidateAndRetry, which runs this check per
+		// attempt.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			report.TotalCostUSD = total
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("escalation stopped: %v", ctxErr))
+			return lastResult, report, ctxErr
+		}
 		if report.Escalations >= e.policy.MaxEscalations {
 			break
 		}
@@ -312,6 +366,26 @@ func (e *LevelingExecutor) Execute(
 			prompt, reason, lastOutput, effPolicy.GetRetryPolicy(), i, e.policy.MaxEscalations)
 		sessionID := fmt.Sprintf("%s-lvl%d", workflowID, i)
 
+		// Each attempted rung gets its own tier resolved, so the trace and the
+		// report say what the ladder actually climbed rather than only where it
+		// started.
+		rungTier := catalog.TierOfWith(ladder[i].Provider, ladder[i].Model, e.policy.Thresholds)
+		if span != nil {
+			span.SetAttribute(fmt.Sprintf("leveling.rung.%d.tier", i), rungTier.String())
+		}
+		// A rung weaker than the primary is a misconfigured ladder: escalation
+		// is paid for on the promise of more capability, and this rung cannot
+		// deliver it. Reported, not rejected — the tiers are derived from
+		// catalog pricing, which is the wrong authority to fail a run on, and
+		// the ladder shape is validated at the config surface instead. Equal
+		// tiers are left alone on purpose: a same-tier rung carrying a
+		// different signal is a working pattern, not a mistake.
+		if rungTier != catalog.TierUnknown && report.Tier != catalog.TierUnknown && rungTier < report.Tier {
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"escalation rung %d (%s/%s) is tier %s, below the primary's tier %s — the ladder escalates downward",
+				i, ladder[i].Provider, ladder[i].Model, rungTier, report.Tier))
+		}
+
 		// An attempted rung counts against MaxEscalations even if it errors —
 		// the call was made and may already have cost money.
 		report.Escalations++
@@ -319,6 +393,7 @@ func (e *LevelingExecutor) Execute(
 			zap.Int("rung", i),
 			zap.String("rung_provider", ladder[i].Provider),
 			zap.String("rung_model", ladder[i].Model),
+			zap.String("rung_tier", rungTier.String()),
 			zap.String("reason", reason))
 
 		escalated, execErr := ladder[i].Execute(ctx, sessionID, escPrompt)
@@ -397,7 +472,10 @@ func schemaCoercion(schema string) CoerceFunc {
 	}
 }
 
-// shouldShortCircuit reports whether the primary tier makes leveling pointless.
+// shouldShortCircuit reports whether the primary tier makes the ladder and the
+// judge pointless. It is not a claim that no work at all is warranted: the
+// tier's retry budget applies either way, so a short-circuiting tier configured
+// with a retry_budget still retries its own model.
 func (e *LevelingExecutor) shouldShortCircuit(tier catalog.ModelTier) bool {
 	switch tier {
 	case catalog.TierFrontier:
@@ -531,7 +609,20 @@ func (e *LevelingExecutor) judgeVerdict(
 		return levelingVerdict{pass: true, signal: true, budgetBlocked: true}
 	}
 
-	pass, reason, costUSD, judgeErr := e.policy.Judge(ctx, prompt, result.Output)
+	// The judge is an LLM call, so it gets its own span under leveling.execute
+	// rather than disappearing into the parent's total.
+	judgeCtx, judgeSpan := e.tracer.StartSpan(ctx, "leveling.judge")
+	pass, reason, costUSD, judgeErr := e.policy.Judge(judgeCtx, prompt, result.Output)
+	if judgeSpan != nil {
+		judgeSpan.SetAttribute("leveling.judge.pass", fmt.Sprintf("%t", pass))
+		judgeSpan.SetAttribute("leveling.judge.cost_usd", fmt.Sprintf("%.6f", costUSD))
+		judgeSpan.SetAttribute("leveling.judge.reason",
+			truncateForError(reason, levelingJudgeReasonSpanChars))
+		if judgeErr != nil {
+			judgeSpan.SetAttribute("leveling.judge.error", judgeErr.Error())
+		}
+	}
+	e.tracer.EndSpan(judgeSpan)
 	report.JudgeCalls++
 	*total += costUSD
 	if judgeErr != nil {

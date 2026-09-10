@@ -349,7 +349,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 
 		ladder, err := resolveLevelingLadder(ag, "role-agent", primary, []*loomv1.LevelingRung{
 			{Role: loomv1.LLMRole_LLM_ROLE_JUDGE},
-		})
+		}, nil)
 		require.NoError(t, err)
 		require.Len(t, ladder, 2)
 		assert.Equal(t, lvlFrontierProvider, ladder[1].Provider, "provider falls back to the resolved LLM")
@@ -380,7 +380,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 
 		ladder, err := resolveLevelingLadder(ag, "pool-agent", primary, []*loomv1.LevelingRung{
 			{Provider: lvlFrontierProvider, Model: lvlFrontierModel},
-		})
+		}, nil)
 		require.NoError(t, err)
 		require.Len(t, ladder, 2)
 		assert.Equal(t, lvlFrontierProvider, ladder[1].Provider, "explicit proto provider wins")
@@ -400,7 +400,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 
 		ladder, err := resolveLevelingLadder(ag, "pool-agent", primary, []*loomv1.LevelingRung{
 			{Provider: "absent-provider"},
-		})
+		}, nil)
 		require.Error(t, err)
 		assert.Nil(t, ladder)
 		assert.Contains(t, err.Error(), "absent-provider")
@@ -415,7 +415,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 
 		ladder, err := resolveLevelingLadder(ag, "bare-agent", primary, []*loomv1.LevelingRung{
 			{Provider: lvlFrontierProvider},
-		})
+		}, nil)
 		require.Error(t, err)
 		assert.Nil(t, ladder)
 		assert.Contains(t, err.Error(), "provider pool")
@@ -427,7 +427,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
 		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("bare-agent"))
 
-		ladder, err := resolveLevelingLadder(ag, "bare-agent", primary, []*loomv1.LevelingRung{{}})
+		ladder, err := resolveLevelingLadder(ag, "bare-agent", primary, []*loomv1.LevelingRung{{}}, nil)
 		require.Error(t, err)
 		assert.Nil(t, ladder)
 		assert.Contains(t, err.Error(), "needs role or provider")
@@ -439,7 +439,7 @@ func TestResolveLevelingLadder(t *testing.T) {
 		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
 		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("bare-agent"))
 
-		ladder, err := resolveLevelingLadder(ag, "bare-agent", primary, nil)
+		ladder, err := resolveLevelingLadder(ag, "bare-agent", primary, nil, nil)
 		require.NoError(t, err)
 		require.Len(t, ladder, 1)
 		assert.Equal(t, lvlLowProvider, ladder[0].Provider)
@@ -448,9 +448,103 @@ func TestResolveLevelingLadder(t *testing.T) {
 	t.Run("nil agent errors", func(t *testing.T) {
 		t.Parallel()
 
-		ladder, err := resolveLevelingLadder(nil, "x", primary, nil)
+		ladder, err := resolveLevelingLadder(nil, "x", primary, nil, nil)
 		require.Error(t, err)
 		assert.Nil(t, ladder)
+	})
+
+	// A rung that lands on the primary's own model is a paid call that cannot
+	// produce a different answer. There are three routes to it and each is
+	// closed separately, because none of the checks subsumes the others.
+	t.Run("role agent is rejected by name", func(t *testing.T) {
+		t.Parallel()
+
+		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("self-agent"))
+
+		ladder, err := resolveLevelingLadder(ag, "self-agent", primary, []*loomv1.LevelingRung{
+			{Role: loomv1.LLMRole_LLM_ROLE_AGENT},
+		}, nil)
+		require.Error(t, err)
+		assert.Nil(t, ladder)
+		assert.Contains(t, err.Error(), "rung 1 role LLM_ROLE_AGENT names the agent's own LLM")
+		assert.Contains(t, err.Error(), "judge, orchestrator, classifier, compressor",
+			"the suggestion lists the roles that carry their own LLM")
+		assert.NotContains(t, err.Error(), "(agent,", "agent is not offered as a valid rung role")
+		assert.Equal(t, 0, main.count())
+	})
+
+	t.Run("pool entry holding the agent's own LLM instance is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("self-agent"))
+		require.NoError(t, ag.SetProviderPool(map[string]agent.LLMProvider{"self": main}, "", nil))
+
+		ladder, err := resolveLevelingLadder(ag, "self-agent", primary, []*loomv1.LevelingRung{
+			{Provider: "self", Model: "anything"},
+		}, nil)
+		require.Error(t, err)
+		assert.Nil(t, ladder)
+		assert.Contains(t, err.Error(), "rung 1 resolves to the primary's own model")
+		assert.Equal(t, 0, main.count())
+	})
+
+	t.Run("pool entry reporting the primary's provider and model is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// A second client object configured against the same model: not the
+		// same instance, but the same model all the same.
+		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+		twin := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "twin out")
+		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("self-agent"))
+		require.NoError(t, ag.SetProviderPool(map[string]agent.LLMProvider{"twin": twin}, "", nil))
+
+		ladder, err := resolveLevelingLadder(ag, "self-agent", primary, []*loomv1.LevelingRung{
+			{Provider: "twin"},
+		}, nil)
+		require.Error(t, err)
+		assert.Nil(t, ladder)
+		assert.Contains(t, err.Error(), "rung 1 resolves to the primary's own model")
+		assert.Contains(t, err.Error(), "/"+lvlLowModel, "the rung is named by the model it resolved to")
+		assert.Equal(t, 0, twin.count())
+	})
+
+	t.Run("explicit proto provider and model equal to the primary rung are rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// The resolved LLM reports a different identity, but the proto fields
+		// — which are what the catalog tiers — name the primary rung exactly.
+		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+		other := newLvlMockLLM("other-provider", "other-model", 0.4, lvlValidJSON)
+		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("self-agent"))
+		require.NoError(t, ag.SetProviderPool(map[string]agent.LLMProvider{lvlLowProvider: other}, "", nil))
+
+		ladder, err := resolveLevelingLadder(ag, "self-agent", primary, []*loomv1.LevelingRung{
+			{Provider: lvlLowProvider, Model: lvlLowModel},
+		}, nil)
+		require.Error(t, err)
+		assert.Nil(t, ladder)
+		assert.Contains(t, err.Error(), "resolves to the primary's own model")
+		assert.Equal(t, 0, other.count())
+	})
+
+	t.Run("a genuinely different rung on the same provider is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// The control: same provider, different model is exactly what a local
+		// ladder looks like (llama3.2 -> deepseek-r1), and must still resolve.
+		main := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "primary out")
+		stronger := newLvlMockLLM(lvlLowProvider, "deepseek-r1:latest", 0, lvlValidJSON)
+		ag := agent.NewAgent(&mockBackend{}, main, agent.WithName("local-agent"))
+		require.NoError(t, ag.SetProviderPool(map[string]agent.LLMProvider{lvlLowProvider: stronger}, "", nil))
+
+		ladder, err := resolveLevelingLadder(ag, "local-agent", primary, []*loomv1.LevelingRung{
+			{Provider: lvlLowProvider, Model: "deepseek-r1:latest"},
+		}, nil)
+		require.NoError(t, err)
+		require.Len(t, ladder, 2)
+		assert.Equal(t, "deepseek-r1:latest", ladder[1].Model)
 	})
 }
 
@@ -462,19 +556,46 @@ func TestEffectiveLevelingOutputPolicy(t *testing.T) {
 	tests := []struct {
 		name   string
 		stage  *loomv1.PipelineStage
-		verify func(t *testing.T, got *loomv1.OutputPolicy)
+		verify func(t *testing.T, got *loomv1.OutputPolicy, err error)
 	}{
 		{
-			name:  "unified policy wins",
-			stage: &loomv1.PipelineStage{OutputPolicy: unified, OutputSchema: `{"type":"array"}`},
-			verify: func(t *testing.T, got *loomv1.OutputPolicy) {
+			name:  "unified policy alone is returned as-is",
+			stage: &loomv1.PipelineStage{OutputPolicy: unified},
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.NoError(t, err)
 				assert.Same(t, unified, got)
+			},
+		},
+		{
+			// The leveled path enforces only the returned policy, so a stage
+			// carrying both would lose its legacy schema the moment leveling
+			// was enabled — silently. That is a conflict, not a precedence.
+			name:  "unified policy plus legacy schema is a conflict",
+			stage: &loomv1.PipelineStage{OutputPolicy: unified, OutputSchema: `{"type":"array"}`},
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.Contains(t, err.Error(), "leveling_policy cannot be combined with output_policy AND the legacy output_schema/retry_policy")
+				assert.Contains(t, err.Error(), "silently dropped")
+			},
+		},
+		{
+			name: "unified policy plus legacy retry policy is a conflict",
+			stage: &loomv1.PipelineStage{
+				OutputPolicy: unified,
+				RetryPolicy:  &loomv1.OutputRetryPolicy{MaxRetries: 2},
+			},
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.Contains(t, err.Error(), "legacy output_schema/retry_policy")
 			},
 		},
 		{
 			name:  "legacy schema is synthesized",
 			stage: &loomv1.PipelineStage{OutputSchema: lvlSchema},
-			verify: func(t *testing.T, got *loomv1.OutputPolicy) {
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.NoError(t, err)
 				require.NotNil(t, got)
 				assert.Equal(t, lvlSchema, got.OutputSchema)
 				assert.Nil(t, got.RetryPolicy)
@@ -483,7 +604,8 @@ func TestEffectiveLevelingOutputPolicy(t *testing.T) {
 		{
 			name:  "legacy retry policy is synthesized",
 			stage: &loomv1.PipelineStage{RetryPolicy: &loomv1.OutputRetryPolicy{MaxRetries: 2}},
-			verify: func(t *testing.T, got *loomv1.OutputPolicy) {
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.NoError(t, err)
 				require.NotNil(t, got)
 				assert.Empty(t, got.OutputSchema)
 				require.NotNil(t, got.RetryPolicy)
@@ -493,7 +615,8 @@ func TestEffectiveLevelingOutputPolicy(t *testing.T) {
 		{
 			name:  "no contract at all",
 			stage: &loomv1.PipelineStage{AgentId: "a"},
-			verify: func(t *testing.T, got *loomv1.OutputPolicy) {
+			verify: func(t *testing.T, got *loomv1.OutputPolicy, err error) {
+				require.NoError(t, err)
 				assert.Nil(t, got)
 			},
 		},
@@ -502,7 +625,8 @@ func TestEffectiveLevelingOutputPolicy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tt.verify(t, effectiveLevelingOutputPolicy(tt.stage))
+			got, err := effectiveLevelingOutputPolicy(tt.stage)
+			tt.verify(t, got, err)
 		})
 	}
 }

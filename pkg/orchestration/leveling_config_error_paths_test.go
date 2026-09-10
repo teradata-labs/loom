@@ -106,7 +106,7 @@ func TestResolveLevelingLadderNilRung(t *testing.T) {
 	primary := LevelingRung{Provider: lvlLowProvider, Model: lvlLowModel}
 
 	ladder, err := resolveLevelingLadder(ag, "nil-rung-agent", primary,
-		[]*loomv1.LevelingRung{{Provider: lvlFrontierProvider}, nil})
+		[]*loomv1.LevelingRung{{Provider: lvlFrontierProvider}, nil}, nil)
 
 	require.Error(t, err)
 	assert.Nil(t, ladder)
@@ -154,7 +154,7 @@ func TestResolveLevelingLadderRoleWithNoLLM(t *testing.T) {
 
 			primary := LevelingRung{Provider: lvlLowProvider, Model: lvlLowModel}
 			ladder, err := resolveLevelingLadder(ag, "llm-less-agent", primary,
-				[]*loomv1.LevelingRung{{Role: loomv1.LLMRole_LLM_ROLE_JUDGE}})
+				[]*loomv1.LevelingRung{{Role: loomv1.LLMRole_LLM_ROLE_JUDGE}}, nil)
 
 			require.Error(t, err)
 			assert.Nil(t, ladder)
@@ -180,7 +180,7 @@ func TestLevelingRungExecuteSurfacesLLMError(t *testing.T) {
 
 	primary := LevelingRung{Provider: lvlLowProvider, Model: lvlLowModel}
 	ladder, err := resolveLevelingLadder(ag, "failing-rung-agent", primary,
-		[]*loomv1.LevelingRung{{Provider: "strong", Model: "deepseek-r1:latest"}})
+		[]*loomv1.LevelingRung{{Provider: "strong", Model: "deepseek-r1:latest"}}, nil)
 	require.NoError(t, err, "resolution succeeds; only the call fails")
 	require.Len(t, ladder, 2)
 

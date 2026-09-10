@@ -801,9 +801,9 @@ var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "co
 // Returns nil if no retry_policy is present or if max_retries is 0/negative —
 // both mean "no retry policy".
 //
-// # Three tolerated shapes, each warned about
+// # Four tolerated shapes, each warned about
 //
-// This block predates the strict scalar helpers, so three shapes that loaded
+// This block predates the strict scalar helpers, so four shapes that loaded
 // before them keep loading, with a warning naming the value and what it resolved
 // to instead of a load error. Rejecting them would break configs that already
 // run, which is a worse outcome than a warning:
@@ -811,6 +811,10 @@ var retryPolicyRetryOnlyKeys = []string{"session_mode", "feedback_template", "co
 //   - max_retries: 2.5 — truncated toward zero, as the pre-helper decode did.
 //   - max_retries: "3" — ignored, i.e. treated as absent, as before. A string is
 //     not silently parsed: that would turn a no-retry config into a retrying one.
+//   - include_valid_values: "true" — ignored, i.e. treated as absent, so the
+//     field resolves to its default true, which is where the pre-helper bool
+//     assertion left it. A string is not parsed either: "false" would flip a
+//     default the old code never touched.
 //   - a retry-only key (session_mode, feedback_template, cooldown_ms) without a
 //     positive max_retries — the whole retry_policy is dropped, as before.
 //
@@ -859,7 +863,7 @@ func parseOutputRetryPolicy(raw map[string]interface{}, path string, logger *zap
 	// in retry prompts is the safe default (helps the LLM produce correct output).
 	// Only set to false if explicitly configured.
 	policy.IncludeValidValues = true
-	includeValues, present, err := yamlBoolField(retryRaw, path, "include_valid_values")
+	includeValues, present, err := retryPolicyIncludeValidValues(retryRaw, path, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -927,6 +931,29 @@ func retryPolicyMaxRetries(retryRaw map[string]interface{}, path string, logger 
 
 	value, _, err := yamlInt32Field(retryRaw, path, "max_retries")
 	return value, err
+}
+
+// retryPolicyIncludeValidValues reads retry_policy.include_valid_values with the
+// value-level tolerance parseOutputRetryPolicy documents, and delegates
+// everything else to the shared strict helper so this key keeps yamlBoolField's
+// accepted values and its error wording.
+//
+// A present, non-nil, non-bool value is ignored and reported as absent, which
+// leaves the caller's default true in place — where the pre-helper bool
+// assertion also left it. The value is never parsed from a string: reading
+// "false" as false would flip a default the old code never touched.
+func retryPolicyIncludeValidValues(retryRaw map[string]interface{}, path string, logger *zap.Logger) (bool, bool, error) {
+	if raw, ok := retryRaw["include_valid_values"]; ok && raw != nil {
+		if _, isBool := raw.(bool); !isBool {
+			logger.Warn("workflow retry_policy.include_valid_values is not a boolean: ignoring it as if the key were absent",
+				zap.String("field", path+".include_valid_values"),
+				zap.String("yaml_type", fmt.Sprintf("%T", raw)),
+				zap.String("resolved_to", "true (default)"))
+			return false, false, nil
+		}
+	}
+
+	return yamlBoolField(retryRaw, path, "include_valid_values")
 }
 
 // presentRetryOnlyKeys lists the retry-only keys the block actually carries, in

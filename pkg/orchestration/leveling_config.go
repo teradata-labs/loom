@@ -9,12 +9,14 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -157,11 +159,18 @@ func validateLevelingOutputPolicy(policy *loomv1.OutputPolicy) error {
 }
 
 // validateLevelingLadderShape checks the part of a proto ladder that can be
-// judged without an agent: every rung must exist and must name either a role or
-// a provider. It exists so a config surface (the workflow YAML loader) can
-// reject a malformed ladder at load time instead of at execution time.
+// judged without an agent: every rung must exist, must name either a role or a
+// provider, and must not name LLM_ROLE_AGENT. It exists so a config surface
+// (the workflow YAML loader) can reject a malformed ladder at load time instead
+// of at execution time.
 //
-// resolveLevelingLadder re-checks both conditions because it must — it resolves
+// LLM_ROLE_AGENT is rejected because it does not name a role LLM at all:
+// Agent.GetLLMForRoleStrict resolves AGENT (and UNSPECIFIED) to the agent's own
+// main LLM, so a rung asking for it escalates to the model that just failed —
+// a paid call that cannot produce a different answer. The strict lookup exists
+// to make that detectable, and this is where it is reported.
+//
+// resolveLevelingLadder re-checks these conditions because it must — it resolves
 // rungs supplied by callers that never went through a config loader — and its
 // wording is kept identical to these messages.
 func validateLevelingLadderShape(protoRungs []*loomv1.LevelingRung) error {
@@ -169,12 +178,24 @@ func validateLevelingLadderShape(protoRungs []*loomv1.LevelingRung) error {
 		switch {
 		case pr == nil:
 			return fmt.Errorf("leveling ladder: rung %d is nil", i+1)
+		case pr.GetRole() == loomv1.LLMRole_LLM_ROLE_AGENT:
+			return errLevelingRungAgentRole(i + 1)
 		case pr.GetRole() != loomv1.LLMRole_LLM_ROLE_UNSPECIFIED, pr.GetProvider() != "":
 		default:
 			return fmt.Errorf("leveling ladder: rung %d needs role or provider", i+1)
 		}
 	}
 	return nil
+}
+
+// errLevelingRungAgentRole is the single wording for a rung that names the
+// agent's own LLM by role, shared by validateLevelingLadderShape and
+// resolveLevelingLadder so a load-time and an execution-time rejection read
+// identically. The roles it suggests are the ones that carry an LLM of their
+// own.
+func errLevelingRungAgentRole(rung int) error {
+	return fmt.Errorf("leveling ladder: rung %d role LLM_ROLE_AGENT names the agent's own LLM — an escalation rung must be a different model than the primary; use a role with its own LLM (%s) or a provider from the agent's provider pool",
+		rung, strings.Join(levelingRungRoleShortNames(), ", "))
 }
 
 // resolveLevelingLadder builds the executor's ladder: the caller's primary rung
@@ -199,11 +220,24 @@ func validateLevelingLadderShape(protoRungs []*loomv1.LevelingRung) error {
 // pool and a role with no LLM of its own. Provider/Model on the returned rung
 // prefer the explicit proto fields (they are what the catalog is keyed on) and
 // fall back to what the resolved LLM reports.
+//
+// A rung that ends up on the primary's own model is also a config error, in all
+// three of the ways it can happen: LLM_ROLE_AGENT (which names the agent's own
+// LLM by definition), a pool entry that holds the agent's main LLM or a
+// same-named/same-modeled provider, and explicit proto provider/model fields
+// equal to the primary's. Escalating to the model that just failed spends a
+// call that cannot produce a different answer, so it is rejected here rather
+// than run. Go callers that deliberately want same-model rungs build the ladder
+// themselves; LevelingExecutor.Execute accepts whatever ladder it is given.
+//
+// tracer instruments each rung's LLM call (see levelingRungExecute); nil is
+// accepted and becomes a no-op tracer.
 func resolveLevelingLadder(
 	ag *agent.Agent,
 	agentID string,
 	primary LevelingRung,
 	protoRungs []*loomv1.LevelingRung,
+	tracer observability.Tracer,
 ) ([]LevelingRung, error) {
 	if ag == nil {
 		return nil, fmt.Errorf("leveling ladder: agent is required to resolve rungs")
@@ -219,6 +253,10 @@ func resolveLevelingLadder(
 
 		var llm agent.LLMProvider
 		switch {
+		case pr.GetRole() == loomv1.LLMRole_LLM_ROLE_AGENT:
+			// The strict lookup below would answer this with the agent's own
+			// LLM, so it is refused by name for the clearer diagnostic.
+			return nil, errLevelingRungAgentRole(i + 1)
 		case pr.GetRole() != loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
 			// Strict lookup: GetLLMForRole falls back to the agent's own LLM,
 			// which would build a rung that escalates to the primary's model.
@@ -253,10 +291,15 @@ func resolveLevelingLadder(
 			model = llm.Model()
 		}
 
+		if rungRepeatsPrimaryModel(ag, primary, llm, provider, model) {
+			return nil, fmt.Errorf("leveling ladder: rung %d resolves to the primary's own model %s/%s — an escalation rung must be a different model than the primary",
+				i+1, provider, model)
+		}
+
 		ladder = append(ladder, LevelingRung{
 			Provider: provider,
 			Model:    model,
-			Execute:  levelingRungExecute(llm, agentID, provider, model),
+			Execute:  levelingRungExecute(llm, agentID, provider, model, tracer),
 			// Feedback is intentionally nil: an escalation rung is a one-shot
 			// call with no session to continue, and the validator falls back to
 			// a fresh execute when no feedback function is supplied.
@@ -267,26 +310,118 @@ func resolveLevelingLadder(
 	return ladder, nil
 }
 
+// rungRepeatsPrimaryModel reports whether a resolved escalation rung is the
+// primary's own model, which makes it a paid call that cannot produce a
+// different answer.
+//
+// Three independent signals answer that, because a rung can arrive at the
+// primary's model by three routes and none of them subsumes the others:
+//
+//   - the resolved LLM is the very instance the agent runs on (a provider pool
+//     that maps a name onto the agent's main LLM);
+//   - the resolved LLM reports the agent's provider name and model (a second
+//     client object configured against the same model);
+//   - the rung's catalog identity — the (provider, model) pair the executor
+//     will tier — equals the primary rung's.
+//
+// The name/model comparisons are skipped when the agent reports no model at
+// all: an agent with no main LLM has nothing for a rung to repeat, and
+// comparing empty strings would reject every rung whose LLM reports no model.
+func rungRepeatsPrimaryModel(ag *agent.Agent, primary LevelingRung, llm agent.LLMProvider, provider, model string) bool {
+	// GetLLMForRole with AGENT is the agent's own main LLM (its doc says so),
+	// which is exactly the instance an escalation rung must not be.
+	if sameLLMInstance(llm, ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)) {
+		return true
+	}
+	if mainModel := ag.GetLLMModel(); mainModel != "" &&
+		llm.Name() == ag.GetLLMProviderName() && llm.Model() == mainModel {
+		return true
+	}
+	return primary.Model != "" && provider == primary.Provider && model == primary.Model
+}
+
+// sameLLMInstance reports whether two providers are the same object. Interface
+// equality panics when the dynamic type is not comparable (a provider
+// implemented as a struct value holding a map, slice or function), so
+// comparability is checked first and an uncomparable pair is reported as
+// different — the provider-name and model comparison in
+// rungRepeatsPrimaryModel still covers it.
+func sameLLMInstance(a, b agent.LLMProvider) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
 // levelingRungExecute returns an ExecuteFunc that sends one prompt straight to
-// the rung's LLM — no tools, no session, and no mutation of the agent, matching
-// how PipelineExecutor.validateStageOutput uses the merge LLM directly. The
-// sessionID the validator supplies is unused because a bare LLM call has no
-// conversation to join.
+// the rung's LLM — no tools, no system prompt, no session and no mutation of the
+// agent, matching how PipelineExecutor.validateStageOutput uses the merge LLM
+// directly.
+//
+// The call runs under its own "leveling.rung" span so an escalation is visible
+// next to the "pipeline.agent.*" spans a primary attempt produces: without it
+// the one part of a leveled stage that spends money on a second model is the
+// one part with no trace. The sessionID the validator supplies is carried on
+// the span and into the agent.Context wrapper — a bare LLM call has no
+// conversation to join, but the session it belongs to is what makes the span
+// joinable to the rest of the stage.
 //
 // Cost comes from the provider's own Usage.CostUSD on the raw LLMResponse (every
 // client fills it from catalog pricing), so escalation spend counts against
 // LevelingPolicy.MaxCostUSD without this package pricing anything itself.
-func levelingRungExecute(llm agent.LLMProvider, agentID, provider, model string) ExecuteFunc {
-	return func(ctx context.Context, _ string, prompt string) (*loomv1.AgentResult, error) {
+func levelingRungExecute(llm agent.LLMProvider, agentID, provider, model string, tracer observability.Tracer) ExecuteFunc {
+	if tracer == nil {
+		tracer = observability.NewNoOpTracer()
+	}
+	return func(ctx context.Context, sessionID string, prompt string) (*loomv1.AgentResult, error) {
 		start := time.Now()
-		resp, err := llm.Chat(ctx, []types.Message{{
+
+		rungCtx, span := tracer.StartSpan(ctx, "leveling.rung")
+		defer tracer.EndSpan(span)
+		if span != nil {
+			span.SetAttribute("leveling.rung.provider", provider)
+			span.SetAttribute("leveling.rung.model", model)
+			span.SetAttribute("agent.id", agentID)
+			span.SetAttribute("agent.session_id", sessionID)
+		}
+
+		// The LLM reads its tracer off the context, the same way the merge and
+		// validation LLMs do, so the provider's own spans nest under this one.
+		rungAgentCtx := &mergeContext{
+			Context: rungCtx,
+			session: &agent.Session{
+				ID:        sessionID,
+				Messages:  []agent.Message{},
+				CreatedAt: start,
+				UpdatedAt: start,
+			},
+			tracer: tracer,
+		}
+
+		resp, err := llm.Chat(rungAgentCtx, []types.Message{{
 			Role:      "user",
 			Content:   prompt,
 			Timestamp: start,
 		}}, nil)
 		if err != nil {
+			if span != nil {
+				span.SetAttribute("error", err.Error())
+			}
 			return nil, fmt.Errorf("leveling rung %s/%s failed: %w", provider, model, err)
 		}
+
+		duration := time.Since(start)
+		if span != nil {
+			span.SetAttribute("llm.cost_usd", fmt.Sprintf("%.6f", resp.Usage.CostUSD))
+			span.SetAttribute("llm.input_tokens", fmt.Sprintf("%d", resp.Usage.InputTokens))
+			span.SetAttribute("llm.output_tokens", fmt.Sprintf("%d", resp.Usage.OutputTokens))
+			span.SetAttribute("llm.duration_ms", fmt.Sprintf("%d", duration.Milliseconds()))
+		}
+
 		return &loomv1.AgentResult{
 			AgentId: agentID,
 			Output:  resp.Content,
@@ -295,7 +430,7 @@ func levelingRungExecute(llm agent.LLMProvider, agentID, provider, model string)
 				levelingRungModelKey:    model,
 			},
 			ConfidenceScore: 1.0,
-			DurationMs:      time.Since(start).Milliseconds(),
+			DurationMs:      duration.Milliseconds(),
 			Cost: &loomv1.AgentExecutionCost{
 				TotalTokens:  types.SafeInt32(resp.Usage.TotalTokens),
 				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
@@ -364,17 +499,38 @@ func levelingWinningModel(result *loomv1.AgentResult, primaryModel string) strin
 // enforce for a pipeline stage. The unified output_policy wins; otherwise the
 // legacy output_schema/retry_policy pair is synthesized into one so enabling
 // leveling on a stage written against the legacy fields still validates against
-// them. nil means the stage has no contract, and leveling then has no free
-// signal to escalate on.
-func effectiveLevelingOutputPolicy(stage *loomv1.PipelineStage) *loomv1.OutputPolicy {
+// them. A nil policy with a nil error means the stage has no contract, and
+// leveling then has no free signal to escalate on.
+//
+// Carrying both an output_policy and the legacy fields is an error rather than a
+// precedence question. Only the returned policy is enforced on the leveled path
+// (the executor skips the legacy validation block entirely), so a stage that had
+// a working legacy schema would lose it the moment leveling was enabled —
+// silently, since the output would then pass through unchecked. Reporting it is
+// the same call validateLevelingValidationPromptConflict makes for the other
+// legacy field leveling cannot carry.
+func effectiveLevelingOutputPolicy(stage *loomv1.PipelineStage) (*loomv1.OutputPolicy, error) {
 	if stage.GetOutputPolicy() != nil {
-		return stage.GetOutputPolicy()
+		if stage.GetOutputSchema() != "" || stage.GetRetryPolicy() != nil {
+			return nil, fmt.Errorf("leveling_policy %s", levelingLegacyContractConflictMessage)
+		}
+		return stage.GetOutputPolicy(), nil
 	}
 	if stage.GetOutputSchema() != "" || stage.GetRetryPolicy() != nil {
 		return &loomv1.OutputPolicy{
 			OutputSchema: stage.GetOutputSchema(),
 			RetryPolicy:  stage.GetRetryPolicy(),
-		}
+		}, nil
 	}
-	return nil
+	return nil, nil
 }
+
+// levelingLegacyContractConflictMessage is the one wording for the
+// output_policy-plus-legacy-fields conflict, shared by
+// effectiveLevelingOutputPolicy (which fails the stage at execution time, the
+// check a raw-proto workflow cannot bypass) and
+// validateLevelingLegacyContractConflict (which fails the YAML load), so both
+// read identically. Each caller supplies its own subject — the proto field name
+// at execution time, the YAML path at load time — exactly as the
+// validation_prompt conflict does.
+const levelingLegacyContractConflictMessage = "cannot be combined with output_policy AND the legacy output_schema/retry_policy on the same stage — with leveling enabled only output_policy is enforced, so the legacy contract would be silently dropped; move it into output_policy.output_schema / output_policy.retry_policy or remove the legacy fields"

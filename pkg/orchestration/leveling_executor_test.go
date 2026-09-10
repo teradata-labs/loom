@@ -318,7 +318,10 @@ func TestLevelingMidShortCircuitConfigurable(t *testing.T) {
 		require.NotNil(t, report)
 		assert.Equal(t, catalog.TierMid, report.Tier)
 		assert.True(t, report.ShortCircuited)
-		assert.Equal(t, 1, rung0.count())
+		// A short circuit drops the ladder and the judge, not the tier's retry
+		// budget: mid's default is 1, so the primary gets one same-model retry
+		// and nothing beyond it runs.
+		assert.Equal(t, 2, rung0.count())
 		assert.Equal(t, 0, rung1.count())
 		assert.Equal(t, 0, judge.count())
 	})

@@ -385,8 +385,11 @@ defaults (`DefaultLevelingPolicy` has `ShortCircuitMid: true`,
   always nil (decision #2 above).
 - `resolveLevelingLadder`: rung 0 is the executing agent's own conversation;
   each proto rung resolves through exactly one of two existing lookups —
-  `Agent.GetLLMForRole(role)` when `role` is set, else
-  `Agent.GetProviderPool()[provider]`. No provider construction, no new router.
+  `Agent.GetLLMForRoleStrict(role)` when `role` is set, else
+  `Agent.GetProviderPool()[provider]`. The lookup is the **strict** variant on
+  purpose: `GetLLMForRole` falls back to the agent's own main LLM, so a rung
+  naming a role with no LLM of its own would silently escalate to the model that
+  just failed. The strict form reports that as a config error instead. No provider construction, no new router.
   Escalation rungs execute as one-shot `LLMProvider.Chat` calls: no tools, no
   session, no agent mutation (same precedent as the pipeline's merge-LLM
   validation calls). Rung spend comes from the provider's own `Usage.CostUSD`
@@ -409,7 +412,13 @@ defaults (`DefaultLevelingPolicy` has `ShortCircuitMid: true`,
   and runs `LevelingExecutor.Execute`; the legacy validation block is skipped
   (leveling owns validation; running both would validate twice). Leveling
   exhaustion is graceful degradation (warning in `validation_warnings`), not an
-  error — matching the existing retries-exhausted behavior.
+  error. ⚠️ That matches the **retry branch's** behavior only. The legacy
+  no-retry branch — a stage with `output_schema` and no `retry_policy` — returned
+  a workflow error (`stage N output validation failed: …`), and under leveling it
+  becomes warn-and-continue too. Enabling leveling therefore converts a
+  hard-failing stage into a warning-emitting one. That is a semantic change, and
+  it is now stated on both surfaces: the `LevelingPolicy` proto comment and the
+  YAML reference (`docs/reference/workflow-leveling.md`, "Failure semantics").
 - `pkg/orchestration/parallel_executor.go` — same gate on
   `task.GetLevelingPolicy().GetEnabled()` in `executeTaskWithSpan`. One
   executor per task and tool-less rung calls keep it race-safe under
@@ -1544,7 +1553,9 @@ enable it. These are the release-notes items.
    previously-tolerated output-retry shapes stay tolerated, with their old behavior, and each
    now emits a zap warning naming the YAML path: `max_retries: 2.5` (float, truncated as
    before), `max_retries: "3"` (string, ignored as before), and `session_mode` present without
-   a positive `max_retries` (dropped as before). Everything else malformed in a leveling or
+   a positive `max_retries` (dropped as before). A fourth shape joins them: a non-bool
+   `include_valid_values` (e.g. `"yes"`) is ignored and the `true` default applies, with a
+   warning, rather than failing the load. Everything else malformed in a leveling or
    retry block is a **load error** wrapping `ErrInvalidWorkflow` — removed keys
    (`scaffolding_depth`, `aggressive_coercion`), unknown tier names, unknown role or
    `session_mode` values, negative numerics, and a leveling block with no `enabled`. A file that

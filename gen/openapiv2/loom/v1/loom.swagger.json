@@ -4115,7 +4115,7 @@
         },
         "levelingPolicy": {
           "$ref": "#/definitions/v1LevelingPolicy",
-          "description": "Optional: capability-leveling policy for this task. Leveling activates\nonly when leveling_policy.enabled is true; when active, the task's\noutput_policy (field 4) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\ntask behaves exactly as before, including leaving output_policy\nunenforced by the executor."
+          "description": "Optional: capability-leveling policy for this task. Leveling activates\nonly when leveling_policy.enabled is true; when active, the task's\noutput_policy (field 4) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\ntask behaves exactly as before, including leaving output_policy\nunenforced by the executor.\n\nWhen leveling is enabled and the output never satisfies the contract\n(retries and ladder exhausted, or the tier short-circuited) the task\nCONTINUES with the best output obtained plus a validation warning —\ngraceful degradation, not a task failure."
         }
       },
       "description": "AgentTask represents a single agent task with its own prompt."
@@ -5890,7 +5890,7 @@
         "maxCostUsd": {
           "type": "number",
           "format": "double",
-          "description": "Hard cost ceiling in USD across all leveling-visible LLM calls\n(attempts on every rung plus judge spend). 0 = no ceiling."
+          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult, which carries\nthe final LLM response's usage, so an attempt that ran a tool loop\nreports less than it spent and the gate can admit a call that a precise\naccounting would have blocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
         },
         "ladder": {
           "type": "array",
@@ -5915,10 +5915,10 @@
           "additionalProperties": {
             "$ref": "#/definitions/v1LevelingTierPolicy"
           },
-          "description": "Per-tier knob overrides keyed by tier name: \"local\", \"small-open\",\n\"mid\", \"frontier\", \"unknown\". Absent tiers use built-in defaults."
+          "description": "Per-tier knob overrides keyed by tier name: \"local\", \"small-open\",\n\"mid\", \"frontier\", \"unknown\". Absent tiers use the built-in defaults:\nlocal 2, small-open 2, mid 1, frontier 0, unknown 0.\n\nAn entry applies on every tier, including the tiers that short-circuit\n(frontier, unknown, and mid when short_circuit_mid is true):\nshort-circuiting skips the ladder and the judge, not the tier's\nretry_budget."
         }
       },
-      "description": "LevelingPolicy configures capability leveling: escalate a weak model's\nfailed output up a ladder of stronger models, spending nothing when the\nprimary output passes. Leveling activates ONLY when enabled is true; an\nabsent policy or enabled=false leaves executor behavior unchanged,\nincluding leaving any OutputPolicy on the same stage/task unenforced\n(matching pre-leveling behavior)."
+      "description": "LevelingPolicy configures capability leveling: escalate a weak model's\nfailed output up a ladder of stronger models, spending nothing when the\nprimary output passes. Leveling activates ONLY when enabled is true; an\nabsent policy or enabled=false leaves executor behavior unchanged,\nincluding leaving any OutputPolicy on the same stage/task unenforced\n(matching pre-leveling behavior).\n\nWhen leveling is enabled and the output never satisfies the contract —\nretries and ladder exhausted, or the tier short-circuited — the stage or\ntask CONTINUES with the best output obtained plus a validation warning\n(graceful degradation). It does not fail the workflow."
     },
     "v1LevelingRung": {
       "type": "object",
@@ -5933,10 +5933,10 @@
         },
         "role": {
           "$ref": "#/definitions/v1LLMRole",
-          "description": "Optional: resolve the rung's LLM from the executing agent's role LLMs\n(Agent.GetLLMForRole). Takes precedence over the provider pool lookup\nwhen set to a value other than LLM_ROLE_UNSPECIFIED."
+          "description": "Optional: resolve the rung's LLM from the executing agent's role LLMs\nvia Agent.GetLLMForRoleStrict — no fallback to the agent's own LLM, so a\nrole carrying no LLM of its own is a config error rather than a rung\npointing back at the primary. Takes precedence over the provider pool\nlookup when set to a value other than LLM_ROLE_UNSPECIFIED.\nLLM_ROLE_AGENT is rejected: it names the agent's own LLM."
         }
       },
-      "description": "LevelingRung is one step of a capability-leveling escalation ladder — a\nstronger model tried when a weaker primary's output fails validation."
+      "description": "LevelingRung is one step of a capability-leveling escalation ladder — a\nstronger model tried when a weaker primary's output fails validation.\n\nA rung is executed as a one-shot LLMProvider.Chat call: no tools, no\nsystem prompt, no session and no memory. A stage whose contract depends on\ntool use cannot be rescued by escalation.\n\nA rung that resolves to the primary's own model — including\nrole = LLM_ROLE_AGENT, which names the agent's own LLM — is rejected at\nload and at execution. A rung the catalog classifies below the primary's\ntier runs, but is reported with a warning. Rung tiers are not otherwise\nenforced: tier is derived from catalog pricing."
     },
     "v1LevelingTierPolicy": {
       "type": "object",
@@ -7181,7 +7181,7 @@
         },
         "levelingPolicy": {
           "$ref": "#/definitions/v1LevelingPolicy",
-          "description": "Optional: capability-leveling policy for this stage. Leveling activates\nonly when leveling_policy.enabled is true; when active, the stage's\noutput_policy (field 6) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\nstage behaves exactly as before, including leaving output_policy\nunenforced by the pipeline executor."
+          "description": "Optional: capability-leveling policy for this stage. Leveling activates\nonly when leveling_policy.enabled is true; when active, the stage's\noutput_policy (field 6) is consumed as the validation contract that\ndecides whether to escalate. When this field is absent or disabled the\nstage behaves exactly as before, including leaving output_policy\nunenforced by the pipeline executor.\n\nWhen leveling is enabled and the output never satisfies the contract\n(retries and ladder exhausted, or the tier short-circuited) the stage\nCONTINUES with the best output obtained plus a validation warning —\ngraceful degradation, not a stage failure. Without leveling, a stage\nwhose legacy output_schema fails and that carries no retry_policy fails\nthe stage.\n\nCombining leveling_policy with the legacy validation_prompt is\nrejected, as is combining it with output_policy plus the legacy\noutput_schema/retry_policy on the same stage: either shape would\nsilently drop the legacy contract."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
@@ -7691,7 +7691,7 @@
         "RETRY_SESSION_MODE_ESCALATE"
       ],
       "default": "RETRY_SESSION_MODE_UNSPECIFIED",
-      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH\nwith an upgraded LLM (switches to orchestrator_llm if available)."
+      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH.\nThe model does NOT change across retries — no LLM upgrade is\nimplemented for this mode (see effectiveMode in\npkg/orchestration/output_validator.go). Escalating to a stronger model\nis LevelingPolicy.ladder in orchestration.proto."
     },
     "v1ReviewComment": {
       "type": "object",
