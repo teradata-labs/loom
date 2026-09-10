@@ -606,11 +606,36 @@ func (s *MultiAgentServer) findSessionOwner(ctx context.Context, sessionID, call
 // behavior holds: identity-less callers see everything and pre-stamping
 // sessions (UserID == "") stay reachable so upgrades do not strand them.
 func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
-	if s.enforceOwnership {
-		return callerUserID != "" && session.UserID == callerUserID
-	}
-	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
+	return s.ownerAccessibleBy(callerUserID, session.UserID)
 }
+
+// ownerAccessibleBy is sessionAccessibleBy's rule expressed over the owner id
+// alone, so a caller that learned ownership without loading the session (an
+// ownership probe) applies the identical policy rather than a copy of it.
+func (s *MultiAgentServer) ownerAccessibleBy(callerUserID, ownerUserID string) bool {
+	if s.enforceOwnership {
+		return callerUserID != "" && ownerUserID == callerUserID
+	}
+	return callerUserID == "" || ownerUserID == "" || ownerUserID == callerUserID
+}
+
+// sessionOwnershipProbe is an OPTIONAL session-store capability: it answers
+// "is this session the caller's own?" without filtering soft-deleted rows,
+// which the owner-scoped LoadSession cannot do.
+//
+// It is a capability rather than a SessionStorage method on purpose — that
+// interface is implemented outside this repo, so adding a method to it would
+// break those implementations. A store that does not implement this simply
+// keeps the fail-closed behaviour below.
+type sessionOwnershipProbe interface {
+	CallerOwnsSession(ctx context.Context, sessionID string) (bool, error)
+}
+
+// The postgres store is the reason this capability exists — it is the backend
+// that soft-deletes sessions. Asserting the match here means a signature drift
+// fails the build instead of silently reverting the type assertion to false and
+// locking owners out again.
+var _ sessionOwnershipProbe = (*postgres.SessionStore)(nil)
 
 // authorizeSessionScope authorizes a session id that arrived in a REQUEST
 // rather than in the call context.
@@ -625,11 +650,16 @@ func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *age
 // Denial is reported as NotFound, matching DeleteSession: a caller must not be
 // able to tell "exists but not yours" from "does not exist" by probing.
 //
-// An unresolvable id — no session store configured, or one the store has never
-// seen — defers to the deployment's tenancy mode instead of a blanket allow or
-// deny. Enforcing deployments fail closed, the same stance findSessionOwner
-// takes on ids it cannot verify; single-tenant deployments stay permissive,
-// which is the trust model they already document.
+// An id that still cannot be resolved — no session store configured, an id the
+// store has never seen, or one whose ownership no probe can establish — defers
+// to the deployment's tenancy mode instead of a blanket allow or deny.
+// Enforcing deployments fail closed, the same stance findSessionOwner takes on
+// ids it cannot verify; single-tenant deployments stay permissive, which is the
+// trust model they already document.
+//
+// Between the load and that fallback sits sessionOwnershipProbe, because a
+// soft-deleted session reads as unresolvable while still belonging to the
+// caller.
 func (s *MultiAgentServer) authorizeSessionScope(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return nil
@@ -665,6 +695,22 @@ func (s *MultiAgentServer) authorizeSessionScope(ctx context.Context, sessionID 
 			if !s.sessionAccessibleBy(callerUserID, stored) {
 				return status.Error(codes.NotFound, "session not found")
 			}
+			return nil
+		}
+	}
+
+	// A soft-deleted session is still the caller's own, but LoadSession filters
+	// `deleted_at IS NULL`, so it reports the same miss as a foreign or unknown
+	// id. Without this probe the fail-closed branch would refuse an owner the
+	// FILTERED view of artifacts the store still hands them UNFILTERED, for the
+	// entire soft-delete grace window — and "which files did this session
+	// produce?" is the question this field exists to answer. The probe is
+	// owner-scoped, so a hit means the owner IS the caller; routing that through
+	// ownerAccessibleBy keeps the blank-identity rule in one place instead of
+	// restating it here.
+	if probe, ok := s.sessionStore.(sessionOwnershipProbe); ok {
+		owned, err := probe.CallerOwnsSession(ctx, sessionID)
+		if err == nil && owned && s.ownerAccessibleBy(callerUserID, callerUserID) {
 			return nil
 		}
 	}

@@ -1306,6 +1306,19 @@ session-scoped RPC uses.
 Denial is reported as `NotFound`, not `PermissionDenied`, so a caller cannot
 distinguish "exists but not yours" from "no such session" by probing.
 
+**Soft-deleted sessions stay readable by their owner.** Postgres `DeleteSession`
+only sets `deleted_at`, and a session's artifacts outlive it — `purge_soft_deleted`
+reaps artifacts by their *own* `deleted_at`, and the `artifacts.session_id`
+CASCADE fires only on the later hard purge. Because `LoadSession` and
+`SessionExists` both filter `deleted_at IS NULL`, neither can tell an owner's
+just-deleted session from one that never existed. Ownership therefore falls back
+to `SessionStore.CallerOwnsSession`, an owner-scoped existence check that ignores
+`deleted_at`, so the owner keeps the session-filtered view of artifacts the store
+still returns unfiltered. It is exposed as an optional capability
+(`sessionOwnershipProbe`) rather than a `SessionStorage` method, because that
+interface is implemented outside this repo; a store without it keeps the
+fail-closed behaviour.
+
 Two limits worth stating plainly, because "session scoping" reads broader than what
 is enforced:
 

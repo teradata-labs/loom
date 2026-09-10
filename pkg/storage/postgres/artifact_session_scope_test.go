@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
@@ -150,4 +151,49 @@ func TestPGGetByNameSessionScopeStaysWithinUser(t *testing.T) {
 		require.NotEqual(t, bobArtifact, leaked.ID,
 			"a name lookup scoped to another user's session returned that user's artifact")
 	}
+}
+
+// The soft-delete case, end to end on the real backend. DeleteSession only sets
+// deleted_at, and the artifact rows outlive it, so an owner asking "which files
+// did this session produce?" right after deleting it must still be recognised as
+// the owner. LoadSession and SessionExists both filter `deleted_at IS NULL` and
+// cannot answer that; CallerOwnsSession is what the server's gate falls back to.
+func TestCallerOwnsSessionSurvivesSoftDelete(t *testing.T) {
+	_, pool := artifactScopeStore(t)
+	sessions := NewSessionStore(pool, observability.NewNoOpTracer(), nil)
+
+	alice, bob := asUniqueID("alice"), asUniqueID("bob")
+	sessionID := asUniqueID("sess-soft")
+
+	aliceCtx := ContextWithUserID(context.Background(), alice)
+	require.NoError(t, sessions.SaveSession(aliceCtx, &agent.Session{
+		ID: sessionID, AgentID: "agent-1", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}))
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
+	})
+
+	owns, err := sessions.CallerOwnsSession(aliceCtx, sessionID)
+	require.NoError(t, err)
+	require.True(t, owns, "owner should own a live session")
+
+	require.NoError(t, sessions.DeleteSession(aliceCtx, sessionID))
+
+	// The premise: the owner-scoped reads can no longer see it.
+	loaded, err := sessions.LoadSession(aliceCtx, sessionID)
+	require.NoError(t, err)
+	require.Nil(t, loaded, "LoadSession filters deleted_at, so it must miss")
+	exists, err := sessions.SessionExists(aliceCtx, sessionID)
+	require.NoError(t, err)
+	require.False(t, exists, "SessionExists filters deleted_at too")
+
+	// The fix: ownership still resolves, so the gate lets the owner through.
+	owns, err = sessions.CallerOwnsSession(aliceCtx, sessionID)
+	require.NoError(t, err)
+	require.True(t, owns, "a soft-deleted session is still the owner's own")
+
+	// And it is not a bypass: it stays owner-scoped after the delete.
+	owns, err = sessions.CallerOwnsSession(ContextWithUserID(context.Background(), bob), sessionID)
+	require.NoError(t, err)
+	require.False(t, owns, "another user must not be told the session is theirs")
 }

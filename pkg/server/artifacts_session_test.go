@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -295,4 +296,101 @@ func TestGetArtifactByIDRemainsUnscopedUnderEnforcement(t *testing.T) {
 	if resp.Artifact.Id != "b1" {
 		t.Errorf("got %s, want b1", resp.Artifact.Id)
 	}
+}
+
+// A Postgres DeleteSession is a SOFT delete (session_store.go: "UPDATE sessions
+// SET deleted_at = NOW()"), and the artifact rows outlive it — purge_soft_deleted
+// reaps artifacts by their OWN deleted_at, and the session_id CASCADE only fires
+// on the later hard purge. But LoadSession filters `deleted_at IS NULL`, so for
+// the whole grace window an owner's own session stops resolving.
+//
+// The gate must not turn that into a lockout: the same caller still gets those
+// exact artifacts from an UNFILTERED list, so refusing the FILTERED view would
+// deny an owner the one question this feature exists to answer, on precisely
+// the deployments the gate is for (enforceOwnership tracks Auth.Enabled).
+type softDeletedSessionStore struct {
+	agent.SessionStorage // only LoadSession is exercised by the gate
+
+	ownedByCaller map[string]string // sessionID -> owner, ignoring soft-delete
+	probed        bool
+}
+
+// Models the post-soft-delete state: the row exists but the owner-scoped,
+// deleted_at-filtering read cannot see it.
+func (s *softDeletedSessionStore) LoadSession(_ context.Context, sessionID string) (*agent.Session, error) {
+	return nil, fmt.Errorf("session not found: %s", sessionID)
+}
+
+func (s *softDeletedSessionStore) CallerOwnsSession(ctx context.Context, sessionID string) (bool, error) {
+	s.probed = true
+	owner, ok := s.ownedByCaller[sessionID]
+	return ok && owner == types.UserIDFromContext(ctx), nil
+}
+
+func setupSoftDeletedServer(t *testing.T) (*MultiAgentServer, *softDeletedSessionStore) {
+	t.Helper()
+
+	sb, err := backend.NewSQLiteBackend(&loomv1.SQLiteStorageConfig{
+		Path: filepath.Join(t.TempDir(), "loom.db"),
+	}, observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+
+	// Seed through the live session so the artifacts FK is satisfied, then the
+	// stub store stands in for a session that has since been soft-deleted.
+	if err := sb.SessionStorage().SaveSession(context.Background(), &agent.Session{ID: "sess-gone"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	store := sb.ArtifactStore()
+	if err := store.Index(context.Background(), &artifacts.Artifact{
+		ID: "g1", Name: "report.md", Path: "/tmp/g1", Source: artifacts.SourceAgent, SessionID: "sess-gone",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	stub := &softDeletedSessionStore{ownedByCaller: map[string]string{"sess-gone": "alice"}}
+	srv := NewMultiAgentServer(nil, stub)
+	srv.SetArtifactStore(store)
+	srv.SetEnforceSessionOwnership(true)
+	return srv, stub
+}
+
+func TestListArtifactsAllowsOwnerOfSoftDeletedSession(t *testing.T) {
+	srv, stub := setupSoftDeletedServer(t)
+	aliceCtx := types.ContextWithUserID(context.Background(), "alice")
+
+	// The asymmetry that makes this a bug and not a policy: unfiltered works.
+	all, err := srv.ListArtifacts(aliceCtx, &loomv1.ListArtifactsRequest{})
+	if err != nil {
+		t.Fatalf("unfiltered list: %v", err)
+	}
+	if len(all.Artifacts) == 0 {
+		t.Fatalf("fixture broken: unfiltered list returned nothing")
+	}
+
+	resp, err := srv.ListArtifacts(aliceCtx, &loomv1.ListArtifactsRequest{SessionId: "sess-gone"})
+	if err != nil {
+		t.Fatalf("owner denied the filtered view of their own soft-deleted session: %v", err)
+	}
+	if len(resp.Artifacts) != 1 || resp.Artifacts[0].Id != "g1" {
+		t.Fatalf("got %d artifacts, want just g1", len(resp.Artifacts))
+	}
+	if !stub.probed {
+		t.Error("ownership probe was never consulted")
+	}
+}
+
+// The probe must not become a bypass: a session the caller does NOT own stays
+// denied even though the same LoadSession miss occurs.
+func TestListArtifactsStillDeniesForeignUnresolvableSession(t *testing.T) {
+	srv, _ := setupSoftDeletedServer(t)
+	bobCtx := types.ContextWithUserID(context.Background(), "bob")
+
+	_, err := srv.ListArtifacts(bobCtx, &loomv1.ListArtifactsRequest{SessionId: "sess-gone"})
+	requireNotFound(t, err, "bob naming alice's soft-deleted session")
+
+	_, err = srv.ListArtifacts(bobCtx, &loomv1.ListArtifactsRequest{SessionId: "sess-never-existed"})
+	requireNotFound(t, err, "bob naming an unknown session")
 }
