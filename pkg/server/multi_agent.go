@@ -612,6 +612,69 @@ func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *age
 	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
 }
 
+// authorizeSessionScope authorizes a session id that arrived in a REQUEST
+// rather than in the call context.
+//
+// The distinction is the whole point: a context session id is server-derived
+// and therefore trusted, while a request field is the caller naming whose data
+// to read. Handing the latter straight to the store would make session scope
+// self-declared, so it runs the same per-user isolation predicate every other
+// session-scoped RPC uses (sessionAccessibleBy) before it is allowed to select
+// anything.
+//
+// Denial is reported as NotFound, matching DeleteSession: a caller must not be
+// able to tell "exists but not yours" from "does not exist" by probing.
+//
+// An unresolvable id — no session store configured, or one the store has never
+// seen — defers to the deployment's tenancy mode instead of a blanket allow or
+// deny. Enforcing deployments fail closed, the same stance findSessionOwner
+// takes on ids it cannot verify; single-tenant deployments stay permissive,
+// which is the trust model they already document.
+func (s *MultiAgentServer) authorizeSessionScope(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+
+	callerUserID := postgres.UserIDFromContext(ctx)
+
+	s.mu.RLock()
+	for _, ag := range s.agents {
+		sess, ok := ag.GetSession(sessionID)
+		if !ok {
+			continue
+		}
+		accessible := s.sessionAccessibleBy(callerUserID, sess)
+		s.mu.RUnlock()
+		if !accessible {
+			return status.Error(codes.NotFound, "session not found")
+		}
+		return nil
+	}
+	s.mu.RUnlock()
+
+	if s.sessionStore != nil {
+		// LoadSession is owner-scoped in both backends, so a hit is already
+		// evidence the session is the caller's own. A miss is not: the SQLite
+		// store reports it as an error and Postgres as a nil session, and
+		// neither separates "belongs to someone else" from "no such id". So a
+		// miss falls through to the tenancy decision below instead of
+		// surfacing as a failure — turning an unknown session id into an
+		// Internal error here would break filtering for every caller whose
+		// session predates the session store.
+		if stored, err := s.sessionStore.LoadSession(ctx, sessionID); err == nil && stored != nil {
+			if !s.sessionAccessibleBy(callerUserID, stored) {
+				return status.Error(codes.NotFound, "session not found")
+			}
+			return nil
+		}
+	}
+
+	if s.enforceOwnership {
+		return status.Error(codes.NotFound, "session not found")
+	}
+	return nil
+}
+
 // SetEnforceSessionOwnership selects the tenancy mode: pass true on
 // deployments that authenticate callers so blank identities stop acting as
 // ownership wildcards. Single-tenant compatibility is the explicit false.
