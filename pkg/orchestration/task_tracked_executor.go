@@ -916,6 +916,11 @@ func (t *TaskTrackedOrchestrator) findResumableBoard(ctx context.Context, patter
 
 		if hasIncomplete && resumeIdx > 0 {
 			// Found a board with some done and some incomplete — resumable.
+			// resumeIdx is the COUNT of done stage rows, diagnostic only: since
+			// results map by agent identity rather than position, nothing
+			// resumes "at an index" any more — the count is logged so a human
+			// can see how far the prior run got, and its exact value is not
+			// load-bearing for out-of-order (Parallel) completion.
 			return b.ID, resumeIdx
 		}
 	}

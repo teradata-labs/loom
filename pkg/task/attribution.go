@@ -51,11 +51,16 @@ func TaskIDFromContext(ctx context.Context) string {
 	return taskctx.TaskIDFromContext(ctx)
 }
 
-// Creation sources recorded in tasks.created_via.
+// Creation sources recorded in tasks.created_via. The full taskctx set,
+// including CreatedViaImplicit — an earlier draft re-exported five values and
+// omitted the only one the runtime actually writes today (round-5 m2); a
+// consumer switching on this package's constants would silently never match
+// the rows the implicit emitter creates.
 const (
 	CreatedViaUser          = taskctx.CreatedViaUser
 	CreatedViaAgent         = taskctx.CreatedViaAgent
 	CreatedViaDecompose     = taskctx.CreatedViaDecompose
 	CreatedViaSkillTemplate = taskctx.CreatedViaSkillTemplate
 	CreatedViaWorkflow      = taskctx.CreatedViaWorkflow
+	CreatedViaImplicit      = taskctx.CreatedViaImplicit
 )

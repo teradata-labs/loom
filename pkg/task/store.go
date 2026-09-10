@@ -233,6 +233,16 @@ type ListTasksOpts struct {
 //
 // Manager.CountByStatus type-asserts for this and falls back to paging when a
 // store does not provide it, so correctness never depends on it — only speed.
+//
+// CONTRACT FOR SCOPING WRAPPERS: a store that wraps another to scope reads by
+// identity must NOT embed the inner store type. Embedding promotes the inner
+// CountByStatus, the type assertion succeeds against the UNSCOPED inner query,
+// and one tenant receives fleet-wide counts — with no compile error and no
+// test failure. Hold the inner store in a named field (the shape
+// avmo-tera-cloud's UserScopedTaskStore already uses — verified: named field,
+// no promotion, so that wrapper takes the paged fallback over its own scoped
+// ListTasks) and implement this interface only with a query that carries the
+// wrapper's scope.
 type StatusCounter interface {
 	CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error)
 }

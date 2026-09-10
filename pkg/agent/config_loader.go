@@ -8,8 +8,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-
-	"go.uber.org/zap"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +16,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
