@@ -17,6 +17,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -167,7 +168,7 @@ const countFallbackMaxPages = 500
 //
 // Uses the store's aggregate when it implements StatusCounter — one query,
 // independent of board size. Otherwise pages through ListTasks and accumulates,
-// which is slower but still exact; the previous implementation fetched a single
+// which is slower, and exact only because both in-repo stores now order pages on a unique tiebreak (created_at alone is second-resolution, and OFFSET paging over non-unique keys double-counts and drops rows across page boundaries); a downstream store without a total order can still return approximate counts here; the previous implementation fetched a single
 // capped page and silently under-reported any board larger than the cap.
 func (m *Manager) CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
 	ctx, span := m.tracer.StartSpan(ctx, "task_manager.count_by_status")
@@ -307,6 +308,14 @@ func (m *Manager) ReleaseTask(ctx context.Context, taskID, sessionID string) (*T
 	return released, nil
 }
 
+// ErrTaskAlreadyTerminal reports a close/cancel that found the task already in
+// a terminal status. Stores return it so the manager can treat a lost
+// close-race as the benign no-op it is — WITHOUT re-recording history,
+// re-publishing task.completed, or re-feeding graph memory a completion, which
+// is what an unguarded double close did. Downstream stores that never return
+// it keep their current behavior.
+var ErrTaskAlreadyTerminal = errors.New("task already in a terminal status")
+
 // CloseTask marks a task as DONE and auto-completes the parent if all siblings are done.
 func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, error) {
 	ctx, span := m.tracer.StartSpan(ctx, "task_manager.close")
@@ -320,6 +329,11 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	oldStatus := StatusName(existing.Status)
 
 	closed, err := m.store.CloseTask(ctx, taskID, reason)
+	if errors.Is(err, ErrTaskAlreadyTerminal) {
+		// Someone else's close won the race. The row is already settled; firing
+		// the side effects again is the harm the sentinel exists to prevent.
+		return closed, nil
+	}
 	if err != nil {
 		return nil, err
 	}

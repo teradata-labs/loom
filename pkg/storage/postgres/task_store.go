@@ -455,9 +455,13 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		copy(fetchArgs, args)
 		fetchArgs = append(fetchArgs, limit, opts.Offset)
 
-		orderBy := "t.priority ASC, t.created_at ASC"
+		// id is the tiebreak: created_at is non-unique, and paged reads over a
+		// non-unique ORDER BY with OFFSET double-count and drop rows across
+		// page boundaries (measured in the admin doc). NewestFirst previously
+		// had NO tiebreak at all on this backend.
+		orderBy := "t.priority ASC, t.created_at ASC, t.id ASC"
 		if opts.NewestFirst {
-			orderBy = "t.created_at DESC"
+			orderBy = "t.created_at DESC, t.id DESC"
 		}
 
 		query := fmt.Sprintf(`SELECT %s FROM tasks t WHERE %s
@@ -573,18 +577,29 @@ func (s *TaskStore) CloseTask(ctx context.Context, taskID, reason string) (*task
 	now := time.Now().UTC()
 	var result *task.Task
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// Status guard — same reasoning as the SQLite twin: a double close must
+		// be a row-level no-op reported as ErrTaskAlreadyTerminal, so the
+		// manager skips the duplicate history/event/graph-memory side effects.
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET
 				status = $1, close_reason = $2, closed_at = $3,
 				assignee_agent_id = NULL, claimed_by_session = NULL,
 				updated_at = $3
-			WHERE id = $4 AND deleted_at IS NULL`,
+			WHERE id = $4 AND deleted_at IS NULL
+			  AND status NOT IN ($5, $6)`,
 			int32(loomv1.TaskStatus_TASK_STATUS_DONE), reason, now, taskID,
+			int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
 		)
 		if err != nil {
 			return fmt.Errorf("close task: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
+			row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1 AND deleted_at IS NULL`, taskID)
+			existing, gerr := pgScanTask(row)
+			if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+				result = existing
+				return fmt.Errorf("close task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+			}
 			return fmt.Errorf("task %s not found or already deleted", taskID)
 		}
 		row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, taskID)
@@ -764,7 +779,7 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 	}
 
 	query := fmt.Sprintf(`SELECT %s FROM tasks t WHERE %s
-		ORDER BY t.priority ASC, t.created_at ASC
+		ORDER BY t.priority ASC, t.created_at ASC, t.id ASC
 		LIMIT $%d`, taskColumns, where, argN)
 	args = append(args, limit)
 
@@ -805,7 +820,7 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 	}
 
 	query := fmt.Sprintf(`SELECT %s FROM tasks t WHERE %s
-		ORDER BY t.priority ASC, t.created_at ASC`, taskColumns, conditions)
+		ORDER BY t.priority ASC, t.created_at ASC, t.id ASC`, taskColumns, conditions)
 
 	var tasks []*task.Task
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {

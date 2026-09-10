@@ -432,8 +432,12 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 	}
 
 	// created_at is stored at second precision; rowid breaks ties in true
-	// insertion order so newest-first windows stay deterministic.
-	orderBy := " ORDER BY t.priority ASC, t.created_at ASC"
+	// insertion order — on BOTH paths. The default path lacked the tiebreak,
+	// and countByStatusPaged pages this ordering with OFFSET: on non-unique
+	// keys adjacent pages returned two rows twice and two rows never (the
+	// overlap this repo's own admin doc measured), so the paged fallback both
+	// double-counted and dropped rows past one page.
+	orderBy := " ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC"
 	if opts.NewestFirst {
 		orderBy = " ORDER BY t.created_at DESC, t.rowid DESC"
 	}
@@ -530,20 +534,31 @@ func (s *TaskStore) CloseTask(ctx context.Context, taskID, reason string) (*task
 	defer s.tracer.EndSpan(span)
 
 	now := time.Now().UTC()
+	// The status guard makes a double close a no-op at the row: without it,
+	// two racing closers both rewrote status/close_reason and the manager fired
+	// duplicate history, a duplicate task.completed event, and a second
+	// graph-memory completion. A no-op close reports ErrTaskAlreadyTerminal so
+	// the manager can skip those side effects.
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			status = ?, close_reason = ?, closed_at = datetime(?),
 			assignee_agent_id = NULL, claimed_by_session = NULL,
 			updated_at = datetime(?)
-		WHERE id = ? AND deleted_at IS NULL`,
+		WHERE id = ? AND deleted_at IS NULL
+		  AND status NOT IN (?, ?)`,
 		int32(loomv1.TaskStatus_TASK_STATUS_DONE), reason,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), taskID,
+		int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("close task: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
+		existing, gerr := s.GetTask(ctx, taskID)
+		if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+			return existing, fmt.Errorf("close task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+		}
 		return nil, fmt.Errorf("task %s not found or already deleted", taskID)
 	}
 	return s.GetTask(ctx, taskID)
@@ -697,7 +712,7 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 			created_at, updated_at, claimed_at, closed_at, close_reason,
 			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks t WHERE %s
-		ORDER BY t.priority ASC, t.created_at ASC
+		ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC
 		LIMIT %d`, where, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -737,7 +752,7 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 			created_at, updated_at, claimed_at, closed_at, close_reason,
 			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks t WHERE t.status = ? AND t.deleted_at IS NULL %s
-		ORDER BY t.priority ASC, t.created_at ASC`, boardFilter)
+		ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC`, boardFilter)
 
 	args = append([]interface{}{int32(loomv1.TaskStatus_TASK_STATUS_BLOCKED)}, args...)
 

@@ -144,6 +144,17 @@ func (s *SQLiteHumanRequestStore) initSchema() error {
 
 	}
 
+	// After the column pass, so it works on fresh AND upgraded databases (a
+	// static CREATE INDEX fails initSchema on a pre-task_id database — the
+	// same trap idx_messages_task hit). Partial: task_id is NULL for every
+	// request raised outside a task. Symmetric with Postgres 000024's
+	// idx_human_requests_task, which existed while this one did not.
+	if _, err := s.db.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS idx_human_requests_task ON human_requests(task_id) WHERE task_id IS NOT NULL"); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("create idx_human_requests_task: %w", err)
+	}
+
 	span.SetAttribute("success", true)
 	return nil
 }
