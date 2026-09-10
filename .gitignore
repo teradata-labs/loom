@@ -117,3 +117,7 @@ generate-weaver
 # LongMemEval benchmark downloaded dataset (~285MB, fetched by
 # `loom-longmemeval download`). Not for source control.
 /data/longmemeval/
+
+# Local operator overrides for the LongMemEval rig (may hold model, cluster,
+# or credential values). The generic .env rules do not match this name.
+lme.env.local

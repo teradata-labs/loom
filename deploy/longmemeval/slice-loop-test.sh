@@ -27,10 +27,20 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=render-common.sh
 source "${SCRIPT_DIR}/render-common.sh"
 
+# LME_RIG_STRICT=1 (CI) turns a missing prerequisite into a failure. A green
+# no-op is worse than a red one here: these are the only regression tests for
+# a runner that spends real money.
+STRICT="${LME_RIG_STRICT:-0}"
+missing() {
+    if [[ "${STRICT}" == "1" ]]; then
+        echo "FAIL: ${1} is required (LME_RIG_STRICT=1)"; exit 1
+    fi
+    echo "SKIP: ${1} not available"; exit 0
+}
 for tool in jq python3 go; do
-    command -v "${tool}" >/dev/null 2>&1 || { echo "SKIP: ${tool} not available"; exit 0; }
+    command -v "${tool}" >/dev/null 2>&1 || missing "${tool}"
 done
-python3 -c 'import yaml' 2>/dev/null || { echo "SKIP: python3 pyyaml not available"; exit 0; }
+python3 -c 'import yaml' 2>/dev/null || missing "python3 pyyaml"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -45,7 +55,7 @@ export LME_NAMESPACE="lme-slice-test" LME_IMAGE="t/i" LME_IMAGE_TAG="t" \
     LME_DATASET_FILE="d.json" LME_MODE="ingest" LME_CONCURRENCY="1" \
     LME_CHUNK="2" LME_OCCURRED_AT="false" LME_RUN_ID="sliceTest01" \
     LME_RUN_MANIFEST="test-manifest" LME_ALLOW_MANIFEST_DRIFT="0" \
-    LME_MAX_CHUNK_ATTEMPTS="2"
+    LME_MAX_CHUNK_ATTEMPTS="2" LME_CONFIG_HASH="slicetestcfg"
 
 lme_render "${SCRIPT_DIR}/runner-script.yaml" > "${TMP_DIR}/cm.yaml" \
     || { echo "FAIL: runner-script.yaml did not render"; exit 1; }
@@ -224,8 +234,42 @@ if compgen -G "${run_dir2}/s500-*.jsonl" >/dev/null; then
     fi
 fi
 
-# ── 5. Dataset swapped underneath a resume is refused ───────────────────────
-echo "=== 5. dataset drift is refused on resume ==="
+# ── 5. A failed PVC write stops the run instead of reporting success ────────
+echo "=== 5. a persistence failure fails closed ==="
+if [[ "$(id -u)" == "0" ]]; then
+    echo "  note: running as root; chmod cannot make a directory unwritable — skipping"
+else
+    R3="${TMP_DIR}/r3"; mkdir -p "${R3}/runs/${LME_RUN_ID}"
+    chmod a-w "${R3}/runs/${LME_RUN_ID}"
+    POISON_IDS="" run_loop "${R3}"
+    rc=$?
+    chmod u+w "${R3}/runs/${LME_RUN_ID}"
+
+    [[ ${rc} -ne 0 ]] \
+        && ok "a run whose results volume rejects writes exits nonzero" \
+        || fail "the loop reported success while persistence was failing (rc=${rc})"
+    grep -q "FATAL: results PVC write failed" "${TMP_DIR}/loop.log" \
+        && ok "the failure names the volume, not the chunk" \
+        || fail "no PVC failure diagnostic in the log"
+fi
+
+# ── 6. A recovered run clears the incomplete sentinel ───────────────────────
+echo "=== 6. RUN-INCOMPLETE.txt is cleared once every chunk completes ==="
+run_dir1="${R1}/runs/${LME_RUN_ID}"
+# R1 completed in step 1; plant a stale sentinel as a recovered quarantine
+# would have left behind, then run a no-op pass.
+echo "stale" > "${run_dir1}/RUN-INCOMPLETE.txt"
+POISON_IDS="" run_loop "${R1}"
+rc=$?
+[[ ${rc} -eq 0 ]] \
+    && ok "a fully-completed run exits zero" \
+    || fail "completed run exited ${rc}"
+[[ ! -f "${run_dir1}/RUN-INCOMPLETE.txt" ]] \
+    && ok "stale sentinel removed — a complete run is not reported as missing entries" \
+    || fail "RUN-INCOMPLETE.txt survived a fully-completed run"
+
+# ── 7. Dataset swapped underneath a resume is refused ───────────────────────
+echo "=== 7. dataset drift is refused on resume ==="
 python3 - "${TMP_DIR}/dataset.json" <<'PY'
 import json, sys
 entries = json.load(open(sys.argv[1]))

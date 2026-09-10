@@ -28,6 +28,10 @@ spec:
         # One-time (cached on the data PVC): fetch the dataset from HuggingFace.
         - name: download-dataset
           image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          # Any tag other than the floating default pulls IfNotPresent, so a
+          # node with a cached layer under a moved tag would keep serving the
+          # old bytes.
+          imagePullPolicy: Always
           command: ["/loom-longmemeval"]
           args: ["download", "--datasets", "${LME_DATASET}", "--data-dir", "/data/longmemeval"]
           volumeMounts:
@@ -36,6 +40,10 @@ spec:
       containers:
         - name: runner
           image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          # Any tag other than the floating default pulls IfNotPresent, so a
+          # node with a cached layer under a moved tag would keep serving the
+          # old bytes.
+          imagePullPolicy: Always
           command: ["/bin/bash", "/scripts/run-slices.sh"]
           env:
             - name: SERVER

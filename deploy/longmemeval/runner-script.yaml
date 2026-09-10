@@ -60,8 +60,24 @@ data:
 
     # write_atomic <path> — persist stdin to path via a .tmp + rename, so a
     # kill mid-write can never leave a half-written marker on the PVC.
+    # Returns nonzero if EITHER step fails; every caller must check it. The
+    # script runs without `set -e`, so an unchecked write on a full or
+    # flaking Azure Files volume would otherwise be silently ignored and the
+    # chunk reported complete with nothing durable behind it.
     write_atomic() {
-      cat > "$1.tmp" && mv "$1.tmp" "$1"
+      cat > "$1.tmp" || { echo "  PVC WRITE FAILED: $1.tmp"; rm -f "$1.tmp"; return 1; }
+      mv "$1.tmp" "$1" || { echo "  PVC RENAME FAILED: $1.tmp -> $1"; rm -f "$1.tmp"; return 1; }
+      return 0
+    }
+
+    # fatal_pvc <message> — a persistence failure is never a chunk-level
+    # problem to retry past: durable state is uncertain, so stop the pass
+    # immediately and let the Job restart rather than continue writing more
+    # results into a volume that just failed.
+    fatal_pvc() {
+      echo "FATAL: results PVC write failed: $*"
+      echo "Refusing to continue: completed chunks cannot be trusted while the volume is failing."
+      exit 1
     }
 
     # Verify run identity before touching anything. A mismatch means this run
@@ -88,7 +104,7 @@ data:
         fi
       fi
     else
-      printf '%s' "${RUN_MANIFEST}" | write_atomic "${manifest_file}"
+      printf '%s' "${RUN_MANIFEST}" | write_atomic "${manifest_file}" || fatal_pvc "${manifest_file}"
     fi
 
     # Per-type question counts come from the dataset, never a hardcoded table.
@@ -122,7 +138,16 @@ data:
     # The counts are part of what the run measures, so pin them the same way
     # the manifest pins the configuration: a dataset swapped underneath a
     # resume would otherwise reuse chunks answering different questions.
-    stats_id="$(printf '%s' "${stats}" | jq -cS '{entries, question_types}')"
+    # Summary statistics do not identify a dataset: a revision that keeps the
+    # same entry count and type distribution but changes question text or
+    # answers would resume onto chunks that answered different questions.
+    # Hash the file itself.
+    if command -v sha256sum >/dev/null 2>&1; then
+      dataset_digest="$(sha256sum "${DATASET_FILE}" | cut -d' ' -f1)"
+    else
+      dataset_digest="$(shasum -a 256 "${DATASET_FILE}" | cut -d' ' -f1)"
+    fi
+    stats_id="$(printf '%s' "${stats}" | jq -cS --arg d "${dataset_digest}" '{entries, question_types, dataset_sha256: $d}')"
     stats_file="${run_dir}/dataset-stats.json"
     if [ -f "${stats_file}" ]; then
       stored_stats="$(cat "${stats_file}")"
@@ -139,7 +164,7 @@ data:
         fi
       fi
     else
-      printf '%s' "${stats_id}" | write_atomic "${stats_file}"
+      printf '%s' "${stats_id}" | write_atomic "${stats_file}" || fatal_pvc "${stats_file}"
     fi
 
     echo "=== dataset plan (${total_entries} entries, derived from ${DATASET_FILE}) ==="
@@ -218,10 +243,16 @@ data:
           continue
         fi
 
-        attempt=$(( $(cat "${attempts_file}" 2>/dev/null || echo 0) + 1 ))
-        printf '%s' "${attempt}" | write_atomic "${attempts_file}"
+        # The quarantine budget counts DETERMINISTIC failures only — a chunk
+        # that ran and produced output which failed validation. A harness
+        # that could not run at all (provider outage, server restart,
+        # transport error) says nothing about the chunk's entries, and
+        # burning the budget on it would quarantine ~9 healthy entries over
+        # three unlucky minutes. Infrastructure retries are bounded by the
+        # Job's backoffLimit instead.
+        attempt=$(cat "${attempts_file}" 2>/dev/null || echo 0)
 
-        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} run_id=${RUN_ID} attempt=${attempt}/${MAX_CHUNK_ATTEMPTS} ==="
+        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} run_id=${RUN_ID} deterministic_failures=${attempt}/${MAX_CHUNK_ATTEMPTS} ==="
         if "${HARNESS}" run \
             --server "$SERVER" \
             --dataset "$DATASET_FILE" \
@@ -233,18 +264,28 @@ data:
             --occurred-at="$OCCURRED_AT" \
             --output "$tmp_out" \
             --detailed "$tmp_det"; then
+          harness_rc=0
           reason="$(validate_chunk "$tmp_out" "$tmp_det" "$lim")"
           ok=$?
         else
-          reason="harness exited $?"
+          harness_rc=$?
+          reason="harness exited ${harness_rc}"
           ok=1
         fi
 
         if [ "${ok}" -eq 0 ]; then
-          mv "$tmp_det" "$det"
-          mv "$tmp_out" "$out"
-          printf 'run_id=%s entries=%s attempts=%s completed=%s\n' \
-            "${RUN_ID}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')" | write_atomic "${marker}"
+          # Promotion is the only point where a validated chunk becomes
+          # durable, so every step is checked and the .done marker is written
+          # LAST, after both promoted files are confirmed present. An
+          # unchecked rename here would report "chunk complete" for a chunk
+          # that is not on the volume — the run would then skip it forever
+          # and score a benchmark that silently lost those entries.
+          mv "$tmp_det" "$det" || fatal_pvc "promote ${det}"
+          mv "$tmp_out" "$out" || fatal_pvc "promote ${out}"
+          [ -s "$det" ] && [ -s "$out" ] || fatal_pvc "promoted outputs missing after rename (${out})"
+          printf 'run_id=%s entries=%s deterministic_failures=%s completed=%s\n' \
+            "${RUN_ID}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')" | write_atomic "${marker}" \
+            || fatal_pvc "completion marker ${marker}"
           rm -f "${attempts_file}"
           completed=$((completed + 1))
           echo "chunk complete: ${out} (${lim} entries, attempt ${attempt})"
@@ -257,20 +298,34 @@ data:
           mkdir -p "${reject_dir}"
           [ -f "$tmp_out" ] && mv -f "$tmp_out" "${reject_dir}/${name}.jsonl"
           [ -f "$tmp_det" ] && mv -f "$tmp_det" "${reject_dir}/${name}-detailed.json"
+          if [ "${harness_rc}" -ne 0 ]; then
+            # The harness could not run. That is infrastructure, not a
+            # verdict on these entries, so the deterministic budget is
+            # untouched and the Job's backoffLimit bounds the retries.
+            echo "CHUNK FAILED (infrastructure, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
+            offset=$((offset + CHUNK))
+            continue
+          fi
+
+          # The chunk ran and produced output that failed validation: a
+          # deterministic problem with these entries. Consume the budget.
+          attempt=$((attempt + 1))
+          printf '%s' "${attempt}" | write_atomic "${attempts_file}" || fatal_pvc "${attempts_file}"
+
           if [ "${attempt}" -ge "${MAX_CHUNK_ATTEMPTS}" ]; then
             {
-              printf 'run_id=%s type=%s offset=%s limit=%s attempts=%s quarantined=%s\n' \
+              printf 'run_id=%s type=%s offset=%s limit=%s deterministic_failures=%s quarantined=%s\n' \
                 "${RUN_ID}" "${t}" "${offset}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')"
               printf 'last failure: %s\n' "${reason}"
               printf 'last attempt output: rejected/%s.jsonl, rejected/%s-detailed.json\n' "${name}" "${name}"
               printf 'entries the harness reported an error for:\n'
               errored_entries "${reject_dir}/${name}-detailed.json"
               printf 'to retry this chunk: rm %s %s\n' "${quarantine}" "${attempts_file}"
-            } | write_atomic "${quarantine}"
+            } | write_atomic "${quarantine}" || fatal_pvc "${quarantine}"
             quarantined+=("${name}")
-            echo "CHUNK QUARANTINED after ${attempt} attempts: ${name} — later passes will skip it so the remaining chunks can finish. See ${quarantine}."
+            echo "CHUNK QUARANTINED after ${attempt} deterministic failures: ${name} — later passes will skip it so the remaining chunks can finish. See ${quarantine}."
           else
-            echo "CHUNK FAILED (attempt ${attempt}/${MAX_CHUNK_ATTEMPTS}): ${name} — retried on the next pod restart."
+            echo "CHUNK FAILED (deterministic ${attempt}/${MAX_CHUNK_ATTEMPTS}): ${name} — retried on the next pod restart."
           fi
         fi
         offset=$((offset + CHUNK))
@@ -289,10 +344,17 @@ data:
         printf 'naming the entries that failed and how to retry it.\n'
         printf 'quarantined chunks:\n'
         for q in "${quarantined[@]}"; do printf '  %s\n' "${q}"; done
-      } | write_atomic "${run_dir}/RUN-INCOMPLETE.txt"
+      } | write_atomic "${run_dir}/RUN-INCOMPLETE.txt" || fatal_pvc "RUN-INCOMPLETE.txt"
       echo "  wrote ${run_dir}/RUN-INCOMPLETE.txt"
       echo "  NOTE: the Job will keep restarting until backoffLimit is reached; later"
       echo "        passes are no-ops (every chunk is done or quarantined) and cost nothing."
+    elif [ -f "${run_dir}/RUN-INCOMPLETE.txt" ]; then
+      # A quarantined chunk was recovered (operator removed its .failed and
+      # .attempts markers) and the run has since completed. Leaving the
+      # sentinel behind would tell the next reader — and the README tells
+      # them to believe it — that a complete run is missing entries.
+      rm -f "${run_dir}/RUN-INCOMPLETE.txt"
+      echo "  cleared a stale RUN-INCOMPLETE.txt: every chunk is now complete"
     fi
     echo "=== run complete (failed=${failed}, run_id=${RUN_ID}) ==="
     exit "$failed"
