@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -41,22 +41,17 @@ func NewSQLiteHumanRequestStore(config SQLiteConfig) (*SQLiteHumanRequestStore, 
 		config.Tracer = observability.NewNoOpTracer()
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite3", config.Path)
+	// Open database. WAL, foreign_keys, and busy_timeout ride in the DSN so
+	// every pooled connection gets them; busy_timeout and foreign_keys are
+	// per-connection settings that a post-open db.Exec would set on only one
+	// connection. (":memory:" ignores WAL and reports journal_mode=memory.)
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(config.Path, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           true,
+		ForeignKeys:   true,
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Enable WAL mode for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
-
-	// Enable foreign keys
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
 	store := &SQLiteHumanRequestStore{

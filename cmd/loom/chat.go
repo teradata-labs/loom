@@ -24,6 +24,8 @@ import (
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/tui/client"
+	"golang.org/x/term"
+	"google.golang.org/grpc/metadata"
 )
 
 var (
@@ -122,6 +124,16 @@ func runChatCommand(cmd *cobra.Command, args []string) {
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), chatTimeout)
 	defer cancel()
+
+	// Report this turn's scheduling band to the server: a human at a
+	// terminal is waiting on the response (interactive) only when both
+	// stdin and stdout are TTYs — scripted and piped invocations are batch.
+	// Edge-triggered per turn; the server never remembers it.
+	origin := "batch"
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		origin = "interactive"
+	}
+	ctx = metadata.AppendToOutgoingContext(ctx, "loom-slot-origin", origin)
 
 	// Send message and handle response (always use StreamWeave)
 	if err := streamChat(ctx, c, message); err != nil {

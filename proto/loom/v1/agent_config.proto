@@ -146,6 +146,19 @@ message LLMConfig {
   // Client-side rate limiting configuration.
   // When nil, rate limiting is enabled with provider-appropriate defaults.
   LLMRateLimitConfig rate_limit = 10;
+
+  // Sampling seed for reproducible generations.
+  // Explicitly optional so that "not set" (sampling stays random, provider
+  // default) is distinguishable from an explicit seed of 0, which some
+  // providers accept as a real seed value.
+  //
+  // Honored by: ollama, and only on the agent-registry construction path
+  // (pkg/agent/registry.go, which passes it into ollama.Config). Providers
+  // other than ollama ignore it. The looms serve path builds clients from
+  // factory.FactoryConfig, which does not carry a seed field, so a seed set in
+  // agent YAML has no effect there — wiring it through the factory is an open
+  // follow-up, not a shipped behavior.
+  optional int64 seed = 11;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
@@ -157,15 +170,18 @@ message LLMRateLimitConfig {
   // has its own throttle handling or you are managing concurrency externally.
   bool disabled = 1;
 
-  // Maximum requests per second across all agents sharing this provider.
+  // Maximum requests per second, shared by every agent on the same provider
+  // quota boundary (endpoint/deployment/model/region, provider-dependent)
+  // with the same rate-limit values. Agents that set different values on the
+  // same boundary each get their own limiter — their combined rate can
+  // exceed the quota, and a warning is logged when that happens.
   // 0 = use default (2.0 RPS).
   double requests_per_second = 2;
 
-  // Maximum input+output tokens per minute for token-based throttling.
-  // 0 = use default (40000 TPM).
-  // Set this to match your API tier:
-  //   Anthropic free: 30000, Tier 1: 100000
-  //   Bedrock: varies by model (40000-400000)
+  // Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token
+  // consumption is tracked and reported in rate-limiter metrics, but this
+  // value is never enforced — only requests_per_second, burst_capacity, and
+  // min_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline).
   int64 tokens_per_minute = 3;
 
   // Burst capacity: maximum concurrent requests allowed before queuing.

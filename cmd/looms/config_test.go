@@ -510,6 +510,47 @@ func TestValidate_ObservabilityMode(t *testing.T) {
 	})
 }
 
+// TestValidate_DoorKnobs (review finding 5, PR #353): negative door knobs
+// are startup errors, not a silent disable (max_active_conversations) or an
+// unbounded queue (max_door_queue).
+func TestValidate_DoorKnobs(t *testing.T) {
+	validBase := func() *Config {
+		return &Config{
+			Server:  ServerConfig{Port: 60051},
+			LLM:     LLMConfig{Provider: "ollama", OllamaEndpoint: "http://localhost:11434", OllamaModel: "test"},
+			Storage: StorageBackendConfig{Backend: "sqlite", SQLite: SQLiteConfig{Path: "/tmp/test.db"}},
+		}
+	}
+
+	t.Run("zero knobs -> valid (gate off, unbounded queue)", func(t *testing.T) {
+		cfg := validBase()
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("positive knobs -> valid", func(t *testing.T) {
+		cfg := validBase()
+		cfg.LLM.MaxActiveConversations = 8
+		cfg.LLM.MaxDoorQueue = 64
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("negative max_active_conversations -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.LLM.MaxActiveConversations = -1
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "llm.max_active_conversations")
+	})
+
+	t.Run("negative max_door_queue -> error", func(t *testing.T) {
+		cfg := validBase()
+		cfg.LLM.MaxDoorQueue = -5
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "llm.max_door_queue")
+	})
+}
+
 func TestValidate_StorageBackend(t *testing.T) {
 	// Helper to create a config with valid LLM settings
 	validBase := func() *Config {

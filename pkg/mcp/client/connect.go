@@ -240,6 +240,7 @@ func (c *Client) enterStatelessMode(version string, disc *protocol.DiscoverResul
 	c.protocolVersion = version
 	c.serverInfo = serverInfo
 	c.serverCapabilities = disc.Capabilities
+	c.instructions = disc.Instructions
 	c.mu.Unlock()
 
 	c.logger.Info("MCP client connected (stateless revision)",

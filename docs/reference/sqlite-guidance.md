@@ -43,6 +43,10 @@ Best practices for SQLite usage in Loom - session storage, HITL persistence, ref
 | `temp_store` | `DEFAULT` | `MEMORY` | Store temporary tables in RAM |
 | `mmap_size` | `0` | `268435456` | Memory-mapped I/O (256MB) |
 
+All of these except `journal_mode` are **per-connection** settings, so on a
+pooled `*sql.DB` they must be set in the DSN — see
+[Essential PRAGMAs](#essential-pragmas).
+
 ### Loom Storage Implementations
 
 | Storage Type | Package | Database File | Purpose |
@@ -515,28 +519,52 @@ fmt.Printf("Active refs: %d, Size: %d bytes\n",
 
 ### Essential PRAGMAs
 
-**Set at database open** (used by all Loom storage implementations):
+**Set them in the DSN at open time, not with `db.Exec` afterwards.**
 
-WAL mode is enabled by all three stores (SessionStore, SQLiteHumanRequestStore, SQLiteStore). Foreign keys are enabled by `OpenDB()` in `pkg/agent/db_config.go` for the session store, and explicitly in the HITL store constructor.
+`busy_timeout`, `foreign_keys` and the SQLCipher `key` are *per-connection*
+settings. A `*sql.DB` is a connection pool, so `db.Exec("PRAGMA busy_timeout
+= 5000")` configures only the one connection that happens to run the
+statement; every other connection the pool opens keeps the driver default.
+That defect cost a 512-agent fleet run 291 lost conversation rows and ~27,000
+dropped trace writes before it was fixed (#366).
+
+`internal/sqlitedriver.DSN` renders these into the DSN so the driver applies
+them as each connection is opened, in whichever parameter syntax the active
+driver uses (mattn-style under CGO, `_pragma=` under modernc):
 
 ```go
-db, err := sql.Open("sqlite3", "sessions.db")
+import "github.com/teradata-labs/loom/internal/sqlitedriver"
+
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    BusyTimeoutMS: 5000,
+    WAL:           true,
+    ForeignKeys:   true,
+}))
 if err != nil {
     return err
 }
-
-// Enable WAL mode (critical for concurrency)
-_, err = db.Exec("PRAGMA journal_mode=WAL")
-if err != nil {
-    return fmt.Errorf("failed to enable WAL: %w", err)
-}
-
-// Enable foreign keys (for referential integrity)
-_, err = db.Exec("PRAGMA foreign_keys=ON")
-if err != nil {
-    return fmt.Errorf("failed to enable foreign keys: %w", err)
-}
 ```
+
+`journal_mode` is the exception: it is a persistent, database-level setting
+stored in the file header, so a single post-open
+`db.Exec("PRAGMA journal_mode=WAL")` also works. `SessionStore` still does it
+that way because `OpenDB()` is shared with callers whose databases must not
+be converted to WAL; everywhere else it rides in the DSN.
+
+**What each store sets** (verified against the code):
+
+| Store | WAL | `busy_timeout` | `foreign_keys` |
+|---|---|---|---|
+| `SessionStore` (`pkg/agent/session_store.go`) | post-open Exec | DSN (via `OpenDB`) | DSN (via `OpenDB`) |
+| `SQLiteHumanRequestStore` (`pkg/shuttle/human_store_sqlite.go`) | DSN | DSN | DSN |
+| Artifact store (`pkg/artifacts/store.go`) | DSN | DSN | DSN |
+| Observability trace store (`pkg/observability/storage/sqlite.go`) | DSN | DSN | not set |
+
+**Encrypted databases** (SQLCipher, CGO builds only) have the same problem in
+a louder form: an unkeyed connection to an encrypted database fails outright
+with `file is not a database`. Use `sqlitedriver.EncryptedDSN(path, key,
+opts)`, which carries the key in the DSN so every pooled connection is keyed.
+`OpenDB()` in `pkg/agent/db_config.go` does this for you.
 
 
 ### Performance PRAGMAs
@@ -565,23 +593,24 @@ PRAGMA automatic_index = ON;
 
 **Apply at startup**:
 
-```go
-// Performance PRAGMAs
-pragmas := []string{
-    "PRAGMA cache_size = 10000",
-    "PRAGMA mmap_size = 268435456",
-    "PRAGMA busy_timeout = 5000",
-    "PRAGMA synchronous = NORMAL",
-    "PRAGMA temp_store = MEMORY",
-    "PRAGMA automatic_index = ON",
-}
+These are all per-connection settings, so on a pooled `*sql.DB` they belong in
+the DSN for the same reason `busy_timeout` does — a `db.Exec` loop reaches one
+connection only. `sqlitedriver.Options` covers `busy_timeout` (plus
+`journal_mode` and `foreign_keys`); add DSN parameters for the rest, or pin
+the pool to a single connection if you must Exec them:
 
-for _, pragma := range pragmas {
-    if _, err := db.Exec(pragma); err != nil {
-        log.Printf("Warning: %s failed: %v", pragma, err)
-    }
-}
+```go
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    BusyTimeoutMS: 5000,
+    WAL:           true,
+    ForeignKeys:   true,
+})+"&_pragma=cache_size(10000)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)")
 ```
+
+Note that the parameter syntax above is modernc's; the CGO driver
+(go-sqlcipher) uses mattn-style keys such as `_cache_size=10000`. That
+difference is exactly why the shared options go through
+`sqlitedriver.Options`, which renders whichever syntax the active build needs.
 
 
 ### Query Current Settings
@@ -936,11 +965,15 @@ _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 
 **Problem**: Writer blocks when another transaction is active.
 
-**Solution**: Wait for lock with `PRAGMA busy_timeout`.
+**Solution**: Wait for the lock with `PRAGMA busy_timeout`, set in the DSN so
+every pooled connection gets it (see [Essential PRAGMAs](#essential-pragmas) —
+a `db.Exec` sets it on one connection only).
 
 ```go
-// Wait up to 5 seconds for lock
-_, err := db.Exec("PRAGMA busy_timeout = 5000")
+// Wait up to 5 seconds for the lock, on every connection the pool opens
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    BusyTimeoutMS: 5000,
+}))
 ```
 
 **Without timeout**: `database is locked` error immediately.
@@ -1243,11 +1276,12 @@ func measureQuery(db *sql.DB, query string, args ...interface{}) time.Duration {
 
 **Resolution**:
 ```go
-// 1. Enable WAL mode (should already be enabled in Loom)
-db.Exec("PRAGMA journal_mode=WAL")
-
-// 2. Set busy timeout
-db.Exec("PRAGMA busy_timeout = 5000")  // 5 seconds
+// 1 + 2. Enable WAL and a busy timeout on EVERY pooled connection.
+//        (Both are already set this way by Loom's stores.)
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    BusyTimeoutMS: 5000,
+    WAL:           true,
+}))
 
 // 3. Keep transactions short
 tx, _ := db.Begin()
@@ -1368,28 +1402,28 @@ if fk != 1 {
 
 ```go
 // REQUIRED: Enable WAL at database open
-db, err := sql.Open("sqlite3", "sessions.db")
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    WAL: true,
+}))
 if err != nil {
     return err
 }
-
-_, err = db.Exec("PRAGMA journal_mode=WAL")
-if err != nil {
-    return fmt.Errorf("failed to enable WAL: %w", err)
-}
 ```
 
-**Why**: Enables concurrent reads + 1 writer, 10x performance improvement.
+**Why**: Readers never block the writer, so a long-running read cannot starve
+writes. Without it, every writer takes an EXCLUSIVE lock on the whole file:
+issue #370 measured ~1,486 dropped trace writes in a single fleet run from
+exactly that.
 
 
 ### 2. Enable Foreign Keys
 
 ```go
-// REQUIRED: Enable foreign keys at database open
-_, err = db.Exec("PRAGMA foreign_keys=ON")
-if err != nil {
-    return fmt.Errorf("failed to enable foreign keys: %w", err)
-}
+// REQUIRED: Enable foreign keys at database open — in the DSN, because
+// PRAGMA foreign_keys is per-connection and defaults to OFF.
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    ForeignKeys: true,
+}))
 ```
 
 **Why**: Prevents orphaned records, ensures referential integrity.
@@ -1434,10 +1468,14 @@ CREATE INDEX idx_messages_session_timestamp
 ### 5. Set Busy Timeout
 
 ```go
-db.Exec("PRAGMA busy_timeout = 5000")  // 5 seconds
+db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{
+    BusyTimeoutMS: 5000,
+}))
 ```
 
-**Why**: Automatic retry on lock contention instead of immediate error.
+**Why**: Automatic retry on lock contention instead of immediate error — and
+in the DSN, so it applies to every connection the pool opens rather than the
+one that ran a `db.Exec`.
 
 
 ### 6. Configure Connection Pool

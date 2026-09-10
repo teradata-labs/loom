@@ -57,6 +57,16 @@ func (i *BuiltinIndexer) Source() loomv1.ToolSource {
 
 // Index indexes all builtin tools.
 func (i *BuiltinIndexer) Index(ctx context.Context) ([]*loomv1.IndexedTool, error) {
+	outcome, err := i.IndexWithOutcome(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Tools, nil
+}
+
+// IndexWithOutcome indexes all builtin tools. The result is always the
+// complete builtin set, so builtin rows not re-reported are pruned.
+func (i *BuiltinIndexer) IndexWithOutcome(ctx context.Context) (*IndexOutcome, error) {
 	_, span := i.tracer.StartSpan(ctx, "tools.indexer.builtin.index")
 	defer i.tracer.EndSpan(span)
 
@@ -103,7 +113,14 @@ func (i *BuiltinIndexer) Index(ctx context.Context) ([]*loomv1.IndexedTool, erro
 		Message: fmt.Sprintf("Indexed %d builtin tools", len(tools)),
 	}
 
-	return tools, nil
+	// Builtin tools live in a single unscoped ("") namespace and this run
+	// enumerated all of them, so it is authoritative for that scope.
+	return &IndexOutcome{
+		Tools:             tools,
+		CompleteScopes:    []string{""},
+		KnownScopes:       []string{""},
+		PruneOrphanScopes: true,
+	}, nil
 }
 
 // MCPIndexer indexes tools from MCP servers.
@@ -135,34 +152,53 @@ func (i *MCPIndexer) Source() loomv1.ToolSource {
 
 // Index indexes tools from all connected MCP servers.
 func (i *MCPIndexer) Index(ctx context.Context) ([]*loomv1.IndexedTool, error) {
+	outcome, err := i.IndexWithOutcome(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Tools, nil
+}
+
+// IndexWithOutcome indexes tools from all connected MCP servers and reports
+// which servers still exist (KnownScopes: every configured server, so rows
+// of removed servers are pruned) and which were fully enumerated this run
+// (CompleteScopes: only those, so a transiently unreachable server never
+// loses its rows).
+func (i *MCPIndexer) IndexWithOutcome(ctx context.Context) (*IndexOutcome, error) {
 	ctx, span := i.tracer.StartSpan(ctx, "tools.indexer.mcp.index")
 	defer i.tracer.EndSpan(span)
 
 	if i.manager == nil {
-		return nil, nil
+		// No manager means no MCP servers exist: every indexed MCP row is
+		// unusable, so reconciliation removes them all.
+		return &IndexOutcome{PruneOrphanScopes: true}, nil
 	}
 
 	var allTools []*loomv1.IndexedTool
+	knownScopes := []string{}
+	completeScopes := []string{}
 
-	// Get all connected servers
+	// Get all configured servers (connected or not)
 	servers := i.manager.ListServers()
 
 	for _, serverInfo := range servers {
 		serverName := serverInfo.Name
+		knownScopes = append(knownScopes, serverName)
 
 		// Get client for this server
 		mcpClient, err := i.manager.GetClient(serverName)
 		if err != nil {
-			// Server not connected, skip
+			// Server not connected: keep its rows, just don't refresh them.
 			continue
 		}
 
 		// Get tools from this server
 		mcpTools, err := mcpClient.ListTools(ctx)
 		if err != nil {
-			// Log but continue with other servers
+			// Enumeration failed: keep its rows, continue with other servers.
 			continue
 		}
+		completeScopes = append(completeScopes, serverName)
 
 		for _, mcpTool := range mcpTools {
 			// Convert input schema to JSON string
@@ -193,7 +229,12 @@ func (i *MCPIndexer) Index(ctx context.Context) ([]*loomv1.IndexedTool, error) {
 		Message: fmt.Sprintf("Indexed %d MCP tools from %d servers", len(allTools), len(servers)),
 	}
 
-	return allTools, nil
+	return &IndexOutcome{
+		Tools:             allTools,
+		CompleteScopes:    completeScopes,
+		KnownScopes:       knownScopes,
+		PruneOrphanScopes: true,
+	}, nil
 }
 
 // CustomIndexer indexes custom tool definitions from YAML files.

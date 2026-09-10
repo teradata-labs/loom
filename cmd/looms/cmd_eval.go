@@ -25,7 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
@@ -222,8 +222,10 @@ func runEval(cmd *cobra.Command, args []string) {
 	// Create pattern tracker for judge metrics if multi-judge is configured
 	var patternTracker *learning.PatternEffectivenessTracker
 	if suite.Spec.MultiJudge != nil && judgeOrch != nil {
-		// Open database connection for pattern tracking
-		db, err := sql.Open("sqlite3", evalStoreDB)
+		// Open database connection for pattern tracking. busy_timeout rides in
+		// the DSN so every pooled connection waits on lock contention instead
+		// of failing instantly with SQLITE_BUSY.
+		db, err := sql.Open("sqlite3", sqlitedriver.DSN(evalStoreDB, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Warning: Failed to open database for pattern tracking: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Judge metrics will not be recorded for learning loop\n")

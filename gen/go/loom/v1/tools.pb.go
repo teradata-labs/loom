@@ -910,7 +910,11 @@ type IndexToolsResponse struct {
 	// Any errors during indexing.
 	Errors []*IndexError `protobuf:"bytes,5,rep,name=errors,proto3" json:"errors,omitempty"`
 	// Time taken (milliseconds).
-	DurationMs    int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Number of stale rows removed during reconciliation: tools whose source
+	// no longer reports them (removed from a server) or whose MCP server is
+	// no longer configured.
+	PrunedCount   int32 `protobuf:"varint,7,opt,name=pruned_count,json=prunedCount,proto3" json:"pruned_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -983,6 +987,13 @@ func (x *IndexToolsResponse) GetErrors() []*IndexError {
 func (x *IndexToolsResponse) GetDurationMs() int64 {
 	if x != nil {
 		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *IndexToolsResponse) GetPrunedCount() int32 {
+	if x != nil {
+		return x.PrunedCount
 	}
 	return 0
 }
@@ -1464,7 +1475,7 @@ const file_loom_v1_tools_proto_rawDesc = "" +
 	"\ffull_reindex\x18\x01 \x01(\bR\vfullReindex\x12-\n" +
 	"\asources\x18\x02 \x03(\x0e2\x13.loom.v1.ToolSourceR\asources\x12\x1f\n" +
 	"\vmcp_servers\x18\x03 \x03(\tR\n" +
-	"mcpServers\"\xe8\x01\n" +
+	"mcpServers\"\x8b\x02\n" +
 	"\x12IndexToolsResponse\x12#\n" +
 	"\rbuiltin_count\x18\x01 \x01(\x05R\fbuiltinCount\x12\x1b\n" +
 	"\tmcp_count\x18\x02 \x01(\x05R\bmcpCount\x12!\n" +
@@ -1473,7 +1484,8 @@ const file_loom_v1_tools_proto_rawDesc = "" +
 	"totalCount\x12+\n" +
 	"\x06errors\x18\x05 \x03(\v2\x13.loom.v1.IndexErrorR\x06errors\x12\x1f\n" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
-	"durationMs\"\x7f\n" +
+	"durationMs\x12!\n" +
+	"\fpruned_count\x18\a \x01(\x05R\vprunedCount\"\x7f\n" +
 	"\n" +
 	"IndexError\x12+\n" +
 	"\x06source\x18\x01 \x01(\x0e2\x13.loom.v1.ToolSourceR\x06source\x12\x1f\n" +

@@ -23,7 +23,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 )
 
 // SQLiteStore implements ReferenceStore with SQLite persistence
@@ -49,17 +49,15 @@ func NewSQLiteStore(dbPath string, gcInterval time.Duration) (*SQLiteStore, erro
 		gcInterval = 5 * time.Minute // Default 5 minute GC interval
 	}
 
-	// Open SQLite database
-	db, err := sql.Open("sqlite3", dbPath)
+	// Open SQLite database. WAL and busy_timeout ride in the DSN so every
+	// pooled connection gets them; busy_timeout is per-connection and a
+	// post-open db.Exec would set it on only one connection.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           true,
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Enable WAL mode for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		// #nosec G104 -- best-effort cleanup on initialization failure
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	store := &SQLiteStore{

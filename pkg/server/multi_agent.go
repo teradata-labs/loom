@@ -606,10 +606,132 @@ func (s *MultiAgentServer) findSessionOwner(ctx context.Context, sessionID, call
 // behavior holds: identity-less callers see everything and pre-stamping
 // sessions (UserID == "") stay reachable so upgrades do not strand them.
 func (s *MultiAgentServer) sessionAccessibleBy(callerUserID string, session *agent.Session) bool {
+	return s.ownerAccessibleBy(callerUserID, session.UserID)
+}
+
+// ownerAccessibleBy is sessionAccessibleBy's rule expressed over the owner id
+// alone, so a caller that learned ownership without loading the session (an
+// ownership probe) applies the identical policy rather than a copy of it.
+func (s *MultiAgentServer) ownerAccessibleBy(callerUserID, ownerUserID string) bool {
 	if s.enforceOwnership {
-		return callerUserID != "" && session.UserID == callerUserID
+		return callerUserID != "" && ownerUserID == callerUserID
 	}
-	return callerUserID == "" || session.UserID == "" || session.UserID == callerUserID
+	return callerUserID == "" || ownerUserID == "" || ownerUserID == callerUserID
+}
+
+// selfOwnedAccessible reports whether a caller may act on a session the store
+// has already confirmed is the caller's OWN.
+//
+// It is ownerAccessibleBy with owner == caller, which collapses to the
+// blank-identity rule: under enforcement an anonymous caller is not a wildcard
+// even for a session nominally "its own", and without enforcement everything is
+// permitted. Named rather than inlined because ownerAccessibleBy(id, id) reads
+// as a tautology at the call site while actually carrying that rule.
+func (s *MultiAgentServer) selfOwnedAccessible(callerUserID string) bool {
+	return s.ownerAccessibleBy(callerUserID, callerUserID)
+}
+
+// sessionOwnershipProbe is an OPTIONAL session-store capability: it answers
+// "is this session the caller's own?" without filtering soft-deleted rows,
+// which the owner-scoped LoadSession cannot do.
+//
+// It is a capability rather than a SessionStorage method on purpose — that
+// interface is implemented outside this repo, so adding a method to it would
+// break those implementations. A store that does not implement this simply
+// keeps the fail-closed behaviour below.
+type sessionOwnershipProbe interface {
+	CallerOwnsSession(ctx context.Context, sessionID string) (bool, error)
+}
+
+// The postgres store is the reason this capability exists — it is the backend
+// that soft-deletes sessions. Asserting the match here means a signature drift
+// fails the build instead of silently reverting the type assertion to false and
+// locking owners out again.
+var _ sessionOwnershipProbe = (*postgres.SessionStore)(nil)
+
+// authorizeSessionScope authorizes a session id that arrived in a REQUEST
+// rather than in the call context.
+//
+// The distinction is the whole point: a context session id is server-derived
+// and therefore trusted, while a request field is the caller naming whose data
+// to read. Handing the latter straight to the store would make session scope
+// self-declared, so it runs the same per-user isolation predicate every other
+// session-scoped RPC uses (sessionAccessibleBy) before it is allowed to select
+// anything.
+//
+// Denial is reported as NotFound, matching DeleteSession: a caller must not be
+// able to tell "exists but not yours" from "does not exist" by probing.
+//
+// An id that still cannot be resolved — no session store configured, an id the
+// store has never seen, or one whose ownership no probe can establish — defers
+// to the deployment's tenancy mode instead of a blanket allow or deny.
+// Enforcing deployments fail closed, the same stance findSessionOwner takes on
+// ids it cannot verify; single-tenant deployments stay permissive, which is the
+// trust model they already document.
+//
+// Between the load and that fallback sits sessionOwnershipProbe, because a
+// soft-deleted session reads as unresolvable while still belonging to the
+// caller.
+func (s *MultiAgentServer) authorizeSessionScope(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+
+	callerUserID := postgres.UserIDFromContext(ctx)
+
+	s.mu.RLock()
+	for _, ag := range s.agents {
+		sess, ok := ag.GetSession(sessionID)
+		if !ok {
+			continue
+		}
+		accessible := s.sessionAccessibleBy(callerUserID, sess)
+		s.mu.RUnlock()
+		if !accessible {
+			return status.Error(codes.NotFound, "session not found")
+		}
+		return nil
+	}
+	s.mu.RUnlock()
+
+	if s.sessionStore != nil {
+		// LoadSession is owner-scoped in both backends, so a hit is already
+		// evidence the session is the caller's own. A miss is not: the SQLite
+		// store reports it as an error and Postgres as a nil session, and
+		// neither separates "belongs to someone else" from "no such id". So a
+		// miss falls through to the tenancy decision below instead of
+		// surfacing as a failure — turning an unknown session id into an
+		// Internal error here would break filtering for every caller whose
+		// session predates the session store.
+		if stored, err := s.sessionStore.LoadSession(ctx, sessionID); err == nil && stored != nil {
+			if !s.sessionAccessibleBy(callerUserID, stored) {
+				return status.Error(codes.NotFound, "session not found")
+			}
+			return nil
+		}
+	}
+
+	// A soft-deleted session is still the caller's own, but LoadSession filters
+	// `deleted_at IS NULL`, so it reports the same miss as a foreign or unknown
+	// id. Without this probe the fail-closed branch would refuse an owner the
+	// FILTERED view of artifacts the store still hands them UNFILTERED, for the
+	// entire soft-delete grace window — and "which files did this session
+	// produce?" is the question this field exists to answer.
+	//
+	// The probe is owner-scoped, so a hit already means the owner IS the caller;
+	// selfOwnedAccessible then applies the blank-identity rule to that fact
+	// rather than restating it here.
+	if probe, ok := s.sessionStore.(sessionOwnershipProbe); ok {
+		owned, err := probe.CallerOwnsSession(ctx, sessionID)
+		if err == nil && owned && s.selfOwnedAccessible(callerUserID) {
+			return nil
+		}
+	}
+
+	if s.enforceOwnership {
+		return status.Error(codes.NotFound, "session not found")
+	}
+	return nil
 }
 
 // SetEnforceSessionOwnership selects the tenancy mode: pass true on
@@ -839,6 +961,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// default agent instead of the agent that created/owns the session.
 	var ag *agent.Agent
 	var agentID string
+	sessionResumed := false
 
 	// An existing session is resolved and authorized before ANY agent
 	// selection: an inaccessible session must surface as not-found — never
@@ -855,6 +978,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			if ownerAg == nil && ownerID != "" {
 				return nil, status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
 			}
+			sessionResumed = true
 			ag, agentID = ownerAg, ownerID
 			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
@@ -882,6 +1006,22 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
 	}
+
+	// Slot scheduling: install this turn's SlotInfo (origin from the
+	// client's own report — gRPC metadata "loom-slot-origin"; a resumed
+	// session classifies IN_FLIGHT from its first call). Installed on every
+	// turn-executing entry point, unary and streaming alike.
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, req.GetAgentId())
+
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	// Without this, unary callers (MCP bridge, TUI, grpc-gateway) would
+	// slip past max_active_conversations entirely.
+	releaseDoor, doorErr := enterTurnDoor(ctx, s.logger)
+	if doorErr != nil {
+		return nil, doorErr
+	}
+	defer releaseDoor()
 
 	// Add progress multiplexer to context if available for this agent
 	s.mu.RLock()
@@ -1046,6 +1186,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
 	var resolvedAgentID string
+	sessionResumed := false
 
 	// An existing session is resolved and authorized before ANY agent
 	// selection — an inaccessible session is not-found, never a fallback to
@@ -1061,6 +1202,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			if ownerAg == nil && ownerID != "" {
 				return status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", ownerID)
 			}
+			sessionResumed = true
 			ag, resolvedAgentID = ownerAg, ownerID
 			if req.AgentId != "" && ag != nil {
 				if reqAg, _, aerr := s.getAgent(req.AgentId); aerr == nil && reqAg != ag {
@@ -1087,6 +1229,21 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
 	}
+
+	// Slot scheduling: install this turn's SlotInfo. Origin comes from the
+	// client's own report (gRPC metadata "loom-slot-origin"): "interactive"
+	// means a human at a terminal is waiting on this single turn. The stamp
+	// is per-request — edge-triggered, never a conversation-lifetime mark. A
+	// resumed session classifies IN_FLIGHT from its first call of the turn.
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, req.GetAgentId())
+
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, s.logger)
+	if doorErr != nil {
+		return doorErr
+	}
+	defer releaseDoor()
 
 	// Register manage_ephemeral_agents tool if not already registered
 	// This allows agents to spawn and despawn sub-agents dynamically
@@ -1146,13 +1303,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	progressChan := make(chan agent.ProgressEvent, 10)
 
 	// Create progress callback that sends events to channel
-	progressCallback := func(event agent.ProgressEvent) {
-		select {
-		case progressChan <- event:
-		case <-stream.Context().Done():
-			// Context cancelled, stop sending
-		}
-	}
+	progressCallback := newProgressSender(progressChan, stream.Context().Done())
 
 	// Execute agent with progress callback
 	go func() {

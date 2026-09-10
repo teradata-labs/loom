@@ -75,6 +75,29 @@ looms serve
 # Log output includes: {"level":"info","msg":"HTTP/REST+SSE endpoints available","sse_endpoint":"http://0.0.0.0:5006/v1/weave:stream"}
 ```
 
+**Request headers**:
+
+| Header | Values | Meaning |
+|--------|--------|---------|
+| `X-Loom-Slot-Origin` | `interactive`, `batch` (default when absent) | Asserts this turn's scheduling band for the LLM slot scheduler and door admission control. |
+
+When door admission is enabled (`llm.max_active_conversations` > 0),
+batch-origin turns queue FIFO at the admission door once the active-turn
+ceiling is reached. Send `X-Loom-Slot-Origin: interactive` when a human is
+actively waiting on the response: interactive turns bypass the door and ride
+the scheduler's interactive band. The value is client-asserted and trusted
+as-is — the same trust model as the gRPC metadata key `loom-slot-origin`
+used by the CLI/TUI. A full door queue rejects the request with
+`RESOURCE_EXHAUSTED` (retry later).
+
+```bash
+# A human-facing web client marks its turns interactive:
+curl -N -X POST http://localhost:5006/v1/weave:stream \
+  -H "Content-Type: application/json" \
+  -H "X-Loom-Slot-Origin: interactive" \
+  -d '{"query": "What is 2+2?", "session_id": "sess_123"}'
+```
+
 
 ## Progress Events
 

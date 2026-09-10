@@ -13,7 +13,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -25,7 +25,9 @@ type Store struct {
 // NewStore creates a new eval store
 // Use ":memory:" for in-memory database (useful for testing)
 func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// busy_timeout rides in the DSN so every pooled connection waits on lock
+	// contention instead of failing instantly with SQLITE_BUSY.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

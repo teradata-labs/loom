@@ -714,6 +714,11 @@
         "rateLimit": {
           "$ref": "#/definitions/v1LLMRateLimitConfig",
           "description": "Client-side rate limiting configuration.\nWhen nil, rate limiting is enabled with provider-appropriate defaults."
+        },
+        "seed": {
+          "type": "string",
+          "format": "int64",
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
@@ -728,12 +733,12 @@
         "requestsPerSecond": {
           "type": "number",
           "format": "double",
-          "description": "Maximum requests per second across all agents sharing this provider.\n0 = use default (2.0 RPS)."
+          "description": "Maximum requests per second, shared by every agent on the same provider\nquota boundary (endpoint/deployment/model/region, provider-dependent)\nwith the same rate-limit values. Agents that set different values on the\nsame boundary each get their own limiter — their combined rate can\nexceed the quota, and a warning is logged when that happens.\n0 = use default (2.0 RPS)."
         },
         "tokensPerMinute": {
           "type": "string",
           "format": "int64",
-          "title": "Maximum input+output tokens per minute for token-based throttling.\n0 = use default (40000 TPM).\nSet this to match your API tier:\n  Anthropic free: 30000, Tier 1: 100000\n  Bedrock: varies by model (40000-400000)"
+          "description": "Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token\nconsumption is tracked and reported in rate-limiter metrics, but this\nvalue is never enforced — only requests_per_second, burst_capacity, and\nmin_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline)."
         },
         "burstCapacity": {
           "type": "integer",

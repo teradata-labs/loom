@@ -23,18 +23,11 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-)
-
-// Global singleton rate limiter shared across all Ollama clients
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
 )
 
 // Client implements the LLMProvider interface for Ollama.
@@ -44,6 +37,7 @@ type Client struct {
 	httpClient         *http.Client
 	maxTokens          int
 	temperature        float64
+	seed               *int64 // nil = omit "seed" from options (Ollama samples randomly)
 	toolMode           ToolMode
 	rateLimiter        *llm.RateLimiter
 	nativeToolsProbed  bool              // true once we've probed the model
@@ -91,6 +85,15 @@ type Config struct {
 	Timeout           time.Duration // Response header timeout. Default: 300s. Total generation time is bounded by caller context.
 	ToolMode          ToolMode      // Default: auto (detect native support)
 	RateLimiterConfig llm.RateLimiterConfig
+
+	// Seed pins Ollama's sampling seed for reproducible generations.
+	//
+	// It is a pointer, not a plain int64, because Ollama treats seed 0 as a
+	// usable seed value rather than "unset". nil therefore means "do not send
+	// a seed at all" (Ollama keeps sampling randomly), while a non-nil pointer
+	// to 0 means "seed with 0". Mirrors the optional int64 seed field on the
+	// loom.v1.LLMConfig proto.
+	Seed *int64
 }
 
 // getDefaultMaxTokens returns intelligent max_tokens based on model name.
@@ -143,7 +146,15 @@ func NewClient(cfg Config) *Client {
 	// Initialize rate limiter if enabled
 	var rateLimiter *llm.RateLimiter
 	if cfg.RateLimiterConfig.Enabled {
-		rateLimiter = getOrCreateGlobalRateLimiter(cfg.RateLimiterConfig)
+		rateLimiter = llm.SharedRateLimiter("ollama|"+cfg.Endpoint, cfg.RateLimiterConfig)
+	}
+
+	// Copy the seed value rather than retaining the caller's pointer, so later
+	// mutation of the caller's variable cannot race with in-flight requests.
+	var seed *int64
+	if cfg.Seed != nil {
+		s := *cfg.Seed
+		seed = &s
 	}
 
 	return &Client{
@@ -151,6 +162,7 @@ func NewClient(cfg Config) *Client {
 		model:       cfg.Model,
 		maxTokens:   cfg.MaxTokens,
 		temperature: cfg.Temperature,
+		seed:        seed,
 		toolMode:    cfg.ToolMode,
 		rateLimiter: rateLimiter,
 		httpClient: &http.Client{
@@ -166,14 +178,6 @@ func NewClient(cfg Config) *Client {
 			},
 		},
 	}
-}
-
-// getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Name returns the provider name.
@@ -457,6 +461,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		},
 	}
 
+	// Only send "seed" when one was configured. Ollama reads seed 0 as a real
+	// seed, so an unset seed must be omitted entirely rather than sent as 0.
+	if c.seed != nil {
+		req.Options["seed"] = *c.seed
+	}
+
 	// Add tools if native support is available
 	if c.supportsNativeTools() && len(tools) > 0 {
 		c.toolNameMap = make(map[string]string)
@@ -469,30 +479,47 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// sendOnce builds and sends ONE fresh HTTP request per attempt. It must
+	// construct a new http.Request each time — a consumed body cannot be
+	// re-sent, so a retry of a request built once outside the closure would go
+	// out empty. It also surfaces HTTP 429 as an ERROR carrying any
+	// server-specified wait (Retry-After and friends): httpClient.Do returns
+	// nil error for any HTTP status, so without this the rate limiter's retry
+	// never sees throttling and 429s go straight to the caller un-retried.
+	sendOnce := func(ctx context.Context) (interface{}, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/chat", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, llm.NewThrottleError(
+				fmt.Errorf("API error (status 429): %s", string(respBody)),
+				llm.RetryAfterFromHeaders(resp.Header))
+		}
+		return resp, nil
 	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
 
 	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
-		})
+		result, err := c.rateLimiter.Do(ctx, sendOnce)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		result, err := sendOnce(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
+		httpResp = result.(*http.Response)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 

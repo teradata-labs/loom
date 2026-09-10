@@ -52,6 +52,17 @@ type AdmissionRequest struct {
 
 // Hook is a single admission policy: it decides whether it applies to a request
 // (Matches) and, when it does, returns its verdict (Evaluate).
+//
+// Both methods MUST be side-effect free, and both may be called MORE THAN ONCE
+// for a single tool call: Preflight asks the same question Admit does without
+// executing anything, so a call that is preflighted and then executed
+// evaluates every matching hook twice (three times for a contact_human that a
+// park re-classifies at resume). A hook that counts, meters, or records inside
+// Evaluate will therefore over-count. Observation has its own seam — see
+// PostToolHook, which runs exactly once, after the body.
+//
+// Reading mutable state is fine (the gated allowlist reads the approved set);
+// WRITING it from Evaluate is not.
 type Hook interface {
 	Matches(req AdmissionRequest) bool
 	Evaluate(req AdmissionRequest) Decision

@@ -98,6 +98,12 @@ type Config struct {
     LLM      types.LLMProvider // LLM provider for search assistance
     Tracer   observability.Tracer
     Indexers []Indexer         // Tool source indexers
+
+    // LiveMCPServers, when set, restricts MCP tools in search results
+    // (Search, GetToolsByCapability) to servers that currently exist,
+    // so stale index rows are never surfaced to agents (issue #334).
+    // nil disables the filter; an empty result hides all MCP tools.
+    LiveMCPServers func() []string
 }
 ```
 
@@ -140,7 +146,16 @@ defer registry.Close()
 
 **Function**: `IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, error)`
 
-Indexes tools from all registered indexers.
+Indexes tools from all registered indexers, then reconciles the index: rows
+that a `ReconcilingIndexer` run proves stale are deleted (issue #334).
+
+**Reconciliation semantics** (per indexer implementing `ReconcilingIndexer`):
+- Rows whose MCP server was **removed from configuration** are pruned.
+- Rows for tools a server **no longer reports** are pruned.
+- A server that is configured but **unreachable this run keeps its rows** —
+  a transient failure never wipes a server's tools.
+- Plain `Indexer` implementations keep upsert-only behavior, so tools
+  registered out-of-band via `RegisterTool` (gRPC custom tools) survive.
 
 **Response**:
 ```go
@@ -151,6 +166,7 @@ type IndexToolsResponse struct {
     CustomCount  int32          // Custom tools count
     DurationMs   int64          // Indexing duration
     Errors       []*IndexError  // Any indexing errors
+    PrunedCount  int32          // Stale rows removed by reconciliation
 }
 ```
 
@@ -160,6 +176,7 @@ resp, err := registry.IndexAll(ctx)
 // resp.TotalCount = 45
 // resp.BuiltinCount = 10
 // resp.McpCount = 35
+// resp.PrunedCount = 3   // e.g. tools of a deleted MCP server
 // resp.DurationMs = 234
 ```
 

@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Authenticates buf's BSR traffic (module downloads and remote plugin
+  # execution) when the BUF_TOKEN repository secret exists; empty is ignored
+  # by buf and requests stay anonymous (rate-limited).
+  BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+
 jobs:
   test-quickstart:
     name: Test Windows Quickstart Script
@@ -39,6 +45,9 @@ jobs:
         run: |
           choco install just -y
           just --version
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0

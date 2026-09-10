@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -67,17 +67,16 @@ func NewMetricsCollector(dbPath string, tracer observability.Tracer) (*MetricsCo
 	ctx, span := tracer.StartSpan(ctx, "metaagent.learning.collector.new")
 	defer tracer.EndSpan(span)
 
-	// Open SQLite database
-	db, err := sql.Open("sqlite3", dbPath)
+	// Open SQLite database. WAL and busy_timeout ride in the DSN so every
+	// pooled connection gets them; busy_timeout is per-connection and a
+	// post-open db.Exec would set it on only one connection.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{
+		BusyTimeoutMS: 5000,
+		WAL:           true,
+	}))
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Enable WAL mode for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	collector := &MetricsCollector{

@@ -134,6 +134,21 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		sessionID = GenerateSessionID()
 	}
 
+	// Slot scheduling: install this turn's SlotInfo (origin from the
+	// client's own report — gRPC metadata "loom-slot-origin"; a session that
+	// already has history classifies IN_FLIGHT from its first call).
+	// Installed on every turn-executing entry point, unary and streaming.
+	_, sessionResumed := s.agent.GetSession(sessionID)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
+
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, nil)
+	if doorErr != nil {
+		return nil, doorErr
+	}
+	defer releaseDoor()
+
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {
 		s.agent.ResetSessionContext(sessionID)
@@ -198,6 +213,19 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		sessionID = GenerateSessionID()
 	}
 
+	// Slot scheduling: install this turn's SlotInfo (see Weave — every
+	// turn-executing entry point installs it).
+	_, sessionResumed := s.agent.GetSession(sessionID)
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
+
+	// Door admission (see enterTurnDoor): batch turns queue at the front
+	// door when the active ceiling is reached; interactive turns bypass.
+	releaseDoor, doorErr := enterTurnDoor(ctx, nil)
+	if doorErr != nil {
+		return doorErr
+	}
+	defer releaseDoor()
+
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {
 		s.agent.ResetSessionContext(sessionID)
@@ -214,13 +242,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	progressChan := make(chan agent.ProgressEvent, DefaultProgressBufferSize)
 
 	// Create progress callback that sends events to channel
-	progressCallback := func(event agent.ProgressEvent) {
-		select {
-		case progressChan <- event:
-		case <-stream.Context().Done():
-			// Context cancelled, stop sending
-		}
-	}
+	progressCallback := newProgressSender(progressChan, stream.Context().Done())
 
 	// Execute agent with progress callback
 	go func() {

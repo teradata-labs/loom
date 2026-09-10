@@ -29,7 +29,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/teradata-labs/loom/embedded"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -49,6 +49,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -371,6 +372,65 @@ type evalStoreSetter interface {
 // judgeServerSetter is an optional interface for wiring the JudgeServer into the main service.
 type judgeServerSetter interface {
 	SetJudgeServer(js *server.JudgeServer)
+}
+
+// registrySubsystemSink is the subset of *agent.Registry that receives the
+// server-level subsystems. Extracted so wireRegistrySubsystems is unit-testable
+// with a spy.
+type registrySubsystemSink interface {
+	SetTaskManager(manager *task.Manager, decomposer *task.Decomposer)
+	SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder)
+	SetSuppressedBuiltinTools(names []string)
+}
+
+// resolveJudgeFallback picks the judge's fallback LLM: the pool's active
+// provider when one is configured and names a real pool entry, else the
+// server's default provider — so judge evaluations work identically on
+// pooled and single-provider servers. A misspelled active_provider falls
+// back instead of handing the judge a nil provider.
+func resolveJudgeFallback(pool map[string]agent.LLMProvider, active string, fallback agent.LLMProvider) agent.LLMProvider {
+	if p, ok := pool[active]; ok && p != nil {
+		return p
+	}
+	return fallback
+}
+
+// wireRegistrySubsystems injects the server-level subsystems (task manager,
+// graph-memory store, tool-surface policy) into the agent registry so that
+// registry-built agents — gRPC-created, config-hot-reloaded, or benchmark
+// --isolate temp agents — receive them.
+//
+// This MUST run independently of whether a provider pool is configured. These
+// injections previously lived inside the `providerPool != nil` branch of the
+// serve wiring, so a single-provider server silently gave every registry-built
+// agent a nil graph-memory store (no extraction, no cross-session recall), a
+// nil task manager, and no tool-surface policy. The per-agent YAML flags
+// (memory.graph_memory.enabled, memory.task_board.enabled) still gate behavior;
+// these calls only make the subsystems reachable.
+func wireRegistrySubsystems(
+	reg registrySubsystemSink,
+	taskManager *task.Manager,
+	taskDecomposer *task.Decomposer,
+	graphMemoryStore memory.GraphMemoryStore,
+	memoryEmbedder memory.Embedder,
+	suppressed []string,
+	logger *zap.Logger,
+) {
+	if taskManager != nil {
+		reg.SetTaskManager(taskManager, taskDecomposer)
+		logger.Info("Task manager injected into agent registry",
+			zap.Bool("decomposer_present", taskDecomposer != nil))
+	}
+	if graphMemoryStore != nil {
+		reg.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
+		logger.Info("Graph memory store injected into agent registry",
+			zap.Bool("embedder_present", memoryEmbedder != nil))
+	}
+	if len(suppressed) > 0 {
+		reg.SetSuppressedBuiltinTools(suppressed)
+		logger.Info("Suppressed builtin tools propagated to agent registry",
+			zap.Strings("tools", suppressed))
+	}
 }
 
 // buildProviderPool constructs a named provider pool from the server configuration.
@@ -764,6 +824,11 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 
 	timeout := time.Duration(serverConfig.LLM.Timeout) * time.Second
 
+	// Rate limiting must be attached on THIS path too: a client built without
+	// it is unthrottled and retry-less (429 retry lives inside the limiter),
+	// which produced the 512-agent thundering-herd outage of issue #348.
+	rlCfg := agent.BuildRateLimiterConfig(protoConfig.RateLimit, logger)
+
 	switch protoConfig.Provider {
 	case "anthropic":
 		model := protoConfig.Model
@@ -776,11 +841,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		return anthropic.NewClient(anthropic.Config{
-			APIKey:      apiKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            apiKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "bedrock":
@@ -792,15 +858,16 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		// caching SDK client and others to the Converse client (single source of
 		// truth for Bedrock client selection — see bedrock.NewClientForModel).
 		return bedrock.NewClientForModel(bedrock.Config{
-			Region:          serverConfig.LLM.BedrockRegion,
-			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
-			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
-			SessionToken:    serverConfig.LLM.BedrockSessionToken,
-			BearerToken:     serverConfig.LLM.BedrockBearerToken,
-			Profile:         serverConfig.LLM.BedrockProfile,
-			ModelID:         modelID,
-			MaxTokens:       maxTokens,
-			Temperature:     temperature,
+			Region:            serverConfig.LLM.BedrockRegion,
+			AccessKeyID:       serverConfig.LLM.BedrockAccessKeyID,
+			SecretAccessKey:   serverConfig.LLM.BedrockSecretAccessKey,
+			SessionToken:      serverConfig.LLM.BedrockSessionToken,
+			BearerToken:       serverConfig.LLM.BedrockBearerToken,
+			Profile:           serverConfig.LLM.BedrockProfile,
+			ModelID:           modelID,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "ollama":
@@ -809,11 +876,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.OllamaModel
 		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:    serverConfig.LLM.OllamaEndpoint,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:          serverConfig.LLM.OllamaEndpoint,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "openai":
@@ -827,11 +895,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
 		return openai.NewClient(openai.Config{
-			APIKey:      apiKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            apiKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "azure-openai", "azureopenai":
@@ -839,15 +908,38 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if deploymentID == "" {
 			deploymentID = serverConfig.LLM.AzureOpenAIDeploymentID
 		}
-		return azureopenai.NewClient(azureopenai.Config{
-			Endpoint:     serverConfig.LLM.AzureOpenAIEndpoint,
-			DeploymentID: deploymentID,
-			APIKey:       serverConfig.LLM.AzureOpenAIAPIKey,
-			EntraToken:   serverConfig.LLM.AzureOpenAIEntraToken,
-			MaxTokens:    maxTokens,
-			Temperature:  temperature,
-			Timeout:      timeout,
-		})
+		// Env fallbacks for parity with the anthropic/openai branches and the
+		// registry path — without them an env-only key fails this path and
+		// silently changes which construction path (and rate-limit behavior)
+		// an agent gets (issue #348).
+		azEndpoint := serverConfig.LLM.AzureOpenAIEndpoint
+		if azEndpoint == "" {
+			azEndpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
+		}
+		azAPIKey := serverConfig.LLM.AzureOpenAIAPIKey
+		if azAPIKey == "" {
+			azAPIKey = os.Getenv("AZURE_OPENAI_API_KEY")
+		}
+		azEntraToken := serverConfig.LLM.AzureOpenAIEntraToken
+		if azEntraToken == "" {
+			azEntraToken = os.Getenv("AZURE_OPENAI_ENTRA_TOKEN")
+		}
+		cfg := azureopenai.Config{
+			Endpoint:          azEndpoint,
+			DeploymentID:      deploymentID,
+			APIKey:            azAPIKey,
+			EntraToken:        azEntraToken,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
+		}
+		if llmscheduler.Enabled() {
+			// Feed provider ratelimit telemetry into this scope's scheduler.
+			cfg.CapacityObserver = llmscheduler.Default().For(
+				"azure-openai|"+azEndpoint+"|"+deploymentID, llmscheduler.Config{})
+		}
+		return azureopenai.NewClient(cfg)
 
 	case "mistral":
 		model := protoConfig.Model
@@ -855,11 +947,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.MistralModel
 		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:      serverConfig.LLM.MistralAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            serverConfig.LLM.MistralAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "gemini":
@@ -868,11 +961,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.GeminiModel
 		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:      serverConfig.LLM.GeminiAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			APIKey:            serverConfig.LLM.GeminiAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "huggingface":
@@ -881,11 +975,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.HuggingFaceModel
 		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:       serverConfig.LLM.HuggingFaceToken,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Token:             serverConfig.LLM.HuggingFaceToken,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "litellm":
@@ -894,12 +989,13 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.LiteLLMModel
 		}
 		return litellm.NewClient(litellm.Config{
-			Endpoint:    serverConfig.LLM.LiteLLMEndpoint,
-			APIKey:      serverConfig.LLM.LiteLLMAPIKey,
-			Model:       model,
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
-			Timeout:     timeout,
+			Endpoint:          serverConfig.LLM.LiteLLMEndpoint,
+			APIKey:            serverConfig.LLM.LiteLLMAPIKey,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	default:
@@ -951,6 +1047,12 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	artifacts.SetSessionMetadataEnabled(config.Artifacts.SessionMetadataEnabled)
 
+	// LLM slot scheduler enablement must precede EVERY LLM client
+	// construction: clients attach their CapacityObserver at build time,
+	// and agents are loaded well before gRPC service registration.
+	llmscheduler.SetEnabled(config.LLM.SchedulerEnabled)
+	llmscheduler.SetDoorLimits(config.LLM.MaxActiveConversations, config.LLM.MaxDoorQueue)
+
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
 
@@ -985,6 +1087,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Nop and silently disappear — which is what hid the original
 	// skills-overhaul Phase D wiring gap during initial diagnosis.
 	zap.ReplaceGlobals(logger)
+
+	// The scheduler registry's logger must be installed BEFORE any agent or
+	// LLM client is constructed: scopes are created lazily at client build
+	// time, and Registry.SetLogger only affects schedulers created after the
+	// call — installing it at gRPC registration (as before) left every
+	// boot-created scope logging calibration events into a no-op.
+	if config.LLM.SchedulerEnabled {
+		llmscheduler.Default().SetLogger(logger)
+	}
 
 	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
 
@@ -1453,17 +1564,26 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Create MCP indexer if MCP manager is available
 		var indexers []toolregistry.Indexer
 		indexers = append(indexers, builtinIndexer)
+		// Search results only surface MCP tools whose server currently
+		// exists; with no manager, no MCP tool is servable at all (#334).
+		liveMCPServers := func() []string { return nil }
 		if mcpManager != nil {
-			mcpIndexer := toolregistry.NewMCPIndexer(mcpManager.GetManager(), tracer)
+			mgr := mcpManager.GetManager()
+			mcpIndexer := toolregistry.NewMCPIndexer(mgr, tracer)
 			indexers = append(indexers, mcpIndexer)
+			liveMCPServers = func() []string {
+				return enabledMCPServerNames(mgr, logger)
+			}
 		}
 
 		var err error
 		toolRegistry, err = toolregistry.New(toolregistry.Config{
-			DBPath:   toolDBPath,
-			LLM:      llmProvider,
-			Tracer:   tracer,
-			Indexers: indexers,
+			DBPath:         toolDBPath,
+			LLM:            llmProvider,
+			Tracer:         tracer,
+			Logger:         logger,
+			Indexers:       indexers,
+			LiveMCPServers: liveMCPServers,
 		})
 		if err != nil {
 			logger.Warn("Failed to create tool registry", zap.Error(err))
@@ -1478,6 +1598,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					zap.Int32("builtin_tools", resp.BuiltinCount),
 					zap.Int32("mcp_tools", resp.McpCount),
 					zap.Int32("total_tools", resp.TotalCount),
+					zap.Int32("pruned_stale_tools", resp.PrunedCount),
 					zap.Int64("duration_ms", resp.DurationMs))
 			}
 		}
@@ -1567,7 +1688,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		hitlStore,
 		askTimeout,
 		time.Second,
-		nil,
+		hitlNotifier(),
 	)
 	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
 	if err != nil {
@@ -1957,9 +2078,10 @@ func runServe(cmd *cobra.Command, args []string) {
 					for _, toolName := range cfg.Tools.Builtin {
 						if toolName == "contact_human" {
 							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-								Store:  hitlStore,
-								Tracer: tracer,
-								Logger: logger,
+								Store:    hitlStore,
+								Notifier: hitlNotifier(),
+								Tracer:   tracer,
+								Logger:   logger,
 							})
 							ag.RegisterTool(humanTool)
 							logger.Info("    Auto-registered contact_human tool (shared HITL store)",
@@ -2024,7 +2146,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					// Enable dynamic tool registration for discovered MCP tools
 					var mcpMgrAdapter shuttle.MCPManager
 					if mcpManager != nil {
-						mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+						mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 					}
 					ag.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 					logger.Info("    Enabled dynamic tool registration")
@@ -2218,6 +2340,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService.SetEnforceSessionOwnership(config.Server.Auth.Enabled)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// LLM slot scheduler observability/admin surface (enablement and the
+	// registry logger were both installed at startup, before any LLM client
+	// construction).
+	if config.LLM.SchedulerEnabled {
+		logger.Info("LLM slot scheduler enabled")
+	}
+	loomv1.RegisterLLMSchedulerServiceServer(grpcServer, llmscheduler.NewService(llmscheduler.Default()))
+
 	// Register TaskService for gRPC task management and TUI streaming.
 	// Bus wired later via SetBus (two-phase init, bus not yet created).
 	var taskService *server.TaskServiceImpl
@@ -2357,10 +2487,18 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Provider factory configured on server for model switching")
 
 	// Wire provider pool from config.
-	if providerPool, err := buildProviderPool(config, providerFactory, logger); err != nil {
+	// The pool is optional: only the two SetProviderPool calls are inherently
+	// pool features. Everything else below runs regardless, so a
+	// single-provider server still gets its eval store and judge (the
+	// regression this hoisting fixes).
+	providerPool, poolErr := buildProviderPool(config, providerFactory, logger)
+	if poolErr != nil {
 		logger.Warn("Failed to build provider pool from config; pool-based features will be unavailable",
-			zap.String("reason", "provider pool configuration error; check LLM provider settings"))
-	} else if providerPool != nil {
+			zap.String("reason", "provider pool configuration error; check LLM provider settings"),
+			zap.Error(poolErr))
+		providerPool = nil
+	}
+	if providerPool != nil {
 		if pps, ok := interface{}(loomService).(providerPoolSetter); ok {
 			pps.SetProviderPool(providerPool, config.ActiveProvider)
 			logger.Info("Provider pool configured on server",
@@ -2373,58 +2511,42 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("Provider pool injected into agent registry",
 				zap.Int("providers", len(providerPool)))
 		}
-		// Inject the task subsystem so registry-built agents reach Phase D
-		// (skills-overhaul task emission) and the sticky-while-open-tasks
-		// eviction checker. The per-agent memory.task_board.enabled flag
-		// still controls task_board tool surfacing; emission is always-on.
-		if registry != nil && taskManager != nil {
-			registry.SetTaskManager(taskManager, taskDecomposer)
-			logger.Info("Task manager injected into agent registry",
-				zap.Bool("decomposer_present", taskDecomposer != nil))
+		// NOTE: the task-manager, graph-memory, tool-surface, eval-store, and
+		// judge wiring all moved OUT of this pool-gated branch to the
+		// unconditional blocks after it — they must run whenever their
+		// subsystems exist, not only when a provider pool is configured.
+	}
+
+	// Inject server subsystems into the agent registry UNCONDITIONALLY (not gated
+	// on a provider pool) so registry-built agents on a single-provider server
+	// still receive the graph-memory store, task manager, and tool-surface
+	// policy. See wireRegistrySubsystems for the regression this guards.
+	if registry != nil {
+		wireRegistrySubsystems(registry, taskManager, taskDecomposer,
+			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), logger)
+	}
+
+	// Wire the eval store for ABTest result persistence — pool-independent.
+	if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
+		evalDBPath := config.Database.Path
+		if evalDBPath == "" {
+			evalDBPath = "./evals.db"
 		}
-		// Inject the graph memory subsystem so registry-built agents
-		// (gRPC-created or config-hot-reloaded) get the extractor. The
-		// per-agent memory.graph_memory.enabled flag in YAML can still
-		// opt out for a specific agent; the suppressed-tools list below
-		// controls tool surfacing independently.
-		if registry != nil && graphMemoryStore != nil {
-			registry.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
-			logger.Info("Graph memory store injected into agent registry",
-				zap.Bool("embedder_present", memoryEmbedder != nil))
+		if store, storeErr := evals.NewStore(evalDBPath); storeErr != nil {
+			logger.Warn("Failed to create eval store; ABTest results will not be persisted",
+				zap.Error(storeErr))
+		} else {
+			ess.SetEvalStore(store)
+			logger.Info("Eval store configured for ABTest persistence", zap.String("path", evalDBPath))
 		}
-		// Push the server-level tool-surface policy into the registry so
-		// gRPC-created agents see the same hidden-tools list as the
-		// statically-loaded ones. See builtinToolsToSuppress().
-		if registry != nil {
-			suppressed := builtinToolsToSuppress()
-			if len(suppressed) > 0 {
-				registry.SetSuppressedBuiltinTools(suppressed)
-				logger.Info("Suppressed builtin tools propagated to agent registry",
-					zap.Strings("tools", suppressed))
-			}
-		}
-		// Wire the eval store for ABTest result persistence.
-		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
-			evalDBPath := config.Database.Path
-			if evalDBPath == "" {
-				evalDBPath = "./evals.db"
-			}
-			if store, storeErr := evals.NewStore(evalDBPath); storeErr != nil {
-				logger.Warn("Failed to create eval store; ABTest results will not be persisted",
-					zap.Error(storeErr))
-			} else {
-				ess.SetEvalStore(store)
-				logger.Info("Eval store configured for ABTest persistence", zap.String("path", evalDBPath))
-			}
-		}
-		// Wire judgeServer into loomService so ABTest can resolve judge_id.
-		// Provide the active pool provider as the fallback LLM for evaluations.
-		activeProvider := providerPool[config.ActiveProvider]
-		judgeServer.SetProviderPool(providerPool, activeProvider)
-		if jss, ok := interface{}(loomService).(judgeServerSetter); ok {
-			jss.SetJudgeServer(judgeServer)
-			logger.Info("Judge server wired into loom service for ABTest judge_id resolution")
-		}
+	}
+	// Wire judgeServer into loomService so ABTest can resolve judge_id —
+	// pool-independent: without a pool the server's default provider judges,
+	// so single-provider servers get working evaluations too.
+	judgeServer.SetProviderPool(providerPool, resolveJudgeFallback(providerPool, config.ActiveProvider, llmProvider))
+	if jss, ok := interface{}(loomService).(judgeServerSetter); ok {
+		jss.SetJudgeServer(judgeServer)
+		logger.Info("Judge server wired into loom service for ABTest judge_id resolution")
 	}
 
 	// Set agent registry for workflow execution
@@ -2619,7 +2741,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		if learningDBPath == "" {
 			learningDBPath = filepath.Join(loomconfig.GetLoomDataDir(), "learning.db")
 		}
-		learningDB, err := sql.Open("sqlite3", learningDBPath)
+		// busy_timeout rides in the DSN so every pooled connection waits on
+		// lock contention instead of failing instantly with SQLITE_BUSY.
+		learningDB, err := sql.Open("sqlite3", sqlitedriver.DSN(learningDBPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 		if err != nil {
 			logger.Fatal("Failed to open database for learning agent", zap.Error(err))
 		}
@@ -3205,9 +3329,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				for _, toolName := range agentConfig.Tools.Builtin {
 					if toolName == "contact_human" {
 						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
-							Store:  hitlStore,
-							Tracer: tracer,
-							Logger: logger,
+							Store:    hitlStore,
+							Notifier: hitlNotifier(),
+							Tracer:   tracer,
+							Logger:   logger,
 						})
 						newAgent.RegisterTool(humanTool)
 						logger.Info("  Auto-registered contact_human tool (shared HITL store)",
@@ -3270,7 +3395,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Enable dynamic tool registration for discovered MCP tools
 				var mcpMgrAdapter shuttle.MCPManager
 				if mcpManager != nil {
-					mcpMgrAdapter = &mcpManagerAdapter{mgr: mcpManager.GetManager()}
+					mcpMgrAdapter = toolregistry.NewShuttleMCPManager(mcpManager.GetManager())
 				}
 				newAgent.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 				logger.Info("  Enabled dynamic tool registration")
@@ -3781,15 +3906,27 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 	}, nil
 }
 
-// mcpManagerAdapter adapts *manager.Manager to shuttle.MCPManager interface.
-// This is needed because manager.Manager.GetClient returns (*client.Client, error)
-// but the interface requires (interface{}, error) for generic handling.
-type mcpManagerAdapter struct {
-	mgr *manager.Manager
-}
-
-func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
-	return a.mgr.GetClient(serverName)
+// enabledMCPServerNames returns the names of the manager's servers that are
+// enabled in configuration, connected or not. Disabled servers are excluded:
+// their stale index rows would pass the search liveness filter, yet their
+// tools can never execute, so surfacing them only misleads agents (#334).
+// Skipped servers are logged so filtered-out tools stay traceable.
+func enabledMCPServerNames(mgr *manager.Manager, logger *zap.Logger) []string {
+	servers := mgr.ListServers()
+	names := make([]string, 0, len(servers))
+	var skipped []string
+	for _, s := range servers {
+		if !s.Enabled {
+			skipped = append(skipped, s.Name)
+			continue
+		}
+		names = append(names, s.Name)
+	}
+	if len(skipped) > 0 && logger != nil {
+		logger.Debug("Excluding disabled MCP servers from tool search",
+			zap.Strings("disabled_servers", skipped))
+	}
+	return names
 }
 
 // copyDir recursively copies a directory tree from src to dst.
