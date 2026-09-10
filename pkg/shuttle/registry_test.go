@@ -82,18 +82,36 @@ func TestRegistry_List(t *testing.T) {
 			t.Errorf("Expected to find %s in list", expected)
 		}
 	}
+	if got, want := list, []string{"tool1", "tool2", "tool3"}; !equalStrings(got, want) {
+		t.Errorf("Expected sorted list %v, got %v", want, got)
+	}
 }
 
 func TestRegistry_ListTools(t *testing.T) {
 	reg := NewRegistry()
 
-	reg.Register(&mockTool{name: "tool1", description: "desc1"})
 	reg.Register(&mockTool{name: "tool2", description: "desc2"})
+	reg.Register(&mockTool{name: "tool1", description: "desc1"})
 
 	tools := reg.ListTools()
 	if len(tools) != 2 {
 		t.Errorf("Expected 2 tools, got %d", len(tools))
 	}
+	if got := []string{tools[0].Name(), tools[1].Name()}; !equalStrings(got, []string{"tool1", "tool2"}) {
+		t.Errorf("Expected sorted tools, got %v", got)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRegistry_ListTools_DedupesAliasedTool is a regression test: when the
@@ -122,6 +140,26 @@ func TestRegistry_ListTools_DedupesAliasedTool(t *testing.T) {
 	}
 	if seen["mcp-server:base_readQuery"] != 1 {
 		t.Errorf("Expected aliased tool to appear exactly once, got %d", seen["mcp-server:base_readQuery"])
+	}
+}
+
+func TestRegistry_RegisterAliasDoesNotOverwriteDifferentTool(t *testing.T) {
+	reg := NewRegistry()
+	first := &mockTool{name: "server-a:query"}
+	second := &mockTool{name: "server-b:query"}
+	reg.Register(first)
+	reg.Register(second)
+
+	if !reg.RegisterAlias("query", first) {
+		t.Fatal("expected initial alias registration to succeed")
+	}
+	if reg.RegisterAlias("query", second) {
+		t.Fatal("expected colliding alias registration to fail")
+	}
+
+	actual, ok := reg.Get("query")
+	if !ok || actual.Name() != first.Name() {
+		t.Fatalf("expected alias to retain %q, got %#v", first.Name(), actual)
 	}
 }
 

@@ -12,7 +12,20 @@ import (
 	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestValidateMCPRemoteURLRejectsEnvironmentPlaceholders(t *testing.T) {
+	for _, transport := range []string{"http", "sse"} {
+		err := validateMCPRemoteURL(transport, "https://example.test/${MCP_TOKEN}")
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		assert.NotContains(t, err.Error(), "MCP_TOKEN")
+	}
+
+	assert.NoError(t, validateMCPRemoteURL("stdio", "${MCP_TOKEN}"))
+	assert.NoError(t, validateMCPRemoteURL("http", "https://example.test/api"))
+}
 
 // TestAddMCPServerPersistence tests that all fields are persisted correctly when adding an MCP server.
 func TestAddMCPServerPersistence(t *testing.T) {

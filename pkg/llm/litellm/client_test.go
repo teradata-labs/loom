@@ -152,6 +152,25 @@ func TestClientHealthCheckUsesLivelinessEndpoint(t *testing.T) {
 	require.NoError(t, client.HealthCheck(context.Background()))
 }
 
+func TestClientHealthCheckPreservesGatewayPathPrefix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "/litellm/health/liveliness", request.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL + "/litellm/v1/chat/completions"})
+	require.NoError(t, client.HealthCheck(context.Background()))
+}
+
+func TestNewClientCopiesExtraHeaders(t *testing.T) {
+	headers := map[string]string{"X-Tenant": "tenant-a"}
+	client := NewClient(Config{ExtraHeaders: headers})
+	headers["X-Tenant"] = "tenant-b"
+
+	assert.Equal(t, "tenant-a", client.extraHeaders["X-Tenant"])
+}
+
 func TestClientHealthCheckRejectsUnhealthyProxy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		assert.Equal(t, "/health/liveliness", request.URL.Path)

@@ -100,6 +100,9 @@ func TestNewClient(t *testing.T) {
 			assert.Equal(t, tt.want.maxTokens, got.maxTokens)
 			assert.Equal(t, tt.want.temperature, got.temperature)
 			assert.NotNil(t, got.httpClient)
+			transport, ok := got.httpClient.Transport.(*http.Transport)
+			require.True(t, ok)
+			assert.True(t, transport.ForceAttemptHTTP2)
 		})
 	}
 }

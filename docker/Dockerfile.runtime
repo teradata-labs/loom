@@ -6,7 +6,6 @@
 # BUILDPLATFORM = host platform (avoids emulating the compiler itself)
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
-ARG GIT_COMMIT=unknown
 ARG VERSION=unknown
 # TARGETARCH / TARGETOS are set automatically by `docker buildx build --platform`
 ARG TARGETARCH
@@ -27,7 +26,7 @@ COPY . .
 # GOOS/GOARCH cross-compile to the target platform (supports linux/amd64 + linux/arm64)
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -tags fts5 \
-    -ldflags="-s -w -X github.com/teradata-labs/loom/internal/version.Version=${VERSION} -X github.com/teradata-labs/loom/internal/version.GitCommit=${GIT_COMMIT}" \
+    -ldflags="-s -w -X github.com/teradata-labs/loom/internal/version.Version=${VERSION}" \
     -trimpath \
     -o /looms \
     ./cmd/looms
@@ -43,7 +42,8 @@ COPY --from=builder /looms /looms
 # Built-in skills library — Teradata runtime skills only
 COPY --from=builder /src/skills/ /opt/loom/skills/
 
-# Runtime patterns — domain execution patterns only (excludes weaver, fun, nasa, prompt_engineering, evaluation)
+# Runtime patterns — explicit allowlist of deployable domain execution patterns.
+# Add a COPY entry when introducing a new runtime pattern directory.
 COPY --from=builder /src/patterns/sql/ /opt/loom/patterns/sql/
 COPY --from=builder /src/patterns/postgres/ /opt/loom/patterns/postgres/
 COPY --from=builder /src/patterns/teradata/ /opt/loom/patterns/teradata/
@@ -73,9 +73,9 @@ ENV LOOM_SKIP_EMBEDDED_AGENTS=true
 #   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT — Opik OTLP ingest URL
 #   OTEL_EXPORTER_OTLP_TRACES_HEADERS  — "Opik-Project-Name=<deployment-id>"
 #   LOOM_OTLP_INSECURE                 — "true" for self-hosted (no TLS)
-# loom auto-selects OTel mode when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set
-# (see pkg/observability/auto_select.go — OTel takes priority over embedded/service).
-# No values are baked in here; they are injected at deploy time by AgentOpsCore.
+# The deployed agent must explicitly select observability mode "otel" (or set
+# observability.otlp_endpoint); generic OTEL_EXPORTER_OTLP_* injection never
+# changes a configured Hawk or embedded mode. No values are baked in here.
 ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=""
 ENV OTEL_EXPORTER_OTLP_TRACES_HEADERS=""
 ENV LOOM_OTLP_INSECURE=""

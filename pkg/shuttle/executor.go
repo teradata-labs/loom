@@ -343,22 +343,11 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
 	//
-	// Check both the requested name (alias/unqualified) and the canonical name
-	// so that deny rules written against either form are effective. Without this,
-	// a deny rule on the unqualified name would be inert once the tool is
-	// resolved to its server-qualified canonical name.
 	canonicalName := tool.Name()
 	req, admRes, denied := e.admit(ctx, canonicalName, normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
-	}
-	if toolName != canonicalName {
-		_, admRes2, denied2 := e.admit(ctx, toolName, normalizedParams)
-		if denied2 != nil {
-			adm = admRes2
-			return denied2, nil
-		}
 	}
 
 	// Handle large parameters: store in shared memory to prevent context bloat
@@ -735,8 +724,13 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
 	if len(matches) == 1 {
 		// Register an alias so subsequent calls skip this scan.
-		e.registry.RegisterAlias(toolName, matches[0])
-		return matches[0], nil
+		if e.registry.RegisterAlias(toolName, matches[0]) {
+			return matches[0], nil
+		}
+		if registered, ok := e.registry.Get(toolName); ok {
+			return registered, nil
+		}
+		return nil, fmt.Errorf("failed to register alias %q", toolName)
 	}
 	if len(matches) > 1 {
 		names := make([]string, len(matches))

@@ -550,9 +550,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
 
-	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
-	// injected, force observability on. See applyOTLPEnvOverride for full details.
-	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
+	applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
@@ -563,13 +561,6 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 				mode = "service"
 			} else {
 				mode = "embedded"
-			}
-		}
-
-		if otlpEnv != "" {
-			if mode != "otel" {
-				logOTLPModeOverride(logger, mode, otlpEnv)
-				mode = "otel"
 			}
 		}
 
@@ -629,7 +620,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 				Endpoint:       config.Observability.OTLPEndpoint,
 				Headers:        config.Observability.OTLPHeaders,
 				Insecure:       config.Observability.OTLPInsecure,
-				ServiceName:    "looms-workflow",
+				ServiceName:    otlpServiceName("looms-workflow"),
 				ServiceVersion: rootCmd.Version,
 				Privacy: observability.PrivacyConfig{
 					RedactCredentials: true,

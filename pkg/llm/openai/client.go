@@ -134,6 +134,7 @@ func NewClient(config Config) *Client {
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
 				DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				ForceAttemptHTTP2:     true,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 				MaxIdleConns:          100,

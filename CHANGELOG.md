@@ -31,8 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
 
 #### OTLP Runtime Integration
-- `applyOTLPEnvOverride` on both `looms serve` and `looms workflow` paths so the platform can enable tracing by injecting `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+- `looms serve` and `looms workflow` resolve standard OTLP endpoint and header variables after `mode: otel` or `observability.otlp_endpoint` explicitly selects OTLP; generic cluster OTEL variables never replace Hawk or embedded tracing.
 - In-process parent-linkage test added to the OTLP test suite.
+
+#### Runtime Image and Configuration
+- Multi-architecture `teradata/loom-runtime` image build recipes for Linux amd64 and arm64, with only the `looms` server, runtime patterns, and built-in skills included.
+- Trusted startup configuration supports single-pass `${VAR}` expansion; bare dollar signs are preserved, `$$` emits a literal dollar sign, and unresolved placeholders remain visible for diagnostics.
 
 ## [1.4.0] - 2026-08-12
 

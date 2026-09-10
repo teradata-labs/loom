@@ -433,7 +433,33 @@ jobs:
           path: bin/
 
   # ============================================================================
-  # Job 6: Security Scan
+  # Job 6: Runtime Image Build
+  # ============================================================================
+  runtime-image:
+    name: Runtime Image Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@f7f7f6e4b7f9409a8f414413881cb93aaf8e0e0a # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build runtime image for supported platforms
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$(cat VERSION)" \
+            --output type=oci,dest=/tmp/loom-runtime.tar \
+            -f docker/Dockerfile.runtime \
+            .
+
+  # ============================================================================
+  # Job 7: Security Scan
   # ============================================================================
   security:
     name: Security Scan

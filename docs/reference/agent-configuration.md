@@ -824,8 +824,14 @@ health_check:
 
 ## Environment Variable Expansion
 
-Agent YAML files support `${VAR}` and `$VAR` syntax. Variables are expanded from the process
-environment at load time via `os.Expand`.
+Agent YAML loading supports `${VAR}` and `$VAR` syntax. Variables are expanded
+from the process environment at load time via `os.Expand`.
+
+Trusted server-startup settings for LLM, MCP, and OTLP values use a stricter
+single-pass expander: only `${VAR}` is expanded, bare dollar signs are
+preserved, `$$` emits one literal dollar sign, and an unresolved placeholder is
+preserved for diagnostics. Runtime management APIs do not expand
+caller-supplied configuration.
 
 ```yaml
 spec:

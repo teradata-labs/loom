@@ -41,7 +41,7 @@ func TestExpandEnvPlaceholders(t *testing.T) {
 
 func TestUnresolvedEnvPlaceholders(t *testing.T) {
 	t.Setenv("LOOM_TEST_SET", "value")
-	got := UnresolvedEnvPlaceholders("$bare $$ ${LOOM_TEST_SET} ${MISSING_B} ${MISSING_A} ${MISSING_B}")
+	got := UnresolvedEnvPlaceholders("$bare $$ $${ESCAPED_LITERAL} ${LOOM_TEST_SET} ${MISSING_B} ${MISSING_A} ${MISSING_B}")
 	want := []string{"MISSING_A", "MISSING_B"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("UnresolvedEnvPlaceholders() = %v, want %v", got, want)

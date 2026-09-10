@@ -15,6 +15,7 @@ package shuttle
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -68,6 +69,7 @@ func (r *Registry) List() []string {
 	for name := range r.tools {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -98,6 +100,7 @@ func (r *Registry) ListTools() []Tool {
 		seen[name] = struct{}{}
 		tools = append(tools, tool)
 	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
 	return tools
 }
 
@@ -121,6 +124,7 @@ func (r *Registry) ListByBackend(backend string) []Tool {
 		seen[name] = struct{}{}
 		tools = append(tools, tool)
 	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
 	return tools
 }
 
@@ -142,16 +146,16 @@ func (r *Registry) Unregister(name string) {
 // RegisterAlias registers an existing tool under an additional alias name.
 // This allows callers to look up a tool by both its canonical prefixed name
 // (e.g. "teradata-aiop:base_databaseList") and a plain alias
-// (e.g. "base_databaseList") without duplicating the tool implementation.
-//
-// Known limitation: aliases are permanent once registered. If a second MCP
-// server later registers a tool with the same unqualified name, the alias
-// still routes to the first winner. The ambiguity guard in
-// tryDynamicRegistration only fires on the initial resolution pass.
-func (r *Registry) RegisterAlias(alias string, tool Tool) {
+// (e.g. "base_databaseList") without duplicating the tool implementation. It
+// returns false rather than overwriting an existing alias for a different tool.
+func (r *Registry) RegisterAlias(alias string, tool Tool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if existing, ok := r.tools[alias]; ok && existing.Name() != tool.Name() {
+		return false
+	}
 	r.tools[alias] = tool
+	return true
 }
 
 // Count returns the number of registered tools.

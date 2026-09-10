@@ -619,7 +619,6 @@ backup:
 build-runtime tag=`cat VERSION`:
     docker build \
         --build-arg VERSION=$(cat VERSION) \
-        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
         -t teradata/loom-runtime:{{tag}} \
         -f docker/Dockerfile.runtime \
         .
@@ -631,7 +630,6 @@ build-runtime-multiarch tag=`cat VERSION`:
     docker buildx build \
         --platform linux/amd64,linux/arm64 \
         --build-arg VERSION=$(cat VERSION) \
-        --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
         -t teradata/loom-runtime:{{tag}} \
         -f docker/Dockerfile.runtime \
         --output type=oci,dest=loom-runtime-{{tag}}.tar \

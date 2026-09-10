@@ -1156,9 +1156,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Create tracer based on mode
 	var tracer observability.Tracer
 
-	// Platform env-var override: when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is
-	// injected, force observability on. See applyOTLPEnvOverride for full details.
-	otlpEnv := applyOTLPEnvOverride(&config.Observability, logger)
+	applyOTLPEnvOverride(&config.Observability, logger)
 
 	if config.Observability.Enabled {
 		mode := config.Observability.Mode
@@ -1173,13 +1171,6 @@ func runServe(cmd *cobra.Command, args []string) {
 				mode = "service"
 			} else {
 				mode = "embedded"
-			}
-		}
-
-		if otlpEnv != "" {
-			if mode != "otel" {
-				logOTLPModeOverride(logger, mode, otlpEnv)
-				mode = "otel"
 			}
 		}
 
@@ -1237,7 +1228,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				Endpoint:       config.Observability.OTLPEndpoint,
 				Headers:        config.Observability.OTLPHeaders,
 				Insecure:       config.Observability.OTLPInsecure,
-				ServiceName:    "looms",
+				ServiceName:    otlpServiceName("looms"),
 				ServiceVersion: rootCmd.Version,
 				Privacy: observability.PrivacyConfig{
 					RedactCredentials: true,
@@ -3546,11 +3537,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		defer preflightCancel()
 
 		if err := server.ValidateProviders(preflightCtx, agents); err != nil {
-			// Log as a warning rather than fatal: some providers (e.g. LiteLLM)
-			// now expose a real HealthCheck endpoint that may not be reachable
-			// in all environments (auth-gated, different path convention, cold
-			// start). Failing to reach it does not mean completions will fail.
-			logger.Warn("LLM provider preflight check failed (non-fatal, server will start)", zap.Error(err))
+			logger.Fatal("LLM provider preflight check failed", zap.Error(err))
 		} else {
 			logger.Info("All LLM provider preflight checks passed",
 				zap.Int("agents_checked", len(agents)))
@@ -3934,16 +3921,13 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
 		// servers without explicit "enabled: false" in YAML default to true.
 
-		// Header expansion is handled by the manager (expandEnvHeaders) using
-		// the safe ${VAR} expander — do NOT expand here to avoid double-expansion.
-
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,
 			Args:             serverConfig.Args,
 			Env:              serverConfig.Env,
 			Transport:        transport,
-			URL:              serverConfig.URL,
-			Headers:          serverConfig.Headers,
+			URL:              loomconfig.ExpandEnvPlaceholders(serverConfig.URL),
+			Headers:          expandMCPHeaders(serverConfig.Headers),
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
 			Enabled:          enabled,
@@ -3967,6 +3951,17 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 	return &mcpManager{
 		manager: mcpMgr,
 	}, nil
+}
+
+func expandMCPHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	expanded := make(map[string]string, len(headers))
+	for key, value := range headers {
+		expanded[key] = loomconfig.ExpandEnvPlaceholders(value)
+	}
+	return expanded
 }
 
 // enabledMCPServerNames returns the names of the manager's servers that are

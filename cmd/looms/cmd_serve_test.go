@@ -195,3 +195,32 @@ func TestInitializeMCPManager_HandlesNilLogger(t *testing.T) {
 	// Skip - integration test requiring real MCP server binaries
 	t.Skip("Integration test - requires real MCP server binaries")
 }
+
+func TestExpandMCPHeaders(t *testing.T) {
+	t.Setenv("MCP_TOKEN", "secret$value")
+
+	tests := []struct {
+		name   string
+		input  map[string]string
+		expect map[string]string
+	}{
+		{name: "nil map", input: nil, expect: nil},
+		{name: "empty map", input: map[string]string{}, expect: map[string]string{}},
+		{
+			name:   "placeholder expanded once",
+			input:  map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"},
+			expect: map[string]string{"Authorization": "Bearer secret$value"},
+		},
+		{
+			name:   "unset placeholder is preserved",
+			input:  map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+			expect: map[string]string{"X-Key": "${UNSET_VAR_12345}"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expect, expandMCPHeaders(test.input))
+		})
+	}
+}

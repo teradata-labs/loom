@@ -145,6 +145,29 @@ func TestAdmission_Allow_RunsToolAndReturnsResult(t *testing.T) {
 	require.Equal(t, map[string]interface{}{"k": "v"}, tool.LastParams)
 }
 
+func TestAdmission_AliasAdmittedOnceUsingCanonicalName(t *testing.T) {
+	reg := NewRegistry()
+	tool := countingTool("mcp-server:write_query")
+	reg.Register(tool)
+	reg.RegisterAlias("write_query", tool)
+
+	var admitted []string
+	exec := NewExecutor(reg)
+	exec.SetAdmissionChain(NewChain([]Hook{fixedHook{
+		match: func(req AdmissionRequest) bool {
+			admitted = append(admitted, req.ToolName)
+			return true
+		},
+		decision: Decision{Kind: Allow},
+	}}, nil, nil))
+
+	result, err := exec.Execute(context.Background(), "write_query", nil)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, []string{"mcp-server:write_query"}, admitted)
+	require.Equal(t, 1, tool.ExecuteCount)
+}
+
 // ac3: a tool call matched by no hook behaves exactly as with no chain attached
 // — the §8-R2 byte-for-byte pass-through guard. The no-chain baseline and a
 // chain whose only hook never matches must yield identical Results.

@@ -20,24 +20,24 @@ import (
 	"go.uber.org/zap"
 )
 
-// applyOTLPEnvOverride inspects the standard and Loom OTLP endpoint
-// environment variables and, when one is set, force-enables observability and
-// overrides the endpoint/headers/insecure fields from env vars.
+// applyOTLPEnvOverride inspects standard and Loom OTLP endpoint environment
+// variables when OTLP was selected in configuration, then overrides the
+// endpoint/headers/insecure fields from environment values.
 //
-// This lets the platform (AgentOpsCore) enable and redirect traces at
-// deploy-time by injecting a single env var, without requiring the operator
-// to patch the agent's looms.yaml config artifact.
+// A generic OTEL_EXPORTER_OTLP_* variable must not enable observability or
+// change a configured Hawk/embedded mode: those variables are often injected
+// by cluster-wide instrumentation. Operators opt in with mode: otel or an
+// explicit observability.otlp_endpoint.
 //
 // Returns the effective OTLP endpoint string (empty when the env var is unset).
 func applyOTLPEnvOverride(obs *ObservabilityConfig, logger *zap.Logger) string {
-	otlpEnv := observability.ResolveOTLPEndpointEnv()
-	if otlpEnv == "" {
+	if obs.Mode != "otel" && obs.OTLPEndpoint == "" {
 		return ""
 	}
 
-	if !obs.Enabled {
-		logger.Info("Enabling observability (OTLP endpoint environment variable is set)")
-		obs.Enabled = true
+	otlpEnv := observability.ResolveOTLPEndpointEnv()
+	if otlpEnv == "" {
+		return ""
 	}
 
 	// Env var always wins over config-file values so the platform can relocate
@@ -55,14 +55,6 @@ func applyOTLPEnvOverride(obs *ObservabilityConfig, logger *zap.Logger) string {
 	return otlpEnv
 }
 
-// logOTLPModeOverride emits an Info log when the observability mode is being
-// changed to "otel" because of the OTLP env-var injection.
-func logOTLPModeOverride(logger *zap.Logger, originalMode, otlpEndpoint string) {
-	logger.Info("Overriding observability mode to otel (OTLP endpoint environment variable is set)",
-		zap.String("original_mode", originalMode),
-		zap.String("otlp_endpoint", otlpEndpoint))
-}
-
 func firstConfiguredEnv(keys ...string) string {
 	for _, key := range keys {
 		if value := os.Getenv(key); value != "" {
@@ -70,4 +62,11 @@ func firstConfiguredEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func otlpServiceName(defaultName string) string {
+	if serviceName := os.Getenv("OTEL_SERVICE_NAME"); serviceName != "" {
+		return serviceName
+	}
+	return defaultName
 }

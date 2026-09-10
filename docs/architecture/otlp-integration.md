@@ -314,6 +314,13 @@ OTEL_SERVICE_VERSION                   ← ServiceVersion
 
 These are the canonical env vars used by the OTel spec — any operator familiar with OTel will expect them to work.
 
+For `looms serve` and `looms workflow`, these environment values configure an
+already selected OTLP tracer. Set `observability.mode: otel` or an explicit
+`observability.otlp_endpoint` to select OTLP. `OTEL_SERVICE_NAME` overrides
+the command default (`looms` or `looms-workflow`) only after OTLP is selected.
+A generic `OTEL_EXPORTER_OTLP_*` variable never changes an explicitly
+configured Hawk or embedded tracer mode.
+
 **Loom-specific fallback env vars** (when OTel standard vars are not set):
 
 ```

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -138,6 +139,9 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 	if !validTransports[req.Transport] {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, or sse)", req.Transport)
 	}
+	if err := validateMCPRemoteURL(req.Transport, req.Url); err != nil {
+		return nil, err
+	}
 
 	// Validate command exists (for stdio transport)
 	if req.Transport == "stdio" {
@@ -200,15 +204,15 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 			if s.logger != nil {
 				s.logger.Error("Failed to start MCP server",
 					zap.String("server", req.Name),
-					zap.Error(err))
+					zap.String("transport", req.Transport))
 			}
 			return &loomv1.AddMCPServerResponse{
 				Success: false,
-				Message: fmt.Sprintf("Server failed validation: %v", err),
+				Message: "Server failed validation",
 				Server: &loomv1.MCPServerInfo{
 					Name:    req.Name,
 					Status:  "error",
-					Error:   err.Error(),
+					Error:   "Server failed validation",
 					Enabled: req.Enabled,
 				},
 			}, nil
@@ -305,6 +309,9 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 	if req.Transport != "" && !validTransports[req.Transport] {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, or sse)", req.Transport)
 	}
+	if err := validateMCPRemoteURL(req.Transport, req.Url); err != nil {
+		return nil, err
+	}
 
 	// Validate command exists (for stdio transport)
 	if req.Transport == "stdio" || req.Transport == "" {
@@ -393,9 +400,9 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 			if s.logger != nil {
 				s.logger.Error("Failed to restart server after update",
 					zap.String("server", req.ServerName),
-					zap.Error(err))
+					zap.String("transport", req.Transport))
 			}
-			return nil, status.Errorf(codes.Internal, "failed to restart server: %v", err)
+			return nil, status.Error(codes.Internal, "failed to restart server")
 		}
 	}
 
@@ -417,6 +424,13 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		Connected: req.RestartIfRunning && wasConnected,
 		Status:    "updated",
 	}, nil
+}
+
+func validateMCPRemoteURL(transport, url string) error {
+	if (transport == "http" || transport == "sse") && strings.Contains(url, "${") {
+		return status.Error(codes.InvalidArgument, "environment placeholders are not allowed in MCP server URLs")
+	}
+	return nil
 }
 
 // DeleteMCPServer removes an MCP server.
