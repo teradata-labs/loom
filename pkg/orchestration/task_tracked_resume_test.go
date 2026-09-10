@@ -342,3 +342,60 @@ func TestFindRootTask_FindsTheRootBehind100Stages(t *testing.T) {
 	require.NotNil(t, root, "the root behind 100+ higher-priority stage rows was invisible to the unpaged read")
 	require.True(t, isWorkflowRootTask(root))
 }
+
+// TestTaskTrackedResume_DuplicateAgentParallelMapsByTaskIndex is MINOR-001's
+// regression: with the SAME agent id in two parallel stages, agent-id matching
+// alone claimed whichever twin row was still free — completion order decided
+// which stage got which output. ParallelExecutor stamps task_index on every
+// result, and that is the only unambiguous key for duplicate agents; the
+// mapping must follow it regardless of completion order.
+func TestTaskTrackedResume_DuplicateAgentParallelMapsByTaskIndex(t *testing.T) {
+	tracked, o, mgr := newTrackedRig(t)
+	ctx := context.Background()
+
+	// One agent, two stages, distinguishable outputs per call: the mock LLM
+	// serves its scripted responses in call order.
+	o.RegisterAgent("dup", createMockAgent(t, "dup",
+		newMockLLMProvider("OUTPUT-FIRST-CALL", "OUTPUT-SECOND-CALL")))
+
+	pattern := &loomv1.WorkflowPattern{
+		Pattern: &loomv1.WorkflowPattern_Parallel{
+			Parallel: &loomv1.ParallelPattern{
+				Tasks: []*loomv1.AgentTask{
+					{AgentId: "dup", Prompt: "stage zero"},
+					{AgentId: "dup", Prompt: "stage one"},
+				},
+				MergeStrategy: loomv1.MergeStrategy_CONCATENATE,
+			},
+		},
+	}
+
+	result, err := o.ExecutePattern(ctx, pattern)
+	require.NoError(t, err)
+	require.Len(t, result.AgentResults, 2)
+
+	// Ground truth from the results themselves: task_index -> output.
+	wantByIndex := map[string]string{}
+	for _, r := range result.AgentResults {
+		idx := r.GetMetadata()["task_index"]
+		require.NotEmpty(t, idx, "ParallelExecutor stamps task_index on every result")
+		wantByIndex[idx] = r.Output
+	}
+
+	boards, err := mgr.ListBoards(ctx)
+	require.NoError(t, err)
+	require.Len(t, boards, 1)
+	rows, err := tracked.listAllBoardTasks(ctx, boards[0].ID)
+	require.NoError(t, err)
+	checked := 0
+	for _, tk := range rows {
+		if !isStageTask(tk) {
+			continue
+		}
+		idx := tk.Metadata[stageIndexMetadataKey]
+		require.Contains(t, tk.Notes, wantByIndex[idx],
+			"stage %s recorded another stage's output — duplicate-agent mapping must follow task_index, not claim order", idx)
+		checked++
+	}
+	require.Equal(t, 2, checked)
+}

@@ -817,9 +817,28 @@ func (t *TaskTrackedOrchestrator) recordResults(
 		}
 	}
 	sort.Slice(stageRows, func(a, b int) bool { return stageIndexOf(stageRows[a]) < stageIndexOf(stageRows[b]) })
-	claimRow := func(agentID string) *task.Task {
+	claimRow := func(res *loomv1.AgentResult) *task.Task {
+		// PRIMARY key: the producer's own task_index. ParallelExecutor stamps
+		// it on every result, and it is the only unambiguous key when one
+		// agent id appears in several stages — matching by agent id alone,
+		// each duplicate-agent result claimed whichever of the twin rows was
+		// still free, writing each output into the other stage's task on the
+		// wrong completion order.
+		if idxStr := res.GetMetadata()["task_index"]; idxStr != "" {
+			if idx, err := strconv.Atoi(idxStr); err == nil {
+				for i, tk := range stageRows {
+					if tk != nil && stageIndexOf(tk) == idx {
+						stageRows[i] = nil
+						return tk
+					}
+				}
+			}
+		}
+		// FALLBACK for producers that do not stamp task_index (fork_join and
+		// swarm executors today): first unclaimed row for the agent, in stage
+		// order — exact for distinct agents, first-free for duplicates.
 		for i, tk := range stageRows {
-			if tk == nil || tk.Metadata[agentIDMetadataKey] != agentID {
+			if tk == nil || tk.Metadata[agentIDMetadataKey] != res.AgentId {
 				continue
 			}
 			stageRows[i] = nil
@@ -828,7 +847,7 @@ func (t *TaskTrackedOrchestrator) recordResults(
 		return nil
 	}
 	for _, agentResult := range result.AgentResults {
-		tk := claimRow(agentResult.AgentId)
+		tk := claimRow(agentResult)
 		if tk == nil {
 			continue
 		}
