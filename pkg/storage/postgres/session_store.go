@@ -584,7 +584,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
@@ -728,7 +728,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.content_search @@ websearch_to_tsquery('english', $3)

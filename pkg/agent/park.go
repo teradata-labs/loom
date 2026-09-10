@@ -366,6 +366,13 @@ func (a *Agent) claimParkedRequest(ctx context.Context, hr *shuttle.HumanRequest
 				zap.Error(eerr))
 			return ErrClaimNotConfirmed
 		}
+		// The row is retired HERE, successfully — which puts it beyond the
+		// lapsed-TTL reclaim, whose guard consults pending rows only. Settle
+		// the task and memo now or nothing ever will (round-7's residual M2
+		// leg): the expiry above is precisely a declaration that the parked
+		// turn is finished without a resume.
+		a.settleAbandonedParkTask(ctx, hr,
+			"Human decision expired before it could be claimed; the turn was abandoned.")
 		return ErrDecisionExpired
 	}
 

@@ -262,6 +262,13 @@ type StatusCounter interface {
 // returns (the settled row, ErrTaskAlreadyTerminal) — the same shape as
 // CloseTask. The scoping-wrapper rule on StatusCounter applies here too: hold
 // the inner store in a named field, never embed it.
+//
+// The StatusCounter scoping-wrapper contract applies here with higher stakes:
+// a wrapper that EMBEDS its inner store promotes the inner CancelTask, the
+// assertion succeeds, and the manager cancels by id through the UNSCOPED inner
+// statement — a bypassed read leaks counts, a bypassed WRITE mutates another
+// tenant's row. Hold the inner store in a named field and implement this only
+// with a scoped statement.
 type TaskCanceller interface {
 	CancelTask(ctx context.Context, taskID, reason string) (*Task, error)
 }

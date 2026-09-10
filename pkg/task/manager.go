@@ -168,8 +168,12 @@ const countFallbackMaxPages = 500
 //
 // Uses the store's aggregate when it implements StatusCounter — one query,
 // independent of board size. Otherwise pages through ListTasks and accumulates,
-// which is slower, and exact only because both in-repo stores now order pages on a unique tiebreak (created_at alone is second-resolution, and OFFSET paging over non-unique keys double-counts and drops rows across page boundaries); a downstream store without a total order can still return approximate counts here; the previous implementation fetched a single
-// capped page and silently under-reported any board larger than the cap.
+// which is slower, and exact only because both in-repo stores now order pages
+// on a unique tiebreak (created_at alone is second-resolution, and OFFSET
+// paging over non-unique keys double-counts and drops rows across page
+// boundaries). A downstream store without a total order can still return
+// approximate counts here. The previous implementation fetched a single capped
+// page and silently under-reported any board larger than the cap.
 func (m *Manager) CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
 	ctx, span := m.tracer.StartSpan(ctx, "task_manager.count_by_status")
 	defer m.tracer.EndSpan(span)
@@ -325,6 +329,12 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	existing, err := m.store.GetTask(ctx, taskID)
 	if err != nil {
 		return nil, err
+	}
+	if existing == nil {
+		// Some stores report absence as (nil, nil) — this round's whole theme
+		// was a store returning a shape the manager didn't expect. CancelTask
+		// gained this guard in round 6; the close path dereferenced unguarded.
+		return nil, fmt.Errorf("close task %s: not found", taskID)
 	}
 	oldStatus := StatusName(existing.Status)
 

@@ -555,3 +555,36 @@ func TestPark_ResumeIdentityCaptureRacesSetID(t *testing.T) {
 	require.Equal(t, hr.TaskID, after.ID, "the resume restored the parked task, not a fresh one")
 	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, after.Status)
 }
+
+// TestPark_ClaimExpiredRaceSettlesItsTask pins round-7's residual M2 leg: when
+// the row lapses BETWEEN the resume's expiry check and the claim write, the
+// claim retires the row itself and returns ErrDecisionExpired — which aborts
+// the resume before the mirror close, and the now-non-pending row is beyond
+// the lapsed-TTL reclaim, whose guard consults pending rows only. The claim's
+// race branch must settle the task at the moment it retires the row.
+func TestPark_ClaimExpiredRaceSettlesItsTask(t *testing.T) {
+	r := newParkTaskRig(t, firstActionParkScript(), "export_csv")
+	ctx := context.Background()
+
+	hr := r.parkAndAssert(t, "s-claimrace", "export the table")
+	parked := r.onlyTask(t, "s-claimrace")
+
+	// The row lapses after the resume's own expiry check would have passed —
+	// simulated by lapsing it now and calling the claim with expired=false,
+	// which is exactly the state the race branch exists for.
+	hr.ExpiresAt = time.Now().Add(-time.Second)
+	require.NoError(t, r.park.Update(ctx, hr))
+
+	err := r.ag.claimParkedRequest(ctx, hr, ParkDecision{RequestID: hr.ID, Approved: true}, false)
+	require.ErrorIs(t, err, ErrDecisionExpired)
+
+	got, err := r.tasks.GetTask(ctx, parked.ID)
+	require.NoError(t, err)
+	require.True(t, task.IsTerminal(got.Status),
+		"the claim retired the row; the task must not be orphaned beyond the reclaim; got %s",
+		task.StatusName(got.Status))
+
+	after, err := r.park.Get(ctx, hr.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, "pending", after.Status)
+}

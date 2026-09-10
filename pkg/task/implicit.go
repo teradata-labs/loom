@@ -396,15 +396,6 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.mu.Unlock()
 		return e.bind(ctx, r, id), nil, nil
 	}
-	// The span starts here, past the memo hit, on purpose: a hit is a map
-	// lookup and a turn with forty tool calls takes it thirty-nine times.
-	// Everything below is store traffic inside the user's turn — up to four
-	// round trips — and that is what an operator needs to see the cost of.
-	ctx, span := e.tracer.StartSpan(ctx, "implicit_task.ensure_for_turn")
-	defer e.tracer.EndSpan(span)
-	span.SetAttribute("session_id", r.SessionID)
-	span.SetAttribute("turn", r.TurnIndex)
-	span.SetAttribute("trigger", r.Trigger.String())
 	// MaxPerSession is an IN-PROCESS noise guard, decided deliberately rather
 	// than left as an accident: it bounds how much one conversation can grow a
 	// board between restarts, and it is NOT a durable quota. A process restart
@@ -433,6 +424,20 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.perSession[r.SessionID]++
 	}
 	e.mu.Unlock()
+
+	// The span starts HERE — past the memo hit and the cap check, and, just as
+	// deliberately, OUTSIDE e.mu: a memo hit is a map lookup a forty-tool turn
+	// takes thirty-nine times, and Tracer is a pluggable exported interface —
+	// an implementation that allocates, blocks, or takes its own lock must not
+	// stall implicit emission for every session in the process (round-7).
+	// Everything below is store traffic inside the user's turn — up to four
+	// round trips — and that is what an operator needs to see the cost of.
+	ctx, span := e.tracer.StartSpan(ctx, "implicit_task.ensure_for_turn")
+	defer e.tracer.EndSpan(span)
+	span.SetAttribute("session_id", r.SessionID)
+	span.SetAttribute("turn", r.TurnIndex)
+	span.SetAttribute("trigger", r.Trigger.String())
+
 	release := func() {
 		if !reserved {
 			return

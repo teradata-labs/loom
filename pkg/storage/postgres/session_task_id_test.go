@@ -42,7 +42,10 @@ func TestMessages_TaskIDStampsAndRoundTrips_Postgres(t *testing.T) {
 	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
 	userID := hrUniqueID("msg-user")
 	sessionID := hrUniqueID("msg-sess")
-	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id) VALUES ($1, 'agent-1')", sessionID)
+	// user_id on the session row is what the agent-scoped JOIN paths filter on
+	// (s.user_id = $2) — without it LoadMessagesForAgent/SearchMessagesByAgent
+	// legitimately return nothing and the round-7 N1 coverage would be vacuous.
+	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
@@ -73,4 +76,19 @@ func TestMessages_TaskIDStampsAndRoundTrips_Postgres(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ranged, 3)
 	require.Equal(t, "task-explicit", ranged[0].TaskID)
+
+	// The two JOIN paths are the seam this test exists to cover (round-7 N1):
+	// scanMessages gained a 15th destination and these two SELECTs kept 14
+	// columns, so BOTH failed on every call with pgx's field-count error — it
+	// compiled, vetted, and passed CI, because their only prior coverage was
+	// behind the integration build tag. Every scanMessages caller must run in
+	// this ordinary env-gated lane.
+	byAgent, err := store.LoadMessagesForAgent(userCtx, "agent-1")
+	require.NoError(t, err, "LoadMessagesForAgent must select every column scanMessages scans")
+	require.NotEmpty(t, byAgent)
+	require.Equal(t, "task-explicit", byAgent[0].TaskID)
+
+	found, err := store.SearchMessagesByAgent(userCtx, "agent-1", "explicit", 10)
+	require.NoError(t, err, "SearchMessagesByAgent must select every column scanMessages scans")
+	require.NotEmpty(t, found)
 }
