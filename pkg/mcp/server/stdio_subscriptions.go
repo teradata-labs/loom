@@ -171,12 +171,21 @@ func (s *MCPServer) startStdioSubscription(ctx context.Context, t transport.Tran
 		// child context too or it accumulates on the Serve context across
 		// overflow/re-subscribe cycles (round-3 finding 3).
 		defer cancel()
-		defer func() {
-			s.subsMu.Lock()
-			delete(s.subscriptions, subKey)
-			s.subsMu.Unlock()
-			conn.remove(listenID)
-		}()
+		// Single-flight: the overflow path runs cleanup inline BEFORE the
+		// cancelled notification, so the listen id is already reusable when
+		// the client learns of the gap. Once run, the deferred call is a
+		// no-op — the old pump can never remove a successor's registration
+		// under the same id.
+		var cleanupOnce sync.Once
+		cleanup := func() {
+			cleanupOnce.Do(func() {
+				s.subsMu.Lock()
+				delete(s.subscriptions, subKey)
+				s.subsMu.Unlock()
+				conn.remove(listenID)
+			})
+		}
+		defer cleanup()
 
 		ack, err := marshalNotification(protocol.NotificationSubscriptionAcknowledged, map[string]interface{}{
 			"_meta":         map[string]json.RawMessage{protocol.MetaSubscriptionID: idJSON},
@@ -202,7 +211,10 @@ func (s *MCPServer) startStdioSubscription(ctx context.Context, t transport.Tran
 			case <-sub.overflow:
 				// The connection stays up on stdio, so the gap signal is a
 				// server-initiated notifications/cancelled for this listen
-				// id: the client re-subscribes and refetches.
+				// id: the client re-subscribes and refetches. Free the id
+				// first — cancelled is the client's cue to re-subscribe, so
+				// the id must be reusable before the cue can arrive.
+				cleanup()
 				cancelled, err := marshalNotification(protocol.NotificationCancelled, map[string]interface{}{
 					"_meta":     map[string]json.RawMessage{protocol.MetaSubscriptionID: idJSON},
 					"requestId": json.RawMessage(idJSON),
