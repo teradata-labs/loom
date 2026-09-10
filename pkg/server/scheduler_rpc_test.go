@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -42,11 +43,13 @@ func setupTestSchedulerServer(t *testing.T) (*MultiAgentServer, *scheduler.Sched
 		LLMProvider: nil,
 	})
 
-	// Create scheduler with in-memory database
-	// Each call to setupTestSchedulerServer gets its own isolated :memory: database
+	// Create scheduler with a per-test database file. Not :memory: — the store
+	// opens its DSN with cache=shared, and for :memory: that means every
+	// scheduler in the process shares one database, so a test's schedule IDs
+	// collide with its own earlier runs under -count>1.
 	sched, err := scheduler.NewScheduler(ctx, scheduler.Config{
 		WorkflowDir:  "",
-		DBPath:       ":memory:",
+		DBPath:       filepath.Join(t.TempDir(), "scheduler.db"),
 		Orchestrator: orchestrator,
 		Registry:     registry,
 		Tracer:       observability.NewNoOpTracer(),
@@ -933,11 +936,13 @@ func TestCancelScheduledExecution_AlreadyFinished(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, trig.ExecutionId)
 
-	// Wait for the run to be recorded before cancelling it.
+	// Wait for the run to be recorded before cancelling it. The bound is a hang
+	// guard, not a performance assertion: it only has to fail with a message
+	// rather than let a stuck run hit the package timeout.
 	require.Eventually(t, func() bool {
 		hist, err := server.GetScheduleHistory(ctx, &loomv1.GetScheduleHistoryRequest{ScheduleId: schedule.Id})
 		return err == nil && len(hist.Executions) == 1
-	}, 5*time.Second, 5*time.Millisecond, "the triggered run never recorded a verdict")
+	}, 30*time.Second, 5*time.Millisecond, "the triggered run never recorded a verdict")
 
 	resp, err := server.CancelScheduledExecution(ctx, &loomv1.CancelScheduledExecutionRequest{
 		ExecutionId: trig.ExecutionId,

@@ -172,10 +172,10 @@ func agentWorkflow(id string) *loomv1.ScheduledWorkflow {
 // awaitDrainCond fails the test instead of hanging. Every wait here goes
 // through it: the failure this file guards against is a shutdown that never
 // finishes, and a bare channel receive would report that as a CI timeout with
-// nothing to read.
+// nothing to read. The bound is hangGuard, for the reasons given there.
 func awaitDrainCond(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	require.Eventually(t, cond, 10*time.Second, 5*time.Millisecond, what)
+	require.Eventually(t, cond, hangGuard, 5*time.Millisecond, what)
 }
 
 // TestStopDrainsInFlightRuns covers F6.
@@ -198,10 +198,13 @@ func TestStopDrainsInFlightRuns(t *testing.T) {
 		wantError  string
 	}{
 		{
-			name:       "hung run is signaled and its record still lands",
-			inFlight:   true,
-			grace:      200 * time.Millisecond,
-			maxStop:    10 * time.Second,
+			name:     "hung run is signaled and its record still lands",
+			inFlight: true,
+			grace:    200 * time.Millisecond,
+			// Far below max_execution_seconds (an hour by default), which is
+			// what this proves Stop does not wait out; generous enough not to
+			// be a performance assertion on a slow runner.
+			maxStop:    hangGuard,
 			wantStatus: "canceled",
 			wantError:  shutdownCancelReason,
 		},
@@ -231,7 +234,7 @@ func TestStopDrainsInFlightRuns(t *testing.T) {
 
 				select {
 				case <-h.llm.started:
-				case <-time.After(10 * time.Second):
+				case <-time.After(hangGuard):
 					t.Fatal("the workflow never reached the agent, so nothing was in flight to drain")
 				}
 				awaitDrainCond(t, "the run should be advertised as cancellable", func() bool {

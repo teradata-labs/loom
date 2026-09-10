@@ -44,20 +44,30 @@ func failingSchedule(id string) *loomv1.ScheduledWorkflow {
 	}
 }
 
-// waitFor spins until cond holds, failing the test rather than hanging forever.
+// hangGuard bounds every wait in the scheduler tests.
 //
-// Every wait in this file goes through here on purpose: a lock-ordering
-// regression in the cancel path deadlocks, and a bare channel receive would
-// turn that into a CI timeout with no indication of which invariant broke.
+// It is a hang guard, not a performance bound. Its only job is to turn a
+// deadlock — a lock-ordering regression in the cancel path, say — into a
+// failure that names the invariant, instead of the bare CI timeout a channel
+// receive would produce. It is therefore generous: on a CI runner under -race
+// and atomic coverage, with the parallel tests in this package competing for
+// CPU, a real agent run has been observed to take over four seconds to settle,
+// and a guard sized to local timings failed there.
+const hangGuard = 30 * time.Second
+
+// waitFor spins until cond holds, failing the test rather than hanging forever.
+// Every wait in this file goes through here on purpose; see hangGuard.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
-		time.Sleep(200 * time.Microsecond)
+		// Long enough not to contend with the run being waited on for the
+		// scheduler lock; short enough that the wait adds nothing measurable.
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -67,6 +77,60 @@ func seedRun(s *Scheduler, scheduleID, execID string, cancel context.CancelFunc,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs[execID] = &runState{scheduleID: scheduleID, cancel: cancel, settled: settled}
+}
+
+// launchParkedAfterVerdict starts executeWorkflow for sched/execID and returns
+// once the run is parked at its first post-verdict store write, with the store
+// lock held by the caller. The caller releases s.store.mu to let the run finish
+// and then receives from done.
+//
+// This is deterministic rather than timing-based, which matters: a poll for
+// "settled" can miss a fast run entirely — it settles and tears down between
+// two polls, and an absent entry is indistinguishable from one not yet
+// registered — so the poll spins until the hang guard fires. Every wait below
+// is on a state the run cannot leave while it is parked.
+//
+// Sequence: the store lock is taken before launch, so the run registers and
+// parks at UpdateCurrentExecution. The scheduler lock is then taken and the
+// store lock released; the run performs that write, runs the orchestrator, and
+// blocks at its linearization point. Once current_execution_id is visible in
+// the store — proof the run is past that write and will not touch the store
+// again before settling — the store lock is retaken and the scheduler lock
+// released: the run settles and parks at UpdateLastWorkflowID, provably after
+// the verdict, before any bookkeeping write, still in the run map.
+func launchParkedAfterVerdict(t *testing.T, s *Scheduler, sched *loomv1.ScheduledWorkflow, execID string) <-chan struct{} {
+	t.Helper()
+	ctx := context.Background()
+	done := make(chan struct{})
+
+	s.store.mu.Lock() // park 1: UpdateCurrentExecution
+	go func() {
+		defer close(done)
+		s.executeWorkflow(ctx, sched, execID, nil)
+	}()
+	waitFor(t, "the run to register", func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		_, ok := s.runs[execID]
+		return ok
+	})
+
+	s.mu.Lock()         // the run will block here at its linearization point
+	s.store.mu.Unlock() // release park 1
+	waitFor(t, "current_execution_id to be persisted", func() bool {
+		got, err := s.store.Get(ctx, sched.Id)
+		return err == nil && got.CurrentExecutionId == execID
+	})
+
+	s.store.mu.Lock() // park 2: UpdateLastWorkflowID
+	s.mu.Unlock()     // the run settles, then parks at park 2
+	waitFor(t, "the run to read its verdict", func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		run, ok := s.runs[execID]
+		return ok && run.settled
+	})
+	return done
 }
 
 func TestCancelExecutionOutcomes(t *testing.T) {
@@ -316,22 +380,11 @@ func TestCancelAfterVerdictReportsAlreadyFinished(t *testing.T) {
 	sched := failingSchedule("sched-late-cancel")
 	require.NoError(t, s.store.Create(ctx, sched))
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-late", nil)
-	}()
-
-	// settled is set in the same critical section that reads the verdict, so
-	// observing it is proof the orchestrator has already returned.
-	waitFor(t, "the run to read its verdict", func() bool {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		run, ok := s.runs["exec-late"]
-		return ok && run.settled
-	})
+	// Parked after the verdict, before any bookkeeping write, still in the map.
+	done := launchParkedAfterVerdict(t, s, sched, "exec-late")
 
 	outcome, err := s.CancelExecution(ctx, "exec-late", "operator stop")
+	s.store.mu.Unlock()
 	require.NoError(t, err)
 	assert.Equal(t, CancelOutcomeAlreadyFinished, outcome,
 		"the run had already reached its verdict; reporting it as signaled tells the operator a run was stopped when it was not")
@@ -387,21 +440,12 @@ func TestCancelAfterSuccessKeepsTheSuccess(t *testing.T) {
 	sched := agentWorkflow("sched-late-success")
 	require.NoError(t, s.store.Create(ctx, sched))
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-late-success", nil)
-	}()
-
-	waitFor(t, "the run to read its verdict", func() bool {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		run, ok := s.runs["exec-late-success"]
-		return ok && run.settled
-	})
+	// Parked after the verdict, before any bookkeeping write, still in the map.
+	done := launchParkedAfterVerdict(t, s, sched, "exec-late-success")
 	require.Positive(t, llm.calls.Load(), "the agent was never asked; the run did not actually complete")
 
 	outcome, err := s.CancelExecution(ctx, "exec-late-success", "operator stop")
+	s.store.mu.Unlock()
 	require.NoError(t, err)
 	assert.Equal(t, CancelOutcomeAlreadyFinished, outcome)
 
@@ -485,7 +529,10 @@ func TestExecuteWorkflowRecordsGenuineCancellation(t *testing.T) {
 func TestCancelRacingCompletionKeepsRecordAndCountersConsistent(t *testing.T) {
 	t.Parallel()
 
-	const iterations = 200
+	// Enough that both interleavings — cancel before and after the verdict —
+	// occur every run (dozens of each observed), while keeping this parallel
+	// test from starving its siblings on a slow runner.
+	const iterations = 100
 
 	s := setupTestScheduler(t)
 	ctx := context.Background()
