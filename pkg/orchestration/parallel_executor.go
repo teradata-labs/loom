@@ -7,6 +7,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -195,20 +196,20 @@ func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.Agent
 	}
 
 	// Check for errors
-	errors := make([]error, 0)
+	errs := make([]error, 0)
 	for err := range errorsChan {
-		errors = append(errors, err)
+		errs = append(errs, err)
 	}
 
 	// If all tasks failed, return error
-	if len(errors) == len(e.pattern.Tasks) {
-		return nil, nil, fmt.Errorf("all tasks failed: %v", errors)
+	if len(errs) == len(e.pattern.Tasks) {
+		return nil, nil, fmt.Errorf("all tasks failed: %w", errors.Join(errs...))
 	}
 
 	// Log partial failures
-	if len(errors) > 0 {
+	if len(errs) > 0 {
 		e.orchestrator.logger.Warn("Some tasks failed in parallel execution",
-			zap.Int("failed_count", len(errors)),
+			zap.Int("failed_count", len(errs)),
 			zap.Int("total_count", len(e.pattern.Tasks)))
 	}
 

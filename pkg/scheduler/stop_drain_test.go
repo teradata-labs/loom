@@ -169,6 +169,30 @@ func agentWorkflow(id string) *loomv1.ScheduledWorkflow {
 	}
 }
 
+// forkJoinWorkflow returns a schedule whose pattern runs the test agent twice
+// in parallel via fork-join. Both branches block on the same LLM, so a cancel
+// lands on both at once and the pattern's own error-joining path is what gets
+// exercised, not just a single agent's.
+func forkJoinWorkflow(id string) *loomv1.ScheduledWorkflow {
+	return &loomv1.ScheduledWorkflow{
+		Id:           id,
+		WorkflowName: "blocking-fork-join",
+		Pattern: &loomv1.WorkflowPattern{
+			Pattern: &loomv1.WorkflowPattern_ForkJoin{
+				ForkJoin: &loomv1.ForkJoinPattern{
+					Prompt:   "go",
+					AgentIds: []string{drainAgentName, drainAgentName},
+				},
+			},
+		},
+		Schedule: &loomv1.ScheduleConfig{
+			Cron:     "0 0 * * *",
+			Timezone: "UTC",
+			Enabled:  true,
+		},
+	}
+}
+
 // awaitDrainCond fails the test instead of hanging. Every wait here goes
 // through it: the failure this file guards against is a shutdown that never
 // finishes, and a bare channel receive would report that as a CI timeout with

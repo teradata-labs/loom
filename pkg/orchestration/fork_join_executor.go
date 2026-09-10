@@ -7,6 +7,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -199,20 +200,20 @@ func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) (
 	}
 
 	// Check for errors
-	errors := make([]error, 0)
+	errs := make([]error, 0)
 	for err := range errorsChan {
-		errors = append(errors, err)
+		errs = append(errs, err)
 	}
 
 	// If all agents failed, return error
-	if len(errors) == len(e.pattern.AgentIds) {
-		return nil, nil, fmt.Errorf("all agents failed: %v", errors)
+	if len(errs) == len(e.pattern.AgentIds) {
+		return nil, nil, fmt.Errorf("all agents failed: %w", errors.Join(errs...))
 	}
 
 	// Log partial failures
-	if len(errors) > 0 {
+	if len(errs) > 0 {
 		e.orchestrator.logger.Warn("Some agents failed in fork-join",
-			zap.Int("failed_count", len(errors)),
+			zap.Int("failed_count", len(errs)),
 			zap.Int("total_count", len(e.pattern.AgentIds)))
 	}
 

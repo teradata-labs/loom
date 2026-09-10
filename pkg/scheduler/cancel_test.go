@@ -520,6 +520,57 @@ func TestExecuteWorkflowRecordsGenuineCancellation(t *testing.T) {
 		"an operator's stop is not a failure; counting it would distort the success rate")
 }
 
+// TestExecuteWorkflowRecordsGenuineCancellationForForkJoin covers N8: a
+// genuine cancel of a fork-join schedule must still be classified as
+// "canceled", not "failed". Fork-join and parallel patterns collect every
+// branch's error into a local slice before this PR's fix and joined them with
+// fmt.Errorf("...: %v", errors) — %v, not %w, so context.Canceled never
+// reached errors.Is and the classification switch's canceled branch was
+// unreachable for these two pattern types no matter how a run was stopped.
+func TestExecuteWorkflowRecordsGenuineCancellationForForkJoin(t *testing.T) {
+	t.Parallel()
+
+	llm := newDrainBlockingLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
+	ctx := context.Background()
+
+	sched := forkJoinWorkflow("sched-genuine-forkjoin")
+	require.NoError(t, s.store.Create(ctx, sched))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.executeWorkflow(ctx, sched, "exec-genuine-forkjoin", nil, true)
+	}()
+
+	select {
+	case <-llm.started:
+	case <-time.After(hangGuard):
+		t.Fatal("the workflow never reached the agent, so nothing was in flight to cancel")
+	}
+
+	outcome, err := s.CancelExecution(ctx, "exec-genuine-forkjoin", "stopped by operator")
+	require.NoError(t, err)
+	require.Equal(t, CancelOutcomeSignaled, outcome)
+
+	<-done
+
+	history, err := s.store.GetExecutionHistory(ctx, sched.Id, 10)
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	assert.Equal(t, "canceled", history[0].Status,
+		"a genuine cancel of a fork-join run was recorded as failed because the joined branch errors lost context.Canceled through %v instead of %w")
+	assert.Equal(t, "stopped by operator", history[0].Error)
+
+	got, err := s.store.Get(ctx, sched.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "canceled", got.Stats.LastStatus)
+	assert.Equal(t, int32(0), got.Stats.TotalExecutions)
+	assert.Equal(t, int32(0), got.Stats.FailedExecutions,
+		"an operator's stop of a fork-join run was counted as a failure, corrupting the success rate")
+}
+
 // TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled
 // covers N1: a cancel signal that arrives before the orchestrator ever runs
 // does not, by itself, mean the orchestrator's error was caused by it. A
