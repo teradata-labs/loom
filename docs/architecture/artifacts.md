@@ -823,7 +823,9 @@ LIMIT 100;
 **Rationale**:
 - **Search**: Session-scoped by default for isolation
 - **List**: Only show artifacts in current session (avoid clutter)
-- **Read**: Session-scoped for security (no cross-session access)
+- **Read**: Session-scoped for the agent tool path (no cross-session access); on the
+  gRPC API an explicit `session_id` is accepted and authorized against the caller
+  (see [Session Isolation](#session-isolation))
 - **API-level**: Cross-session search available for server-side operations
 
 ---
@@ -1274,9 +1276,9 @@ db.Exec("PRAGMA foreign_keys=ON")
 3. **Storage-level**: SQLite queries filtered by session_id
 4. **Filesystem-level**: Paths constructed from validated session ID only
 
-**Bypass Prevention**:
+**Bypass Prevention (agent tool path)**:
 ```go
-// Agent cannot override session ID via tool parameters
+// The agent cannot override session ID via tool parameters
 // Session ID comes from context, not user-controllable input
 
 func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
@@ -1284,6 +1286,55 @@ func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface
     // params["session_id"] is ignored - session ID always from context
 }
 ```
+
+This holds for the in-process agent tool (`pkg/shuttle/builtin/workspace.go`), which
+is the path an agent drives. It is **not** a statement about the gRPC API — see below.
+
+**gRPC API path (`ListArtifacts`, `GetArtifact`)**: these accept an explicit
+`session_id` on the request, because a remote surface has no session in its call
+context and still has to answer "which files did this session produce?". A
+request-supplied session id is caller-declared rather than server-derived, so it is
+authorized before it selects anything: `MultiAgentServer.authorizeSessionScope`
+runs the same per-user isolation predicate (`sessionAccessibleBy`) that every other
+session-scoped RPC uses.
+
+| Deployment | Effect of an explicit `session_id` |
+|---|---|
+| Ownership enforcement on (authenticated) | Must resolve to a session the caller owns, or the call returns `NotFound`. A blank identity is never a wildcard. |
+| Single-tenant (default, unauthenticated) | Permitted, matching the mode's documented trust model — `looms serve` states all data is accessible to all callers and there is no per-user isolation. |
+
+Denial is reported as `NotFound`, not `PermissionDenied`, so a caller cannot
+distinguish "exists but not yours" from "no such session" by probing.
+
+**Soft-deleted sessions stay readable by their owner.** Postgres `DeleteSession`
+only sets `deleted_at`, and a session's artifacts outlive it — `purge_soft_deleted`
+reaps artifacts by their *own* `deleted_at`, and the `artifacts.session_id`
+CASCADE fires only on the later hard purge. Because `LoadSession` and
+`SessionExists` both filter `deleted_at IS NULL`, neither can tell an owner's
+just-deleted session from one that never existed. Ownership therefore falls back
+to `SessionStore.CallerOwnsSession`, an owner-scoped existence check that ignores
+`deleted_at`, so the owner keeps the session-filtered view of artifacts the store
+still returns unfiltered. It is exposed as an optional capability
+(`sessionOwnershipProbe`) rather than a `SessionStorage` method, because that
+interface is implemented outside this repo; a store without it keeps the
+fail-closed behaviour.
+
+Only the Postgres store needs this, and so only it implements the capability.
+SQLite hard-deletes sessions and its `artifacts.session_id` foreign key is
+`ON DELETE CASCADE`, so a deleted session's artifacts are already gone — there is
+nothing to be locked out of. The two backends therefore answer the same request
+differently in *shape*: with enforcement on, scoping to a deleted session yields
+an empty list on Postgres and `NotFound` on SQLite. Both mean "no artifacts";
+a client that distinguishes the two should treat `NotFound` as empty here.
+
+Two limits worth stating plainly, because "session scoping" reads broader than what
+is enforced:
+
+- **ID lookups are not session-scoped.** `GetArtifact` by `id`, `GetArtifactContent`,
+  and `DeleteArtifact` ignore session entirely — artifact IDs are global, and
+  scoping them would only manufacture spurious not-founds. Session scoping is a
+  filtering and name-resolution boundary, not an access-control boundary on IDs.
+- **The write path is not session-scoped.** `UploadArtifact` has no `session_id`.
 
 **Coordinator Exception**: Agents configured with `restrictReads=all_sessions` can read across sessions for research purposes, but write access remains session-scoped.
 

@@ -13,6 +13,7 @@ Output retry adds automatic retry with informative feedback when agent output do
 - [Swarm Pattern Retry](#swarm-pattern-retry)
 - [Output Coercion](#output-coercion)
 - [Configuration Reference](#configuration-reference)
+- [Loader tolerances and errors](#loader-tolerances-and-errors)
 - [Builder API](#builder-api)
 - [Behavior Details](#behavior-details)
 - [See Also](#see-also)
@@ -35,8 +36,20 @@ Defined in `proto/loom/v1/collaboration.proto`. Shared across all pattern types.
 message OutputRetryPolicy {
   int32 max_retries = 1;
   bool include_valid_values = 2;
+  RetrySessionMode session_mode = 3;
+  string feedback_template = 4;
+  int32 cooldown_ms = 5;
+}
+
+enum RetrySessionMode {
+  RETRY_SESSION_MODE_UNSPECIFIED = 0;  // treated as FRESH
+  RETRY_SESSION_MODE_CONTINUE = 1;
+  RETRY_SESSION_MODE_FRESH = 2;
+  RETRY_SESSION_MODE_ESCALATE = 3;
 }
 ```
+
+Fields 3-5 have been on the proto and honored by the validator; **v1.3.0 is the first release in which the workflow YAML loader parses them**, so a `retry_policy:` block written in YAML can now set all five.
 
 ### Fields
 
@@ -61,6 +74,49 @@ Whether to include valid output values in the retry prompt:
 - **Swarm**: Controls whether the VOTE:/CONFIDENCE:/REASONING: format template and example are included.
 
 **Note**: When constructing `OutputRetryPolicy` directly in Go (not via YAML or builders), set `IncludeValidValues: true` explicitly. Proto3 defaults `bool` to `false`, but the YAML parser and builder methods default to `true`.
+
+#### session_mode
+
+**Type**: `RetrySessionMode` (YAML: string)
+**Default**: `fresh` (proto `UNSPECIFIED` is treated as `FRESH`)
+**Accepted**: `fresh`, `continue`, `escalate` — hyphens and any case are accepted, as are the full enum names such as `RETRY_SESSION_MODE_FRESH`
+**Required**: No
+
+How the agent's session is handled on each retry:
+
+| Value | Behavior |
+|-------|----------|
+| `fresh` | New session per retry (`{workflowID}-retry{N}`). The agent sees the original prompt plus the failure feedback, with no memory of its bad output. |
+| `continue` | Same session. The failure feedback is appended as a new user message, so the agent sees its previous attempt and what went wrong. Falls back to `fresh` when the caller supplied no feedback function. |
+| `escalate` | `continue` on the first retry, then `fresh` for every retry after it. **No model change**: `escalate` only changes session handling, and no LLM upgrade is implemented for it. To escalate to a stronger model, use a `leveling:` ladder — see [Capability Leveling](workflow-leveling.md). |
+
+#### feedback_template
+
+**Type**: `string`
+**Default**: empty (a built-in template is used)
+**Required**: No
+
+Custom feedback appended to the original prompt on each retry. The built-in default is `Previous attempt failed validation: <reason>\nPlease fix the issues and try again.`
+
+Substituted variables:
+
+| Variable | Value |
+|----------|-------|
+| `{{error}}` | The validation failure that triggered this retry |
+| `{{previous_output}}` | The output of the previous attempt |
+| `{{attempt}}` | The retry number (1 for the first retry) |
+| `{{max_retries}}` | The effective retry bound after clamping to `[0, 10]` |
+
+The template is appended to the original prompt, not substituted for it: the retry prompt is always `originalPrompt + "\n\n" + rendered template`.
+
+#### cooldown_ms
+
+**Type**: `int32`
+**Default**: `0` (no cooldown)
+**Range**: `>= 0`, whole numbers only
+**Required**: No
+
+Milliseconds to wait before each retry execution — applied before the call, not after. A negative or fractional value is a load error.
 
 ## Conditional Pattern Retry
 
@@ -142,6 +198,8 @@ When `output_schema` validation succeeds on JSON extracted from mixed text (e.g.
 ### Graceful Degradation
 
 When all retries are exhausted, the pipeline **continues** with the unvalidated output rather than failing. A warning is recorded in `WorkflowResult.Metadata["validation_warnings"]`. This is different from the behavior when no `retry_policy` is configured — in that case, validation failure is fatal.
+
+⚠️ **With a `leveling:` block enabled on the stage, the stage never hard-fails on validation** — even with no `retry_policy` at all. Leveling always continues with the best output it obtained and records a `validation_warnings` entry instead. See [Capability Leveling → Failure Semantics](workflow-leveling.md#failure-semantics).
 
 ### YAML Example
 
@@ -265,6 +323,9 @@ Before retrying (which costs an LLM call), the conditional executor applies ligh
 retry_policy:              # Optional
   max_retries: 2           # int, 0-10, default 0
   include_valid_values: true  # bool, default true (no effect for conditionals)
+  session_mode: fresh      # optional; fresh | continue | escalate
+  feedback_template: "..." # optional; {{error}}, {{previous_output}}, {{attempt}}, {{max_retries}}
+  cooldown_ms: 250         # optional; >= 0
 ```
 
 #### Pipeline Stage
@@ -278,6 +339,9 @@ stages:
     retry_policy:               # Optional
       max_retries: 2            # int, 0-10, default 0
       include_valid_values: true   # bool, default true
+      session_mode: continue    # optional; fresh | continue | escalate
+      feedback_template: "..."  # optional
+      cooldown_ms: 250          # optional; >= 0
 ```
 
 #### Swarm Pattern
@@ -286,7 +350,32 @@ stages:
 retry_policy:              # Optional
   max_retries: 2           # int, 0-10, default 0
   include_valid_values: true  # bool, default true
+  session_mode: fresh      # optional; fresh | continue | escalate
+  feedback_template: "..." # optional
+  cooldown_ms: 250         # optional; >= 0
 ```
+
+### Loader tolerances and errors
+
+The workflow-YAML loader is deliberately lenient about three shapes that loaded before it gained strict scalar helpers, because rejecting them would break configs that already run. Each keeps its old behavior and now emits a `zap` warning naming the YAML path, so no malformed key is dropped without a trace.
+
+| YAML | Resolves to | Loader behavior |
+|------|------------|-----------------|
+| `max_retries: 2.5` | `2` | ⚠️ Tolerated — truncated toward zero, warning logged |
+| `max_retries: "3"` | no retry policy | ⚠️ Tolerated — the string is ignored as if the key were absent (it is **not** parsed: that would turn a no-retry config into a retrying one), warning logged |
+| `session_mode`, `feedback_template` or `cooldown_ms` without a positive `max_retries` | no retry policy | ⚠️ Tolerated — the whole `retry_policy` is dropped, warning names the ignored keys |
+| non-bool `include_valid_values` (e.g. `"yes"`) | `true` | ⚠️ Tolerated — the value is ignored and the default applies, warning logged |
+
+Everything else malformed in a `retry_policy` block is a **load error** wrapping `ErrInvalidWorkflow` (`invalid workflow structure: `):
+
+| YAML | Error |
+|------|-------|
+| `max_retries: true` | `spec.stages[0].retry_policy.max_retries must be an integer, got bool` |
+| `cooldown_ms: 250.5` | `spec.stages[0].retry_policy.cooldown_ms must be a whole number, got 250.5` |
+| `cooldown_ms: -1` | `spec.stages[0].retry_policy.cooldown_ms must be >= 0, got -1` |
+| `session_mode: warm` | `spec.stages[0].retry_policy.session_mode "warm" is not a known retry session mode (valid: continue, fresh, escalate; the full enum name such as RETRY_SESSION_MODE_FRESH is also accepted)` |
+
+The tolerances are local to `retry_policy`. The `leveling:` block has no legacy configs to keep loading, so every malformation there is a load error — see [Capability Leveling](workflow-leveling.md#rejected-configurations).
 
 ## Builder API
 
@@ -321,7 +410,9 @@ result, err := orchestrator.Pipeline("Extract data").
 
 ### Fresh Session Per Retry
 
-Each retry uses a unique session ID (`{workflowID}-...-retry{N}`) to prevent the agent from being anchored to its previous bad output. The agent starts with a clean conversation history on each retry.
+Fresh is the default. Each retry uses a unique session ID (`{workflowID}-...-retry{N}`) to prevent the agent from being anchored to its previous bad output, and the agent starts with a clean conversation history on each retry.
+
+`session_mode: continue` instead appends the validation feedback to the same session, so the agent sees its own previous attempt alongside what went wrong. `session_mode: escalate` uses `continue` for the first retry and `fresh` after that. See [session_mode](#session_mode).
 
 ### Retry Cap
 
@@ -361,5 +452,6 @@ When pipeline retries are exhausted, the workflow result includes:
 
 ## See Also
 
+- [Workflow Capability Leveling Reference](workflow-leveling.md) — escalate a failed stage output up a ladder of stronger models; consumes `output_policy.retry_policy`
 - [Iterative Workflow Reference](workflow-iterative.md) — iterative pipelines with restart coordination
-- [Workflow All-Fields Reference](../../examples/reference/workflows/workflow-all-fields-reference.yaml) — complete YAML field reference
+- [Workflow All-Fields Reference](../../examples/reference/workflows/workflow-all-fields-reference.yaml) — full YAML field reference

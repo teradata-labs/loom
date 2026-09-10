@@ -134,6 +134,12 @@ message SlotState {
   // Aging promotions since scheduler start (a rising rate means the scope is
   // saturated enough that liveness protection is doing real work).
   int64 promotions_total = 9;
+
+  // True when an operator pinned effective_tokens_per_minute via
+  // SetSchedulerConfig. While pinned, provider header calibration and AIMD
+  // leave the ceiling alone; setting tokens_per_minute back to 0 releases
+  // the pin and resumes calibration.
+  bool ceiling_pinned = 10;
 }
 
 // SlotWaiter describes one parked slot request.

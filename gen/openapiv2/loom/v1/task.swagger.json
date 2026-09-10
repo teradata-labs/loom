@@ -1335,7 +1335,7 @@
         "RETRY_SESSION_MODE_ESCALATE"
       ],
       "default": "RETRY_SESSION_MODE_UNSPECIFIED",
-      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH\nwith an upgraded LLM (switches to orchestrator_llm if available)."
+      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH.\nThe model does NOT change across retries — no LLM upgrade is\nimplemented for this mode (see effectiveMode in\npkg/orchestration/output_validator.go). Escalating to a stronger model\nis LevelingPolicy.ladder in orchestration.proto."
     },
     "v1Task": {
       "type": "object",

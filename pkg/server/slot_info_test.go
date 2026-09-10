@@ -46,11 +46,11 @@ func TestSlotOriginFromMetadata(t *testing.T) {
 // helper; the SlotInfo must actually land on the context so the agent's LLM
 // funnel schedules the turn.
 func TestInstallTurnSlotInfoInstallsSlotInfo(t *testing.T) {
-	ctx := installTurnSlotInfo(mdCtx(SlotOriginMetadataKey, "interactive"), false)
+	ctx := installTurnSlotInfo(mdCtx(SlotOriginMetadataKey, "interactive"), false, "sess-1", "agent-1")
 	require.NotNil(t, llmscheduler.SlotInfoFrom(ctx),
 		"a fresh turn must carry SlotInfo")
 
-	resumed := installTurnSlotInfo(mdCtx(SlotOriginMetadataKey, "batch"), true)
+	resumed := installTurnSlotInfo(mdCtx(SlotOriginMetadataKey, "batch"), true, "sess-2", "agent-2")
 	require.NotNil(t, llmscheduler.SlotInfoFrom(resumed),
 		"a resumed turn must carry SlotInfo (seeded IN_FLIGHT)")
 }

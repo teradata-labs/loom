@@ -37,6 +37,7 @@ type Client struct {
 	httpClient         *http.Client
 	maxTokens          int
 	temperature        float64
+	seed               *int64 // nil = omit "seed" from options (Ollama samples randomly)
 	toolMode           ToolMode
 	rateLimiter        *llm.RateLimiter
 	nativeToolsProbed  bool              // true once we've probed the model
@@ -84,6 +85,15 @@ type Config struct {
 	Timeout           time.Duration // Response header timeout. Default: 300s. Total generation time is bounded by caller context.
 	ToolMode          ToolMode      // Default: auto (detect native support)
 	RateLimiterConfig llm.RateLimiterConfig
+
+	// Seed pins Ollama's sampling seed for reproducible generations.
+	//
+	// It is a pointer, not a plain int64, because Ollama treats seed 0 as a
+	// usable seed value rather than "unset". nil therefore means "do not send
+	// a seed at all" (Ollama keeps sampling randomly), while a non-nil pointer
+	// to 0 means "seed with 0". Mirrors the optional int64 seed field on the
+	// loom.v1.LLMConfig proto.
+	Seed *int64
 }
 
 // getDefaultMaxTokens returns intelligent max_tokens based on model name.
@@ -139,11 +149,20 @@ func NewClient(cfg Config) *Client {
 		rateLimiter = llm.SharedRateLimiter("ollama|"+cfg.Endpoint, cfg.RateLimiterConfig)
 	}
 
+	// Copy the seed value rather than retaining the caller's pointer, so later
+	// mutation of the caller's variable cannot race with in-flight requests.
+	var seed *int64
+	if cfg.Seed != nil {
+		s := *cfg.Seed
+		seed = &s
+	}
+
 	return &Client{
 		endpoint:    cfg.Endpoint,
 		model:       cfg.Model,
 		maxTokens:   cfg.MaxTokens,
 		temperature: cfg.Temperature,
+		seed:        seed,
 		toolMode:    cfg.ToolMode,
 		rateLimiter: rateLimiter,
 		httpClient: &http.Client{
@@ -440,6 +459,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			"temperature": c.temperature,
 			"num_predict": c.maxTokens,
 		},
+	}
+
+	// Only send "seed" when one was configured. Ollama reads seed 0 as a real
+	// seed, so an unset seed must be omitted entirely rather than sent as 0.
+	if c.seed != nil {
+		req.Options["seed"] = *c.seed
 	}
 
 	// Add tools if native support is available

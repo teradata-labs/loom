@@ -493,6 +493,10 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 }
 
 // GetMessages returns all L1 messages for building conversation context.
+// This is the RAW view: the rows in append order, with no rendering, no
+// folding, and no pair synthesis (that is GetMessagesForLLM/compileLocked,
+// which is what types.Session.GetMessages delegates to when segmented memory
+// is configured).
 func (sm *SegmentedMemory) GetMessages() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

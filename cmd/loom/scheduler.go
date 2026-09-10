@@ -121,8 +121,14 @@ func runSchedulerState(_ *cobra.Command, _ []string) {
 				wake = d.Truncate(time.Millisecond).String()
 			}
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
-			s.Scope, s.EffectiveTokensPerMinute, s.ParkedRequests, s.ReservedTokensOutstanding,
+		tpm := fmt.Sprintf("%d", s.EffectiveTokensPerMinute)
+		if s.CeilingPinned {
+			// An operator-pinned ceiling reads differently from a calibrated
+			// one: it will not move when the provider's headers change.
+			tpm += " (pinned)"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			s.Scope, tpm, s.ParkedRequests, s.ReservedTokensOutstanding,
 			s.GrantsTotal, s.PromotionsTotal, s.ActiveConversations, s.DoorQueueDepth, wake)
 	}
 	_ = w.Flush()
@@ -234,8 +240,12 @@ func runSchedulerSet(_ *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 	if resp.State != nil {
-		fmt.Printf("scope %s: effective %d tokens/min, %d parked, %d reserved\n",
-			resp.State.Scope, resp.State.EffectiveTokensPerMinute,
+		pinned := ""
+		if resp.State.CeilingPinned {
+			pinned = " (pinned — provider calibration will not move it; --tpm 0 releases)"
+		}
+		fmt.Printf("scope %s: effective %d tokens/min%s, %d parked, %d reserved\n",
+			resp.State.Scope, resp.State.EffectiveTokensPerMinute, pinned,
 			resp.State.ParkedRequests, resp.State.ReservedTokensOutstanding)
 		return
 	}

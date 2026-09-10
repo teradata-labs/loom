@@ -79,6 +79,19 @@ func WithHandleCollector(ctx context.Context) (context.Context, *HandleCollector
 	return context.WithValue(ctx, handleCollectorKey{}, c), c
 }
 
+// ContextWithHandleCollector installs an EXISTING collector on ctx, so a turn
+// that spans more than one call — a HITL park and the resume that finishes it
+// — keeps one collector for its whole life. Its handles then stay live across
+// the gap and are released once, by whichever call actually ends the turn.
+// The per-call scope in the type comment above is the default, not a limit:
+// the owner is whoever planted the collector.
+func ContextWithHandleCollector(ctx context.Context, c *HandleCollector) context.Context {
+	if c == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, handleCollectorKey{}, c)
+}
+
 // collectorFrom returns the conversation's collector, or nil when the caller
 // did not opt in (workflows, direct executor use).
 func collectorFrom(ctx context.Context) *HandleCollector {

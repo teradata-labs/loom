@@ -185,6 +185,10 @@
           "type": "string",
           "format": "int64",
           "description": "Aging promotions since scheduler start (a rising rate means the scope is\nsaturated enough that liveness protection is doing real work)."
+        },
+        "ceilingPinned": {
+          "type": "boolean",
+          "description": "True when an operator pinned effective_tokens_per_minute via\nSetSchedulerConfig. While pinned, provider header calibration and AIMD\nleave the ceiling alone; setting tokens_per_minute back to 0 releases\nthe pin and resumes calibration."
         }
       },
       "description": "SlotState is the observable state of one scheduler scope."
