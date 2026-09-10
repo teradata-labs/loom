@@ -114,6 +114,19 @@ jobs:
         with:
           version: v2.9.0
 
+      # Attribution files are generated from the dependency tree, so any
+      # dependency bump can silently invalidate them. `just check` runs this,
+      # but a Dependabot PR never does — so without it in CI the committed
+      # NOTICE/THIRD-PARTY-NOTICES.md drift the moment a bump merges, and we
+      # ship legally inaccurate attribution.
+      - name: Check third-party notices are up to date
+        run: |
+          if ! GOWORK=off go run ./cmd/gen-notices -check; then
+            echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+            exit 1
+          fi
+          echo "Third-party notices are up to date"
+
   # ============================================================================
   # Job 3: Unit Tests with Race Detection
   # ============================================================================
