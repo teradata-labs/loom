@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -47,4 +48,37 @@ func applyOccurredAt(ctx context.Context, req *loomv1.WeaveRequest, allow bool) 
 			"occurred_at is in the future: %s", t.Format(time.RFC3339))
 	}
 	return agent.WithOccurredAt(ctx, t), nil
+}
+
+// applyReplayAssistant validates WeaveRequest.replay_assistant_message and,
+// when present and allowed, threads it through the context so
+// runConversationLoop substitutes it for the provider call — recording the
+// text verbatim as the assistant turn while still running the full memory
+// pipeline (context compilation, compression, extraction, salience). See
+// agent.WithScriptedResponse.
+//
+// Generation-free replay lets a caller supply the assistant's side of the
+// conversation — a stronger capability than backdating timestamps — so it has
+// its own opt-in switch, server.allow_assistant_override, separate from
+// occurred_at's server.allow_time_override: operators who enabled timestamp
+// anchoring have not implicitly accepted caller-supplied assistant content.
+// Requests carrying the field are rejected with FAILED_PRECONDITION unless
+// allow is true. A whitespace-only value is rejected (INVALID_ARGUMENT)
+// rather than accepted-then-ignored: the conversation loop substitutes only
+// non-blank scripted text, so letting it through would silently generate a
+// real turn where the caller expected verbatim replay.
+func applyReplayAssistant(ctx context.Context, req *loomv1.WeaveRequest, allow bool) (context.Context, error) {
+	msg := req.GetReplayAssistantMessage()
+	if msg == "" {
+		return ctx, nil
+	}
+	if !allow {
+		return nil, status.Error(codes.FailedPrecondition,
+			"replay_assistant_message override is disabled on this server (set server.allow_assistant_override: true to accept generation-free conversation replay)")
+	}
+	if strings.TrimSpace(msg) == "" {
+		return nil, status.Error(codes.InvalidArgument,
+			"replay_assistant_message is whitespace-only; a replay turn must carry the assistant's text")
+	}
+	return agent.WithScriptedResponse(ctx, msg), nil
 }

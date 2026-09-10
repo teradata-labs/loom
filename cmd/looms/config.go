@@ -197,16 +197,22 @@ type TUIConfig struct {
 
 // ServerConfig holds server-specific configuration.
 type ServerConfig struct {
-	Port              int                 `mapstructure:"port"`
-	Host              string              `mapstructure:"host"`
-	HTTPPort          int                 `mapstructure:"http_port"` // HTTP/REST+SSE port (default: 5006, 0=disabled)
-	EnableReflection  bool                `mapstructure:"enable_reflection"`
-	InsecureAdmin     bool                `mapstructure:"insecure_admin"`      // Allow admin endpoints without LOOM_ADMIN_TOKEN (default: false)
-	AllowTimeOverride bool                `mapstructure:"allow_time_override"` // Honor WeaveRequest.occurred_at for replayed/imported conversations (default: false)
-	TLS               TLSConfig           `mapstructure:"tls"`
-	Clarification     ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
-	CORS              CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
-	Auth              AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
+	Port              int    `mapstructure:"port"`
+	Host              string `mapstructure:"host"`
+	HTTPPort          int    `mapstructure:"http_port"` // HTTP/REST+SSE port (default: 5006, 0=disabled)
+	EnableReflection  bool   `mapstructure:"enable_reflection"`
+	InsecureAdmin     bool   `mapstructure:"insecure_admin"`      // Allow admin endpoints without LOOM_ADMIN_TOKEN (default: false)
+	AllowTimeOverride bool   `mapstructure:"allow_time_override"` // Honor WeaveRequest.occurred_at for replayed/imported conversations (default: false)
+	// AllowAssistantOverride honors WeaveRequest.replay_assistant_message
+	// (generation-free conversation replay — the caller supplies the assistant's
+	// turn verbatim). Separate from allow_time_override so enabling timestamp
+	// anchoring never implicitly accepts caller-supplied assistant content
+	// (default: false).
+	AllowAssistantOverride bool                `mapstructure:"allow_assistant_override"`
+	TLS                    TLSConfig           `mapstructure:"tls"`
+	Clarification          ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
+	CORS                   CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
+	Auth                   AuthConfig          `mapstructure:"auth"`          // Endpoint authentication (Supabase JWT)
 }
 
 // AuthConfig gates JWT authentication of Loom's gRPC/HTTP endpoints. When
@@ -1111,6 +1117,7 @@ func setDefaults() {
 	viper.SetDefault("server.enable_reflection", true)
 	viper.SetDefault("server.insecure_admin", false)
 	viper.SetDefault("server.allow_time_override", false)
+	viper.SetDefault("server.allow_assistant_override", false)
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1855,6 +1862,7 @@ server:
   enable_reflection: true
   # insecure_admin: false  # Set to true to allow admin endpoints without LOOM_ADMIN_TOKEN (NOT recommended for production)
   # allow_time_override: false  # Set to true to honor WeaveRequest.occurred_at (replayed/imported conversations only)
+  # allow_assistant_override: false  # Set to true to honor WeaveRequest.replay_assistant_message (generation-free conversation replay only)
 
 llm:
   # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral
