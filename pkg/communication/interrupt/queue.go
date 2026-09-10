@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
+	"github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -96,7 +96,9 @@ CREATE INDEX IF NOT EXISTS idx_created_at ON interrupt_queue(created_at);
 // NewPersistentQueue creates a new persistent interrupt queue.
 // dbPath is the path to the SQLite database file.
 func NewPersistentQueue(ctx context.Context, dbPath string, router *Router) (*PersistentQueue, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// busy_timeout rides in the DSN so every pooled connection waits on lock
+	// contention instead of failing instantly with SQLITE_BUSY.
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

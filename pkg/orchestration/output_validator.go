@@ -57,6 +57,38 @@ type ExecuteFunc func(ctx context.Context, sessionID string, prompt string) (*lo
 // Used in CONTINUE mode to add a user message to the same conversation.
 type FeedbackFunc func(ctx context.Context, sessionID string, feedback string) (*loomv1.AgentResult, error)
 
+// CoerceFunc attempts to rewrite an output that failed validation into a
+// valid form (for example, extracting fenced JSON from mixed text).
+// ok reports whether a candidate rewrite was produced.
+type CoerceFunc func(output string) (coerced string, ok bool)
+
+// BudgetFunc reports whether budget remains for another paid attempt. It is
+// consulted before each retry, never before the first attempt: the first
+// attempt is the work the caller asked for, and refusing to do it at all would
+// leave no output to return.
+//
+// The check is check-before-spend against whatever the caller has managed to
+// account for so far, so it bounds the number of retries rather than
+// guaranteeing a spend ceiling.
+type BudgetFunc func() bool
+
+// ValidationOutcome is the validator's final verdict on the returned result.
+type ValidationOutcome struct {
+	// Passed reports whether the final attempt satisfied the policy.
+	// Vacuously true when the policy is nil or carries no criteria.
+	Passed bool
+	// Err is the validation error from the final attempt; nil when Passed.
+	Err error
+	// Warnings holds one entry per failed attempt.
+	Warnings []string
+	// CoercionApplied is true when coerce rewrote the output into a form
+	// that passed validation; the returned result carries the rewrite.
+	CoercionApplied bool
+	// BudgetExhausted is true when a retry was not attempted because the
+	// caller's BudgetFunc reported no budget left.
+	BudgetExhausted bool
+}
+
 // ValidateAndRetry executes an agent, validates the output against the policy,
 // and retries with feedback if validation fails. Works across all workflow patterns.
 //
@@ -66,8 +98,25 @@ type FeedbackFunc func(ctx context.Context, sessionID string, feedback string) (
 //   - feedback: function to send feedback in the same session (called for CONTINUE mode)
 //   - originalPrompt: the original prompt for fresh retries
 //   - workflowID: base workflow ID for session ID generation
+//   - coerce: optional free rewrite attempted on a schema failure before the
+//     attempt is written off. A rewrite that validates ends the loop, so a
+//     fenced-but-valid payload never burns a retry. nil disables coercion.
+//   - budget: optional gate consulted before each retry. Reporting false stops
+//     the loop and returns the best result so far with BudgetExhausted set.
+//     nil leaves retries ungated.
 //
-// Returns the agent result (possibly from a retry) and any validation warnings.
+// Returns the agent result (possibly from a retry, possibly coerced) and the
+// final verdict on it. The returned ValidationOutcome carries whether that
+// result actually satisfies the policy, the validation error when it does not,
+// one warning per failed attempt, and whether coercion produced the pass — so
+// callers never need to re-validate the output themselves.
+//
+// A non-nil error means execution or the context failed, not that validation
+// failed: an output that fails every attempt is returned with Passed=false and
+// a nil error.
+//
+// The policy's retry bound is clamped to [0, 10], so at least one attempt
+// always runs: a nil error guarantees a non-nil result.
 func (v *OutputValidator) ValidateAndRetry(
 	ctx context.Context,
 	policy *loomv1.OutputPolicy,
@@ -75,14 +124,16 @@ func (v *OutputValidator) ValidateAndRetry(
 	feedback FeedbackFunc,
 	originalPrompt string,
 	workflowID string,
-) (*loomv1.AgentResult, []string, error) {
+	coerce CoerceFunc,
+	budget BudgetFunc,
+) (*loomv1.AgentResult, ValidationOutcome, error) {
 	ctx, span := v.tracer.StartSpan(ctx, "output_validator.validate_and_retry")
 	defer v.tracer.EndSpan(span)
 
-	// No policy = execute once, no validation.
+	// No policy = execute once, no validation. Passing is vacuous.
 	if policy == nil {
 		result, err := execute(ctx, workflowID, originalPrompt)
-		return result, nil, err
+		return result, ValidationOutcome{Passed: err == nil}, err
 	}
 
 	retryPolicy := policy.RetryPolicy
@@ -91,6 +142,14 @@ func (v *OutputValidator) ValidateAndRetry(
 		maxRetries = int(retryPolicy.MaxRetries)
 		if maxRetries > 10 {
 			maxRetries = 10 // cap
+		}
+		if maxRetries < 0 {
+			// Floor. A negative bound would make the attempt loop below run
+			// zero times, so this method would return a nil result with a nil
+			// error — a contract every caller reads as "here is your output".
+			// Zero means one attempt and no retry, which is what a caller
+			// asking for "no retries" can only have meant.
+			maxRetries = 0
 		}
 	}
 
@@ -101,11 +160,13 @@ func (v *OutputValidator) ValidateAndRetry(
 
 	var lastResult *loomv1.AgentResult
 	var warnings []string
+	var lastValidationErr error
+	budgetExhausted := false
 	currentSessionID := workflowID
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if ctx.Err() != nil {
-			return lastResult, warnings, ctx.Err()
+			return lastResult, ValidationOutcome{Warnings: warnings, BudgetExhausted: budgetExhausted}, ctx.Err()
 		}
 
 		var result *loomv1.AgentResult
@@ -115,6 +176,19 @@ func (v *OutputValidator) ValidateAndRetry(
 			// First attempt: always execute with original prompt.
 			result, err = execute(ctx, currentSessionID, originalPrompt)
 		} else {
+			// A retry is a fresh paid call, so the caller's ceiling gets a say
+			// before it is made. Stopping here keeps the best result obtained
+			// so far, which is what the retry would have improved on.
+			if budget != nil && !budget() {
+				budgetExhausted = true
+				warnings = append(warnings,
+					fmt.Sprintf("attempt %d not made: cost ceiling reached before the retry", attempt+1))
+				v.logger.Debug("retry skipped by the caller's cost ceiling",
+					zap.Int("attempt", attempt+1),
+					zap.Int("max_retries", maxRetries))
+				break
+			}
+
 			// Apply cooldown before retry execution (not after).
 			if retryPolicy != nil && retryPolicy.CooldownMs > 0 {
 				time.Sleep(time.Duration(retryPolicy.CooldownMs) * time.Millisecond)
@@ -149,7 +223,8 @@ func (v *OutputValidator) ValidateAndRetry(
 		}
 
 		if err != nil {
-			return lastResult, warnings, fmt.Errorf("execution failed (attempt %d): %w", attempt+1, err)
+			return lastResult, ValidationOutcome{Warnings: warnings},
+				fmt.Errorf("execution failed (attempt %d): %w", attempt+1, err)
 		}
 		lastResult = result
 
@@ -157,10 +232,26 @@ func (v *OutputValidator) ValidateAndRetry(
 		validationErr := v.validate(ctx, policy, result.Output)
 		if validationErr == nil {
 			// Validation passed.
-			return result, warnings, nil
+			return result, ValidationOutcome{Passed: true, Warnings: warnings}, nil
+		}
+
+		// A free rewrite that validates costs nothing and ends the loop, so a
+		// well-formed payload wrapped in prose or fences never burns a retry.
+		if coerce != nil && policy.OutputSchema != "" {
+			if coerced, ok := coerce(result.Output); ok && v.validate(ctx, policy, coerced) == nil {
+				result.Output = coerced
+				v.logger.Debug("output coerced into a valid form without retrying",
+					zap.Int("attempt", attempt+1))
+				return result, ValidationOutcome{
+					Passed:          true,
+					Warnings:        warnings,
+					CoercionApplied: true,
+				}, nil
+			}
 		}
 
 		// Validation failed.
+		lastValidationErr = validationErr
 		warning := fmt.Sprintf("attempt %d: %s", attempt+1, validationErr.Error())
 		warnings = append(warnings, warning)
 		v.logger.Debug("output validation failed",
@@ -169,8 +260,13 @@ func (v *OutputValidator) ValidateAndRetry(
 			zap.String("error", validationErr.Error()))
 	}
 
-	// All retries exhausted — return last result with warnings.
-	return lastResult, warnings, nil
+	// Retries exhausted, or stopped by the budget — return the last result with
+	// the verdict against it.
+	return lastResult, ValidationOutcome{
+		Err:             lastValidationErr,
+		Warnings:        warnings,
+		BudgetExhausted: budgetExhausted,
+	}, nil
 }
 
 // validate checks an output against all validation criteria in the policy.

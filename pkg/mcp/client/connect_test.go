@@ -60,6 +60,7 @@ func (f *fakeRevisionTransport) Send(ctx context.Context, message []byte) error 
 			ResultType:        protocol.ResultTypeComplete,
 			SupportedVersions: []string{protocol.Version20260728, protocol.Version20251125},
 			CacheScope:        "public",
+			Instructions:      "fake stateless usage guidance",
 		}
 		if err := result.SetServerInfo(protocol.Implementation{Name: "fake", Version: "1.0"}); err != nil {
 			return err
@@ -72,6 +73,7 @@ func (f *fakeRevisionTransport) Send(ctx context.Context, message []byte) error 
 		result := protocol.InitializeResult{
 			ProtocolVersion: protocol.Version20241105,
 			ServerInfo:      protocol.Implementation{Name: "fake-legacy", Version: "1.0"},
+			Instructions:    "fake-legacy usage guidance",
 		}
 		resp.Result, _ = json.Marshal(result)
 	case "tools/list":
@@ -110,6 +112,9 @@ func TestConnectStatelessNegotiation(t *testing.T) {
 	}
 	if c.ServerInfo().Name != "fake" {
 		t.Fatalf("serverInfo not recorded: %+v", c.ServerInfo())
+	}
+	if c.Instructions() != "fake stateless usage guidance" {
+		t.Fatalf("instructions not recorded from discover: %q (issue #336)", c.Instructions())
 	}
 
 	// The discover probe itself must carry the standard _meta identity keys —
@@ -171,5 +176,8 @@ func TestConnectFallsBackToInitialize(t *testing.T) {
 	}
 	if c.ServerInfo().Name != "fake-legacy" {
 		t.Fatalf("serverInfo not recorded: %+v", c.ServerInfo())
+	}
+	if c.Instructions() != "fake-legacy usage guidance" {
+		t.Fatalf("instructions not recorded from initialize: %q (issue #336)", c.Instructions())
 	}
 }

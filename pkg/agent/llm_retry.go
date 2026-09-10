@@ -20,20 +20,75 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
-// chatWithRetry wraps LLM Chat calls with exponential backoff retry logic.
-// If the provider supports streaming and a progress callback is configured,
-// it will use streaming with token buffering to emit real-time progress.
-func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+// chatWithRetry wraps LLM Chat calls with slot scheduling, capacity
+// observation, and exponential backoff retry logic. If the provider supports
+// streaming and a progress callback is configured, it will use streaming
+// with token buffering to emit real-time progress.
+func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (resp *LLMResponse, err error) {
 	// Debug tap: one context dump per provider call, before any dispatch branch.
 	// No-op unless the dump switch is on. Covers streaming, no-retry, and the
 	// retry loop alike since every path fans out from here.
 	a.dumpContext(ctx, messages, tools)
 
+	// Slot scheduling: every LLM call — streaming, retry, and direct alike —
+	// acquires a capacity slot here. Waiting for a slot can only end with a
+	// grant or the caller's own context expiring; it is never a scheduler
+	// timeout (docs/architecture/llm-slot-scheduler.md). A nil grant means
+	// scheduling is disabled or the turn carries no SlotInfo.
+	grant, aerr := scheduler.AcquireForCall(ctx, a.schedulerScope(), a.estimateReservation(messages))
+	if aerr != nil {
+		return nil, aerr
+	}
+	if grant != nil {
+		// Registered before the observation defer so it runs AFTER it:
+		// the outcome must be observed (throttle → ceiling halved, wake
+		// armed) before the released reservation re-dispatches waiters.
+		defer func() {
+			var actual int64
+			if resp != nil {
+				actual = int64(resp.Usage.TotalTokens)
+			}
+			grant.Release(actual)
+		}()
+	}
+	// Provider-agnostic capacity observation: every provider's calls pass
+	// through this funnel, so this one seam calibrates all scopes — with or
+	// without a grant, because an unscheduled call's 429 depletes the same
+	// shared quota (see observeSchedulerOutcome).
+	defer func() { a.observeSchedulerOutcome(err) }()
+
+	return a.dispatchChat(ctx, messages, tools)
+}
+
+// observeSchedulerOutcome feeds the slot scheduler's provider-agnostic AIMD
+// seam from one call's outcome: a clean completion grows the scope's ceiling
+// (until header calibration outranks it), a surfaced throttle — a typed
+// llm.ThrottleError from any HTTP client, or an SDK throttling message
+// (Bedrock) — halves it, at most once per congestion event. Anthropic,
+// Bedrock, OpenAI, Gemini, and Ollama scopes all calibrate through this with
+// zero per-provider wiring; Azure's response-header calibration stays in its
+// client and outranks these observations.
+func (a *Agent) observeSchedulerOutcome(err error) {
+	if !scheduler.Enabled() {
+		return
+	}
+	if err == nil {
+		scheduler.ObserveSuccessForScope(a.schedulerScope())
+		return
+	}
+	if llm.IsThrottle(err) {
+		scheduler.ObserveThrottleForScope(a.schedulerScope(), llm.RetryAfter(err))
+	}
+}
+
+// dispatchChat routes one LLM call to streaming, direct, or the retry loop.
+func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
 	// Check if provider supports streaming and we have a progress callback
 	supportsStreaming := llmtypes.SupportsStreaming(a.llm)
 	progressCallback := ctx.ProgressCallback()
@@ -52,10 +107,10 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 		var patience throttlePatience
 		for {
 			resp, err := a.llm.Chat(ctx, messages, tools)
-			if err == nil || !llm.IsThrottlingError(err) {
+			if err == nil || !llm.IsThrottle(err) {
 				return resp, err
 			}
-			if waitErr := patience.wait(ctx, err); waitErr != nil {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}
 		}
@@ -98,8 +153,8 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 		// attempt. Wait out the provider-stated window (or a patient default)
 		// and go again, bounded by the patience budget and the conversation's
 		// own deadline.
-		if llm.IsThrottlingError(err) {
-			if waitErr := patience.wait(ctx, err); waitErr != nil {
+		if llm.IsThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}
 			attempt--
@@ -162,12 +217,27 @@ const (
 	throttleBudget = 10 * time.Minute
 )
 
+// absorbThrottle records the throttle with the slot scheduler, then waits it
+// out. The observation has to happen HERE, at absorption: chatWithRetry's
+// deferred observeSchedulerOutcome only ever sees the call's FINAL error, so
+// a throttle that patience rides out and then succeeds would reach the AIMD
+// seam as a SUCCESS and GROW the scope's ceiling — the exact opposite of what
+// a congestion signal must do. The scheduler already collapses repeat
+// observations within one congestion event, so absorbing a burst does not
+// halve the ceiling repeatedly.
+func (a *Agent) absorbThrottle(ctx Context, p *throttlePatience, err error) error {
+	if scheduler.Enabled() {
+		scheduler.ObserveThrottleForScope(a.schedulerScope(), llm.RetryAfter(err))
+	}
+	return p.wait(ctx, err)
+}
+
 func (p *throttlePatience) wait(ctx Context, err error) error {
 	if p.delay == 0 {
 		p.delay = throttleInitialDelay
 	}
 	wait := p.delay
-	if hint := llm.RetryAfterHint(err); hint > wait {
+	if hint := llm.RetryAfter(err); hint > wait {
 		wait = hint
 	}
 	if p.total+wait > throttleBudget {
@@ -271,8 +341,8 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		if err == nil {
 			break
 		}
-		if llm.IsThrottlingError(err) {
-			if waitErr := patience.wait(ctx, err); waitErr != nil {
+		if llm.IsThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}
 			continue
@@ -295,4 +365,30 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	}
 
 	return resp, nil
+}
+
+// schedulerScope derives the quota scope of this agent's LLM provider for
+// the slot scheduler: the provider's own boundary when it exposes one,
+// otherwise name|model.
+func (a *Agent) schedulerScope() string {
+	return scheduler.ScopeFor(a.llm.Name(), a.llm.Model(), a.llm)
+}
+
+// estimateReservation mirrors reservation-accounting providers, which debit
+// prompt-estimate + max_tokens at admission: a cheap chars/4 prompt estimate
+// plus the configured completion budget.
+func (a *Agent) estimateReservation(messages []Message) int64 {
+	var chars int
+	for _, m := range messages {
+		chars += len(m.Content)
+	}
+	out := int64(a.config.ReservedOutputTokens)
+	if out <= 0 {
+		out = 4096 // provider-default max_tokens when unconfigured
+	}
+	est := int64(chars/4) + out
+	if est < 1 {
+		est = 1
+	}
+	return est
 }

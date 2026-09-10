@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
@@ -132,4 +133,39 @@ func TestThrottlePatienceBudget(t *testing.T) {
 	err := p.wait(ctx, fmt.Errorf("API error (status 429): still throttled"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "patience budget")
+}
+
+// An absorbed throttle must still reach the slot scheduler's AIMD seam.
+//
+// chatWithRetry observes the call outcome in a defer, which only ever sees
+// the FINAL error — so once patience rides a 429 out and the retry succeeds,
+// that defer reports SUCCESS and would GROW the scope's ceiling on the very
+// signal that should shrink it. absorbThrottle reports at the moment of
+// absorption to close that hole; this pins it.
+func TestChatWithRetry_AbsorbedThrottleStillHalvesCeiling(t *testing.T) {
+	stub := &throttleOnceLLM{failures: 1}
+	a := &Agent{id: "t-aimd", llm: stub, config: &Config{}}
+
+	// Register the scope with a known ceiling BEFORE enabling scheduling
+	// (Registry.For keeps the first registration's config).
+	sched := scheduler.Default().For(a.schedulerScope(), scheduler.Config{
+		TokensPerMinute:     1000,
+		InteractiveHeadroom: -1,
+	})
+	before := sched.State().EffectiveTokensPerMinute
+	require.Equal(t, int64(1000), before)
+
+	scheduler.SetEnabled(true)
+	defer scheduler.SetEnabled(false)
+
+	ctx := newCtxDumpContext("sess-throttle-aimd", observability.NewNoOpTracer(), nil)
+	resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp.Content)
+	assert.Equal(t, 2, stub.calls, "the throttle must have been absorbed and retried")
+
+	after := sched.State().EffectiveTokensPerMinute
+	assert.Less(t, after, before,
+		"a throttle absorbed by patience must still shrink the scope's ceiling; "+
+			"if it does not, the AIMD seam saw the eventual success and grew instead")
 }

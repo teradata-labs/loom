@@ -135,6 +135,14 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 # MCP servers auto-start with: looms serve
 ```
 
+The client negotiates the MCP protocol revision per server (2026-07-28 stateless core with fallback to the legacy initialize handshake for 2024/2025-era servers). Verify any server before wiring it in with the probe:
+
+```bash
+just mcp-probe -url http://localhost:8971 -call some_tool -watch 5
+```
+
+See the [MCP Probe guide](docs/guides/mcp-probe.md) for negotiation, MRTR elicitation, and subscription testing against real servers.
+
 **4 built-in MCP UI Apps** served at `/apps/` and as MCP resources (`ui://` scheme):
 
 | App | Description |
@@ -356,6 +364,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 | Streaming | [docs/reference/streaming.md](docs/reference/streaming.md) |
 | MCP Apps Guide | [docs/guides/mcp-apps-guide.md](docs/guides/mcp-apps-guide.md) |
 | MCP Apps Reference | [docs/reference/mcp-apps.md](docs/reference/mcp-apps.md) |
+| MCP Probe (real-server testing) | [docs/guides/mcp-probe.md](docs/guides/mcp-probe.md) |
 | Supabase Integration | [docs/guides/supabase-integration.md](docs/guides/supabase-integration.md) |
 | Database Upgrade | `looms upgrade --help` |
 | API Reference | [pkg.go.dev](https://pkg.go.dev/github.com/teradata-labs/loom) |

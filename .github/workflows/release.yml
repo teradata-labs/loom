@@ -8,6 +8,9 @@ on:
 env:
   GPG_EMAIL: 'releases@teradata.com'
   GIT_USER_NAME: 'Loom Release Bot'
+  # Authenticates buf's BSR traffic when the BUF_TOKEN repository secret
+  # exists; empty is ignored by buf (anonymous, rate-limited).
+  BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
 
 jobs:
   create-release:
@@ -84,7 +87,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           body: |
             ## What's Changed
@@ -217,6 +220,9 @@ jobs:
           go-version: '1.26'
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99  # v1.50.0
         with:
@@ -287,7 +293,7 @@ jobs:
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             ${{ matrix.output }}.tar.gz
@@ -298,7 +304,7 @@ jobs:
 
       - name: Upload release assets (Windows)
         if: matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             ${{ matrix.output }}.zip
@@ -382,7 +388,7 @@ jobs:
           echo "✅ Combined package checksum signed"
 
       - name: Upload combined package
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           files: |
             loom-windows-x64.zip

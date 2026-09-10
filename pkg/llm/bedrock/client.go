@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -36,11 +35,6 @@ import (
 // Global rate limiter shared across all Bedrock clients.
 // This ensures all agents using Bedrock coordinate through a single rate limiter,
 // preventing AWS Bedrock throttling when multiple agents make concurrent requests.
-var (
-	globalRateLimiter     *llm.RateLimiter
-	globalRateLimiterOnce sync.Once
-)
-
 // Client implements the LLMProvider interface for AWS Bedrock.
 type Client struct {
 	client      *bedrockruntime.Client
@@ -54,20 +48,6 @@ type Client struct {
 	toolNameMap map[string]string
 	// rateLimiter handles request rate limiting to prevent AWS throttling
 	rateLimiter *llm.RateLimiter
-}
-
-// getOrCreateGlobalRateLimiter returns the singleton rate limiter for all Bedrock clients.
-// The first call initializes the rate limiter with the provided config.
-// Subsequent calls return the existing rate limiter (ignoring the config parameter).
-func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
-	globalRateLimiterOnce.Do(func() {
-		// Apply defaults if not provided
-		if config.Logger == nil {
-			config = llm.DefaultRateLimiterConfig()
-		}
-		globalRateLimiter = llm.NewRateLimiter(config)
-	})
-	return globalRateLimiter
 }
 
 // Config holds configuration for the Bedrock client.
@@ -180,7 +160,7 @@ func NewClient(cfg Config) (*Client, error) {
 		awsCfg.AuthSchemePreference = []string{"httpBearerAuth"}
 	}
 
-	// Initialize rate limiter - use global singleton shared across all Bedrock clients.
+	// Initialize rate limiter - shared per (region, model) quota boundary.
 	// This prevents AWS throttling when multiple agents make concurrent requests.
 	var rateLimiter *llm.RateLimiter
 	if cfg.RateLimiterConfig.Enabled {
@@ -211,9 +191,7 @@ func NewClient(cfg Config) (*Client, error) {
 			rlCfg.QueueTimeout = cfg.RateLimiterConfig.QueueTimeout
 		}
 
-		// Get or create the global singleton rate limiter
-		// Note: Only the first client's config is used to initialize the rate limiter
-		rateLimiter = getOrCreateGlobalRateLimiter(rlCfg)
+		rateLimiter = llm.SharedRateLimiter("bedrock|"+cfg.Region+"|"+cfg.ModelID, rlCfg)
 	}
 
 	return &Client{

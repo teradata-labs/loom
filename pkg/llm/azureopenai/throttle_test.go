@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,74 +26,64 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/llm"
+	llmtypes "github.com/teradata-labs/loom/pkg/types"
 )
 
-// A 429 must come back as an error (so retry layers see it), carrying the
-// Retry-After header in classifier-parsable form — not as a raw response.
-func TestDoWithRateLimit_ThrottleConvertedToError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Retry-After", "3")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_exceeded"}}`))
-	}))
-	defer server.Close()
-
-	client, err := NewClient(Config{
-		Endpoint:     server.URL,
-		DeploymentID: "gpt-4o",
-		APIKey:       "test-key-not-real",
-	})
-	require.NoError(t, err)
-
-	_, err = client.doWithRateLimit(context.Background(), server.URL, []byte(`{"x":1}`))
-	require.Error(t, err)
-	assert.True(t, llm.IsThrottlingError(err), "429 must classify as throttling: %v", err)
-	assert.Equal(t, 3*time.Second, llm.RetryAfterHint(err), "Retry-After header must survive into the error")
-}
-
-// The request is rebuilt per attempt: after a 429 the retried request must
-// carry the FULL body again (a reused request's body reader is already
-// consumed and silently sends nothing).
-func TestDoWithRateLimit_RebuildsBodyPerAttempt(t *testing.T) {
+// A retried request must carry the FULL body again.
+//
+// http.Request's body is a reader consumed by the first send, so a client
+// that builds one request and re-sends it through the rate limiter's retry
+// silently ships an EMPTY body on every attempt after the first — the
+// provider then rejects or mis-answers the retry, and a recoverable throttle
+// looks like a model failure. sendOnce builds a fresh request per attempt;
+// this pins that, which a stub server that ignores the body cannot catch
+// (TestCallAPI429IsRetriedThroughRateLimiter passes either way).
+func TestThrottleRetryResendsFullBody(t *testing.T) {
+	var mu sync.Mutex
 	var bodies []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		bodies = append(bodies, string(b))
-		if len(bodies) == 1 {
+		n := len(bodies)
+		mu.Unlock()
+
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_exceeded"}}`))
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"choices":[]}`))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":2}}`))
 	}))
-	defer server.Close()
+	defer srv.Close()
 
 	client, err := NewClient(Config{
-		Endpoint:     server.URL,
-		DeploymentID: "gpt-4o",
+		Endpoint:     srv.URL,
+		DeploymentID: "gpt-4o-body-resend",
 		APIKey:       "test-key-not-real",
+		RateLimiterConfig: llm.RateLimiterConfig{
+			Enabled:           true,
+			RequestsPerSecond: 1000,
+			BurstCapacity:     8,
+			MinDelay:          time.Millisecond,
+			RetryBackoff:      time.Millisecond,
+			MaxRetries:        3,
+		},
 	})
 	require.NoError(t, err)
-	// Wire a private (non-global) rate limiter so the retry loop runs.
-	client.rateLimiter = llm.NewRateLimiter(llm.RateLimiterConfig{
-		Enabled:           true,
-		RequestsPerSecond: 1000,
-		BurstCapacity:     10,
-		MinDelay:          time.Millisecond,
-		MaxRetries:        2,
-		RetryBackoff:      time.Millisecond,
-		QueueTimeout:      5 * time.Second,
-	})
-	defer func() { _ = client.rateLimiter.Close() }()
 
-	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
-	resp, err := client.doWithRateLimit(context.Background(), server.URL, []byte(payload))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp, err := client.Chat(context.Background(),
+		[]llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err, "one 429 then success must be absorbed by retry")
+	assert.Contains(t, resp.Content, "ok")
 
+	mu.Lock()
+	defer mu.Unlock()
 	require.Len(t, bodies, 2, "one throttled attempt, one retry")
-	assert.Equal(t, payload, bodies[0])
-	assert.Equal(t, payload, bodies[1], "retry must resend the full body, not an empty one")
+	assert.NotEmpty(t, bodies[0], "first attempt must carry a body")
+	assert.Equal(t, bodies[0], bodies[1],
+		"the retry must resend the full body, not an empty one")
 }

@@ -31,6 +31,17 @@ func safeInt32(val int, fieldName string) (int32, error) {
 	return int32(val), nil
 }
 
+// copyInt64Ptr returns a fresh pointer holding the same value, or nil for nil.
+// Used for optional scalar fields so the YAML struct and the proto message never
+// share the same backing int64.
+func copyInt64Ptr(val *int64) *int64 {
+	if val == nil {
+		return nil
+	}
+	v := *val
+	return &v
+}
+
 // convertLLMConfigYAMLToProto converts a LLMConfigYAML pointer to a proto LLMConfig.
 // Returns (nil, nil) if the input is nil, allowing callers to distinguish "not configured"
 // from "configured with values". This is used for role-specific LLM configs (judge, orchestrator, etc.)
@@ -55,6 +66,19 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	var rateLimit *loomv1.LLMRateLimitConfig
+	if y.RateLimit != nil {
+		rateLimit = &loomv1.LLMRateLimitConfig{
+			Disabled:            y.RateLimit.Disabled,
+			RequestsPerSecond:   y.RateLimit.RequestsPerSecond,
+			TokensPerMinute:     y.RateLimit.TokensPerMinute,
+			BurstCapacity:       y.RateLimit.BurstCapacity,
+			MinDelayMs:          y.RateLimit.MinDelayMs,
+			MaxRetries:          y.RateLimit.MaxRetries,
+			RetryBackoffMs:      y.RateLimit.RetryBackoffMs,
+			QueueTimeoutSeconds: y.RateLimit.QueueTimeoutSeconds,
+		}
+	}
 	return &loomv1.LLMConfig{
 		Provider:             y.Provider,
 		Model:                y.Model,
@@ -65,6 +89,8 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		TopK:                 topK,
 		MaxContextTokens:     maxContextTokens,
 		ReservedOutputTokens: reservedOutputTokens,
+		RateLimit:            rateLimit,
+		Seed:                 copyInt64Ptr(y.Seed),
 	}, nil
 }
 
@@ -73,6 +99,19 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	if pb == nil || pb.Provider == "" {
 		return nil
+	}
+	var rateLimit *LLMRateLimitYAML
+	if pb.RateLimit != nil {
+		rateLimit = &LLMRateLimitYAML{
+			Disabled:            pb.RateLimit.Disabled,
+			RequestsPerSecond:   pb.RateLimit.RequestsPerSecond,
+			TokensPerMinute:     pb.RateLimit.TokensPerMinute,
+			BurstCapacity:       pb.RateLimit.BurstCapacity,
+			MinDelayMs:          pb.RateLimit.MinDelayMs,
+			MaxRetries:          pb.RateLimit.MaxRetries,
+			RetryBackoffMs:      pb.RateLimit.RetryBackoffMs,
+			QueueTimeoutSeconds: pb.RateLimit.QueueTimeoutSeconds,
+		}
 	}
 	return &LLMConfigYAML{
 		Provider:             pb.Provider,
@@ -84,6 +123,8 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		TopK:                 int(pb.TopK),
 		MaxContextTokens:     int(pb.MaxContextTokens),
 		ReservedOutputTokens: int(pb.ReservedOutputTokens),
+		RateLimit:            rateLimit,
+		Seed:                 copyInt64Ptr(pb.Seed),
 	}
 }
 
@@ -148,15 +189,40 @@ type K8sStyleAgentConfig struct {
 
 // LLMConfigYAML represents LLM configuration in YAML
 type LLMConfigYAML struct {
-	Provider             string   `yaml:"provider"`
-	Model                string   `yaml:"model"`
-	Temperature          float64  `yaml:"temperature"`
-	MaxTokens            int      `yaml:"max_tokens"`
-	StopSequences        []string `yaml:"stop_sequences"`
-	TopP                 float64  `yaml:"top_p"`
-	TopK                 int      `yaml:"top_k"`
-	MaxContextTokens     int      `yaml:"max_context_tokens"`
-	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+	Provider             string            `yaml:"provider"`
+	Model                string            `yaml:"model"`
+	Temperature          float64           `yaml:"temperature"`
+	MaxTokens            int               `yaml:"max_tokens"`
+	StopSequences        []string          `yaml:"stop_sequences"`
+	TopP                 float64           `yaml:"top_p"`
+	TopK                 int               `yaml:"top_k"`
+	MaxContextTokens     int               `yaml:"max_context_tokens"`
+	ReservedOutputTokens int               `yaml:"reserved_output_tokens"`
+	RateLimit            *LLMRateLimitYAML `yaml:"rate_limit"`
+
+	// Seed pins the sampling seed for reproducible generations.
+	// A pointer so that an omitted key (nil → provider samples randomly) is
+	// distinguishable from an explicit `seed: 0`, which some providers accept
+	// as a real seed. Honored by the ollama provider; others ignore it.
+	Seed *int64 `yaml:"seed"`
+}
+
+// LLMRateLimitYAML mirrors proto LLMRateLimitConfig for agent YAML files.
+// Before this existed, a spec.llm.rate_limit block was silently dropped by
+// the loader — the proto field was never populated from YAML (issue #348).
+//
+// Note: tokens_per_minute is OBSERVATIONAL ONLY today — tracked and reported
+// in rate-limiter metrics, never enforced. Only requests_per_second,
+// burst_capacity, and min_delay_ms gate requests.
+type LLMRateLimitYAML struct {
+	Disabled            bool    `yaml:"disabled"`
+	RequestsPerSecond   float64 `yaml:"requests_per_second"`
+	TokensPerMinute     int64   `yaml:"tokens_per_minute"`
+	BurstCapacity       int32   `yaml:"burst_capacity"`
+	MinDelayMs          int32   `yaml:"min_delay_ms"`
+	MaxRetries          int32   `yaml:"max_retries"`
+	RetryBackoffMs      int32   `yaml:"retry_backoff_ms"`
+	QueueTimeoutSeconds int32   `yaml:"queue_timeout_seconds"`
 }
 
 // ToolsConfigYAML represents tools configuration in YAML
@@ -1095,6 +1161,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			TopK:                 int(config.Llm.TopK),
 			MaxContextTokens:     int(config.Llm.MaxContextTokens),
 			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
+			Seed:                 copyInt64Ptr(config.Llm.Seed),
 		}
 	}
 

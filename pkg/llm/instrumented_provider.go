@@ -532,3 +532,16 @@ var _ llmtypes.LLMProvider = (*InstrumentedProvider)(nil)
 
 // Ensure InstrumentedProvider implements StreamingLLMProvider interface
 var _ llmtypes.StreamingLLMProvider = (*InstrumentedProvider)(nil)
+
+// SchedulerScope forwards the wrapped provider's quota-boundary scope so
+// slot scheduling keys grants to the same scope its capacity telemetry
+// calibrates. Without this forwarding, a wrapped client silently fell back
+// to the name|model scope — grants drew from an uncalibrated scheduler
+// while headers fed the real one. Empty when the wrapped provider does not
+// name a scope (callers fall back to name|model).
+func (p *InstrumentedProvider) SchedulerScope() string {
+	if sp, ok := p.provider.(interface{ SchedulerScope() string }); ok {
+		return sp.SchedulerScope()
+	}
+	return ""
+}

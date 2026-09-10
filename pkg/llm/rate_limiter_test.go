@@ -99,7 +99,8 @@ func TestRateLimiter_Do_Success(t *testing.T) {
 func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 10
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 3
 	config.RetryBackoff = 10 * time.Millisecond // Fast for testing
 
@@ -127,7 +128,8 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 func TestRateLimiter_Do_ThrottlingExhausted(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 10
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 2
 	config.RetryBackoff = 10 * time.Millisecond
 
@@ -386,6 +388,11 @@ func TestIsThrottlingError(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "typed ThrottleError with no keyword in message",
+			err:      fmt.Errorf("wrapped: %w", NewThrottleError(errors.New("slow down"), time.Second)),
+			expected: true,
+		},
+		{
 			name:     "other error",
 			err:      errors.New("connection timeout"),
 			expected: false,
@@ -434,7 +441,9 @@ func TestRateLimiter_MinDelay(t *testing.T) {
 func TestRateLimiter_Metrics(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 50 // Fast for testing
+	config.RequestsPerSecond = 50          // Fast for testing
+	config.MinDelay = time.Millisecond     // retries re-enter admission; keep spacing small
+	config.RetryBackoff = time.Millisecond // keep retry waits short
 
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
@@ -466,8 +475,9 @@ func TestRateLimiter_Metrics(t *testing.T) {
 func TestRateLimiter_ConcurrentThrottling(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
-	config.RequestsPerSecond = 20
+	config.RequestsPerSecond = 100
 	config.BurstCapacity = 10
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 2
 	config.RetryBackoff = 10 * time.Millisecond
 
@@ -557,6 +567,9 @@ func TestRateLimiter_TokenWindowPruning(t *testing.T) {
 func TestRateLimiter_ExponentialBackoff(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 1000
+	config.BurstCapacity = 10
+	config.MinDelay = time.Millisecond // retries re-enter admission; keep spacing small
 	config.MaxRetries = 3
 	config.RetryBackoff = 50 * time.Millisecond
 
@@ -572,18 +585,18 @@ func TestRateLimiter_ExponentialBackoff(t *testing.T) {
 	require.Error(t, err)
 	require.Len(t, callTimes, 4) // 1 initial + 3 retries
 
-	// Verify exponential backoff: ~50ms, ~100ms, ~200ms
+	// Backoff is exponential (base doubles per attempt: 50ms, 100ms, 200ms)
+	// with uniform ±50% jitter, so each observed gap must be at least half its
+	// attempt's base. Admission and scheduling only add delay, never remove
+	// it, so the lower bounds are strict. Exact jitter bounds are covered by
+	// TestRateLimiter_RetryDelayJitter (no sleeping, no scheduling noise).
 	delay1 := callTimes[1].Sub(callTimes[0])
 	delay2 := callTimes[2].Sub(callTimes[1])
 	delay3 := callTimes[3].Sub(callTimes[2])
 
-	assert.GreaterOrEqual(t, delay1, 50*time.Millisecond)
-	assert.GreaterOrEqual(t, delay2, 100*time.Millisecond)
-	assert.GreaterOrEqual(t, delay3, 200*time.Millisecond)
-
-	// Verify exponential growth
-	assert.Greater(t, delay2, delay1)
-	assert.Greater(t, delay3, delay2)
+	assert.GreaterOrEqual(t, delay1, 25*time.Millisecond)
+	assert.GreaterOrEqual(t, delay2, 50*time.Millisecond)
+	assert.GreaterOrEqual(t, delay3, 100*time.Millisecond)
 }
 
 func TestRateLimiter_RaceConditions(t *testing.T) {
@@ -685,4 +698,79 @@ func BenchmarkRateLimiter_Concurrent(b *testing.B) {
 			})
 		}
 	})
+}
+
+// TestRateLimiter_ConcurrentDispatch proves execution is no longer serialized
+// behind the dispatch loop (issue #349): 8 calls of 200ms each must complete
+// in far less than the 1.6s a serial dispatcher needs.
+func TestRateLimiter_ConcurrentDispatch(t *testing.T) {
+	rl := NewRateLimiter(RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 1000,
+		BurstCapacity:     16,
+		MinDelay:          time.Millisecond,
+		Logger:            zap.NewNop(),
+	})
+	defer func() { _ = rl.Close() }()
+
+	const n = 8
+	callDur := 200 * time.Millisecond
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := rl.Do(context.Background(), func(context.Context) (interface{}, error) {
+				time.Sleep(callDur)
+				return "ok", nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	// Serial execution would need n*callDur = 1.6s. Allow generous scheduling
+	// slack while still proving overlap.
+	assert.Less(t, elapsed, n*callDur/2,
+		"calls must overlap: %v elapsed for %d x %v calls", elapsed, n, callDur)
+}
+
+// TestRateLimiter_AdmissionStillPaced proves the concurrency fix did not
+// remove request-rate pacing: with 1 rps and burst 1, the second call must
+// start roughly a second after the first.
+func TestRateLimiter_AdmissionStillPaced(t *testing.T) {
+	rl := NewRateLimiter(RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 1,
+		BurstCapacity:     1,
+		MinDelay:          time.Millisecond,
+		Logger:            zap.NewNop(),
+	})
+	defer func() { _ = rl.Close() }()
+
+	var mu sync.Mutex
+	var starts []time.Time
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := rl.Do(context.Background(), func(context.Context) (interface{}, error) {
+				mu.Lock()
+				starts = append(starts, time.Now())
+				mu.Unlock()
+				return "ok", nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	require.Len(t, starts, 2)
+	gap := starts[1].Sub(starts[0])
+	if gap < 0 {
+		gap = -gap
+	}
+	assert.GreaterOrEqual(t, gap, 700*time.Millisecond,
+		"1 rps with burst 1 must space the second admission ~1s after the first, got %v", gap)
 }

@@ -583,7 +583,19 @@ type LLMConfig struct {
 	ReservedOutputTokens int32 `protobuf:"varint,9,opt,name=reserved_output_tokens,json=reservedOutputTokens,proto3" json:"reserved_output_tokens,omitempty"`
 	// Client-side rate limiting configuration.
 	// When nil, rate limiting is enabled with provider-appropriate defaults.
-	RateLimit     *LLMRateLimitConfig `protobuf:"bytes,10,opt,name=rate_limit,json=rateLimit,proto3" json:"rate_limit,omitempty"`
+	RateLimit *LLMRateLimitConfig `protobuf:"bytes,10,opt,name=rate_limit,json=rateLimit,proto3" json:"rate_limit,omitempty"`
+	// Sampling seed for reproducible generations.
+	// Explicitly optional so that "not set" (sampling stays random, provider
+	// default) is distinguishable from an explicit seed of 0, which some
+	// providers accept as a real seed value.
+	//
+	// Honored by: ollama, and only on the agent-registry construction path
+	// (pkg/agent/registry.go, which passes it into ollama.Config). Providers
+	// other than ollama ignore it. The looms serve path builds clients from
+	// factory.FactoryConfig, which does not carry a seed field, so a seed set in
+	// agent YAML has no effect there — wiring it through the factory is an open
+	// follow-up, not a shipped behavior.
+	Seed          *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -688,6 +700,13 @@ func (x *LLMConfig) GetRateLimit() *LLMRateLimitConfig {
 	return nil
 }
 
+func (x *LLMConfig) GetSeed() int64 {
+	if x != nil && x.Seed != nil {
+		return *x.Seed
+	}
+	return 0
+}
+
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
 // All numeric fields default to 0 (zero), which means "use provider default".
 // Rate limiting is always enabled unless disabled is explicitly set to true.
@@ -697,15 +716,17 @@ type LLMRateLimitConfig struct {
 	// Default: false (rate limiting is ON). Set to true only if the provider
 	// has its own throttle handling or you are managing concurrency externally.
 	Disabled bool `protobuf:"varint,1,opt,name=disabled,proto3" json:"disabled,omitempty"`
-	// Maximum requests per second across all agents sharing this provider.
+	// Maximum requests per second, shared by every agent on the same provider
+	// quota boundary (endpoint/deployment/model/region, provider-dependent)
+	// with the same rate-limit values. Agents that set different values on the
+	// same boundary each get their own limiter — their combined rate can
+	// exceed the quota, and a warning is logged when that happens.
 	// 0 = use default (2.0 RPS).
 	RequestsPerSecond float64 `protobuf:"fixed64,2,opt,name=requests_per_second,json=requestsPerSecond,proto3" json:"requests_per_second,omitempty"`
-	// Maximum input+output tokens per minute for token-based throttling.
-	// 0 = use default (40000 TPM).
-	// Set this to match your API tier:
-	//
-	//	Anthropic free: 30000, Tier 1: 100000
-	//	Bedrock: varies by model (40000-400000)
+	// Maximum input+output tokens per minute. OBSERVATIONAL ONLY today: token
+	// consumption is tracked and reported in rate-limiter metrics, but this
+	// value is never enforced — only requests_per_second, burst_capacity, and
+	// min_delay_ms gate requests. 0 = use default (40000 TPM metrics baseline).
 	TokensPerMinute int64 `protobuf:"varint,3,opt,name=tokens_per_minute,json=tokensPerMinute,proto3" json:"tokens_per_minute,omitempty"`
 	// Burst capacity: maximum concurrent requests allowed before queuing.
 	// 0 = use default (5).
@@ -2150,7 +2171,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x06config\x18\x02 \x01(\v2\x12.loom.v1.LLMConfigR\x06config\"\\\n" +
 	"\fProviderPool\x124\n" +
 	"\tproviders\x18\x01 \x03(\v2\x16.loom.v1.ProviderEntryR\tproviders\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\tR\x06active\"\xef\x02\n" +
+	"\x06active\x18\x02 \x01(\tR\x06active\"\x91\x03\n" +
 	"\tLLMConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12 \n" +
@@ -2164,7 +2185,9 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x16reserved_output_tokens\x18\t \x01(\x05R\x14reservedOutputTokens\x12:\n" +
 	"\n" +
 	"rate_limit\x18\n" +
-	" \x01(\v2\x1b.loom.v1.LLMRateLimitConfigR\trateLimit\"\xd4\x02\n" +
+	" \x01(\v2\x1b.loom.v1.LLMRateLimitConfigR\trateLimit\x12\x17\n" +
+	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01B\a\n" +
+	"\x05_seed\"\xd4\x02\n" +
 	"\x12LLMRateLimitConfig\x12\x1a\n" +
 	"\bdisabled\x18\x01 \x01(\bR\bdisabled\x12.\n" +
 	"\x13requests_per_second\x18\x02 \x01(\x01R\x11requestsPerSecond\x12*\n" +
@@ -2392,6 +2415,7 @@ func file_loom_v1_agent_config_proto_init() {
 	}
 	file_loom_v1_skill_proto_init()
 	file_loom_v1_task_proto_init()
+	file_loom_v1_agent_config_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

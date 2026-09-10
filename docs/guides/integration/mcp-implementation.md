@@ -102,7 +102,9 @@ mcp:
 > **Note:** The `http` and `sse` transport values are interchangeable and both
 > use the legacy HTTP/SSE transport. For new deployments, prefer `streamable-http`.
 
-### Streamable HTTP Transport (MCP 2025-03-26 spec) ✅
+### Streamable HTTP Transport (negotiated revision) ✅
+
+The client negotiates the MCP protocol revision per server: 2026-07-28 stateless core when the server supports it, with automatic fallback to the legacy initialize handshake (and legacy `Mcp-Session-Id` handling) for 2024/2025-era servers. Pin a revision per server with `protocol_version`.
 
 ```yaml
 mcp:
@@ -110,8 +112,8 @@ mcp:
     remote:
       url: http://localhost:8080/mcp
       transport: streamable-http
+      protocol_version: auto  # auto | legacy | exact revision (e.g. "2026-07-28")
       enable_sessions: true
-      enable_resumption: false
 ```
 
 
@@ -284,8 +286,9 @@ mcp:
       enabled: bool            # Enable/disable server
       timeout: string          # Operation timeout (e.g., "30s", "1m")
       url: string              # Server URL (required for http/sse/streamable-http)
-      enable_sessions: bool    # Enable session management (streamable-http only)
-      enable_resumption: bool  # Enable stream resumption (streamable-http only)
+      protocol_version: string # "auto" (default) | "legacy" | exact revision (e.g. "2026-07-28")
+      enable_sessions: bool    # Echo legacy session IDs (streamable-http only)
+      enable_resumption: bool  # DEPRECATED no-op: resumption was removed by MCP 2026-07-28; parses with a warning
 
       # Tool filtering
       tools:

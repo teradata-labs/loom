@@ -140,6 +140,28 @@ Update task notes, approach, description, or status.
 - `[BLOCKED]` — Hit a blocker
 - `[DECISION]` — Made a choice
 
+**Status changes run the real lifecycle** (never a raw status write):
+- `done` / `cancelled` — terminal close with the entry's `reason` (defaults:
+  "closed via task_board update" / "cancelled via task_board update"):
+  stamps `closed_at`, releases any claim, unblocks dependents, and settles
+  the parent when all children are terminal. `done` additionally creates the
+  completion memory; `cancelled` does not.
+- `in_progress` — atomic claim (WIP-limited); when two sessions race,
+  exactly one wins. Re-asserting `in_progress` succeeds only for the session
+  holding the claim.
+- `open` — releases the claim when the task is claimed (making it
+  re-claimable), otherwise a plain transition.
+
+**Batch form**: pass `updates` as an array of update objects (max 20) to
+apply several transitions in one call — e.g. mark the current task done and
+claim the next. Entries apply independently with per-entry results; the call
+reports failure only when every entry fails.
+
+**Write-once acceptance criteria**: `acceptance_criteria` is settable at
+create or while still empty, then immutable (enforced atomically in the
+store — concurrent writers cannot both win). To change criteria, cancel the
+task (`update` with `status=cancelled` and a `reason`) and re-create it.
+
 #### close
 
 Mark a task as done with a completion reason.

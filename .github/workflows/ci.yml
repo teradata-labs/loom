@@ -12,6 +12,12 @@ permissions:
   checks: write
   security-events: write  # Required for SARIF upload to code scanning
 
+env:
+  # Authenticates buf's BSR traffic (module downloads and remote plugin
+  # execution) when the BUF_TOKEN repository secret exists; empty is ignored
+  # by buf and requests stay anonymous (rate-limited).
+  BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+
 jobs:
   # ============================================================================
   # Job 1: Proto Linting & Breaking Change Detection
@@ -25,6 +31,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0  # Fetch all history for breaking change detection
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -76,6 +85,9 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -139,6 +151,9 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
 
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
@@ -275,6 +290,9 @@ jobs:
           go-version: '1.26'
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
@@ -354,6 +372,9 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
@@ -428,6 +449,9 @@ jobs:
           go-version: '1.26'
           cache: true
 
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
@@ -440,7 +464,7 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
+        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
 
@@ -453,7 +477,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
