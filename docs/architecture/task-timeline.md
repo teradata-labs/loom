@@ -126,7 +126,7 @@ Two lessons worth keeping:
 │                              WRITE SIDE                                     │
 │                     (no new writes — only a stamped column)                 │
 │                                                                            │
-│   ClaimTask ──▶ taskctx.ContextWithAttribution(ctx, {task, session, agent}) │
+│   ClaimTask ──▶ taskctx.ContextWithAttribution(ctx, ...)   [📋 planned]     │
 │                                   │                                        │
 │              ┌────────────────────┼─────────────────────┐                  │
 │              ▼                    ▼                     ▼                  │
@@ -424,6 +424,31 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 
 **Impact**: repo-wide, not specific to this component — migrations 000005, 000006, and 000008 already encode the convention. `tasks.created_via` is left in place on rollback; it is `NOT NULL DEFAULT ''` with no index, so it is inert.
 
+### Tool-call rendering: pairing is by `tool_use_id`, and its edges show
+
+**Description**: a result event carries its call's `ToolName` via a same-scan
+`tool_use_id → name` map (a result always follows its call in timestamp order).
+The edges are visible rather than hidden: an orphaned result — its call row
+missing, or invisible to the caller — renders anonymously, and duplicate
+`tool_use_id`s (some providers reuse ids across turns) resolve to the most
+recent call's name rather than being flagged. An unpaired *call* (result never
+written) is silent.
+
+**Impact**: cosmetic in the ordinary case; on audit surfaces an orphaned
+result's anonymity is the truthful rendering of a genuinely unattributable row.
+
+### One `task_boards` row per session
+
+**Description**: with `default_board_id` unset (the default), the emitter
+auto-creates a board per session ("Session work"), and nothing deletes the row
+when the session ends — `ForgetSession` reclaims only in-process state. A
+long-lived server accumulates one `task_boards` row per session.
+
+**Impact**: rows are small and boards are queried by id, so the cost is
+storage, not reads. A retention decision (filter or sweep) belongs with the
+task-retention design, not here; recorded so nobody mistakes the growth for a
+leak in the emitter's maps, which ARE reclaimed.
+
 ### `tool_executions` is a dead table
 
 **Description**: `tool_executions` (`tool_name`, `input_json`, `result_json`, `error`, `execution_time_ms`) has existed since migration 000001 and **nothing writes to it**. Its shape is almost exactly what a tool-event log would want, which is part of why the rejected design's duplication was not obvious sooner.
@@ -437,9 +462,9 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 | Piece | Status |
 |---|---|
 | `pkg/taskctx` attribution (leaf package) | ✅ Implemented |
-| `messages.task_id` — schema, migration, stamping, read-back | ✅ Implemented |
-| `human_requests.task_id` — schema, migration, stamping | ✅ Implemented |
-| `tasks.created_via` (SQLite 000009, Postgres 000014) | ✅ Migration written |
+| `messages.task_id` — schema, migration, stamping, read-back | ✅ Implemented on both backends (Postgres stamping landed in review round 5 — before that the column existed on Postgres with no writer) |
+| `human_requests.task_id` — schema, migration, stamping, read-back | ✅ Implemented on both backends (Postgres stamping + read-back landed in round 5; the read-back is what ResumeChat's durable identity restore depends on) |
+| `tasks.created_via` (SQLite 000009, Postgres 000024) | ✅ Migration written |
 | `TimelineEvent` / `TimelineSource` / `TimelineReader` | ✅ Implemented |
 | `messages` projection incl. tool call/result reconstruction | ✅ Implemented, 5 tests |
 | `human_requests` projection | ⚠️ Partial — projection + `TimelineSource` written and covered by 2 tests, but `ListByTask` has **no production implementation**: both tests supply fakes, and `SQLiteHumanRequestStore` writes `task_id` without ever selecting by it. A consumer wiring the documented reader against the built-in stores gets no HITL events, silently. |
@@ -447,7 +472,7 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 | Merge, tie-break stability, filters, limits, partial failure | ✅ 9 tests |
 | Read benchmark | ✅ 2.14 ms / 400 events |
 | Rejected `task_activity` table, proto, store, recorder | ❌ Deleted |
-| Stamping `created_via` at the creation sites | 📋 Planned — column exists, writers not yet updated |
+| Stamping `created_via` at the creation sites | ✅ Implemented for the sites that exist: the implicit emitter and the task-tracked orchestrator write it, and the visibility exclusion depends on it. Sites that do not yet create tasks (future RPC writers) stamp when they land |
 | `ClaimTask` establishing the attribution on the agent's context | 📋 Planned — the timeline is only as good as its stamping |
 | Postgres message projection | 📋 Planned |
 | `TaskService` RPC exposing the timeline | 📋 Planned — deliberately last, so the proto commits to a validated shape |

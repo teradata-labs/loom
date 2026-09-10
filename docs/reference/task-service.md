@@ -651,15 +651,59 @@ message TaskBoardConfig {
   string default_board_id = 4;         // Default board ID
   DecomposeStrategy default_strategy = 5; // Default strategy
   int32 context_budget_tokens = 6;     // Max tokens for context injection (default: 500)
+  ImplicitTaskConfig implicit_tasks = 7; // Runtime task recording (see below)
 }
 ```
 
-**Two-axis behavior**:
+**Three-axis behavior**:
 
 | Flag | Controls |
 |------|----------|
 | `taskManager != nil` (server-level) | Skill task emission (on `manage_skills` load), stickiness checking |
 | `TaskBoardConfig.enabled` (agent-level) | `task_board` tool registration, prompt supplement, context injection |
+| `TaskBoardConfig.implicit_tasks.mode` (agent-level) | Runtime task recording — the runtime mints at most one task per working turn, independent of `enabled`, so a board-less agent can still be recorded for a human-facing timeline |
+
+### ImplicitTaskConfig (field 7) — runtime task recording
+
+**Default ON.** With no configuration at all, every tool-using turn records one
+task (durable rows: a board row per session, a task row per working turn, and
+lifecycle history). The recorded tasks are excluded from the agent's own task
+context and ready front by default, so they cost no prompt tokens.
+
+```protobuf
+message ImplicitTaskConfig {
+  ImplicitTaskMode mode = 1;              // UNSPECIFIED = enabled (opt-out)
+  repeated ImplicitTaskTrigger triggers = 2;          // narrow to these ("only these")
+  repeated ImplicitTaskTrigger excluded_triggers = 3; // subtract from the effective set
+  int32 max_per_session = 4;              // in-process noise cap (default 100)
+  bool agent_visible = 5;                 // surface recorded tasks to the agent (default false)
+}
+```
+
+**The off switch**, in agent YAML:
+
+```yaml
+task_board:
+  implicit_tasks:
+    mode: disabled        # or "off"
+```
+
+Parsing fails CLOSED: a typo'd `mode`, an unrecognised trigger name, or a
+negative `max_per_session` disables emission entirely and logs a warning —
+present-but-unparseable never silently widens to the defaults.
+
+Triggers today: `tool_call` and `human_request` fire; `skill_activation`,
+`subagent_spawn` and `workflow_step` are declared but not yet fired by the
+runtime. `max_per_session` is an in-process noise guard, not a durable quota —
+a process restart grants a fresh budget.
+
+**Cost of the default**: one idempotent task create per working turn (memoized
+in-process, so repeat triggers in a turn cost a map lookup), one board-existence
+probe per session, and one back-fill `UPDATE` per turn scoped by `(session,
+turn)`. Turns that use no tools and ask no human record nothing. One
+`task_boards` row is created per session when `default_board_id` is unset and
+is not currently deleted with the session (see the architecture doc's
+constraints).
 
 ---
 
