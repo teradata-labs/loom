@@ -610,8 +610,13 @@ func (s *Scheduler) dispatchLocked() {
 		// dispatch without ever claiming to BE a lease holder. That keeps the
 		// proto's liveness bound — no waiter waits indefinitely behind a
 		// stream of higher classes — while leaving the class honest.
-		var starved, ordinary []*waiter
-		for _, class := range dispatchOrder {
+		// ordinary stays grouped BY CLASS: an unfit non-starved head blocks
+		// only its own class, so the next class still gets a turn. Flattening
+		// it would make one stuck large reservation stall every cheaper
+		// waiter behind it in the whole band.
+		var starved []*waiter
+		ordinary := make([][]*waiter, len(dispatchOrder))
+		for ci, class := range dispatchOrder {
 			for _, w := range s.queues[band][class] {
 				if w.cancelled {
 					continue
@@ -620,7 +625,7 @@ func (s *Scheduler) dispatchLocked() {
 					starved = append(starved, w)
 					continue
 				}
-				ordinary = append(ordinary, w)
+				ordinary[ci] = append(ordinary[ci], w)
 			}
 		}
 		sort.SliceStable(starved, func(i, j int) bool {
@@ -629,16 +634,35 @@ func (s *Scheduler) dispatchLocked() {
 
 		granted := make(map[*waiter]struct{})
 		blocked := false
-		for _, w := range append(starved, ordinary...) {
+
+		// Starved waiters first, oldest first, across every class. A starved
+		// head that cannot fit HALTS the band: backfilling smaller requests
+		// past it is precisely how it never accumulates the capacity it
+		// needs, which is the starvation this ordering exists to end.
+		for _, w := range starved {
 			if !s.canGrantLocked(band, w.req.ReservationTokens) {
-				// The head that cannot fit is starved: hold the band rather
-				// than backfilling smaller requests past it, or it never
-				// accumulates the capacity it needs.
-				blocked = hasStarvedLocked(w)
+				blocked = true
 				break
 			}
 			w.ready <- s.grantLocked(w.req.ReservationTokens)
 			granted[w] = struct{}{}
+		}
+
+		// Then the ordinary class order, FIFO inside each class. An unfit
+		// head here stops ITS class and nothing else — it is not starved, so
+		// it has no claim on the band, and a large RESOURCE_HOLDER that
+		// cannot yet fit must not stall a burst of cheap NEW waiters that
+		// can. This is the backfill this function's contract promises.
+		if !blocked {
+			for ci := range dispatchOrder {
+				for _, w := range ordinary[ci] {
+					if !s.canGrantLocked(band, w.req.ReservationTokens) {
+						break // this class only; the next still gets a turn
+					}
+					w.ready <- s.grantLocked(w.req.ReservationTokens)
+					granted[w] = struct{}{}
+				}
+			}
 		}
 
 		// Rebuild each class queue from what remains, preserving FIFO.
