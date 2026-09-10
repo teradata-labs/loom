@@ -114,11 +114,15 @@ func TestOccurredAtEnabled(t *testing.T) {
 	}
 }
 
-func TestIsTimeOverrideRejection(t *testing.T) {
+// A refused override must abort the run, whichever override it is: it
+// invalidates the benchmark rather than degrading it, and a run that writes
+// error rows and exits zero hands automation a fake result.
+func TestOverrideRejection(t *testing.T) {
 	tests := []struct {
-		name   string
-		result EntryResult
-		want   bool
+		name     string
+		result   EntryResult
+		want     bool
+		wantFlag string
 	}{
 		{
 			name: "failed precondition mentioning occurred_at",
@@ -126,12 +130,30 @@ func TestIsTimeOverrideRejection(t *testing.T) {
 				Error:    "ingest session 0: rpc error: code = FailedPrecondition desc = occurred_at override is disabled on this server",
 				grpcCode: codes.FailedPrecondition,
 			},
-			want: true,
+			want:     true,
+			wantFlag: "allow_time_override",
 		},
 		{
-			name:   "flag-name substring without a status code",
-			result: EntryResult{Error: "server refused: enable allow_time_override"},
-			want:   true,
+			name:     "flag-name substring without a status code",
+			result:   EntryResult{Error: "server refused: enable allow_time_override"},
+			want:     true,
+			wantFlag: "allow_time_override",
+		},
+		{
+			// The MAJOR-001 case: conversation mode against a default server.
+			name: "failed precondition mentioning replay_assistant_message",
+			result: EntryResult{
+				Error:    "replay turn 3: rpc error: code = FailedPrecondition desc = replay_assistant_message override is disabled on this server (set server.allow_assistant_override: true ...)",
+				grpcCode: codes.FailedPrecondition,
+			},
+			want:     true,
+			wantFlag: "allow_assistant_override",
+		},
+		{
+			name:     "assistant flag-name substring without a status code",
+			result:   EntryResult{Error: "server refused: enable allow_assistant_override"},
+			want:     true,
+			wantFlag: "allow_assistant_override",
 		},
 		{
 			name: "unrelated failed precondition",
@@ -153,7 +175,14 @@ func TestIsTimeOverrideRejection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isTimeOverrideRejection(tt.result))
+			msg, got := overrideRejection(tt.result)
+			assert.Equal(t, tt.want, got)
+			if tt.want {
+				assert.Contains(t, msg, tt.wantFlag,
+					"the abort message must name the flag the operator has to change")
+			} else {
+				assert.Empty(t, msg)
+			}
 		})
 	}
 }
@@ -283,4 +312,60 @@ func TestRunAbortsOnTimeOverrideRejection(t *testing.T) {
 	for i, ctxErr := range fake.deleteAgentCtxErrs {
 		assert.NoError(t, ctxErr, "temp-agent cleanup %d ran on a cancelled context", i)
 	}
+}
+
+// weaveErrClient fails every Weave with a fixed status. Only Weave is
+// called, so the embedded nil interface is never dereferenced.
+type weaveErrClient struct {
+	loomv1.LoomServiceClient
+	err error
+}
+
+func (c *weaveErrClient) Weave(_ context.Context, _ *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+	return nil, c.err
+}
+
+// The other half of MAJOR-001: replayTurn dropped the gRPC status, so a
+// server refusing the replay override was indistinguishable from a transient
+// per-entry failure and the run never aborted. This walks the whole path —
+// the refusal a default server actually returns, through replayTurn, into
+// the fail-fast check — because either half alone silently restores the bug.
+func TestReplayTurn_RecordsRejectionSoTheRunAborts(t *testing.T) {
+	r := &Runner{
+		client: &weaveErrClient{err: status.Error(codes.FailedPrecondition,
+			"replay_assistant_message override is disabled on this server "+
+				"(set server.allow_assistant_override: true to accept generation-free conversation replay)")},
+	}
+
+	var result EntryResult
+	err := r.replayTurn(context.Background(), "sess-1", "user text", "assistant text", "", time.Time{}, &result)
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, result.grpcCode,
+		"replayTurn must record the status, or the rejection looks transient")
+
+	// What Runner.Run stores before consulting the fail-fast check.
+	result.Error = err.Error()
+	msg, rejected := overrideRejection(result)
+	assert.True(t, rejected, "a refused replay override must abort the run, not write error rows and exit zero")
+	assert.Contains(t, msg, "allow_assistant_override")
+}
+
+// A successful replay must not mark the entry as rejected.
+func TestReplayTurn_SuccessLeavesNoRejection(t *testing.T) {
+	r := &Runner{client: &weaveOKClient{}}
+
+	var result EntryResult
+	require.NoError(t, r.replayTurn(context.Background(), "sess-1", "u", "a", "", time.Time{}, &result))
+	assert.Equal(t, codes.OK, result.grpcCode)
+
+	_, rejected := overrideRejection(result)
+	assert.False(t, rejected)
+}
+
+type weaveOKClient struct {
+	loomv1.LoomServiceClient
+}
+
+func (c *weaveOKClient) Weave(_ context.Context, _ *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+	return &loomv1.WeaveResponse{}, nil
 }
