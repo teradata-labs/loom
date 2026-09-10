@@ -29,6 +29,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -516,4 +517,41 @@ func TestPark_AbandonedParkSettlesItsTask(t *testing.T) {
 	require.True(t, task.IsTerminal(got.Status),
 		"a turn declared dead must not leave its task IN_PROGRESS; got %s", task.StatusName(got.Status))
 	require.Contains(t, got.CloseReason, "abandoned")
+}
+
+// TestPark_ResumeIdentityCaptureRacesSetID reproduces, under -race, the third
+// unguarded read of a.id the round-5 review missed: ResumeChat stamps the
+// restored attribution's AgentID while SetID — a live mutator under a.mu — can
+// run on another goroutine (registry hot-reload assigns stable GUIDs). The two
+// earlier capture sites were guarded in round 5; this one was not. Every
+// identity stamp in park.go now reads through GetID, which takes the lock.
+func TestPark_ResumeIdentityCaptureRacesSetID(t *testing.T) {
+	r := newParkTaskRig(t, workThenParkScript(), "read_table", "export_csv")
+
+	hr := r.parkAndAssert(t, "s-race-id", "read then export")
+	require.NotEmpty(t, hr.TaskID, "rig sanity: the park row carries the durable task id, so the resume takes the restore path")
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				r.ag.SetID(fmt.Sprintf("agent-%d", i))
+			}
+		}
+	}()
+
+	_, err := r.ag.ResumeChat(context.Background(), "s-race-id",
+		ParkDecision{RequestID: hr.ID, Approved: true}, nil)
+	close(stop)
+	<-done
+	require.NoError(t, err)
+
+	after := r.onlyTask(t, "s-race-id")
+	require.Equal(t, hr.TaskID, after.ID, "the resume restored the parked task, not a fresh one")
+	require.Equal(t, loomv1.TaskStatus_TASK_STATUS_DONE, after.Status)
 }

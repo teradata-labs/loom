@@ -66,25 +66,39 @@ const (
 	MetricImplicitTaskClosed  = "task.implicit.closed"
 )
 
-// DefaultImplicitTriggers is the effective trigger set when configuration
-// names none.
+// RuntimeFiredTriggers is the set of triggers the runtime actually passes to
+// the emitter today: TOOL_CALL from tool dispatch and HUMAN_REQUEST from the
+// HITL park and contact_human paths. SKILL_ACTIVATION, SUBAGENT_SPAWN and
+// WORKFLOW_STEP parse, validate and resolve, but no code path fires them yet.
+// A policy whose resolved set is disjoint from this one records nothing; the
+// agent warns about that at wiring time (see ImplicitPolicy.CanFire).
+func RuntimeFiredTriggers() []loomv1.ImplicitTaskTrigger {
+	return []loomv1.ImplicitTaskTrigger{
+		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
+		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST,
+	}
+}
+
+// DefaultImplicitTriggers is the trigger set an agent gets when it says nothing.
 //
-// TOOL_CALL, HUMAN_REQUEST, and SUBAGENT_SPAWN are in. Each is an unambiguous
-// sign the turn did something a human may need to audit, and each is bounded
-// per turn by the laziness rule.
+// TOOL_CALL and HUMAN_REQUEST are in. Each is an unambiguous signal that work
+// happened: a tool ran, or a human was asked. Between them they cover every
+// turn that does anything durable.
 //
-// SKILL_ACTIVATION is OUT of the default set: the skills task emitter already
-// creates tasks on activation, so including it would produce two tasks for one
-// cause. It remains available for agents that disable skill emission.
+// SUBAGENT_SPAWN is OUT, and this is a change: it was in the default set while
+// nothing fired it, which made `triggers: [subagent_spawn]` resolve to
+// enabled-with-nothing-firable in silence, and made the default look broader
+// than it was. The default is now exactly the firable set. Restoring it when the
+// spawn path fires it is a one-line change here plus RuntimeFiredTriggers.
+//
+// SKILL_ACTIVATION is OUT: the skills task emitter already creates tasks on
+// activation, so including it would produce two tasks for one cause. It remains
+// available for agents that disable skill emission.
 //
 // WORKFLOW_STEP is OUT for the same reason — the task-tracked orchestrator
 // already creates a task per stage.
 func DefaultImplicitTriggers() []loomv1.ImplicitTaskTrigger {
-	return []loomv1.ImplicitTaskTrigger{
-		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL,
-		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST,
-		loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN,
-	}
+	return RuntimeFiredTriggers()
 }
 
 // ImplicitPolicy is the resolved configuration, with defaults applied.
@@ -140,6 +154,22 @@ func ResolveImplicitPolicy(cfg *loomv1.ImplicitTaskConfig) ImplicitPolicy {
 		p.Enabled = false
 	}
 	return p
+}
+
+// CanFire reports whether at least one trigger in the resolved set is one the
+// runtime fires (RuntimeFiredTriggers). An enabled policy that cannot fire is
+// the silent failure this guards against: every knob parsed, nothing was
+// recorded, and nothing said why.
+func (p ImplicitPolicy) CanFire() bool {
+	if !p.Enabled {
+		return false
+	}
+	for _, tr := range RuntimeFiredTriggers() {
+		if p.Triggers[tr] {
+			return true
+		}
+	}
+	return false
 }
 
 // Allows reports whether a trigger may mint a task under this policy.
@@ -366,6 +396,15 @@ func (e *ImplicitEmitter) EnsureForTurn(ctx context.Context, r TurnRequest) (con
 		e.mu.Unlock()
 		return e.bind(ctx, r, id), nil, nil
 	}
+	// The span starts here, past the memo hit, on purpose: a hit is a map
+	// lookup and a turn with forty tool calls takes it thirty-nine times.
+	// Everything below is store traffic inside the user's turn — up to four
+	// round trips — and that is what an operator needs to see the cost of.
+	ctx, span := e.tracer.StartSpan(ctx, "implicit_task.ensure_for_turn")
+	defer e.tracer.EndSpan(span)
+	span.SetAttribute("session_id", r.SessionID)
+	span.SetAttribute("turn", r.TurnIndex)
+	span.SetAttribute("trigger", r.Trigger.String())
 	// MaxPerSession is an IN-PROCESS noise guard, decided deliberately rather
 	// than left as an accident: it bounds how much one conversation can grow a
 	// board between restarts, and it is NOT a durable quota. A process restart
@@ -844,6 +883,9 @@ func (e *ImplicitEmitter) CompleteForTurn(ctx context.Context, taskID, closeReas
 	if e == nil || e.manager == nil || taskID == "" {
 		return
 	}
+	ctx, span := e.tracer.StartSpan(ctx, "implicit_task.complete_for_turn")
+	defer e.tracer.EndSpan(span)
+	span.SetAttribute("task_id", taskID)
 
 	existing, err := e.manager.GetTask(ctx, taskID)
 	if err != nil || existing == nil {
@@ -880,7 +922,7 @@ func (e *ImplicitEmitter) CompleteForTurn(ctx context.Context, taskID, closeReas
 			zap.String("task_id", taskID), zap.Error(err))
 		return
 	}
-	e.tracer.RecordMetric(MetricImplicitTaskClosed, 1, nil)
+	e.tracer.RecordMetric(MetricImplicitTaskClosed, 1, map[string]string{"outcome": "done"})
 }
 
 // AbortForTurn is CompleteForTurn's failure-shaped twin: the same guards (only
@@ -893,6 +935,9 @@ func (e *ImplicitEmitter) AbortForTurn(ctx context.Context, taskID, reason strin
 	if e == nil || e.manager == nil || taskID == "" {
 		return
 	}
+	ctx, span := e.tracer.StartSpan(ctx, "implicit_task.abort_for_turn")
+	defer e.tracer.EndSpan(span)
+	span.SetAttribute("task_id", taskID)
 	existing, err := e.manager.GetTask(ctx, taskID)
 	if err != nil || existing == nil {
 		return

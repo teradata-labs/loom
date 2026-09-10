@@ -96,8 +96,12 @@ func TestResolveImplicitPolicy_GranularControl(t *testing.T) {
 	if except.Allows(trToolCall) {
 		t.Error("excluded trigger must be removed")
 	}
-	if !except.Allows(trHuman) || !except.Allows(trSubagent) {
+	if !except.Allows(trHuman) {
 		t.Error("exclusion must leave the other defaults intact")
+	}
+	if except.Allows(trSubagent) {
+		t.Error("SUBAGENT_SPAWN left the default set: nothing fires it, and a default that " +
+			"cannot fire made `triggers: [subagent_spawn]` silently record nothing")
 	}
 
 	// Exclusion applies after the allow-list.
@@ -298,5 +302,51 @@ func TestForgetSessionSweepsTheKeyTurnKeyMinted(t *testing.T) {
 		if key := turnKey(TurnRequest{SessionID: sess, TurnIndex: turn}); e.memoHas(key) {
 			t.Errorf("ForgetSession left %q behind: the sweep prefix no longer matches the keys turnKey mints", key)
 		}
+	}
+}
+
+// TestDefaultImplicitTriggers_AreExactlyTheFirableSet pins the invariant that
+// closed the silent-default finding: every default trigger is one the runtime
+// fires, so an agent that says nothing records something. A trigger added to
+// the default set without a code path that fires it fails here.
+func TestDefaultImplicitTriggers_AreExactlyTheFirableSet(t *testing.T) {
+	fired := map[loomv1.ImplicitTaskTrigger]bool{}
+	for _, tr := range RuntimeFiredTriggers() {
+		fired[tr] = true
+	}
+	for _, tr := range DefaultImplicitTriggers() {
+		if !fired[tr] {
+			t.Errorf("default trigger %s is not fired by the runtime", tr)
+		}
+	}
+	if len(DefaultImplicitTriggers()) != len(RuntimeFiredTriggers()) {
+		t.Errorf("default set (%d) and firable set (%d) differ", len(DefaultImplicitTriggers()), len(RuntimeFiredTriggers()))
+	}
+}
+
+// TestImplicitPolicy_CanFire is the check the agent runs at wiring time: an
+// enabled policy whose triggers are all unfired must be reported, because it
+// otherwise looks configured and produces nothing.
+func TestImplicitPolicy_CanFire(t *testing.T) {
+	if !ResolveImplicitPolicy(nil).CanFire() {
+		t.Fatal("the default policy must be able to fire")
+	}
+	unfirable := ResolveImplicitPolicy(&loomv1.ImplicitTaskConfig{
+		Triggers: []loomv1.ImplicitTaskTrigger{trSubagent},
+	})
+	if !unfirable.Enabled {
+		t.Fatal("rig sanity: a valid trigger list keeps the policy enabled — that is what makes the silence dangerous")
+	}
+	if unfirable.CanFire() {
+		t.Error("a policy narrowed to an unfired trigger must report that it cannot fire")
+	}
+	if ResolveImplicitPolicy(&loomv1.ImplicitTaskConfig{Mode: loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED}).CanFire() {
+		t.Error("a disabled policy cannot fire")
+	}
+	mixed := ResolveImplicitPolicy(&loomv1.ImplicitTaskConfig{
+		Triggers: []loomv1.ImplicitTaskTrigger{trSubagent, trToolCall},
+	})
+	if !mixed.CanFire() {
+		t.Error("one firable trigger is enough")
 	}
 }

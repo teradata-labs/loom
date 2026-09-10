@@ -24,11 +24,15 @@ package agent
 
 import (
 	"context"
+	"math"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
@@ -211,6 +215,11 @@ func TestImplicitTasks_UnparseableConfigFailsClosed(t *testing.T) {
 		{"typo'd excluded trigger", &ImplicitTasksConfigYAML{ExcludedTriggers: []string{"tool_cal"}}},
 		{"typo'd mode", &ImplicitTasksConfigYAML{Mode: "offf"}},
 		{"negative cap", &ImplicitTasksConfigYAML{MaxPerSession: -1}},
+		// An int32-overflowing cap used to fail OPEN: safeInt32's error was
+		// swallowed, the field stayed 0, and the resolver filled in the
+		// default 100. Present-but-unparseable must disable, whichever way
+		// the value is unparseable.
+		{"int32-overflowing cap", &ImplicitTasksConfigYAML{MaxPerSession: overflowingInt32()}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,5 +238,60 @@ func TestImplicitTasks_UnparseableConfigFailsClosed(t *testing.T) {
 		assert.True(t, policy.Allows(loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL))
 		assert.False(t, policy.Allows(loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST),
 			"narrowing to one trigger must exclude the other defaults")
+	})
+}
+
+// overflowingInt32 returns math.MaxInt32+1 without a constant expression, so
+// the file compiles on a 32-bit int as well (where the increment wraps
+// negative and the case still fails closed via the negative-cap branch).
+func overflowingInt32() int {
+	v := math.MaxInt32
+	v++
+	return v
+}
+
+// TestImplicitTasks_UnfirableTriggerSetWarnsAtWiring pins the silent-config
+// finding on the path every registry-built agent takes: a policy narrowed to a
+// trigger the runtime does not fire parses, validates and resolves as ENABLED,
+// and then records nothing. The agent now says so once, when it wires the
+// emitter, instead of leaving the operator to infer it from an empty board.
+func TestImplicitTasks_UnfirableTriggerSetWarnsAtWiring(t *testing.T) {
+	const msg = "implicit_tasks is enabled but no configured trigger is fired by the runtime"
+
+	t.Run("unfirable set warns and records nothing", func(t *testing.T) {
+		core, logs := observer.New(zapcore.WarnLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		r := newImplicitCfgRig(t, &loomv1.ImplicitTaskConfig{
+			Triggers: []loomv1.ImplicitTaskTrigger{loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN},
+		}, 1)
+		entries := logs.FilterMessageSnippet(msg).All()
+		require.Len(t, entries, 1, "exactly one warning at wiring time")
+		assert.ElementsMatch(t, []interface{}{"tool_call", "human_request"},
+			entries[0].ContextMap()["fired_by_runtime"].([]interface{}),
+			"the warning names what would have worked")
+
+		r.runTurns(t, "s-unfirable", 1)
+		assert.Empty(t, r.sessionTasks(t, "s-unfirable"),
+			"rig sanity: the configured trigger really does fire nothing — that is why the warning exists")
+	})
+
+	t.Run("the default set is silent", func(t *testing.T) {
+		core, logs := observer.New(zapcore.WarnLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		newImplicitCfgRig(t, nil, 1)
+		assert.Empty(t, logs.FilterMessageSnippet(msg).All(), "a policy that can fire must not be flagged")
+	})
+
+	t.Run("disabled is silent", func(t *testing.T) {
+		core, logs := observer.New(zapcore.WarnLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		newImplicitCfgRig(t, &loomv1.ImplicitTaskConfig{Mode: loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED}, 1)
+		assert.Empty(t, logs.FilterMessageSnippet(msg).All(), "off is a decision, not a misconfiguration")
 	})
 }

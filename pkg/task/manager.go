@@ -332,6 +332,14 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	if errors.Is(err, ErrTaskAlreadyTerminal) {
 		// Someone else's close won the race. The row is already settled; firing
 		// the side effects again is the harm the sentinel exists to prevent.
+		if closed == nil {
+			// The sentinel's contract is (settled task, sentinel), but a store
+			// can report the sentinel alone. Every caller of this branch
+			// dereferences the result — task_board's close tool builds a
+			// detail map from it — so returning (nil, nil) turns a benign
+			// double close into a panic. The pre-close read is the settled row.
+			return existing, nil
+		}
 		return closed, nil
 	}
 	if err != nil {
@@ -369,21 +377,59 @@ func (m *Manager) CancelTask(ctx context.Context, taskID, reason string) (*Task,
 	if err != nil {
 		return nil, err
 	}
+	if existing == nil {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
 	oldStatus := StatusName(existing.Status)
 	oldAssignee := existing.AssigneeAgentID
 	oldSession := existing.ClaimedBySession
 
-	now := time.Now().UTC()
-	existing.Status = loomv1.TaskStatus_TASK_STATUS_CANCELLED
-	existing.CloseReason = reason
-	existing.ClosedAt = &now
-	existing.AssigneeAgentID = ""
-	existing.ClaimedBySession = ""
-	existing.ClaimedAt = nil
+	// A cancel that finds the row already settled is the same benign no-op a
+	// double close is: no history, no event, no unblock — and, above all, no
+	// flip of a DONE row to CANCELLED. The sentinel's doc always said
+	// "close/cancel"; until this guard only CloseTask honoured it.
+	if IsTerminal(existing.Status) {
+		span.SetAttribute("path", "already_terminal")
+		return existing, nil
+	}
 
-	cancelled, err := m.store.UpdateTask(ctx, existing, nil)
-	if err != nil {
-		return nil, err
+	var cancelled *Task
+	if canceller, ok := m.store.(TaskCanceller); ok {
+		// One statement with a status predicate: the store decides the race,
+		// not this goroutine's stale read.
+		span.SetAttribute("path", "guarded")
+		cancelled, err = canceller.CancelTask(ctx, taskID, reason)
+		if errors.Is(err, ErrTaskAlreadyTerminal) {
+			if cancelled == nil {
+				return existing, nil
+			}
+			return cancelled, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Read-modify-write fallback for stores without the capability. The
+		// IsTerminal check above closes the sequential cases (double cancel,
+		// cancel after close); a close that lands between that read and this
+		// write can still be overwritten here, which is what TaskCanceller
+		// exists to prevent.
+		span.SetAttribute("path", "update_fallback")
+		now := time.Now().UTC()
+		existing.Status = loomv1.TaskStatus_TASK_STATUS_CANCELLED
+		existing.CloseReason = reason
+		existing.ClosedAt = &now
+		existing.AssigneeAgentID = ""
+		existing.ClaimedBySession = ""
+		existing.ClaimedAt = nil
+
+		cancelled, err = m.store.UpdateTask(ctx, existing, nil)
+		if err != nil {
+			return nil, err
+		}
+		if cancelled == nil {
+			return nil, fmt.Errorf("task %s: store returned no row from cancel", taskID)
+		}
 	}
 
 	m.recordHistory(ctx, taskID, "cancelled", oldStatus, StatusName(cancelled.Status), oldAssignee, oldSession)

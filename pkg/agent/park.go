@@ -675,7 +675,7 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse)
 	kind, question := parkKindAndQuestion(items)
 	hr := &shuttle.HumanRequest{
 		ID:              uuid.New().String(),
-		AgentID:         a.id,
+		AgentID:         a.GetID(),
 		SessionID:       sess.ID,
 		Question:        question,
 		Context:         map[string]interface{}{"kind": "parked"},
@@ -1012,10 +1012,14 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// emitter did not mint — so restoring an explicit task's identity attributes
 	// the resumed rows without stealing that task's lifecycle from its owner.
 	if hr.TaskID != "" {
+		// GetID reads a.id under a.mu. SetID is a live mutator and a resume
+		// runs on a different goroutine than the park — the same race
+		// b5c3684e fixed in the skill emitter and round 5 fixed in
+		// maybeRecordImplicitTask. This capture site was missed by both.
 		attr := taskctx.Attribution{
 			TaskID:    hr.TaskID,
 			SessionID: sessionID,
-			AgentID:   a.id,
+			AgentID:   a.GetID(),
 		}
 		taskBinding.Set(attr)
 		ctx = taskctx.ContextWithAttribution(ctx, attr)
@@ -1132,7 +1136,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	a.appendMessage(ctx, sess, Message{
 		Role:       "assistant",
 		Content:    response.Content,
-		AgentID:    a.id,
+		AgentID:    a.GetID(),
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
@@ -1439,7 +1443,7 @@ func (a *Agent) synthesizeParkedResult(ctx Context, sess *Session, call ToolCall
 		Content:    a.formatToolResult(ctx, sess.ID, call.Name, res, nil),
 		ToolUseID:  call.ID,
 		ToolResult: res,
-		AgentID:    a.id,
+		AgentID:    a.GetID(),
 		Timestamp:  time.Now(),
 	}, false)
 }

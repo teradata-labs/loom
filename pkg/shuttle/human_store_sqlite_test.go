@@ -768,3 +768,37 @@ func TestInMemoryHumanStore_CapturesAmbientTaskID(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "task-ambient", got.TaskID)
 }
+
+// TestSQLiteHumanStore_TaskIndexExistsOnFreshAndUpgradedDatabases pins the
+// round-5 idx_human_requests_task, which shipped without a test. The index is
+// created AFTER the column-upgrade pass so it works on both a fresh database
+// and one that pre-dates the task_id column — a static CREATE INDEX in the
+// schema failed initSchema on the latter, the trap idx_messages_task hit.
+func TestSQLiteHumanStore_TaskIndexExistsOnFreshAndUpgradedDatabases(t *testing.T) {
+	hasTaskIndex := func(t *testing.T, store *SQLiteHumanRequestStore) bool {
+		t.Helper()
+		var name string
+		err := store.db.QueryRowContext(context.Background(),
+			"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_human_requests_task'").Scan(&name)
+		if err == sql.ErrNoRows {
+			return false
+		}
+		require.NoError(t, err)
+		return name == "idx_human_requests_task"
+	}
+
+	t.Run("fresh database", func(t *testing.T) {
+		store := newTestSQLiteStore(t)
+		defer func() { _ = store.Close() }()
+		require.True(t, hasTaskIndex(t, store))
+	})
+
+	t.Run("upgraded pre-task_id database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hitl.db")
+		createLegacyHITLSchema(t, path)
+		store, err := NewSQLiteHumanRequestStore(SQLiteConfig{Path: path})
+		require.NoError(t, err, "opening a legacy database must add the column and then the index, in that order")
+		defer func() { _ = store.Close() }()
+		require.True(t, hasTaskIndex(t, store))
+	})
+}

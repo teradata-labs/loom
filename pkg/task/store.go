@@ -247,6 +247,25 @@ type StatusCounter interface {
 	CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error)
 }
 
+// TaskCanceller is an OPTIONAL capability a TaskStore may implement to cancel a
+// task with a status predicate in one statement, the way CloseTask does.
+//
+// Manager.CancelTask uses it when present. Without it the manager falls back
+// to read-modify-write through UpdateTask, which cannot see a close that lands
+// between its read and its write — so a cancel racing a close could flip a
+// DONE row to CANCELLED and re-fire history, task.updated and the dependent
+// unblock. Optional for the same reason StatusCounter is: TaskStore has
+// implementers outside this repository, and adding a method to the interface
+// breaks them at their next bump.
+//
+// Contract: a store that finds the row already terminal changes nothing and
+// returns (the settled row, ErrTaskAlreadyTerminal) — the same shape as
+// CloseTask. The scoping-wrapper rule on StatusCounter applies here too: hold
+// the inner store in a named field, never embed it.
+type TaskCanceller interface {
+	CancelTask(ctx context.Context, taskID, reason string) (*Task, error)
+}
+
 // CountByStatusOpts scopes a status aggregate.
 type CountByStatusOpts struct {
 	// BoardID restricts the count to one board. Empty counts every board.

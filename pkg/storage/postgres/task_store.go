@@ -607,7 +607,59 @@ func (s *TaskStore) CloseTask(ctx context.Context, taskID, reason string) (*task
 		return err
 	})
 	if err != nil {
-		return nil, err
+		// result is non-nil ONLY on the ErrTaskAlreadyTerminal path, where the
+		// closure scanned the settled row before returning the sentinel.
+		// Returning nil here broke the sentinel's contract: Manager.CloseTask
+		// hands the sentinel's task straight back to its caller, and the
+		// task_board close tool dereferences it — so a benign double close
+		// panicked on Postgres while the SQLite twin returned (existing,
+		// sentinel) correctly. The rollback does not invalidate the scan: the
+		// values are already in Go memory.
+		return result, err
+	}
+	return result, nil
+}
+
+// CancelTask implements task.TaskCanceller: the CANCELLED twin of CloseTask,
+// with the same status guard so a cancel racing a close is decided at the row
+// and reported as ErrTaskAlreadyTerminal, not applied over the winner.
+func (s *TaskStore) CancelTask(ctx context.Context, taskID, reason string) (*task.Task, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.cancel")
+	defer s.tracer.EndSpan(span)
+
+	now := time.Now().UTC()
+	var result *task.Task
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET
+				status = $1, close_reason = $2, closed_at = $3,
+				assignee_agent_id = NULL, claimed_by_session = NULL, claimed_at = NULL,
+				updated_at = $3
+			WHERE id = $4 AND deleted_at IS NULL
+			  AND status NOT IN ($5, $6)`,
+			int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED), reason, now, taskID,
+			int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+		)
+		if err != nil {
+			return fmt.Errorf("cancel task: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1 AND deleted_at IS NULL`, taskID)
+			existing, gerr := pgScanTask(row)
+			if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+				result = existing
+				return fmt.Errorf("cancel task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+			}
+			return fmt.Errorf("task %s not found or already deleted", taskID)
+		}
+		row := tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, taskID)
+		result, err = pgScanTask(row)
+		return err
+	})
+	if err != nil {
+		// As in CloseTask: result is non-nil only on the sentinel path, and the
+		// manager returns it to callers that dereference it.
+		return result, err
 	}
 	return result, nil
 }

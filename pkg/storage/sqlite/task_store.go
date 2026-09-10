@@ -564,6 +564,39 @@ func (s *TaskStore) CloseTask(ctx context.Context, taskID, reason string) (*task
 	return s.GetTask(ctx, taskID)
 }
 
+// CancelTask implements task.TaskCanceller: the CANCELLED twin of CloseTask,
+// with the same status guard so a cancel racing a close is decided at the row
+// and reported as ErrTaskAlreadyTerminal, not applied over the winner.
+func (s *TaskStore) CancelTask(ctx context.Context, taskID, reason string) (*task.Task, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.cancel")
+	defer s.tracer.EndSpan(span)
+
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET
+			status = ?, close_reason = ?, closed_at = datetime(?),
+			assignee_agent_id = NULL, claimed_by_session = NULL, claimed_at = NULL,
+			updated_at = datetime(?)
+		WHERE id = ? AND deleted_at IS NULL
+		  AND status NOT IN (?, ?)`,
+		int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED), reason,
+		now.Format(time.RFC3339), now.Format(time.RFC3339), taskID,
+		int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cancel task: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		existing, gerr := s.GetTask(ctx, taskID)
+		if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+			return existing, fmt.Errorf("cancel task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+		}
+		return nil, fmt.Errorf("task %s not found or already deleted", taskID)
+	}
+	return s.GetTask(ctx, taskID)
+}
+
 func (s *TaskStore) TransitionTask(ctx context.Context, taskID string, newStatus loomv1.TaskStatus) (*task.Task, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.transition")
 	defer s.tracer.EndSpan(span)

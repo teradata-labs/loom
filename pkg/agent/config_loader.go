@@ -424,6 +424,8 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 		}
 	}
 
+	warnMisnestedTaskBoard(yamlOnly)
+
 	// Validate required fields
 	if yamlConfig.Agent.Name == "" {
 		return nil, fmt.Errorf("agent name is required")
@@ -1110,7 +1112,15 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 	if yaml.MaxPerSession < 0 {
 		return failClosed("max_per_session", fmt.Sprintf("%d", yaml.MaxPerSession))
 	}
-	if v, err := safeInt32(yaml.MaxPerSession, "TaskBoard.ImplicitTasks.MaxPerSession"); err == nil && v > 0 {
+	if yaml.MaxPerSession > 0 {
+		v, err := safeInt32(yaml.MaxPerSession, "TaskBoard.ImplicitTasks.MaxPerSession")
+		if err != nil {
+			// An int32-overflowing cap is present-but-unparseable. Swallowing
+			// the error left the field at 0, which ResolveImplicitPolicy reads
+			// as "unset" and fills with the default 100 — failing OPEN in the
+			// one block whose entire purpose is to fail closed.
+			return failClosed("max_per_session", fmt.Sprintf("%d", yaml.MaxPerSession))
+		}
 		cfg.MaxPerSession = v
 	}
 
@@ -1140,6 +1150,51 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 		cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
 	}
 	return cfg
+}
+
+// warnMisnestedTaskBoard reports a task_board block written where the loader
+// does not read it.
+//
+// task_board is read at agent.memory.task_board (spec.memory.task_board in
+// k8s style) and nowhere else. yaml.Unmarshal is not strict, so a block in any
+// other position is dropped in silence — and because implicit_tasks defaults
+// to ON and writes durable rows, a dropped block means an operator who wrote
+// the off switch one level too high still gets recording, with nothing
+// anywhere to say why. Warning is deliberately not an error: the block is
+// inert either way, and refusing to load an agent over a stray key would be a
+// breaking change for configs that load today.
+func warnMisnestedTaskBoard(yamlOnly string) {
+	var probe struct {
+		TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		Agent     struct {
+			TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		} `yaml:"agent"`
+		Spec struct {
+			TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		} `yaml:"spec"`
+	}
+	// A parse failure here is not this function's to report: the caller has
+	// already unmarshalled the same document and surfaced any syntax error.
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+
+	for _, at := range []struct {
+		where string
+		block *TaskBoardConfigYAML
+	}{
+		{"task_board", probe.TaskBoard},
+		{"agent.task_board", probe.Agent.TaskBoard},
+		{"spec.task_board", probe.Spec.TaskBoard},
+	} {
+		if at.block == nil {
+			continue
+		}
+		zap.L().Warn("task_board is configured where the loader does not read it; the block was IGNORED",
+			zap.String("found_at", at.where),
+			zap.String("expected_at", "agent.memory.task_board (spec.memory.task_board in k8s-style configs)"),
+			zap.Bool("implicit_tasks_present", at.block.ImplicitTasks != nil))
+	}
 }
 
 // parseImplicitTaskTrigger maps a YAML trigger name to its enum value. The

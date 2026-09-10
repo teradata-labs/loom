@@ -302,10 +302,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	//
 	// This wires the EMITTER, which is what registry-built agents lacked. It does
 	// not make SUBAGENT_SPAWN fire: the runtime passes TOOL_CALL (dispatchOneCall)
-	// and HUMAN_REQUEST (maybeParkBatch) and nothing else, so SUBAGENT_SPAWN,
-	// SKILL_ACTIVATION and WORKFLOW_STEP remain unused and no subagent-spawn task
-	// is minted from that trigger. Said plainly because the previous wording read
-	// as though this change had closed that too.
+	// and HUMAN_REQUEST (maybeParkBatch) and nothing else — task.RuntimeFiredTriggers
+	// is the authoritative list — so SUBAGENT_SPAWN, SKILL_ACTIVATION and
+	// WORKFLOW_STEP remain unused and no subagent-spawn task is minted from that
+	// trigger. Said plainly because the previous wording read as though this
+	// change had closed that too.
 	//
 	// The policy is resolved from the agent's OWN task board config. Passing nil
 	// here — the hardcoded default — made every knob the proto advertises inert
@@ -329,10 +330,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// this is at most one task minted per turn that calls a tool, and nothing
 	// at all on turns that don't.
 	if a.implicitTasks == nil && a.taskManager != nil {
-		a.implicitTasks = task.NewImplicitEmitter(
-			a.taskManager,
-			task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks()),
-			a.tracer, zap.L())
+		policy := task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks())
+		if policy.Enabled && !policy.CanFire() {
+			// Every knob parsed and validated, and nothing will ever be
+			// recorded: the configured triggers are ones the runtime does not
+			// fire yet. Said once, here, rather than discovered from an empty
+			// board.
+			zap.L().Warn("implicit_tasks is enabled but no configured trigger is fired by the runtime; nothing will be recorded",
+				zap.String("agent", a.config.Name),
+				zap.Strings("fired_by_runtime", triggerNames(task.RuntimeFiredTriggers())))
+		}
+		a.implicitTasks = task.NewImplicitEmitter(a.taskManager, policy, a.tracer, zap.L())
 	}
 
 	// Install the sticky-while-open-tasks checker on the orchestrator
@@ -376,7 +384,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			a.taskManager,
 			hygiene.WithEnforcerTracer(a.tracer),
 			hygiene.WithEnforcerLogger(zap.L()),
-			hygiene.WithAgentID(a.id),
+			hygiene.WithAgentID(a.GetID()),
 		)
 	}
 
@@ -768,7 +776,7 @@ func (a *Agent) registerSessionTool(sessionID string, name string) {
 		return
 	}
 	if sessionID == "" {
-		sessionID = a.id
+		sessionID = a.GetID()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -790,7 +798,7 @@ func (a *Agent) registerSessionTool(sessionID string, name string) {
 func (a *Agent) advertisedTools(session *Session) []shuttle.Tool {
 	all := a.tools.ListTools()
 
-	sessionID := a.id
+	sessionID := a.GetID()
 	if session != nil && session.ID != "" {
 		sessionID = session.ID
 	}
@@ -918,7 +926,7 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 	}
 	sessionID := session.ID
 	if sessionID == "" {
-		sessionID = a.id
+		sessionID = a.GetID()
 	}
 	active := a.skillOrchestrator.GetActiveSkills(sessionID)
 	if len(active) == 0 {
@@ -1381,7 +1389,7 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 		return
 	}
 
-	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
+	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.GetID(), a.llm, a.taskBoardConfig)
 	a.tools.Register(tbTool)
 }
 
@@ -1471,7 +1479,7 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 
 	// Query current claimed tasks for this agent.
 	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		AssigneeAgentID:   a.id,
+		AssigneeAgentID:   a.GetID(),
 		Status:            loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
 		BoardID:           boardID,
 		Limit:             5,
@@ -1964,7 +1972,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		Role:          "user",
 		Content:       userMessage,
 		ContentBlocks: p.contentBlocks,
-		AgentID:       a.id, // Track which agent received this message
+		AgentID:       a.GetID(), // Track which agent received this message
 		Timestamp:     time.Now(),
 	}, true)
 
@@ -2101,7 +2109,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	a.appendMessage(ctx, session, Message{
 		Role:       "assistant",
 		Content:    response.Content,
-		AgentID:    a.id, // Track which agent generated this response
+		AgentID:    a.GetID(), // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
@@ -2765,7 +2773,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				a.appendMessage(ctx, session, Message{
 					Role:      "user",
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
-					AgentID:   a.id,
+					AgentID:   a.GetID(),
 					Timestamp: time.Now(),
 				}, false)
 				continue // re-enter conversation loop for one more LLM call
@@ -2836,7 +2844,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Role:       "assistant",
 			Content:    llmResp.Content,
 			ToolCalls:  llmResp.ToolCalls,
-			AgentID:    a.id, // Track which agent generated this response
+			AgentID:    a.GetID(), // Track which agent generated this response
 			TokenCount: llmResp.Usage.TotalTokens,
 			CostUSD:    llmResp.Usage.CostUSD,
 			Timestamp:  time.Now(),
@@ -2968,7 +2976,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 					Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", st.maxPerTurn, i+1, st.batchLen),
 				},
 			},
-			AgentID:   a.id,
+			AgentID:   a.GetID(),
 			Timestamp: time.Now(),
 		}, false)
 		*st.toolExecutionCount++
@@ -2983,7 +2991,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 			Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
 			ToolUseID:  toolCall.ID,
 			ToolResult: cachedResult,
-			AgentID:    a.id,
+			AgentID:    a.GetID(),
 			Timestamp:  time.Now(),
 		}, false)
 		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
@@ -3212,7 +3220,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		Content:    formattedResult,
 		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 		ToolResult: result,
-		AgentID:    a.id, // Track which agent executed this tool
+		AgentID:    a.GetID(), // Track which agent executed this tool
 		Timestamp:  time.Now(),
 	}, false)
 
@@ -3226,7 +3234,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 			st.pendingSidecars = append(st.pendingSidecars, Message{
 				Role:      "user",
 				Content:   textBody,
-				AgentID:   a.id,
+				AgentID:   a.GetID(),
 				Timestamp: time.Now(),
 			})
 		}
@@ -3259,7 +3267,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	a.appendMessage(ctx, session, Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
-		AgentID:   a.id, // Track which agent created this synthesis request
+		AgentID:   a.GetID(), // Track which agent created this synthesis request
 		Timestamp: time.Now(),
 	}, false)
 
@@ -4484,4 +4492,13 @@ func implicitCloseReason(resp *Response, err error) string {
 		}
 	}
 	return "Turn completed."
+}
+
+// triggerNames renders trigger enums as their bare YAML names for log lines.
+func triggerNames(trs []loomv1.ImplicitTaskTrigger) []string {
+	out := make([]string, 0, len(trs))
+	for _, tr := range trs {
+		out = append(out, strings.ToLower(strings.TrimPrefix(tr.String(), "IMPLICIT_TASK_TRIGGER_")))
+	}
+	return out
 }

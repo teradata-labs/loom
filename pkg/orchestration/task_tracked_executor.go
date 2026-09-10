@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -179,7 +180,7 @@ func (t *TaskTrackedOrchestrator) ExecutePattern(ctx context.Context, pattern *l
 func (t *TaskTrackedOrchestrator) closeRootTask(
 	ctx context.Context, boardID string, result *loomv1.WorkflowResult, execErr error,
 ) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rootCloseDeadline)
 	defer cancel()
 
 	failed := execErr != nil || result == nil
@@ -357,18 +358,28 @@ func (t *TaskTrackedOrchestrator) agentLabel(ctx context.Context, agentID string
 			}
 		}
 	}
-	if len(agentID) > 8 {
-		// Byte-slicing can cut a rune in half, and this value lands in a task
-		// TITLE — a proto string field, and invalid UTF-8 fails proto.Marshal
-		// for the whole list response, not just the row. Back off to a rune
-		// boundary the way implicitTitle does.
-		cut := 8
-		for cut > 0 && agentID[cut]&0xC0 == 0x80 {
-			cut--
-		}
-		return agentID[:cut]
+	// This value lands in a task TITLE — a proto string field, and invalid
+	// UTF-8 fails proto.Marshal for the whole list response, not just the row.
+	return cutAtRuneBoundary(agentID, shortAgentIDLen)
+}
+
+// shortAgentIDLen is the prefix agentLabel falls back to for an unregistered
+// agent: enough to tell stages apart without consuming the title.
+const shortAgentIDLen = 8
+
+// cutAtRuneBoundary returns s truncated to at most n bytes without splitting a
+// multi-byte rune. Byte-slicing a string that carries LLM output or an id can
+// cut a rune in half; the result is invalid UTF-8, and a proto string field
+// holding it fails proto.Marshal for the whole message that contains it.
+func cutAtRuneBoundary(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return agentID
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // workflowRootMetadataKey marks the task that owns a workflow run's activity,
@@ -384,6 +395,22 @@ const workflowRootMetadataKey = "workflow_root"
 // merge task sorted ahead of the forks and consumed a fork's result.
 // Only rows that an agent result closes carry it.
 const stageIndexMetadataKey = "stage_index"
+
+// agentIDMetadataKey is the writer/reader mapping key that pairs a stage row
+// with the WorkflowResult.AgentResults entry that closes it (claimRow). It is
+// load-bearing in the same way stageIndexMetadataKey is: a writer that spells
+// it differently produces a row no result can ever claim.
+const agentIDMetadataKey = "agent_id"
+
+// rootCloseDeadline bounds closeRootTask's detached cleanup. The parent
+// context is already cancelled or finished when this runs, so the bound is
+// what stops a hung store from pinning the goroutine.
+const rootCloseDeadline = 10 * time.Second
+
+// maxStageOutputNotes caps the agent output copied into a stage task's Notes.
+// Notes is a proto string field, so the cut must land on a rune boundary — see
+// cutAtRuneBoundary.
+const maxStageOutputNotes = 1000
 
 // structuralMetadataKey marks rows that mirror the pattern's SHAPE rather than
 // an agent's work: a fork_join's merge, a swarm's decision, a conditional's
@@ -520,8 +547,8 @@ func (t *TaskTrackedOrchestrator) createPipelineTasks(ctx context.Context, board
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "pipeline", fmt.Sprintf("stage-%d", i+1)},
 			Metadata: map[string]string{
-				"agent_id":    stage.AgentId,
-				"stage_index": fmt.Sprintf("%d", i),
+				agentIDMetadataKey:    stage.AgentId,
+				stageIndexMetadataKey: strconv.Itoa(i),
 			},
 		})
 		if err != nil {
@@ -552,7 +579,7 @@ func (t *TaskTrackedOrchestrator) createForkJoinTasks(ctx context.Context, board
 
 	for i, agentID := range fj.AgentIds {
 		tk, err := t.manager.CreateTask(ctx, &task.Task{
-			Title:       fmt.Sprintf("Fork agent %d: %s", i+1, agentID),
+			Title:       fmt.Sprintf("Fork agent %d: %s", i+1, t.agentLabel(ctx, agentID)),
 			Description: fj.Prompt,
 			Objective:   "Complete parallel execution",
 			BoardID:     boardID,
@@ -561,7 +588,7 @@ func (t *TaskTrackedOrchestrator) createForkJoinTasks(ctx context.Context, board
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "fork-join", "parallel"},
 			Metadata: map[string]string{
-				"agent_id":            agentID,
+				agentIDMetadataKey:    agentID,
 				stageIndexMetadataKey: strconv.Itoa(i),
 			},
 		})
@@ -617,7 +644,7 @@ func (t *TaskTrackedOrchestrator) createParallelTasks(ctx context.Context, board
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "parallel"},
 			Metadata: map[string]string{
-				"agent_id":            agentTask.AgentId,
+				agentIDMetadataKey:    agentTask.AgentId,
 				stageIndexMetadataKey: strconv.Itoa(i),
 			},
 		})
@@ -642,7 +669,7 @@ func (t *TaskTrackedOrchestrator) createConditionalTasks(ctx context.Context, bo
 		Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
 		Tags:     []string{"workflow", "conditional", "classifier"},
 		Metadata: map[string]string{
-			"agent_id":            cond.ConditionAgentId,
+			agentIDMetadataKey:    cond.ConditionAgentId,
 			stageIndexMetadataKey: "0",
 		},
 	})
@@ -695,7 +722,7 @@ func (t *TaskTrackedOrchestrator) createSwarmTasks(ctx context.Context, boardID 
 
 	for i, agentID := range swarm.AgentIds {
 		tk, err := t.manager.CreateTask(ctx, &task.Task{
-			Title:       fmt.Sprintf("Vote %d: %s", i+1, agentID),
+			Title:       fmt.Sprintf("Vote %d: %s", i+1, t.agentLabel(ctx, agentID)),
 			Description: swarm.Question,
 			BoardID:     boardID,
 			Category:    loomv1.TaskCategory_TASK_CATEGORY_DECISION,
@@ -703,7 +730,7 @@ func (t *TaskTrackedOrchestrator) createSwarmTasks(ctx context.Context, boardID 
 			Status:      loomv1.TaskStatus_TASK_STATUS_OPEN,
 			Tags:        []string{"workflow", "swarm", "vote"},
 			Metadata: map[string]string{
-				"agent_id":            agentID,
+				agentIDMetadataKey:    agentID,
 				stageIndexMetadataKey: strconv.Itoa(i),
 			},
 		})
@@ -792,7 +819,7 @@ func (t *TaskTrackedOrchestrator) recordResults(
 	sort.Slice(stageRows, func(a, b int) bool { return stageIndexOf(stageRows[a]) < stageIndexOf(stageRows[b]) })
 	claimRow := func(agentID string) *task.Task {
 		for i, tk := range stageRows {
-			if tk == nil || tk.Metadata["agent_id"] != agentID {
+			if tk == nil || tk.Metadata[agentIDMetadataKey] != agentID {
 				continue
 			}
 			stageRows[i] = nil
@@ -813,8 +840,10 @@ func (t *TaskTrackedOrchestrator) recordResults(
 
 		// Update notes with the stage output.
 		output := agentResult.Output
-		if len(output) > 1000 {
-			output = output[:1000] + "\n[output truncated]"
+		if len(output) > maxStageOutputNotes {
+			// Rune-safe: Notes is a proto string, and LLM output is far
+			// likelier than an agent id to carry multi-byte runes.
+			output = cutAtRuneBoundary(output, maxStageOutputNotes) + "\n[output truncated]"
 		}
 		tk.Notes = fmt.Sprintf("[%s] Stage completed\nOutput: %s",
 			time.Now().Format("2006-01-02 15:04"), output)
