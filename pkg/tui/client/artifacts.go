@@ -24,6 +24,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -41,7 +42,7 @@ func (c *Client) ListSessionArtifacts(ctx context.Context, sessionID string, lim
 
 	resp, err := c.client.ListArtifacts(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list session artifacts: %w", err)
 	}
 
 	return resp.Artifacts, nil
@@ -59,7 +60,7 @@ func (c *Client) GetArtifactByName(ctx context.Context, name, sessionID string) 
 
 	resp, err := c.client.GetArtifact(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get artifact by name: %w", err)
 	}
 
 	return resp.Artifact, nil
