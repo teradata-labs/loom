@@ -621,7 +621,7 @@ func TestAdaptMCPTools_PreservesUIMetadata(t *testing.T) {
 }
 
 // =============================================================================
-// Tests for toSnakeCase, toCamelCase, normalizeParametersToCamelCase,
+// Tests for toSnakeCase, toCamelCase, normalizeParametersToSchema,
 // detectAndExtractSQLResult, and Execute integration scenarios
 // =============================================================================
 
@@ -681,24 +681,44 @@ func TestToCamelCase(t *testing.T) {
 	}
 }
 
-func TestNormalizeParametersToCamelCase(t *testing.T) {
+// normalizeParametersToSchema maps LLM-supplied names onto whatever the
+// schema declares, so the same snake_case input lands differently depending
+// on the server's own naming. Table covers both server styles plus the
+// edge cases (nil, absent properties, nested values).
+func TestNormalizeParametersToSchema(t *testing.T) {
+	camelSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"databaseName": map[string]interface{}{"type": "string"},
+			"tableName":    map[string]interface{}{"type": "string"},
+			"includeMeta":  map[string]interface{}{"type": "boolean"},
+			"limit":        map[string]interface{}{"type": "integer"},
+			"filterConfig": map[string]interface{}{"type": "object"},
+		},
+	}
+	snakeSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"database_name": map[string]interface{}{"type": "string"},
+			"table_name":    map[string]interface{}{"type": "string"},
+		},
+	}
+
 	tests := []struct {
 		name     string
+		schema   map[string]interface{}
 		input    map[string]interface{}
 		expected map[string]interface{}
 	}{
 		{
-			name:     "nil input",
+			name:     "nil params",
+			schema:   camelSchema,
 			input:    nil,
 			expected: nil,
 		},
 		{
-			name:     "empty map",
-			input:    map[string]interface{}{},
-			expected: map[string]interface{}{},
-		},
-		{
-			name: "snake_case keys converted",
+			name:   "camelCase server: snake_case keys mapped to declared names",
+			schema: camelSchema,
 			input: map[string]interface{}{
 				"database_name": "test_db",
 				"table_name":    "users",
@@ -709,7 +729,8 @@ func TestNormalizeParametersToCamelCase(t *testing.T) {
 			},
 		},
 		{
-			name: "already camelCase passes through",
+			name:   "camelCase server: already-declared keys pass through",
+			schema: camelSchema,
 			input: map[string]interface{}{
 				"databaseName": "test_db",
 				"tableName":    "users",
@@ -720,7 +741,8 @@ func TestNormalizeParametersToCamelCase(t *testing.T) {
 			},
 		},
 		{
-			name: "mixed keys",
+			name:   "camelCase server: mixed keys",
+			schema: camelSchema,
 			input: map[string]interface{}{
 				"database_name": "mydb",
 				"limit":         10,
@@ -733,7 +755,8 @@ func TestNormalizeParametersToCamelCase(t *testing.T) {
 			},
 		},
 		{
-			name: "values preserved including nested structures",
+			name:   "values preserved including nested structures",
+			schema: camelSchema,
 			input: map[string]interface{}{
 				"filter_config": map[string]interface{}{
 					"inner_key": "value",
@@ -741,15 +764,42 @@ func TestNormalizeParametersToCamelCase(t *testing.T) {
 			},
 			expected: map[string]interface{}{
 				"filterConfig": map[string]interface{}{
-					"inner_key": "value", // only top-level keys are converted
+					"inner_key": "value", // only top-level keys are mapped
 				},
+			},
+		},
+		{
+			name:   "snake_case server: declared names kept verbatim",
+			schema: snakeSchema,
+			input: map[string]interface{}{
+				"database_name": "mydb",
+				"table_name":    "users",
+			},
+			expected: map[string]interface{}{
+				"database_name": "mydb",
+				"table_name":    "users",
+			},
+		},
+		{
+			name:   "schema without a properties key leaves names untouched",
+			schema: map[string]interface{}{"type": "object"},
+			input: map[string]interface{}{
+				"database_name": "mydb",
+			},
+			expected: map[string]interface{}{
+				"database_name": "mydb",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := normalizeParametersToCamelCase(tt.input)
+			adapter := NewMCPToolAdapter(nil, protocol.Tool{
+				Name:        "query_tool",
+				InputSchema: tt.schema,
+			}, "test")
+
+			result := adapter.normalizeParametersToSchema(tt.input)
 			if tt.expected == nil {
 				assert.Nil(t, result)
 			} else {
@@ -912,8 +962,8 @@ func TestInputSchema_CamelCaseToSnakeCase_Conversion(t *testing.T) {
 	assert.Contains(t, schema.Required, "table_name")
 }
 
-func TestNormalizeParametersToCamelCase_RoundTrip(t *testing.T) {
-	// Test the round-trip: camelCase -> snake_case (InputSchema) -> camelCase (normalizeParametersToCamelCase)
+func TestNormalizeParametersToSchema_RoundTrip(t *testing.T) {
+	// Test the round-trip: camelCase -> snake_case (InputSchema) -> camelCase (normalizeParametersToSchema)
 	// This validates that the LLM sees snake_case but the MCP server receives camelCase
 	originalKeys := []string{"databaseName", "tableName", "maxRows"}
 

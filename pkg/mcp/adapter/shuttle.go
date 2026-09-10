@@ -440,20 +440,6 @@ func toCamelCase(s string) string {
 	return result.String()
 }
 
-// normalizeParametersToCamelCase converts all parameter keys in a map from snake_case to camelCase.
-// This restores the original parameter names expected by MCP tools.
-func normalizeParametersToCamelCase(params map[string]interface{}) map[string]interface{} {
-	if params == nil {
-		return nil
-	}
-
-	normalized := make(map[string]interface{}, len(params))
-	for key, value := range params {
-		normalized[toCamelCase(key)] = value
-	}
-	return normalized
-}
-
 // normalizeParametersToSchema maps LLM-supplied parameter names onto the
 // names the tool's schema actually declares. InputSchema shows the LLM
 // snake_case names, so a key is kept as-is when the schema declares it
