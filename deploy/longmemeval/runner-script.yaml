@@ -22,21 +22,47 @@ data:
     #      marker written; the marker — never file nonemptiness — is the
     #      resume signal, so a killed or partial attempt is always redone
     #
-    # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and the stored
-    # manifest.txt must match RUN_MANIFEST before resuming, so chunks from a
-    # different configuration are never silently reused.
+    # Attempt budget: validation is all-or-nothing but resume granularity is
+    # the whole chunk, so an entry that fails *deterministically* (a content
+    # filter on that question's text, an oversized session that always fails
+    # ingest) would otherwise re-bill its healthy neighbours on every one of
+    # the Job's restarts and still never complete. Each chunk therefore gets
+    # MAX_CHUNK_ATTEMPTS tries, counted on the PVC so the budget spans pod
+    # restarts; past that the chunk is quarantined (.failed marker) and later
+    # passes skip it, leaving the remaining chunks free to finish. The run
+    # still exits nonzero and writes RUN-INCOMPLETE.txt — a quarantined chunk
+    # means the published number would be missing entries.
     #
-    # Results are never deleted: a failed attempt removes only its own
-    # unpromoted *.tmp files; promoted outputs and other runs are untouched.
+    # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and both the
+    # stored manifest and the dataset's own statistics must match before
+    # resuming, so chunks from a different configuration or a revised dataset
+    # are never silently reused.
+    #
+    # Results are never deleted: a rejected attempt's output is moved into
+    # runs/RUN_ID/rejected/ (outside the s500-*.jsonl glob the scorer reads),
+    # never removed; promoted outputs and other runs are untouched.
     set -uo pipefail
 
     : "${SERVER:?}" "${DATASET_FILE:?}" "${MODE:?}" "${CONCURRENCY:?}" "${CHUNK:?}" "${OCCURRED_AT:?}" "${RESULTS_DIR:?}" "${RUN_ID:?}" "${RUN_MANIFEST:?}"
     ALLOW_MANIFEST_DRIFT="${ALLOW_MANIFEST_DRIFT:-0}"
+    MAX_CHUNK_ATTEMPTS="${MAX_CHUNK_ATTEMPTS:-3}"
 
     command -v jq >/dev/null 2>&1 || { echo "FATAL: jq not present in runner image (required for chunk validation)"; exit 1; }
 
+    # The harness binary. In the Job this is always the image's own copy; the
+    # seam exists so slice-loop-test.sh can drive this exact script offline,
+    # with a stub standing in for the paid Bedrock calls.
+    HARNESS="${HARNESS_BIN:-/loom-longmemeval}"
+
     run_dir="${RESULTS_DIR}/runs/${RUN_ID}"
+    reject_dir="${run_dir}/rejected"
     mkdir -p "${run_dir}"
+
+    # write_atomic <path> — persist stdin to path via a .tmp + rename, so a
+    # kill mid-write can never leave a half-written marker on the PVC.
+    write_atomic() {
+      cat > "$1.tmp" && mv "$1.tmp" "$1"
+    }
 
     # Verify run identity before touching anything. A mismatch means this run
     # directory was produced by a different configuration (dataset, mode,
@@ -62,13 +88,64 @@ data:
         fi
       fi
     else
-      printf '%s' "${RUN_MANIFEST}" > "${manifest_file}.tmp"
-      mv "${manifest_file}.tmp" "${manifest_file}"
+      printf '%s' "${RUN_MANIFEST}" | write_atomic "${manifest_file}"
     fi
 
-    # Per-type question counts in LongMemEval (oracle and _S share them).
-    types=(temporal-reasoning multi-session knowledge-update single-session-user single-session-assistant single-session-preference)
-    counts=(133 133 78 70 56 30)
+    # Per-type question counts come from the dataset, never a hardcoded table.
+    # A dataset revision that shifts a count would otherwise drive the final
+    # chunk past the last entry (the harness errors on offset >= entry count,
+    # failing every retry) or stop the loop early and quietly omit questions
+    # from a published number.
+    if ! stats="$("${HARNESS}" info --json "${DATASET_FILE}")" || [ -z "${stats}" ]; then
+      echo "FATAL: could not read dataset statistics from ${DATASET_FILE}"
+      exit 1
+    fi
+
+    types=(); counts=()
+    while IFS="$(printf '\t')" read -r t n; do
+      [ -n "${t}" ] || continue
+      types+=("${t}"); counts+=("${n}")
+    done < <(printf '%s' "${stats}" | jq -r '.question_types[] | [.type, .count] | @tsv')
+
+    if [ "${#types[@]}" -eq 0 ]; then
+      echo "FATAL: dataset ${DATASET_FILE} reports no question types"
+      exit 1
+    fi
+    total_entries="$(printf '%s' "${stats}" | jq -r '.entries')"
+    sum=0
+    for n in "${counts[@]}"; do sum=$((sum + n)); done
+    if [ "${sum}" -ne "${total_entries}" ]; then
+      echo "FATAL: per-type counts sum to ${sum} but the dataset holds ${total_entries} entries"
+      exit 1
+    fi
+
+    # The counts are part of what the run measures, so pin them the same way
+    # the manifest pins the configuration: a dataset swapped underneath a
+    # resume would otherwise reuse chunks answering different questions.
+    stats_id="$(printf '%s' "${stats}" | jq -cS '{entries, question_types}')"
+    stats_file="${run_dir}/dataset-stats.json"
+    if [ -f "${stats_file}" ]; then
+      stored_stats="$(cat "${stats_file}")"
+      if [ "${stored_stats}" != "${stats_id}" ]; then
+        if [ "${ALLOW_MANIFEST_DRIFT}" = "1" ]; then
+          echo "WARNING: resuming run ${RUN_ID} despite dataset drift (LME_ALLOW_MANIFEST_DRIFT=1)"
+          echo "$(date -u '+%FT%TZ') ${stats_id}" >> "${run_dir}/manifest-drift.log"
+        else
+          echo "FATAL: refusing to resume run ${RUN_ID}: ${DATASET_FILE} no longer holds the"
+          echo "questions this run's completed chunks answered. Existing outputs are preserved."
+          echo "  stored:  ${stored_stats}"
+          echo "  current: ${stats_id}"
+          exit 1
+        fi
+      fi
+    else
+      printf '%s' "${stats_id}" | write_atomic "${stats_file}"
+    fi
+
+    echo "=== dataset plan (${total_entries} entries, derived from ${DATASET_FILE}) ==="
+    for i in "${!types[@]}"; do
+      echo "  ${types[$i]}: ${counts[$i]}"
+    done
 
     # validate_chunk <jsonl> <detailed.json> <expected-entries>
     # Complete = the .jsonl holds exactly the expected number of well-formed
@@ -79,7 +156,7 @@ data:
     validate_chunk() {
       local out="$1" det="$2" want="$3"
       if [ ! -s "${out}" ] || [ ! -s "${det}" ]; then
-        echo "  invalid chunk: missing or empty output (${out} / ${det})"
+        echo "invalid chunk: missing or empty output (${out} / ${det})"
         return 1
       fi
       if ! jq -e -s --argjson want "${want}" '
@@ -89,20 +166,33 @@ data:
                     and (.question_id | type == "string" and length > 0)
                     and (.hypothesis | type == "string"))' \
             "${out}" >/dev/null; then
-        echo "  invalid chunk: ${out} is not exactly ${want} well-formed JSONL entries"
+        echo "invalid chunk: ${out} is not exactly ${want} well-formed JSONL entries"
         return 1
       fi
       if ! jq -e --argjson want "${want}" '
             type == "array" and length == $want
             and all(.[]; (.error // "") == "")' \
             "${det}" >/dev/null; then
-        echo "  invalid chunk: ${det} reports missing or errored entries"
+        echo "invalid chunk: ${det} reports missing or errored entries"
         return 1
       fi
       return 0
     }
 
+    # errored_entries <detailed.json> — the question ids the harness recorded
+    # a per-entry failure for, so a quarantine marker names the poison entry
+    # instead of only the chunk.
+    errored_entries() {
+      [ -s "$1" ] || { echo "  (no detailed output produced)"; return 0; }
+      jq -r 'if type == "array"
+             then (.[] | select((.error // "") != "") | "  \(.question_id): \(.error)")
+             else "  (detailed output is not a JSON array)" end' "$1" 2>/dev/null |
+        head -20
+    }
+
     failed=0
+    quarantined=()
+    completed=0
     for i in "${!types[@]}"; do
       t="${types[$i]}"; n="${counts[$i]}"
       offset=0
@@ -110,15 +200,29 @@ data:
         lim="$CHUNK"
         [ $((offset + lim)) -gt "$n" ] && lim=$((n - offset))
         base="${run_dir}/s500-${t}-o$(printf '%03d' "$offset")"
+        name="$(basename "${base}")"
         out="${base}.jsonl"; det="${base}-detailed.json"; marker="${base}.done"
+        attempts_file="${base}.attempts"; quarantine="${base}.failed"
         tmp_out="${out}.tmp"; tmp_det="${det}.tmp"
         if [ -f "${marker}" ]; then
           echo "skip completed chunk: ${out}"
+          completed=$((completed + 1))
           offset=$((offset + CHUNK))
           continue
         fi
-        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} run_id=${RUN_ID} ==="
-        if /loom-longmemeval run \
+        if [ -f "${quarantine}" ]; then
+          echo "skip quarantined chunk: ${name} (see ${quarantine})"
+          quarantined+=("${name}")
+          failed=1
+          offset=$((offset + CHUNK))
+          continue
+        fi
+
+        attempt=$(( $(cat "${attempts_file}" 2>/dev/null || echo 0) + 1 ))
+        printf '%s' "${attempt}" | write_atomic "${attempts_file}"
+
+        echo "=== [$(date -u '+%F %T')] run: ${t} offset=${offset} limit=${lim} conc=${CONCURRENCY} mode=${MODE} run_id=${RUN_ID} attempt=${attempt}/${MAX_CHUNK_ATTEMPTS} ==="
+        if "${HARNESS}" run \
             --server "$SERVER" \
             --dataset "$DATASET_FILE" \
             --mode "$MODE" \
@@ -128,21 +232,67 @@ data:
             --concurrency "$CONCURRENCY" \
             --occurred-at="$OCCURRED_AT" \
             --output "$tmp_out" \
-            --detailed "$tmp_det" \
-            && validate_chunk "$tmp_out" "$tmp_det" "$lim"; then
+            --detailed "$tmp_det"; then
+          reason="$(validate_chunk "$tmp_out" "$tmp_det" "$lim")"
+          ok=$?
+        else
+          reason="harness exited $?"
+          ok=1
+        fi
+
+        if [ "${ok}" -eq 0 ]; then
           mv "$tmp_det" "$det"
           mv "$tmp_out" "$out"
-          printf 'run_id=%s entries=%s completed=%s\n' "${RUN_ID}" "${lim}" "$(date -u '+%FT%TZ')" > "${marker}.tmp"
-          mv "${marker}.tmp" "${marker}"
-          echo "chunk complete: ${out} (${lim} entries)"
+          printf 'run_id=%s entries=%s attempts=%s completed=%s\n' \
+            "${RUN_ID}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')" | write_atomic "${marker}"
+          rm -f "${attempts_file}"
+          completed=$((completed + 1))
+          echo "chunk complete: ${out} (${lim} entries, attempt ${attempt})"
         else
-          echo "CHUNK FAILED: ${t} offset=${offset} (removing unpromoted .tmp output; promoted results are never touched)"
-          rm -f "$tmp_out" "$tmp_det"
           failed=1
+          echo "  ${reason}"
+          # Keep the rejected attempt: it cost real Bedrock spend and names
+          # the failing entries. It lands in rejected/ so the scorer's
+          # s500-*.jsonl glob can never pick it up as a result.
+          mkdir -p "${reject_dir}"
+          [ -f "$tmp_out" ] && mv -f "$tmp_out" "${reject_dir}/${name}.jsonl"
+          [ -f "$tmp_det" ] && mv -f "$tmp_det" "${reject_dir}/${name}-detailed.json"
+          if [ "${attempt}" -ge "${MAX_CHUNK_ATTEMPTS}" ]; then
+            {
+              printf 'run_id=%s type=%s offset=%s limit=%s attempts=%s quarantined=%s\n' \
+                "${RUN_ID}" "${t}" "${offset}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')"
+              printf 'last failure: %s\n' "${reason}"
+              printf 'last attempt output: rejected/%s.jsonl, rejected/%s-detailed.json\n' "${name}" "${name}"
+              printf 'entries the harness reported an error for:\n'
+              errored_entries "${reject_dir}/${name}-detailed.json"
+              printf 'to retry this chunk: rm %s %s\n' "${quarantine}" "${attempts_file}"
+            } | write_atomic "${quarantine}"
+            quarantined+=("${name}")
+            echo "CHUNK QUARANTINED after ${attempt} attempts: ${name} — later passes will skip it so the remaining chunks can finish. See ${quarantine}."
+          else
+            echo "CHUNK FAILED (attempt ${attempt}/${MAX_CHUNK_ATTEMPTS}): ${name} — retried on the next pod restart."
+          fi
         fi
         offset=$((offset + CHUNK))
       done
     done
 
+    echo "=== run summary (run_id=${RUN_ID}) ==="
+    echo "  completed chunks:   ${completed}"
+    echo "  quarantined chunks: ${#quarantined[@]}"
+    if [ "${#quarantined[@]}" -gt 0 ]; then
+      {
+        printf 'run_id=%s written=%s\n' "${RUN_ID}" "$(date -u '+%FT%TZ')"
+        printf 'This run is INCOMPLETE: %s chunk(s) exhausted MAX_CHUNK_ATTEMPTS=%s and were\n' "${#quarantined[@]}" "${MAX_CHUNK_ATTEMPTS}"
+        printf 'skipped. Scoring s500-*.jsonl will omit their entries, so any number derived\n'
+        printf 'from this run is not the full benchmark. Each chunk has a .failed marker\n'
+        printf 'naming the entries that failed and how to retry it.\n'
+        printf 'quarantined chunks:\n'
+        for q in "${quarantined[@]}"; do printf '  %s\n' "${q}"; done
+      } | write_atomic "${run_dir}/RUN-INCOMPLETE.txt"
+      echo "  wrote ${run_dir}/RUN-INCOMPLETE.txt"
+      echo "  NOTE: the Job will keep restarting until backoffLimit is reached; later"
+      echo "        passes are no-ops (every chunk is done or quarantined) and cost nothing."
+    fi
     echo "=== run complete (failed=${failed}, run_id=${RUN_ID}) ==="
     exit "$failed"

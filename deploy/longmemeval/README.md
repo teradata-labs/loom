@@ -32,8 +32,21 @@ Configuration lives in `lme.env` (override with `lme.env.local`): dataset varian
 run mode, concurrency, chunk size, VM sizes, namespace, port, model. Every
 manifest is a template rendered by `run-500.sh` (allowlisted `envsubst` via
 `render-common.sh`), so overrides apply consistently across the namespace,
-server, service, config, and runner job. `bash deploy/longmemeval/render-test.sh`
-renders everything with nondefault values and asserts the manifests agree.
+server, service, config, and runner job.
+
+Two offline tests cover the rig itself (no cluster, no Bedrock, no spend):
+
+```bash
+bash deploy/longmemeval/render-test.sh      # manifests agree on nondefault values
+bash deploy/longmemeval/slice-loop-test.sh  # drives the real slice loop with a stub harness
+```
+
+`slice-loop-test.sh` extracts the runner script from the rendered ConfigMap and
+runs it against a synthetic dataset, asserting the behaviours a paid multi-day
+run depends on: counts derived from the dataset, resume skipping only completed
+chunks, a deterministically-failing entry quarantining its chunk instead of
+re-billing the run, rejected output preserved outside the scorer's glob, and a
+revised dataset refused on resume.
 
 ## Architecture
 
@@ -63,16 +76,41 @@ renders everything with nondefault values and asserts the manifests agree.
   before resuming — a changed configuration gets a fresh run directory instead of
   silently reusing chunks. To knowingly continue a run after e.g. an image
   rebuild: `LME_RUN_ID=<id> LME_ALLOW_MANIFEST_DRIFT=1` (drift is logged to the
-  run's `manifest-drift.log`; nothing is ever deleted). Workload images are
-  pinned to the immutable commit tag the build pushes, never `:latest`.
+  run's `manifest-drift.log`; nothing is ever deleted). The runner also pins the
+  dataset's own statistics (entry count and per-type counts) in
+  `dataset-stats.json`, so a dataset revised underneath a resume is refused
+  rather than mixed with chunks that answered different questions.
+- **Build identity:** workloads are pinned to the tag the build pushes, never
+  `:latest`. `az acr build` uploads the working tree rather than the commit, so
+  a dirty tree is tagged `<commit>-dirty-<fingerprint>` and gets its own run id
+  — a build with uncommitted edits can never resume a clean commit's chunks
+  under the same name. `run-500.sh` warns when it does this.
+- **Per-type counts:** the slice loop derives them from
+  `loom-longmemeval info --json` on the dataset it is about to run, so a dataset
+  revision cannot silently drive the final chunk past the last entry or stop the
+  loop early and omit questions from a published number.
 - **Resume:** the runner writes each `(type, offset)` chunk to `*.tmp`, validates
   it (exact entry count, every line parses as JSON, zero errored entries in the
   `-detailed.json`), promotes it with an atomic rename, and only then writes a
   `.done` marker. The marker — not file nonemptiness — is the resume signal, so a
-  killed or partial chunk is always redone. A failed attempt removes only its own
-  unpromoted `.tmp` files; promoted results are never deleted. Individual errored
-  entries can no longer hide inside a "completed" chunk — validation rejects them
-  and the Job's backoff retries the chunk.
+  killed or partial chunk is always redone. Promoted results are never deleted,
+  and a rejected attempt's output is moved to `runs/<run-id>/rejected/` (outside
+  the `s500-*.jsonl` glob the scorer reads) rather than discarded — it cost real
+  spend and names the entries that failed. Individual errored entries can no
+  longer hide inside a "completed" chunk: validation rejects them and the Job's
+  backoff retries the chunk.
+- **Attempt budget:** validation is all-or-nothing but resume granularity is the
+  whole chunk, so an entry that fails *deterministically* (a content filter on
+  that question's text, say) would otherwise re-bill its ~9 healthy neighbours on
+  every one of the Job's restarts and still never complete. Each chunk gets
+  `LME_MAX_CHUNK_ATTEMPTS` tries (default 3), counted on the PVC so the budget
+  spans pod restarts. Past that the chunk is quarantined with a `.failed` marker
+  naming the failing entries and how to retry it (`rm` the marker), and later
+  passes skip it so the remaining chunks can finish. A quarantined chunk never
+  turns a partial run into a passing one: the run exits nonzero and writes
+  `RUN-INCOMPLETE.txt` listing what is missing. Once only quarantined chunks
+  remain, further Job restarts are no-op passes that cost nothing, and the Job
+  ends `Failed` when it exhausts `backoffLimit` — which is the honest outcome.
 
 ## Time and cost — read before launching
 
@@ -102,6 +140,7 @@ Scoring runs **off-cluster** on pulled results (raw LongMemEval-compatible JSONL
 ```bash
 bash deploy/longmemeval/pull-results.sh ./results/s500
 # Chunks live under runs/<run-id>/ — concatenate ONE run, don't mix runs:
+# (check for RUN-INCOMPLETE.txt first — it means entries are missing)
 cat ./results/s500/results/runs/<run-id>/s500-*.jsonl > ./results/s500/s500-all.jsonl
 
 # Official evaluator (paper prompts). Judge model is a disclosed parameter:
