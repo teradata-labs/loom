@@ -30,11 +30,25 @@ case "${LME_DATASET}" in
   *) echo "Unknown LME_DATASET: ${LME_DATASET}"; exit 1 ;;
 esac
 
-# Workloads are pinned to an immutable commit tag — never :latest — and the
-# tag is part of the run's identity manifest below.
+# Workloads are pinned to a tag that identifies the *build context* — never
+# :latest — and the tag is part of the run's identity manifest below.
+#
+# az acr build uploads the working tree, not the commit, and ACR tags are
+# mutable: a dirty tree at commit abc123 would otherwise be pushed as :abc123,
+# a name a clean build of abc123 may already own. The manifest would then
+# match and the runner would happily resume chunks produced by a different
+# binary — exactly the cross-run contamination the run identity exists to
+# prevent. A dirty tree therefore gets its own tag and its own run id.
 GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
-LME_IMAGE_TAG="${LME_IMAGE_TAG:-${GIT_COMMIT}}"
+GIT_BUILD_ID="$(lme_build_id "${REPO_ROOT}")"
+if [[ "${GIT_BUILD_ID}" != "${GIT_COMMIT}" ]]; then
+    echo "WARNING: the working tree is dirty; az acr build uploads it as-is."
+    echo "         Tagging this build ${GIT_BUILD_ID} so it cannot be confused"
+    echo "         with a clean build of ${GIT_COMMIT} (it gets its own run id)."
+fi
+LME_IMAGE_TAG="${LME_IMAGE_TAG:-${GIT_BUILD_ID}}"
 LME_IMAGE_REPO="${LME_IMAGE#*/}"
+LME_MAX_CHUNK_ATTEMPTS="${LME_MAX_CHUNK_ATTEMPTS:-3}"
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     echo "=== Building image in ACR (${LME_IMAGE}:${LME_IMAGE_TAG}) ==="
@@ -42,7 +56,7 @@ if [[ "${SKIP_BUILD}" -eq 0 ]]; then
         --registry "${LME_ACR_NAME}" \
         --image "${LME_IMAGE_REPO}:${LME_IMAGE_TAG}" \
         --file "${SCRIPT_DIR}/Dockerfile" \
-        --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
+        --build-arg "GIT_COMMIT=${GIT_BUILD_ID}" \
         "${REPO_ROOT}"
 else
     echo "=== Skipping build; verifying ${LME_IMAGE}:${LME_IMAGE_TAG} exists in ACR ==="
@@ -63,7 +77,8 @@ LME_ALLOW_MANIFEST_DRIFT="${LME_ALLOW_MANIFEST_DRIFT:-0}"
 
 export LME_NAMESPACE LME_IMAGE LME_IMAGE_TAG LME_GRPC_PORT LME_MODEL \
     LME_DATASET LME_DATASET_FILE LME_MODE LME_CONCURRENCY LME_CHUNK \
-    LME_OCCURRED_AT LME_RUN_ID LME_RUN_MANIFEST LME_ALLOW_MANIFEST_DRIFT
+    LME_OCCURRED_AT LME_RUN_ID LME_RUN_MANIFEST LME_ALLOW_MANIFEST_DRIFT \
+    LME_MAX_CHUNK_ATTEMPTS
 
 echo "=== Run identity ==="
 echo "  run id:   ${LME_RUN_ID}"
