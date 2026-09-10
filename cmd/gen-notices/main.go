@@ -58,6 +58,25 @@ var targets = []target{
 	{"./cmd/loom-standalone", "fts5,standalone"},
 }
 
+// platform is one released GOOS/GOARCH pair.
+type platform struct{ goos, goarch string }
+
+// platforms is the release matrix from .github/workflows/release.yml. The
+// dependency set is resolved for each and UNIONED, for two reasons:
+//
+//   - Correctness: build constraints mean a linux binary can link modules a
+//     darwin one never sees. Notices generated for one platform would omit
+//     licenses that another platform's users are actually shipped.
+//   - Determinism: `go list -deps` otherwise resolves for the HOST, so a file
+//     generated on a mac could never satisfy -check on linux CI, and the
+//     gate would be unpassable rather than useful.
+var platforms = []platform{
+	{"linux", "amd64"},
+	{"darwin", "amd64"},
+	{"darwin", "arm64"},
+	{"windows", "amd64"},
+}
+
 // ownModule is excluded: it is the work being distributed, not a third party.
 const ownModule = "github.com/teradata-labs/loom"
 
@@ -167,10 +186,22 @@ func collect() ([]component, error) {
 	seen := map[string]component{} // license file path → component
 	unlicensed := map[string]bool{}
 	for _, t := range targets {
-		pkgs, err := listDeps(t)
-		if err != nil {
-			return nil, fmt.Errorf("listing deps of %s: %w", t.pkg, err)
+		for _, plat := range platforms {
+			pkgs, err := listDeps(t, plat)
+			if err != nil {
+				return nil, fmt.Errorf("listing deps of %s for %s/%s: %w", t.pkg, plat.goos, plat.goarch, err)
+			}
+			if err := collectPkgs(pkgs, seen, unlicensed); err != nil {
+				return nil, err
+			}
 		}
+	}
+	return finish(seen, unlicensed)
+}
+
+// collectPkgs folds one platform's package list into the accumulated set.
+func collectPkgs(pkgs []pkgInfo, seen map[string]component, unlicensed map[string]bool) error {
+	{
 		for _, p := range pkgs {
 			if p.Standard || p.Module == nil || p.Module.Dir == "" {
 				continue // stdlib is covered by the Go toolchain notice below
@@ -180,7 +211,7 @@ func collect() ([]component, error) {
 			}
 			licPath, err := findLicense(p.ImportPath, p.Module.Dir)
 			if err != nil {
-				return nil, fmt.Errorf("searching for license of %s: %w", p.ImportPath, err)
+				return fmt.Errorf("searching for license of %s: %w", p.ImportPath, err)
 			}
 			if licPath == "" {
 				// Never skip quietly. A component we ship without its license
@@ -194,7 +225,7 @@ func collect() ([]component, error) {
 			}
 			text, err := os.ReadFile(licPath)
 			if err != nil {
-				return nil, fmt.Errorf("reading %s: %w", licPath, err)
+				return fmt.Errorf("reading %s: %w", licPath, err)
 			}
 			// Attribute to the directory the license actually governs, so a
 			// package with its own LICENSE is not filed under its parent.
@@ -212,7 +243,11 @@ func collect() ([]component, error) {
 			}
 		}
 	}
+	return nil
+}
 
+// finish validates the accumulated set and returns it in a stable order.
+func finish(seen map[string]component, unlicensed map[string]bool) ([]component, error) {
 	if len(unlicensed) > 0 {
 		var names []string
 		for n := range unlicensed {
@@ -232,7 +267,7 @@ func collect() ([]component, error) {
 	return out, nil
 }
 
-func listDeps(t target) ([]pkgInfo, error) {
+func listDeps(t target, plat platform) ([]pkgInfo, error) {
 	args := []string{"list", "-deps", "-json"}
 	if t.tags != "" {
 		args = append(args, "-tags", t.tags)
@@ -240,7 +275,10 @@ func listDeps(t target) ([]pkgInfo, error) {
 	args = append(args, t.pkg)
 
 	cmd := exec.Command("go", args...)
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	// GOOS/GOARCH are pinned rather than inherited: build constraints decide
+	// which modules are linked, so an unpinned run resolves the HOST's set and
+	// makes the generated file depend on who ran it.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOOS="+plat.goos, "GOARCH="+plat.goarch)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
