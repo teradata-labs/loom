@@ -123,6 +123,7 @@ type CallToolResult struct {
 	Content           []Content              `json:"content"`                     // Array of content items
 	IsError           bool                   `json:"isError,omitempty"`           // Deprecated, use proper errors
 	StructuredContent map[string]interface{} `json:"structuredContent,omitempty"` // Structured output (MCP 2025-03-26)
+	Meta              map[string]interface{} `json:"_meta,omitempty"`             // Result _meta (e.g. MetaAwaitResource)
 }
 
 // Content represents different types of content (text, image, resource)
