@@ -249,8 +249,54 @@ PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
 	return cmd
 }
 
+// DatasetTypeCount is one question type and how many entries carry it.
+type DatasetTypeCount struct {
+	Type  string `json:"type"`
+	Count int    `json:"count"`
+}
+
+// DatasetStats is the machine-readable form of `info`. The AKS slice loop
+// (deploy/longmemeval/runner-script.yaml) derives its per-type chunk counts
+// from this instead of hardcoding them, so a dataset revision that shifts a
+// count cannot silently drive the loop past the last entry (a hard error) or
+// stop it early and omit questions from a published number.
+//
+// QuestionTypes is ordered by QuestionTypes(), so consumers iterate
+// deterministically.
+type DatasetStats struct {
+	Dataset       string             `json:"dataset"`
+	Entries       int                `json:"entries"`
+	QuestionTypes []DatasetTypeCount `json:"question_types"`
+	TotalSessions int                `json:"total_sessions"`
+	TotalTurns    int                `json:"total_turns"`
+}
+
+// ComputeDatasetStats summarizes a loaded dataset.
+func ComputeDatasetStats(path string, entries []Entry) DatasetStats {
+	stats := DatasetStats{
+		Dataset:       path,
+		Entries:       len(entries),
+		QuestionTypes: []DatasetTypeCount{},
+	}
+
+	typeCounts := make(map[string]int)
+	for _, e := range entries {
+		typeCounts[e.QuestionType]++
+		stats.TotalSessions += len(e.HaystackSessions)
+		for _, s := range e.HaystackSessions {
+			stats.TotalTurns += len(s)
+		}
+	}
+	for _, t := range QuestionTypes(entries) {
+		stats.QuestionTypes = append(stats.QuestionTypes, DatasetTypeCount{Type: t, Count: typeCounts[t]})
+	}
+	return stats
+}
+
 func infoCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+
+	cmd := &cobra.Command{
 		Use:   "info [dataset-path]",
 		Short: "Show dataset statistics",
 		Args:  cobra.MaximumNArgs(1),
@@ -264,38 +310,43 @@ func infoCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			stats := ComputeDatasetStats(path, entries)
 
-			fmt.Printf("Dataset:  %s\n", path)
-			fmt.Printf("Entries:  %d\n", len(entries))
+			if asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(stats)
+			}
+
+			fmt.Printf("Dataset:  %s\n", stats.Dataset)
+			fmt.Printf("Entries:  %d\n", stats.Entries)
 			fmt.Println()
 
-			types := QuestionTypes(entries)
-			typeCounts := make(map[string]int)
-			for _, e := range entries {
-				typeCounts[e.QuestionType]++
-			}
-
 			fmt.Println("Question Types:")
-			for _, t := range types {
-				fmt.Printf("  %-30s %d\n", t, typeCounts[t])
+			for _, tc := range stats.QuestionTypes {
+				fmt.Printf("  %-30s %d\n", tc.Type, tc.Count)
 			}
 
-			// Session stats
-			var totalSessions, totalTurns int
-			for _, e := range entries {
-				totalSessions += len(e.HaystackSessions)
-				for _, s := range e.HaystackSessions {
-					totalTurns += len(s)
-				}
-			}
-			fmt.Printf("\nTotal sessions: %d (avg %.1f/entry)\n",
-				totalSessions, float64(totalSessions)/float64(len(entries)))
-			fmt.Printf("Total turns:    %d (avg %.1f/session)\n",
-				totalTurns, float64(totalTurns)/float64(totalSessions))
+			fmt.Printf("\nTotal sessions: %d (avg %s/entry)\n",
+				stats.TotalSessions, ratio(stats.TotalSessions, stats.Entries))
+			fmt.Printf("Total turns:    %d (avg %s/session)\n",
+				stats.TotalTurns, ratio(stats.TotalTurns, stats.TotalSessions))
 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit statistics as JSON (used by the AKS slice loop to derive per-type counts)")
+	return cmd
+}
+
+// ratio formats an average, reporting "n/a" rather than NaN when the
+// denominator is zero (an empty or session-less dataset).
+func ratio(num, denom int) string {
+	if denom == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f", float64(num)/float64(denom))
 }
 
 func runBenchmark(cmd *cobra.Command, args []string) error {

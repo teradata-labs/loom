@@ -7,7 +7,10 @@ metadata:
   namespace: ${LME_NAMESPACE}
 spec:
   # Multi-day run: pod restarts are the resume mechanism (chunks with a .done
-  # marker on the results PVC are skipped), so allow generous retries.
+  # marker on the results PVC are skipped), so allow generous retries. A chunk
+  # that keeps failing does not consume them all: after LME_MAX_CHUNK_ATTEMPTS
+  # it is quarantined and later passes skip it, so restarts always make
+  # progress on the chunks that can still complete.
   backoffLimit: 30
   template:
     metadata:
@@ -55,6 +58,8 @@ spec:
               value: "${LME_RUN_MANIFEST}"
             - name: ALLOW_MANIFEST_DRIFT
               value: "${LME_ALLOW_MANIFEST_DRIFT}"
+            - name: MAX_CHUNK_ATTEMPTS
+              value: "${LME_MAX_CHUNK_ATTEMPTS}"
           volumeMounts:
             - name: results
               mountPath: /results

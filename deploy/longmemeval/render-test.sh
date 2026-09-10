@@ -26,6 +26,7 @@ export LME_OCCURRED_AT="false"
 export LME_RUN_ID="runid0123abcd"
 export LME_RUN_MANIFEST="dataset=test_dataset.json mode=ingest occurred_at=false model=test.model-v9 image=testreg.azurecr.io/lme-render-test:cafef00d chunk=7"
 export LME_ALLOW_MANIFEST_DRIFT="0"
+export LME_MAX_CHUNK_ATTEMPTS="4"
 
 MANIFESTS=(namespace pvcs server-config runner-script server-deployment runner-job)
 
@@ -104,6 +105,8 @@ grep -q "value: \"${LME_RUN_ID}\"" "${TMP_DIR}/runner-job.yaml" \
     || fail "runner-job.yaml RUN_ID not rendered"
 grep -q "value: \"${LME_RUN_MANIFEST}\"" "${TMP_DIR}/runner-job.yaml" \
     || fail "runner-job.yaml RUN_MANIFEST not rendered"
+grep -q "value: \"${LME_MAX_CHUNK_ATTEMPTS}\"" "${TMP_DIR}/runner-job.yaml" \
+    || fail "runner-job.yaml MAX_CHUNK_ATTEMPTS not rendered"
 
 # 7. No unrendered placeholders (lme_render also guards; belt and suspenders).
 if grep -rn '\${LME_' "${TMP_DIR}"/*.yaml; then
