@@ -52,6 +52,10 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 	e.orchestrator.logger.Info("Starting parallel execution",
 		zap.Int("tasks", len(e.pattern.Tasks)))
 
+	if len(e.pattern.Tasks) == 0 {
+		return nil, fmt.Errorf("parallel pattern has no tasks")
+	}
+
 	// Validate all agents exist
 	for i, task := range e.pattern.Tasks {
 		if _, err := e.orchestrator.GetAgent(ctx, task.AgentId); err != nil {

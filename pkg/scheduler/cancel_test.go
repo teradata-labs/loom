@@ -571,6 +571,55 @@ func TestExecuteWorkflowRecordsGenuineCancellationForForkJoin(t *testing.T) {
 		"an operator's stop of a fork-join run was counted as a failure, corrupting the success rate")
 }
 
+// TestExecuteWorkflowRecordsGenuineCancellationForParallel is the parallel
+// twin of TestExecuteWorkflowRecordsGenuineCancellationForForkJoin: the same
+// %v-vs-%w bug lived independently in parallel_executor.go, so fixing
+// fork-join alone would have left this pattern type still misclassifying a
+// genuine cancel as "failed".
+func TestExecuteWorkflowRecordsGenuineCancellationForParallel(t *testing.T) {
+	t.Parallel()
+
+	llm := newDrainBlockingLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
+	ctx := context.Background()
+
+	sched := parallelWorkflow("sched-genuine-parallel")
+	require.NoError(t, s.store.Create(ctx, sched))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.executeWorkflow(ctx, sched, "exec-genuine-parallel", nil, true)
+	}()
+
+	select {
+	case <-llm.started:
+	case <-time.After(hangGuard):
+		t.Fatal("the workflow never reached the agent, so nothing was in flight to cancel")
+	}
+
+	outcome, err := s.CancelExecution(ctx, "exec-genuine-parallel", "stopped by operator")
+	require.NoError(t, err)
+	require.Equal(t, CancelOutcomeSignaled, outcome)
+
+	<-done
+
+	history, err := s.store.GetExecutionHistory(ctx, sched.Id, 10)
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	assert.Equal(t, "canceled", history[0].Status,
+		"a genuine cancel of a parallel run was recorded as failed because the joined task errors lost context.Canceled through %v instead of %w")
+	assert.Equal(t, "stopped by operator", history[0].Error)
+
+	got, err := s.store.Get(ctx, sched.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "canceled", got.Stats.LastStatus)
+	assert.Equal(t, int32(0), got.Stats.TotalExecutions)
+	assert.Equal(t, int32(0), got.Stats.FailedExecutions,
+		"an operator's stop of a parallel run was counted as a failure, corrupting the success rate")
+}
+
 // TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled
 // covers N1: a cancel signal that arrives before the orchestrator ever runs
 // does not, by itself, mean the orchestrator's error was caused by it. A

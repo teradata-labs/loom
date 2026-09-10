@@ -257,6 +257,19 @@ func TestForkJoinPattern(t *testing.T) {
 			timeout:       30,
 			wantErr:       false,
 		},
+		{
+			// A schedule can be created with agent_ids: [] (validateSchedule
+			// doesn't reject it), and executeFork's own "all agents failed"
+			// guard is len(errs) == len(AgentIds), which is 0 == 0 for this
+			// case — errors.Join() with zero args returns nil, producing a
+			// literal "%!w(<nil>)" in the recorded error instead of a real
+			// message. This must be rejected before executeFork ever runs.
+			name:          "no agents is rejected up front",
+			prompt:        "Analyze this code",
+			numAgents:     0,
+			mergeStrategy: loomv1.MergeStrategy_CONCATENATE,
+			wantErr:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -386,6 +399,28 @@ func TestParallelPattern(t *testing.T) {
 	for _, agentResult := range result.AgentResults {
 		assert.Contains(t, agentResult.Metadata, "task_index")
 	}
+}
+
+// TestParallelPatternNoTasksIsRejectedUpFront is the parallel twin of the
+// fork-join "no agents" case: a schedule can be created with tasks: []
+// (validateSchedule doesn't reject it), and executeParallel's own "all tasks
+// failed" guard is len(errs) == len(Tasks), which is 0 == 0 here —
+// errors.Join() with zero args returns nil, producing a literal
+// "%!w(<nil>)" in the recorded error instead of a real message. This must be
+// rejected before executeParallel ever runs.
+func TestParallelPatternNoTasksIsRejectedUpFront(t *testing.T) {
+	orchestrator := NewOrchestrator(Config{
+		Logger:      zaptest.NewLogger(t),
+		Tracer:      observability.NewNoOpTracer(),
+		LLMProvider: newMockLLMProvider("Combined summary"),
+	})
+
+	_, err := orchestrator.
+		Parallel().
+		WithMergeStrategy(loomv1.MergeStrategy_SUMMARY).
+		Execute(context.Background())
+
+	require.Error(t, err)
 }
 
 // TestConditionalPattern tests the conditional orchestration pattern.

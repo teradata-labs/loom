@@ -58,6 +58,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		zap.String("prompt", truncateForLog(e.pattern.Prompt, 100)),
 		zap.Int("agents", len(e.pattern.AgentIds)))
 
+	if len(e.pattern.AgentIds) == 0 {
+		return nil, fmt.Errorf("fork-join has no agents")
+	}
+
 	// Validate agents exist
 	for _, agentID := range e.pattern.AgentIds {
 		if _, err := e.orchestrator.GetAgent(ctx, agentID); err != nil {
