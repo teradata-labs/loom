@@ -20,10 +20,13 @@ package client
 // so the TUI, the desktop app, and loom-standalone cannot drift in what a
 // routine means or how one is triggered.
 //
-// The server answers these only when it was built with a scheduler; without one
-// it reports FailedPrecondition. Callers should surface that verbatim rather
-// than presenting an empty list, since "no scheduler" and "no routines" mean
-// very different things to a user.
+// Most of these RPCs answer only when the server was built with a scheduler;
+// without one they report FailedPrecondition, and callers should surface that
+// verbatim rather than presenting an empty list, since "no scheduler" and "no
+// routines" mean very different things to a user. The exceptions are
+// ListWorkflowExecutions and GetWorkflowExecution: they read execution
+// records straight from the workflow store and work the same with or without
+// a scheduler configured.
 
 import (
 	"context"
@@ -40,17 +43,26 @@ const defaultScheduleHistoryLimit = 50
 // enabledOnly filters out paused schedules. Pass false when rendering a
 // management view: a paused routine that is invisible looks deleted, and the
 // user has no way to resume what they cannot see.
-func (c *Client) ListSchedules(ctx context.Context, enabledOnly bool) ([]*loomv1.ScheduledWorkflow, error) {
+//
+// pageSize of 0 lets the server choose. The returned next page token is
+// empty when the server has none to give; the server does not yet page this
+// list (multi_agent.go: "TODO: Implement pagination if needed"), so today
+// every call returns everything and an empty token regardless of pageSize —
+// but the field is wired through now so callers that page do not force a
+// breaking signature change onto this method once the server catches up.
+func (c *Client) ListSchedules(ctx context.Context, enabledOnly bool, pageSize int32, pageToken string) ([]*loomv1.ScheduledWorkflow, string, error) {
 	req := &loomv1.ListScheduledWorkflowsRequest{
 		EnabledOnly: enabledOnly,
+		PageSize:    pageSize,
+		PageToken:   pageToken,
 	}
 
 	resp, err := c.client.ListScheduledWorkflows(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return resp.Schedules, nil
+	return resp.Schedules, resp.NextPageToken, nil
 }
 
 // GetSchedule retrieves one scheduled workflow by ID.

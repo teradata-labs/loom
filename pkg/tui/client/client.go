@@ -171,6 +171,10 @@ func createTLSConfig(cfg Config) (*tls.Config, error) {
 //
 // The returned Client does not own the connection: Close is a no-op, and
 // closing the conn remains the caller's job.
+//
+// Wrap(nil) returns nil rather than a Client that would panic on first use,
+// so a caller can propagate a missing connection the same way it would
+// propagate a nil Client from anywhere else in this package.
 func Wrap(conn *grpc.ClientConn) *Client {
 	if conn == nil {
 		return nil

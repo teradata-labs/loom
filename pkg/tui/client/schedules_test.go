@@ -41,16 +41,22 @@ type scheduleMockServer struct {
 	gotExecs   *loomv1.ListWorkflowExecutionsRequest
 	gotCreate  *loomv1.ScheduleWorkflowRequest
 	gotUpdate  *loomv1.UpdateScheduledWorkflowRequest
+	gotGet     *loomv1.GetScheduledWorkflowRequest
+	gotGetExec *loomv1.GetWorkflowExecutionRequest
 }
 
 func (m *scheduleMockServer) ListScheduledWorkflows(_ context.Context, req *loomv1.ListScheduledWorkflowsRequest) (*loomv1.ListScheduledWorkflowsResponse, error) {
 	m.gotList = req
-	return &loomv1.ListScheduledWorkflowsResponse{
+	resp := &loomv1.ListScheduledWorkflowsResponse{
 		Schedules: []*loomv1.ScheduledWorkflow{
 			{Id: "sched-1", WorkflowName: "daily-report"},
 			{Id: "sched-2", WorkflowName: "hourly-sync"},
 		},
-	}, nil
+	}
+	if req.PageSize > 0 {
+		resp.NextPageToken = "list-page-2"
+	}
+	return resp, nil
 }
 
 func (m *scheduleMockServer) GetScheduleHistory(_ context.Context, req *loomv1.GetScheduleHistoryRequest) (*loomv1.GetScheduleHistoryResponse, error) {
@@ -106,6 +112,16 @@ func (m *scheduleMockServer) UpdateScheduledWorkflow(_ context.Context, req *loo
 	}, nil
 }
 
+func (m *scheduleMockServer) GetScheduledWorkflow(_ context.Context, req *loomv1.GetScheduledWorkflowRequest) (*loomv1.ScheduledWorkflow, error) {
+	m.gotGet = req
+	return &loomv1.ScheduledWorkflow{Id: req.ScheduleId, WorkflowName: "daily-report"}, nil
+}
+
+func (m *scheduleMockServer) GetWorkflowExecution(_ context.Context, req *loomv1.GetWorkflowExecutionRequest) (*loomv1.WorkflowExecution, error) {
+	m.gotGetExec = req
+	return &loomv1.WorkflowExecution{Id: req.ExecutionId, Status: "success"}, nil
+}
+
 // setupScheduleServer stands up the recording mock over bufconn and returns a
 // client wired to it.
 func setupScheduleServer(t *testing.T) (*Client, *scheduleMockServer) {
@@ -146,7 +162,7 @@ func TestListSchedules(t *testing.T) {
 	c, mock := setupScheduleServer(t)
 
 	for _, enabledOnly := range []bool{true, false} {
-		schedules, err := c.ListSchedules(context.Background(), enabledOnly)
+		schedules, _, err := c.ListSchedules(context.Background(), enabledOnly, 0, "")
 		if err != nil {
 			t.Fatalf("ListSchedules(%v): %v", enabledOnly, err)
 		}
@@ -156,6 +172,28 @@ func TestListSchedules(t *testing.T) {
 		if mock.gotList.EnabledOnly != enabledOnly {
 			t.Errorf("server saw EnabledOnly=%v, want %v", mock.gotList.EnabledOnly, enabledOnly)
 		}
+	}
+}
+
+// pageSize and pageToken must reach the server, and the server's next page
+// token must come back to the caller, even though the server does not yet
+// page this list — the wiring has to exist before the server-side behaviour
+// does, or this method needs a breaking signature change later.
+func TestListSchedulesPaging(t *testing.T) {
+	c, mock := setupScheduleServer(t)
+
+	_, next, err := c.ListSchedules(context.Background(), false, 10, "page-1-token")
+	if err != nil {
+		t.Fatalf("ListSchedules: %v", err)
+	}
+	if mock.gotList.PageSize != 10 {
+		t.Errorf("server saw PageSize=%d, want 10", mock.gotList.PageSize)
+	}
+	if mock.gotList.PageToken != "page-1-token" {
+		t.Errorf("server saw PageToken=%q, want page-1-token", mock.gotList.PageToken)
+	}
+	if next != "list-page-2" {
+		t.Errorf("next page token = %q, want list-page-2", next)
 	}
 }
 
@@ -284,6 +322,42 @@ func TestUpdateScheduleLeavesNilPartsAlone(t *testing.T) {
 	}
 }
 
+// GetSchedule is a one-line passthrough, but the same rationale the PR uses
+// for every other method applies here too: a test that only checked the
+// return value would pass even if ScheduleId were dropped on the way out.
+func TestGetSchedule(t *testing.T) {
+	c, mock := setupScheduleServer(t)
+
+	sched, err := c.GetSchedule(context.Background(), "sched-42")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if sched.Id != "sched-42" {
+		t.Errorf("Id = %q, want sched-42", sched.Id)
+	}
+	if mock.gotGet.ScheduleId != "sched-42" {
+		t.Errorf("server saw ScheduleId=%q, want sched-42", mock.gotGet.ScheduleId)
+	}
+}
+
+// Same rationale as TestGetSchedule: GetWorkflowExecution is a one-line
+// passthrough, and nothing else in this file verifies ExecutionId reaches
+// the wire.
+func TestGetWorkflowExecution(t *testing.T) {
+	c, mock := setupScheduleServer(t)
+
+	exec, err := c.GetWorkflowExecution(context.Background(), "exec-42")
+	if err != nil {
+		t.Fatalf("GetWorkflowExecution: %v", err)
+	}
+	if exec.Id != "exec-42" {
+		t.Errorf("Id = %q, want exec-42", exec.Id)
+	}
+	if mock.gotGetExec.ExecutionId != "exec-42" {
+		t.Errorf("server saw ExecutionId=%q, want exec-42", mock.gotGetExec.ExecutionId)
+	}
+}
+
 func TestListWorkflowExecutions(t *testing.T) {
 	c, mock := setupScheduleServer(t)
 
@@ -336,7 +410,7 @@ func TestWrapBorrowsConnection(t *testing.T) {
 		t.Fatal("Wrap returned nil for a non-nil conn")
 	}
 
-	if _, err := sdk.ListSchedules(context.Background(), false); err != nil {
+	if _, _, err := sdk.ListSchedules(context.Background(), false, 0, ""); err != nil {
 		t.Fatalf("ListSchedules through a wrapped conn: %v", err)
 	}
 
@@ -345,7 +419,7 @@ func TestWrapBorrowsConnection(t *testing.T) {
 	}
 
 	// The conn must still work after the SDK was closed.
-	if _, err := sdk.ListSchedules(context.Background(), false); err != nil {
+	if _, _, err := sdk.ListSchedules(context.Background(), false, 0, ""); err != nil {
 		t.Errorf("conn was closed by the borrower: %v", err)
 	}
 }
