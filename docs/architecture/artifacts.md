@@ -1319,6 +1319,14 @@ still returns unfiltered. It is exposed as an optional capability
 interface is implemented outside this repo; a store without it keeps the
 fail-closed behaviour.
 
+Only the Postgres store needs this, and so only it implements the capability.
+SQLite hard-deletes sessions and its `artifacts.session_id` foreign key is
+`ON DELETE CASCADE`, so a deleted session's artifacts are already gone — there is
+nothing to be locked out of. The two backends therefore answer the same request
+differently in *shape*: with enforcement on, scoping to a deleted session yields
+an empty list on Postgres and `NotFound` on SQLite. Both mean "no artifacts";
+a client that distinguishes the two should treat `NotFound` as empty here.
+
 Two limits worth stating plainly, because "session scoping" reads broader than what
 is enforced:
 

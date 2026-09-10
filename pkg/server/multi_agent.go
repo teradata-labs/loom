@@ -619,6 +619,18 @@ func (s *MultiAgentServer) ownerAccessibleBy(callerUserID, ownerUserID string) b
 	return callerUserID == "" || ownerUserID == "" || ownerUserID == callerUserID
 }
 
+// selfOwnedAccessible reports whether a caller may act on a session the store
+// has already confirmed is the caller's OWN.
+//
+// It is ownerAccessibleBy with owner == caller, which collapses to the
+// blank-identity rule: under enforcement an anonymous caller is not a wildcard
+// even for a session nominally "its own", and without enforcement everything is
+// permitted. Named rather than inlined because ownerAccessibleBy(id, id) reads
+// as a tautology at the call site while actually carrying that rule.
+func (s *MultiAgentServer) selfOwnedAccessible(callerUserID string) bool {
+	return s.ownerAccessibleBy(callerUserID, callerUserID)
+}
+
 // sessionOwnershipProbe is an OPTIONAL session-store capability: it answers
 // "is this session the caller's own?" without filtering soft-deleted rows,
 // which the owner-scoped LoadSession cannot do.
@@ -704,13 +716,14 @@ func (s *MultiAgentServer) authorizeSessionScope(ctx context.Context, sessionID 
 	// id. Without this probe the fail-closed branch would refuse an owner the
 	// FILTERED view of artifacts the store still hands them UNFILTERED, for the
 	// entire soft-delete grace window — and "which files did this session
-	// produce?" is the question this field exists to answer. The probe is
-	// owner-scoped, so a hit means the owner IS the caller; routing that through
-	// ownerAccessibleBy keeps the blank-identity rule in one place instead of
-	// restating it here.
+	// produce?" is the question this field exists to answer.
+	//
+	// The probe is owner-scoped, so a hit already means the owner IS the caller;
+	// selfOwnedAccessible then applies the blank-identity rule to that fact
+	// rather than restating it here.
 	if probe, ok := s.sessionStore.(sessionOwnershipProbe); ok {
 		owned, err := probe.CallerOwnsSession(ctx, sessionID)
-		if err == nil && owned && s.ownerAccessibleBy(callerUserID, callerUserID) {
+		if err == nil && owned && s.selfOwnedAccessible(callerUserID) {
 			return nil
 		}
 	}
