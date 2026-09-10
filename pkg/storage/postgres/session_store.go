@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -386,11 +387,21 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			turnIncrement = 1
 		}
 
+		// task_id is stamped from the turn's ambient attribution, the same rule
+		// the SQLite session store applies — before this, migration 000024
+		// installed a column this store never wrote, and the whole
+		// message-attribution half of the timeline was dead on Postgres while
+		// the doc claimed stamping was implemented.
+		taskIDValue := msg.TaskID
+		if taskIDValue == "" {
+			taskIDValue = taskctx.TaskIDFromContext(ctx)
+		}
+
 		var seq, turn int64
 		err := tx.QueryRow(ctx, `
-		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			(SELECT COALESCE(MAX(turn), 0) + $15 FROM messages WHERE session_id = $1))
+		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+			(SELECT COALESCE(MAX(turn), 0) + $16 FROM messages WHERE session_id = $1))
 		RETURNING id, turn`,
 			sessionID,
 			userID,
@@ -401,6 +412,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			nullableBytes(toolResultJSON),
 			string(msg.SessionContext),
 			nullableString(msg.AgentID),
+			nullableString(taskIDValue),
 			msg.Timestamp,
 			msg.TokenCount,
 			msg.CostUSD,
