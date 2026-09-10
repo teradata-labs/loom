@@ -37,16 +37,20 @@ server, service, config, and runner job.
 Two offline tests cover the rig itself (no cluster, no Bedrock, no spend):
 
 ```bash
-bash deploy/longmemeval/render-test.sh      # manifests agree on nondefault values
-bash deploy/longmemeval/slice-loop-test.sh  # drives the real slice loop with a stub harness
+just lme-rig-test   # both, in strict mode — what CI runs
 ```
+
+CI runs these on every PR (`LME_RIG_STRICT=1`, so a missing prerequisite fails
+rather than printing SKIP and going green).
 
 `slice-loop-test.sh` extracts the runner script from the rendered ConfigMap and
 runs it against a synthetic dataset, asserting the behaviours a paid multi-day
 run depends on: counts derived from the dataset, resume skipping only completed
 chunks, a deterministically-failing entry quarantining its chunk instead of
-re-billing the run, rejected output preserved outside the scorer's glob, and a
-revised dataset refused on resume.
+re-billing the run, rejected output preserved outside the scorer's glob, a
+failed results-volume write stopping the run instead of reporting success, the
+incomplete-run sentinel clearing once every chunk completes, and a revised
+dataset refused on resume.
 
 ## Architecture
 
@@ -84,7 +88,10 @@ revised dataset refused on resume.
   `:latest`. `az acr build` uploads the working tree rather than the commit, so
   a dirty tree is tagged `<commit>-dirty-<fingerprint>` and gets its own run id
   — a build with uncommitted edits can never resume a clean commit's chunks
-  under the same name. `run-500.sh` warns when it does this.
+  under the same name. `run-500.sh` warns when it does this. Because ACR tags
+  are mutable, the run identity also records the image's immutable **digest**,
+  and both workloads pull with `imagePullPolicy: Always`, so a rebuilt or
+  retagged image yields a new run id instead of quietly serving a resume.
 - **Per-type counts:** the slice loop derives them from
   `loom-longmemeval info --json` on the dataset it is about to run, so a dataset
   revision cannot silently drive the final chunk past the last entry or stop the
@@ -104,7 +111,11 @@ revised dataset refused on resume.
   that question's text, say) would otherwise re-bill its ~9 healthy neighbours on
   every one of the Job's restarts and still never complete. Each chunk gets
   `LME_MAX_CHUNK_ATTEMPTS` tries (default 3), counted on the PVC so the budget
-  spans pod restarts. Past that the chunk is quarantined with a `.failed` marker
+  spans pod restarts. Only *deterministic* failures count — a chunk that ran
+  and produced output failing validation. A harness that could not run at all
+  (provider outage, server restart, transport error) says nothing about the
+  chunk's entries, so it leaves the budget untouched and is bounded by the
+  Job's `backoffLimit` instead. Past that the chunk is quarantined with a `.failed` marker
   naming the failing entries and how to retry it (`rm` the marker), and later
   passes skip it so the remaining chunks can finish. A quarantined chunk never
   turns a partial run into a passing one: the run exits nonzero and writes

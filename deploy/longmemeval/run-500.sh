@@ -67,11 +67,28 @@ else
     fi
 fi
 
+# ACR tags are mutable, and Kubernetes defaults a non-:latest tag to
+# imagePullPolicy: IfNotPresent — so a rebuilt or retagged image can serve a
+# run whose manifest records the same tag string. Resolve the tag to its
+# immutable digest and make THAT part of the run identity, so a moved tag
+# yields a new run id instead of silently resuming onto chunks produced by
+# different bytes. Empty (older az, or no permission) degrades to tag-only
+# identity rather than blocking the run.
+LME_IMAGE_DIGEST="$(az acr repository show \
+    --name "${LME_ACR_NAME}" \
+    --image "${LME_IMAGE_REPO}:${LME_IMAGE_TAG}" \
+    --query digest -o tsv 2>/dev/null || true)"
+if [[ -z "${LME_IMAGE_DIGEST}" ]]; then
+    echo "WARNING: could not resolve the image digest; run identity falls back to the"
+    echo "         tag alone, which ACR allows to move. Resume cannot detect a rebuild."
+    LME_IMAGE_DIGEST="unresolved"
+fi
+
 # Run identity: a manifest of every input that determines what the benchmark
 # measures. Chunk outputs are namespaced by its hash on the results PVC, so a
 # configuration change can never silently reuse chunks from a different run;
 # the runner also verifies the stored manifest before resuming.
-LME_RUN_MANIFEST="dataset=${LME_DATASET_FILE} mode=${LME_MODE} occurred_at=${LME_OCCURRED_AT} model=${LME_MODEL} image=${LME_IMAGE}:${LME_IMAGE_TAG} chunk=${LME_CHUNK}"
+LME_RUN_MANIFEST="dataset=${LME_DATASET_FILE} mode=${LME_MODE} occurred_at=${LME_OCCURRED_AT} model=${LME_MODEL} image=${LME_IMAGE}:${LME_IMAGE_TAG} digest=${LME_IMAGE_DIGEST} chunk=${LME_CHUNK}"
 LME_RUN_ID="${LME_RUN_ID:-$(lme_sha256_12 "${LME_RUN_MANIFEST}")}"
 LME_ALLOW_MANIFEST_DRIFT="${LME_ALLOW_MANIFEST_DRIFT:-0}"
 
@@ -83,9 +100,16 @@ export LME_NAMESPACE LME_IMAGE LME_IMAGE_TAG LME_GRPC_PORT LME_MODEL \
 echo "=== Run identity ==="
 echo "  run id:   ${LME_RUN_ID}"
 echo "  manifest: ${LME_RUN_MANIFEST}"
+echo "  digest:   ${LME_IMAGE_DIGEST}"
 echo "  outputs:  PVC lme-results:/results/runs/${LME_RUN_ID}/"
 
-echo "=== Applying namespace, PVCs, config (namespace=${LME_NAMESPACE}) ==="
+# Hash the rendered server config so a config-only change (model, port,
+# anything in looms.yaml) rolls the server pod. Computed BEFORE the config is
+# applied, from exactly the bytes that will be applied.
+LME_CONFIG_HASH="$(lme_render "${SCRIPT_DIR}/server-config.yaml" | lme_sha256_12_stdin)"
+export LME_CONFIG_HASH
+
+echo "=== Applying namespace, PVCs, config (namespace=${LME_NAMESPACE}, config ${LME_CONFIG_HASH}) ==="
 for manifest in namespace pvcs server-config runner-script; do
     lme_render "${SCRIPT_DIR}/${manifest}.yaml" | kubectl apply -f -
 done

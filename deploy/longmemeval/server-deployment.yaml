@@ -18,6 +18,14 @@ spec:
     metadata:
       labels:
         app: lme-server
+      annotations:
+        # looms reads its config once at startup (cobra.OnInitialize) and has
+        # no watcher, so a ConfigMap-only change — a different LME_MODEL, say
+        # — would leave the OLD model serving while the run manifest claims
+        # the new one. Stamping the rendered config's hash into the pod
+        # template makes such a change roll the pod, so the server that
+        # answers is always the one this run's identity records.
+        loom.dev/config-checksum: "${LME_CONFIG_HASH}"
     spec:
       nodeSelector:
         loom-role: lme
@@ -28,6 +36,10 @@ spec:
       containers:
         - name: server
           image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          # Any tag other than the floating default pulls IfNotPresent, so a
+          # node with a cached layer under a moved tag would keep serving the
+          # old bytes.
+          imagePullPolicy: Always
           command: ["/looms"]
           args: ["serve", "--config", "/etc/loom/looms.yaml"]
           ports:
