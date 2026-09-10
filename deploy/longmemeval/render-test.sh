@@ -27,6 +27,7 @@ export LME_RUN_ID="runid0123abcd"
 export LME_RUN_MANIFEST="dataset=test_dataset.json mode=ingest occurred_at=false model=test.model-v9 image=testreg.azurecr.io/lme-render-test:cafef00d chunk=7"
 export LME_ALLOW_MANIFEST_DRIFT="0"
 export LME_MAX_CHUNK_ATTEMPTS="4"
+export LME_CONFIG_HASH="cfg123456789"
 
 MANIFESTS=(namespace pvcs server-config runner-script server-deployment runner-job)
 
@@ -47,6 +48,8 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; t
         python3 -c 'import sys, yaml; list(yaml.safe_load_all(open(sys.argv[1])))' "${TMP_DIR}/${m}.yaml" \
             || fail "${m}.yaml does not parse as YAML after rendering"
     done
+elif [[ "${LME_RIG_STRICT:-0}" == "1" ]]; then
+    fail "python3+pyyaml is required to validate rendered manifests (LME_RIG_STRICT=1)"
 else
     echo "NOTE: python3+pyyaml not available; skipping YAML parse assertions"
 fi
@@ -107,6 +110,10 @@ grep -q "value: \"${LME_RUN_MANIFEST}\"" "${TMP_DIR}/runner-job.yaml" \
     || fail "runner-job.yaml RUN_MANIFEST not rendered"
 grep -q "value: \"${LME_MAX_CHUNK_ATTEMPTS}\"" "${TMP_DIR}/runner-job.yaml" \
     || fail "runner-job.yaml MAX_CHUNK_ATTEMPTS not rendered"
+# A config-only change must roll the server pod: looms reads its config once
+# at startup, so without this a new model would never actually be served.
+grep -q "loom.dev/config-checksum: \"${LME_CONFIG_HASH}\"" "${TMP_DIR}/server-deployment.yaml" \
+    || fail "server-deployment.yaml pod template missing the config checksum annotation"
 
 # 7. No unrendered placeholders (lme_render also guards; belt and suspenders).
 if grep -rn '\${LME_' "${TMP_DIR}"/*.yaml; then
