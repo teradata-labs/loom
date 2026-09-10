@@ -208,8 +208,7 @@ loop:
 			defer func() { <-sem }()
 
 			result := r.runEntry(runCtx, e)
-			if isTimeOverrideRejection(result) {
-				msg := "server rejects occurred_at (server.allow_time_override is not enabled); aborting the run — enable it in looms.yaml or pass --occurred-at=false"
+			if msg, rejected := overrideRejection(result); rejected {
 				if abortErr.CompareAndSwap(nil, &msg) {
 					r.logger.Error(msg, zap.String("first_failed_entry", e.QuestionID))
 					abort()
@@ -239,16 +238,34 @@ loop:
 	return ctx.Err()
 }
 
-// isTimeOverrideRejection reports whether an entry failed because the server
-// rejects WeaveRequest.occurred_at (server.allow_time_override disabled). The
-// primary signal is the gRPC FailedPrecondition code from the Weave call
-// paired with a mention of occurred_at; the bare flag-name substring is kept
-// as a fallback for servers whose status code was lost in transit.
-func isTimeOverrideRejection(result EntryResult) bool {
-	if result.grpcCode == codes.FailedPrecondition && strings.Contains(result.Error, "occurred_at") {
-		return true
+// overrideRejection reports whether an entry failed because the server
+// refuses a request override this run depends on, and returns the message
+// naming the flag the operator has to change. The primary signal is the gRPC
+// FailedPrecondition code from the Weave call paired with the field name; the
+// bare flag-name substring is kept as a fallback for servers whose status
+// code was lost in transit.
+//
+// This has to cover EVERY override the run needs, not just occurred_at: a
+// refused override does not degrade the benchmark, it invalidates it. Every
+// remaining entry fails the same way, so without an abort the run writes a
+// file of error rows and exits zero — handing automation something that
+// looks like a result.
+func overrideRejection(result EntryResult) (string, bool) {
+	precondition := result.grpcCode == codes.FailedPrecondition
+
+	if (precondition && strings.Contains(result.Error, "replay_assistant_message")) ||
+		strings.Contains(result.Error, "allow_assistant_override") {
+		return "server rejects replay_assistant_message (server.allow_assistant_override is not enabled); " +
+			"aborting the run — enable it in looms.yaml, or use a mode other than --mode conversation", true
 	}
-	return strings.Contains(result.Error, "allow_time_override")
+
+	if (precondition && strings.Contains(result.Error, "occurred_at")) ||
+		strings.Contains(result.Error, "allow_time_override") {
+		return "server rejects occurred_at (server.allow_time_override is not enabled); " +
+			"aborting the run — enable it in looms.yaml or pass --occurred-at=false", true
+	}
+
+	return "", false
 }
 
 // runEntry evaluates a single LongMemEval entry.
@@ -417,6 +434,10 @@ func (r *Runner) replayTurn(ctx context.Context, sessionID, userContent, assista
 
 	resp, err := r.client.Weave(ctx, req)
 	if err != nil {
+		// Record the status, as weave does: without it a server that
+		// rejects the replay override is indistinguishable from a transient
+		// per-entry failure, and the run does not abort.
+		result.grpcCode = status.Code(err)
 		return err
 	}
 
