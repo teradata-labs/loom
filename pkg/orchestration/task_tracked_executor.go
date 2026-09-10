@@ -818,16 +818,22 @@ func (t *TaskTrackedOrchestrator) recordResults(
 	}
 	sort.Slice(stageRows, func(a, b int) bool { return stageIndexOf(stageRows[a]) < stageIndexOf(stageRows[b]) })
 	claimRow := func(res *loomv1.AgentResult) *task.Task {
-		// PRIMARY key: the producer's own task_index. ParallelExecutor stamps
-		// it on every result, and it is the only unambiguous key when one
-		// agent id appears in several stages — matching by agent id alone,
-		// each duplicate-agent result claimed whichever of the twin rows was
-		// still free, writing each output into the other stage's task on the
-		// wrong completion order.
+		// PRIMARY key: the producer's own task_index AND its agent id. The
+		// index disambiguates one agent id appearing in several stages —
+		// matching by agent id alone, each duplicate-agent result claimed
+		// whichever of the twin rows was still free, writing each output into
+		// the other stage's task on the wrong completion order. The agent-id
+		// conjunct is what keeps the index trustworthy: task_index values
+		// also arrive from OUTSIDE this board's stage set — a conditional
+		// returns its selected branch's results as its own (a Parallel
+		// branch's index 0 would otherwise claim the classifier's row), and
+		// ParallelExecutor merges AgentTask.Metadata over its own task_index
+		// key, so a pattern reusing that key redirects the claim. A non-match
+		// falls through to the fallback below.
 		if idxStr := res.GetMetadata()["task_index"]; idxStr != "" {
 			if idx, err := strconv.Atoi(idxStr); err == nil {
 				for i, tk := range stageRows {
-					if tk != nil && stageIndexOf(tk) == idx {
+					if tk != nil && stageIndexOf(tk) == idx && tk.Metadata[agentIDMetadataKey] == res.AgentId {
 						stageRows[i] = nil
 						return tk
 					}

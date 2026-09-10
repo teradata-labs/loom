@@ -152,7 +152,8 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 }
 
 // sessionEpoch derives the incarnation component of the implicit idempotency
-// key from the session's durable creation time.
+// key: the session's persisted Incarnation nonce when it has one, otherwise
+// its creation time.
 //
 // Nanosecond resolution, deliberately: at second resolution a
 // delete-and-recreate of a session id inside one wall-clock second was
@@ -160,9 +161,9 @@ func (a *Agent) maybeRecordImplicitTask(ctx Context, trigger loomv1.ImplicitTask
 // emitter is designed to rebind — and create/turn/delete/recreate is a normal
 // harness loop shape that fits easily in a second. The remaining collision
 // window is one clock tick, which a real recreation (two store writes apart)
-// cannot fit inside. It stays derived from CreatedAt rather than a random
-// nonce because a restart must re-derive the SAME epoch to rebind its own
-// parked turns.
+// cannot fit inside. A restart must re-derive the SAME epoch to rebind its
+// own parked turns — which is why the nonce is persisted verbatim at creation
+// rather than re-rolled per process.
 func sessionEpoch(sess *Session) int64 {
 	if sess == nil {
 		return 0

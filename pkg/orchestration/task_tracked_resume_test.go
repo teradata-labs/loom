@@ -399,3 +399,116 @@ func TestTaskTrackedResume_DuplicateAgentParallelMapsByTaskIndex(t *testing.T) {
 	}
 	require.Equal(t, 2, checked)
 }
+
+// TestTaskTrackedConditional_BranchResultsDoNotClaimTheClassifierRow is the
+// round-4 blocking regression: a conditional returns its selected branch's
+// AgentResults as its OWN (the classifier's result is never in the list), and
+// a Parallel branch stamps task_index 0,1,... — while the conditional's only
+// stage row is the classifier at stage_index 0. Without the agent-id conjunct
+// on the task_index claim, the branch's index-0 result closed the
+// classifier's row with the branch agent's output — and CloseTask →
+// rememberTaskCompletion then persisted a high-salience memory asserting it.
+// The correct outcome is the pre-existing benign one: the classifier row
+// simply stays unclaimed.
+func TestTaskTrackedConditional_BranchResultsDoNotClaimTheClassifierRow(t *testing.T) {
+	tracked, o, mgr := newTrackedRig(t)
+	ctx := context.Background()
+
+	o.RegisterAgent("classifier", createMockAgent(t, "classifier", newMockLLMProvider("work")))
+	o.RegisterAgent("worker", createMockAgent(t, "worker", newMockLLMProvider("WORKER-OUTPUT")))
+
+	pattern := &loomv1.WorkflowPattern{
+		Pattern: &loomv1.WorkflowPattern_Conditional{
+			Conditional: &loomv1.ConditionalPattern{
+				ConditionAgentId: "classifier",
+				ConditionPrompt:  "Route this",
+				Branches: map[string]*loomv1.WorkflowPattern{
+					"work": {
+						Pattern: &loomv1.WorkflowPattern_Parallel{
+							Parallel: &loomv1.ParallelPattern{
+								Tasks:         []*loomv1.AgentTask{{AgentId: "worker", Prompt: "do the work"}},
+								MergeStrategy: loomv1.MergeStrategy_CONCATENATE,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := o.ExecutePattern(ctx, pattern)
+	require.NoError(t, err)
+	require.Len(t, result.AgentResults, 1, "a conditional returns the branch's results as its own")
+	require.Equal(t, "worker", result.AgentResults[0].AgentId)
+	require.Equal(t, "0", result.AgentResults[0].GetMetadata()["task_index"],
+		"rig sanity: the Parallel branch stamps the foreign index 0 this test is about")
+
+	boards, err := mgr.ListBoards(ctx)
+	require.NoError(t, err)
+	require.Len(t, boards, 1)
+	rows, err := tracked.listAllBoardTasks(ctx, boards[0].ID)
+	require.NoError(t, err)
+	var classifier *task.Task
+	for _, tk := range rows {
+		if isStageTask(tk) && tk.Metadata[agentIDMetadataKey] == "classifier" {
+			classifier = tk
+		}
+	}
+	require.NotNil(t, classifier, "the conditional's only stage row is the classifier")
+	require.NotContains(t, classifier.Notes, "WORKER-OUTPUT",
+		"the branch agent's index-0 result claimed the classifier's row across agent identities")
+	require.NotEqual(t, loomv1.TaskStatus_TASK_STATUS_DONE, classifier.Status,
+		"the classifier row must stay unclaimed, not be closed with another agent's result")
+}
+
+// TestTaskTrackedParallel_PatternSuppliedTaskIndexCannotRedirectTheClaim
+// covers the review's second foreign-index source: ParallelExecutor merges
+// AgentTask.Metadata over its own task_index key, so a pattern that uses
+// task_index as its own label stamps alpha's result with beta's index.
+// Whichever completion order the run produces, each stage row must record its
+// own agent's output — the mismatched index falls through to the agent-id
+// fallback instead of claiming beta's row. (Under a reverted conjunct the
+// failure is completion-order dependent, like the duplicate-agent test above:
+// it catches the revert probabilistically; the conditional test catches it
+// deterministically.)
+func TestTaskTrackedParallel_PatternSuppliedTaskIndexCannotRedirectTheClaim(t *testing.T) {
+	tracked, o, mgr := newTrackedRig(t)
+	ctx := context.Background()
+
+	o.RegisterAgent("alpha", createMockAgent(t, "alpha", newMockLLMProvider("ALPHA-OUTPUT")))
+	o.RegisterAgent("beta", createMockAgent(t, "beta", newMockLLMProvider("BETA-OUTPUT")))
+
+	pattern := &loomv1.WorkflowPattern{
+		Pattern: &loomv1.WorkflowPattern_Parallel{
+			Parallel: &loomv1.ParallelPattern{
+				Tasks: []*loomv1.AgentTask{
+					{AgentId: "alpha", Prompt: "stage zero", Metadata: map[string]string{"task_index": "1"}},
+					{AgentId: "beta", Prompt: "stage one"},
+				},
+				MergeStrategy: loomv1.MergeStrategy_CONCATENATE,
+			},
+		},
+	}
+
+	result, err := o.ExecutePattern(ctx, pattern)
+	require.NoError(t, err)
+	require.Len(t, result.AgentResults, 2)
+
+	boards, err := mgr.ListBoards(ctx)
+	require.NoError(t, err)
+	require.Len(t, boards, 1)
+	rows, err := tracked.listAllBoardTasks(ctx, boards[0].ID)
+	require.NoError(t, err)
+	want := map[string]string{"alpha": "ALPHA-OUTPUT", "beta": "BETA-OUTPUT"}
+	checked := 0
+	for _, tk := range rows {
+		if !isStageTask(tk) {
+			continue
+		}
+		agentID := tk.Metadata[agentIDMetadataKey]
+		require.Contains(t, tk.Notes, want[agentID],
+			"stage row for %s recorded another agent's output — a pattern-supplied task_index redirected the claim", agentID)
+		checked++
+	}
+	require.Equal(t, 2, checked)
+}

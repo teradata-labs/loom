@@ -104,6 +104,7 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		ParentSessionID: req.ParentSessionID, // Link to parent
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
+		Incarnation:     time.Now().UnixNano(),
 	}
 
 	// Store session

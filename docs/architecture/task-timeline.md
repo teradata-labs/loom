@@ -314,7 +314,7 @@ Ties are constant, not exceptional: `messages.timestamp` is second-resolution, a
 
 ### Decision 2: Column ownership follows table ownership, not the migrator
 
-**Chosen**: `messages.task_id` is added by `pkg/agent/session_store.go`; `human_requests.task_id` by `pkg/shuttle/human_store_sqlite.go`; only `tasks.created_via` is a migrator migration.
+**Chosen**: `messages.task_id` and `sessions.incarnation` are added by `pkg/agent/session_store.go`; `human_requests.task_id` by `pkg/shuttle/human_store_sqlite.go`; only `tasks.created_via` is a migrator migration.
 
 **Rationale**: forced by two facts discovered while testing. First, `messages` and `human_requests` are created by migration 000001, and the migrator **baselines** 000001 on a pre-migration database — stamping it applied without executing it (see `TestBootstrap_PreMigrationDB`). On that path the tables do not exist, so an `ALTER` from a later migration fails the whole migration chain. Second, `messages` has a *second* schema owner in `session_store.go`, and two `ALTER`s adding the same column collide, because SQLite has no `ADD COLUMN IF NOT EXISTS`.
 

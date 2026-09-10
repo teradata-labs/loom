@@ -273,7 +273,9 @@ func TestSessionEpoch_SurvivesTheStoreRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
 
-	now := time.Now()
+	// Both stamps derive from a point pinned 10ms past a second boundary, so
+	// the same-second rig below cannot itself cross one.
+	now := time.Now().Truncate(time.Second).Add(10 * time.Millisecond)
 	first := &Session{ID: "sess-reuse", AgentID: "agent-1",
 		CreatedAt: now, UpdatedAt: now, Incarnation: now.UnixNano()}
 	require.NoError(t, store.SaveSession(ctx, first))
@@ -288,12 +290,7 @@ func TestSessionEpoch_SurvivesTheStoreRoundTrip(t *testing.T) {
 	// Delete and recreate the same id inside the same wall-clock SECOND: the
 	// exact shape that collided at second resolution.
 	require.NoError(t, store.DeleteSession(ctx, "sess-reuse"))
-	now2 := time.Now()
-	if now2.Unix() != now.Unix() {
-		// A second boundary slipped between the two creations; pin both into
-		// one second — the collision window under test.
-		now2 = now.Add(100 * time.Microsecond)
-	}
+	now2 := now.Add(100 * time.Microsecond)
 	second := &Session{ID: "sess-reuse", AgentID: "agent-1",
 		CreatedAt: now2, UpdatedAt: now2, Incarnation: now2.UnixNano()}
 	require.NoError(t, store.SaveSession(ctx, second))

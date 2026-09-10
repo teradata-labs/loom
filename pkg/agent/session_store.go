@@ -360,11 +360,16 @@ func (s *SessionStore) initSchema() error {
 		// initSchema (not the pkg/storage/sqlite migrator, whose 000001 only
 		// bootstraps): a numbered migration here would double-ALTER.
 		"user_id": "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default-user'",
+		// incarnation is the session's creation nonce (nanosecond, stamped
+		// once, never updated): created_at survives the round trip at SECOND
+		// resolution only, so the implicit-task epoch needs its own column to
+		// distinguish a same-second delete-and-recreate. NULL on legacy rows,
+		// which read back 0 and fall back to a CreatedAt-derived epoch.
+		"incarnation": "ALTER TABLE sessions ADD COLUMN incarnation INTEGER",
 		// task_id attributes a message to the task claimed when it was written,
 		// so a task's timeline can be reconstructed from the rows that already
 		// record the work. NULL for ordinary chat.
-		"incarnation": "ALTER TABLE sessions ADD COLUMN incarnation INTEGER",
-		"task_id":     "ALTER TABLE messages ADD COLUMN task_id TEXT",
+		"task_id": "ALTER TABLE messages ADD COLUMN task_id TEXT",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {

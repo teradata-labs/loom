@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **2 new database migrations** (SQLite `000009_task_created_via`, Postgres `000024_task_attribution`) apply automatically on first start of the upgraded server. They add `tasks.created_via`, `messages.task_id` and `human_requests.task_id`. Back up databases before upgrading.
+- **2 new database migrations** (SQLite `000009_task_created_via`, Postgres `000024_task_attribution`) apply automatically on first start of the upgraded server. They add `tasks.created_via`, `messages.task_id` and `human_requests.task_id`. The SQLite session store's own schema pass additionally adds `sessions.incarnation` (surfaced as the new exported field `Session.Incarnation`); Postgres does not persist it yet, and sessions without it fall back to a CreatedAt-derived epoch. Back up databases before upgrading.
 - **Implicit task recording is ON by default** for every agent with a task subsystem: one task row per turn that calls a tool or asks a human, excluded from the agent's own task queries. Disable with `memory.task_board.implicit_tasks.mode: disabled`.
 
 ### Added
