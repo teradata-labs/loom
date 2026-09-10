@@ -220,6 +220,8 @@ Three implementations, each living with the table it reads:
 
 **Contract**: an unknown task returns an empty slice, never an error. This is what lets `TimelineReader` distinguish "nothing happened" from "the source failed".
 
+**Identity**: only the `messages` source scopes its query to the calling user. `HistorySource` and `HITLTimelineSource` are **identity-blind by default** — `task_history` and `human_requests` carry no owner the source can filter on — and declare it through `IdentityBlindSource`. Under a caller identity (`types.UserIDFromContext` non-empty) the reader skips them and lists them in `PartialSources`, so a user-scoped read is one source, not three. The owner-scoped constructors (`NewOwnerScopedHistorySource`, `NewOwnerScopedHITLTimelineSource`) opt a source back in when the host has already scoped the store it wraps. The gate exists because without it the history projection returned another user's task title, close reason and session id with `PartialSources` empty.
+
 ### TimelineReader (`pkg/task/timeline.go`)
 
 **Responsibility**: Query sources concurrently, merge, sort, filter, bound.
@@ -391,6 +393,7 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 | Unknown or empty task ID at a source | empty slice, no error — a task with no activity is normal |
 | Empty task ID at `TimelineReader.Read` | `ErrTimelineTaskIDRequired` — an unscoped read would scan every source in full |
 | One source fails | listed in `PartialSources`; the read succeeds |
+| An identity-blind source under a caller identity | skipped and listed in `PartialSources`; the read succeeds with what the scoped sources return |
 | Malformed `tool_calls_json` on one row | that row yields no tool events but its text still appears; the read succeeds. One corrupt row must not blank the view |
 | Missing `tool_result_json` | the event is emitted with `Success == nil` — outcome unknown, not assumed |
 
@@ -405,6 +408,10 @@ Allocation count is dominated by JSON unmarshalling per row and could be reduced
 **Known cases**: skill activation (only inferable from `skill_idempotency_key`), workflow stage boundaries (partially covered — the task-tracked orchestrator creates a task per stage), and an ephemeral agent's report to its spawner (probably in `messages` via `agent_id`, **not yet verified**).
 
 **Correct fix**: give the fact a writer in the table where it belongs, then add a projection. Not a parallel log.
+
+### Identity-blind sources are skipped under a caller identity
+
+`task_history` and `human_requests` have no owner column the projection can filter on, so their sources are identity-blind by default and the reader skips them whenever the context carries a user. A user-scoped timeline therefore shows tool calls, results and text from `messages`, and reports `task_history` and `human_requests` in `PartialSources`. A host that has already scoped those stores by identity wraps them with the owner-scoped constructors to get all three.
 
 ### Second-resolution timestamps
 
@@ -462,15 +469,15 @@ leak in the emitter's maps, which ARE reclaimed.
 | Piece | Status |
 |---|---|
 | `pkg/taskctx` attribution (leaf package) | ✅ Implemented |
-| `messages.task_id` — schema, migration, stamping, read-back | ✅ Implemented on both backends (Postgres stamping landed in review round 5 — before that the column existed on Postgres with no writer) |
+| `messages.task_id` — schema, migration, stamping, read-back | ✅ Implemented on both backends (Postgres stamping landed in review round 5; Postgres read-back landed in round 6 — between the two, the column was write-only there and `Message.TaskID` read back empty) |
 | `human_requests.task_id` — schema, migration, stamping, read-back | ✅ Implemented on both backends (Postgres stamping + read-back landed in round 5; the read-back is what ResumeChat's durable identity restore depends on) |
 | `tasks.created_via` (SQLite 000009, Postgres 000024) | ✅ Migration written |
 | `TimelineEvent` / `TimelineSource` / `TimelineReader` | ✅ Implemented |
-| `messages` projection incl. tool call/result reconstruction | ✅ Implemented, 5 tests |
+| `messages` projection incl. tool call/result reconstruction | ✅ Implemented, 11 tests (`pkg/agent/session_timeline_test.go`) |
 | `human_requests` projection | ⚠️ Partial — projection + `TimelineSource` written and covered by 2 tests, but `ListByTask` has **no production implementation**: both tests supply fakes, and `SQLiteHumanRequestStore` writes `task_id` without ever selecting by it. A consumer wiring the documented reader against the built-in stores gets no HITL events, silently. |
-| `task_history` projection | ✅ Implemented |
-| Merge, tie-break stability, filters, limits, partial failure | ✅ 9 tests |
-| Read benchmark | ✅ 2.14 ms / 400 events |
+| `task_history` projection | ✅ Implemented — identity-blind by default, so skipped under a caller identity (see Constraints) |
+| Merge, tie-break stability, filters, limits, partial failure, bounds pushdown, identity gate, broken-vs-empty rendering | ✅ 13 tests (`pkg/task/timeline_test.go`) |
+| Read benchmark | ✅ `BenchmarkTimelineRead` (`pkg/agent/session_timeline_test.go`): 2.14 ms / 400 events on the first measurement; a review re-run on the same hardware measured 2.79–3.10 ms. Treat the figure as 2–3 ms, not a constant |
 | Rejected `task_activity` table, proto, store, recorder | ❌ Deleted |
 | Stamping `created_via` at the creation sites | ✅ Implemented for the sites that exist: the implicit emitter and the task-tracked orchestrator write it, and the visibility exclusion depends on it. Sites that do not yet create tasks (future RPC writers) stamp when they land |
 | `ClaimTask` establishing the attribution on the agent's context | 📋 Planned — the timeline is only as good as its stamping |

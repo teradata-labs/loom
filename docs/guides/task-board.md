@@ -48,8 +48,20 @@ memory:
 | `max_depth` | 3 | Maximum decomposition depth |
 | `default_strategy` | BACKWARD | Default LLM decomposition strategy |
 | `context_budget_tokens` | 500 | Max tokens for the task context block rendered into the system prompt. 0 disables it |
+| `implicit_tasks` | on | Runtime recording of working turns as tasks. **Independent of `enabled`** and on by default — see below and the [TaskService reference](../reference/task-service.md#implicittaskconfig-field-7--runtime-task-recording) |
 
 **What `enabled: false` does**: it hides the `task_board` tool and the task context block from the agent. Tasks already on a board stay in the store and remain readable and writable over the gRPC `TaskService`.
+
+**What `enabled: false` does not do**: it does not stop implicit task recording. Recording is governed by `implicit_tasks` alone; with the default policy an agent that has `enabled: false` still writes one `task_boards` row per session and one task row (plus history) per turn that calls a tool or asks a human. To stop recording:
+
+```yaml
+memory:
+  task_board:
+    implicit_tasks:
+      mode: disabled
+```
+
+The nesting under `memory:` is load-bearing — the loader warns about, and ignores, a `task_board` block anywhere else. Implicit tasks are stamped `created_via: implicit` and excluded from the agent's own task queries, so they never cost the agent context; over the `TaskService` API they are returned with that field set so a client can filter them the same way.
 
 ---
 
@@ -386,6 +398,7 @@ Check:
 2. `context_budget_tokens` is > 0 (0 disables the block).
 3. Tasks exist on the configured `default_board_id`.
 4. The tasks were on the board before the session started — the block is built at session creation, so start a new session to pick up newer tasks.
+5. The tasks are not implicit ones. Runtime-recorded tasks (`created_via: implicit`) are excluded from the agent's context by design; `implicit_tasks.agent_visible: true` surfaces them.
 
 ### Stuck claimed tasks
 
@@ -402,3 +415,5 @@ grpcurl -d '{"task_id": "abc123", "session_id": "the-session"}' \
 - [Task System Architecture](../architecture/task-system.md): Design rationale and internals
 - [TaskService API Reference](../reference/task-service.md): Complete RPC specifications
 - [Skills Overhaul Architecture](../architecture/skills-overhaul.md): the skills subsystem
+- [Task Timeline Architecture](../architecture/task-timeline.md): attribution (`task_id` on messages and human requests), implicit recording, and the timeline read model
+- [Task Admin Observability](../architecture/task-admin-observability.md): metrics the task subsystem emits and the planned operator view

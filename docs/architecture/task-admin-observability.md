@@ -19,8 +19,8 @@ The task subsystem already emits counters (`pkg/task/implicit.go`):
 | Metric | Labels |
 |---|---|
 | `task.implicit.created` | `trigger` |
-| `task.implicit.skipped` | `reason`: `session_cap`, `board_unavailable`, `create_failed`, `close_failed` |
-| `task.implicit.closed` | — |
+| `task.implicit.skipped` | `reason`: `session_cap`, `board_unavailable`, `create_failed`, `spent_key`, `close_failed`, `abort_failed` |
+| `task.implicit.closed` | `outcome`: `done`, `cancelled` |
 
 Those labels are exactly the operator's questions. So the natural design is a dashboard over the metrics plane — cheap, aggregate, no tenant data touched.
 
@@ -85,7 +85,7 @@ For drill-down, use a **single-session lookup by ID**, which is tenant-scoped an
 One route, `admin/tasks`, with three regions:
 
 1. **Is recording working?** Created versus closed per day. A widening gap means tasks are opening and not closing — the failure that matters most, because it silently accumulates in-progress rows on user boards.
-2. **What is being declined, and why?** Skips broken out by reason. `session_cap` is a tuning signal; `board_unavailable` and `create_failed` are defects.
+2. **What is being declined, and why?** Skips broken out by reason. `session_cap` is a tuning signal; `spent_key` is expected after a turn's task is closed and a late trigger arrives; `board_unavailable`, `create_failed`, `close_failed` and `abort_failed` are defects.
 3. **What is driving recording?** Counts by trigger and provenance — which shows whether skills, workflows, or plain tool calls dominate.
 
 Plus a session-ID lookup that opens the existing per-task timeline.
@@ -120,6 +120,9 @@ owns those tables; the two remaining items are framework-side.
    result that shows the table never had a row-count problem.
 2. 📋 Give `buildTaskContext` the board fallback its proto already promises.
    Unset, it issues four unscoped queries before every model call.
-3. 📋 Add `, id` to the ORDER BY in both task stores. Both sort on non-unique
-   keys with offset pagination on top; measured page overlap is two rows
-   returned on two adjacent pages, meaning two others returned on neither.
+3. ✅ Add a unique tiebreak to the ORDER BY in both task stores (`rowid` on
+   SQLite, `id` on Postgres; both list directions and `GetReadyFront`). Both
+   sorted on non-unique keys with offset pagination on top; measured page
+   overlap was two rows returned on two adjacent pages, meaning two others
+   returned on neither. Shipped in #378; `Manager.countByStatusPaged` is exact
+   because of it.

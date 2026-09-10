@@ -118,6 +118,7 @@ The `loom.v1.TaskService` provides persistent, dependency-aware task decompositi
 | compacted_summary | string | 26 | Summary created during compaction |
 | output_policy | OutputPolicy | 27 | Validation policy checked before close |
 | estimated_effort | string | 28 | Freeform effort estimate |
+| created_via | string | 29 | How the task came to exist: `user`, `agent`, `decompose`, `skill_template`, `workflow`, or `implicit` (minted by the runtime to record a working turn). Empty on rows written before provenance was recorded. `CreateTask` stamps `user` when the client sends none. Runtime-minted tasks are returned by `ListTasks` and counted by `GetBoard`; the agent's own queries exclude them, and an API consumer wanting the same view filters on this field |
 
 ### TaskDependency
 
@@ -546,6 +547,8 @@ Retrieves a board with its lanes and task counts.
 | board | TaskBoard | The board |
 | stats | TaskBoardStats | Aggregate task counts |
 
+`stats` is computed with `Manager.CountByStatus` — one aggregate query on the built-in stores, an exact paged walk on a store without `StatusCounter` — so it is exact past 1,000 tasks, where it used to be capped. A count failure returns `Internal` rather than zeros. The counts include runtime-minted tasks (`created_via: implicit`, roughly one per working turn), which the agent's own context excludes; a client that wants the agent's view filters `ListTasks` on `created_via`.
+
 ---
 
 ### ListBoards
@@ -680,12 +683,15 @@ message ImplicitTaskConfig {
 }
 ```
 
-**The off switch**, in agent YAML:
+**The off switch**, in agent YAML. `task_board` is read under `memory:` — that
+nesting is load-bearing, because the loader is not strict and a `task_board`
+block at the top level is silently ignored, leaving recording ON:
 
 ```yaml
-task_board:
-  implicit_tasks:
-    mode: disabled        # or "off"
+memory:
+  task_board:
+    implicit_tasks:
+      mode: disabled        # or "off"
 ```
 
 Parsing fails CLOSED: a typo'd `mode`, an unrecognised trigger name, or a
