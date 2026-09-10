@@ -72,7 +72,7 @@ func (c messageRowContext) applyTo(events []task.TimelineEvent) {
 //
 // The query is an index range scan on (task_id, timestamp), so cost is
 // proportional to the task's own messages rather than the session's.
-func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]task.TimelineEvent, error) {
+func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string, opts task.SourceReadOpts) ([]task.TimelineEvent, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.timeline_events")
 	defer s.tracer.EndSpan(span)
 
@@ -105,14 +105,38 @@ func (s *SessionStore) TimelineEvents(ctx context.Context, taskID string) ([]tas
 	// A non-owner gets an empty result, which is deliberately indistinguishable
 	// from an unknown task id — the absence of a row must not confirm that the
 	// task exists.
-	rows, err := s.db.QueryContext(ctx, `
+	// The bound and window are pushed into the QUERY, for two costs at once:
+	// materialization (a Limit:10 read used to scan and build every matching
+	// row's events — megabytes of Detail for a page) and the LOCK HOLD below —
+	// s.mu.RLock serializes this read against SaveMessage, and an unbounded
+	// scan blocked the agent's message writes for the read's whole duration
+	// (measured 165x write latency on a 4,000-row task). LIMIT caps both.
+	q := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, agent_id, timestamp,
 		       COALESCE(evicted, 0), COALESCE(folded, 0), COALESCE(turn, 0),
 		       COALESCE(token_count, 0), COALESCE(cost_usd, 0)
 		FROM messages
 		WHERE task_id = ?
-		  AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
-		ORDER BY timestamp ASC, id ASC`, taskID, storeUserID(ctx))
+		  AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)`
+	args := []interface{}{taskID, storeUserID(ctx)}
+	if !opts.Since.IsZero() {
+		q += ` AND timestamp >= ?`
+		args = append(args, opts.Since.Unix())
+	}
+	if !opts.Until.IsZero() {
+		q += ` AND timestamp <= ?`
+		args = append(args, opts.Until.Unix())
+	}
+	if opts.Newest {
+		q += ` ORDER BY timestamp DESC, id DESC`
+	} else {
+		q += ` ORDER BY timestamp ASC, id ASC`
+	}
+	if opts.Limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, opts.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("timeline: query messages for task %s: %w", taskID, err)
 	}

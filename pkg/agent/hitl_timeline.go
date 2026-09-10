@@ -49,20 +49,37 @@ type TaskHumanRequestLister interface {
 // One request yields one or two events: the question, and — once answered,
 // rejected, or timed out — the outcome.
 type HITLTimelineSource struct {
-	store TaskHumanRequestLister
+	store         TaskHumanRequestLister
+	identityBlind bool
 }
 
 // NewHITLTimelineSource builds a HITL timeline source. A nil store yields a
 // source that reports nothing, so callers can wire it unconditionally.
+//
+// Identity-blind by default, same reasoning as NewHistorySource: loom's own
+// human-request store has no owner column, so ListByTask answers for any task
+// id and the reader must skip this source under a user identity rather than
+// leak another user's approval questions. An owner-scoped store opts in via
+// NewOwnerScopedHITLTimelineSource.
 func NewHITLTimelineSource(store TaskHumanRequestLister) *HITLTimelineSource {
+	return &HITLTimelineSource{store: store, identityBlind: true}
+}
+
+// NewOwnerScopedHITLTimelineSource is the opt-in for stores whose ListByTask
+// already scopes rows to the caller's identity. The composer asserts the
+// property; nothing here can verify it.
+func NewOwnerScopedHITLTimelineSource(store TaskHumanRequestLister) *HITLTimelineSource {
 	return &HITLTimelineSource{store: store}
 }
+
+// IdentityBlind implements task.IdentityBlindSource.
+func (h *HITLTimelineSource) IdentityBlind() bool { return h.identityBlind }
 
 // SourceName implements task.TimelineSource.
 func (h *HITLTimelineSource) SourceName() string { return hitlTimelineSource }
 
 // TimelineEvents implements task.TimelineSource.
-func (h *HITLTimelineSource) TimelineEvents(ctx context.Context, taskID string) ([]task.TimelineEvent, error) {
+func (h *HITLTimelineSource) TimelineEvents(ctx context.Context, taskID string, opts task.SourceReadOpts) ([]task.TimelineEvent, error) {
 	if h == nil || h.store == nil || taskID == "" {
 		return nil, nil
 	}
@@ -71,6 +88,10 @@ func (h *HITLTimelineSource) TimelineEvents(ctx context.Context, taskID string) 
 	if err != nil {
 		return nil, fmt.Errorf("timeline: human requests for %s: %w", taskID, err)
 	}
+	// Bounds after the read, like the history source: ListByTask takes no
+	// options and a task's HITL exchanges number in the decisions, not the
+	// conversation. The reader still enforces the global limit.
+	_ = opts
 
 	events := make([]task.TimelineEvent, 0, len(requests)*2)
 	for _, r := range requests {

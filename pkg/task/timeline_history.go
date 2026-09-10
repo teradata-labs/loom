@@ -32,19 +32,39 @@ const historyTimelineSource = "task_history"
 // It needs no schema change at all; it only needed a reader that speaks the
 // timeline's shape.
 type HistorySource struct {
-	store TaskStore
+	store         TaskStore
+	identityBlind bool
 }
 
 // NewHistorySource builds a lifecycle timeline source over a task store.
+//
+// IDENTITY-BLIND BY DEFAULT: loom's own task stores carry no owner column, so
+// GetHistory answers for ANY task id and this source cannot scope by caller.
+// The reader therefore skips it whenever the context carries a user identity
+// (see IdentityBlindSource) — before that gate existed, user B reading user
+// A's task id got A's task title, close reason and session id back as a
+// COMPLETE timeline. A composer whose store IS owner-scoped (RLS-backed
+// Postgres, the cloud stores) opts in with NewOwnerScopedHistorySource.
 func NewHistorySource(store TaskStore) *HistorySource {
+	return &HistorySource{store: store, identityBlind: true}
+}
+
+// NewOwnerScopedHistorySource is the explicit opt-in for stores whose
+// GetHistory already scopes rows to the caller's identity (row-level security,
+// or per-user wrappers). The composer asserts the property; nothing here can
+// verify it.
+func NewOwnerScopedHistorySource(store TaskStore) *HistorySource {
 	return &HistorySource{store: store}
 }
+
+// IdentityBlind implements IdentityBlindSource.
+func (h *HistorySource) IdentityBlind() bool { return h.identityBlind }
 
 // SourceName implements TimelineSource.
 func (h *HistorySource) SourceName() string { return historyTimelineSource }
 
 // TimelineEvents implements TimelineSource.
-func (h *HistorySource) TimelineEvents(ctx context.Context, taskID string) ([]TimelineEvent, error) {
+func (h *HistorySource) TimelineEvents(ctx context.Context, taskID string, opts SourceReadOpts) ([]TimelineEvent, error) {
 	if h == nil || h.store == nil || taskID == "" {
 		return nil, nil
 	}
@@ -53,6 +73,11 @@ func (h *HistorySource) TimelineEvents(ctx context.Context, taskID string) ([]Ti
 	if err != nil {
 		return nil, fmt.Errorf("timeline: task history for %s: %w", taskID, err)
 	}
+	// Bounds applied after the read: GetHistory takes no options, and a task's
+	// lifecycle entries number in the transitions (created/claimed/closed), not
+	// in the conversation — the unbounded-materialization hazard lives in the
+	// message source, which pushes its bound into SQL.
+	entries = boundHistoryEntries(entries, opts)
 
 	events := make([]TimelineEvent, 0, len(entries))
 	for i, e := range entries {
@@ -88,4 +113,34 @@ func lifecycleSummary(e *TaskHistoryEntry) string {
 	default:
 		return fmt.Sprintf("Task %s", e.Action)
 	}
+}
+
+// boundHistoryEntries applies the pushed-down window and limit to entries that
+// arrive ORDER BY created_at ASC from the store.
+func boundHistoryEntries(entries []*TaskHistoryEntry, opts SourceReadOpts) []*TaskHistoryEntry {
+	if !opts.Since.IsZero() || !opts.Until.IsZero() {
+		kept := entries[:0]
+		for _, e := range entries {
+			if e == nil {
+				continue
+			}
+			ts := e.Timestamp.UTC()
+			if !opts.Since.IsZero() && ts.Before(opts.Since) {
+				continue
+			}
+			if !opts.Until.IsZero() && ts.After(opts.Until) {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		entries = kept
+	}
+	if opts.Limit > 0 && len(entries) > opts.Limit {
+		if opts.Newest {
+			entries = entries[len(entries)-opts.Limit:]
+		} else {
+			entries = entries[:opts.Limit]
+		}
+	}
+	return entries
 }

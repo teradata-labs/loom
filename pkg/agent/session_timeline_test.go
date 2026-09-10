@@ -72,7 +72,7 @@ func TestTimeline_AttributionStampedFromContext(t *testing.T) {
 	assert.Equal(t, "", byContent["Unattributed chatter"], "message written outside a task must have no task ID")
 
 	// And the timeline sees only the attributed one.
-	events, err := store.TimelineEvents(ctx, "task-1")
+	events, err := store.TimelineEvents(ctx, "task-1", task.SourceReadOpts{})
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.Equal(t, task.TimelineKindAssistant, events[0].Kind)
@@ -121,7 +121,7 @@ func TestTimeline_ToolCallAndResultReconstructed(t *testing.T) {
 		Timestamp: base.Add(time.Second),
 	}, false))
 
-	events, err := store.TimelineEvents(ctx, "task-2")
+	events, err := store.TimelineEvents(ctx, "task-2", task.SourceReadOpts{})
 	require.NoError(t, err)
 
 	var call, result *task.TimelineEvent
@@ -169,7 +169,7 @@ func TestTimeline_FailedToolSurfacesError(t *testing.T) {
 		Timestamp: time.Now(),
 	}, false))
 
-	events, err := store.TimelineEvents(ctx, "task-3")
+	events, err := store.TimelineEvents(ctx, "task-3", task.SourceReadOpts{})
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
@@ -200,7 +200,7 @@ func TestTimeline_MalformedToolPayloadDoesNotBlankTheView(t *testing.T) {
 		Role: "assistant", Content: "fine", Timestamp: time.Now().Add(time.Second),
 	}, false))
 
-	events, err := store.TimelineEvents(ctx, "task-4")
+	events, err := store.TimelineEvents(ctx, "task-4", task.SourceReadOpts{})
 	require.NoError(t, err, "a corrupt payload must not fail the whole timeline")
 
 	var contents []string
@@ -215,11 +215,11 @@ func TestTimeline_MalformedToolPayloadDoesNotBlankTheView(t *testing.T) {
 // on to distinguish "nothing happened" from "source failed".
 func TestTimeline_UnknownTaskIsEmptyNotAnError(t *testing.T) {
 	store := timelineStore(t)
-	events, err := store.TimelineEvents(context.Background(), "no-such-task")
+	events, err := store.TimelineEvents(context.Background(), "no-such-task", task.SourceReadOpts{})
 	require.NoError(t, err)
 	assert.Empty(t, events)
 
-	events, err = store.TimelineEvents(context.Background(), "")
+	events, err = store.TimelineEvents(context.Background(), "", task.SourceReadOpts{})
 	require.NoError(t, err)
 	assert.Empty(t, events)
 }
@@ -310,7 +310,7 @@ func TestTimeline_HITLPendingVsAnswered(t *testing.T) {
 		},
 	}})
 
-	events, err := src.TimelineEvents(context.Background(), "task-1")
+	events, err := src.TimelineEvents(context.Background(), "task-1", task.SourceReadOpts{})
 	require.NoError(t, err)
 
 	var questions, outcomes int
@@ -419,7 +419,7 @@ func TestTimeline_ContextReliefFlagsSurface(t *testing.T) {
 		Timestamp: time.Now(),
 	}, false))
 
-	events, err := store.TimelineEvents(ctx, "task-relief")
+	events, err := store.TimelineEvents(ctx, "task-relief", task.SourceReadOpts{})
 	require.NoError(t, err)
 	require.NotEmpty(t, events)
 
@@ -477,7 +477,7 @@ func TestTimeline_IsOwnerScoped(t *testing.T) {
 		Role: "user", Content: "private conversation content", Timestamp: time.Now()}, true))
 
 	t.Run("the owner reads its own timeline", func(t *testing.T) {
-		events, err := store.TimelineEvents(userA, "task-a")
+		events, err := store.TimelineEvents(userA, "task-a", task.SourceReadOpts{})
 		require.NoError(t, err)
 		require.NotEmpty(t, events, "the owner must still see its own events")
 		found := false
@@ -491,16 +491,16 @@ func TestTimeline_IsOwnerScoped(t *testing.T) {
 
 	t.Run("another user reads nothing, holding the same task id", func(t *testing.T) {
 		// The reproduction: user-b holds task-a's id and previously got the rows.
-		events, err := store.TimelineEvents(userB, "task-a")
+		events, err := store.TimelineEvents(userB, "task-a", task.SourceReadOpts{})
 		require.NoError(t, err, "a non-owner gets an empty result, not an error")
 		assert.Empty(t, events, "user-b must not read user-a's conversation")
 	})
 
 	t.Run("an unknown task is indistinguishable from someone else's", func(t *testing.T) {
 		// Absence of a row must not confirm that the task exists.
-		unknown, err := store.TimelineEvents(userB, "task-does-not-exist")
+		unknown, err := store.TimelineEvents(userB, "task-does-not-exist", task.SourceReadOpts{})
 		require.NoError(t, err)
-		other, err := store.TimelineEvents(userB, "task-a")
+		other, err := store.TimelineEvents(userB, "task-a", task.SourceReadOpts{})
 		require.NoError(t, err)
 		assert.Equal(t, len(unknown), len(other),
 			"a non-owner's result must not reveal whether the task exists")
@@ -519,7 +519,7 @@ func TestTimeline_IsOwnerScoped(t *testing.T) {
 		assert.Zero(t, n, "user-b must not stamp any of user-a's rows")
 
 		// And the consequence the stamp was a means to.
-		leaked, err := store.TimelineEvents(userB, "task-owned-by-b")
+		leaked, err := store.TimelineEvents(userB, "task-owned-by-b", task.SourceReadOpts{})
 		require.NoError(t, err)
 		assert.Empty(t, leaked, "user-b must not reach user-a's content through its own task")
 	})
@@ -565,7 +565,7 @@ func TestTimeline_BackfillCannotClaimThePrecedingTurn(t *testing.T) {
 		"the back-fill claims exactly its own turn's row, not the previous turn's two")
 
 	// The previous turn's rows stay unattributed — they belong to no task.
-	events, err := store.TimelineEvents(ctx, "task-turn-2")
+	events, err := store.TimelineEvents(ctx, "task-turn-2", task.SourceReadOpts{})
 	require.NoError(t, err)
 	for _, e := range events {
 		assert.NotContains(t, e.Detail, "just chatting",
@@ -623,7 +623,7 @@ func TestTimeline_SurvivesANullContentRow(t *testing.T) {
 		"sess-null", "assistant", "task-null", time.Now().Unix())
 	require.NoError(t, err)
 
-	events, err := store.TimelineEvents(ctx, "task-null")
+	events, err := store.TimelineEvents(ctx, "task-null", task.SourceReadOpts{})
 	require.NoError(t, err, "one NULL content row must not fail the projection")
 	// The NULL-content assistant row carries no tool calls either, so it
 	// legitimately projects no narrative event — the property under test is
@@ -659,7 +659,7 @@ func TestTimeline_ToolResultsCarryTheirToolName(t *testing.T) {
 			Role: "tool", Content: "output for " + id, ToolUseID: id, Timestamp: now}, false))
 	}
 
-	events, err := store.TimelineEvents(ctx, "task-pair")
+	events, err := store.TimelineEvents(ctx, "task-pair", task.SourceReadOpts{})
 	require.NoError(t, err)
 
 	wantNames := map[string]string{"tc-1": "grep", "tc-2": "read_file", "tc-3": "drop_table"}

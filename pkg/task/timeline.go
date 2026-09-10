@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // The task timeline is a READ MODEL. It has no storage of its own.
@@ -174,9 +175,45 @@ type TimelineSource interface {
 	// stable ordering when two events share a timestamp.
 	SourceName() string
 
-	// TimelineEvents returns every event this source holds for the task, in any
-	// order. An unknown task returns an empty slice, not an error.
-	TimelineEvents(ctx context.Context, taskID string) ([]TimelineEvent, error)
+	// TimelineEvents returns the task's events within opts, in any order. An
+	// unknown task returns an empty slice, not an error.
+	//
+	// opts is a REQUEST, pushed down so a bound caps the WORK and not only the
+	// result: before it existed, Limit was applied after every source had
+	// materialized every matching event — a Limit:10 read over 50,000 events
+	// materialized all 50,000, and a task with 200 x 1MB tool results built
+	// ~200MB to return 500 events. A source honors what it can (SQL-backed
+	// sources push Limit and the time window into the query; small in-memory
+	// projections may filter after the fact) and may return FEWER events than
+	// exist; it must never return more than opts.Limit when Limit > 0.
+	TimelineEvents(ctx context.Context, taskID string, opts SourceReadOpts) ([]TimelineEvent, error)
+}
+
+// SourceReadOpts is the per-source slice of a timeline read: the bound and
+// window the reader pushes down, already clamped to the package limits.
+type SourceReadOpts struct {
+	// Limit caps the events this source materializes. Always > 0 when the
+	// reader calls; <= 0 (a direct caller) means unbounded.
+	Limit int
+	// Newest asks for the most recent Limit events instead of the oldest.
+	// Order of the returned slice is unspecified either way — the reader sorts.
+	Newest bool
+	// Since / Until bound the window; zero values mean unbounded.
+	Since time.Time
+	Until time.Time
+}
+
+// IdentityBlindSource marks a source that CANNOT scope its read to the
+// caller's identity — typically one over a store with no owner column (loom's
+// SQLite task and human-request stores). When the context carries a user
+// identity, the reader SKIPS blind sources and reports them in PartialSources:
+// a cross-user leak dressed as a complete timeline is strictly worse than a
+// visible gap. Found the hard way: the task_history projection returned
+// another user's task title, close reason and session id — with
+// PartialSources empty — while the message source correctly returned nothing.
+// Sources that scope by identity simply do not implement this interface.
+type IdentityBlindSource interface {
+	IdentityBlind() bool
 }
 
 // TimelineOpts filters and bounds a timeline read.
@@ -274,19 +311,46 @@ func (r *TimelineReader) Read(ctx context.Context, taskID string, opts TimelineO
 		err    error
 	}
 
-	results := make([]sourceResult, len(r.sources))
+	srcOpts := SourceReadOpts{
+		Limit:  limit,
+		Newest: opts.Newest,
+		Since:  opts.Since,
+		Until:  opts.Until,
+	}
+
+	out := &TimelineResult{}
+
+	// Identity gate: with a user identity on the context, a source that cannot
+	// scope by identity is skipped and reported, never consulted — see
+	// IdentityBlindSource. Without one (a single-identity embedding) every
+	// source runs, which is the pre-existing behavior.
+	callerScoped := types.UserIDFromContext(ctx) != ""
+	live := make([]TimelineSource, 0, len(r.sources))
+	for _, src := range r.sources {
+		if callerScoped {
+			if b, ok := src.(IdentityBlindSource); ok && b.IdentityBlind() {
+				out.PartialSources = append(out.PartialSources, src.SourceName())
+				r.logger.Warn("timeline source skipped: cannot scope by caller identity",
+					zap.String("source", src.SourceName()),
+					zap.String("task_id", taskID))
+				continue
+			}
+		}
+		live = append(live, src)
+	}
+
+	results := make([]sourceResult, len(live))
 	var wg sync.WaitGroup
-	for i, src := range r.sources {
+	for i, src := range live {
 		wg.Add(1)
 		go func(i int, src TimelineSource) {
 			defer wg.Done()
-			events, err := src.TimelineEvents(ctx, taskID)
+			events, err := src.TimelineEvents(ctx, taskID, srcOpts)
 			results[i] = sourceResult{name: src.SourceName(), events: events, err: err}
 		}(i, src)
 	}
 	wg.Wait()
 
-	out := &TimelineResult{}
 	merged := make([]TimelineEvent, 0, 64)
 	for _, res := range results {
 		if res.err != nil {
@@ -309,6 +373,10 @@ func (r *TimelineReader) Read(ctx context.Context, taskID string, opts TimelineO
 	}
 
 	sortTimeline(merged)
+	// TotalMatched counts events that survived filtering AMONG THOSE THE
+	// SOURCES MATERIALIZED. With bounds pushed down, a source may hold more
+	// than it returned, so when Truncated is set the true total can be larger —
+	// the field is a page size's honest denominator, not a table count.
 	out.TotalMatched = len(merged)
 
 	if len(merged) > limit {

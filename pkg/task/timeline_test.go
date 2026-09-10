@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // fakeSource is a TimelineSource backed by a fixed slice, optionally failing.
@@ -22,7 +24,7 @@ type fakeSource struct {
 }
 
 func (f *fakeSource) SourceName() string { return f.name }
-func (f *fakeSource) TimelineEvents(context.Context, string) ([]TimelineEvent, error) {
+func (f *fakeSource) TimelineEvents(context.Context, string, SourceReadOpts) ([]TimelineEvent, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
@@ -289,5 +291,100 @@ func TestRenderTimeline_BrokenIsNotEmpty(t *testing.T) {
 	}
 	if !strings.Contains(broken, "no recorded activity") {
 		t.Errorf("the empty-timeline text still renders after the banner; got %q", broken)
+	}
+}
+
+// recordingSource captures the SourceReadOpts the reader hands down.
+type recordingSource struct {
+	name   string
+	events []TimelineEvent
+	blind  bool
+	got    SourceReadOpts
+	calls  int
+}
+
+func (r *recordingSource) SourceName() string  { return r.name }
+func (r *recordingSource) IdentityBlind() bool { return r.blind }
+func (r *recordingSource) TimelineEvents(_ context.Context, _ string, opts SourceReadOpts) ([]TimelineEvent, error) {
+	r.calls++
+	r.got = opts
+	return r.events, nil
+}
+
+// TestTimelineReader_SkipsIdentityBlindSourcesUnderAUserIdentity pins the
+// round-4 cross-user leak: the task_history projection has no owner column, so
+// user B reading user A's task id got A's title, close reason and session id —
+// reported as a COMPLETE timeline (PartialSources empty). A source that cannot
+// scope by identity is now skipped whenever the context carries one, and the
+// gap is visible; without an identity every source runs as before.
+func TestTimelineReader_SkipsIdentityBlindSourcesUnderAUserIdentity(t *testing.T) {
+	blind := &recordingSource{name: "task_history", blind: true,
+		events: []TimelineEvent{{Kind: TimelineKindLifecycle, Summary: "created", OccurredAt: time.Now()}}}
+	scoped := &recordingSource{name: "messages",
+		events: []TimelineEvent{{Kind: TimelineKindUser, Summary: "hello", OccurredAt: time.Now()}}}
+	r := NewTimelineReader(nil, nil, blind, scoped)
+
+	ctx := types.ContextWithUserID(context.Background(), "user-b")
+	res, err := r.Read(ctx, "task-a", TimelineOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blind.calls != 0 {
+		t.Fatal("the blind source must not even be consulted under a user identity")
+	}
+	if len(res.PartialSources) != 1 || res.PartialSources[0] != "task_history" {
+		t.Fatalf("the gap must be visible, not dressed as a complete timeline; PartialSources=%v", res.PartialSources)
+	}
+	for _, e := range res.Events {
+		if e.Kind == TimelineKindLifecycle {
+			t.Fatalf("a blind-source event leaked through: %+v", e)
+		}
+	}
+
+	// Without a user identity every source runs — the single-identity embedding.
+	res, err = r.Read(context.Background(), "task-a", TimelineOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blind.calls != 1 || len(res.PartialSources) != 0 || len(res.Events) != 2 {
+		t.Fatalf("without an identity every source runs: calls=%d partial=%v events=%d",
+			blind.calls, res.PartialSources, len(res.Events))
+	}
+
+	// The history source declares itself blind by default; the opt-in does not.
+	if !NewHistorySource(nil).IdentityBlind() {
+		t.Fatal("NewHistorySource must be identity-blind by default")
+	}
+	if NewOwnerScopedHistorySource(nil).IdentityBlind() {
+		t.Fatal("the owner-scoped opt-in must not be blind")
+	}
+}
+
+// TestTimelineReader_PushesBoundsIntoSources pins that Limit bounds the WORK:
+// the reader hands each source the clamped limit and window rather than
+// materializing everything and trimming after — a Limit:10 read over 50,000
+// events used to materialize all 50,000 (~200MB of Detail on a task with
+// large tool results).
+func TestTimelineReader_PushesBoundsIntoSources(t *testing.T) {
+	src := &recordingSource{name: "messages"}
+	r := NewTimelineReader(nil, nil, src)
+	since := time.Now().Add(-time.Hour)
+	until := time.Now()
+
+	if _, err := r.Read(context.Background(), "task-a", TimelineOpts{
+		Limit: 10, Newest: true, Since: since, Until: until,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if src.got.Limit != 10 || !src.got.Newest ||
+		src.got.Since.Unix() != since.Unix() || src.got.Until.Unix() != until.Unix() {
+		t.Fatalf("bounds did not reach the source: %+v", src.got)
+	}
+
+	if _, err := r.Read(context.Background(), "task-a", TimelineOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if src.got.Limit != DefaultTimelineLimit {
+		t.Fatalf("an unlimited caller still hands sources the package default, never zero; got %d", src.got.Limit)
 	}
 }
