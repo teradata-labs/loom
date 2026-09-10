@@ -290,3 +290,19 @@ func TestStopDrainsInFlightRuns(t *testing.T) {
 		})
 	}
 }
+
+// TestStopIsIdempotent covers N5: a second Stop call must not panic. Stop
+// closes s.stopCh unconditionally; without a guard on s.stopped, calling Stop
+// twice — a plausible shutdown-path mistake, not just a test artifact — closes
+// an already-closed channel and panics instead of returning cleanly.
+func TestStopIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	s := setupTestScheduler(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.Stop(ctx))
+	assert.NotPanics(t, func() {
+		require.NoError(t, s.Stop(ctx))
+	})
+}

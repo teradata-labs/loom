@@ -8,7 +8,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,7 +105,7 @@ func launchParkedAfterVerdict(t *testing.T, s *Scheduler, sched *loomv1.Schedule
 	s.store.mu.Lock() // park 1: UpdateCurrentExecution
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, execID, nil)
+		s.executeWorkflow(ctx, sched, execID, nil, true)
 	}()
 	waitFor(t, "the run to register", func() bool {
 		s.mu.RLock()
@@ -344,7 +343,7 @@ func TestExecuteWorkflowRegistersBeforeAdvertising(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-advertise", nil)
+		s.executeWorkflow(ctx, sched, "exec-advertise", nil, true)
 	}()
 
 	waitFor(t, "the run to be advertised", func() bool {
@@ -469,33 +468,37 @@ func TestCancelAfterSuccessKeepsTheSuccess(t *testing.T) {
 // TestExecuteWorkflowRecordsGenuineCancellation is the positive case: a cancel
 // that really does stop the run is recorded as canceled and leaves the
 // success-rate counters alone.
+//
+// The run has to be genuinely interrupted mid-flight, not merely signaled
+// before an orchestrator call that would have failed on its own regardless —
+// see TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled
+// for that distinction. A blocking agent call is what makes the interruption
+// real: the cancel unwinds context.WithTimeout's context inside Chat, which
+// returns ctx.Err() and wraps up through the pipeline as context.Canceled.
 func TestExecuteWorkflowRecordsGenuineCancellation(t *testing.T) {
 	t.Parallel()
 
-	s := setupTestScheduler(t)
+	llm := newDrainBlockingLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
 	ctx := context.Background()
-	sched := failingSchedule("sched-genuine")
-	require.NoError(t, s.store.Create(ctx, sched))
 
-	// Park the run before the orchestrator runs, so the cancel provably lands
-	// while it is still cancellable.
-	s.store.mu.Lock()
+	sched := agentWorkflow("sched-genuine")
+	require.NoError(t, s.store.Create(ctx, sched))
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-genuine", nil)
+		s.executeWorkflow(ctx, sched, "exec-genuine", nil, true)
 	}()
 
-	waitFor(t, "the run to register", func() bool {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		_, ok := s.runs["exec-genuine"]
-		return ok
-	})
+	select {
+	case <-llm.started:
+	case <-time.After(hangGuard):
+		t.Fatal("the workflow never reached the agent, so nothing was in flight to cancel")
+	}
 
 	outcome, err := s.CancelExecution(ctx, "exec-genuine", "stopped by operator")
-	s.store.mu.Unlock()
 	require.NoError(t, err)
 	require.Equal(t, CancelOutcomeSignaled, outcome)
 
@@ -517,65 +520,160 @@ func TestExecuteWorkflowRecordsGenuineCancellation(t *testing.T) {
 		"an operator's stop is not a failure; counting it would distort the success rate")
 }
 
-// TestCancelRacingCompletionKeepsRecordAndCountersConsistent fires a cancel at
-// an unsynchronised point around completion, many times, and asserts that the
-// history record and the counters agree on every interleaving.
+// TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled
+// covers N1: a cancel signal that arrives before the orchestrator ever runs
+// does not, by itself, mean the orchestrator's error was caused by it. A
+// misconfigured pipeline fails the same way whether or not anyone canceled it,
+// and that real error must not be discarded and relabeled "canceled" just
+// because a signal happened to land first.
+func TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled(t *testing.T) {
+	t.Parallel()
+
+	s := setupTestScheduler(t)
+	ctx := context.Background()
+	sched := failingSchedule("sched-unrelated-failure")
+	require.NoError(t, s.store.Create(ctx, sched))
+
+	// Park the run before the orchestrator runs, so the cancel provably lands
+	// first, then release it to run ExecutePattern against an already-canceled
+	// context. The pattern has no stages, so it fails immediately for a reason
+	// that has nothing to do with context cancellation.
+	s.store.mu.Lock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.executeWorkflow(ctx, sched, "exec-unrelated", nil, true)
+	}()
+
+	waitFor(t, "the run to register", func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		_, ok := s.runs["exec-unrelated"]
+		return ok
+	})
+
+	outcome, err := s.CancelExecution(ctx, "exec-unrelated", "stopped by operator")
+	s.store.mu.Unlock()
+	require.NoError(t, err)
+	require.Equal(t, CancelOutcomeSignaled, outcome)
+
+	<-done
+
+	history, err := s.store.GetExecutionHistory(ctx, sched.Id, 10)
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	assert.Equal(t, "failed", history[0].Status,
+		"a configuration error unrelated to the cancel signal was relabeled as an operator stop")
+	assert.Contains(t, history[0].Error, "stages",
+		"the real error was discarded in favor of the cancel reason")
+
+	got, err := s.store.Get(ctx, sched.Id)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), got.Stats.FailedExecutions,
+		"the failure was dropped from the counters the success rate is derived from")
+	assert.Equal(t, "failed", got.Stats.LastStatus)
+}
+
+// controllableLLM parks inside Chat until the test releases it, and reports
+// entry so the test never has to guess whether the call has started.
 //
-// This is the shape of test the race detector cannot substitute for: the bug
-// class is a logical interleaving, not a data race, so -race stays green while
-// the two disagree. It checks consistency, not which verdict was right — the
-// two deterministic tests above pin the verdict for a cancel that lands after
-// completion.
+// A timing-based race between "cancel" and "let it complete" was tried here
+// first and discarded: the run's settle time is dominated by real agent
+// dispatch overhead (registry lookup, message assembly, SQLite writes) that
+// varies by an order of magnitude between the first call and later ones, so
+// no fixed jitter window reliably straddles it — the boundary this test
+// exists to exercise cannot be hit by chance without becoming flaky under
+// -race on a loaded runner. Parking on a channel makes both interleavings
+// exact instead of probable.
+type controllableLLM struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newControllableLLM() *controllableLLM {
+	return &controllableLLM{entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (l *controllableLLM) Chat(ctx context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	l.entered <- struct{}{}
+	select {
+	case <-l.release:
+		return &llmtypes.LLMResponse{Content: "done", StopReason: "stop"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (l *controllableLLM) Name() string  { return "controllable" }
+func (l *controllableLLM) Model() string { return "controllable" }
+
+// TestCancelRacingCompletionKeepsRecordAndCountersConsistent pins a cancel
+// against a completion at the same point — while the run is genuinely
+// in-flight inside the agent call — many times, alternating which one the
+// test lets win, and asserts the history record and the counters agree on
+// every outcome.
+//
+// This is the shape of bug the race detector cannot substitute for: the bug
+// class is a logical interleaving (does the recorded status match what
+// actually happened at the boundary), not a data race, so -race stays green
+// while the two disagree. The two deterministic tests above already pin the
+// verdict for a cancel landing after the verdict; this one pins it for a
+// cancel and a completion contending for the same still-in-flight run, many
+// times, to catch a lock-ordering regression a single case could miss. The
+// LLM must genuinely honor context cancellation (unlike failingSchedule's
+// config-validation error, which never touches ctx and so can never
+// legitimately race a cancel — see the N1 regression test above): a signal
+// racing an error unrelated to it must never be relabeled canceled.
 func TestCancelRacingCompletionKeepsRecordAndCountersConsistent(t *testing.T) {
 	t.Parallel()
 
-	// Enough that both interleavings — cancel before and after the verdict —
-	// occur every run (dozens of each observed), while keeping this parallel
-	// test from starving its siblings on a slow runner.
+	// Enough to run the lock-ordering path many times over without starving
+	// this parallel test's siblings on a slow runner.
 	const iterations = 100
 
-	s := setupTestScheduler(t)
+	llm := newControllableLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
 	ctx := context.Background()
 
 	var (
 		canceledRuns int
-		failedRuns   int
+		successRuns  int
 	)
 
 	for i := 0; i < iterations; i++ {
 		// A fresh schedule per iteration, so each one's counters and history
 		// are judged on their own rather than needing a reset.
-		sched := failingSchedule(fmt.Sprintf("sched-race-%d", i))
+		sched := agentWorkflow(fmt.Sprintf("sched-race-%d", i))
 		require.NoError(t, s.store.Create(ctx, sched))
 
 		execID := fmt.Sprintf("exec-race-%d", i)
-		var wg sync.WaitGroup
-		wg.Add(2)
+		llm.entered = make(chan struct{}, 1)
+		llm.release = make(chan struct{})
+		wantCancel := i%2 == 0
 
+		done := make(chan struct{})
 		go func() {
-			defer wg.Done()
-			s.executeWorkflow(ctx, sched, execID, nil)
+			defer close(done)
+			s.executeWorkflow(ctx, sched, execID, nil, true)
 		}()
 
-		go func() {
-			defer wg.Done()
-			// Unsynchronised on purpose: across iterations this lands before,
-			// during and after the verdict. The run may register and tear down
-			// before this goroutine ever observes it, so the spin is bounded —
-			// a missed run is a legitimate interleaving, not a failure.
-			deadline := time.Now().Add(2 * time.Second)
-			for {
-				s.mu.RLock()
-				_, tracked := s.runs[execID]
-				s.mu.RUnlock()
-				if tracked || time.Now().After(deadline) {
-					break
-				}
-			}
-			_, _ = s.CancelExecution(ctx, execID, "operator stop")
-		}()
+		select {
+		case <-llm.entered:
+		case <-time.After(hangGuard):
+			t.Fatalf("iteration %d: the run never reached the agent call", i)
+		}
 
-		wg.Wait()
+		if wantCancel {
+			outcome, err := s.CancelExecution(ctx, execID, "operator stop")
+			require.NoError(t, err)
+			require.Equal(t, CancelOutcomeSignaled, outcome, "iteration %d", i)
+		} else {
+			close(llm.release)
+		}
+
+		<-done
 
 		history, err := s.store.GetExecutionHistory(ctx, sched.Id, 1)
 		require.NoError(t, err)
@@ -584,36 +682,110 @@ func TestCancelRacingCompletionKeepsRecordAndCountersConsistent(t *testing.T) {
 		got, err := s.store.Get(ctx, sched.Id)
 		require.NoError(t, err)
 
-		switch history[0].Status {
-		case "canceled":
+		if wantCancel {
 			canceledRuns++
 			// A canceled run reached no verdict: no counters, and the reason
 			// rather than an orchestrator error.
-			require.Equal(t, int32(0), got.Stats.FailedExecutions,
-				"iteration %d: canceled run counted as a failure", i)
+			require.Equal(t, "canceled", history[0].Status,
+				"iteration %d: a run parked inside the agent call, then canceled, must be recorded as canceled", i)
+			require.Equal(t, "operator stop", history[0].Error,
+				"iteration %d: real error replaced the cancel reason, or vice versa", i)
+			require.Equal(t, int32(0), got.Stats.SuccessfulExecutions,
+				"iteration %d: canceled run counted as a success", i)
 			require.Equal(t, int32(0), got.Stats.TotalExecutions,
 				"iteration %d: canceled run counted as an execution", i)
-
-		case "failed":
-			failedRuns++
-			// The cancel did not stop this run, so its real failure must be
-			// recorded in full — this is the assertion that fails when the run
-			// stays cancellable through its bookkeeping tail.
-			require.Contains(t, history[0].Error, "stages",
-				"iteration %d: real error replaced by the cancel reason", i)
-			require.Equal(t, int32(1), got.Stats.FailedExecutions,
-				"iteration %d: failure dropped from the counters", i)
-			require.Equal(t, "failed", got.Stats.LastStatus,
+		} else {
+			successRuns++
+			// The run was let through to completion, so its real success must
+			// be recorded in full — this is the assertion that fails when the
+			// run stays cancellable through its bookkeeping tail.
+			require.Equal(t, "success", history[0].Status,
+				"iteration %d: a run released to complete normally must be recorded as a success", i)
+			require.Equal(t, int32(1), got.Stats.SuccessfulExecutions,
+				"iteration %d: success dropped from the counters", i)
+			require.Equal(t, "success", got.Stats.LastStatus,
 				"iteration %d: last_status does not match the recorded outcome", i)
-
-		default:
-			t.Fatalf("iteration %d: unexpected status %q", i, history[0].Status)
 		}
 	}
 
-	// Both interleavings must actually have occurred, or the test proved nothing.
-	t.Logf("canceled=%d failed=%d of %d iterations", canceledRuns, failedRuns, iterations)
-	assert.Positive(t, canceledRuns+failedRuns)
+	t.Logf("canceled=%d success=%d of %d iterations", canceledRuns, successRuns, iterations)
+	assert.Positive(t, canceledRuns)
+	assert.Positive(t, successRuns)
+}
+
+// TestTriggerNowRegistersBeforeReturningTheID covers N2's transient half: an ID
+// TriggerNow just handed back must already be tracked, with no window in which
+// canceling it reports NOT_FOUND for an execution this scheduler, in fact,
+// just minted.
+//
+// No synchronization with the spawned goroutine is used on purpose: before the
+// fix, the goroutine registered the run itself, so a cancel arriving before it
+// was even scheduled to run found nothing tracked. Registration now happens in
+// TriggerNow itself, before the ID is returned, so there is nothing to race.
+func TestTriggerNowRegistersBeforeReturningTheID(t *testing.T) {
+	t.Parallel()
+
+	llm := newDrainBlockingLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
+	ctx := context.Background()
+
+	sched := agentWorkflow("sched-trigger-race")
+	require.NoError(t, s.AddSchedule(ctx, sched))
+
+	executionID, err := s.TriggerNow(ctx, sched.Id, false, nil)
+	require.NoError(t, err)
+
+	outcome, err := s.CancelExecution(ctx, executionID, "operator stop")
+	require.NoError(t, err)
+	assert.Equal(t, CancelOutcomeSignaled, outcome,
+		"an ID TriggerNow just returned must already be tracked, not NOT_FOUND")
+}
+
+// TestTriggerNowOverridesScheduleSkipIfRunning covers N2's permanent half: the
+// skip-if-running decision for a manual trigger is the request's own
+// skipIfRunning, not the schedule's persisted config.
+//
+// Before the fix, executeWorkflow re-checked schedule.Schedule.SkipIfRunning
+// regardless of what TriggerNow's caller asked for. An explicit "run it
+// anyway" (skipIfRunning=false) against a SkipIfRunning:true schedule with a
+// run already in flight minted a second ID, returned it, and then silently
+// skipped without ever registering it — an ID that would answer NOT_FOUND
+// forever, because nothing this scheduler ever recorded used it.
+func TestTriggerNowOverridesScheduleSkipIfRunning(t *testing.T) {
+	t.Parallel()
+
+	llm := newDrainBlockingLLM()
+	h := newAgentTestScheduler(t, llm)
+	s := h.scheduler
+	ctx := context.Background()
+
+	sched := agentWorkflow("sched-trigger-override")
+	sched.Schedule.SkipIfRunning = true
+	require.NoError(t, s.AddSchedule(ctx, sched))
+
+	first, err := s.TriggerNow(ctx, sched.Id, false, nil)
+	require.NoError(t, err)
+
+	select {
+	case <-llm.started:
+	case <-time.After(hangGuard):
+		t.Fatal("the first triggered run never reached the agent")
+	}
+
+	second, err := s.TriggerNow(ctx, sched.Id, false, nil)
+	require.NoError(t, err, `an explicit "run it anyway" trigger must not be rejected because the schedule's own skip_if_running is set`)
+	require.NotEqual(t, first, second)
+
+	outcome, err := s.CancelExecution(ctx, second, "operator stop")
+	require.NoError(t, err)
+	assert.Equal(t, CancelOutcomeSignaled, outcome,
+		"the second trigger was silently skipped instead of running, so its ID was never registered")
+
+	// Also stop the first run, so teardown does not have to sit out Stop's
+	// grace period waiting for a blocked agent call nothing here still needs.
+	_, err = s.CancelExecution(ctx, first, "test cleanup")
+	require.NoError(t, err)
 }
 
 // TestStopCancelsInFlightRunsOnDeadline covers F6: Stop must not close the store

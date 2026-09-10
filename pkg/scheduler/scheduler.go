@@ -7,6 +7,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -187,6 +188,31 @@ func (s *Scheduler) beginRun() bool {
 	return true
 }
 
+// beginTriggeredRun reserves a slot the same way beginRun does, and also
+// pre-registers executionID under scheduleID before returning — in the same
+// critical section, so there is no gap between the caller handing this ID out
+// and the scheduler considering it tracked.
+//
+// TriggerNow needs this and the cron path does not: TriggerNow returns
+// executionID to its caller before the goroutine that will run it even starts,
+// so a cancel arriving in that window has to find something. Without
+// pre-registration it would see nothing tracked and report NOT_FOUND for an ID
+// this scheduler had, in fact, already minted. The entry's cancel func is nil
+// until executeWorkflow builds the real context and attaches it; a cancel
+// arriving before then can only set the canceled flag, which executeWorkflow
+// checks and honors immediately once the real cancel func exists.
+func (s *Scheduler) beginTriggeredRun(scheduleID, executionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stopped {
+		return false
+	}
+	s.inFlight.Add(1)
+	s.runs[executionID] = &runState{scheduleID: scheduleID}
+	return true
+}
+
 // cancelAllRunning signals every cancellable execution and reports how many it
 // signaled. Used by Stop when the shutdown deadline expires.
 func (s *Scheduler) cancelAllRunning(reason string) int {
@@ -198,7 +224,12 @@ func (s *Scheduler) cancelAllRunning(reason string) int {
 		}
 		run.canceled = true
 		run.reason = reason
-		cancels = append(cancels, run.cancel)
+		// A pre-registered trigger whose real context has not been attached
+		// yet has a nil cancel func. The flag above is enough: executeWorkflow
+		// checks it as soon as the real func exists and cancels immediately.
+		if run.cancel != nil {
+			cancels = append(cancels, run.cancel)
+		}
 	}
 	s.mu.Unlock()
 
@@ -230,8 +261,14 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping workflow scheduler")
 
 	// Refuse new runs first. Paired with beginRun's Add under the same lock,
-	// this fixes the set of executions the wait below has to cover.
+	// this fixes the set of executions the wait below has to cover. The
+	// stopped check also makes Stop idempotent: without it, a second call
+	// would close(s.stopCh) again and panic.
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
 	s.stopped = true
 	s.mu.Unlock()
 
@@ -269,8 +306,24 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 	// while a run is writing its record, and every remaining run has had its
 	// context canceled, so the wait is bounded in practice by the executor
 	// honoring that context and by the store's SQLite busy timeout — not by
-	// max_execution_seconds.
-	<-drained
+	// max_execution_seconds. An unbounded, silent wait is undiagnosable from
+	// the outside, so log periodically rather than going quiet until it
+	// returns or the process is killed.
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+waitForDrain:
+	for {
+		select {
+		case <-drained:
+			break waitForDrain
+		case <-ticker.C:
+			s.mu.RLock()
+			remaining := len(s.runs)
+			s.mu.RUnlock()
+			s.logger.Warn("Still waiting for in-flight executions to finish",
+				zap.Int("remaining", remaining))
+		}
+	}
 
 	// Close store
 	if err := s.store.Close(); err != nil {
@@ -484,20 +537,29 @@ func (s *Scheduler) TriggerNow(ctx context.Context, scheduleID string, skipIfRun
 		mergedVars[k] = v
 	}
 
-	// Reserve the run before spawning it. A trigger that arrives during
-	// shutdown is refused rather than started, because the store it would
-	// write to is about to close.
-	if !s.beginRun() {
+	// Reserve the run and pre-register it under the ID before spawning the
+	// goroutine, both in one critical section. This ID is handed back to the
+	// caller below, before the goroutine even starts; without pre-registration
+	// a cancel arriving in that window finds nothing tracked and reports
+	// NOT_FOUND for an execution this scheduler already minted. A trigger that
+	// arrives during shutdown is refused rather than started, because the
+	// store it would write to is about to close.
+	executionID := uuid.New().String()
+	if !s.beginTriggeredRun(scheduleID, executionID) {
 		return "", fmt.Errorf("scheduler is stopped")
 	}
 
-	// Execute workflow
-	executionID := uuid.New().String()
 	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive the request context
 		// Done only once executeWorkflow has returned, so it covers the
 		// bookkeeping tail as well as the workflow itself.
 		defer s.inFlight.Done()
-		s.executeWorkflow(context.Background(), schedule, executionID, mergedVars)
+		// checkScheduleSkipIfRunning is false: the skip-if-running decision for
+		// a manual trigger is the request's own skipIfRunning above, already
+		// applied. Re-checking the schedule's persisted setting here would let
+		// stale config silently override an explicit "run it anyway" from the
+		// caller — and would find this run's own pre-registered entry and
+		// report itself as "previous execution still running".
+		s.executeWorkflow(context.Background(), schedule, executionID, mergedVars, false)
 	}()
 
 	return executionID, nil
@@ -603,9 +665,15 @@ func (s *Scheduler) CancelExecution(ctx context.Context, executionID, reason str
 			zap.String("execution_id", executionID),
 			zap.String("reason", reason))
 
+		// cancel is nil for a triggered run whose real context has not been
+		// attached yet — the canceled flag set above is enough, and
+		// executeWorkflow delivers the signal itself once it exists.
+		//
 		// Called outside s.mu: a cancel func whose unwinding path takes the
 		// scheduler lock would otherwise self-deadlock.
-		cancel()
+		if cancel != nil {
+			cancel()
+		}
 		return CancelOutcomeSignaled, nil
 	}
 
@@ -618,7 +686,9 @@ func (s *Scheduler) CancelExecution(ctx context.Context, executionID, reason str
 	// never seen, so the caller is not told a live workflow "already finished".
 	known, err := s.store.ExecutionExists(ctx, executionID)
 	if err != nil {
-		return CancelOutcomeNotFound, fmt.Errorf("failed to look up execution: %w", err)
+		// ExecutionExists already names the execution ID in its own error; do
+		// not wrap "failed to look up execution" a second time around it.
+		return CancelOutcomeNotFound, err
 	}
 	if known {
 		return CancelOutcomeAlreadyFinished, nil
@@ -635,6 +705,13 @@ func (s *Scheduler) CancelExecution(ctx context.Context, executionID, reason str
 // anything it reports must still be cancellable when the operator clicks —
 // listing a run whose cancel would come back "already finished" is the exact
 // mismatch this is meant to avoid.
+//
+// Known gap, recorded rather than solved here: keying by schedule ID means two
+// concurrent runs of the same schedule (skip_if_running disabled) collapse to
+// one entry, and only one of them is reachable through this view. Fixing it
+// means changing the return shape (e.g. []string per schedule, or a slice of
+// execution records), which is a wider API change than this cancellation work
+// should carry.
 func (s *Scheduler) RunningExecutions() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -712,7 +789,9 @@ func (s *Scheduler) addScheduleToCron(ctx context.Context, schedule *loomv1.Sche
 			variables = make(map[string]string)
 		}
 
-		s.executeWorkflow(execCtx, schedule, executionID, variables)
+		// true: a cron tick has no request-level override to defer to, so it
+		// must honor the schedule's own persisted skip_if_running.
+		s.executeWorkflow(execCtx, schedule, executionID, variables, true)
 	}
 
 	// Add to cron engine
@@ -728,7 +807,16 @@ func (s *Scheduler) addScheduleToCron(ctx context.Context, schedule *loomv1.Sche
 }
 
 // executeWorkflow executes a scheduled workflow.
-func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.ScheduledWorkflow, executionID string, variables map[string]string) {
+//
+// checkScheduleSkipIfRunning gates the schedule's own persisted
+// skip_if_running setting. A cron tick has no other opinion on the matter and
+// must pass true. A manually triggered run must pass false: TriggerNow already
+// applied the request's own skip_if_running override — using it, not the
+// schedule's config — before this executionID existed anywhere, and by the
+// time control reaches here that ID is already registered in s.runs, so
+// re-checking here would find that entry and report the run as colliding with
+// itself.
+func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.ScheduledWorkflow, executionID string, variables map[string]string, checkScheduleSkipIfRunning bool) {
 	startTime := time.Now()
 
 	s.logger.Info("Executing scheduled workflow",
@@ -737,7 +825,7 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 		zap.String("workflow_name", schedule.WorkflowName))
 
 	// Check skip-if-running
-	if schedule.Schedule.SkipIfRunning {
+	if checkScheduleSkipIfRunning && schedule.Schedule.SkipIfRunning {
 		currentExecID := s.runningExecutionFor(schedule.Id)
 
 		if currentExecID != "" {
@@ -765,9 +853,24 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 	// there is no window in which the run is advertised as running — including
 	// via current_execution_id, the field callers are told to pass to
 	// CancelScheduledExecution — but a cancel would come back "not running".
+	//
+	// A triggered run already has an entry here, pre-registered by
+	// beginTriggeredRun before this executionID was ever handed to a caller;
+	// attach the real cancel func to it rather than replacing it. If a cancel
+	// landed in the window before this func existed, deliver it now — the flag
+	// is the only thing a caller with a nil cancel func could set.
+	var deliverPendingCancel bool
 	s.mu.Lock()
-	s.runs[executionID] = &runState{scheduleID: schedule.Id, cancel: cancel}
+	if run, exists := s.runs[executionID]; exists {
+		run.cancel = cancel
+		deliverPendingCancel = run.canceled
+	} else {
+		s.runs[executionID] = &runState{scheduleID: schedule.Id, cancel: cancel}
+	}
 	s.mu.Unlock()
+	if deliverPendingCancel {
+		cancel()
+	}
 
 	defer func() {
 		s.mu.Lock()
@@ -852,13 +955,18 @@ func (s *Scheduler) executeWorkflow(ctx context.Context, schedule *loomv1.Schedu
 	// failure would corrupt the success rate the UI uses to convey trust, and
 	// would make a deliberately stopped routine look broken.
 	//
-	// The err != nil conjunct matters: cancellation is cooperative, so a run can
-	// be signaled and still finish on its own before it next checks its
-	// context. That run reached a real verdict and must be recorded as such —
-	// its counters move like any other. Only a run the signal actually stopped
-	// is recorded as canceled.
+	// The errors.Is conjunct matters: cancellation is cooperative, so a run can
+	// be signaled and still finish on its own — successfully, or with a real
+	// failure unrelated to the signal — before it next checks its context.
+	// That run reached a real verdict and must be recorded as such — its
+	// counters move like any other. err != nil alone is not enough: a run
+	// signaled early enough can fail for an unrelated reason (e.g. "pipeline
+	// has no stages") without the cancellation ever reaching the context, and
+	// that failure must not be discarded and relabelled canceled. Only a run
+	// whose own error actually carries context.Canceled up the chain is
+	// recorded as canceled.
 	switch {
-	case wasCanceled && err != nil:
+	case wasCanceled && errors.Is(err, context.Canceled):
 		execution.Status = "canceled"
 		if cancelReason != "" {
 			execution.Error = cancelReason
