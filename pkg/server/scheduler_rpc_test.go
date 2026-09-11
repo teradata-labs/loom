@@ -58,6 +58,20 @@ func setupTestSchedulerServer(t *testing.T) (*MultiAgentServer, *scheduler.Sched
 	})
 	require.NoError(t, err)
 
+	// Stop the scheduler before the test's temp directory is torn down. Stop is
+	// what closes the store, and an open SQLite handle makes t.TempDir's
+	// RemoveAll fail on Windows ("being used by another process") — a failure
+	// CI cannot see, because unit tests only run on ubuntu. Registered after
+	// t.TempDir above, so cleanups run in the order this needs: handle closed
+	// first, directory removed second.
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if stopErr := sched.Stop(stopCtx); stopErr != nil {
+			t.Errorf("stopping the test scheduler: %v", stopErr)
+		}
+	})
+
 	// Create server
 	server := &MultiAgentServer{
 		agents:        make(map[string]*agent.Agent),

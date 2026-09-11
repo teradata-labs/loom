@@ -423,6 +423,63 @@ func TestParallelPatternNoTasksIsRejectedUpFront(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestEmptyPatternsAreRejectedByTheExecutor pins the guard the two cases above
+// only look like they pin.
+//
+// Both of those go through ForkJoinBuilder.Execute / ParallelBuilder.Execute,
+// which carry their own pre-existing "at least 1 agent/task" check; that check
+// fires first, so both tests keep passing with the executor-level guard
+// removed. A schedule never touches those builders — it hands a pattern
+// straight to ExecutePattern, which is the path exercised here, and the
+// assertion is on the executor's own message rather than on some error having
+// come back.
+func TestEmptyPatternsAreRejectedByTheExecutor(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern *loomv1.WorkflowPattern
+		wantErr string
+	}{
+		{
+			name: "fork-join with no agents",
+			pattern: &loomv1.WorkflowPattern{
+				Pattern: &loomv1.WorkflowPattern_ForkJoin{
+					ForkJoin: &loomv1.ForkJoinPattern{Prompt: "Analyze this code"},
+				},
+			},
+			wantErr: "fork-join has no agents",
+		},
+		{
+			name: "parallel with no tasks",
+			pattern: &loomv1.WorkflowPattern{
+				Pattern: &loomv1.WorkflowPattern_Parallel{
+					Parallel: &loomv1.ParallelPattern{},
+				},
+			},
+			wantErr: "parallel pattern has no tasks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orchestrator := NewOrchestrator(Config{
+				Logger:      zaptest.NewLogger(t),
+				Tracer:      observability.NewNoOpTracer(),
+				LLMProvider: newMockLLMProvider("never asked"),
+			})
+
+			_, err := orchestrator.ExecutePattern(context.Background(), tt.pattern)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			// The failure mode being guarded against: errors.Join() over zero
+			// branch errors is nil, and fmt.Errorf("...: %w", nil) renders that
+			// literally, so an operator's history entry read "%!w(<nil>)".
+			assert.NotContains(t, err.Error(), "%!w(<nil>)",
+				"the degenerate pattern reached the error-joining path instead of being rejected up front")
+		})
+	}
+}
+
 // TestConditionalPattern tests the conditional orchestration pattern.
 func TestConditionalPattern(t *testing.T) {
 	tests := []struct {

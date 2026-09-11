@@ -605,6 +605,14 @@ func (s *Store) RecordFailure(ctx context.Context, scheduleID, errorMsg string) 
 // total_executions and is not counted among successes or failures — that keeps
 // the success rate consumers derive from those counters honest.
 //
+// last_execution_at is left alone for the same reason, and that is deliberate
+// rather than an oversight: RecordSuccess and RecordFailure both move it
+// because they record a run that produced an outcome, while IncrementSkipped
+// leaves it untouched because a skipped run never happened. A canceled run sits
+// on the skip's side of that line — it ran, but it reached nothing worth
+// dating, and moving the field would tell an operator the schedule last
+// executed at a moment when nothing was actually delivered.
+//
 // What it must do is move last_status. Without this a canceled run would leave
 // last_status showing the *previous* run's outcome, so a routine someone just
 // stopped would report itself as having last succeeded.

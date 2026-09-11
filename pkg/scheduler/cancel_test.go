@@ -105,7 +105,7 @@ func launchParkedAfterVerdict(t *testing.T, s *Scheduler, sched *loomv1.Schedule
 	s.store.mu.Lock() // park 1: UpdateCurrentExecution
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, execID, nil, true)
+		s.executeWorkflow(ctx, sched, execID, nil)
 	}()
 	waitFor(t, "the run to register", func() bool {
 		s.mu.RLock()
@@ -343,7 +343,7 @@ func TestExecuteWorkflowRegistersBeforeAdvertising(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-advertise", nil, true)
+		s.executeWorkflow(ctx, sched, "exec-advertise", nil)
 	}()
 
 	waitFor(t, "the run to be advertised", func() bool {
@@ -489,7 +489,7 @@ func TestExecuteWorkflowRecordsGenuineCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-genuine", nil, true)
+		s.executeWorkflow(ctx, sched, "exec-genuine", nil)
 	}()
 
 	select {
@@ -541,7 +541,7 @@ func TestExecuteWorkflowRecordsGenuineCancellationForForkJoin(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-genuine-forkjoin", nil, true)
+		s.executeWorkflow(ctx, sched, "exec-genuine-forkjoin", nil)
 	}()
 
 	select {
@@ -590,7 +590,7 @@ func TestExecuteWorkflowRecordsGenuineCancellationForParallel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-genuine-parallel", nil, true)
+		s.executeWorkflow(ctx, sched, "exec-genuine-parallel", nil)
 	}()
 
 	select {
@@ -643,7 +643,7 @@ func TestCancelBeforeOrchestratorWithUnrelatedFailureIsNotMislabeledCanceled(t *
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.executeWorkflow(ctx, sched, "exec-unrelated", nil, true)
+		s.executeWorkflow(ctx, sched, "exec-unrelated", nil)
 	}()
 
 	waitFor(t, "the run to register", func() bool {
@@ -756,7 +756,7 @@ func TestCancelRacingCompletionKeepsRecordAndCountersConsistent(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			s.executeWorkflow(ctx, sched, execID, nil, true)
+			s.executeWorkflow(ctx, sched, execID, nil)
 		}()
 
 		select {
@@ -851,7 +851,8 @@ func TestTriggerNowRegistersBeforeReturningTheID(t *testing.T) {
 // anyway" (skipIfRunning=false) against a SkipIfRunning:true schedule with a
 // run already in flight minted a second ID, returned it, and then silently
 // skipped without ever registering it — an ID that would answer NOT_FOUND
-// forever, because nothing this scheduler ever recorded used it.
+// forever, because nothing this scheduler ever recorded used it. The decision
+// is now made exactly once, in admitRun, against the request's own flag.
 func TestTriggerNowOverridesScheduleSkipIfRunning(t *testing.T) {
 	t.Parallel()
 
