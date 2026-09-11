@@ -1215,6 +1215,14 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	for _, sidecar := range st.pendingSidecars {
 		a.appendMessage(ctx, sess, sidecar, false)
 	}
+
+	// Error-triggered lesson recall, mirroring the conversation loop's drain.
+	// dispatchOneCall fills st.errTexts on both paths, so without this a
+	// resumed batch's failures would collect lesson evidence and silently
+	// drop it — the drift sharing the dispatch body exists to prevent.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(ctx, sess, st.errTexts)
+	}
 }
 
 // synthesizeParkedResult appends a decision-synthesized result as the call's

@@ -1923,6 +1923,26 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
+	}
+
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
@@ -2790,8 +2810,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Resource-await park (park_resource.go): calls held during dispatch
 		// end the turn HERE, after every other call's row and sidecar landed.
+		// It runs before the lesson lane so the park sees the batch tail
+		// exactly as it did before lessons existed; a parked turn ends here
+		// and re-queries the lesson partition on resume instead.
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
+		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(st.errTexts) > 0 {
+			a.injectErrorLessons(ctx, session, st.errTexts)
 		}
 	}
 
@@ -2818,6 +2849,12 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+
+	// errTexts: tool-error messages from this batch, buffered for the
+	// error-triggered lesson lane (graph_memory_lessons.go). It rides on
+	// batchState rather than the loop because dispatchOneCall — which fills
+	// it — is shared with ResumeChat's parked-batch completion.
+	errTexts []string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3078,6 +3115,16 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		AgentID:    a.id, // Track which agent executed this tool
 		Timestamp:  time.Now(),
 	}, false)
+
+	// Mining ledger (graph_memory_lessons.go): record the execution now,
+	// before compilation can evict this turn.
+	a.recordToolLedger(session.ID, toolCall, result)
+
+	// Collect failure text for error-triggered lesson recall (injected AFTER
+	// the whole batch — never between a tool_use and its tool_result).
+	if result != nil && result.Error != nil && result.Error.Message != "" {
+		st.errTexts = append(st.errTexts, result.Error.Message)
+	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 	// — the skill body belongs under the user-instruction slot, not the
@@ -3511,14 +3558,32 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking above. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons).
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return
 	}
 	span.SetAttribute("recall.injected", len(relevant))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString("Verified lessons from prior work (each fix was observed to succeed):\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {

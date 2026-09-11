@@ -489,6 +489,12 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	conditions = append(conditions, "m.salience >= ?")
 	args = append(args, opts.MinSalience)
 
+	// Optional strict salience ceiling (band selection — see RecallOpts).
+	if opts.BelowSalience > 0 {
+		conditions = append(conditions, "m.salience < ?")
+		args = append(args, opts.BelowSalience)
+	}
+
 	// Optional type filter.
 	if opts.MemoryType != "" {
 		conditions = append(conditions, "m.memory_type = ?")
@@ -928,6 +934,20 @@ func (s *GraphMemoryStore) TouchMemories(ctx context.Context, memoryIDs []string
 			`UPDATE graph_memories SET accessed_at = datetime('now'), access_count = access_count + 1
 			 WHERE id IN (%s)`, strings.Join(placeholders, ",")),
 		args...,
+	)
+	return err
+}
+
+// AdjustSalience applies a bounded delta to one memory's salience, clamped
+// to [0.05, 1.0]. Optional store capability (discovered by type assertion in
+// pkg/agent): outcome credit for injected lessons — a lesson repeatedly
+// injected into conversations that then fail sinks below the lesson lane's
+// recall floor; one that precedes recoveries drifts up. Deliberately not on
+// the GraphMemoryStore interface so other implementations build unchanged.
+func (s *GraphMemoryStore) AdjustSalience(ctx context.Context, memoryID string, delta float64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE graph_memories SET salience = MIN(1.0, MAX(0.05, salience + ?)) WHERE id = ?`,
+		delta, memoryID,
 	)
 	return err
 }
