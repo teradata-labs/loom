@@ -125,7 +125,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 		transport:      httpTransport,
 	}
 
-	logger.Info("Streamable HTTP transport created", zap.String("endpoint", config.Endpoint))
+	logger.Info("Streamable HTTP transport created")
 
 	return t, nil
 }
@@ -176,7 +176,6 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	}
 
 	t.logger.Debug("Sending POST request",
-		zap.String("endpoint", t.endpoint),
 		zap.Int("message_size", len(message)),
 		zap.Bool("has_session", t.sessionMgr.HasSession()))
 

@@ -17,13 +17,12 @@ import (
 )
 
 func TestValidateMCPRemoteURLRejectsEnvironmentPlaceholders(t *testing.T) {
-	for _, transport := range []string{"http", "sse"} {
+	for _, transport := range []string{"", "stdio", "http", "sse"} {
 		err := validateMCPRemoteURL(transport, "https://example.test/${MCP_TOKEN}")
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 		assert.NotContains(t, err.Error(), "MCP_TOKEN")
 	}
 
-	assert.NoError(t, validateMCPRemoteURL("stdio", "${MCP_TOKEN}"))
 	assert.NoError(t, validateMCPRemoteURL("http", "https://example.test/api"))
 }
 

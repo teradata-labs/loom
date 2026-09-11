@@ -129,7 +129,7 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		defer subscribeCancel()
 		defer close(t.subscribeDone)
 
-		logger.Debug("Attempting SSE subscription", zap.String("endpoint", config.Endpoint+config.SSEPath))
+		logger.Debug("Attempting SSE subscription")
 
 		err := sseClient.SubscribeWithContext(ctx, "message", func(msg *sse.Event) {
 			select {
@@ -140,17 +140,15 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		})
 
 		if err != nil {
-			logger.Warn("Failed to subscribe to SSE (will retry on first message)",
-				zap.String("endpoint", config.Endpoint),
-				zap.Error(err))
+			logger.Warn("Failed to subscribe to SSE (will retry on first message)")
 			// Don't send to errors channel - let it fail on first actual use
 			// This allows the server to start even if this MCP server is down
 		} else {
-			logger.Info("HTTP/SSE transport connected", zap.String("endpoint", config.Endpoint))
+			logger.Info("HTTP/SSE transport connected")
 		}
 	}()
 
-	logger.Debug("HTTP/SSE transport created (connecting in background)", zap.String("endpoint", config.Endpoint))
+	logger.Debug("HTTP/SSE transport created (connecting in background)")
 
 	return t, nil
 }

@@ -942,6 +942,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if config.Tools != nil && len(config.Tools.Builtin) > 0 {
 		// Filter builtin tools based on config
 		for _, toolName := range config.Tools.Builtin {
+			// The server constructs this tool later with request-scoped session
+			// and agent identifiers when the configuration explicitly opts in.
+			if toolName == "manage_ephemeral_agents" {
+				continue
+			}
 			tool := builtin.ByName(toolName)
 			if tool != nil {
 				// Wrap with PromptAwareTool if prompts registry available

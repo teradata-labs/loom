@@ -196,9 +196,10 @@ func (e *Executor) CanonicalToolName(name string) string {
 // without a chain attached — so SetPermissionChecker is never silently inert:
 // a host that sets both gets the checker first, then the chain. With neither
 // configured the call is a pure pass-through.
-func (e *Executor) admit(ctx context.Context, toolName string, params map[string]interface{}) (AdmissionRequest, AdmissionResult, *Result) {
+
+func (e *Executor) admit(ctx context.Context, toolName, requestedToolName string, params map[string]interface{}) (AdmissionRequest, AdmissionResult, *Result) {
 	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
+		if err := e.permissionChecker.checkPermissionNames(ctx, toolName, requestedToolName, params); err != nil {
 			denied := &Result{
 				Success: false,
 				Error:   &Error{Code: "permission_denied", Message: err.Error(), Retryable: false},
@@ -216,12 +217,13 @@ func (e *Executor) admit(ctx context.Context, toolName string, params map[string
 	}
 
 	req := AdmissionRequest{
-		Ctx:       ctx,
-		ToolName:  toolName,
-		Params:    params,
-		UserID:    userID,
-		SessionID: session.SessionIDFromContext(ctx),
-		State:     e.approvedSet,
+		Ctx:               ctx,
+		ToolName:          toolName,
+		RequestedToolName: requestedToolName,
+		Params:            params,
+		UserID:            userID,
+		SessionID:         session.SessionIDFromContext(ctx),
+		State:             e.approvedSet,
 	}
 
 	res := e.admissionChain.Admit(req)
@@ -288,8 +290,9 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 
 	normalizedParams := NormalizeParametersToSchema(tool, params)
 
+	canonicalToolName := tool.Name()
 	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, normalizedParams); err != nil {
+		if err := e.permissionChecker.checkPermissionNames(ctx, canonicalToolName, toolName, normalizedParams); err != nil {
 			return Decision{Kind: Deny, Reason: err.Error()}
 		}
 	}
@@ -302,12 +305,13 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 		userID = e.identityResolver(ctx)
 	}
 	req := AdmissionRequest{
-		Ctx:       ctx,
-		ToolName:  toolName,
-		Params:    normalizedParams,
-		UserID:    userID,
-		SessionID: session.SessionIDFromContext(ctx),
-		State:     e.approvedSet,
+		Ctx:               ctx,
+		ToolName:          canonicalToolName,
+		RequestedToolName: toolName,
+		Params:            normalizedParams,
+		UserID:            userID,
+		SessionID:         session.SessionIDFromContext(ctx),
+		State:             e.approvedSet,
 	}
 	return e.admissionChain.Preflight(req)
 }
@@ -343,8 +347,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
 	//
-	canonicalName := tool.Name()
-	req, admRes, denied := e.admit(ctx, canonicalName, normalizedParams)
+	req, admRes, denied := e.admit(ctx, tool.Name(), toolName, normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
@@ -419,7 +422,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 
 	// Admit before execution. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, tool.Name(), normalizedParams)
+	req, admRes, denied := e.admit(ctx, tool.Name(), tool.Name(), normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil

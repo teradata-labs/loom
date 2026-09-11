@@ -118,7 +118,9 @@ type SpanExporter interface {
 }
 ```
 
-This interface could host an `OTLPSpanExporter` implementation as a lighter alternative to a full `OTelTracer`. The trade-off between these two approaches is analyzed in [Design Trade-offs](#design-trade-offs).
+An `OTLPSpanExporter` through this interface was considered as a lighter
+alternative. Loom uses `OTelTracer` instead so OTLP resource, trace-context,
+and attribute translation behavior are owned in one tracer implementation.
 
 
 ## System Context

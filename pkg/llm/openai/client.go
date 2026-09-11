@@ -193,32 +193,35 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 	}
 
 	if c.rateLimiter != nil {
-		// Build a fresh request inside the closure so each retry attempt gets
-		// an unconsumed body reader. Detect 429 here and return it as an error
-		// so the rate limiter's isThrottlingError check triggers its retry loop.
-		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			req, err := newReq(ctx)
-			if err != nil {
+		// Each retry re-enters the limiter so every outbound attempt is paced.
+		for attempt := 1; attempt <= 2; attempt++ {
+			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+				req, err := newReq(ctx)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := c.httpClient.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				if resp.StatusCode == http.StatusTooManyRequests {
+					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
+					respBody, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					return nil, llm.NewThrottleError(
+						fmt.Errorf("API error (status 429): %s", string(respBody)),
+						retryAfter)
+				}
+				return resp, nil
+			})
+			if err == nil {
+				return result.(*http.Response), nil
+			}
+			if attempt == 2 || !isRetryableTransportError(err) {
 				return nil, err
 			}
-			resp, err := c.httpClient.Do(req)
-			if err != nil {
-				return nil, err
-			}
-			if resp.StatusCode == http.StatusTooManyRequests {
-				retryAfter := llm.RetryAfterFromHeaders(resp.Header)
-				respBody, _ := io.ReadAll(resp.Body)
-				_ = resp.Body.Close()
-				return nil, llm.NewThrottleError(
-					fmt.Errorf("API error (status 429): %s", string(respBody)),
-					retryAfter)
-			}
-			return resp, nil
-		})
-		if err != nil {
-			return nil, err
 		}
-		return result.(*http.Response), nil
+		return nil, fmt.Errorf("HTTP request failed")
 	}
 
 	// Without rate limiter: single retry on transient transport errors only.

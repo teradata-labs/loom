@@ -427,7 +427,7 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 }
 
 func validateMCPRemoteURL(transport, url string) error {
-	if (transport == "http" || transport == "sse") && strings.Contains(url, "${") {
+	if strings.Contains(url, "${") {
 		return status.Error(codes.InvalidArgument, "environment placeholders are not allowed in MCP server URLs")
 	}
 	return nil
