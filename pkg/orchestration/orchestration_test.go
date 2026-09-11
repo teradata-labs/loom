@@ -257,6 +257,19 @@ func TestForkJoinPattern(t *testing.T) {
 			timeout:       30,
 			wantErr:       false,
 		},
+		{
+			// A schedule can be created with agent_ids: [] (validateSchedule
+			// doesn't reject it), and executeFork's own "all agents failed"
+			// guard is len(errs) == len(AgentIds), which is 0 == 0 for this
+			// case — errors.Join() with zero args returns nil, producing a
+			// literal "%!w(<nil>)" in the recorded error instead of a real
+			// message. This must be rejected before executeFork ever runs.
+			name:          "no agents is rejected up front",
+			prompt:        "Analyze this code",
+			numAgents:     0,
+			mergeStrategy: loomv1.MergeStrategy_CONCATENATE,
+			wantErr:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -385,6 +398,85 @@ func TestParallelPattern(t *testing.T) {
 	// Verify each task has its metadata
 	for _, agentResult := range result.AgentResults {
 		assert.Contains(t, agentResult.Metadata, "task_index")
+	}
+}
+
+// TestParallelPatternNoTasksIsRejectedUpFront is the parallel twin of the
+// fork-join "no agents" case: a schedule can be created with tasks: []
+// (validateSchedule doesn't reject it), and executeParallel's own "all tasks
+// failed" guard is len(errs) == len(Tasks), which is 0 == 0 here —
+// errors.Join() with zero args returns nil, producing a literal
+// "%!w(<nil>)" in the recorded error instead of a real message. This must be
+// rejected before executeParallel ever runs.
+func TestParallelPatternNoTasksIsRejectedUpFront(t *testing.T) {
+	orchestrator := NewOrchestrator(Config{
+		Logger:      zaptest.NewLogger(t),
+		Tracer:      observability.NewNoOpTracer(),
+		LLMProvider: newMockLLMProvider("Combined summary"),
+	})
+
+	_, err := orchestrator.
+		Parallel().
+		WithMergeStrategy(loomv1.MergeStrategy_SUMMARY).
+		Execute(context.Background())
+
+	require.Error(t, err)
+}
+
+// TestEmptyPatternsAreRejectedByTheExecutor pins the guard the two cases above
+// only look like they pin.
+//
+// Both of those go through ForkJoinBuilder.Execute / ParallelBuilder.Execute,
+// which carry their own pre-existing "at least 1 agent/task" check; that check
+// fires first, so both tests keep passing with the executor-level guard
+// removed. A schedule never touches those builders — it hands a pattern
+// straight to ExecutePattern, which is the path exercised here, and the
+// assertion is on the executor's own message rather than on some error having
+// come back.
+func TestEmptyPatternsAreRejectedByTheExecutor(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern *loomv1.WorkflowPattern
+		wantErr string
+	}{
+		{
+			name: "fork-join with no agents",
+			pattern: &loomv1.WorkflowPattern{
+				Pattern: &loomv1.WorkflowPattern_ForkJoin{
+					ForkJoin: &loomv1.ForkJoinPattern{Prompt: "Analyze this code"},
+				},
+			},
+			wantErr: "fork-join has no agents",
+		},
+		{
+			name: "parallel with no tasks",
+			pattern: &loomv1.WorkflowPattern{
+				Pattern: &loomv1.WorkflowPattern_Parallel{
+					Parallel: &loomv1.ParallelPattern{},
+				},
+			},
+			wantErr: "parallel pattern has no tasks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orchestrator := NewOrchestrator(Config{
+				Logger:      zaptest.NewLogger(t),
+				Tracer:      observability.NewNoOpTracer(),
+				LLMProvider: newMockLLMProvider("never asked"),
+			})
+
+			_, err := orchestrator.ExecutePattern(context.Background(), tt.pattern)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			// The failure mode being guarded against: errors.Join() over zero
+			// branch errors is nil, and fmt.Errorf("...: %w", nil) renders that
+			// literally, so an operator's history entry read "%!w(<nil>)".
+			assert.NotContains(t, err.Error(), "%!w(<nil>)",
+				"the degenerate pattern reached the error-joining path instead of being rejected up front")
+		})
 	}
 }
 
