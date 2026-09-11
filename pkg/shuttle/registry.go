@@ -148,8 +148,8 @@ func (r *Registry) Unregister(name string) {
 // (e.g. "teradata-aiop:base_databaseList") and a plain alias
 // (e.g. "base_databaseList") without duplicating the tool implementation. It
 // returns false rather than overwriting an existing alias for a different tool.
-// Known limitation: aliases are first-server-wins; a later server exposing the
-// same plain name remains reachable only through its canonical qualified name.
+// Known limitation: the first registered tool retains a shared plain-name
+// alias; a later tool remains reachable only through its canonical qualified name.
 func (r *Registry) RegisterAlias(alias string, tool Tool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
