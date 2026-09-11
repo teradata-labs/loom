@@ -26,11 +26,60 @@ import (
 	"go.uber.org/zap"
 )
 
+// IsSyntheticWireUserRole reports whether role is a persisted Loom-internal
+// role that must be delivered to the LLM as user-turn content — the
+// skill-body sidecar, a hygiene retry injection, an empty-response retry
+// nudge, or a synthesis prompt — as opposed to the literal end user.
+// Exported so pkg/server's live-streaming gate (isNewMessageUpdateRole)
+// shares this definition instead of maintaining the same string set
+// independently.
+func IsSyntheticWireUserRole(role string) bool {
+	switch role {
+	case "skill_body", "hygiene_injection", "empty_response_retry", "synthesis_prompt":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeWireRoles returns a copy of messages where synthetic
+// Loom-internal roles read "user". The persisted and in-memory session
+// messages are never mutated; only this local copy, built immediately
+// before the provider call, changes. Returns the input slice unchanged
+// (no allocation) when nothing needs folding — the common case, since most
+// turns carry no skill-body or hygiene-injection rows at all.
+func normalizeWireRoles(messages []Message) []Message {
+	needsFold := false
+	for _, m := range messages {
+		if IsSyntheticWireUserRole(m.Role) {
+			needsFold = true
+			break
+		}
+	}
+	if !needsFold {
+		return messages
+	}
+
+	out := make([]Message, len(messages))
+	for i, m := range messages {
+		if IsSyntheticWireUserRole(m.Role) {
+			m.Role = "user"
+		}
+		out[i] = m
+	}
+	return out
+}
+
 // chatWithRetry wraps LLM Chat calls with slot scheduling, capacity
 // observation, and exponential backoff retry logic. If the provider supports
 // streaming and a progress callback is configured, it will use streaming
 // with token buffering to emit real-time progress.
 func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (resp *LLMResponse, err error) {
+	// Fold synthetic Loom-internal roles to the wire "user" role before
+	// anything else sees this slice — including the debug dump below, which
+	// must capture the true wire-bound view, not the persisted role.
+	messages = normalizeWireRoles(messages)
+
 	// Debug tap: one context dump per provider call, before any dispatch branch.
 	// No-op unless the dump switch is on. Covers streaming, no-retry, and the
 	// retry loop alike since every path fans out from here.

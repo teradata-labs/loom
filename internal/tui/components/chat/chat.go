@@ -376,6 +376,8 @@ func (m *messageListCmp) handleNewMessage(msg message.Message) tea.Cmd {
 		return m.handleNewUserMessage(msg)
 	case message.Assistant:
 		return m.handleNewAssistantMessage(msg)
+	case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
+		return m.handleNewSyntheticMessage(msg)
 	case message.Tool:
 		return m.handleToolMessage(msg)
 	}
@@ -385,6 +387,12 @@ func (m *messageListCmp) handleNewMessage(msg message.Message) tea.Cmd {
 // handleNewUserMessage adds a new user message to the list and updates the timestamp.
 func (m *messageListCmp) handleNewUserMessage(msg message.Message) tea.Cmd {
 	m.lastUserMessageTime = msg.CreatedAt
+	return m.listCmp.AppendItem(messages.NewMessageCmp(msg))
+}
+
+// handleNewSyntheticMessage appends a skill-body or hygiene-injection
+// message to the list without treating it as the human's turn.
+func (m *messageListCmp) handleNewSyntheticMessage(msg message.Message) tea.Cmd {
 	return m.listCmp.AppendItem(messages.NewMessageCmp(msg))
 }
 
@@ -603,6 +611,11 @@ func (m *messageListCmp) convertMessagesToUI(sessionMessages []message.Message, 
 			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
 				uiMessages = append(uiMessages, messages.NewAssistantSection(msg, time.Unix(m.lastUserMessageTime, 0)))
 			}
+		case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
+			// Synthetic content, not the human's turn — do not touch
+			// lastUserMessageTime, which anchors the assistant response timer
+			// to the real user's send time.
+			uiMessages = append(uiMessages, messages.NewMessageCmp(msg))
 		}
 	}
 

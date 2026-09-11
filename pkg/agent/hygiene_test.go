@@ -153,7 +153,7 @@ func TestEndOfTurnHygiene_RequireFix_InjectsAndRetriesOnce(t *testing.T) {
 	// LLM sees it on the next turn.
 	require.Len(t, rig.session.Messages, 1)
 	msg := rig.session.Messages[0]
-	assert.Equal(t, "user", msg.Role)
+	assert.Equal(t, "hygiene_injection", msg.Role)
 	assert.Contains(t, msg.Content, "Task-board hygiene check found violations")
 	assert.Contains(t, msg.Content, "open-unstarted")
 	assert.Contains(t, msg.Content, "in-progress-orphan")

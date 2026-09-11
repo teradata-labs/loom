@@ -37,7 +37,9 @@ const recallTruncationTailFormat = `[range truncated — continue: recall("msg:%
 // RecallTool retrieves conversation that is no longer shown, by an address
 // cited in the session summary (HLD §6). It returns the span's user and
 // assistant rows as stored — call signatures included, since they live inside
-// the assistant row and are what makes "re-run" literal — and omits role='tool'
+// the assistant row and are what makes "re-run" literal — plus the
+// skill_body and hygiene_injection rows (IsSyntheticWireUserRole), which are
+// recoverable text content under the same rationale. It omits role='tool'
 // rows entirely; a result's only door is re-running its call.
 type RecallTool struct {
 	agent *Agent
@@ -117,8 +119,12 @@ func (t *RecallTool) Execute(ctx context.Context, input map[string]interface{}) 
 	truncatedFrom := int64(0)
 	for _, m := range messages {
 		// Omit role='tool' rows entirely — a result's only door is re-running
-		// its call (HLD §6).
-		if m.Role != "user" && m.Role != "assistant" {
+		// its call (HLD §6). skill_body and hygiene_injection rows pass this
+		// check alongside user/assistant: they are recoverable text content,
+		// stored under their own persisted role instead of the literal
+		// "user" (see IsSyntheticWireUserRole), not results whose only door
+		// is re-running a call.
+		if m.Role != "user" && m.Role != "assistant" && !IsSyntheticWireUserRole(m.Role) {
 			continue
 		}
 		row := renderRecalledRow(m)
