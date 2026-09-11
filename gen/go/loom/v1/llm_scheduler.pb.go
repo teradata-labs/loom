@@ -40,7 +40,9 @@ const (
 	SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT SlotPriorityClass = 2
 	// Conversation holding an external scarce resource (database session
 	// handle, MCP slot): priority inheritance — it is blocking other agents
-	// that are burning LLM budget trying to acquire what it holds.
+	// that are burning LLM budget trying to acquire what it holds. Reached
+	// ONLY by actually holding a lease; starvation aging never promotes a
+	// request into this class (see starvation_age_s).
 	SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER SlotPriorityClass = 3
 )
 
@@ -179,9 +181,13 @@ type LLMSchedulerConfig struct {
 	// The door gate is wired process-wide and configured at boot via looms
 	// config (llm.max_door_queue); this per-scope field is not yet read.
 	MaxDoorQueue int32 `protobuf:"varint,4,opt,name=max_door_queue,json=maxDoorQueue,proto3" json:"max_door_queue,omitempty"`
-	// Seconds after which a waiting slot request is promoted one priority
-	// class. Bounds starvation: any waiter reaches the top class in at most
-	// 2 * starvation_age_s.
+	// Seconds a request may wait before it earns starvation precedence, which
+	// puts it at the head of its band ahead of every non-starved request
+	// regardless of class (oldest starved first). Each further interval
+	// advances its tier. Bounds starvation without rewriting priority class:
+	// waiting longer does not make a request a lease holder, so the
+	// RESOURCE_HOLDER class keeps meaning what it says even in a scope that
+	// has been saturated for a long time.
 	StarvationAgeS int32 `protobuf:"varint,5,opt,name=starvation_age_s,json=starvationAgeS,proto3" json:"starvation_age_s,omitempty"`
 	// Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
 	UtilizationTarget float32 `protobuf:"fixed32,6,opt,name=utilization_target,json=utilizationTarget,proto3" json:"utilization_target,omitempty"`

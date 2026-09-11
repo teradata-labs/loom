@@ -208,8 +208,63 @@ func TestAgingPromotesStarvedWaiters(t *testing.T) {
 
 	ws := s.Waiters()
 	require.Len(t, ws, 1)
-	assert.NotEqual(t, classNew, ws[0].Class, "waiter should have left NEW")
-	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1))
+	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1), "the starvation tier must advance")
+	assert.Equal(t, classNew, ws[0].Class,
+		"aging must NOT move the waiter's class: class says what a request is, "+
+			"and waiting longer does not turn a request into a lease holder — "+
+			"precedence for a starved waiter comes from dispatch")
+}
+
+// TestStarvedWaiterOutranksHolderWithoutBecomingOne is the liveness half of
+// that contract: a starved NEW waiter must still be served ahead of a
+// freshly-arrived RESOURCE_HOLDER, so removing the cross-class promotion
+// cannot starve lower classes behind a stream of holders.
+//
+// Reservations are sized so exactly ONE of the two waiters fits once the hog
+// releases (budget 800; two 500s cannot both be admitted) — otherwise both
+// are granted in the same dispatch pass and the assertion is a coin flip.
+func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 300 * time.Millisecond, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	// A NEW waiter parks first and ages past a starvation threshold.
+	newDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classNew})
+		if err == nil {
+			g.Release(1)
+		}
+		close(newDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().PromotionsTotal >= 1 },
+		5*time.Second, 20*time.Millisecond, "the NEW waiter must reach starvation")
+
+	// A holder arrives afterwards — higher class, but it has not starved.
+	holderDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classHolder})
+		if err == nil {
+			g.Release(1)
+		}
+		close(holderDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().ParkedRequests >= 2 },
+		5*time.Second, 20*time.Millisecond, "both must be parked")
+
+	// True up the hog's reservation (Release(0) would book the whole 700 and
+	// keep the window full until rollover), freeing room for exactly one.
+	hog.Release(1)
+
+	select {
+	case <-newDone:
+		// The starved waiter went first, without ever changing class.
+	case <-holderDone:
+		t.Fatal("the freshly-arrived holder was served before the starved waiter")
+	case <-time.After(5 * time.Second):
+		t.Fatal("neither waiter was served")
+	}
+	<-holderDone
 }
 
 func TestReservationTrueUpFreesBudget(t *testing.T) {
@@ -415,8 +470,13 @@ func TestStarvedTopClassHeadHaltsBackfill(t *testing.T) {
 		require.NoError(t, gerr)
 		holderGranted <- g
 	}()
-	// ...and starves past its aging point at the top class.
-	time.Sleep(300 * time.Millisecond)
+	// ...and starves for real. Starvation is promoted > 0, and promoted is
+	// only bumped by ageLocked on the 1s tick — so sleeping past
+	// StarvationAge is NOT enough, and a short sleep here made this test
+	// assert the NON-starved path by accident (the old flattened dispatch
+	// halted the band for any unfit head, starved or not, so it passed for
+	// the wrong reason and left the starved case unexercised).
+	waitUntilStarved(t, s)
 
 	// A stream of small NEW arrivals that would individually fit.
 	smallGranted := make(chan *Grant, 2)
@@ -611,4 +671,85 @@ func TestListWaitersAllScopes(t *testing.T) {
 
 	cancel()
 	held.Release(0)
+}
+
+// The mirror of TestStarvedTopClassHeadHaltsBackfill: a NON-starved head that
+// cannot fit must block only its own class, not the whole band.
+//
+// Halting the band is correct for a STARVED head — that is how it finally
+// accumulates capacity. Applying the same halt to an ordinary head silently
+// converts one stuck large reservation into a stall for every cheaper waiter
+// behind it, for up to a full starvation_age. That is the throughput this
+// function's contract promises ("below a non-starved head, backfill
+// continues"), and only the starved case was pinned before.
+func TestNonStarvedHeadAllowsBackfill(t *testing.T) {
+	// StarvationAge far exceeds the test's lifetime, so nothing starves and
+	// the head below is unambiguously ordinary.
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
+
+	hog1, err := s.Acquire(context.Background(), Request{ReservationTokens: 500})
+	require.NoError(t, err)
+	hog2, err := s.Acquire(context.Background(), Request{ReservationTokens: 200})
+	require.NoError(t, err)
+
+	// A large RESOURCE_HOLDER parks: 500+200+400 > 800.
+	holderGranted := make(chan *Grant, 1)
+	go func() {
+		g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 400, Class: classHolder, ConversationID: "big-holder"})
+		require.NoError(t, gerr)
+		holderGranted <- g
+	}()
+	time.Sleep(100 * time.Millisecond) // park it, but nowhere near starving
+
+	// A cheap NEW arrival in a lower class, which fits once hog2 releases.
+	smallGranted := make(chan *Grant, 1)
+	go func() {
+		g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 100, Class: classNew})
+		require.NoError(t, gerr)
+		smallGranted <- g
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// Free 200: the holder still does not fit (500+400 > 800), but the small
+	// one does (500+100 <= 800). Because the holder is NOT starved, it holds
+	// up only its own class and the small NEW waiter must be granted.
+	hog2.Release(1)
+
+	select {
+	case g := <-smallGranted:
+		g.Release(1)
+	case <-holderGranted:
+		t.Fatal("holder cannot fit while hog1 holds 500")
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cheap NEW waiter was stalled behind an unfit but NON-starved holder; " +
+			"an ordinary head must block only its own class, not the band")
+	}
+
+	hog1.Release(1)
+	select {
+	case g := <-holderGranted:
+		g.Release(1)
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder never admitted after capacity freed")
+	}
+}
+
+// waitUntilStarved blocks until some parked waiter has actually crossed a
+// starvation tier (promoted > 0), which only ageLocked's 1s tick can do.
+func waitUntilStarved(t *testing.T, s *Scheduler) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, band := range bandOrder {
+			for _, class := range dispatchOrder {
+				for _, w := range s.queues[band][class] {
+					if !w.cancelled && hasStarvedLocked(w) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 5*time.Second, 50*time.Millisecond, "no waiter ever crossed a starvation tier")
 }

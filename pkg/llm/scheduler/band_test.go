@@ -79,8 +79,10 @@ func TestBatchCannotConsumeInteractiveHeadroom(t *testing.T) {
 	g2.Release(1)
 }
 
-// Aging must never promote a batch waiter into the interactive band: batch
-// liveness comes from its own budget share, not the human lane.
+// Aging must never move a batch waiter into the interactive band. The bands
+// are a hard ordering — interactive outranks batch entirely — so a batch
+// waiter's liveness comes from starvation precedence WITHIN its own band,
+// never from crossing into the human lane.
 func TestAgingStaysWithinBand(t *testing.T) {
 	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 500 * time.Millisecond})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 600, Origin: originInteractive})
@@ -95,14 +97,16 @@ func TestAgingStaysWithinBand(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait until aging has demonstrably promoted the batch waiter twice
-	// (NEW → IN_FLIGHT → RESOURCE_HOLDER within the batch band).
+	// Wait until aging has demonstrably advanced the batch waiter's
+	// starvation tier twice.
 	require.Eventually(t, func() bool {
 		return s.State().PromotionsTotal >= 2
 	}, 15*time.Second, 100*time.Millisecond)
 
 	ws := s.Waiters()
 	require.Len(t, ws, 1)
-	assert.Equal(t, originBatch, ws[0].Origin, "promotion must never change the band")
-	assert.Equal(t, classHolder, ws[0].Class, "waiter should have aged to the top of its own band")
+	assert.Equal(t, originBatch, ws[0].Origin, "aging must never change the band")
+	assert.Equal(t, classNew, ws[0].Class,
+		"aging advances the starvation tier without rewriting the class")
+	assert.GreaterOrEqual(t, ws[0].Promotions, int32(2))
 }
