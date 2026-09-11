@@ -189,6 +189,15 @@ Total sessions: 948 (avg 1.9/entry)
 Total turns:    10960 (avg 11.6/session)
 ```
 
+`--json` emits the same statistics machine-readably (`entries`,
+`question_types` as an ordered `{type, count}` array, `total_sessions`,
+`total_turns`). The AKS slice loop uses it to derive its per-type chunk counts
+from the dataset instead of hardcoding them:
+
+```bash
+./bin/loom-longmemeval info --json | jq -r '.question_types[] | [.type, .count] | @tsv'
+```
+
 ## Run Modes
 
 Selected with `--mode`:
