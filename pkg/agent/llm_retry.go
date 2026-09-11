@@ -100,12 +100,24 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	}
 
 	// Non-streaming path with retry logic
-	// If retry is disabled, call LLM directly
+	// If retry is disabled, call LLM directly — but throttling still pauses
+	// rather than failing: disabling retry opts out of retrying FAILURES,
+	// not out of honoring provider flow control.
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		return a.llm.Chat(ctx, messages, tools)
+		var patience throttlePatience
+		for {
+			resp, err := a.llm.Chat(ctx, messages, tools)
+			if err == nil || !llm.IsThrottle(err) {
+				return resp, err
+			}
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+		}
 	}
 
 	var lastErr error
+	var patience throttlePatience
 	delay := a.config.Retry.InitialDelay
 
 	for attempt := 0; attempt <= a.config.Retry.MaxRetries; attempt++ {
@@ -135,6 +147,18 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled)",
 				attempt+1, a.config.Retry.MaxRetries+1, err)
+		}
+
+		// Throttling is flow control, not failure: it never consumes a retry
+		// attempt. Wait out the provider-stated window (or a patient default)
+		// and go again, bounded by the patience budget and the conversation's
+		// own deadline.
+		if llm.IsThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+			attempt--
+			continue
 		}
 
 		// If this is the last attempt, don't sleep
@@ -174,6 +198,67 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
 		a.config.Retry.MaxRetries+1, lastErr)
+}
+
+// throttlePatience paces re-invocation against provider throttling (429 and
+// kin). Waits honor the provider-stated retry-after when the error names one,
+// escalate 2s→60s otherwise, and give up only past a total budget — a
+// throttled conversation pauses, it does not die.
+type throttlePatience struct {
+	delay time.Duration
+	total time.Duration
+}
+
+const (
+	throttleInitialDelay = 2 * time.Second
+	throttleMaxDelay     = 60 * time.Second
+	// throttleBudget bounds total throttle waiting per LLM call so a caller
+	// without a deadline cannot park forever on a hard-down provider.
+	throttleBudget = 10 * time.Minute
+)
+
+// absorbThrottle records the throttle with the slot scheduler, then waits it
+// out. The observation has to happen HERE, at absorption: chatWithRetry's
+// deferred observeSchedulerOutcome only ever sees the call's FINAL error, so
+// a throttle that patience rides out and then succeeds would reach the AIMD
+// seam as a SUCCESS and GROW the scope's ceiling — the exact opposite of what
+// a congestion signal must do. The scheduler already collapses repeat
+// observations within one congestion event, so absorbing a burst does not
+// halve the ceiling repeatedly.
+func (a *Agent) absorbThrottle(ctx Context, p *throttlePatience, err error) error {
+	if scheduler.Enabled() {
+		scheduler.ObserveThrottleForScope(a.schedulerScope(), llm.RetryAfter(err))
+	}
+	return p.wait(ctx, err)
+}
+
+func (p *throttlePatience) wait(ctx Context, err error) error {
+	if p.delay == 0 {
+		p.delay = throttleInitialDelay
+	}
+	wait := p.delay
+	if hint := llm.RetryAfter(err); hint > wait {
+		wait = hint
+	}
+	if p.total+wait > throttleBudget {
+		return fmt.Errorf("llm throttled beyond %s patience budget: %w", throttleBudget, err)
+	}
+	zap.L().Warn("llm throttled; conversation paused, not failed",
+		zap.Duration("wait", wait),
+		zap.Duration("throttled_so_far", p.total),
+		zap.Error(err),
+	)
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("llm throttled and context ended during wait: %w", ctx.Err())
+	case <-time.After(wait):
+	}
+	p.total += wait
+	p.delay *= 2
+	if p.delay > throttleMaxDelay {
+		p.delay = throttleMaxDelay
+	}
+	return nil
 }
 
 // chatWithStreaming uses streaming API with token buffering and progress emission.
@@ -239,9 +324,29 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		}
 	}
 
-	// Call streaming provider
-	resp, err := streamingProvider.ChatStream(ctx, messages, tools, tokenCallback)
-	if err != nil {
+	// Call streaming provider. Throttling pauses and re-invokes — the
+	// previous behavior ("streaming already handles errors") returned the
+	// first 429 straight up the stack and killed the conversation. Buffered
+	// state resets per attempt so a retried stream never duplicates tokens.
+	var patience throttlePatience
+	var resp *LLMResponse
+	for {
+		buffer.Reset()
+		tokenCount = 0
+		ttft = 0
+		ttftRecorded = false
+
+		var err error
+		resp, err = streamingProvider.ChatStream(ctx, messages, tools, tokenCallback)
+		if err == nil {
+			break
+		}
+		if llm.IsThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
 		return nil, err
 	}
 
