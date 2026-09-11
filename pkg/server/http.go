@@ -8,20 +8,25 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // CORSConfig holds CORS configuration
@@ -307,34 +312,6 @@ func (h *HTTPServer) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(spec)
 }
 
-// SlotOriginHTTPHeader is the HTTP request header SSE clients use to assert
-// this turn's scheduling band — "interactive" (a human is waiting on the
-// response) or "batch" (the default when absent). It mirrors the gRPC
-// metadata key (SlotOriginMetadataKey) under the same trust model: the value
-// is client-asserted and trusted as-is.
-const SlotOriginHTTPHeader = "X-Loom-Slot-Origin"
-
-// withHTTPSlotOrigin maps the client-asserted X-Loom-Slot-Origin header into
-// incoming gRPC metadata on ctx, so slotOriginFromMetadata — and with it
-// slot scheduling and door admission — sees the HTTP turn's band. Without
-// this mapping an HTTP request context carries no gRPC metadata, every
-// HTTP/SSE client classifies BATCH, and a web human parks at the door
-// behind fleets.
-func withHTTPSlotOrigin(ctx context.Context, r *http.Request) context.Context {
-	origin := strings.ToLower(strings.TrimSpace(r.Header.Get(SlotOriginHTTPHeader)))
-	if origin == "" {
-		return ctx
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if ok {
-		md = md.Copy()
-	} else {
-		md = metadata.MD{}
-	}
-	md.Set(SlotOriginMetadataKey, origin)
-	return metadata.NewIncomingContext(ctx, md)
-}
-
 // handleStreamWeaveSSE handles SSE streaming for /v1/weave:stream
 func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -360,22 +337,82 @@ func (h *HTTPServer) handleStreamWeaveSSE(w http.ResponseWriter, r *http.Request
 		flusher.Flush()
 	}
 
-	// Create gRPC stream. The context carries the client-asserted slot
-	// origin (X-Loom-Slot-Origin) as incoming gRPC metadata so interactive
-	// HTTP turns bypass door admission exactly like interactive gRPC turns.
+	ctx := withHTTPSlotOrigin(r.Context(), r)
+
+	// Create gRPC stream
 	stream := &sseStreamWrapper{
-		ctx:     withHTTPSlotOrigin(r.Context(), r),
+		ctx:     ctx,
 		writer:  w,
 		flusher: w.(http.Flusher),
 		logger:  h.logger,
 	}
 
+	// Emit periodic SSE heartbeats while StreamWeave runs. Some stages (e.g.
+	// pattern-selection / skill-decompose LLM calls) can run for tens of
+	// seconds without producing a single WeaveProgress event. Upstream
+	// proxies/load balancers with an idle-connection timeout (a common default
+	// is 60s) may kill an SSE connection that has been silent that long, which
+	// surfaces to the browser as a client-cancelled request and an empty
+	// response even though the agent was still working. A ~15s heartbeat
+	// keeps bytes flowing so those idle timeouts don't trigger.
+	heartbeatDone := make(chan struct{})
+	var heartbeatWg sync.WaitGroup
+	heartbeatWg.Add(1)
+	go func() {
+		defer heartbeatWg.Done()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				if err := stream.writeHeartbeat(); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	// Close the done channel to signal the goroutine, then wait for it to
+	// finish before returning so it cannot write to the ResponseWriter after
+	// ServeHTTP exits (which net/http forbids).
+	defer func() {
+		close(heartbeatDone)
+		heartbeatWg.Wait()
+	}()
+
 	// Execute StreamWeave
 	if err := h.grpcServer.StreamWeave(&req, stream); err != nil {
-		h.logger.Error("StreamWeave failed", zap.Error(err))
+		if isClientCanceled(err) {
+			// The client disconnected or cancelled the request (e.g. closed the
+			// tab/EventSource, navigated away, or hit a client-side timeout).
+			// This is routine SSE lifecycle, not a server failure, so it is
+			// logged at Info rather than Error to avoid false-positive alerts.
+			h.logger.Info("StreamWeave stopped: client disconnected", zap.Error(err))
+		} else {
+			h.logger.Error("StreamWeave failed", zap.Error(err))
+		}
 		// Send error as SSE event
-		h.sendSSEError(w, stream.flusher, err)
+		stream.writeError(err)
 	}
+}
+
+// isClientCanceled reports whether err represents a client-initiated stream
+// cancellation (context canceled or gRPC codes.Canceled) rather than a
+// genuine server-side failure.
+func isClientCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Code() == codes.Canceled
+	}
+	return false
 }
 
 // sseStreamWrapper implements loomv1.LoomService_StreamWeaveServer for SSE
@@ -384,18 +421,26 @@ type sseStreamWrapper struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	logger  *zap.Logger
+
+	// mu serializes writes to writer/flusher between Send (from the StreamWeave
+	// goroutine) and writeHeartbeat (from the heartbeat ticker goroutine).
+	mu sync.Mutex
 }
 
 func (s *sseStreamWrapper) Send(progress *loomv1.WeaveProgress) error {
-	// Convert progress to JSON
+	// Use encoding/json so the SSE wire format matches the snake_case field names
+	// and numeric enum values that existing SSE clients (and docs/reference/streaming.md)
+	// expect. Do not switch to protojson — that would change the wire format and break clients.
 	data, err := json.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("failed to marshal progress: %w", err)
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Write SSE event
-	_, err = fmt.Fprintf(s.writer, "data: %s\n\n", data)
-	if err != nil {
+	if _, err := fmt.Fprintf(s.writer, "data: %s\n\n", data); err != nil {
 		return err
 	}
 
@@ -403,6 +448,45 @@ func (s *sseStreamWrapper) Send(progress *loomv1.WeaveProgress) error {
 	s.flusher.Flush()
 
 	return nil
+}
+
+// writeHeartbeat writes an SSE comment line (ignored by spec-compliant SSE
+// clients since it doesn't start with "data:") purely to keep the
+// connection's byte stream active for idle-timeout proxies/load balancers.
+func (s *sseStreamWrapper) writeHeartbeat() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := fmt.Fprint(s.writer, ": heartbeat\n\n"); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
+
+func (s *sseStreamWrapper) writeError(err error) {
+	errorEvent := map[string]interface{}{
+		"error":    err.Error(),
+		"stage":    "EXECUTION_STAGE_FAILED",
+		"progress": 0,
+	}
+	data, marshalErr := json.Marshal(errorEvent)
+	if marshalErr != nil {
+		s.logger.Error("failed to marshal SSE error", zap.Error(marshalErr))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, writeErr := fmt.Fprintf(s.writer, "data: %s\n\n", data); writeErr != nil {
+		if isClientCanceled(writeErr) || errors.Is(writeErr, syscall.EPIPE) || errors.Is(writeErr, syscall.ECONNRESET) {
+			s.logger.Debug("client disconnected before SSE error could be written", zap.Error(writeErr))
+		} else {
+			s.logger.Error("failed to write SSE error", zap.Error(writeErr))
+		}
+		return
+	}
+	s.flusher.Flush()
 }
 
 func (s *sseStreamWrapper) SetHeader(md metadata.MD) error {
@@ -509,17 +593,4 @@ func (h *HTTPServer) handleAppHTML(w http.ResponseWriter, _ *http.Request, name 
 			"connect-src 'self'; frame-ancestors 'self'")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content) // #nosec -- trusted internal app HTML served with strict CSP headers
-}
-
-// sendSSEError sends an error event via SSE
-func (h *HTTPServer) sendSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	errorEvent := map[string]interface{}{
-		"error":    err.Error(),
-		"stage":    "EXECUTION_STAGE_FAILED",
-		"progress": 0,
-	}
-
-	data, _ := json.Marshal(errorEvent)
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
 }

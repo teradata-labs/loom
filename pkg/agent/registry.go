@@ -27,6 +27,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
+	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -944,6 +945,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if config.Tools != nil && len(config.Tools.Builtin) > 0 {
 		// Filter builtin tools based on config
 		for _, toolName := range config.Tools.Builtin {
+			// The server constructs this tool later with request-scoped session
+			// and agent identifiers when the configuration explicitly opts in.
+			if toolName == "manage_ephemeral_agents" {
+				continue
+			}
 			tool := builtin.ByName(toolName)
 			if tool != nil {
 				// Wrap with PromptAwareTool if prompts registry available
@@ -1194,6 +1200,20 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		}
 		return openai.NewClient(openai.Config{
 			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "litellm":
+		endpoint := os.Getenv("LITELLM_ENDPOINT")
+		if endpoint == "" {
+			endpoint = os.Getenv("LITELLM_BASE_URL")
+		}
+		return litellm.NewClient(litellm.Config{
+			Endpoint:          endpoint,
+			APIKey:            os.Getenv("LITELLM_API_KEY"),
 			Model:             config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),

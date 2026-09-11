@@ -145,6 +145,65 @@ func TestAdmission_Allow_RunsToolAndReturnsResult(t *testing.T) {
 	require.Equal(t, map[string]interface{}{"k": "v"}, tool.LastParams)
 }
 
+func TestAdmission_AliasAdmittedOnceUsingCanonicalName(t *testing.T) {
+	reg := NewRegistry()
+	tool := countingTool("mcp-server:write_query")
+	reg.Register(tool)
+	reg.RegisterAlias("write_query", tool)
+
+	var admitted []string
+	exec := NewExecutor(reg)
+	exec.SetAdmissionChain(NewChain([]Hook{fixedHook{
+		match: func(req AdmissionRequest) bool {
+			admitted = append(admitted, req.ToolName)
+			return true
+		},
+		decision: Decision{Kind: Allow},
+	}}, nil, nil))
+
+	result, err := exec.Execute(context.Background(), "write_query", nil)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, []string{"mcp-server:write_query"}, admitted)
+	require.Equal(t, 1, tool.ExecuteCount)
+}
+
+func TestAdmission_AliasHonorsPoliciesForBothNames(t *testing.T) {
+	newAliasExecutor := func(config PermissionConfig) (*Executor, *MockTool) {
+		reg := NewRegistry()
+		tool := countingTool("mcp-server:write_query")
+		reg.Register(tool)
+		require.True(t, reg.RegisterAlias("write_query", tool))
+		exec := NewExecutor(reg)
+		exec.SetAdmissionChain(NewChain([]Hook{newPermHook(NewPermissionChecker(config))}, nil, nil))
+		return exec, tool
+	}
+
+	t.Run("disabled alias cannot run through its canonical tool", func(t *testing.T) {
+		exec, tool := newAliasExecutor(PermissionConfig{DisabledTools: []string{"write_query"}})
+		require.Equal(t, Deny, exec.Preflight(context.Background(), "write_query", nil).Kind)
+
+		result, err := exec.Execute(context.Background(), "write_query", nil)
+		require.NoError(t, err)
+		require.Equal(t, "permission_denied", result.Error.Code)
+		require.Equal(t, 0, tool.ExecuteCount)
+	})
+
+	t.Run("canonical allowlist applies through alias", func(t *testing.T) {
+		exec, tool := newAliasExecutor(PermissionConfig{
+			RequireApproval: true,
+			AllowedTools:    []string{"mcp-server:write_query"},
+			DefaultAction:   "deny",
+		})
+		require.Equal(t, Allow, exec.Preflight(context.Background(), "write_query", nil).Kind)
+
+		result, err := exec.Execute(context.Background(), "write_query", nil)
+		require.NoError(t, err)
+		require.True(t, result.Success)
+		require.Equal(t, 1, tool.ExecuteCount)
+	})
+}
+
 // ac3: a tool call matched by no hook behaves exactly as with no chain attached
 // — the §8-R2 byte-for-byte pass-through guard. The no-chain baseline and a
 // chain whose only hook never matches must yield identical Results.

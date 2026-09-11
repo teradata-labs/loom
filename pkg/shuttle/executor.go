@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -164,6 +165,30 @@ func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 	e.builtinToolProvider = provider
 }
 
+// CanonicalToolName returns the registered tool's own name for a lookup key.
+// Registry aliases point at the same Tool instance, so this keeps permissions,
+// admission, and circuit breakers keyed consistently with direct calls.
+// When the name is not found by direct lookup, a local suffix scan is tried
+// (same logic as tryDynamicRegistration) so callers get the server-qualified
+// name even for suffix or sanitized-name inputs.
+func (e *Executor) CanonicalToolName(name string) string {
+	if tool, ok := e.registry.Get(name); ok {
+		return tool.Name()
+	}
+	suffix := ":" + name
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		n := t.Name()
+		if strings.HasSuffix(n, suffix) || strings.ReplaceAll(n, ":", "_") == name {
+			matches = append(matches, t)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].Name()
+	}
+	return name
+}
+
 // admit runs the admission gates for a tool call. It returns the request handed
 // to the hooks, the admission result, and — when the decision is Deny — a ready
 // permission_denied Result to return in place of running the tool. The
@@ -171,9 +196,10 @@ func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
 // without a chain attached — so SetPermissionChecker is never silently inert:
 // a host that sets both gets the checker first, then the chain. With neither
 // configured the call is a pure pass-through.
-func (e *Executor) admit(ctx context.Context, toolName string, params map[string]interface{}) (AdmissionRequest, AdmissionResult, *Result) {
+
+func (e *Executor) admit(ctx context.Context, toolName, requestedToolName string, params map[string]interface{}) (AdmissionRequest, AdmissionResult, *Result) {
 	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, params); err != nil {
+		if err := e.permissionChecker.checkPermissionNames(ctx, toolName, requestedToolName, params); err != nil {
 			denied := &Result{
 				Success: false,
 				Error:   &Error{Code: "permission_denied", Message: err.Error(), Retryable: false},
@@ -191,12 +217,13 @@ func (e *Executor) admit(ctx context.Context, toolName string, params map[string
 	}
 
 	req := AdmissionRequest{
-		Ctx:       ctx,
-		ToolName:  toolName,
-		Params:    params,
-		UserID:    userID,
-		SessionID: session.SessionIDFromContext(ctx),
-		State:     e.approvedSet,
+		Ctx:               ctx,
+		ToolName:          toolName,
+		RequestedToolName: requestedToolName,
+		Params:            params,
+		UserID:            userID,
+		SessionID:         session.SessionIDFromContext(ctx),
+		State:             e.approvedSet,
 	}
 
 	res := e.admissionChain.Admit(req)
@@ -263,8 +290,9 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 
 	normalizedParams := NormalizeParametersToSchema(tool, params)
 
+	canonicalToolName := tool.Name()
 	if e.permissionChecker != nil {
-		if err := e.permissionChecker.CheckPermission(ctx, toolName, normalizedParams); err != nil {
+		if err := e.permissionChecker.checkPermissionNames(ctx, canonicalToolName, toolName, normalizedParams); err != nil {
 			return Decision{Kind: Deny, Reason: err.Error()}
 		}
 	}
@@ -277,12 +305,13 @@ func (e *Executor) Preflight(ctx context.Context, toolName string, params map[st
 		userID = e.identityResolver(ctx)
 	}
 	req := AdmissionRequest{
-		Ctx:       ctx,
-		ToolName:  toolName,
-		Params:    normalizedParams,
-		UserID:    userID,
-		SessionID: session.SessionIDFromContext(ctx),
-		State:     e.approvedSet,
+		Ctx:               ctx,
+		ToolName:          canonicalToolName,
+		RequestedToolName: toolName,
+		Params:            normalizedParams,
+		UserID:            userID,
+		SessionID:         session.SessionIDFromContext(ctx),
+		State:             e.approvedSet,
 	}
 	return e.admissionChain.Preflight(req)
 }
@@ -317,7 +346,8 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	// dynamic registration) so an externally-resolved tool is governed at the
 	// same seam as a local one. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, toolName, normalizedParams)
+	//
+	req, admRes, denied := e.admit(ctx, tool.Name(), toolName, normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
@@ -392,7 +422,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 
 	// Admit before execution. A Deny returns the permission_denied Result
 	// without running the tool body.
-	req, admRes, denied := e.admit(ctx, tool.Name(), normalizedParams)
+	req, admRes, denied := e.admit(ctx, tool.Name(), tool.Name(), normalizedParams)
 	adm = admRes
 	if denied != nil {
 		return denied, nil
@@ -676,6 +706,43 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	// Fast path: the tool may already be registered locally under its
+	// server-qualified name (e.g., "teradata-aiop-mcp-server:base_readQuery")
+	// while the LLM called it using either:
+	//   - the plain unprefixed name ("base_readQuery"), because the ROM or
+	//     tool_search result returned the unprefixed form, or
+	//   - the LLM-sanitized qualified name ("teradata-aiop-mcp-server_base_readQuery"),
+	//     since some providers reject ':' in tool names (see llm.SanitizeToolName)
+	//     and the caller re-derived the sanitized form from an earlier turn
+	//     instead of using the provider's reverse-mapped original name.
+	// Scan the local registry first before hitting the external tool registry.
+	suffix := ":" + toolName
+	var matches []Tool
+	for _, t := range e.registry.ListTools() {
+		name := t.Name()
+		if strings.HasSuffix(name, suffix) || strings.ReplaceAll(name, ":", "_") == toolName {
+			matches = append(matches, t)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name() < matches[j].Name() })
+	if len(matches) == 1 {
+		// Register an alias so subsequent calls skip this scan.
+		if e.registry.RegisterAlias(toolName, matches[0]) {
+			return matches[0], nil
+		}
+		if registered, ok := e.registry.Get(toolName); ok {
+			return registered, nil
+		}
+		return nil, fmt.Errorf("failed to register alias %q", toolName)
+	}
+	if len(matches) > 1 {
+		names := make([]string, len(matches))
+		for i, match := range matches {
+			names[i] = match.Name()
+		}
+		return nil, fmt.Errorf("ambiguous tool name %q matches %s", toolName, strings.Join(names, ", "))
+	}
+
 	// Check if tool registry is configured
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")

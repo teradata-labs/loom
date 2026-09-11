@@ -67,7 +67,7 @@ type AutoSelectConfig struct {
 	// OTLPHeaders are HTTP headers sent with OTLP requests (e.g. auth tokens).
 	OTLPHeaders map[string]string
 
-	// OTLPInsecure disables TLS verification (local dev only).
+	// OTLPInsecure selects plaintext HTTP transport (local dev only).
 	OTLPInsecure bool
 
 	// ServiceName populates resource attribute service.name in otel mode.
@@ -112,7 +112,7 @@ func NewAutoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 			Headers:     config.OTLPHeaders,
 			Insecure:    config.OTLPInsecure,
 			ServiceName: config.ServiceName,
-			Privacy:     safeOTelPrivacy(config.Privacy),
+			Privacy:     safePrivacy(config.Privacy),
 		})
 	case TracerModeAuto:
 		return autoSelectTracer(config)
@@ -142,7 +142,7 @@ func autoSelectTracer(config *AutoSelectConfig) (Tracer, error) {
 			Headers:     config.OTLPHeaders,
 			Insecure:    config.OTLPInsecure,
 			ServiceName: config.ServiceName,
-			Privacy:     safeOTelPrivacy(config.Privacy),
+			Privacy:     safePrivacy(config.Privacy),
 		})
 	}
 
@@ -198,17 +198,10 @@ func isServiceAvailable(config *AutoSelectConfig) bool {
 	return config.HawkURL != ""
 }
 
-// safeOTelPrivacy dereferences a *PrivacyConfig for OTel construction paths.
-// When nil (caller did not explicitly configure privacy) it defaults to safe
-// redaction-on behaviour: credentials and PII are redacted before export to
-// any off-box OTLP backend.  Callers that intentionally want no redaction must
-// pass an explicit &PrivacyConfig{RedactCredentials: false, RedactPII: false}.
-func safeOTelPrivacy(p *PrivacyConfig) PrivacyConfig {
+// safePrivacy preserves secure export defaults unless explicitly overridden.
+func safePrivacy(p *PrivacyConfig) PrivacyConfig {
 	if p == nil {
-		return PrivacyConfig{
-			RedactCredentials: true,
-			RedactPII:         true,
-		}
+		return PrivacyConfig{RedactCredentials: true, RedactPII: true}
 	}
 	return *p
 }
@@ -301,10 +294,6 @@ func newEmbeddedTracer(config *AutoSelectConfig) (Tracer, error) {
 //	export LOOM_EMBEDDED_STORAGE=memory
 //	export HAWK_URL=http://localhost:8090
 func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
-	var otlpHeaders map[string]string
-	if raw := firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "LOOM_OTLP_HEADERS"); raw != "" {
-		otlpHeaders = parseHeadersEnv(raw)
-	}
 	config := &AutoSelectConfig{
 		Mode:                TracerMode(getEnv("LOOM_TRACER_MODE", "auto")),
 		PreferEmbedded:      getEnv("LOOM_TRACER_PREFER_EMBEDDED", "true") == "true",
@@ -312,10 +301,10 @@ func NewAutoSelectTracerFromEnv(logger *zap.Logger) (Tracer, error) {
 		HawkAPIKey:          os.Getenv("HAWK_API_KEY"),
 		EmbeddedStorageType: getEnv("LOOM_EMBEDDED_STORAGE", "memory"),
 		EmbeddedSQLitePath:  os.Getenv("LOOM_EMBEDDED_SQLITE_PATH"),
-		OTLPEndpoint:        resolveOTLPEndpointEnv(),
-		OTLPHeaders:         otlpHeaders,
-		OTLPInsecure:        os.Getenv("LOOM_OTLP_INSECURE") == "true",
-		ServiceName:         firstEnv("OTEL_SERVICE_NAME", ""),
+		OTLPEndpoint:        ResolveOTLPEndpointEnv(),
+		OTLPHeaders:         ParseHeadersEnv(firstEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS")),
+		OTLPInsecure:        getEnv("LOOM_OTLP_INSECURE", "false") == "true",
+		ServiceName:         os.Getenv("OTEL_SERVICE_NAME"),
 		Logger:              logger,
 	}
 

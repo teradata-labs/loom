@@ -6,13 +6,21 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestCORSMiddleware(t *testing.T) {
@@ -305,4 +313,139 @@ func TestNewHTTPServerWithCORS(t *testing.T) {
 	require.NotNil(t, httpServer)
 	assert.False(t, httpServer.corsConfig.Enabled)
 	assert.Equal(t, []string{"https://custom.com"}, httpServer.corsConfig.AllowedOrigins)
+}
+
+// TestSSEStreamWrapperSendPreservesLegacyJSON pins the documented SSE contract
+// used by existing clients: snake_case fields and numeric enum values.
+func TestSSEStreamWrapperSendPreservesLegacyJSON(t *testing.T) {
+	rr := httptest.NewRecorder()
+	wrapper := &sseStreamWrapper{
+		ctx:     nil, //nolint:staticcheck // test-only stream wrapper, no context needed
+		writer:  rr,
+		flusher: rr,
+		logger:  zap.NewNop(),
+	}
+
+	progress := &loomv1.WeaveProgress{
+		Stage:          loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
+		IsTokenStream:  true,
+		PartialContent: "hello world",
+		TokenCount:     2,
+	}
+
+	require.NoError(t, wrapper.Send(progress))
+
+	body := rr.Body.String()
+	assert.Contains(t, body, `"stage":7`)
+	assert.Contains(t, body, `"is_token_stream":true`)
+	assert.Contains(t, body, `"partial_content":"hello world"`)
+	assert.Contains(t, body, `"token_count":2`)
+}
+
+// TestSSEStreamWrapperWriteHeartbeat guards the idle-connection keepalive:
+// writeHeartbeat must emit an SSE comment line (starts with ":", not
+// "data:") so spec-compliant SSE clients ignore it, while still producing
+// bytes on the wire so upstream idle-timeout proxies/load balancers (which
+// may kill a silent SSE connection, e.g. during a long skill-decompose LLM
+// call) see traffic and don't terminate the request before the agent emits
+// its first real WeaveProgress event.
+func TestSSEStreamWrapperWriteHeartbeat(t *testing.T) {
+	rr := httptest.NewRecorder()
+	wrapper := &sseStreamWrapper{
+		ctx:     nil, //nolint:staticcheck // test-only stream wrapper, no context needed
+		writer:  rr,
+		flusher: rr,
+		logger:  zap.NewNop(),
+	}
+
+	require.NoError(t, wrapper.writeHeartbeat())
+
+	body := rr.Body.String()
+	assert.Equal(t, ": heartbeat\n\n", body)
+	assert.False(t, strings.HasPrefix(body, "data:"), "heartbeat must not be parsed as a data event")
+}
+
+// TestSSEStreamWrapperWritesConcurrent guards against data races among progress,
+// heartbeat, and terminal error writes to the same ResponseWriter/Flusher.
+// Run with -race to catch regressions if the mutex is ever removed.
+func TestSSEStreamWrapperWritesConcurrent(t *testing.T) {
+	rr := httptest.NewRecorder()
+	wrapper := &sseStreamWrapper{
+		ctx:     nil, //nolint:staticcheck // test-only stream wrapper, no context needed
+		writer:  rr,
+		flusher: rr,
+		logger:  zap.NewNop(),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			_ = wrapper.writeHeartbeat()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		progress := &loomv1.WeaveProgress{PartialContent: "chunk"}
+		for i := 0; i < 20; i++ {
+			_ = wrapper.Send(progress)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		wrapper.writeError(errors.New("stream failed"))
+	}()
+	wg.Wait()
+	assert.Contains(t, rr.Body.String(), `"stage":"EXECUTION_STAGE_FAILED"`)
+}
+
+// TestIsClientCanceled verifies that client-initiated stream cancellations
+// (context.Canceled and gRPC codes.Canceled) are distinguished from genuine
+// server-side failures, so handleStreamWeaveSSE can log the former at a
+// lower severity instead of raising false-positive "StreamWeave failed"
+// errors for routine client disconnects (e.g. closed EventSource/tab).
+func TestIsClientCanceled(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "context.Canceled directly",
+			err:  context.Canceled,
+			want: true,
+		},
+		{
+			name: "wrapped context.Canceled",
+			err:  fmt.Errorf("stream ended: %w", context.Canceled),
+			want: true,
+		},
+		{
+			name: "gRPC codes.Canceled status",
+			err:  status.Error(codes.Canceled, "client cancelled request"),
+			want: true,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("tool not found: base_readQuery"),
+			want: false,
+		},
+		{
+			name: "gRPC codes.Internal status",
+			err:  status.Error(codes.Internal, "boom"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isClientCanceled(tt.err))
+		})
+	}
 }

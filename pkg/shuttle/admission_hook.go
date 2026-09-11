@@ -42,12 +42,20 @@ type Decision struct {
 // AdmissionRequest is the immutable view of a tool call handed to every hook.
 // State is the approved-set accessor and may be nil until one is wired.
 type AdmissionRequest struct {
-	Ctx       context.Context
-	ToolName  string
-	Params    map[string]interface{} // the tool's own params (MCP nested/carried op lives here)
-	UserID    string                 // caller identity resolved from Ctx
-	SessionID string                 // session identity resolved from Ctx
-	State     ApprovedSetAccessor    // may be nil until an approved-set store is wired
+	Ctx               context.Context
+	ToolName          string
+	RequestedToolName string
+	Params            map[string]interface{} // the tool's own params (MCP nested/carried op lives here)
+	UserID            string                 // caller identity resolved from Ctx
+	SessionID         string                 // session identity resolved from Ctx
+	State             ApprovedSetAccessor    // may be nil until an approved-set store is wired
+}
+
+// MatchesTool reports whether a policy scoped to name governs this call. Aliases
+// retain their requested name for human-facing messages while policy matching
+// also recognizes the underlying tool's canonical name.
+func (r AdmissionRequest) MatchesTool(scope ToolScope) bool {
+	return scope.MatchesTool(r.ToolName) || (r.RequestedToolName != "" && scope.MatchesTool(r.RequestedToolName))
 }
 
 // Hook is a single admission policy: it decides whether it applies to a request
@@ -128,7 +136,7 @@ func (h permHook) Evaluate(req AdmissionRequest) Decision {
 	if h.pc == nil {
 		return Decision{Kind: Allow}
 	}
-	if err := h.pc.CheckPermission(req.Ctx, req.ToolName, req.Params); err != nil {
+	if err := h.pc.checkPermissionNames(req.Ctx, req.ToolName, req.RequestedToolName, req.Params); err != nil {
 		return Decision{Kind: Deny, Reason: err.Error()}
 	}
 	return Decision{Kind: Allow}

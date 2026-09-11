@@ -366,6 +366,26 @@ func TestValidateAgentConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAgentConfig_AcceptsEverySupportedLLMProvider(t *testing.T) {
+	providers := []string{
+		"anthropic", "bedrock", "litellm", "ollama", "openai",
+		"azure-openai", "azureopenai", "mistral", "gemini", "huggingface",
+	}
+
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			err := ValidateAgentConfig(&loomv1.AgentConfig{
+				Name: "test-agent",
+				Llm: &loomv1.LLMConfig{
+					Provider: provider,
+					Model:    "test-model",
+				},
+			})
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestSaveAgentConfig(t *testing.T) {
 	config := &loomv1.AgentConfig{
 		Name:        "test_agent",

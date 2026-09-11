@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **2 new database migrations** (SQLite `000009_task_created_via`, Postgres `000024_task_attribution`) apply automatically on first start of the upgraded server. They add `tasks.created_via`, `messages.task_id` and `human_requests.task_id`. The SQLite session store's own schema pass additionally adds `sessions.incarnation` (surfaced as the new exported field `Session.Incarnation`); Postgres does not persist it yet, and sessions without it fall back to a CreatedAt-derived epoch. Back up databases before upgrading.
 - **Implicit task recording is ON by default** for every agent with a task subsystem: one task row per turn that calls a tool or asks a human, excluded from the agent's own task queries. Disable with `memory.task_board.implicit_tasks.mode: disabled`.
+- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
 
 ### Added
 
@@ -18,6 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Task.created_via` on the wire** (`task.proto` field 29) so API and UI consumers of `ListTasks`/`GetBoard` can tell runtime-minted tasks from an agent's own. Tasks created over the `CreateTask` RPC without an explicit value are stamped `user`.
 - **`task.TaskCanceller`** optional store capability: a status-guarded cancel, implemented by the SQLite and Postgres stores, so a cancel racing a close is decided at the row and never flips a DONE task to CANCELLED. Stores without it take a guarded read-modify-write fallback.
 - `task.StatusCounter` optional store capability and `Manager.CountByStatus`, so `GetBoard` stats are exact past 1,000 rows.
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly for non-request messages; for JSON-RPC requests, 202 is now treated as an error since the spec requires a response body.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
+
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
+#### OTLP Runtime Integration
+- `looms serve` and `looms workflow` resolve standard OTLP endpoint and header variables after `mode: otel` or `observability.otlp_endpoint` explicitly selects OTLP; generic cluster OTEL variables never replace Hawk or embedded tracing.
+- In-process parent-linkage test added to the OTLP test suite.
+
+#### Runtime Image and Configuration
+- Multi-architecture `teradata/loom-runtime` image build recipes for Linux amd64 and arm64, with only the `looms` server, runtime patterns, and built-in skills included.
+- Trusted startup configuration supports single-pass `${VAR}` expansion; bare dollar signs are preserved, `$$` emits a literal dollar sign, and unresolved placeholders remain visible for diagnostics.
 
 ### Changed
 

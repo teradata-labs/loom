@@ -145,7 +145,6 @@ mcp:
       url: https://api.example.com/mcp
       enabled: true
       protocol_version: auto   # auto (default) | legacy | exact revision, e.g. "2026-07-28"
-      enable_sessions: true    # echo legacy session IDs when a server mints one
 ```
 
 **`protocol_version` values:**
@@ -166,7 +165,7 @@ Verify what a server actually negotiates with `just mcp-probe -url <endpoint>` (
 - Legacy session management via `Mcp-Session-Id` headers (2024/2025-era servers)
 - Broken-stream recovery: a lost SSE response stream is re-issued once with an idempotency key
 
-> **Note:** `enable_resumption` is deprecated and has no effect — SSE stream resumption (`Last-Event-ID`) was removed by the MCP 2026-07-28 revision. The field still parses (with a warning) so existing configs keep loading; recovery is re-issue plus refetch instead of event replay.
+> **Note:** `enable_sessions` and `enable_resumption` are deprecated no-ops. Legacy `Mcp-Session-Id` values are adopted automatically whenever a server returns one; SSE stream resumption (`Last-Event-ID`) was removed by the MCP 2026-07-28 revision. Both fields still parse so existing configurations keep loading; recovery is re-issue plus refetch instead of event replay.
 
 #### 3. http/sse (Remote Servers - Legacy)
 ⚠️ **Deprecated - Use streamable-http instead**
@@ -192,8 +191,6 @@ url: http://server.example.com/mcp
 transport: streamable-http
 url: http://server.example.com/mcp
 enabled: true
-enable_sessions: true
-enable_resumption: true
 ```
 
 ### Enabling/Disabling Servers

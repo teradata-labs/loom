@@ -27,6 +27,8 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -278,6 +280,28 @@ func completedProgressFromResponse(resp *loomv1.WeaveResponse) *loomv1.WeaveProg
 // this turn's scheduling band: "interactive" when a human at a terminal is
 // waiting on the response, anything else (or absence) is batch.
 const SlotOriginMetadataKey = "loom-slot-origin"
+
+// SlotOriginHTTPHeader is the HTTP header counterpart of SlotOriginMetadataKey.
+// HTTP/SSE callers set this header; withHTTPSlotOrigin injects it into gRPC
+// incoming metadata so that slotOriginFromMetadata works on both transports.
+const SlotOriginHTTPHeader = "X-Loom-Slot-Origin"
+
+// withHTTPSlotOrigin copies the X-Loom-Slot-Origin HTTP header from r into ctx
+// as gRPC incoming metadata so that slotOriginFromMetadata (which reads from
+// metadata) works on the HTTP/SSE path. The header value is trimmed and
+// lower-cased before injection to match the gRPC path where the CLI always
+// sends "interactive". A supplied header replaces an existing slot-origin
+// value; an absent header leaves existing metadata untouched.
+func withHTTPSlotOrigin(ctx context.Context, r *http.Request) context.Context {
+	val := strings.ToLower(strings.TrimSpace(r.Header.Get(SlotOriginHTTPHeader)))
+	existing, _ := metadata.FromIncomingContext(ctx)
+	if val == "" {
+		return ctx
+	}
+	md := existing.Copy()
+	md.Set(SlotOriginMetadataKey, val)
+	return metadata.NewIncomingContext(ctx, md)
+}
 
 // slotOriginFromMetadata reads the turn's origin from incoming metadata.
 // The origin is client-asserted and trusted as-is by design (see SlotOrigin
