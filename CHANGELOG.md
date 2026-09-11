@@ -9,9 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- **2 new database migrations** (SQLite `000009_task_created_via`, Postgres `000024_task_attribution`) apply automatically on first start of the upgraded server. They add `tasks.created_via`, `messages.task_id` and `human_requests.task_id`. The SQLite session store's own schema pass additionally adds `sessions.incarnation` (surfaced as the new exported field `Session.Incarnation`); Postgres does not persist it yet, and sessions without it fall back to a CreatedAt-derived epoch. Back up databases before upgrading.
+- **Implicit task recording is ON by default** for every agent with a task subsystem: one task row per turn that calls a tool or asks a human, excluded from the agent's own task queries. Disable with `memory.task_board.implicit_tasks.mode: disabled`.
 - **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
 
 ### Added
+
+- **Task attribution and timeline read model (#378)** — `taskctx.Attribution` on the context stamps `task_id` onto messages and human requests on both backends; `TimelineReader` merges `messages`, `task_history` and `human_requests` projections for a task (no RPC yet). `ImplicitTaskConfig` (`TaskBoardConfig` field 7) tunes runtime recording: `mode`, `triggers`, `excluded_triggers`, `max_per_session`, `agent_visible`; unparseable values fail closed.
+- **`Task.created_via` on the wire** (`task.proto` field 29) so API and UI consumers of `ListTasks`/`GetBoard` can tell runtime-minted tasks from an agent's own. Tasks created over the `CreateTask` RPC without an explicit value are stamped `user`.
+- **`task.TaskCanceller`** optional store capability: a status-guarded cancel, implemented by the SQLite and Postgres stores, so a cancel racing a close is decided at the row and never flips a DONE task to CANCELLED. Stores without it take a guarded read-modify-write fallback.
+- `task.StatusCounter` optional store capability and `Manager.CountByStatus`, so `GetBoard` stats are exact past 1,000 rows.
 
 #### MCP Streamable-HTTP Session & 202 Handling
 - Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
@@ -37,6 +44,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Runtime Image and Configuration
 - Multi-architecture `teradata/loom-runtime` image build recipes for Linux amd64 and arm64, with only the `looms` server, runtime patterns, and built-in skills included.
 - Trusted startup configuration supports single-pass `${VAR}` expansion; bare dollar signs are preserved, `$$` emits a literal dollar sign, and unresolved placeholders remain visible for diagnostics.
+
+### Changed
+
+- The default implicit trigger set is now exactly the set the runtime fires (`tool_call`, `human_request`); `subagent_spawn` was in the default while nothing fired it. An enabled policy whose triggers cannot fire is logged at agent wiring.
+- The agent config loader warns when a `task_board` block is written anywhere other than `memory.task_board`, where it is silently ignored.
+- Both task stores order list pages on a unique tiebreak, so offset paging no longer double-counts or drops rows.
+- `GetBoard` returns `Internal` on a count failure instead of silently reporting zeros.
+
+### Fixed
+
+- Postgres `CloseTask` on an already-terminal task returned no row with its sentinel, which the `task_board close` tool dereferenced.
+- Postgres never read `messages.task_id` back, so `Message.TaskID` was always empty there.
+- Every read of the agent id in `pkg/agent` now goes through the locked accessor; several stamped identity onto rows without the lock while `SetID` could run.
+- An int32-overflowing `implicit_tasks.max_per_session` failed open to the default cap instead of disabling emission.
+- Fork-join and swarm stage titles showed raw agent UUIDs; stage output copied into task notes could split a multi-byte rune and fail proto marshalling.
 
 ## [1.4.0] - 2026-08-12
 

@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -185,7 +186,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 
 		// Load messages within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
 		ORDER BY id ASC`,
@@ -386,11 +387,21 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			turnIncrement = 1
 		}
 
+		// task_id is stamped from the turn's ambient attribution, the same rule
+		// the SQLite session store applies — before this, migration 000024
+		// installed a column this store never wrote, and the whole
+		// message-attribution half of the timeline was dead on Postgres while
+		// the doc claimed stamping was implemented.
+		taskIDValue := msg.TaskID
+		if taskIDValue == "" {
+			taskIDValue = taskctx.TaskIDFromContext(ctx)
+		}
+
 		var seq, turn int64
 		err := tx.QueryRow(ctx, `
-		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			(SELECT COALESCE(MAX(turn), 0) + $15 FROM messages WHERE session_id = $1))
+		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+			(SELECT COALESCE(MAX(turn), 0) + $16 FROM messages WHERE session_id = $1))
 		RETURNING id, turn`,
 			sessionID,
 			userID,
@@ -401,6 +412,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			nullableBytes(toolResultJSON),
 			string(msg.SessionContext),
 			nullableString(msg.AgentID),
+			nullableString(taskIDValue),
 			msg.Timestamp,
 			msg.TokenCount,
 			msg.CostUSD,
@@ -447,7 +459,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
 		ORDER BY id ASC`,
@@ -541,7 +553,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND id BETWEEN $3 AND $4
 		ORDER BY id ASC`,
@@ -572,7 +584,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
@@ -624,7 +636,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 
 		// Load messages from parent session within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
 		  AND folded = FALSE
@@ -669,7 +681,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		if sessionID == "" {
 			// Search across all sessions for this user
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 			FROM messages
 			WHERE user_id = $1 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $2)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $2)) DESC
@@ -678,7 +690,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			)
 		} else {
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 			FROM messages
 			WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $3)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $3)) DESC
@@ -716,7 +728,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.content_search @@ websearch_to_tsquery('english', $3)
@@ -1026,6 +1038,7 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 			toolResultJSON []byte
 			sessionCtx     *string
 			msgAgentID     *string
+			taskID         *string
 			timestamp      time.Time
 			tokenCount     int
 			costUSD        float64
@@ -1034,7 +1047,7 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 			turn           int64
 		)
 
-		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &timestamp, &tokenCount, &costUSD, &evicted, &folded, &turn); err != nil {
+		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &taskID, &timestamp, &tokenCount, &costUSD, &evicted, &folded, &turn); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 
@@ -1060,6 +1073,13 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 		}
 		if msgAgentID != nil {
 			msg.AgentID = *msgAgentID
+		}
+		// task_id is NULL for any message written outside a claimed task, which
+		// is the normal case. Until this read-back existed the column was
+		// write-only on Postgres: SaveMessage stamped it and no SELECT returned
+		// it, so Message.TaskID was always "" here while SQLite populated it.
+		if taskID != nil {
+			msg.TaskID = *taskID
 		}
 
 		// Deserialize tool calls

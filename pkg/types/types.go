@@ -148,6 +148,11 @@ type Message struct {
 	// "perfect place" (ROM, summary, and the last message before any current-turn
 	// offload stub); each provider client honors it.
 	CacheBreakpoint bool
+	// TaskID attributes this message to the task that was claimed when it was
+	// written. Empty is the normal case — not every turn runs under a task —
+	// and is persisted as NULL. Stamped from the ambient task attribution on
+	// the context; see pkg/task.Attribution.
+	TaskID string
 
 	// Timestamp when the message was created
 	Timestamp time.Time
@@ -274,6 +279,18 @@ type Session struct {
 	// Set from context via interceptor for PostgreSQL backends.
 	// Defaults to "default-user" for SQLite backends.
 	UserID string
+
+	// Incarnation distinguishes INCARNATIONS of a session id across its
+	// durable lifetime: a nanosecond-resolution nonce stamped once at
+	// creation and persisted verbatim, never updated. It exists because
+	// CreatedAt persists at SECOND resolution — in memory the implicit-task
+	// epoch used CreatedAt.UnixNano(), but a store round trip truncated it,
+	// so after a restart a same-second delete-and-recreate of a session id
+	// re-derived the previous incarnation's idempotency key and the new
+	// conversation's first turn was declined against the dead task's spent
+	// key. Zero means "no persisted incarnation" (a legacy row, or a
+	// backend that does not store it) and readers fall back to CreatedAt.
+	Incarnation int64
 
 	// Messages is the conversation history (flat, for backward compatibility)
 	Messages []Message

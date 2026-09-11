@@ -122,7 +122,7 @@ func (a *Agent) dumpContext(ctx Context, messages []Message, tools []shuttle.Too
 // so dumping is silently disabled for the run rather than crashing it.
 func (a *Agent) contextDumperInstance() *contextDumper {
 	a.contextDumpOnce.Do(func() {
-		d, err := newContextDumper(a.id)
+		d, err := newContextDumper(a.GetID())
 		if err != nil {
 			zap.L().Warn("context dump sink init failed; dumps disabled for this run", zap.Error(err))
 			return

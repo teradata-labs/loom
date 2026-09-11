@@ -118,6 +118,7 @@ The `loom.v1.TaskService` provides persistent, dependency-aware task decompositi
 | compacted_summary | string | 26 | Summary created during compaction |
 | output_policy | OutputPolicy | 27 | Validation policy checked before close |
 | estimated_effort | string | 28 | Freeform effort estimate |
+| created_via | string | 29 | How the task came to exist: `user`, `agent`, `decompose`, `skill_template`, `workflow`, or `implicit` (minted by the runtime to record a working turn). Empty on rows written before provenance was recorded. `CreateTask` stamps `user` when the client sends none. Runtime-minted tasks are returned by `ListTasks` and counted by `GetBoard`; the agent's own queries exclude them, and an API consumer wanting the same view filters on this field |
 
 ### TaskDependency
 
@@ -546,6 +547,8 @@ Retrieves a board with its lanes and task counts.
 | board | TaskBoard | The board |
 | stats | TaskBoardStats | Aggregate task counts |
 
+`stats` is computed with `Manager.CountByStatus` — one aggregate query on the built-in stores, an exact paged walk on a store without `StatusCounter` — so it is exact past 1,000 tasks, where it used to be capped. A count failure returns `Internal` rather than zeros. The counts include runtime-minted tasks (`created_via: implicit`, roughly one per working turn), which the agent's own context excludes; a client that wants the agent's view filters `ListTasks` on `created_via`.
+
 ---
 
 ### ListBoards
@@ -651,15 +654,62 @@ message TaskBoardConfig {
   string default_board_id = 4;         // Default board ID
   DecomposeStrategy default_strategy = 5; // Default strategy
   int32 context_budget_tokens = 6;     // Max tokens for context injection (default: 500)
+  ImplicitTaskConfig implicit_tasks = 7; // Runtime task recording (see below)
 }
 ```
 
-**Two-axis behavior**:
+**Three-axis behavior**:
 
 | Flag | Controls |
 |------|----------|
-| `taskManager != nil` (server-level) | Task emission (Phase D), stickiness checking |
+| `taskManager != nil` (server-level) | Skill task emission (on `manage_skills` load), stickiness checking |
 | `TaskBoardConfig.enabled` (agent-level) | `task_board` tool registration, prompt supplement, context injection |
+| `TaskBoardConfig.implicit_tasks.mode` (agent-level) | Runtime task recording — the runtime mints at most one task per working turn, independent of `enabled`, so a board-less agent can still be recorded for a human-facing timeline |
+
+### ImplicitTaskConfig (field 7) — runtime task recording
+
+**Default ON.** With no configuration at all, every tool-using turn records one
+task (durable rows: a board row per session, a task row per working turn, and
+lifecycle history). The recorded tasks are excluded from the agent's own task
+context and ready front by default, so they cost no prompt tokens.
+
+```protobuf
+message ImplicitTaskConfig {
+  ImplicitTaskMode mode = 1;              // UNSPECIFIED = enabled (opt-out)
+  repeated ImplicitTaskTrigger triggers = 2;          // narrow to these ("only these")
+  repeated ImplicitTaskTrigger excluded_triggers = 3; // subtract from the effective set
+  int32 max_per_session = 4;              // in-process noise cap (default 100)
+  bool agent_visible = 5;                 // surface recorded tasks to the agent (default false)
+}
+```
+
+**The off switch**, in agent YAML. `task_board` is read under `memory:` — that
+nesting is load-bearing, because the loader is not strict and a `task_board`
+block at the top level is silently ignored, leaving recording ON:
+
+```yaml
+memory:
+  task_board:
+    implicit_tasks:
+      mode: disabled        # or "off"
+```
+
+Parsing fails CLOSED: a typo'd `mode`, an unrecognised trigger name, or a
+negative `max_per_session` disables emission entirely and logs a warning —
+present-but-unparseable never silently widens to the defaults.
+
+Triggers today: `tool_call` and `human_request` fire; `skill_activation`,
+`subagent_spawn` and `workflow_step` are declared but not yet fired by the
+runtime. `max_per_session` is an in-process noise guard, not a durable quota —
+a process restart grants a fresh budget.
+
+**Cost of the default**: one idempotent task create per working turn (memoized
+in-process, so repeat triggers in a turn cost a map lookup), one board-existence
+probe per session, and one back-fill `UPDATE` per turn scoped by `(session,
+turn)`. Turns that use no tools and ask no human record nothing. One
+`task_boards` row is created per session when `default_board_id` is unset and
+is not currently deleted with the session (see the architecture doc's
+constraints).
 
 ---
 

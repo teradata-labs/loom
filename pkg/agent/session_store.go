@@ -29,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -167,6 +168,7 @@ func (s *SessionStore) initSchema() error {
 		parent_session_id TEXT,
 		context_json TEXT,
 		created_at INTEGER NOT NULL,
+		incarnation INTEGER,
 		updated_at INTEGER NOT NULL,
 		total_cost_usd REAL DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
@@ -183,6 +185,7 @@ func (s *SessionStore) initSchema() error {
 		tool_use_id TEXT,
 		tool_result_json TEXT,
 		session_context TEXT DEFAULT 'direct',
+		task_id TEXT,
 		timestamp INTEGER NOT NULL,
 		token_count INTEGER DEFAULT 0,
 		cost_usd REAL DEFAULT 0,
@@ -357,13 +360,23 @@ func (s *SessionStore) initSchema() error {
 		// initSchema (not the pkg/storage/sqlite migrator, whose 000001 only
 		// bootstraps): a numbered migration here would double-ALTER.
 		"user_id": "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default-user'",
+		// incarnation is the session's creation nonce (nanosecond, stamped
+		// once, never updated): created_at survives the round trip at SECOND
+		// resolution only, so the implicit-task epoch needs its own column to
+		// distinguish a same-second delete-and-recreate. NULL on legacy rows,
+		// which read back 0 and fall back to a CreatedAt-derived epoch.
+		"incarnation": "ALTER TABLE sessions ADD COLUMN incarnation INTEGER",
+		// task_id attributes a message to the task claimed when it was written,
+		// so a task's timeline can be reconstructed from the rows that already
+		// record the work. NULL for ordinary chat.
+		"task_id": "ALTER TABLE messages ADD COLUMN task_id TEXT",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
 		// Check if column exists
 		var table string
 		switch columnName {
-		case "session_context", "message_agent_id", "evicted", "folded", "turn":
+		case "session_context", "message_agent_id", "evicted", "folded", "turn", "task_id":
 			table = "messages"
 		case "admission_decision":
 			table = "tool_executions"
@@ -398,6 +411,10 @@ func (s *SessionStore) initSchema() error {
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"
 				case "user_id":
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
+				case "task_id":
+					// Partial: task_id is NULL for most rows, so the NULL
+					// majority costs nothing to index.
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, timestamp) WHERE task_id IS NOT NULL"
 				}
 				if indexSQL != "" {
 					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
@@ -479,6 +496,21 @@ func (s *SessionStore) initSchema() error {
 	if span != nil {
 		span.SetAttribute("tables_created", "3")
 	}
+
+	// idx_messages_task is created HERE, after the column pass, and not in the
+	// static DDL block: on a fresh database task_id is in the CREATE TABLE, but
+	// on a legacy upgrade the column arrives via the ALTER above — and the
+	// static block runs before it, so a static CREATE INDEX failed the whole
+	// initSchema on every pre-task_id database ("no such column"). Running it
+	// unconditionally after the pass covers both paths; before this line the
+	// index existed only on upgraded databases and the fresh-install timeline
+	// read was a full table scan (11x slower at 200k rows). Partial: task_id is
+	// NULL for most rows, so the NULL majority costs nothing to index.
+	if _, err := s.db.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, timestamp) WHERE task_id IS NOT NULL"); err != nil {
+		return fmt.Errorf("failed to create idx_messages_task: %w", err)
+	}
+
 	return nil
 }
 
@@ -501,8 +533,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	// different user is left untouched (the DO UPDATE WHERE clause fails), so
 	// a caller cannot overwrite another user's session by reusing its ID.
 	query := `
-		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, user_id, incarnation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			agent_id = excluded.agent_id,
@@ -548,6 +580,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.TotalCostUSD,
 		session.TotalTokens,
 		owner,
+		session.Incarnation,
 	)
 	s.mu.Unlock()
 
@@ -576,7 +609,8 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens,
+		       COALESCE(incarnation, 0)
 		FROM sessions
 		WHERE id = ? AND user_id = ?
 	`
@@ -598,6 +632,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 		&updatedAt,
 		&session.TotalCostUSD,
 		&session.TotalTokens,
+		&session.Incarnation,
 	)
 
 	// Populate optional fields from nullable database values
@@ -718,9 +753,22 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		folded = 1
 	}
 
+	// Attribute the message to the task claimed for this work, if any. An
+	// explicit msg.TaskID wins; otherwise fall back to the ambient attribution
+	// on the context. Both empty is the normal case and stores NULL — a message
+	// written outside any task is not an error.
+	taskIDValue := msg.TaskID
+	if taskIDValue == "" {
+		taskIDValue = task.TaskIDFromContext(ctx)
+	}
+	var taskID *string
+	if taskIDValue != "" {
+		taskID = &taskIDValue
+	}
+
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
@@ -733,6 +781,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		toolResultJSON,
 		string(sessionContext),
 		agentID,
+		taskID,
 		msg.Timestamp.Unix(),
 		msg.TokenCount,
 		msg.CostUSD,
@@ -806,7 +855,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	// The owner predicate is defense in depth: callers guard first, but this
 	// helper must not become a cross-user read if a future caller forgets.
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
@@ -824,7 +873,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		var msg Message
 		var msgID int64
 		var toolCallsJSON, toolUseID, toolResultJSON *string
-		var sessionContext, agentID sql.NullString
+		var sessionContext, agentID, taskID sql.NullString
 		var timestamp int64
 		var evicted, folded int
 
@@ -837,6 +886,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&toolResultJSON,
 			&sessionContext,
 			&agentID,
+			&taskID,
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
@@ -857,6 +907,11 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 		// Populate agent_id from nullable database value (backward compatible)
 		if agentID.Valid {
 			msg.AgentID = agentID.String
+		}
+		// task_id is NULL for any message written outside a claimed task, which
+		// is the common case.
+		if taskID.Valid {
+			msg.TaskID = taskID.String
 		}
 		// Messages carry no user_id column in SQLite; the owner predicate
 		// above guarantees these rows belong to the context identity.

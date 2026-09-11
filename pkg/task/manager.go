@@ -17,6 +17,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -155,6 +156,70 @@ func (m *Manager) CreateTaskIdempotent(ctx context.Context, t *Task) (*Task, boo
 	return created, true, nil
 }
 
+// countFallbackPageSize is the page size used when a store cannot aggregate.
+const countFallbackPageSize = 500
+
+// countFallbackMaxPages bounds the fallback scan. At the default page size this
+// covers 250k tasks; beyond that the count is reported as reached-the-bound
+// rather than silently wrong.
+const countFallbackMaxPages = 500
+
+// CountByStatus returns per-status task counts.
+//
+// Uses the store's aggregate when it implements StatusCounter — one query,
+// independent of board size. Otherwise pages through ListTasks and accumulates,
+// which is slower, and exact only because both in-repo stores now order pages
+// on a unique tiebreak (created_at alone is second-resolution, and OFFSET
+// paging over non-unique keys double-counts and drops rows across page
+// boundaries). A downstream store without a total order can still return
+// approximate counts here. The previous implementation fetched a single capped
+// page and silently under-reported any board larger than the cap.
+func (m *Manager) CountByStatus(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.count_by_status")
+	defer m.tracer.EndSpan(span)
+
+	if counter, ok := m.store.(StatusCounter); ok {
+		span.SetAttribute("path", "aggregate")
+		return counter.CountByStatus(ctx, opts)
+	}
+
+	span.SetAttribute("path", "paged_fallback")
+	return m.countByStatusPaged(ctx, opts)
+}
+
+// countByStatusPaged accumulates counts by walking every matching task.
+//
+// Correct but O(n) in rows transferred. A store that cares about this path
+// should implement StatusCounter; the log line below says so explicitly rather
+// than letting the cost stay invisible.
+func (m *Manager) countByStatusPaged(ctx context.Context, opts CountByStatusOpts) (StatusCounts, error) {
+	var counts StatusCounts
+
+	for page := 0; page < countFallbackMaxPages; page++ {
+		batch, _, err := m.store.ListTasks(ctx, ListTasksOpts{
+			BoardID:           opts.BoardID,
+			ExcludeCreatedVia: opts.ExcludeCreatedVia,
+			Limit:             countFallbackPageSize,
+			Offset:            page * countFallbackPageSize,
+		})
+		if err != nil {
+			return StatusCounts{}, fmt.Errorf("count by status (paged): %w", err)
+		}
+		for _, t := range batch {
+			counts.Add(t.Status, 1)
+		}
+		if len(batch) < countFallbackPageSize {
+			return counts, nil
+		}
+	}
+
+	m.logger.Warn("count by status hit the fallback page bound; counts may be short",
+		zap.String("board_id", opts.BoardID),
+		zap.Int("max_rows", countFallbackPageSize*countFallbackMaxPages),
+		zap.String("remedy", "implement task.StatusCounter on the store"))
+	return counts, nil
+}
+
 // GetTask retrieves a task by ID and populates ChildIDs.
 func (m *Manager) GetTask(ctx context.Context, id string) (*Task, error) {
 	t, err := m.store.GetTask(ctx, id)
@@ -247,6 +312,14 @@ func (m *Manager) ReleaseTask(ctx context.Context, taskID, sessionID string) (*T
 	return released, nil
 }
 
+// ErrTaskAlreadyTerminal reports a close/cancel that found the task already in
+// a terminal status. Stores return it so the manager can treat a lost
+// close-race as the benign no-op it is — WITHOUT re-recording history,
+// re-publishing task.completed, or re-feeding graph memory a completion, which
+// is what an unguarded double close did. Downstream stores that never return
+// it keep their current behavior.
+var ErrTaskAlreadyTerminal = errors.New("task already in a terminal status")
+
 // CloseTask marks a task as DONE and auto-completes the parent if all siblings are done.
 func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, error) {
 	ctx, span := m.tracer.StartSpan(ctx, "task_manager.close")
@@ -257,9 +330,28 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	if err != nil {
 		return nil, err
 	}
+	if existing == nil {
+		// Some stores report absence as (nil, nil) — this round's whole theme
+		// was a store returning a shape the manager didn't expect. CancelTask
+		// gained this guard in round 6; the close path dereferenced unguarded.
+		return nil, fmt.Errorf("close task %s: not found", taskID)
+	}
 	oldStatus := StatusName(existing.Status)
 
 	closed, err := m.store.CloseTask(ctx, taskID, reason)
+	if errors.Is(err, ErrTaskAlreadyTerminal) {
+		// Someone else's close won the race. The row is already settled; firing
+		// the side effects again is the harm the sentinel exists to prevent.
+		if closed == nil {
+			// The sentinel's contract is (settled task, sentinel), but a store
+			// can report the sentinel alone. Every caller of this branch
+			// dereferences the result — task_board's close tool builds a
+			// detail map from it — so returning (nil, nil) turns a benign
+			// double close into a panic. The pre-close read is the settled row.
+			return existing, nil
+		}
+		return closed, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -295,21 +387,59 @@ func (m *Manager) CancelTask(ctx context.Context, taskID, reason string) (*Task,
 	if err != nil {
 		return nil, err
 	}
+	if existing == nil {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
 	oldStatus := StatusName(existing.Status)
 	oldAssignee := existing.AssigneeAgentID
 	oldSession := existing.ClaimedBySession
 
-	now := time.Now().UTC()
-	existing.Status = loomv1.TaskStatus_TASK_STATUS_CANCELLED
-	existing.CloseReason = reason
-	existing.ClosedAt = &now
-	existing.AssigneeAgentID = ""
-	existing.ClaimedBySession = ""
-	existing.ClaimedAt = nil
+	// A cancel that finds the row already settled is the same benign no-op a
+	// double close is: no history, no event, no unblock — and, above all, no
+	// flip of a DONE row to CANCELLED. The sentinel's doc always said
+	// "close/cancel"; until this guard only CloseTask honoured it.
+	if IsTerminal(existing.Status) {
+		span.SetAttribute("path", "already_terminal")
+		return existing, nil
+	}
 
-	cancelled, err := m.store.UpdateTask(ctx, existing, nil)
-	if err != nil {
-		return nil, err
+	var cancelled *Task
+	if canceller, ok := m.store.(TaskCanceller); ok {
+		// One statement with a status predicate: the store decides the race,
+		// not this goroutine's stale read.
+		span.SetAttribute("path", "guarded")
+		cancelled, err = canceller.CancelTask(ctx, taskID, reason)
+		if errors.Is(err, ErrTaskAlreadyTerminal) {
+			if cancelled == nil {
+				return existing, nil
+			}
+			return cancelled, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Read-modify-write fallback for stores without the capability. The
+		// IsTerminal check above closes the sequential cases (double cancel,
+		// cancel after close); a close that lands between that read and this
+		// write can still be overwritten here, which is what TaskCanceller
+		// exists to prevent.
+		span.SetAttribute("path", "update_fallback")
+		now := time.Now().UTC()
+		existing.Status = loomv1.TaskStatus_TASK_STATUS_CANCELLED
+		existing.CloseReason = reason
+		existing.ClosedAt = &now
+		existing.AssigneeAgentID = ""
+		existing.ClaimedBySession = ""
+		existing.ClaimedAt = nil
+
+		cancelled, err = m.store.UpdateTask(ctx, existing, nil)
+		if err != nil {
+			return nil, err
+		}
+		if cancelled == nil {
+			return nil, fmt.Errorf("task %s: store returned no row from cancel", taskID)
+		}
 	}
 
 	m.recordHistory(ctx, taskID, "cancelled", oldStatus, StatusName(cancelled.Status), oldAssignee, oldSession)
