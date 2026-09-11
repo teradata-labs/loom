@@ -904,7 +904,7 @@ message ScheduleStats {
   // Number of skipped executions (due to previous run still active)
   int32 skipped_executions = 4;
 
-  // Last execution status: "success", "failed", "skipped"
+  // Last execution status: "success", "failed", "skipped", "canceled"
   string last_status = 5;
 
   // Last error message (if failed)

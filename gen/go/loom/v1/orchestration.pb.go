@@ -3490,7 +3490,7 @@ type ScheduleStats struct {
 	FailedExecutions int32 `protobuf:"varint,3,opt,name=failed_executions,json=failedExecutions,proto3" json:"failed_executions,omitempty"`
 	// Number of skipped executions (due to previous run still active)
 	SkippedExecutions int32 `protobuf:"varint,4,opt,name=skipped_executions,json=skippedExecutions,proto3" json:"skipped_executions,omitempty"`
-	// Last execution status: "success", "failed", "skipped"
+	// Last execution status: "success", "failed", "skipped", "canceled"
 	LastStatus string `protobuf:"bytes,5,opt,name=last_status,json=lastStatus,proto3" json:"last_status,omitempty"`
 	// Last error message (if failed)
 	LastError     string `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
