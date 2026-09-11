@@ -45,6 +45,22 @@ func TestNewManager(t *testing.T) {
 	assert.False(t, mgr.started)
 }
 
+func TestManager_AddServerDoesNotExpandEnvironment(t *testing.T) {
+	t.Setenv("MCP_TEST_URL", "http://127.0.0.1:1")
+	manager, err := NewManager(Config{
+		ClientInfo: ClientInfo{Name: "test-client", Version: "1.0.0"},
+	}, zap.NewNop())
+	require.NoError(t, err)
+	err = manager.AddServer(context.Background(), "remote", ServerConfig{
+		Enabled:   true,
+		Transport: "streamable-http",
+		URL:       "${MCP_TEST_URL}",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MCP_TEST_URL")
+	assert.NotContains(t, err.Error(), "127.0.0.1:1")
+}
+
 func TestNewManager_InvalidConfig(t *testing.T) {
 	// Test with negative cache size (invalid)
 	config := Config{
@@ -492,4 +508,17 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 	health := mgr.HealthCheck(ctx)
 	assert.True(t, health["fs1"])
 	assert.True(t, health["fs2"])
+}
+
+func TestUnresolvedEnvVariables(t *testing.T) {
+	t.Setenv("MCP_SET", "configured")
+	missing := unresolvedEnvVariables(
+		"${MCP_ENDPOINT_MISSING}",
+		map[string]string{
+			"Authorization": "Bearer ${MCP_TOKEN_MISSING}",
+			"X-Configured":  "${MCP_SET}",
+			"X-Duplicate":   "${MCP_ENDPOINT_MISSING}",
+		},
+	)
+	assert.Equal(t, []string{"MCP_ENDPOINT_MISSING", "MCP_TOKEN_MISSING"}, missing)
 }

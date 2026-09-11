@@ -24,6 +24,50 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestSafePrivacyDefaultsToRedaction(t *testing.T) {
+	privacy := safePrivacy(nil)
+	if !privacy.RedactCredentials || !privacy.RedactPII {
+		t.Fatalf("default privacy = %+v, want credential and PII redaction enabled", privacy)
+	}
+}
+
+func TestNewAutoSelectTracerFromEnvSelectsOTel(t *testing.T) {
+	t.Setenv("LOOM_TRACER_MODE", "auto")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://localhost:4318/v1/traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization=Bearer test")
+	t.Setenv("LOOM_OTLP_INSECURE", "true")
+
+	tracer, err := NewAutoSelectTracerFromEnv(zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAutoSelectTracerFromEnv: %v", err)
+	}
+	otelTracer, ok := tracer.(*OTelTracer)
+	if !ok {
+		t.Fatalf("tracer type = %T, want *OTelTracer", tracer)
+	}
+	if err := otelTracer.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestNewAutoSelectTracerFromEnvSelectsOTelFromBaseEndpoint(t *testing.T) {
+	t.Setenv("LOOM_TRACER_MODE", "auto")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+	t.Setenv("LOOM_OTLP_INSECURE", "true")
+
+	tracer, err := NewAutoSelectTracerFromEnv(zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAutoSelectTracerFromEnv: %v", err)
+	}
+	otelTracer, ok := tracer.(*OTelTracer)
+	if !ok {
+		t.Fatalf("tracer type = %T, want *OTelTracer", tracer)
+	}
+	if err := otelTracer.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
 // TestAutoSelectTracer_EmbeddedMemory verifies embedded memory storage works via auto-selection
 func TestAutoSelectTracer_EmbeddedMemory(t *testing.T) {
 	logger, _ := zap.NewDevelopment()

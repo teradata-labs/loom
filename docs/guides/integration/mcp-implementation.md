@@ -113,7 +113,6 @@ mcp:
       url: http://localhost:8080/mcp
       transport: streamable-http
       protocol_version: auto  # auto | legacy | exact revision (e.g. "2026-07-28")
-      enable_sessions: true
 ```
 
 
@@ -287,7 +286,7 @@ mcp:
       timeout: string          # Operation timeout (e.g., "30s", "1m")
       url: string              # Server URL (required for http/sse/streamable-http)
       protocol_version: string # "auto" (default) | "legacy" | exact revision (e.g. "2026-07-28")
-      enable_sessions: bool    # Echo legacy session IDs (streamable-http only)
+      enable_sessions: bool    # DEPRECATED no-op: MCP 2026-07-28 moved session management to server-side Mcp-Session-Id injection; parses without error
       enable_resumption: bool  # DEPRECATED no-op: resumption was removed by MCP 2026-07-28; parses with a warning
 
       # Tool filtering

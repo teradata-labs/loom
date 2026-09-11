@@ -48,6 +48,35 @@ func spawnTestServer(t *testing.T, llm *replyingLLM) *MultiAgentServer {
 	return srv
 }
 
+func TestAgentAllowsSpawnRequiresExplicitBuiltin(t *testing.T) {
+	srv := spawnTestServer(t, &replyingLLM{})
+	srv.registry.RegisterConfig(&loomv1.AgentConfig{
+		Name: "spawn-enabled",
+		Tools: &loomv1.ToolsConfig{
+			Builtin: []string{"manage_ephemeral_agents"},
+		},
+	})
+	srv.registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:  "spawn-disabled",
+		Tools: &loomv1.ToolsConfig{Builtin: []string{"task_board"}},
+	})
+
+	assert.True(t, srv.agentAllowsSpawn("spawn-enabled"))
+	assert.False(t, srv.agentAllowsSpawn("spawn-disabled"))
+	assert.False(t, srv.agentAllowsSpawn("missing"))
+}
+
+func TestAgentAllowsSpawnProgrammaticOptInWithoutRegistry(t *testing.T) {
+	server := NewMultiAgentServer(nil, nil)
+	assert.False(t, server.agentAllowsSpawn("embedded-agent"))
+
+	server.SetAgentSpawnEnabled("embedded-agent", true)
+	assert.True(t, server.agentAllowsSpawn("embedded-agent"))
+
+	server.SetAgentSpawnEnabled("embedded-agent", false)
+	assert.False(t, server.agentAllowsSpawn("embedded-agent"))
+}
+
 // parentSession creates the parent session a spawn hangs off, which the store
 // requires before a child session can reference it.
 func parentSession(t *testing.T, srv *MultiAgentServer) string {

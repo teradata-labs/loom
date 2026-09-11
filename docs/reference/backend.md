@@ -854,7 +854,15 @@ The following defaults are applied when timeout is not set or is 0:
 
 ### Environment Variable Expansion
 
-All YAML string values support environment variable expansion using `${VAR}` syntax. The expansion uses Go's `os.Expand` with `os.Getenv`, which means only `${VAR}` and `$VAR` forms are supported. Shell-style default values (`${VAR:-default}`) are **not** supported — the entire string including `:-default` is treated as the variable name, which will resolve to an empty string.
+Backend YAML loading supports `${VAR}` and `$VAR` through Go's `os.Expand`.
+Shell-style default values (`${VAR:-default}`) are **not** supported — the
+entire string including `:-default` is treated as the variable name and
+resolves to an empty string when unset.
+
+This differs from trusted server-startup configuration for LLM, MCP, and OTLP
+values. Those paths accept only `${VAR}`, preserve bare dollar signs, use `$$`
+for one literal dollar sign, and leave an unresolved placeholder unchanged for
+diagnostics. Runtime management APIs never expand caller-supplied values.
 
 ```yaml
 database:

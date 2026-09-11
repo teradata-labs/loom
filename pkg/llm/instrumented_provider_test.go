@@ -16,6 +16,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -208,6 +209,25 @@ func TestInstrumentedProvider_Success(t *testing.T) {
 	assert.True(t, metricNames[observability.MetricLLMTokensInput])
 	assert.True(t, metricNames[observability.MetricLLMTokensOutput])
 	assert.True(t, metricNames[observability.MetricLLMCost])
+}
+
+func TestInstrumentedProvider_BoundsPromptAndCompletionPreviews(t *testing.T) {
+	content := strings.Repeat("界", maxPreviewRunes+25)
+	mockProvider := &mockLLMProvider{
+		name:     "test-provider",
+		model:    "test-model",
+		response: &llmtypes.LLMResponse{Content: content},
+	}
+	tracer := newMockTracer()
+	instrumented := NewInstrumentedProvider(mockProvider, tracer)
+
+	_, err := instrumented.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: content}}, nil)
+	require.NoError(t, err)
+	require.Len(t, tracer.spans, 1)
+
+	want := strings.Repeat("界", maxPreviewRunes) + "…"
+	assert.Equal(t, want, tracer.spans[0].Attributes["message.preview"])
+	assert.Equal(t, want, tracer.spans[0].Attributes["response.preview"])
 }
 
 func TestInstrumentedProvider_WithToolCalls(t *testing.T) {

@@ -139,18 +139,25 @@ func (pc *PermissionChecker) Advertisable(toolName string) bool {
 // CheckPermission checks if a tool can be executed.
 // Returns nil if allowed, error if denied.
 func (pc *PermissionChecker) CheckPermission(ctx context.Context, toolName string, params map[string]interface{}) error {
+	return pc.checkPermissionNames(ctx, toolName, "", params)
+}
+
+// checkPermissionNames applies permissions to the requested tool name and its
+// canonical registry name. A disabled match on either name wins over an allow
+// match, so an alias cannot bypass an operator deny.
+func (pc *PermissionChecker) checkPermissionNames(ctx context.Context, toolName, canonicalToolName string, params map[string]interface{}) error {
 	// YOLO mode bypasses all checks
 	if pc.yolo {
 		return nil
 	}
 
 	// Check if tool is disabled (blacklist takes precedence)
-	if matchPattern(toolName, pc.disabledExact, pc.disabledPrefix) {
+	if pc.matchesAny(toolName, canonicalToolName, pc.disabledExact, pc.disabledPrefix) {
 		return fmt.Errorf("tool '%s' is disabled by configuration (tools.permissions.disabled_tools)", toolName)
 	}
 
 	// Check if tool is in allowed list (whitelist)
-	if matchPattern(toolName, pc.allowedExact, pc.allowedPrefix) {
+	if pc.matchesAny(toolName, canonicalToolName, pc.allowedExact, pc.allowedPrefix) {
 		return nil // Always allow whitelisted tools
 	}
 
@@ -168,6 +175,10 @@ func (pc *PermissionChecker) CheckPermission(ctx context.Context, toolName strin
 
 	// Default action is "deny" - tool requires approval but callback mechanism not implemented
 	return fmt.Errorf("tool '%s' requires user approval (tools.permissions.require_approval=true) but permission request mechanism is not yet implemented. To bypass: set tools.permissions.yolo=true or add '%s' to tools.permissions.allowed_tools", toolName, toolName)
+}
+
+func (pc *PermissionChecker) matchesAny(toolName, canonicalToolName string, exact map[string]bool, prefixes []string) bool {
+	return matchPattern(toolName, exact, prefixes) || (canonicalToolName != "" && canonicalToolName != toolName && matchPattern(canonicalToolName, exact, prefixes))
 }
 
 // IsYOLOMode returns true if YOLO mode is enabled.
