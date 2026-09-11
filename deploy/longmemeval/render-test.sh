@@ -115,6 +115,22 @@ grep -q "value: \"${LME_MAX_CHUNK_ATTEMPTS}\"" "${TMP_DIR}/runner-job.yaml" \
 grep -q "loom.dev/config-checksum: \"${LME_CONFIG_HASH}\"" "${TMP_DIR}/server-deployment.yaml" \
     || fail "server-deployment.yaml pod template missing the config checksum annotation"
 
+# 6b. run-500.sh computes LME_CONFIG_HASH by rendering server-config.yaml
+# BEFORE that variable exists. lme_render must therefore require only the
+# variables a given template references — requiring the whole global allowlist
+# broke the documented invocation, and every test here pre-seeding the value
+# is precisely why CI stayed green through it.
+(
+    unset LME_CONFIG_HASH
+    lme_render "${SCRIPT_DIR}/server-config.yaml" >/dev/null 2>&1
+) || fail "server-config.yaml must render with LME_CONFIG_HASH unset (run-500.sh's hash step)"
+
+# ...but a variable the template DOES reference must still be required.
+(
+    unset LME_MODEL
+    lme_render "${SCRIPT_DIR}/server-config.yaml" >/dev/null 2>&1
+) && fail "lme_render accepted server-config.yaml with LME_MODEL unset" || true
+
 # 7. No unrendered placeholders (lme_render also guards; belt and suspenders).
 if grep -rn '\${LME_' "${TMP_DIR}"/*.yaml; then
     fail "unrendered LME_* placeholder in rendered output"
