@@ -18,6 +18,13 @@ lme_render() {
     for var in ${LME_RENDER_VARS}; do
         var="${var#\$\{}"
         var="${var%\}}"
+        # Require only what THIS template references. The allowlist is global,
+        # so demanding every entry made it impossible to render one template
+        # in order to compute a value another template needs — which is
+        # exactly what run-500.sh does for LME_CONFIG_HASH, and it died on the
+        # documented invocation. A variable that never appears here cannot
+        # affect this render.
+        grep -qF "\${${var}}" "${tpl}" || continue
         if [[ -z "${!var:-}" ]]; then
             echo "lme_render: required variable ${var} is unset or empty (rendering ${tpl})" >&2
             return 1
