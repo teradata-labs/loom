@@ -249,11 +249,17 @@ func isSensitivePath(path string) bool {
 		"/dev",
 		"/proc",
 		"/sys",
+		"C:/Windows/System32",
+		"C:/Windows/SysWOW64",
 	}
 
+	// Compare on a slash-normalized form: callers pass paths through
+	// filepath.Clean, which renders the OS-native separator (backslash on
+	// Windows), so these Unix entries would otherwise never match.
+	slashPath := filepath.ToSlash(path)
 	for _, prefix := range sensitive {
 		// Check if path equals prefix or is within prefix directory
-		if path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator)) {
+		if slashPath == prefix || strings.HasPrefix(slashPath, prefix+"/") {
 			return true
 		}
 	}

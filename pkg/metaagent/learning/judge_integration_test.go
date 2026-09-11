@@ -514,6 +514,7 @@ func setupLearningAgent(t *testing.T, db *sql.DB, tracker *PatternEffectivenessT
 	dbPath := t.TempDir() + "/metrics.db"
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = collector.Close() })
 
 	// Create learning engine
 	engine := NewLearningEngine(collector, tracer)

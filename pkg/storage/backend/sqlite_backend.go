@@ -42,6 +42,7 @@ type SQLiteBackend struct {
 	taskStore         task.TaskStore
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
 	migrator          *sqlite.Migrator
+	migratorDB        *sql.DB // owned connection backing migrator; closed in Close()
 	dbPath            string
 	tracer            observability.Tracer
 }
@@ -164,6 +165,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		taskStore:         taskStore,
 		taskDB:            taskDB,
 		migrator:          migrator,
+		migratorDB:        migratorDB,
 		dbPath:            dbPath,
 		tracer:            tracer,
 	}, nil
@@ -258,6 +260,11 @@ func (b *SQLiteBackend) Close() error {
 	if b.taskDB != nil {
 		if err := b.taskDB.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("task db close: %w", err)
+		}
+	}
+	if b.migratorDB != nil {
+		if err := b.migratorDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("migrator db close: %w", err)
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,7 @@ func TestVisualizationTool_Execute(t *testing.T) {
 	}
 
 	topNJSON, _ := json.Marshal(topNResult)
+	outputPath := filepath.Join(t.TempDir(), "loom-test-report.html")
 
 	params := map[string]interface{}{
 		"datasets": []interface{}{
@@ -38,7 +40,7 @@ func TestVisualizationTool_Execute(t *testing.T) {
 		},
 		"title":       "Test Report",
 		"summary":     "This is a test report",
-		"output_path": "/tmp/loom-test-report.html",
+		"output_path": outputPath,
 		"theme":       "dark",
 	}
 
@@ -54,20 +56,20 @@ func TestVisualizationTool_Execute(t *testing.T) {
 
 	// Verify result data
 	data := result.Data.(map[string]interface{})
-	if data["output_path"] != "/tmp/loom-test-report.html" {
-		t.Errorf("output_path = %v, want /tmp/loom-test-report.html", data["output_path"])
+	if data["output_path"] != outputPath {
+		t.Errorf("output_path = %v, want %v", data["output_path"], outputPath)
 	}
 	if data["visualizations"] != 1 {
 		t.Errorf("visualizations = %v, want 1", data["visualizations"])
 	}
 
 	// Verify file was created
-	if _, err := os.Stat("/tmp/loom-test-report.html"); os.IsNotExist(err) {
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		t.Error("Output file was not created")
 	}
 
 	// Read and verify HTML content
-	htmlBytes, err := os.ReadFile("/tmp/loom-test-report.html")
+	htmlBytes, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("Failed to read output file: %v", err)
 	}
@@ -86,9 +88,6 @@ func TestVisualizationTool_Execute(t *testing.T) {
 			t.Errorf("HTML missing required element: %s", elem)
 		}
 	}
-
-	// Cleanup
-	_ = os.Remove("/tmp/loom-test-report.html")
 }
 
 // TestVisualizationTool_InvalidParams tests parameter validation

@@ -48,6 +48,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -79,8 +80,9 @@ func main() {
 	flag.Parse()
 
 	// Configure logging -- CRITICAL: never write to stdout (that's the MCP transport)
-	logger := setupLogger(*logFile, *logLevel)
+	logger, logCloser := setupLogger(*logFile, *logLevel)
 	defer func() { _ = logger.Sync() }()
+	defer func() { _ = logCloser.Close() }()
 
 	logger.Info("starting loom-mcp server",
 		zap.String("grpc_addr", *grpcAddr),
@@ -414,27 +416,31 @@ func edgeBearer(header string) string {
 
 // setupLogger creates a zap logger that writes to a file (or stderr if no file specified).
 // IMPORTANT: The logger must NEVER write to stdout because stdout is the MCP stdio transport.
-func setupLogger(logFile, logLevel string) *zap.Logger {
-	logger, err := buildLogger(logFile, logLevel)
+// The returned io.Closer releases the underlying log file handle (a no-op for stderr) and
+// must be closed by the caller on shutdown.
+func setupLogger(logFile, logLevel string) (*zap.Logger, io.Closer) {
+	logger, closer, err := buildLogger(logFile, logLevel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to setup logger: %v\n", err)
 		os.Exit(1)
 	}
-	return logger
+	return logger, closer
 }
 
 // buildLogger is the testable core of setupLogger. It returns an error instead
 // of calling os.Exit so tests can exercise all code paths.
-func buildLogger(logFile, logLevel string) (*zap.Logger, error) {
+func buildLogger(logFile, logLevel string) (*zap.Logger, io.Closer, error) {
 	level := parseLogLevel(logLevel)
 
 	var output zapcore.WriteSyncer
+	var closer io.Closer = io.NopCloser(nil)
 	if logFile != "" {
 		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // #nosec G304 -- log file path from CLI flag
 		if err != nil {
-			return nil, fmt.Errorf("open log file %s: %w", logFile, err)
+			return nil, nil, fmt.Errorf("open log file %s: %w", logFile, err)
 		}
 		output = zapcore.AddSync(f)
+		closer = f
 	} else {
 		// Write to stderr (not stdout!) as a fallback
 		output = zapcore.AddSync(os.Stderr)
@@ -450,7 +456,7 @@ func buildLogger(logFile, logLevel string) (*zap.Logger, error) {
 		level,
 	)
 
-	return zap.New(core), nil
+	return zap.New(core), closer, nil
 }
 
 // parseLogLevel converts a string log level to a zapcore.Level.

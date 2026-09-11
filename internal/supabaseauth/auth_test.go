@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -67,10 +68,14 @@ func TestStore_FileFallback(t *testing.T) {
 	assert.Equal(t, "at", loaded.AccessToken)
 	assert.Equal(t, "a@b.c", loaded.Email)
 
-	// File must be 0600.
-	info, err := statFile(st.FilePath)
-	require.NoError(t, err)
-	assert.Equal(t, "-rw-------", info)
+	// File must be 0600. Windows has no POSIX permission-bit model (os.Chmod
+	// there only toggles the read-only attribute), so this is unverifiable
+	// on that platform the same way it is on Unix.
+	if runtime.GOOS != "windows" {
+		info, err := statFile(st.FilePath)
+		require.NoError(t, err)
+		assert.Equal(t, "-rw-------", info)
+	}
 
 	require.NoError(t, st.Clear())
 	cleared, err := st.Load()

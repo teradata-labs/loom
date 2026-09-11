@@ -260,11 +260,18 @@ func isSensitiveReadPath(path string) bool {
 		"/private/etc/shadow",
 		"/private/etc/passwd",
 		"/private/etc/sudoers",
+		"C:/Windows/System32/config/SAM",
+		"C:/Windows/System32/config/SYSTEM",
 	}
+
+	// Compare on a slash-normalized form: callers pass paths through
+	// filepath.Clean, which renders the OS-native separator (backslash on
+	// Windows), so these Unix entries would otherwise never match.
+	slashPath := filepath.ToSlash(path)
 
 	// Exact match for very sensitive files
 	for _, s := range sensitive {
-		if path == s {
+		if slashPath == s {
 			return true
 		}
 	}
@@ -274,10 +281,11 @@ func isSensitiveReadPath(path string) bool {
 		"/proc",
 		"/sys",
 		"/dev",
+		"C:/Windows/System32/config",
 	}
 
 	for _, prefix := range protectedDirs {
-		if strings.HasPrefix(path, prefix+"/") || path == prefix {
+		if strings.HasPrefix(slashPath, prefix+"/") || slashPath == prefix {
 			return true
 		}
 	}

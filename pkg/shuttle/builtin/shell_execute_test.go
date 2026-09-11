@@ -257,10 +257,15 @@ func TestShellExecuteTool_Execute_Windows(t *testing.T) {
 			},
 		},
 		{
+			// "default" shell resolution tries PowerShell before cmd, and
+			// PowerShell's `cd` (Set-Location) prints nothing for a bare
+			// call, unlike cmd.exe's builtin. Pin the shell so the test
+			// doesn't depend on which one auto-detection picks.
 			name: "working directory",
 			params: map[string]interface{}{
 				"command":     "cd",
 				"working_dir": "C:\\Windows\\Temp",
+				"shell":       "cmd",
 			},
 			expectSuccess: true,
 			validateResult: func(t *testing.T, data map[string]interface{}) {

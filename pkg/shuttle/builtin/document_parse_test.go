@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -682,8 +683,15 @@ func TestDocumentParseTool_FileTooLarge(t *testing.T) {
 func TestDocumentParseTool_SecurityCheck(t *testing.T) {
 	tool := NewDocumentParseTool("")
 
+	// "/etc/passwd" isn't a rooted absolute path in Go's Windows semantics
+	// (no drive letter), so use the platform's own sensitive-path fixture.
+	blockedPath := "/etc/passwd"
+	if runtime.GOOS == "windows" {
+		blockedPath = `C:\Windows\System32\config\SAM`
+	}
+
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
-		"file_path": "/etc/passwd",
+		"file_path": blockedPath,
 	})
 
 	require.NoError(t, err)

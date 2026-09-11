@@ -17,7 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -347,8 +347,7 @@ func runDogfoodScenario(t *testing.T, scenario struct {
 	tracer := observability.NewNoOpTracer()
 
 	// Setup database
-	dbPath := fmt.Sprintf("/tmp/loom-dogfood-%s-%d.db", scenario.domain, time.Now().UnixNano())
-	defer func() { _ = os.Remove(dbPath) }()
+	dbPath := filepath.Join(t.TempDir(), fmt.Sprintf("loom-dogfood-%s.db", scenario.domain))
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
@@ -359,6 +358,7 @@ func runDogfoodScenario(t *testing.T, scenario struct {
 
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 

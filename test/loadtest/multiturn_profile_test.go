@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 // TestProfile_MultiTurn_Latency sends sequential requests to a single session
 // and measures per-turn latency, writing a CPU profile for the hot phase.
 // Run with: go test -tags fts5 -v -run TestProfile_MultiTurn_Latency ./test/loadtest/
-// Then: go tool pprof -http=:8080 /tmp/loom_multiturn_cpu.prof
+// Then: go tool pprof -http=:8080 <path logged at profiling start> (os.TempDir(), e.g. /tmp on Unix, %TEMP% on Windows)
 func TestProfile_MultiTurn_Latency(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping profiling test in -short mode")
@@ -73,10 +74,11 @@ func TestProfile_MultiTurn_Latency(t *testing.T) {
 	for turn := 5; turn < totalTurns; turn++ {
 		// Start profiling at turn 80
 		if turn == 80 && cpuFile == nil {
-			cpuFile, err = os.Create("/tmp/loom_multiturn_cpu.prof")
+			cpuPath := filepath.Join(os.TempDir(), "loom_multiturn_cpu.prof")
+			cpuFile, err = os.Create(cpuPath)
 			require.NoError(t, err)
 			require.NoError(t, pprof.StartCPUProfile(cpuFile))
-			t.Log("CPU profiling started at turn 80")
+			t.Logf("CPU profiling started at turn 80, writing to %s", cpuPath)
 		}
 
 		start := time.Now()
@@ -123,13 +125,14 @@ func TestProfile_MultiTurn_Latency(t *testing.T) {
 	if cpuFile != nil {
 		pprof.StopCPUProfile()
 		require.NoError(t, cpuFile.Close())
-		t.Logf("CPU profile written to /tmp/loom_multiturn_cpu.prof")
+		t.Logf("CPU profile written to %s", filepath.Join(os.TempDir(), "loom_multiturn_cpu.prof"))
 	}
 
 	// Write memory profile
-	memFile, err := os.Create("/tmp/loom_multiturn_mem.prof")
+	memPath := filepath.Join(os.TempDir(), "loom_multiturn_mem.prof")
+	memFile, err := os.Create(memPath)
 	require.NoError(t, err)
 	require.NoError(t, pprof.WriteHeapProfile(memFile))
 	require.NoError(t, memFile.Close())
-	t.Logf("Memory profile written to /tmp/loom_multiturn_mem.prof")
+	t.Logf("Memory profile written to %s", memPath)
 }
