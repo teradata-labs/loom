@@ -47,7 +47,14 @@ type Client struct {
 	rateLimiter  *llm.RateLimiter
 	toolNameMap  map[string]string // sanitized name → original name
 	extraHeaders map[string]string // additional headers sent with every request
+	// catalogProvider is the catalog namespace calculateCost prices under.
+	// "openai" unless Config.CatalogProvider overrides it.
+	catalogProvider string
 }
+
+// DefaultCatalogProvider is the catalog namespace the client prices under
+// when Config.CatalogProvider is empty.
+const DefaultCatalogProvider = "openai"
 
 // Config holds configuration for the OpenAI client.
 type Config struct {
@@ -66,6 +73,15 @@ type Config struct {
 	// same name is used. Use with care when targeting proxies that require
 	// a different auth scheme.
 	ExtraHeaders map[string]string
+	// CatalogProvider is the catalog namespace (the provider key passed to
+	// catalog.LookupPricing) used to price responses. Default "openai".
+	//
+	// Set it when this client fronts an OpenAI-compatible gateway (LiteLLM,
+	// vLLM, …) whose model ids are not OpenAI's: the embedder registers those
+	// ids under its own provider key via catalog.Register, and this is how the
+	// client is told to look there. Without it a gateway alias never matches
+	// the "openai" namespace and is priced at the gpt-4o default below.
+	CatalogProvider string
 }
 
 // Default OpenAI configuration values.
@@ -112,6 +128,9 @@ func NewClient(config Config) *Client {
 	if config.Temperature == 0 {
 		config.Temperature = DefaultOpenAITemperature
 	}
+	if config.CatalogProvider == "" {
+		config.CatalogProvider = DefaultCatalogProvider
+	}
 
 	// Initialize rate limiter if enabled — keyed by credential+endpoint+model
 	// so clients with independent quotas do not throttle each other.
@@ -122,13 +141,14 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:       config.APIKey,
-		model:        config.Model,
-		endpoint:     config.Endpoint,
-		maxTokens:    config.MaxTokens,
-		temperature:  config.Temperature,
-		rateLimiter:  rateLimiter,
-		extraHeaders: copyHeaders(config.ExtraHeaders),
+		apiKey:          config.APIKey,
+		model:           config.Model,
+		endpoint:        config.Endpoint,
+		maxTokens:       config.MaxTokens,
+		temperature:     config.Temperature,
+		rateLimiter:     rateLimiter,
+		extraHeaders:    copyHeaders(config.ExtraHeaders),
+		catalogProvider: config.CatalogProvider,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
@@ -664,9 +684,15 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 // calculateCost estimates the cost in USD based on token usage.
 // Pricing as of 2024-11 for various OpenAI models.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
-	// to the provider-local rates below only for model ids it does not list.
-	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("openai", c.model)
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing — the
+	// registered source chain first, then the static table — under the
+	// namespace Config.CatalogProvider selected. Fall back to the
+	// provider-local rates below only for model ids it does not list.
+	provider := c.catalogProvider
+	if provider == "" {
+		provider = DefaultCatalogProvider
+	}
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing(provider, c.model)
 	if !ok {
 		switch c.model {
 		case "gpt-4o":

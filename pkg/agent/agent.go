@@ -2010,10 +2010,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.turns", turns)
 	span.SetAttribute("conversation.tool_executions", toolExecs)
 	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	// Conversation-level figures are the TURN total (every LLM call), not
+	// the final call's share — see Response.TurnUsage.
+	span.SetAttribute("conversation.tokens.total", response.TurnUsage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.TurnUsage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.TurnUsage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
 	span.SetAttribute("response.preview", truncatePreview(response.Content))
@@ -2031,8 +2033,8 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		"duration_ms":     duration.Milliseconds(),
 		"turns":           turns,
 		"tool_executions": toolExecs,
-		"cost_usd":        response.Usage.CostUSD,
-		"tokens":          response.Usage.TotalTokens,
+		"cost_usd":        response.TurnUsage.CostUSD,
+		"tokens":          response.TurnUsage.TotalTokens,
 	})
 
 	a.recordConversationMetrics(sessionID, response, duration)
@@ -2066,13 +2068,25 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 		observability.AttrSessionID: sessionID,
 	})
 
-	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+	// Agent-level cost/tokens describe the whole turn (every LLM call it
+	// made), so they read TurnUsage; Usage is the final call's share only.
+	a.tracer.RecordMetric("agent.cost.usd", response.TurnUsage.CostUSD, map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
 
-	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.TurnUsage.TotalTokens), map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
+}
+
+// addUsage folds one LLM call's usage into a running turn total.
+func addUsage(dst *Usage, u Usage) {
+	dst.InputTokens += u.InputTokens
+	dst.OutputTokens += u.OutputTokens
+	dst.TotalTokens += u.TotalTokens
+	dst.CacheReadInputTokens += u.CacheReadInputTokens
+	dst.CacheCreationInputTokens += u.CacheCreationInputTokens
+	dst.CostUSD += u.CostUSD
 }
 
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
@@ -2115,8 +2129,18 @@ type Response struct {
 	// Content is the text response
 	Content string
 
-	// Usage tracks token usage and cost
+	// Usage is the token usage and cost of the FINAL LLM call of the turn —
+	// the call that produced Content. It is what the persisted assistant
+	// message carries as its own TokenCount/CostUSD, so it must stay per-call:
+	// each tool-calling assistant row in the loop already carries its own.
 	Usage Usage
+
+	// TurnUsage is the sum over EVERY successful LLM call the turn made —
+	// the tool loop's calls, the empty-response and hygiene retries, and the
+	// final synthesis — i.e. what the provider actually billed for this turn.
+	// An embedder metering a turn must read this, not Usage: a turn that ran
+	// N tool-loop iterations has N−1 calls that Usage does not represent.
+	TurnUsage Usage
 
 	// ToolExecutions contains tools that were executed
 	ToolExecutions []ToolExecution
@@ -2295,6 +2319,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
+	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
@@ -2484,6 +2509,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
+		addUsage(&turnUsage, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
 		llmEvent := map[string]interface{}{
@@ -2666,13 +2692,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"response_length": len(content),
-				"total_tokens":    llmResp.Usage.TotalTokens,
-				"cost_usd":        llmResp.Usage.CostUSD,
+				"total_tokens":    turnUsage.TotalTokens,
+				"cost_usd":        turnUsage.CostUSD,
 			})
 			span.SetAttribute("conversation.turns", turnCount)
 			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
 			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
-			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
+			span.SetAttribute("conversation.total_tokens", turnUsage.TotalTokens)
 
 			// End-of-turn hygiene check for skill-emitted tasks. Audits the
 			// active skill's tasks and either injects a fixup message and
@@ -2708,6 +2734,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
+				TurnUsage:      turnUsage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
 				Metadata:       meta,
@@ -2736,7 +2763,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -2798,7 +2825,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions)
+	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3115,7 +3142,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3134,6 +3161,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		return &Response{
 			Content:        maxTurnsMessage,
 			Usage:          Usage{},
+			TurnUsage:      turnUsage, // the loop's calls were still billed
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
@@ -3151,9 +3179,11 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
 	}
 
+	addUsage(&turnUsage, finalResp.Usage)
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
+		TurnUsage:      turnUsage,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{

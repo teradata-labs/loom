@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Usage and cost accounting
+- `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
+- `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.
+- `agent.Response.TurnUsage` and `agent.TurnParkedError.TurnUsage` report the sum of every LLM call the turn made (tool-loop iterations, empty-response and hygiene retries, final synthesis). `Response.Usage` keeps its final-call meaning — it is what the persisted assistant row carries as its own token count and cost — so embedders metering a turn should read `TurnUsage`. The conversation span attributes (`conversation.tokens.*`, `conversation.cost.usd`) and the `agent.cost.usd` / `agent.tokens.total` metrics now report the turn total instead of the final call's share.
+
 ### Breaking Changes
 
 - **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
