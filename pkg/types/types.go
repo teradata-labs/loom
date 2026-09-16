@@ -480,6 +480,12 @@ type ProgressEvent struct {
 	// IsTokenStream indicates if this event is a token streaming update
 	IsTokenStream bool
 
+	// IsToolInputStream indicates the provider is streaming tool-input
+	// (function-call argument) bytes. It carries no content — tool input is
+	// never rendered as partial text — and exists so a long tool-argument
+	// generation registers as activity instead of silence. Always Droppable.
+	IsToolInputStream bool
+
 	// TokenCount is the running count of tokens received
 	TokenCount int32
 

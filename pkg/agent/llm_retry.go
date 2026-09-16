@@ -176,6 +176,11 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		a.config.Retry.MaxRetries+1, lastErr)
 }
 
+// toolInputActivityInterval throttles the IsToolInputStream progress events
+// emitted while a provider streams tool-input deltas: liveness needs a pulse,
+// not one event per JSON fragment.
+const toolInputActivityInterval = time.Second
+
 // chatWithStreaming uses streaming API with token buffering and progress emission.
 func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shuttle.Tool, progressCallback ProgressCallback) (*LLMResponse, error) {
 	streamingProvider, ok := a.llm.(llmtypes.StreamingLLMProvider)
@@ -239,8 +244,40 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		}
 	}
 
+	// Tool-input (function-call argument) bytes never reach tokenCallback —
+	// the callback is text only, because its tokens become the visible
+	// partial response — so a tool argument the size of a document streams
+	// for minutes with no progress event at all, and anything watching for
+	// activity (an idle-based turn deadline, a proxy inactivity timer) sees a
+	// stalled stream. Providers report those deltas through
+	// NotifyStreamActivity; emit them as a throttled, content-free progress
+	// event so they count as activity without leaking JSON into the text.
+	var lastToolInputEmit time.Time
+	streamCtx := llmtypes.WithStreamActivity(ctx, func() {
+		now := time.Now()
+		if now.Sub(lastToolInputEmit) < toolInputActivityInterval {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		lastToolInputEmit = now
+		progressCallback(ProgressEvent{
+			Stage:             StageLLMGeneration,
+			Progress:          50,
+			Message:           "Generating tool call...",
+			Timestamp:         now,
+			IsToolInputStream: true,
+			Droppable:         true,
+			TokenCount:        tokenCount,
+			TTFT:              ttft,
+		})
+	})
+
 	// Call streaming provider
-	resp, err := streamingProvider.ChatStream(ctx, messages, tools, tokenCallback)
+	resp, err := streamingProvider.ChatStream(streamCtx, messages, tools, tokenCallback)
 	if err != nil {
 		return nil, err
 	}

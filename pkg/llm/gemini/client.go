@@ -659,8 +659,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					}
 				}
 
-				// Extract tool calls
+				// Extract tool calls. A function-call part never reaches
+				// tokenCallback (text only); report it as stream activity.
 				if part.FunctionCall != nil {
+					llmtypes.NotifyStreamActivity(ctx)
 					reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:               reversedName,

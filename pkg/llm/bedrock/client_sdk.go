@@ -666,6 +666,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 			// Handle tool input delta
 			if event.Delta.Type == "input_json_delta" {
+				// Tool-input deltas never reach tokenCallback (text only);
+				// report them as stream activity, then accumulate the JSON.
+				llmtypes.NotifyStreamActivity(ctx)
 				// Accumulate the JSON delta (uses PartialJSON field, not Text)
 				if buf, exists := toolInputBuffers[event.Index]; exists {
 					buf.WriteString(event.Delta.PartialJSON)
