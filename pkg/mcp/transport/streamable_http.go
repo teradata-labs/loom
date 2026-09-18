@@ -195,7 +195,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	}()
 
 	// Handle HTTP errors
-	if handled, err := t.handleHTTPStatus(ctx, resp); handled || err != nil {
+	if handled, err := t.handleHTTPStatus(ctx, resp, message); handled || err != nil {
 		return err
 	}
 
@@ -480,7 +480,8 @@ func (t *StreamableHTTPTransport) synthesizeStreamLost(ctx context.Context, id j
 // handleHTTPStatus handles HTTP status codes per MCP spec. The boolean is
 // true when the response was fully consumed here (an error body delivered as
 // a protocol message); the caller must not read the body further in that case.
-func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *http.Response) (bool, error) {
+// request is the JSON-RPC message this response answers.
+func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *http.Response, request []byte) (bool, error) {
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
 		return false, nil
@@ -495,7 +496,14 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 	// transport failure. This MUST be checked before the session-expiry branch
 	// below, because a 404 with a JSON-RPC -32601 error (method not found) is
 	// NOT a session expiry — it is a normal protocol error response.
-	if isJSONRPCErrorResponse(body) {
+	//
+	// Only a body that answers THIS request is routable. A server that refuses
+	// the request at the HTTP layer — teradata-mcp-server rejecting an
+	// MCP-Protocol-Version it does not support — replies with a synthetic id
+	// ("server-error"); delivering that as a message leaves the real request
+	// waiting for a response that never comes, so it stays an HTTP error, where
+	// the client's legacy-signal classification can see the status code.
+	if isJSONRPCErrorResponse(body) && responseIDMatches(body, request) {
 		select {
 		case t.messages <- body:
 			return true, nil
@@ -514,6 +522,23 @@ func (t *StreamableHTTPTransport) handleHTTPStatus(ctx context.Context, resp *ht
 	}
 
 	return true, &HTTPStatusError{Code: resp.StatusCode, Body: body}
+}
+
+// responseIDMatches reports whether a JSON-RPC response body carries the id of
+// the request it is answering. Ids are compared as raw JSON so a numeric 1 and
+// a string "1" stay distinct, exactly as the client's response router treats
+// them.
+func responseIDMatches(body, request []byte) bool {
+	var resp, req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(body, &resp) != nil || json.Unmarshal(request, &req) != nil {
+		return false
+	}
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(resp.ID), bytes.TrimSpace(req.ID))
 }
 
 // isJSONRPCRequest reports whether msg is a JSON-RPC request: it must have
