@@ -3926,6 +3926,10 @@
         "skills": {
           "$ref": "#/definitions/v1SkillsConfig",
           "title": "Skills configuration for this agent"
+        },
+        "decision": {
+          "$ref": "#/definitions/v1DecisionConfig",
+          "description": "Decision layer configuration (pkg/decision): which decider answers typed\nauxiliary judgments and, per call site, whether its answers are acted on\nor only shadow-recorded. Absent or provider \"off\" disables the layer."
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -5051,6 +5055,88 @@
         }
       },
       "description": "DebateRound captures one round of debate discussion."
+    },
+    "v1DecisionBand": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "description": "Site name this band applies to (matches DecisionRequest.site)."
+        },
+        "actMin": {
+          "type": "number",
+          "format": "double",
+          "description": "At or above this confidence the Decider's answer is used."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1DecisionBandMode",
+          "description": "How the site may use the answer."
+        },
+        "shadow": {
+          "type": "boolean",
+          "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        }
+      },
+      "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandMode": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_MODE_UNSPECIFIED",
+        "DECISION_BAND_MODE_REPLACE",
+        "DECISION_BAND_MODE_TIGHTEN_ONLY"
+      ],
+      "default": "DECISION_BAND_MODE_UNSPECIFIED",
+      "description": "DecisionBandMode says how a call site may use a decider answer.\n\n - DECISION_BAND_MODE_REPLACE: The answer may replace the site's existing mechanism when confident.\n - DECISION_BAND_MODE_TIGHTEN_ONLY: The answer may only make an outcome more restrictive: add a failure\ncount, raise NoDecision to Ask. It never clears, allows, or bypasses."
+    },
+    "v1DecisionConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider: \"off\", \"llm\" (adapter over a configured LLM role), \"jev\", \"mock\"."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model for the provider (for Jev, a pinned version; aliases are rejected\nunless allow_alias is set)."
+        },
+        "allowAlias": {
+          "type": "boolean",
+          "description": "Allow a floating alias such as \"jev-latest\". Off by default."
+        },
+        "timeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Per-request timeout in milliseconds."
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Base URL override, for gateways (for example the Vercel AI Gateway path)."
+        },
+        "maxPerSession": {
+          "type": "string",
+          "format": "int64",
+          "description": "Maximum decision requests per session before the router falls back."
+        },
+        "maxCostUsdPerSession": {
+          "type": "number",
+          "format": "double",
+          "description": "Maximum decision spend per session in USD before the router falls back."
+        },
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DecisionBand"
+          },
+          "description": "Bands per call site. Sites without a band are treated as shadow."
+        },
+        "llmRole": {
+          "type": "string",
+          "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        }
+      },
+      "description": "DecisionConfig configures the decision layer for an agent or server."
     },
     "v1DecomposeStrategy": {
       "type": "string",
