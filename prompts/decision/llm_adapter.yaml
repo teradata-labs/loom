@@ -1,0 +1,33 @@
+---
+name: decision
+namespace: loom
+---
+prompts:
+  - id: llm_adapter
+    content: |
+      Answer each question below about the STATE, and return ONLY a JSON object.
+      Do not add prose, markdown fences, or keys that are not requested.
+
+      STATE:
+      {{.state}}
+
+      QUESTIONS:
+      {{.questions}}
+
+      Return exactly this JSON shape, one entry per question id:
+      {{.schema}}
+
+      Rules:
+      - "noul" questions: "probability" is the probability in [0, 1] that the statement is true.
+      - "choice" questions: "probabilities" gives a probability for EVERY listed option key,
+        summing to 1. Do not invent option keys.
+      - "score" questions: "probabilities" gives a probability for EVERY level index as a
+        string ("0", "1", ...), summing to 1. Level 0 is the lowest.
+      - Judge only from the STATE. If the STATE does not settle a question, spread the
+        probability rather than guessing.
+    tags:
+      - decision
+      - adapter
+    metadata:
+      version: "v1.0"
+      description: "Renders a DecisionRequest into a prompt that asks a generative LLM for the same typed answer shape a decision model would return. Fallback and comparator for pkg/decision."
