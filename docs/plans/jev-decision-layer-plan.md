@@ -34,7 +34,7 @@ The honest framing: **cheaper aux path, faster in three places, more correct in 
 
 | # | Decision | Resolved | Consequence |
 |---|---|---|---|
-| D1 | TypeSafe API access | **Not applied yet.** Owner action item: request early access at typesafe.ai. | Phases 0–1 run entirely on the LLM adapter. Phase 2 is scheduled when a key exists; nothing else waits on it. |
+| D1 | TypeSafe API access | **Via Vercel AI Gateway**, which serves Jev on its free tier (owner, 2026-09-22). No direct TypeSafe key needed. | Phase 2 is unblocked. The client must take a configurable `base_url` and auth header so the same code speaks to `api.typesafe.ai` directly or to the gateway path; independent measurements put the gateway at ~580 ms per call vs ~300 ms direct, which the shadow report will show. |
 | D2 | Package name and location | `pkg/decision` (framework-generic, importable) | Sibling of `pkg/llm`, not inside it: Jev is not an `LLMProvider`. |
 | D3 | Shadow record storage | hawk span attributes **and** a `decision_shadow` table on **both SQLite and Postgres** | Two migrations (`pkg/storage/sqlite/migrations/000010_*`, `pkg/storage/postgres/migrations/000025_*`) and a `DecisionShadowStore` interface in `pkg/storage/backend`, implemented by both backends. The report CLI reads through the interface. |
 | D4 | Config block placement | `decision:` block in agent YAML beside `judge_llm` / `classifier_llm`; server-level default in `looms` config | Per-agent bands, one shared client. |
@@ -197,13 +197,14 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 
 ## 6. Checklist
 
-### Phase 0 — core (no key needed)
-- [ ] `decision.proto` + `buf generate`, lint, breaking
-- [ ] `pkg/decision`: decider, build, answer, router, instrumented, off
-- [ ] `pkg/decision/mock`, `pkg/decision/llm`
-- [ ] observability constants
-- [ ] tests: table-driven, fuzz, race; >80% coverage
-- [ ] `docs/architecture/decision-layer.md`
+### Phase 0 — core (no key needed) — ✅ implemented 2026-09-22 on `feat/decision-layer`
+- [x] `decision.proto` + `buf generate`, lint, breaking
+- [x] `pkg/decision`: decider, build, answer, router, instrumented, off
+- [x] `pkg/decision/mock`, `pkg/decision/llm` (+ `prompts/decision/llm_adapter.yaml`, drift-guarded by a test)
+- [x] observability constants (`decision.evaluate` span, `decision.*` metrics)
+- [x] tests: table-driven, fuzz, race; coverage 92.8% / 89.9% / 93.9% (core / llm / mock)
+- [x] `docs/architecture/decision-layer.md`
+- Finding from fuzzing: invalid UTF-8 in state made `ToValue` fail and the builders panic. Fixed by sanitizing to U+FFFD; tool-result-derived state can carry arbitrary bytes.
 
 ### Phase 1 — shadow (no key needed)
 - [ ] `shadow.go` + migration + `report/`

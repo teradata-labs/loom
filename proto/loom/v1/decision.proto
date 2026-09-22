@@ -1,0 +1,208 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// Typed decisions.
+//
+// A decision is a narrow semantic judgment over supplied state: a yes/no
+// probability, a choice among named options, or a position on an ordered
+// scale. Decisions never generate text. They are answered by a Decider
+// (pkg/decision): a hosted decision model such as TypeSafe Jev, an adapter
+// that asks an ordinary LLM for the same typed shape, or a mock.
+//
+// Every question in one request is evaluated independently against the same
+// state; the answer to one question is never context for another.
+//
+// The wire shape mirrors the TypeSafe System One API so a Jev-backed Decider
+// is a thin translation, but nothing here is vendor-specific.
+
+// DecisionRequest is one state plus a set of named typed questions.
+message DecisionRequest {
+  // State is the material the questions are judged against: a string, a JSON
+  // object, or a JSON array. Callers filter state in code and send only the
+  // fields a question needs; accuracy falls as irrelevant state grows and
+  // payloads such as query results must never leave the process.
+  google.protobuf.Value state = 1;
+
+  // Questions keyed by a caller-chosen id. Ids are echoed in the response.
+  map<string, DecisionQuestion> questions = 2;
+
+  // Model is the decider-specific model identifier (for Jev: a pinned version
+  // such as "jev-1.13.0"). Empty means the Decider's configured default.
+  string model = 3;
+
+  // Site names the call site that issued the request (for example
+  // "recall.rerank"). It selects the confidence band and labels traces and
+  // shadow records. Not sent to any vendor.
+  string site = 4;
+}
+
+// DecisionQuestion is one typed question. Instructions and criteria accept
+// JSON structure, not only strings, so a tool schema or a skill manifest can
+// be passed intact.
+message DecisionQuestion {
+  // Instructions state what to judge, as directly as possible.
+  google.protobuf.Value instructions = 1;
+
+  oneof kind {
+    NoulQuestion noul = 2;
+    ChoiceQuestion choice = 3;
+    ScoreQuestion score = 4;
+  }
+}
+
+// NoulQuestion asks "is this true?" and is answered with a probability.
+message NoulQuestion {
+  // Optional description of what makes the answer true.
+  google.protobuf.Value criteria_true = 1;
+  // Optional description of what makes the answer false.
+  google.protobuf.Value criteria_false = 2;
+}
+
+// ChoiceQuestion asks "which of these?" over named options.
+message ChoiceQuestion {
+  // Options keyed by the value returned in ChoiceAnswer.choice. Each value
+  // describes the option. Between 2 and 255 options.
+  map<string, google.protobuf.Value> options = 1;
+}
+
+// ScoreQuestion asks "where on this ordered scale?".
+message ScoreQuestion {
+  // Ordered level descriptions, lowest first. Between 2 and 10 levels. The
+  // level index (0-based) is the score value.
+  repeated google.protobuf.Value levels = 1;
+}
+
+// DecisionResponse carries one answer per question id.
+message DecisionResponse {
+  // Model that answered, as a pinned version (never an alias).
+  string model = 1;
+
+  // Answers keyed by the request's question ids.
+  map<string, DecisionAnswer> answers = 2;
+
+  // Usage is what the Decider consumed, including its cost.
+  DecisionUsage usage = 3;
+}
+
+// DecisionAnswer is one typed answer.
+message DecisionAnswer {
+  oneof kind {
+    NoulAnswer noul = 1;
+    ChoiceAnswer choice = 2;
+    ScoreAnswer score = 3;
+  }
+}
+
+// NoulAnswer is the probability that the statement is true.
+message NoulAnswer {
+  // Probability in [0, 1].
+  double probability = 1;
+}
+
+// ChoiceAnswer is the selected option with the full distribution.
+message ChoiceAnswer {
+  // The option key with the highest probability.
+  string choice = 1;
+  // Probability per option key; sums to 1.
+  map<string, double> probabilities = 2;
+  // Confidence in [0, 1]: how concentrated the distribution is,
+  // (n * p_max - 1) / (n - 1) for n options. Not the same as p_max.
+  double confidence = 3;
+}
+
+// ScoreAnswer is the probability-weighted position on the scale.
+message ScoreAnswer {
+  // Probability-weighted score across level indices. Use only to compare
+  // against thresholds, never as an exact magnitude.
+  double score = 1;
+  // Probability per level index, as strings "0".."n-1"; sums to 1.
+  map<string, double> probabilities = 2;
+  // Level index to description, echoed from the question.
+  map<string, string> legend = 3;
+  // Confidence in [0, 1], same definition as ChoiceAnswer.confidence.
+  double confidence = 4;
+}
+
+// DecisionUsage is token accounting for one request.
+message DecisionUsage {
+  int64 input_tokens = 1;
+  // Output tokens are zero for decision models and non-zero for the LLM
+  // adapter, which pays for the JSON it generates.
+  int64 output_tokens = 2;
+  // Cost in USD as reported or computed by the Decider from its own pricing.
+  // Zero when unknown.
+  double cost_usd = 3;
+}
+
+// DecisionPath records which mechanism produced a routed outcome.
+enum DecisionPath {
+  DECISION_PATH_UNSPECIFIED = 0;
+  // The Decider answered above the site's act threshold.
+  DECISION_PATH_DECIDER = 1;
+  // The Decider answered below the act threshold; the site's existing
+  // mechanism decided.
+  DECISION_PATH_FALLBACK = 2;
+  // The Decider returned an error; the site's existing mechanism decided.
+  DECISION_PATH_ERROR = 3;
+  // The decision layer is off for this site or process.
+  DECISION_PATH_DISABLED = 4;
+  // The session's decision budget was exhausted.
+  DECISION_PATH_BUDGET = 5;
+}
+
+// DecisionBandMode says how a call site may use a decider answer.
+enum DecisionBandMode {
+  DECISION_BAND_MODE_UNSPECIFIED = 0;
+  // The answer may replace the site's existing mechanism when confident.
+  DECISION_BAND_MODE_REPLACE = 1;
+  // The answer may only make an outcome more restrictive: add a failure
+  // count, raise NoDecision to Ask. It never clears, allows, or bypasses.
+  DECISION_BAND_MODE_TIGHTEN_ONLY = 2;
+}
+
+// DecisionBand is a call site's confidence routing rule.
+message DecisionBand {
+  // Site name this band applies to (matches DecisionRequest.site).
+  string site = 1;
+  // At or above this confidence the Decider's answer is used.
+  double act_min = 2;
+  // How the site may use the answer.
+  DecisionBandMode mode = 3;
+  // Shadow records the Decider's answer alongside the existing mechanism's
+  // without branching on it. Overrides act_min: the path is always FALLBACK.
+  bool shadow = 4;
+}
+
+// DecisionConfig configures the decision layer for an agent or server.
+message DecisionConfig {
+  // Provider: "off", "llm" (adapter over a configured LLM role), "jev", "mock".
+  string provider = 1;
+  // Model for the provider (for Jev, a pinned version; aliases are rejected
+  // unless allow_alias is set).
+  string model = 2;
+  // Allow a floating alias such as "jev-latest". Off by default.
+  bool allow_alias = 3;
+  // Per-request timeout in milliseconds.
+  int64 timeout_ms = 4;
+  // Base URL override, for gateways (for example the Vercel AI Gateway path).
+  string base_url = 5;
+  // Maximum decision requests per session before the router falls back.
+  int64 max_per_session = 6;
+  // Maximum decision spend per session in USD before the router falls back.
+  double max_cost_usd_per_session = 7;
+  // Bands per call site. Sites without a band are treated as shadow.
+  repeated DecisionBand bands = 8;
+  // LLM role the "llm" provider adapts (for example "classifier",
+  // "compressor"). Empty means the agent's main LLM.
+  string llm_role = 9;
+}
