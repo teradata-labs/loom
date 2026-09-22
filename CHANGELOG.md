@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Graph memory
+- Task-completion memories now honor the owning agent's `memory.graph_memory.enabled: false`. The task manager is server-wide and wrote an `experience` memory (salience 0.75, plus an async entity-salience boost) into the owner agent's partition on every closed task — including the implicit per-turn task, so an agent that opted out of graph memory still accrued one memory per turn. `task.Manager.SetGraphMemoryPolicy` routes the write through the registry's per-agent view (`Registry.GraphMemoryEnabledFor`: on unless explicitly disabled, matching the subsystem wiring rule); `looms serve` installs it whenever a graph store is present.
+
 #### Usage and cost accounting
 - `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
 - `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.
