@@ -69,7 +69,7 @@ func ptr(s string) *string { return &s }
 
 func resetDecisionFlags(t *testing.T) {
 	t.Helper()
-	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors}
+	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors, decisionSample}
 	t.Cleanup(func() {
 		decisionDBPath = prev[0].(string)
 		decisionSite = prev[1].(string)
@@ -80,7 +80,23 @@ func resetDecisionFlags(t *testing.T) {
 		decisionModel = prev[6].(string)
 		decisionDryRun = prev[7].(bool)
 		decisionErrors = prev[8].(bool)
+		decisionSample = prev[9].(string)
 	})
+}
+
+func TestDecisionReplaySampleFlag(t *testing.T) {
+	resetDecisionFlags(t)
+	path := seedTelemetryDB(t)
+	decisionDBPath, decisionDecider, decisionLimit, decisionDryRun, decisionErrors = path, "mock", 100, true, false
+
+	decisionSample = "random"
+	var out bytes.Buffer
+	decisionReplayCmd.SetOut(&out)
+	require.NoError(t, runDecisionReplay(decisionReplayCmd, nil))
+	assert.Contains(t, out.String(), "4 executions", "random sampling still reaches every row when the limit exceeds them")
+
+	decisionSample = "shuffled"
+	assert.Error(t, runDecisionReplay(decisionReplayCmd, nil), "unknown sample order is rejected")
 }
 
 func TestDecisionReplayAndReport(t *testing.T) {
@@ -129,6 +145,25 @@ func TestDecisionReplayAndReport(t *testing.T) {
 
 	decisionSince = "not-a-duration"
 	assert.Error(t, runDecisionReport(decisionReportCmd, nil))
+}
+
+func TestDecisionReplayConcurrent(t *testing.T) {
+	resetDecisionFlags(t)
+	path := seedTelemetryDB(t)
+	decisionDBPath, decisionDecider, decisionLimit, decisionDryRun, decisionErrors = path, "mock", 100, false, false
+	decisionConcurrency = 4
+	t.Cleanup(func() { decisionConcurrency = 0 })
+	var out bytes.Buffer
+	decisionReplayCmd.SetOut(&out)
+	require.NoError(t, runDecisionReplay(decisionReplayCmd, nil))
+	assert.Contains(t, out.String(), "8 shadow rows written")
+	assert.Contains(t, out.String(), "4 workers")
+
+	decisionSite, decisionLimit, decisionSince = sites.SiteFailureKind, 0, ""
+	var rep bytes.Buffer
+	decisionReportCmd.SetOut(&rep)
+	require.NoError(t, runDecisionReport(decisionReportCmd, nil))
+	assert.Contains(t, rep.String(), "| Rows | 8 |")
 }
 
 func TestDecisionReportEmptyAndMissingDB(t *testing.T) {

@@ -211,8 +211,8 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] `loom decision replay|report` (replay reads `tool_executions`, writes shadow rows; mock and LLM-adapter deciders; dry run)
 - [x] shadow wiring: recall rerank, tool_search rerank, failure classifier; `decision:` config block (moved forward from Phase 2 so shadows can be switched on per agent)
 - [x] `sites/` package so replay and live agents build identical requests and references
-- [ ] first report over ≥1,000 rows with the LLM adapter — **operator step**: `loom decision replay --decider llm --limit 2000` against a real `loom.db`, then `loom decision report`
-- [ ] baseline capture on the gauntlet rig (scheduler queue wait, `recall.query_source=keyword` rate) — operations task, needs the Azure rig
+- [x] first report over ≥1,000 rows with the LLM adapter — three replays on the rig (gpt-4o via Azure OpenAI): newest 2,000 mixed, newest 1,500 errors, random 1,500 errors across the full history; results and findings in `docs/research/decision-layer-phase1-report.md` (kind agreement 95%+ outside the reference's `other` blind spot; ≥0.9-confidence rows agree 99.9%; retry question reworded after the run exposed it as ill-posed on successes)
+- [x] baseline capture on the gauntlet rig — from the 2026-09-22 TPC-H run: 1,494 grants / **987 starvation promotions (66%)**, sessions of 3 LLM calls taking p50 611 s; same doc §1. Gaps recorded: no per-request queue-wait metric (follow-up), recall starvation needs a graph-memory-on rerun paired with Phase 3.1.
 
 ### Phase 2 — Jev client (blocked on D1)
 - [ ] client + limiter + fixtures + contract tests

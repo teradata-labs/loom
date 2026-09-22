@@ -82,11 +82,15 @@ func FailureKindRequest(tool, errorCode, errorText string, input map[string]any)
 	if err != nil {
 		return nil, err
 	}
+	// Worded about the failure clearing, not about a retry succeeding: on a
+	// successful call "would a retry succeed?" is trivially true and split the
+	// first shadow run 786/597, while the reference (no failure, nothing to
+	// retry) says false. See docs/research/decision-layer-phase1-report.md §2.
 	retry := decision.Noul(
-		"Would calling the same tool again with the identical input probably succeed?",
+		"Did this call fail in a way that calling the same tool again with the identical input would probably clear?",
 		decision.WithCriteria(
-			"the failure is temporary and unrelated to the input or credentials",
-			"the failure is caused by the input, the credentials, a missing object, or a saturated server",
+			"the call failed for a temporary reason unrelated to the input or credentials, such as a timeout or a dropped connection",
+			"the call succeeded, or it failed because of the input, the credentials, a missing object, or a saturated server",
 		),
 	)
 	state := map[string]any{
