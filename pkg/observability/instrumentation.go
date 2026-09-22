@@ -115,6 +115,9 @@ const (
 	MetricDecisionCost      = "decision.cost"
 	MetricDecisionErrors    = "decision.errors.total"
 	MetricDecisionFallbacks = "decision.fallbacks.total"
+	// Shadow-mode comparisons written (rows) and store failures.
+	MetricDecisionShadowRows   = "decision.shadow.rows.total"
+	MetricDecisionShadowErrors = "decision.shadow.errors.total"
 
 	// Streaming metrics
 	MetricLLMStreamingTTFT       = "llm.streaming.ttft_ms"

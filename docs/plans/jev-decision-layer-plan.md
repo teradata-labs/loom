@@ -206,11 +206,13 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] `docs/architecture/decision-layer.md`
 - Finding from fuzzing: invalid UTF-8 in state made `ToValue` fail and the builders panic. Fixed by sanitizing to U+FFFD; tool-result-derived state can carry arbitrary bytes.
 
-### Phase 1 — shadow (no key needed)
-- [ ] `shadow.go` + migration + `report/`
-- [ ] `loom decision replay|report`
-- [ ] shadow wiring: recall rerank, tool_search rerank, failure classifier
-- [ ] first report over ≥1,000 rows with the LLM adapter
+### Phase 1 — shadow (no key needed) — ✅ code landed 2026-09-22 on `feat/decision-layer`
+- [x] `shadow.go` (record, store contract, recorder) + SQLite 000010 + Postgres 000025 (RLS) + `backend.DecisionShadowProvider` + `report/`
+- [x] `loom decision replay|report` (replay reads `tool_executions`, writes shadow rows; mock and LLM-adapter deciders; dry run)
+- [x] shadow wiring: recall rerank, tool_search rerank, failure classifier; `decision:` config block (moved forward from Phase 2 so shadows can be switched on per agent)
+- [x] `sites/` package so replay and live agents build identical requests and references
+- [ ] first report over ≥1,000 rows with the LLM adapter — **operator step**: `loom decision replay --decider llm --limit 2000` against a real `loom.db`, then `loom decision report`
+- [ ] baseline capture on the gauntlet rig (scheduler queue wait, `recall.query_source=keyword` rate) — operations task, needs the Azure rig
 
 ### Phase 2 — Jev client (blocked on D1)
 - [ ] client + limiter + fixtures + contract tests

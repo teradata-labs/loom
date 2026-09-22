@@ -129,6 +129,115 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	}
 }
 
+// DecisionConfigYAML mirrors proto DecisionConfig (pkg/decision) for agent
+// YAML files.
+//
+//	decision:
+//	  provider: llm          # off | llm | mock | jev (jev: plan Phase 2)
+//	  llm_role: classifier   # which role LLM the "llm" provider adapts
+//	  model: jev-1.13.0      # pinned; aliases rejected unless allow_alias
+//	  timeout_ms: 2000
+//	  max_per_session: 200
+//	  max_cost_usd_per_session: 0.05
+//	  bands:
+//	    - site: recall.rerank
+//	      act_min: 0.9
+//	      mode: replace        # replace | tighten_only
+//	      shadow: true         # record only, never act
+type DecisionConfigYAML struct {
+	Provider             string                   `yaml:"provider"`
+	Model                string                   `yaml:"model"`
+	AllowAlias           bool                     `yaml:"allow_alias"`
+	TimeoutMs            int64                    `yaml:"timeout_ms"`
+	BaseURL              string                   `yaml:"base_url"`
+	MaxPerSession        int64                    `yaml:"max_per_session"`
+	MaxCostUSDPerSession float64                  `yaml:"max_cost_usd_per_session"`
+	LLMRole              string                   `yaml:"llm_role"`
+	Bands                []DecisionBandConfigYAML `yaml:"bands"`
+}
+
+// DecisionBandConfigYAML mirrors proto DecisionBand.
+type DecisionBandConfigYAML struct {
+	Site   string  `yaml:"site"`
+	ActMin float64 `yaml:"act_min"`
+	Mode   string  `yaml:"mode"`
+	Shadow bool    `yaml:"shadow"`
+}
+
+// decisionProviders are the values DecisionConfigYAML.provider accepts.
+var decisionProviders = map[string]bool{"off": true, "llm": true, "mock": true, "jev": true}
+
+// decisionAliases are floating model names a pinned production config
+// rejects unless allow_alias is set. The response carries the resolved
+// version either way; the point is that a config names what it runs.
+var decisionAliases = map[string]bool{"jev-latest": true, "jev-preview": true, "latest": true}
+
+// convertDecisionConfigYAMLToProto validates and converts the decision block.
+// A nil block converts to nil (layer off).
+func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionConfig, error) {
+	if y == nil {
+		return nil, nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(y.Provider))
+	if provider == "" {
+		provider = "off"
+	}
+	if !decisionProviders[provider] {
+		return nil, fmt.Errorf("decision.provider %q: must be one of off, llm, mock, jev", y.Provider)
+	}
+	if decisionAliases[strings.ToLower(y.Model)] && !y.AllowAlias {
+		return nil, fmt.Errorf("decision.model %q is a floating alias; pin a version or set allow_alias: true", y.Model)
+	}
+	if y.TimeoutMs < 0 {
+		return nil, fmt.Errorf("decision.timeout_ms must be >= 0, got %d", y.TimeoutMs)
+	}
+	if y.MaxPerSession < 0 {
+		return nil, fmt.Errorf("decision.max_per_session must be >= 0, got %d", y.MaxPerSession)
+	}
+	if y.MaxCostUSDPerSession < 0 {
+		return nil, fmt.Errorf("decision.max_cost_usd_per_session must be >= 0, got %v", y.MaxCostUSDPerSession)
+	}
+	cfg := &loomv1.DecisionConfig{
+		Provider:             provider,
+		Model:                y.Model,
+		AllowAlias:           y.AllowAlias,
+		TimeoutMs:            y.TimeoutMs,
+		BaseUrl:              y.BaseURL,
+		MaxPerSession:        y.MaxPerSession,
+		MaxCostUsdPerSession: y.MaxCostUSDPerSession,
+		LlmRole:              y.LLMRole,
+	}
+	seen := make(map[string]bool, len(y.Bands))
+	for i, b := range y.Bands {
+		if strings.TrimSpace(b.Site) == "" {
+			return nil, fmt.Errorf("decision.bands[%d]: site is required", i)
+		}
+		if seen[b.Site] {
+			return nil, fmt.Errorf("decision.bands[%d]: duplicate site %q", i, b.Site)
+		}
+		seen[b.Site] = true
+		if b.ActMin < 0 || b.ActMin > 1 {
+			return nil, fmt.Errorf("decision.bands[%d] (%s): act_min must be in [0, 1], got %v", i, b.Site, b.ActMin)
+		}
+		var mode loomv1.DecisionBandMode
+		switch strings.ToLower(strings.TrimSpace(b.Mode)) {
+		case "", "replace":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
+		case "tighten_only", "tighten-only", "tighten":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): mode %q must be replace or tighten_only", i, b.Site, b.Mode)
+		}
+		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
+			Site:   b.Site,
+			ActMin: b.ActMin,
+			Mode:   mode,
+			Shadow: b.Shadow,
+		})
+	}
+	return cfg, nil
+}
+
 // AgentConfigYAML represents the YAML structure for agent configuration.
 // This struct mirrors the proto AgentConfig but uses YAML-friendly types.
 // Legacy format with "agent:" as root key.
@@ -142,6 +251,7 @@ type AgentConfigYAML struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		SystemPrompt     string                 `yaml:"system_prompt"`
@@ -177,6 +287,7 @@ type K8sStyleAgentConfig struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
@@ -500,6 +611,7 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	legacy.Agent.OrchestratorLLM = k8s.Spec.OrchestratorLLM
 	legacy.Agent.ClassifierLLM = k8s.Spec.ClassifierLLM
 	legacy.Agent.CompressorLLM = k8s.Spec.CompressorLLM
+	legacy.Agent.Decision = k8s.Spec.Decision
 	legacy.Agent.ActiveProvider = k8s.Spec.ActiveProvider
 	legacy.Agent.AllowedProviders = k8s.Spec.AllowedProviders
 
@@ -689,6 +801,13 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		}
 		config.CompressorLlm = compressorLLM
 	}
+
+	// Decision layer (pkg/decision); nil means off.
+	decisionCfg, err := convertDecisionConfigYAMLToProto(yaml.Agent.Decision)
+	if err != nil {
+		return nil, err
+	}
+	config.Decision = decisionCfg
 
 	// Provider pool fields
 	config.ActiveProvider = yaml.Agent.ActiveProvider

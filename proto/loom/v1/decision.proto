@@ -8,6 +8,7 @@ syntax = "proto3";
 package loom.v1;
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
@@ -181,6 +182,44 @@ message DecisionBand {
   // Shadow records the Decider's answer alongside the existing mechanism's
   // without branching on it. Overrides act_min: the path is always FALLBACK.
   bool shadow = 4;
+}
+
+// DecisionShadowRecord is one question's shadow comparison: what the decider
+// answered and what the call site's existing mechanism answered for the same
+// input. Rows accumulate in the decision_shadow table and feed the agreement,
+// calibration and confusion reports that set a site's band. Nothing in a
+// record is sent to a vendor.
+message DecisionShadowRecord {
+  // Store-assigned id; empty on write.
+  string id = 1;
+  google.protobuf.Timestamp recorded_at = 2;
+  string site = 3;
+  string session_id = 4;
+  string question_id = 5;
+  // "noul", "choice" or "score".
+  string kind = 6;
+  // Candidate (decider) answer rendered as a string: "true"/"false" for
+  // noul, the option key for choice, the argmax level index for score.
+  // Empty when the decider did not answer (see path).
+  string candidate_answer = 7;
+  // AnswerConfidence of the candidate answer, or 0.
+  double candidate_confidence = 8;
+  // Full candidate distribution (empty for noul, which has a single
+  // probability recorded under key "true").
+  map<string, double> candidate_probabilities = 9;
+  // Reference (existing mechanism) answer in the same rendering. Empty when
+  // the site had no reference for this question.
+  string reference_answer = 10;
+  // What produced the reference ("llm_rerank", "fabric.InferErrorType",
+  // "keyword"), so a report can say what it agreed with.
+  string reference_source = 11;
+  int64 latency_ms = 12;
+  int64 input_tokens = 13;
+  double cost_usd = 14;
+  string model = 15;
+  string provider = 16;
+  // Router path for the request this record came from.
+  DecisionPath path = 17;
 }
 
 // DecisionConfig configures the decision layer for an agent or server.

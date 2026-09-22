@@ -1,7 +1,7 @@
 # Decision Layer
 
-**Status**: ⚠️ Partial. Core package implemented (Phase 0); no call site uses it yet; no Jev client yet.
-**Package**: `pkg/decision` (+ `pkg/decision/mock`, `pkg/decision/llm`)
+**Status**: ⚠️ Partial. Core package (Phase 0) and shadow harness (Phase 1) implemented; three call sites shadow-record; no site acts on a decider yet; no Jev client yet.
+**Package**: `pkg/decision` (+ `mock`, `llm`, `report`, `sites`)
 **Proto**: `proto/loom/v1/decision.proto`
 **Plan**: `docs/plans/jev-decision-layer-plan.md` · **Research**: `docs/research/jev-system-one-assessment.md`
 
@@ -43,13 +43,26 @@ call site ──► decision.Router ──► decision.Instrumented ──► De
 5. **Shadow by default.** A site with no band never acts. Bands are configured per site after a shadow report, not from vendor defaults.
 6. **Budgets are counted.** `WithBudget(maxPerSession, maxCostUSD)` caps decisions per session; exhaustion is a `BUDGET` path, not an error.
 
+## Shadow mode (Phase 1) ✅
+
+A shadow comparison runs the decider **in the background, alongside** a call site's existing mechanism, and records both answers as one `DecisionShadowRecord` per question. Nothing branches on the decider; the rows are the evidence for a band.
+
+- **Record and store** (`shadow.go`): `BuildShadowRecords` renders candidate and reference answers the same way ("true"/"false", option key, level index); `ShadowStore` is implemented on SQLite (migration 000010) and Postgres (000025, tenant-scoped with RLS) and exposed through `backend.DecisionShadowProvider`; `ShadowRecorder` swallows store errors into `decision.shadow.errors.total`.
+- **Sites** (`sites/`): request builders and reference mappings live here, not inline, so `loom decision replay` builds the exact request a live agent builds.
+  - `tool.failure_kind` (`sites/failure.go`): `Choice` over {not_a_failure, transient, server_saturated, auth, bad_input, not_found, other} plus a `Noul` "identical retry would help". State is `{tool, error_code, error_text[:2000], input_digest}`, never the input or payload. Reference maps `Success` plus `fabric.InferErrorType` onto the kinds.
+  - `recall.rerank`, `tool_search.rerank` (`sites/rerank.go`): one `Noul` per candidate, up to 64; reference is the set the LLM rerank kept.
+- **Wired sites**: `Agent.rerankMemories` (`pkg/agent/decision_shadow.go`), `Agent.executeToolWithSelfCorrection`, `registry.rerankWithLLM` (`pkg/tools/registry/decision_shadow.go`). Shadows run in goroutines detached from the turn's cancellation with a 30 s cap; `WaitDecisionShadows()` exists for tests and shutdown.
+- **Configuration**: a `decision:` block in agent YAML (`provider: off|llm|mock|jev`, `llm_role`, `model` pinned unless `allow_alias`, budgets, `bands`), converted with validation in `config_loader.go`. The registry passes the server's shadow store to every agent; `looms serve` obtains it from the storage backend.
+- **Report** (`report/`): agreement with the reference, expected calibration error over 10 confidence bins, confusion (reference → candidate), decider error rate, latency percentiles, token and cost totals; rendered as Markdown.
+- **CLI**: `loom decision replay --decider llm|mock [--errors-only] [--limit N] [--dry-run]` runs `tool_executions` rows through the failure-kind classifier and writes shadow rows; `loom decision report --site S [--since 7d]` prints the report. Both read the local `loom.db`.
+
 ## Not yet implemented
 
-- 📋 Jev HTTP client (`pkg/decision/jev`), including a configurable base URL for gateways (Vercel AI Gateway serves Jev) and its own rate limiter separate from the LLM slot scheduler.
-- 📋 Shadow harness and `decision_shadow` store on SQLite and Postgres; `loom decision replay|report`.
-- 📋 Agent/server config block (`decision:`) and `WithDecider` wiring.
-- 📋 Any call-site migration. The ranked list is in the plan, §3 Phase 3–5.
+- 📋 Jev HTTP client (`pkg/decision/jev`), including a configurable base URL for gateways (Vercel AI Gateway serves Jev) and its own rate limiter separate from the LLM slot scheduler. `provider: jev` currently logs a warning and stays off.
+- 📋 Conversation-search rerank shadow (`segmented_memory.go`) and every other site in the plan's Phase 3–5 list.
+- 📋 Any live band. No site acts on a decider answer until its shadow report has been reviewed.
+- 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).
 
 ## Tests
 
-`go test -tags fts5 -race ./pkg/decision/...` covers builders (table-driven), answer math, router paths and budgets (including a concurrent band-rewrite test), the instrumented wrapper against a recording tracer, the mock, and the LLM adapter against a scripted provider. Fuzz targets: `FuzzToValueRoundTrip`, `FuzzValidateState`, `FuzzParseAnswers`, `FuzzExtractObject`.
+`go test -tags fts5 -race ./pkg/decision/...` covers builders (table-driven), answer math, router paths and budgets (including a concurrent band-rewrite test), the instrumented wrapper against a recording tracer, the mock, the LLM adapter against a scripted provider, shadow record construction and the recorder, the report math against hand-computed ECE, and the site builders and reference mappings. Fuzz targets: `FuzzToValueRoundTrip`, `FuzzValidateState`, `FuzzParseAnswers`, `FuzzExtractObject`. Store tests: `pkg/storage/sqlite` (temp DB through the migrator, concurrent writes) and `pkg/storage/postgres` (integration, `TEST_POSTGRES_URL`, tenant isolation). Wiring tests: `pkg/agent/decision_shadow_test.go`, `pkg/tools/registry/decision_shadow_test.go`, `cmd/loom/decision_test.go` (seeded `loom.db`, replay + report), `cmd/looms/registry_subsystems_test.go`.

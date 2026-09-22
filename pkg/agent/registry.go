@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -117,6 +118,11 @@ type Registry struct {
 	// tool surfacing — see suppressedBuiltinTools below. Protected by mu.
 	graphMemoryStore    memory.GraphMemoryStore
 	graphMemoryEmbedder memory.Embedder
+
+	// decisionShadowStore is the server-level store for typed-decision shadow
+	// rows (pkg/decision). Every agent built through buildAgent receives it
+	// with its DecisionConfig; nil means shadows are traced but not persisted.
+	decisionShadowStore decision.ShadowStore
 
 	// suppressedBuiltinTools is the server-level tool-surface policy. Each
 	// agent built through buildAgent receives WithoutBuiltinTool for every
@@ -279,6 +285,16 @@ func (r *Registry) SetGraphMemoryStore(store memory.GraphMemoryStore, embedder m
 	r.logger.Info("Graph memory store configured in registry",
 		zap.Bool("store_present", store != nil),
 		zap.Bool("embedder_present", embedder != nil))
+}
+
+// SetDecisionShadowStore configures the server-level decision shadow store.
+// Agents built afterwards persist their shadow comparisons to it.
+func (r *Registry) SetDecisionShadowStore(store decision.ShadowStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decisionShadowStore = store
+	r.logger.Info("Decision shadow store configured in registry",
+		zap.Bool("store_present", store != nil))
 }
 
 // SetSuppressedBuiltinTools configures the server-level tool-surface policy.
@@ -782,8 +798,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	taskDec := r.taskDecomposer
 	gmStore := r.graphMemoryStore
 	gmEmbedder := r.graphMemoryEmbedder
+	shadowStore := r.decisionShadowStore
 	suppressedTools := append([]string(nil), r.suppressedBuiltinTools...)
 	r.mu.RUnlock()
+
+	// Decision layer: the agent resolves the configured decider against its
+	// own LLMs after options apply; nil config means off.
+	opts = append(opts, WithDecisionConfig(config.GetDecision(), shadowStore))
 	if taskMgr != nil {
 		tbCfg := config.GetMemory().GetTaskBoard()
 		if tbCfg == nil {

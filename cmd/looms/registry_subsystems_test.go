@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/task"
 )
@@ -27,6 +28,7 @@ import (
 type spyRegistrySink struct {
 	taskManagerSet bool
 	graphStoreSet  bool
+	shadowStoreSet bool
 	suppressedSet  []string
 }
 
@@ -34,7 +36,12 @@ func (s *spyRegistrySink) SetTaskManager(*task.Manager, *task.Decomposer) { s.ta
 func (s *spyRegistrySink) SetGraphMemoryStore(memory.GraphMemoryStore, memory.Embedder) {
 	s.graphStoreSet = true
 }
-func (s *spyRegistrySink) SetSuppressedBuiltinTools(names []string) { s.suppressedSet = names }
+func (s *spyRegistrySink) SetSuppressedBuiltinTools(names []string)    { s.suppressedSet = names }
+func (s *spyRegistrySink) SetDecisionShadowStore(decision.ShadowStore) { s.shadowStoreSet = true }
+
+// stubShadowStore is a non-nil decision.ShadowStore whose methods are never
+// invoked here (the helper only checks for nil).
+type stubShadowStore struct{ decision.ShadowStore }
 
 // stubGraphStore is a non-nil memory.GraphMemoryStore whose methods are never
 // invoked here (the helper only checks for nil). Embedding the interface
@@ -55,19 +62,22 @@ func TestWireRegistrySubsystems(t *testing.T) {
 		// expressible here because the helper takes none.
 		tm := &task.Manager{}
 		gm := memory.GraphMemoryStore(&stubGraphStore{})
-		wireRegistrySubsystems(spy, tm, nil, gm, nil, []string{"graph_memory", "task_board"}, zap.NewNop())
+		wireRegistrySubsystems(spy, tm, nil, gm, nil, []string{"graph_memory", "task_board"},
+			decision.ShadowStore(&stubShadowStore{}), zap.NewNop())
 
 		assert.True(t, spy.taskManagerSet, "task manager must be injected")
 		assert.True(t, spy.graphStoreSet, "graph memory store must be injected")
+		assert.True(t, spy.shadowStoreSet, "decision shadow store must be injected")
 		assert.Equal(t, []string{"graph_memory", "task_board"}, spy.suppressedSet,
 			"tool-surface policy must be propagated")
 	})
 
 	t.Run("nil subsystems are skipped, empty suppression is a no-op", func(t *testing.T) {
 		spy := &spyRegistrySink{}
-		wireRegistrySubsystems(spy, nil, nil, nil, nil, nil, zap.NewNop())
+		wireRegistrySubsystems(spy, nil, nil, nil, nil, nil, nil, zap.NewNop())
 
 		assert.False(t, spy.taskManagerSet, "nil task manager must not be injected")
+		assert.False(t, spy.shadowStoreSet, "nil decision shadow store must not be injected")
 		assert.False(t, spy.graphStoreSet, "nil graph store must not be injected")
 		assert.Nil(t, spy.suppressedSet, "empty suppression list must not call the setter")
 	})
