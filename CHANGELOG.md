@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Graph memory
 - Task-completion memories now honor the owning agent's `memory.graph_memory.enabled: false`. The task manager is server-wide and wrote an `experience` memory (salience 0.75, plus an async entity-salience boost) into the owner agent's partition on every closed task — including the implicit per-turn task, so an agent that opted out of graph memory still accrued one memory per turn. `task.Manager.SetGraphMemoryPolicy` routes the write through the registry's per-agent view (`Registry.GraphMemoryEnabledFor`: on unless explicitly disabled, matching the subsystem wiring rule); `looms serve` installs it whenever a graph store is present.
 
+#### MCP tool adapter
+- The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
+
 ### Breaking Changes
 
 - **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.

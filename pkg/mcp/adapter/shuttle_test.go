@@ -1063,6 +1063,81 @@ func TestExecute_NonSchemaToolSkipsCache(t *testing.T) {
 	}, "non-schema tool should not hit cache and should proceed to call client")
 }
 
+func TestIsEmptySchemaResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{"empty columns object", `{"columns":[]}`, true},
+		{"cached-style prefix is not JSON", `(cached) {"columns":[]}`, false},
+		{"empty array", `[]`, true},
+		{"empty with scalar siblings", `{"columns":[],"row_count":0}`, true},
+		{"several arrays all empty", `{"tables":[],"views":[]}`, true},
+		{"one populated array", `{"tables":[],"databases":[{"database_name":"x"}]}`, false},
+		{"populated columns", `{"columns":[{"column_name":"a","column_type":"I"}]}`, false},
+		{"object without arrays", `{"row_count":0}`, false},
+		{"plain text", `no such table`, false},
+		{"whitespace-padded empty", "  {\"columns\": [ ]}  ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isEmptySchemaResult(tt.payload))
+		})
+	}
+}
+
+// TestExecute_SchemaToolEmptyResultNotCached guards the az512 failure: a
+// describe_table that answered {"columns":[]} was cached and then served to
+// every later caller with the same arguments. An empty schema answer must miss
+// the cache so the next caller reaches the server again.
+func TestExecute_SchemaToolEmptyResultNotCached(t *testing.T) {
+	ClearSchemaCache()
+	t.Cleanup(ClearSchemaCache)
+
+	describeTool := protocol.Tool{
+		Name:        "describe_table",
+		Description: "Describe a table",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"table_name": map[string]interface{}{"type": "string"},
+			},
+		},
+	}
+	calls := 0
+	payloads := []string{`{"columns":[]}`, `{"columns":[{"column_name":"SK_ID_CURR","column_type":"I"}]}`}
+	handler := func(method string, params json.RawMessage) (interface{}, *protocol.Error) {
+		switch method {
+		case "tools/list":
+			return protocol.ToolListResult{Tools: []protocol.Tool{describeTool}}, nil
+		case "tools/call":
+			p := payloads[calls]
+			calls++
+			return protocol.CallToolResult{Content: []protocol.Content{{Type: "text", Text: p}}}, nil
+		default:
+			return nil, protocol.NewError(protocol.MethodNotFound, "unknown method: "+method, nil)
+		}
+	}
+	mcpClient, _ := newMockClientWithHandler(t, handler)
+	adapter := NewMCPToolAdapter(mcpClient, describeTool, "teradata")
+	args := map[string]interface{}{"table_name": "DEMO_CreditCard.Credit_Card"}
+
+	first, err := adapter.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.True(t, first.Success)
+	assert.Equal(t, `{"columns":[]}`, first.Data, "the empty answer is still returned to this caller")
+	_, cached := globalSchemaCache.get(adapter.buildSchemaCacheKey(args))
+	assert.False(t, cached, "an empty schema answer must not enter the cache")
+
+	second, err := adapter.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "the second caller must reach the server, not the cache")
+	assert.Equal(t, payloads[1], second.Data)
+	_, cached = globalSchemaCache.get(adapter.buildSchemaCacheKey(args))
+	assert.True(t, cached, "a populated schema answer is cached as before")
+}
+
 func TestExecute_ParameterNormalization(t *testing.T) {
 	// Verify that the parameter normalization happens before cache key building
 	ClearSchemaCache()
