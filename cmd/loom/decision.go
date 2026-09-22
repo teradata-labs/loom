@@ -22,10 +22,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/decision"
 	decisionllm "github.com/teradata-labs/loom/pkg/decision/llm"
@@ -57,15 +59,17 @@ a band is configured.`,
 }
 
 var (
-	decisionDBPath   string
-	decisionSite     string
-	decisionLimit    int
-	decisionSince    string
-	decisionDecider  string
-	decisionProvider string
-	decisionModel    string
-	decisionDryRun   bool
-	decisionErrors   bool
+	decisionDBPath      string
+	decisionSite        string
+	decisionLimit       int
+	decisionSince       string
+	decisionDecider     string
+	decisionProvider    string
+	decisionModel       string
+	decisionDryRun      bool
+	decisionErrors      bool
+	decisionConcurrency int
+	decisionSample      string
 )
 
 var decisionReplayCmd = &cobra.Command{
@@ -85,10 +89,12 @@ func init() {
 
 	decisionReplayCmd.Flags().IntVar(&decisionLimit, "limit", 1000, "Maximum tool executions to replay, newest first")
 	decisionReplayCmd.Flags().StringVar(&decisionDecider, "decider", "llm", "Decider to shadow: llm | mock")
-	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm (default: $LOOM_LLM_PROVIDER or anthropic)")
+	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm: anthropic | bedrock | azure-openai | openai | gemini | mistral | ollama | litellm (default: $LOOM_LLM_PROVIDER or anthropic; credentials from the usual env vars)")
 	decisionReplayCmd.Flags().StringVar(&decisionModel, "model", "", "LLM model for --decider llm (default: provider default)")
 	decisionReplayCmd.Flags().BoolVar(&decisionErrors, "errors-only", false, "Replay only executions that recorded an error")
 	decisionReplayCmd.Flags().BoolVar(&decisionDryRun, "dry-run", false, "Build requests and references but call no decider and write nothing")
+	decisionReplayCmd.Flags().IntVar(&decisionConcurrency, "concurrency", 4, "Decider calls in flight at once (1 = sequential)")
+	decisionReplayCmd.Flags().StringVar(&decisionSample, "sample", sampleNewest, "Which executions to replay: newest | random (random reaches across the whole history)")
 
 	decisionReportCmd.Flags().StringVar(&decisionSite, "site", sites.SiteFailureKind, "Site to report on (empty = all sites)")
 	decisionReportCmd.Flags().IntVar(&decisionLimit, "limit", 0, "Maximum shadow rows to read, newest first (0 = store default)")
@@ -149,7 +155,7 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	rows, err := loadToolExecutions(ctx, db, decisionLimit, decisionErrors)
+	rows, err := loadToolExecutions(ctx, db, decisionLimit, decisionErrors, decisionSample)
 	if err != nil {
 		return err
 	}
@@ -177,51 +183,117 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 	}
 	emit(cmd.OutOrStdout(), "\n")
 
-	var written, errored, skipped int
+	workers := decisionConcurrency
+	if workers < 1 || decisionDryRun {
+		workers = 1
+	}
+	deciderName := ""
+	if decider != nil {
+		deciderName = decider.Name()
+	}
+
+	// Workers evaluate; the main goroutine is the single writer to the store
+	// and the only one printing progress. Results arrive in completion order,
+	// which is fine: rows are independent and the report does not care.
+	type replayResult struct {
+		records []*loomv1.DecisionShadowRecord
+		skipped bool
+		errored bool
+	}
+	jobs := make(chan toolExecutionRow)
+	results := make(chan replayResult)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for row := range jobs {
+				results <- replayOne(ctx, router, deciderName, row, decisionDryRun)
+			}
+		}()
+	}
+	go func() {
+		for _, row := range rows {
+			jobs <- row
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+
+	var written, errored, skipped, done int
 	start := time.Now()
-	for i, row := range rows {
-		input := map[string]any{}
-		if row.inputJSON.Valid && row.inputJSON.String != "" {
-			_ = json.Unmarshal([]byte(row.inputJSON.String), &input)
-		}
-		errText := ""
-		if row.errorText.Valid {
-			errText = row.errorText.String
-		}
-		success := errText == ""
-		req, err := sites.FailureKindRequest(row.toolName, "", errText, input)
-		if err != nil {
+	for res := range results {
+		done++
+		switch {
+		case res.skipped:
 			skipped++
-			continue
+		case decisionDryRun:
+			written += len(res.records)
+		default:
+			if res.errored {
+				errored++
+			}
+			if err := recorder.Record(ctx, res.records); err != nil {
+				return fmt.Errorf("record shadow rows: %w", err)
+			}
+			written += len(res.records)
 		}
-		refs := sites.FailureKindReference(success, "", errText)
-		if decisionDryRun {
-			written += len(refs)
-			continue
-		}
-		out := router.Decide(decision.WithSessionID(ctx, row.sessionID), req)
-		if out.Err != nil {
-			errored++
-		}
-		records := decision.BuildShadowRecords(req, out, decider.Name(), row.sessionID, refs)
-		if err := recorder.Record(ctx, records); err != nil {
-			return fmt.Errorf("record shadow rows: %w", err)
-		}
-		written += len(records)
-		if (i+1)%50 == 0 {
+		if done%50 == 0 {
 			emitf(cmd.OutOrStdout(), "  %d/%d executions, %d rows, %d decider errors, %s elapsed\n",
-				i+1, len(rows), written, errored, time.Since(start).Round(time.Second))
+				done, len(rows), written, errored, time.Since(start).Round(time.Second))
 		}
 	}
-	emitf(cmd.OutOrStdout(), "done: %d executions, %d shadow rows written, %d decider errors, %d skipped, %s\n",
-		len(rows), written, errored, skipped, time.Since(start).Round(time.Millisecond))
+	emitf(cmd.OutOrStdout(), "done: %d executions, %d shadow rows written, %d decider errors, %d skipped, %d workers, %s\n",
+		len(rows), written, errored, skipped, workers, time.Since(start).Round(time.Millisecond))
 	if !decisionDryRun {
 		emitf(cmd.OutOrStdout(), "next: loom decision report --site %s --db %s\n", sites.SiteFailureKind, path)
 	}
 	return nil
 }
 
-func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly bool) ([]toolExecutionRow, error) {
+// replayOne builds the failure-kind request and reference for one recorded
+// execution and, unless dry-running, asks the router. It never returns an
+// error: a decider failure becomes ERROR-path rows, a malformed row is
+// skipped.
+func replayOne(ctx context.Context, router *decision.Router, deciderName string, row toolExecutionRow, dryRun bool) (res struct {
+	records []*loomv1.DecisionShadowRecord
+	skipped bool
+	errored bool
+}) {
+	input := map[string]any{}
+	if row.inputJSON.Valid && row.inputJSON.String != "" {
+		_ = json.Unmarshal([]byte(row.inputJSON.String), &input)
+	}
+	errText := ""
+	if row.errorText.Valid {
+		errText = row.errorText.String
+	}
+	success := errText == ""
+	req, err := sites.FailureKindRequest(row.toolName, "", errText, input)
+	if err != nil {
+		res.skipped = true
+		return res
+	}
+	refs := sites.FailureKindReference(success, "", errText)
+	if dryRun {
+		// Nothing is written on a dry run; the count stands in for rows.
+		res.records = make([]*loomv1.DecisionShadowRecord, len(refs))
+		return res
+	}
+	out := router.Decide(decision.WithSessionID(ctx, row.sessionID), req)
+	res.errored = out.Err != nil
+	res.records = decision.BuildShadowRecords(req, out, deciderName, row.sessionID, refs)
+	return res
+}
+
+// Sampling orders for loadToolExecutions.
+const (
+	sampleNewest = "newest"
+	sampleRandom = "random"
+)
+
+func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly bool, sample string) ([]toolExecutionRow, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -229,10 +301,21 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	if errorsOnly {
 		where = "WHERE error IS NOT NULL AND error <> ''"
 	}
+	// Newest-first reads the tail of whatever campaign ran last, which can be
+	// one failure mode repeated thousands of times. Random reaches across the
+	// whole history and is what a class-balanced report wants.
+	order := "ORDER BY timestamp DESC, id DESC"
+	switch strings.ToLower(sample) {
+	case "", sampleNewest:
+	case sampleRandom:
+		order = "ORDER BY RANDOM()"
+	default:
+		return nil, fmt.Errorf("--sample %q: must be newest or random", sample)
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT session_id, tool_name, input_json, error, timestamp
 		FROM tool_executions `+where+`
-		ORDER BY timestamp DESC, id DESC
+		`+order+`
 		LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read tool_executions: %w", err)
@@ -271,17 +354,21 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 			provider = "anthropic"
 		}
 		f := factory.NewProviderFactory(factory.FactoryConfig{
-			DefaultProvider:  provider,
-			DefaultModel:     decisionModel,
-			AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
-			OpenAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
-			GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
-			MistralAPIKey:    os.Getenv("MISTRAL_API_KEY"),
-			HuggingFaceToken: os.Getenv("HF_TOKEN"),
-			OllamaEndpoint:   os.Getenv("OLLAMA_ENDPOINT"),
-			LiteLLMEndpoint:  os.Getenv("LITELLM_ENDPOINT"),
-			LiteLLMAPIKey:    os.Getenv("LITELLM_API_KEY"),
-			BedrockRegion:    os.Getenv("AWS_REGION"),
+			DefaultProvider:         provider,
+			DefaultModel:            decisionModel,
+			AnthropicAPIKey:         os.Getenv("ANTHROPIC_API_KEY"),
+			OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
+			GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
+			MistralAPIKey:           os.Getenv("MISTRAL_API_KEY"),
+			HuggingFaceToken:        os.Getenv("HF_TOKEN"),
+			OllamaEndpoint:          os.Getenv("OLLAMA_ENDPOINT"),
+			LiteLLMEndpoint:         os.Getenv("LITELLM_ENDPOINT"),
+			LiteLLMAPIKey:           os.Getenv("LITELLM_API_KEY"),
+			BedrockRegion:           os.Getenv("AWS_REGION"),
+			BedrockProfile:          os.Getenv("AWS_PROFILE"),
+			AzureOpenAIEndpoint:     os.Getenv("AZURE_OPENAI_ENDPOINT"),
+			AzureOpenAIDeploymentID: os.Getenv("AZURE_OPENAI_DEPLOYMENT"),
+			AzureOpenAIAPIKey:       os.Getenv("AZURE_OPENAI_API_KEY"),
 		})
 		raw, err := f.CreateProvider(provider, decisionModel)
 		if err != nil {
