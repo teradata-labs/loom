@@ -290,3 +290,79 @@ func TestRememberTaskCompletion_InvokesBoost(t *testing.T) {
 	require.Len(t, mock.touchedIDs, 1)
 	assert.Contains(t, mock.touchedIDs[0], "mem-1")
 }
+
+// TestRememberTaskCompletion_HonorsAgentPolicy guards the per-agent opt-out:
+// the task manager is server-wide, so without the policy a
+// `graph_memory.enabled: false` agent still accrued an "experience" memory on
+// every closed (implicit) task.
+func TestRememberTaskCompletion_HonorsAgentPolicy(t *testing.T) {
+	tests := []struct {
+		name          string
+		policy        func(agentID string) bool
+		wantRemembers int
+		wantSearches  int
+	}{
+		{name: "nil policy records (store present)", policy: nil, wantRemembers: 1, wantSearches: 1},
+		{name: "policy allows", policy: func(string) bool { return true }, wantRemembers: 1, wantSearches: 1},
+		{name: "policy denies owner", policy: func(id string) bool { return id != "agent-off" }, wantRemembers: 0, wantSearches: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockGraphMemoryStore{
+				entities: []*memory.Entity{{ID: "ent-1", Name: "testing", AgentID: "agent-off"}},
+				memories: []*memory.Memory{{ID: "mem-1"}},
+			}
+			mgr := NewManager(nil, nil, nil, zap.NewNop())
+			mgr.SetGraphMemory(mock)
+
+			// The async boost consults the gate from its own goroutine.
+			var askedMu sync.Mutex
+			var asked []string
+			if tt.policy != nil {
+				inner := tt.policy
+				mgr.SetGraphMemoryPolicy(func(id string) bool {
+					askedMu.Lock()
+					asked = append(asked, id)
+					askedMu.Unlock()
+					return inner(id)
+				})
+			}
+
+			task := &Task{
+				ID:              "task-6",
+				Title:           "Run query",
+				Objective:       "TPC-H q1",
+				OwnerAgentID:    "agent-off",
+				AssigneeAgentID: "agent-other",
+				CloseReason:     "Turn completed.",
+			}
+			mgr.rememberTaskCompletion(context.Background(), task)
+			time.Sleep(50 * time.Millisecond) // let the async boost settle (or prove it never ran)
+
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+			assert.Equal(t, tt.wantRemembers, mock.rememberCalls, "Remember calls")
+			assert.Len(t, mock.searchCalls, tt.wantSearches, "salience boost searches")
+			if tt.policy != nil {
+				askedMu.Lock()
+				defer askedMu.Unlock()
+				require.NotEmpty(t, asked, "policy must be consulted")
+				for _, id := range asked {
+					assert.Equal(t, "agent-off", id, "gate must be keyed on the OWNER agent (the memory partition written to)")
+				}
+			}
+		})
+	}
+}
+
+func TestMemoryRecordingAllowed(t *testing.T) {
+	mgr := NewManager(nil, nil, nil, zap.NewNop())
+	assert.False(t, mgr.MemoryRecordingAllowed("a"), "no store: never allowed")
+
+	mgr.SetGraphMemory(&mockGraphMemoryStore{})
+	assert.True(t, mgr.MemoryRecordingAllowed("a"), "store, no policy: allowed")
+
+	mgr.SetGraphMemoryPolicy(func(id string) bool { return id == "a" })
+	assert.True(t, mgr.MemoryRecordingAllowed("a"))
+	assert.False(t, mgr.MemoryRecordingAllowed("b"))
+}

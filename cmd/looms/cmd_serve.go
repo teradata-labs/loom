@@ -382,6 +382,7 @@ type registrySubsystemSink interface {
 	SetTaskManager(manager *task.Manager, decomposer *task.Decomposer)
 	SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder)
 	SetSuppressedBuiltinTools(names []string)
+	GraphMemoryEnabledFor(nameOrID string) bool
 }
 
 // resolveJudgeFallback picks the judge's fallback LLM: the pool's active
@@ -426,6 +427,13 @@ func wireRegistrySubsystems(
 		reg.SetGraphMemoryStore(graphMemoryStore, memoryEmbedder)
 		logger.Info("Graph memory store injected into agent registry",
 			zap.Bool("embedder_present", memoryEmbedder != nil))
+		if taskManager != nil {
+			// The task manager is server-wide; graph memory is opted out per
+			// agent. Route its completion-memory writes through the registry's
+			// per-agent view so `graph_memory.enabled: false` is honored.
+			taskManager.SetGraphMemoryPolicy(reg.GraphMemoryEnabledFor)
+			logger.Info("Task-completion memory gated on per-agent graph memory setting")
+		}
 	}
 	if len(suppressed) > 0 {
 		reg.SetSuppressedBuiltinTools(suppressed)
