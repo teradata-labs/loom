@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### MCP tool adapter
+- The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
+
 #### Usage and cost accounting
 - `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
 - `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.
