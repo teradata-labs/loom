@@ -101,7 +101,7 @@ func (r *Registry) recordAsync(ctx context.Context, router *decision.Router, rec
 		defer cancel()
 		records := decision.BuildShadowRecords(req, out, provider, sessionID, refs)
 		if err := recorder.Record(recCtx, records); err != nil {
-			r.logger.Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
+			r.logger.Warn("decision shadow: record failed", zap.String("site", req.Site), zap.Int("rows", len(records)), zap.Error(err))
 		}
 	}()
 }
@@ -133,7 +133,7 @@ func (r *Registry) shadowRerank(ctx context.Context, query string, candidates, k
 		}
 		records := decision.BuildShadowRecords(req, out, provider, sessionID, refs)
 		if err := recorder.Record(shadowCtx, records); err != nil {
-			r.logger.Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
+			r.logger.Warn("decision shadow: record failed", zap.String("site", req.Site), zap.Int("rows", len(records)), zap.Error(err))
 		}
 	}()
 }

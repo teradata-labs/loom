@@ -245,7 +245,9 @@ func (a *Agent) runShadow(ctx context.Context, sessionID string, req *loomv1.Dec
 func (a *Agent) recordDecision(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, out decision.Outcome, refs map[string]decision.Reference) {
 	records := decision.BuildShadowRecords(req, out, a.deciderName(), sessionID, refs)
 	if err := a.decisionRecorder.Record(ctx, records); err != nil {
-		zap.L().Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
+		// Warn: a store that rejects rows (a schema behind the binary, a
+		// locked file) otherwise drops a whole campaign's evidence silently.
+		zap.L().Warn("decision shadow: record failed", zap.String("site", req.Site), zap.Int("rows", len(records)), zap.Error(err))
 	}
 }
 
