@@ -27,6 +27,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -41,6 +42,12 @@ type Registry struct {
 	mu             sync.RWMutex
 	indexers       []Indexer
 	liveMCPServers func() []string
+
+	// Decision layer (pkg/decision): shadow-evaluates the LLM rerank. Set by
+	// SetDecisionRouter; nil means off. See decision_shadow.go.
+	decisionRouter   *decision.Router
+	decisionRecorder *decision.ShadowRecorder
+	decisionWG       sync.WaitGroup
 }
 
 // Indexer is an interface for tool source indexers.
@@ -859,6 +866,11 @@ Example output: [{"index": 2, "score": 0.95, "reason": "Exact match for slack no
 		})
 		reranked = append(reranked, result)
 	}
+
+	// Decision layer shadow (plan Phase 1, site tool_search.rerank): the
+	// decider scores the same candidates in the background and the result is
+	// recorded against the indexes the LLM kept. Nothing branches on it yet.
+	r.shadowRerank(ctx, query, candidates, reranked)
 
 	if len(reranked) == 0 {
 		return candidates

@@ -22,6 +22,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -119,6 +120,16 @@ type Agent struct {
 	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
 	classifierLLM   LLMProvider // For intent classification / pattern selection
 	compressorLLM   LLMProvider // For memory compression / semantic search reranking
+
+	// Decision layer (pkg/decision). decisionCfg and decisionShadowStore come
+	// from WithDecisionConfig; initDecisionRouter builds decisionRouter and
+	// decisionRecorder from them after options are applied. decisionWG tracks
+	// background shadow evaluations so tests and shutdown can wait.
+	decisionCfg         *loomv1.DecisionConfig
+	decisionShadowStore decision.ShadowStore
+	decisionRouter      *decision.Router
+	decisionRecorder    *decision.ShadowRecorder
+	decisionWG          sync.WaitGroup
 
 	// Tracer for observability
 	tracer observability.Tracer

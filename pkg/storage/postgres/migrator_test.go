@@ -32,9 +32,9 @@ func TestLoadMigrations(t *testing.T) {
 	// 000017_graph_rls_honor_jwt, 000018_tool_outcomes_policy_denied,
 	// 000019_context_compilation, 000020_tool_exec_admission_decision,
 	// 000021_human_request_kind_summary, 000022_human_request_params,
-	// 000023_tool_outcomes_admission_decision, then
-	// 000024_task_attribution.
-	assert.Len(t, migrations, 24, "should have 24 migration versions")
+	// 000023_tool_outcomes_admission_decision, 000024_task_attribution,
+	// then 000025_decision_shadow (typed decision layer, pkg/decision).
+	assert.Len(t, migrations, 25, "should have 25 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
