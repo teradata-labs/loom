@@ -236,6 +236,9 @@ message DecisionShadowRecord {
   string provider = 16;
   // Router path for the request this record came from.
   DecisionPath path = 17;
+  // Decider error text for ERROR-path rows (bounded), empty otherwise. An
+  // ERROR row without its reason cannot be triaged; this is that reason.
+  string error = 18;
 }
 
 // DecisionConfig configures the decision layer for an agent or server.
