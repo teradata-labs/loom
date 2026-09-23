@@ -266,14 +266,34 @@ func TestResolveContextLimits(t *testing.T) {
 			description:        "Fall back to conservative system default",
 		},
 		{
-			name:               "Versioned model (prefix match)",
+			// A tagged Ollama ID now resolves through catalog.Lookup, which
+			// retries with the tag stripped after an exact miss, so it lands on
+			// the "llama3.1" catalog entry and reserves that entry's documented
+			// MaxOutputTokens (8192). Before tag-tolerant lookup this fell
+			// through to the legacy GetModelContextLimits table, which reserved
+			// a flat 10% (12800) instead. The untagged "llama3.1" already
+			// resolved to 8192, so this makes the tagged and untagged forms of
+			// the same model agree; the context window is 128000 either way.
+			name:               "Versioned model (tag-stripped catalog match)",
 			provider:           "ollama",
 			model:              "llama3.1:70b-instruct",
 			configuredMax:      0,
 			configuredReserved: 0,
 			expectedMax:        128000,
-			expectedReserved:   12800,
-			description:        "Prefix matching works for versioned models",
+			expectedReserved:   8192,
+			description:        "Tagged Ollama IDs resolve to their catalog entry's documented max output",
+		},
+		{
+			// A tagged model with no catalog entry under any tag still falls
+			// through to the legacy prefix table, so that path is not dead.
+			name:               "Versioned model with no catalog entry (legacy prefix match)",
+			provider:           "ollama",
+			model:              "llama2:70b",
+			configuredMax:      0,
+			configuredReserved: 0,
+			expectedMax:        4096,
+			expectedReserved:   409,
+			description:        "Legacy prefix matching still handles models absent from the catalog",
 		},
 	}
 

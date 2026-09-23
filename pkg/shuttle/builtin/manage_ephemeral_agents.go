@@ -8,6 +8,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,11 @@ type SpawnSubAgentRequest struct {
 	InitialMessage  string            // Optional: first message to send to spawned agent
 	AutoSubscribe   []string          // Optional: topics to auto-subscribe
 	Metadata        map[string]string // Optional: metadata for tracking
+	// TimeoutSeconds is how long the spawning agent wants the sub-agent to be
+	// allowed to run. 0 means "not specified": the embedder applies its own
+	// default. Embedders are expected to clamp a request to a ceiling they
+	// control — the value is model-supplied.
+	TimeoutSeconds int
 }
 
 // SpawnSubAgentResponse contains the result of spawning a sub-agent.
@@ -118,6 +124,7 @@ func (t *ManageEphemeralAgentsTool) InputSchema() *shuttle.JSONSchema {
 			"initial_message": shuttle.NewStringSchema("(spawn) Task description to send to the spawned agent"),
 			"workflow_id":     shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)"),
 			"auto_subscribe":  shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
+			"timeout_seconds": shuttle.NewNumberSchema("(spawn) Optional: how many seconds the sub-agent may run before it is cancelled. Size it to the task — a lookup needs far less than a multi-step analysis. Omit to use the server default; the server also enforces a ceiling."),
 			// Despawn parameters
 			"sub_agent_id": shuttle.NewStringSchema("(despawn) Full ID of sub-agent to despawn"),
 			"reason":       shuttle.NewStringSchema("(despawn) Optional: reason for despawn"),
@@ -205,6 +212,44 @@ func (t *ManageEphemeralAgentsTool) executeList(ctx context.Context, start time.
 	}, nil
 }
 
+// spawnTimeoutSeconds reads the optional timeout_seconds parameter. Absent or
+// null means "not specified" (0, ok). Models send JSON numbers (float64 after
+// decoding) but some serialise integers as strings, so both are accepted; a
+// fraction, zero, or a negative value is rejected rather than rounded so the
+// model learns the contract instead of getting a surprising cap.
+func spawnTimeoutSeconds(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case nil:
+		return 0, true
+	case float64:
+		if v <= 0 || v != float64(int(v)) {
+			return 0, false
+		}
+		return int(v), true
+	case int:
+		if v <= 0 {
+			return 0, false
+		}
+		return v, true
+	case int64:
+		if v <= 0 {
+			return 0, false
+		}
+		return int(v), true
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return 0, true
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
 func (t *ManageEphemeralAgentsTool) executeSpawn(ctx context.Context, params map[string]any, start time.Time) (*shuttle.Result, error) {
 	agentID, _ := params["agent_id"].(string)
 	preset, _ := params["preset"].(string)
@@ -243,6 +288,19 @@ func (t *ManageEphemeralAgentsTool) executeSpawn(ctx context.Context, params map
 		}
 	}
 
+	timeoutSeconds, ok := spawnTimeoutSeconds(params["timeout_seconds"])
+	if !ok {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_TIMEOUT",
+				Message:    fmt.Sprintf("timeout_seconds must be a positive whole number of seconds, got %v", params["timeout_seconds"]),
+				Suggestion: "Pass e.g. timeout_seconds=300, or omit it to use the server default",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	req := &SpawnSubAgentRequest{
 		ParentSessionID: t.parentSession,
 		ParentAgentID:   t.parentAgentID,
@@ -252,6 +310,7 @@ func (t *ManageEphemeralAgentsTool) executeSpawn(ctx context.Context, params map
 		InitialMessage:  initialMessage,
 		AutoSubscribe:   autoSubscribe,
 		Metadata:        metadata,
+		TimeoutSeconds:  timeoutSeconds,
 	}
 
 	resp, err := t.handler.SpawnSubAgent(ctx, req)

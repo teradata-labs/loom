@@ -1831,3 +1831,75 @@ func TestExecute_ConcurrentCalls(t *testing.T) {
 		assert.Contains(t, resultStr, "result for id=", "goroutine %d should have correct result", i)
 	}
 }
+
+func TestExecute_AwaitResourceMetaStampsResult(t *testing.T) {
+	// A SUCCESSFUL result whose _meta carries protocol.MetaAwaitResource is
+	// stamped onto the generic contract (shuttle.Result.AwaitResource) so the
+	// agent loop can park the turn without knowing MCP.
+	testTool := protocol.Tool{
+		Name:        "start_job",
+		Description: "Start a background job",
+		InputSchema: map[string]interface{}{"type": "object"},
+	}
+
+	handler := func(method string, params json.RawMessage) (interface{}, *protocol.Error) {
+		switch method {
+		case "tools/list":
+			return protocol.ToolListResult{Tools: []protocol.Tool{testTool}}, nil
+		case "tools/call":
+			return protocol.CallToolResult{
+				Content: []protocol.Content{
+					{Type: "text", Text: `{"job_id":"j-1","status":"working"}`},
+					{Type: "resource_link", URI: "gdp://jobs/j-1", Name: "gdp-job-j-1"},
+				},
+				Meta: map[string]interface{}{
+					protocol.MetaAwaitResource: map[string]interface{}{"uri": "gdp://jobs/j-1"},
+				},
+			}, nil
+		default:
+			return nil, protocol.NewError(protocol.MethodNotFound, "unknown method: "+method, nil)
+		}
+	}
+
+	mcpClient, _ := newMockClientWithHandler(t, handler)
+	adapter := NewMCPToolAdapter(mcpClient, testTool, "gdp")
+
+	result, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Success)
+	require.NotNil(t, result.AwaitResource, "the _meta marker must stamp AwaitResource")
+	assert.Equal(t, "gdp://jobs/j-1", result.AwaitResource.URI)
+}
+
+func TestExecute_NoAwaitMetaLeavesResultUnstamped(t *testing.T) {
+	testTool := protocol.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+		InputSchema: map[string]interface{}{"type": "object"},
+	}
+
+	handler := func(method string, params json.RawMessage) (interface{}, *protocol.Error) {
+		switch method {
+		case "tools/list":
+			return protocol.ToolListResult{Tools: []protocol.Tool{testTool}}, nil
+		case "tools/call":
+			return protocol.CallToolResult{
+				Content: []protocol.Content{{Type: "text", Text: "plain"}},
+				// A malformed marker (wrong value shape) must not stamp either.
+				Meta: map[string]interface{}{protocol.MetaAwaitResource: "gdp://jobs/j-1"},
+			}, nil
+		default:
+			return nil, protocol.NewError(protocol.MethodNotFound, "unknown method: "+method, nil)
+		}
+	}
+
+	mcpClient, _ := newMockClientWithHandler(t, handler)
+	adapter := NewMCPToolAdapter(mcpClient, testTool, "fs")
+
+	result, err := adapter.Execute(context.Background(), map[string]interface{}{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Success)
+	assert.Nil(t, result.AwaitResource)
+}

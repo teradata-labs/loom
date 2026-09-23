@@ -262,6 +262,93 @@ func TestGetLLMForRole_FallbackChain(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestGetLLMForRoleStrict
+// ---------------------------------------------------------------------------
+
+// TestGetLLMForRoleStrict pins the non-falling-back lookup: ok reports whether
+// the role has an LLM of its own, so a caller (capability-leveling ladder
+// resolution) can refuse to treat "not configured" as "use the main model".
+func TestGetLLMForRoleStrict(t *testing.T) {
+	mainLLM := newRoleMockLLM("main", "main-model")
+	judgeLLM := newRoleMockLLM("judge", "judge-model")
+
+	tests := []struct {
+		name     string
+		mainLLM  LLMProvider
+		opts     []Option
+		role     loomv1.LLMRole
+		wantName string // empty means the lookup must report no LLM
+	}{
+		{
+			name:     "role configured returns the role LLM",
+			mainLLM:  mainLLM,
+			opts:     []Option{WithJudgeLLM(judgeLLM)},
+			role:     loomv1.LLMRole_LLM_ROLE_JUDGE,
+			wantName: "judge",
+		},
+		{
+			name:    "role not configured does not fall back to main",
+			mainLLM: mainLLM,
+			role:    loomv1.LLMRole_LLM_ROLE_JUDGE,
+		},
+		{
+			name:    "another unconfigured role with a judge present",
+			mainLLM: mainLLM,
+			opts:    []Option{WithJudgeLLM(judgeLLM)},
+			role:    loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR,
+		},
+		{
+			name:     "AGENT names the agent's own LLM",
+			mainLLM:  mainLLM,
+			role:     loomv1.LLMRole_LLM_ROLE_AGENT,
+			wantName: "main",
+		},
+		{
+			name:     "UNSPECIFIED names the agent's own LLM",
+			mainLLM:  mainLLM,
+			role:     loomv1.LLMRole_LLM_ROLE_UNSPECIFIED,
+			wantName: "main",
+		},
+		{
+			name:    "no main LLM leaves AGENT unresolved",
+			mainLLM: nil,
+			role:    loomv1.LLMRole_LLM_ROLE_AGENT,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ag := createRoleTestAgent(tt.mainLLM, tt.opts...)
+			got, ok := ag.GetLLMForRoleStrict(tt.role)
+
+			if tt.wantName == "" {
+				assert.False(t, ok, "an unconfigured role must report no LLM")
+				assert.Nil(t, got)
+				return
+			}
+			require.True(t, ok)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.wantName, got.Name())
+		})
+	}
+}
+
+// TestGetLLMForRoleStrictDiffersFromFallback states the difference between the
+// two lookups on the one input that matters: an unconfigured role on an agent
+// that does have a main LLM.
+func TestGetLLMForRoleStrictDiffersFromFallback(t *testing.T) {
+	ag := createRoleTestAgent(newRoleMockLLM("main", "main-model"))
+
+	fallback := ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_JUDGE)
+	require.NotNil(t, fallback)
+	assert.Equal(t, "main", fallback.Name(), "GetLLMForRole falls back to the main LLM")
+
+	strict, ok := ag.GetLLMForRoleStrict(loomv1.LLMRole_LLM_ROLE_JUDGE)
+	assert.False(t, ok, "GetLLMForRoleStrict reports the role as unconfigured")
+	assert.Nil(t, strict)
+}
+
+// ---------------------------------------------------------------------------
 // TestGetLLMModelForRole / TestGetLLMProviderNameForRole
 // ---------------------------------------------------------------------------
 

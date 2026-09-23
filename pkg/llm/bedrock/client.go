@@ -434,7 +434,9 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 
 			// Handle tool input delta (accumulate JSON for tool parameters)
 			if chunk.Type == "content_block_delta" && chunk.Delta.Type == "input_json_delta" {
-				// Accumulate the JSON delta
+				// Tool-input deltas never reach tokenCallback (text only);
+				// report them as stream activity, then accumulate the JSON.
+				llmtypes.NotifyStreamActivity(ctx)
 				if buf, exists := toolInputBuffers[chunk.Index]; exists {
 					buf.WriteString(chunk.Delta.Text)
 				}

@@ -15,11 +15,12 @@ package server
 
 import (
 	"context"
+	"testing"
+
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
-	"testing"
 
 	"github.com/stretchr/testify/require"
 

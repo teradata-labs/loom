@@ -418,6 +418,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		Context:         make(map[string]interface{}),
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
+		Incarnation:     time.Now().UnixNano(),
 		SegmentedMem:    segMem,
 		FailureTracker:  newConsecutiveFailureTracker(),
 	}
@@ -983,4 +984,13 @@ func (m *Memory) notifyObservers(agentID string, sessionID string, msg Message) 
 			obs.OnMessageAdded(agentID, sessionID, msg)
 		}(observer)
 	}
+}
+
+// Store returns the configured persistent session storage, or nil when the
+// memory is storeless. Read-only accessor: callers must not swap the store.
+func (m *Memory) Store() SessionStorage {
+	if m == nil {
+		return nil
+	}
+	return m.store
 }

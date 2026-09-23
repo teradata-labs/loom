@@ -48,8 +48,11 @@ enum RetrySessionMode {
   // Fresh session. New conversation with original prompt + error feedback.
   RETRY_SESSION_MODE_FRESH = 2;
 
-  // Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH
-  // with an upgraded LLM (switches to orchestrator_llm if available).
+  // Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH.
+  // The model does NOT change across retries — no LLM upgrade is
+  // implemented for this mode (see effectiveMode in
+  // pkg/orchestration/output_validator.go). Escalating to a stronger model
+  // is LevelingPolicy.ladder in orchestration.proto.
   RETRY_SESSION_MODE_ESCALATE = 3;
 }
 

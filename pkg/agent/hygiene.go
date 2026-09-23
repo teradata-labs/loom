@@ -75,7 +75,7 @@ func (a *Agent) runEndOfTurnHygiene(ctx context.Context, session *Session, retry
 		a.appendMessage(ctx, session, Message{
 			Role:      "hygiene_injection",
 			Content:   outcome.InjectionMessage,
-			AgentID:   a.id,
+			AgentID:   a.GetID(),
 			Timestamp: time.Now(),
 		}, false)
 		*retryCount++
