@@ -3805,14 +3805,30 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 }
 
 // rerankMemories selects the most relevant memories for a user message from a
-// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
-// layer is wired, the decider's per-candidate relevance is evaluated in the
-// background and recorded against that decision as a shadow row (plan Phase
-// 1, site recall.rerank). Nothing branches on the decider yet.
+// pool of FTS5 candidates (site recall.rerank).
+//
+// With a live band, the decider answers first and, when the band says to act,
+// its per-candidate relevance is the result and the generative rerank is
+// skipped. Otherwise the existing LLM rerank decides and the decider's answer
+// (already obtained on a live band, obtained in the background on a shadow
+// band) is recorded against it as shadow rows.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	sessionID := sessionIDFromContext(ctx)
+	if kept, acted, req, out := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
+		// Live: nothing to compare against; the row records what was acted on.
+		a.recordDecisionAsync(ctx, sessionID, req, out, nil)
+		return kept
+	} else if req != nil {
+		// Live band, but the decider did not clear it: the LLM decides and
+		// the answer already in hand is recorded against it.
+		kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+		a.recordDecisionAsync(ctx, sessionID, req, out,
+			sites.RerankReference(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank))
+		return kept
+	}
 	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
 	if a.decisionRouter != nil && len(candidates) > 0 {
-		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+		a.shadowRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
 	}
 	return kept
 }

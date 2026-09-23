@@ -5075,9 +5075,23 @@
         "shadow": {
           "type": "boolean",
           "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        },
+        "aggregate": {
+          "$ref": "#/definitions/v1DecisionBandAggregate",
+          "description": "How multi-question requests are judged against act_min."
         }
       },
       "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandAggregate": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+        "DECISION_BAND_AGGREGATE_MIN",
+        "DECISION_BAND_AGGREGATE_PER_QUESTION"
+      ],
+      "default": "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+      "description": "DecisionBandAggregate says how a request with several questions is judged\nagainst act_min.\n\n - DECISION_BAND_AGGREGATE_MIN: The least confident answer must clear act_min (a request is as reliable\nas its weakest judgment). Right for requests whose answers are combined\ninto one decision.\n - DECISION_BAND_AGGREGATE_PER_QUESTION: The request acts when the Decider answered at all; the call site applies\nact_min to each answer separately. Right for fan-outs (one question per\ncandidate) where one uncertain candidate must not veto the rest."
     },
     "v1DecisionBandMode": {
       "type": "string",

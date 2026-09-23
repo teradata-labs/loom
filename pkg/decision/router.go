@@ -35,12 +35,29 @@ type Band struct {
 	// Shadow records the decider's answer but never acts on it: the path is
 	// always FALLBACK and the response is attached for comparison.
 	Shadow bool
+	// Aggregate says how a multi-question request is judged against ActMin:
+	// MIN (the weakest answer must clear it) or PER_QUESTION (act when the
+	// decider answered; the site applies ActMin per answer). Fan-out sites
+	// (one question per candidate) use PER_QUESTION so one uncertain
+	// candidate cannot veto the rest.
+	Aggregate loomv1.DecisionBandAggregate
+}
+
+// PerQuestion reports whether the band judges answers individually.
+func (b Band) PerQuestion() bool {
+	return b.Aggregate == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+}
+
+// Confident reports whether one answer clears the band's threshold.
+func (b Band) Confident(a *loomv1.DecisionAnswer) bool {
+	return AnswerConfidence(a) >= b.ActMin
 }
 
 // ShadowBand is the default for a site with no configured band: measure,
 // never branch. A site must be given a band explicitly before its decider
 // answer can change behaviour.
-var ShadowBand = Band{ActMin: 1, Mode: loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, Shadow: true}
+var ShadowBand = Band{ActMin: 1, Mode: loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, Shadow: true,
+	Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN}
 
 // BandFromProto converts a configured band.
 func BandFromProto(b *loomv1.DecisionBand) Band {
@@ -51,7 +68,11 @@ func BandFromProto(b *loomv1.DecisionBand) Band {
 	if mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED {
 		mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
 	}
-	return Band{ActMin: clamp01(b.ActMin), Mode: mode, Shadow: b.Shadow}
+	agg := b.Aggregate
+	if agg == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED {
+		agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
+	}
+	return Band{ActMin: clamp01(b.ActMin), Mode: mode, Shadow: b.Shadow, Aggregate: agg}
 }
 
 // Outcome is what a Router returns: the decider's response when it produced
@@ -217,7 +238,7 @@ func (r *Router) Decide(ctx context.Context, req *loomv1.DecisionRequest) Outcom
 
 	out.Response = resp
 	out.Confidence = MinConfidence(resp)
-	if !band.Shadow && out.Confidence >= band.ActMin {
+	if !band.Shadow && (band.PerQuestion() || out.Confidence >= band.ActMin) {
 		out.Path = loomv1.DecisionPath_DECISION_PATH_DECIDER
 		return out
 	}

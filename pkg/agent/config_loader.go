@@ -164,6 +164,9 @@ type DecisionBandConfigYAML struct {
 	ActMin float64 `yaml:"act_min"`
 	Mode   string  `yaml:"mode"`
 	Shadow bool    `yaml:"shadow"`
+	// Aggregate: min (default) | per_question. Fan-out sites such as the
+	// reranks use per_question so one uncertain candidate cannot veto the rest.
+	Aggregate string `yaml:"aggregate"`
 }
 
 // decisionProviders are the values DecisionConfigYAML.provider accepts.
@@ -230,11 +233,21 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		default:
 			return nil, fmt.Errorf("decision.bands[%d] (%s): mode %q must be replace or tighten_only", i, b.Site, b.Mode)
 		}
+		var agg loomv1.DecisionBandAggregate
+		switch strings.ToLower(strings.TrimSpace(b.Aggregate)) {
+		case "", "min":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
+		case "per_question", "per-question", "each":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): aggregate %q must be min or per_question", i, b.Site, b.Aggregate)
+		}
 		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
-			Site:   b.Site,
-			ActMin: b.ActMin,
-			Mode:   mode,
-			Shadow: b.Shadow,
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
 		})
 	}
 	return cfg, nil

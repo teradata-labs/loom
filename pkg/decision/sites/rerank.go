@@ -103,6 +103,48 @@ func RerankReference(n int, kept []int, source string) map[string]decision.Refer
 	return refs
 }
 
+// RerankKeepProbability is the Noul probability at or above which a candidate
+// counts as relevant in live mode.
+const RerankKeepProbability = 0.5
+
+// RerankContributed reports whether a live rerank outcome is worth acting on:
+// at least one of n answers cleared the band. When every answer is uncertain
+// the decider has said nothing, and the site is better off running its
+// generative rerank than keeping every candidate.
+func RerankContributed(n, uncertain int) bool { return n > 0 && uncertain < n }
+
+// RerankKeptWithBand is the live-mode selection for a fan-out band judged
+// PER_QUESTION: a candidate is kept when its Noul says relevant, or when the
+// answer does not clear the band (uncertain candidates are kept, because
+// dropping a relevant memory costs an answer while keeping an irrelevant one
+// costs tokens). It returns the kept indexes in index order and how many were
+// kept only because they were uncertain.
+func RerankKeptWithBand(resp *loomv1.DecisionResponse, n int, band decision.Band) (kept []int, uncertain int) {
+	if resp == nil {
+		return nil, 0
+	}
+	if n > MaxRerankCandidates {
+		n = MaxRerankCandidates
+	}
+	for i := 0; i < n; i++ {
+		id := CandidateQuestionID(i)
+		a, err := decision.NoulOf(resp, id)
+		if err != nil {
+			kept = append(kept, i) // no answer: keep, never drop silently
+			uncertain++
+			continue
+		}
+		switch {
+		case !band.Confident(resp.Answers[id]):
+			kept = append(kept, i)
+			uncertain++
+		case a.Probability >= RerankKeepProbability:
+			kept = append(kept, i)
+		}
+	}
+	return kept, uncertain
+}
+
 // RerankKept returns the candidate indexes whose Noul probability is at or
 // above threshold, in index order. It is the live-mode selection a call site
 // applies when the router says to act.

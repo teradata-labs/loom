@@ -206,6 +206,12 @@ func (a *Agent) deciderName() string {
 	return a.decisionRouter.Decider().Name()
 }
 
+// liveDecideTimeout bounds a decider call made on the hot path, ahead of the
+// existing mechanism. A live band trades this much latency for skipping a
+// generative call; when the decider is slower than this the site falls back
+// and the turn is no worse than before.
+const liveDecideTimeout = 3 * time.Second
+
 // runShadow evaluates req in the background and records the outcome against
 // refs. It never blocks the caller and never surfaces an error; failures
 // become ERROR-path rows and metrics.
@@ -222,11 +228,88 @@ func (a *Agent) runShadow(ctx context.Context, sessionID string, req *loomv1.Dec
 		shadowCtx, cancel := context.WithTimeout(bg, shadowTimeout)
 		defer cancel()
 		out := a.decisionRouter.Decide(shadowCtx, req)
-		records := decision.BuildShadowRecords(req, out, a.deciderName(), sessionID, refs)
-		if err := a.decisionRecorder.Record(shadowCtx, records); err != nil {
-			zap.L().Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
-		}
+		a.recordDecision(shadowCtx, sessionID, req, out, refs)
 	}()
+}
+
+// recordDecision writes shadow rows for an outcome already obtained.
+func (a *Agent) recordDecision(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, out decision.Outcome, refs map[string]decision.Reference) {
+	records := decision.BuildShadowRecords(req, out, a.deciderName(), sessionID, refs)
+	if err := a.decisionRecorder.Record(ctx, records); err != nil {
+		zap.L().Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
+	}
+}
+
+// RunDecisionShadow evaluates req in the background against refs. Exported
+// for call sites outside this package that borrow the agent's decision layer
+// (the conditional workflow executor uses the condition agent's). A nil
+// router is a no-op.
+func (a *Agent) RunDecisionShadow(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, refs map[string]decision.Reference) {
+	a.runShadow(ctx, sessionID, req, refs)
+}
+
+// LiveDecide asks the agent's router synchronously, bounded by a short
+// timeout. Callers check the site's band first; a shadow band never pays
+// this latency. It returns a DISABLED outcome when the layer is off.
+func (a *Agent) LiveDecide(ctx context.Context, sessionID string, req *loomv1.DecisionRequest) decision.Outcome {
+	if a.decisionRouter == nil || req == nil {
+		return decision.Outcome{Path: loomv1.DecisionPath_DECISION_PATH_DISABLED}
+	}
+	return a.liveDecide(ctx, sessionID, req)
+}
+
+// RecordDecisionAsync records an outcome the caller already holds, off the
+// hot path. refs may be nil when the decider's answer was acted on and there
+// is nothing to compare against.
+func (a *Agent) RecordDecisionAsync(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, out decision.Outcome, refs map[string]decision.Reference) {
+	if a.decisionRouter == nil || req == nil {
+		return
+	}
+	a.recordDecisionAsync(ctx, sessionID, req, out, refs)
+}
+
+// recordDecisionAsync is recordDecision off the hot path.
+func (a *Agent) recordDecisionAsync(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, out decision.Outcome, refs map[string]decision.Reference) {
+	bg := decision.WithSessionID(context.WithoutCancel(ctx), sessionID)
+	a.decisionWG.Add(1)
+	go func() {
+		defer a.decisionWG.Done()
+		recCtx, cancel := context.WithTimeout(bg, shadowTimeout)
+		defer cancel()
+		a.recordDecision(recCtx, sessionID, req, out, refs)
+	}()
+}
+
+// liveDecide asks the router synchronously, bounded by liveDecideTimeout.
+// Only called when the site's band is live; a shadow band never pays this.
+func (a *Agent) liveDecide(ctx context.Context, sessionID string, req *loomv1.DecisionRequest) decision.Outcome {
+	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), liveDecideTimeout)
+	defer cancel()
+	return a.decisionRouter.Decide(liveCtx, req)
+}
+
+// rerankRequest builds the recall rerank request for a candidate list.
+func rerankRequest(site, userMessage string, candidates []*memory.Memory) (*loomv1.DecisionRequest, error) {
+	texts := make([]string, 0, len(candidates))
+	for _, m := range candidates {
+		texts = append(texts, m.Content)
+	}
+	return sites.RerankRequest(site, userMessage, texts)
+}
+
+// keptIndexes maps the kept memories back to candidate indexes.
+func keptIndexes(candidates, kept []*memory.Memory) []int {
+	keptSet := make(map[*memory.Memory]struct{}, len(kept))
+	for _, m := range kept {
+		keptSet[m] = struct{}{}
+	}
+	idx := make([]int, 0, len(kept))
+	for i, m := range candidates {
+		if _, ok := keptSet[m]; ok {
+			idx = append(idx, i)
+		}
+	}
+	return idx
 }
 
 // shadowRerank compares the decider's per-candidate relevance against the
@@ -235,26 +318,50 @@ func (a *Agent) shadowRerank(ctx context.Context, sessionID, site, userMessage s
 	if a.decisionRouter == nil || len(candidates) == 0 {
 		return
 	}
-	texts := make([]string, 0, len(candidates))
-	for _, m := range candidates {
-		texts = append(texts, m.Content)
-	}
-	req, err := sites.RerankRequest(site, userMessage, texts)
+	req, err := rerankRequest(site, userMessage, candidates)
 	if err != nil {
 		zap.L().Debug("decision shadow: rerank request", zap.String("site", site), zap.Error(err))
 		return
 	}
-	keptSet := make(map[*memory.Memory]struct{}, len(kept))
-	for _, m := range kept {
-		keptSet[m] = struct{}{}
+	a.runShadow(ctx, sessionID, req, sites.RerankReference(len(candidates), keptIndexes(candidates, kept), source))
+}
+
+// liveRerank is the live path for a rerank site: ask the decider first and,
+// when its band says to act, return the kept candidates without a generative
+// call. The second return is false when the caller must run the existing
+// mechanism; the outcome is returned either way so the caller can record it
+// against the mechanism's answer without a second decider call.
+func (a *Agent) liveRerank(ctx context.Context, sessionID, site, userMessage string, candidates []*memory.Memory) (kept []*memory.Memory, acted bool, req *loomv1.DecisionRequest, out decision.Outcome) {
+	if a.decisionRouter == nil || len(candidates) == 0 || a.decisionRouter.Band(site).Shadow {
+		return nil, false, nil, decision.Outcome{}
 	}
-	keptIdx := make([]int, 0, len(kept))
-	for i, m := range candidates {
-		if _, ok := keptSet[m]; ok {
-			keptIdx = append(keptIdx, i)
+	req, err := rerankRequest(site, userMessage, candidates)
+	if err != nil {
+		zap.L().Debug("decision: rerank request", zap.String("site", site), zap.Error(err))
+		return nil, false, nil, decision.Outcome{}
+	}
+	out = a.liveDecide(ctx, sessionID, req)
+	if !out.Act() {
+		return nil, false, req, out
+	}
+	idx, uncertain := sites.RerankKeptWithBand(out.Response, len(candidates), out.Band)
+	if !sites.RerankContributed(len(candidates), uncertain) {
+		// Every answer was uncertain: the generative rerank decides, and the
+		// row is recorded as a fallback against it.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		return nil, false, req, out
+	}
+	kept = make([]*memory.Memory, 0, len(idx))
+	for _, i := range idx {
+		if i < len(candidates) {
+			kept = append(kept, candidates[i])
 		}
 	}
-	a.runShadow(ctx, sessionID, req, sites.RerankReference(len(candidates), keptIdx, source))
+	zap.L().Debug("decision: rerank acted",
+		zap.String("site", site), zap.Int("candidates", len(candidates)),
+		zap.Int("kept", len(kept)), zap.Int("uncertain_kept", uncertain),
+		zap.Duration("latency", out.Latency))
+	return kept, true, req, out
 }
 
 // shadowFailureKind compares the decider's failure classification against

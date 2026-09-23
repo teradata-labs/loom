@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -267,4 +268,103 @@ func TestSessionIDFromContextHelper(t *testing.T) {
 	assert.Equal(t, "legacy", sessionIDFromContext(legacy))
 	both := decision.WithSessionID(legacy, "typed")
 	assert.Equal(t, "typed", sessionIDFromContext(both), "the typed key wins")
+}
+
+// countingRerankLLM is rerankReplyLLM that counts chats, so a test can prove the
+// generative rerank was skipped.
+type countingRerankLLM struct {
+	reply string
+	calls atomic.Int32
+}
+
+func (l *countingRerankLLM) Chat(context.Context, []types.Message, []shuttle.Tool) (*types.LLMResponse, error) {
+	l.calls.Add(1)
+	return &types.LLMResponse{Content: l.reply, StopReason: "end_turn"}, nil
+}
+func (*countingRerankLLM) Name() string  { return "mock" }
+func (*countingRerankLLM) Model() string { return "mock-model" }
+
+func liveRerankBand(actMin float64) decision.RouterOption {
+	return decision.WithBands([]*loomv1.DecisionBand{{
+		Site:      sites.SiteRecallRerank,
+		ActMin:    actMin,
+		Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+	}})
+}
+
+func TestRerankMemoriesLiveBandSkipsLLM(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "1,2,3"}
+	// c0 confident relevant, c1 confident irrelevant, c2 uncertain (kept).
+	dec := decisionmock.New().AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.55)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+
+	candidates := []*memory.Memory{
+		{ID: "m1", Content: "the user drives a blue car"},
+		{ID: "m2", Content: "quarterly revenue table"},
+		{ID: "m3", Content: "GPS malfunction after March service"},
+	}
+	ctx := decision.WithSessionID(context.Background(), "sess-live")
+	kept := ag.rerankMemories(ctx, "what happened to my car's GPS?", candidates)
+	require.Len(t, kept, 2)
+	assert.Equal(t, "m1", kept[0].ID)
+	assert.Equal(t, "m3", kept[1].ID, "uncertain candidate is kept, never dropped")
+	assert.Equal(t, int32(0), llm.calls.Load(), "the generative rerank was skipped")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	for _, r := range rows {
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, r.Path)
+		assert.Equal(t, "", r.ReferenceAnswer, "acted: nothing to compare against")
+	}
+}
+
+func TestRerankMemoriesLiveBandNotClearedFallsBackAndRecords(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "2"}
+	// Every answer is a coin flip: nothing clears the band.
+	dec := decisionmock.New().AnswerNoul("c0", 0.5).AnswerNoul("c1", 0.5)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+
+	candidates := []*memory.Memory{{ID: "a", Content: "a"}, {ID: "b", Content: "b"}}
+	ctx := decision.WithSessionID(context.Background(), "sess-fb")
+	kept := ag.rerankMemories(ctx, "q", candidates)
+	require.Len(t, kept, 1)
+	assert.Equal(t, "b", kept[0].ID, "the LLM decided")
+	assert.Equal(t, int32(1), llm.calls.Load())
+	assert.Equal(t, 1, dec.CallCount(), "the live answer is reused, not re-asked")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	byQ := map[string]*loomv1.DecisionShadowRecord{}
+	for _, r := range rows {
+		byQ[r.QuestionId] = r
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, r.Path)
+		assert.Equal(t, sites.ReferenceSourceLLMRerank, r.ReferenceSource)
+	}
+	assert.Equal(t, "false", byQ["c0"].ReferenceAnswer)
+	assert.Equal(t, "true", byQ["c1"].ReferenceAnswer)
+}
+
+func TestExportedDecisionHelpersNoRouter(t *testing.T) {
+	t.Parallel()
+	ag := NewAgent(nil, rerankReplyLLM{reply: "1"}, WithName("off"))
+	req, err := sites.BranchRequest("p", []string{"a", "b"})
+	require.NoError(t, err)
+	out := ag.LiveDecide(context.Background(), "s", req)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DISABLED, out.Path)
+	assert.False(t, out.Act())
+	ag.RecordDecisionAsync(context.Background(), "s", req, out, nil)
+	ag.RunDecisionShadow(context.Background(), "s", req, nil)
+	ag.WaitDecisionShadows()
 }

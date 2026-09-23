@@ -49,6 +49,7 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
         act_min: 0.8
         mode: tighten_only
         shadow: true
+        aggregate: per_question
 `)
 	require.NoError(t, err)
 	d := cfg.GetDecision()
@@ -67,6 +68,8 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
 	assert.False(t, d.Bands[0].Shadow)
 	assert.Equal(t, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY, d.Bands[1].Mode)
 	assert.True(t, d.Bands[1].Shadow)
+	assert.Equal(t, loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN, d.Bands[0].Aggregate, "aggregate defaults to min")
+	assert.Equal(t, loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION, d.Bands[1].Aggregate)
 }
 
 func TestLoadConfig_DecisionAbsentIsNil(t *testing.T) {
@@ -97,6 +100,8 @@ func TestLoadConfig_DecisionValidation(t *testing.T) {
 		{name: "band act_min out of range", block: "  decision:\n    provider: llm\n    bands:\n      - site: a\n        act_min: 1.5\n", wantErr: "act_min"},
 		{name: "band bad mode", block: "  decision:\n    provider: llm\n    bands:\n      - site: a\n        mode: maybe\n", wantErr: "mode"},
 		{name: "mode spellings", block: "  decision:\n    provider: llm\n    bands:\n      - site: a\n        mode: tighten-only\n      - site: b\n        mode: REPLACE\n"},
+		{name: "aggregate spellings", block: "  decision:\n    provider: llm\n    bands:\n      - site: a\n        aggregate: per_question\n      - site: b\n        aggregate: MIN\n"},
+		{name: "bad aggregate", block: "  decision:\n    provider: llm\n    bands:\n      - site: a\n        aggregate: mean\n", wantErr: "aggregate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

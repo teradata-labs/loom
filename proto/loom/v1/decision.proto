@@ -171,6 +171,20 @@ enum DecisionBandMode {
   DECISION_BAND_MODE_TIGHTEN_ONLY = 2;
 }
 
+// DecisionBandAggregate says how a request with several questions is judged
+// against act_min.
+enum DecisionBandAggregate {
+  DECISION_BAND_AGGREGATE_UNSPECIFIED = 0;
+  // The least confident answer must clear act_min (a request is as reliable
+  // as its weakest judgment). Right for requests whose answers are combined
+  // into one decision.
+  DECISION_BAND_AGGREGATE_MIN = 1;
+  // The request acts when the Decider answered at all; the call site applies
+  // act_min to each answer separately. Right for fan-outs (one question per
+  // candidate) where one uncertain candidate must not veto the rest.
+  DECISION_BAND_AGGREGATE_PER_QUESTION = 2;
+}
+
 // DecisionBand is a call site's confidence routing rule.
 message DecisionBand {
   // Site name this band applies to (matches DecisionRequest.site).
@@ -182,6 +196,8 @@ message DecisionBand {
   // Shadow records the Decider's answer alongside the existing mechanism's
   // without branching on it. Overrides act_min: the path is always FALLBACK.
   bool shadow = 4;
+  // How multi-question requests are judged against act_min.
+  DecisionBandAggregate aggregate = 5;
 }
 
 // DecisionShadowRecord is one question's shadow comparison: what the decider

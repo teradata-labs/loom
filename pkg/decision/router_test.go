@@ -148,6 +148,34 @@ func TestRouterPaths(t *testing.T) {
 	}
 }
 
+func TestRouterPerQuestionAggregateActsDespiteOneUncertainAnswer(t *testing.T) {
+	t.Parallel()
+	const site = "fanout"
+	m := mock.New().AnswerNoul("c0", 0.99).AnswerNoul("c1", 0.5) // c1 has decisiveness 0
+	req, err := decision.NewRequest(site, "s", map[string]*loomv1.DecisionQuestion{
+		"c0": decision.Noul("?"), "c1": decision.Noul("?"),
+	})
+	require.NoError(t, err)
+
+	minBand := decision.Band{ActMin: 0.5}
+	assert.False(t, decision.NewRouter(m, decision.WithBand(site, minBand)).Decide(context.Background(), req).Act(),
+		"MIN aggregate: the uncertain candidate vetoes")
+
+	pq := decision.Band{ActMin: 0.5, Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION}
+	out := decision.NewRouter(m, decision.WithBand(site, pq)).Decide(context.Background(), req)
+	assert.True(t, out.Act(), "PER_QUESTION aggregate: the request acts")
+	assert.True(t, out.Band.Confident(out.Response.Answers["c0"]))
+	assert.False(t, out.Band.Confident(out.Response.Answers["c1"]), "the site sees which answers cleared the band")
+
+	pqShadow := pq
+	pqShadow.Shadow = true
+	assert.False(t, decision.NewRouter(m, decision.WithBand(site, pqShadow)).Decide(context.Background(), req).Act(), "shadow still never acts")
+
+	fromProto := decision.BandFromProto(&loomv1.DecisionBand{Site: site, ActMin: 0.5, Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION})
+	assert.True(t, fromProto.PerQuestion())
+	assert.False(t, decision.BandFromProto(&loomv1.DecisionBand{Site: site}).PerQuestion(), "unspecified aggregate is MIN")
+}
+
 func TestRouterMinConfidenceGatesOnWeakestAnswer(t *testing.T) {
 	t.Parallel()
 	const site = "multi"

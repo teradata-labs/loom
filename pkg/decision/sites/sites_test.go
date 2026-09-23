@@ -171,6 +171,36 @@ func TestRerankCapsCandidates(t *testing.T) {
 	assert.Len(t, refs, MaxRerankCandidates, "references are capped with the request")
 }
 
+func TestRerankKeptWithBand(t *testing.T) {
+	t.Parallel()
+	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	// c0 relevant+confident, c1 irrelevant+confident, c2 uncertain (0.55 → decisiveness 0.1), c3 relevant but below band.
+	m := mock.New().AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.55).AnswerNoul("c3", 0.7)
+	out := decision.NewRouter(m).Decide(context.Background(), req)
+	require.NotNil(t, out.Response)
+
+	kept, uncertain := RerankKeptWithBand(out.Response, 4, decision.Band{ActMin: 0.8})
+	assert.Equal(t, []int{0, 2, 3}, kept, "confident-irrelevant dropped; uncertain kept")
+	assert.Equal(t, 2, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(out.Response, 4, decision.Band{ActMin: 0.0})
+	assert.Equal(t, []int{0, 2, 3}, kept, "with no threshold, p≥0.5 decides")
+	assert.Equal(t, 0, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(out.Response, 6, decision.Band{ActMin: 0.8})
+	assert.Equal(t, []int{0, 2, 3, 4, 5}, kept, "candidates without an answer are kept")
+	assert.Equal(t, 4, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(nil, 4, decision.Band{})
+	assert.Nil(t, kept)
+	assert.Equal(t, 0, uncertain)
+
+	assert.True(t, RerankContributed(4, 2))
+	assert.False(t, RerankContributed(4, 4), "all uncertain: nothing to act on")
+	assert.False(t, RerankContributed(0, 0))
+}
+
 func TestRerankKept(t *testing.T) {
 	t.Parallel()
 	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c"})
