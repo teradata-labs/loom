@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Skills: trigger modes are enforced, and a slash command loads a skill
+- **`trigger.mode: MANUAL` now means the user activates the skill and the model does not.** The mode was stored, shown and read by nothing on a turn — every bound skill was named with its description on the system-prompt menu and loadable through `manage_skills`, so a model routed to MANUAL skills on its own. A MANUAL skill is now left off the menu and out of `manage_skills list`, and a model-issued `load` is refused with a message naming the skill's slash command. A MANUAL skill the user has already activated loads again freely: the rule withholds a skill, not a session.
+- **A leading slash command loads the named skill**, before the model reads the turn — the user's route in, and the only one that reaches a MANUAL skill. It runs the same load path `manage_skills` uses (activation, required-tool wiring, task emission) and writes the same three conversation rows, so restore replay, folding and any embedder's tool timeline see a load indistinguishable from the model's own. A command matching no bound skill is left alone as ordinary text. `Orchestrator.MatchSkills` and `Discovery.Discover` are unchanged and remain off the conversation loop: nothing else activates a skill.
+- **`manage_skills list` reports the session's real library.** It read the index of the search paths and embedded FS, so skills an embedder injected with `Register` — database-backed, marketplace, or an admin's draft under test — were missing from it, which for an embedder that registers everything meant an empty answer. It now merges both stores and returns a stable, sorted list.
+
+### Breaking Changes
+
+- **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
+
 #### Usage and cost accounting
 - `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
 - `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.

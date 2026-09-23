@@ -1327,15 +1327,29 @@ func (a *Agent) skillMenuPromptSupplement() string {
 	var b strings.Builder
 	b.WriteString("\n\n---\n\n# Available skills\n\n")
 	b.WriteString("Bound to this agent. Load with manage_skills to bring instructions into the conversation; until then, only the name + description below are in context.\n\n")
+	listed := 0
 	for _, rb := range resolved {
 		if rb.Skill == nil {
 			continue
 		}
+		// MANUAL skills are the user's to invoke, so they are not on the menu:
+		// manage_skills(load) refuses them, and naming one here would only
+		// invite the call that gets refused. The user's slash command activates
+		// them directly (Agent.loadSkillFromSlashCommand).
+		if isManualSkill(rb.Skill) {
+			continue
+		}
+		listed++
 		if rb.Skill.Description != "" {
 			b.WriteString(fmt.Sprintf("- %s — %s\n", rb.Skill.Name, rb.Skill.Description))
 		} else {
 			b.WriteString(fmt.Sprintf("- %s\n", rb.Skill.Name))
 		}
+	}
+	// An all-MANUAL binding set leaves a heading over an empty list, which reads
+	// as a menu with nothing on it. Render nothing instead.
+	if listed == 0 {
+		return ""
 	}
 	return b.String()
 }
@@ -1410,6 +1424,18 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		return
 	}
 
+	a.tools.Register(a.newManageSkillsTool())
+}
+
+// newManageSkillsTool builds the manage_skills tool with this agent's skill
+// wiring. Two callers share it: the registration above, and the slash-command
+// load (Agent.loadSkillFromSlashCommand), which drives the same load path the
+// model uses so both routes activate, wire tools and emit tasks identically.
+// Returns nil when the orchestrator or its library is missing.
+func (a *Agent) newManageSkillsTool() *ManageSkillsTool {
+	if a.skillOrchestrator == nil || a.skillOrchestrator.GetLibrary() == nil {
+		return nil
+	}
 	tool := NewManageSkillsTool(
 		a.skillOrchestrator,
 		a.skillOrchestrator.GetLibrary(),
@@ -1422,7 +1448,7 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 	// auto-wires a.skillTaskEmitter, and emitSkillTasksAsync reads that field
 	// at call time. An agent with no emitter is a no-op at the same place.
 	tool.emitSkillTasks = a.emitSkillTasksAsync
-	a.tools.Register(tool)
+	return tool
 }
 
 // checkAndRegisterLoadPatternTool registers the load_pattern builtin whenever a
@@ -1974,6 +2000,13 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		AgentID:       a.GetID(), // Track which agent received this message
 		Timestamp:     time.Now(),
 	}, true)
+
+	// A leading slash command is the user activating a skill. It runs here,
+	// after their message is on the record and before the model reads the
+	// conversation, so the skill's instructions are already in context for the
+	// turn that asked for them — and, for a MANUAL skill, this is the only
+	// route in. A message that names no known command is left alone.
+	a.loadSkillFromSlashCommand(ctx, session, userMessage)
 
 	// Fire graph memory extraction on the incoming user message immediately,
 	// in parallel with the LLM processing it. The user message is where the

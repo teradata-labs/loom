@@ -59,7 +59,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Emit skill instructions body.
@@ -83,7 +83,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Plain skill instructions body.
