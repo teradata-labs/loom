@@ -234,8 +234,13 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] decision fuzz targets in the CI fuzz job
 
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
-- [ ] 3.1 recall rerank · [ ] 3.2 conversation rerank · [ ] 3.3 tool_search rerank
-- [ ] 3.4 workflow branch · [ ] 3.5 intent · [ ] 3.6 stage validation · [ ] 3.7 swarm/debate
+- [x] `DecisionBand.aggregate` (MIN | PER_QUESTION) in proto, router, YAML (`bands[].aggregate`) — 2026-09-23 on `feat/decision-layer-phase3`. Fan-out reranks need it: under MIN one uncertain candidate disables the whole answer.
+- [x] 3.1 recall rerank — live path code: decider first when the band is live, keep relevant-or-uncertain, LLM rerank when no answer clears the band; one decider call per visit. **Shadow report against a real decider: not yet run** (needs live agent traffic with graph memory on; the replay CLI only covers `tool.failure_kind`). No band recommended yet.
+- [ ] 3.2 conversation rerank — not started (no shadow either)
+- [x] 3.3 tool_search rerank — live path code in `Registry.Search` stage 3: ordered by probability, `decision` RelevanceSignal, span attribute `tool_search.rerank`. Shadow report: not yet run.
+- [x] 3.4 workflow branch — new site `workflow.branch` (`sites/branch.go`): Choice over branch keys + `none_of_these`; live path in `ConditionalExecutor.Execute` skips the condition agent's turn; `none_of_these` acts only with a default branch. Shadow report: not yet run (needs conditional workflows in traffic).
+- [ ] 3.5 intent · [ ] 3.6 stage validation · [ ] 3.7 swarm/debate
+- [ ] Phase 3 evidence: run the three sites in shadow with `provider: jev` on the rig (graph memory on, tool_search BALANCED, a conditional workflow in the mix), produce `loom decision report --site` for each, then pick bands. Recall precision on the LongMemEval harness before/after is the 3.1 acceptance gate.
 
 ### Phase 4 — Tier 2 gaps
 - [ ] P0 prerequisite: breaker counts `Result.Success==false` (from tool-calling assessment)
