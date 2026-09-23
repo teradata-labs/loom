@@ -72,12 +72,20 @@ func rerankRequest(query string, candidates []*loomv1.ToolSearchResult) (*loomv1
 	return sites.RerankRequest(sites.SiteToolSearchRerank, query, texts)
 }
 
-func keptIndexes(candidates, kept []*loomv1.ToolSearchResult) []int {
-	keptSet := make(map[*loomv1.ToolSearchResult]struct{}, len(kept))
-	for _, k := range kept {
-		keptSet[k] = struct{}{}
+// keptIndexes maps the LLM rerank's output back to candidate indexes and
+// keeps only the ones the LLM scored at or above sites.RerankKeepProbability.
+// The LLM rerank re-orders and returns everything it scored above 0.3, so
+// "returned" is not a relevance verdict; its score is. The first campaign
+// compared the decider against "returned" and read 13% agreement on a site
+// where the decider was the more discriminating party.
+func keptIndexes(candidates, reranked []*loomv1.ToolSearchResult) []int {
+	keptSet := make(map[*loomv1.ToolSearchResult]struct{}, len(reranked))
+	for _, k := range reranked {
+		if k != nil && k.Confidence >= sites.RerankKeepProbability {
+			keptSet[k] = struct{}{}
+		}
 	}
-	idx := make([]int, 0, len(kept))
+	idx := make([]int, 0, len(keptSet))
 	for i, c := range candidates {
 		if _, ok := keptSet[c]; ok {
 			idx = append(idx, i)

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xeipuuv/gojsonschema"
@@ -32,6 +33,21 @@ type PipelineExecutor struct {
 	// checkpoints. Set by the iterative executor's plain-pipeline fallback so
 	// suspension/resume verify against the host-visible iterative pattern.
 	fingerprintOverride string
+
+	// auxCost accumulates LLM calls that are not stage results (the
+	// validation calls), which were missing from the reported cost.
+	auxMu   sync.Mutex
+	auxCost *loomv1.WorkflowCost
+}
+
+// addAuxUsage records one non-stage LLM call under agentID.
+func (e *PipelineExecutor) addAuxUsage(agentID string, u types.Usage) {
+	e.auxMu.Lock()
+	defer e.auxMu.Unlock()
+	if e.auxCost == nil {
+		e.auxCost = &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)}
+	}
+	addUsageToCost(e.auxCost, agentID, u)
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -520,8 +536,10 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	}
 	finalOutput := stageOutputs[len(stageOutputs)-1]
 
-	// Calculate total cost
-	cost := e.calculateCost(allResults)
+	// Calculate total cost: stage results plus the validation calls.
+	e.auxMu.Lock()
+	cost := mergeCost(e.calculateCost(allResults), e.auxCost)
+	e.auxMu.Unlock()
 
 	duration := time.Since(startTime)
 	e.orchestrator.logger.Info("Pipeline completed",
@@ -986,6 +1004,7 @@ func (e *PipelineExecutor) validateStageOutputLLM(ctx context.Context, sessionID
 	if err != nil {
 		return false, fmt.Errorf("validation LLM call failed: %w", err)
 	}
+	e.addAuxUsage("validation:"+stage.AgentId, response.Usage)
 
 	// Simple validation: check if response contains "valid" or "yes"
 	// In a real implementation, this could be more sophisticated

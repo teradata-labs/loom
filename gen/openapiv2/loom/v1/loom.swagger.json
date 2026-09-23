@@ -4079,6 +4079,23 @@
         "provider": {
           "type": "string",
           "title": "Provider name (e.g., \"anthropic\", \"bedrock\", \"ollama\")"
+        },
+        "inputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LLM usage and cost of producing this position. Scalars rather than\nAgentExecutionCost because that message lives in orchestration.proto,\nwhich imports this file."
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double"
         }
       },
       "description": "AgentPosition represents an agent's argument in a debate."

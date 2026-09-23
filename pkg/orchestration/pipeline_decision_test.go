@@ -131,6 +131,8 @@ func TestStageValidationDecision_BelowBandFallsBackAndRecords(t *testing.T) {
 	assert.Equal(t, "a prose answer", res.MergedOutput)
 	assert.Equal(t, 1, validator.count(), "the LLM decided")
 	assert.Equal(t, 1, dec.CallCount(), "the live answer is recorded, not re-asked")
+	require.NotNil(t, res.Cost)
+	assert.Equal(t, int32(2), res.Cost.LlmCalls, "stage worker + validation call; validation used to be missing from the cost")
 
 	ag.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})

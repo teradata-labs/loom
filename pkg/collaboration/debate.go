@@ -116,7 +116,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			zap.Int32("round", roundNum),
 			zap.Int32("total_rounds", config.Rounds))
 
-		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator)
+		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator, result.Cost)
 
 		// End round span
 		if roundSpan != nil {
@@ -141,7 +141,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 		debateResult.Rounds = append(debateResult.Rounds, round)
 
 		// Add round to history for next round's context (using moderator for summarization)
-		debateHistory = append(debateHistory, d.formatRoundHistory(ctx, workflowID, round, internalModerator))
+		debateHistory = append(debateHistory, d.formatRoundHistory(ctx, workflowID, round, internalModerator, result.Cost))
 
 		// Accumulate agent results and costs
 		for _, position := range round.Positions {
@@ -149,6 +149,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 				AgentId:         position.AgentId,
 				Output:          position.Position,
 				ConfidenceScore: position.Confidence,
+				Cost:            positionCost(position),
 				Metadata: map[string]string{
 					"round":         fmt.Sprintf("%d", roundNum),
 					"num_arguments": fmt.Sprintf("%d", len(position.Arguments)),
@@ -182,7 +183,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			modSpan.SetAttribute("moderator.rounds_reviewed", fmt.Sprintf("%d", len(debateResult.Rounds)))
 		}
 
-		synthesis, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult)
+		synthesis, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult, result.Cost)
 
 		if modSpan != nil {
 			if err != nil {
@@ -239,7 +240,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 }
 
 // executeRound runs a single round of debate where all agents present positions.
-func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent) (*loomv1.DebateRound, error) {
+func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) (*loomv1.DebateRound, error) {
 	round := &loomv1.DebateRound{
 		RoundNumber:      roundNum,
 		Positions:        make([]*loomv1.AgentPosition, 0),
@@ -252,7 +253,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Collect positions from all agents
 	positions := make(map[string]*loomv1.AgentPosition)
 	for _, agentID := range config.AgentIds {
-		position, err := d.getAgentPosition(ctx, workflowID, agentID, contextPrompt, roundNum)
+		position, err := d.getAgentPosition(ctx, workflowID, agentID, contextPrompt, roundNum, cost)
 		if err != nil {
 			return nil, fmt.Errorf("agent %s failed: %w", agentID, err)
 		}
@@ -263,7 +264,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Let agents respond to each other's positions (second pass)
 	if roundNum > 1 {
 		for _, agentID := range config.AgentIds {
-			responses, err := d.getAgentResponses(ctx, workflowID, agentID, positions, contextPrompt, roundNum)
+			responses, err := d.getAgentResponses(ctx, workflowID, agentID, positions, contextPrompt, roundNum, cost)
 			if err != nil {
 				// Non-fatal: log and continue
 				continue
@@ -405,7 +406,7 @@ func (d *DebateOrchestrator) generatePerspectiveGuidance(agentID string) string 
 }
 
 // getAgentPosition gets an agent's position on the debate topic.
-func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, agentID, contextPrompt string, roundNum int32) (*loomv1.AgentPosition, error) {
+func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, agentID, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (*loomv1.AgentPosition, error) {
 	// Start agent-level span with hierarchical naming
 	ctx, agentSpan := d.tracer.StartSpan(ctx, fmt.Sprintf("debate.agent.%s.position", agentID))
 	defer d.tracer.EndSpan(agentSpan)
@@ -460,6 +461,7 @@ Be specific, evidence-based, and consider alternative perspectives.`, contextPro
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
+	addDebateUsage(cost, agentID, resp.Usage)
 
 	// Extract tool usage from response
 	toolsUsed := make([]string, 0)
@@ -505,11 +507,15 @@ Be specific, evidence-based, and consider alternative perspectives.`, contextPro
 		ToolCallCount: toolCallCount,
 		Model:         model,
 		Provider:      provider,
+		InputTokens:   types.SafeInt32(resp.Usage.InputTokens),
+		OutputTokens:  types.SafeInt32(resp.Usage.OutputTokens),
+		TotalTokens:   types.SafeInt32(resp.Usage.TotalTokens),
+		CostUsd:       resp.Usage.CostUSD,
 	}, nil
 }
 
 // getAgentResponses gets agent responses to other agents' positions.
-func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, positions map[string]*loomv1.AgentPosition, contextPrompt string, roundNum int32) (map[string]string, error) {
+func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, positions map[string]*loomv1.AgentPosition, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (map[string]string, error) {
 	a, err := d.provider.GetAgent(ctx, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent not found: %s: %w", agentID, err)
@@ -550,6 +556,7 @@ Provide brief responses to the key points raised by other agents. What do you ag
 	if err != nil {
 		return nil, err
 	}
+	addDebateUsage(cost, agentID, resp.Usage)
 
 	// For simplicity, use full response as general response
 	responses["all"] = resp.Content
@@ -613,12 +620,12 @@ func (d *DebateOrchestrator) buildDebateContext(topic string, roundNum int32, hi
 // formatRoundHistory formats a round for inclusion in next round's context.
 // It creates concise summaries instead of including full positions to keep context manageable.
 // Uses the moderator agent for LLM-guided summarization.
-func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID string, round *loomv1.DebateRound, moderator *agent.Agent) string {
+func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID string, round *loomv1.DebateRound, moderator *agent.Agent, cost *loomv1.WorkflowCost) string {
 	var sb strings.Builder
 
 	for _, pos := range round.Positions {
 		// Extract key points from position using moderator for LLM-guided summarization
-		summary := d.summarizePosition(ctx, workflowID, pos.AgentId, pos.Position, pos.Arguments, moderator)
+		summary := d.summarizePosition(ctx, workflowID, pos.AgentId, pos.Position, pos.Arguments, moderator, cost)
 		sb.WriteString(fmt.Sprintf("**Agent %s** (confidence: %.0f%%):\n%s\n\n",
 			pos.AgentId, pos.Confidence*100, summary))
 	}
@@ -632,7 +639,7 @@ func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID 
 
 // summarizePosition creates a concise summary of an agent's position using moderator-guided LLM summarization.
 // If the position is short enough, it returns it as-is. Otherwise, it uses the moderator to create an intelligent summary.
-func (d *DebateOrchestrator) summarizePosition(ctx context.Context, workflowID, agentID, position string, arguments []string, moderator *agent.Agent) string {
+func (d *DebateOrchestrator) summarizePosition(ctx context.Context, workflowID, agentID, position string, arguments []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) string {
 	// If position is already short, no need to summarize
 	if len(position) <= 250 && len(arguments) <= 2 {
 		summary := position
@@ -681,6 +688,7 @@ Provide only the summary, no preamble or commentary.`, agentID, position, d.form
 		}
 		return d.fallbackSummary(position, arguments)
 	}
+	addDebateUsage(cost, moderator.GetName(), resp.Usage)
 
 	// Use LLM-generated summary
 	summary := strings.TrimSpace(resp.Content)
@@ -810,7 +818,7 @@ func (d *DebateOrchestrator) checkConsensus(round *loomv1.DebateRound) bool {
 }
 
 // synthesizeWithModerator uses a moderator agent to synthesize final consensus.
-func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult) (string, error) {
+func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult, cost *loomv1.WorkflowCost) (string, error) {
 	moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
 	if err != nil {
 		return "", fmt.Errorf("moderator agent not found: %s: %w", config.ModeratorAgentId, err)
@@ -850,6 +858,7 @@ Provide a concise synthesis that captures the essence of the debate and identifi
 	if err != nil {
 		return "", fmt.Errorf("moderator synthesis failed: %w", err)
 	}
+	addDebateUsage(cost, config.ModeratorAgentId, resp.Usage)
 
 	return resp.Content, nil
 }
