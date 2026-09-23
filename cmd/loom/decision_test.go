@@ -69,7 +69,7 @@ func ptr(s string) *string { return &s }
 
 func resetDecisionFlags(t *testing.T) {
 	t.Helper()
-	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors, decisionSample}
+	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors, decisionSample, decisionSeed, decisionRPM}
 	t.Cleanup(func() {
 		decisionDBPath = prev[0].(string)
 		decisionSite = prev[1].(string)
@@ -81,7 +81,34 @@ func resetDecisionFlags(t *testing.T) {
 		decisionDryRun = prev[7].(bool)
 		decisionErrors = prev[8].(bool)
 		decisionSample = prev[9].(string)
+		decisionSeed = prev[10].(int64)
+		decisionRPM = prev[11].(float64)
 	})
+}
+
+func TestLoadToolExecutionsSeedIsDeterministic(t *testing.T) {
+	path := seedTelemetryDB(t)
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(path, sqlitedriver.Options{BusyTimeoutMS: 5000}))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+
+	a, err := loadToolExecutions(ctx, db, 10, false, "random", 7)
+	require.NoError(t, err)
+	b, err := loadToolExecutions(ctx, db, 10, false, "random", 7)
+	require.NoError(t, err)
+	require.Len(t, a, 4)
+	for i := range a {
+		assert.Equal(t, a[i].toolName, b[i].toolName, "same seed, same order at %d", i)
+		assert.Equal(t, a[i].timestamp, b[i].timestamp)
+	}
+	newest, err := loadToolExecutions(ctx, db, 10, false, "newest", 0)
+	require.NoError(t, err)
+	require.Len(t, newest, 4)
+	assert.GreaterOrEqual(t, newest[0].timestamp, newest[3].timestamp, "newest first")
+
+	_, err = loadToolExecutions(ctx, db, 10, false, "shuffled", 0)
+	assert.Error(t, err)
 }
 
 func TestDecisionReplaySampleFlag(t *testing.T) {
