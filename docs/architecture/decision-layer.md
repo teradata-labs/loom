@@ -101,12 +101,40 @@ The conditional, pipeline and swarm executors and the debate orchestrator borrow
 
 **Sites found to be unreachable.** Two of the plan's Tier 1 sites have no production caller on `main` as of 2026-09-23, so instrumenting them would measure nothing: `SegmentedMemory.SearchMessages` (conversation-search rerank, plan 3.2) is called only from tests, and `patterns.Orchestrator.ClassifyIntent` / `RecommendPattern` (intent, plan 3.5) are never invoked by the agent, which builds and installs the LLM intent classifier and then never calls it. Both are skipped until a caller exists; the finding is recorded in the plan.
 
+## Decision judge ✅
+
+`JUDGE_TYPE_DECISION` makes the decider usable as an evaluator anywhere Loom takes a `JudgeConfig`: `looms judge register`, the judge gRPC service (`EvaluateResponse`, streaming), A/B scoring, and `looms eval` multi-judge suites. Implementation: `pkg/evals/judges/decision_judge.go` (`DecisionJudge`, `NewDecisionJudgeFromConfig`), constructed through `judges.NewJudgeFromConfig`, which every judge call site now uses; other types still build `LLMJudge`.
+
+```yaml
+name: recall-quality
+type: JUDGE_TYPE_DECISION
+criteria: |
+  - The answer states the fact the question asks for.
+  - The answer does not contradict the conversation history.
+  - The answer says so when the history holds no answer.
+min_passing_score: 80
+criticality: JUDGE_CRITICALITY_CRITICAL
+decision:
+  provider: jev          # or llm (the decision adapter over the judge LLM)
+  requests_per_minute: 30
+```
+
+How it evaluates, in one decider request at site `judge.<judge id>`:
+
+- **State**: the request (`EvaluationContext.prompt`, ≤6,000 runes), the response (≤12,000 runes), and the criteria as `{id, text}` items.
+- **Questions**: one `Noul` per criterion ("does the response satisfy criterion `crit<i>`?") and one five-level `Score` for overall quality (`unusable … excellent`). `criteria` is split on lines (list markers and numbering removed); a single line splits on semicolons; an empty string uses three default criteria (answers the request, complete, no contradictions).
+- **Verdict**: `overall = 100 × mean p(met)`; `PASS` when every criterion has p ≥ 0.5 and overall ≥ `min_passing_score` (default 80); `FAIL` when no criterion is met or overall < 50; else `PARTIAL`. `issues` lists the criteria with p < 0.5 and any the decider left unanswered. `dimension_scores` carries `correctness` (= overall), `completeness` (share of criteria met) and `quality` (expected quality level on 0–100); a `JUDGE_DIMENSION_CUSTOM` name gets overall/100 like the LLM judge. `reasoning` is the per-criterion probabilities and the decider's minimum confidence, not prose.
+- **Bands are ignored**: a judge always acts on the decider's answer and reports its confidence. `judge_model` is the decider's model; `cost_usd` comes from the decider's usage. A decider error returns `{verdict: FAIL, error}` plus the error, as `LLMJudge` does, so aggregation records the failure.
+
+What it buys: a second opinion per criterion in one typed call (no generative tokens, calibrated probabilities), which fits weighted multi-judge aggregation next to LLM judges. What it is not: a replacement for a judge that must explain itself in prose or that needs tool use (`JUDGE_TYPE_AGENT`).
+
 ## Not yet implemented
 
 - 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
 - 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier.
 - 📋 The Phase 4–5 sites. Plan 3.2 and 3.5 are skipped as unreachable (see above).
 - 📋 Shadow reports for the six Phase 3 sites against a real decider (the replay CLI covers `tool.failure_kind` only; these sites need live agent traffic with `provider: jev` in shadow, then `loom decision report --site recall.rerank` and friends).
+- 📋 Direct use from a conversation: a `decide` builtin tool (an agent asks the decider a typed question mid-turn) and a `loom decision ask` CLI. The judge above is the only direct-use path today.
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).
 
 ## Tests

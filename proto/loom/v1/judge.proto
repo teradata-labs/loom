@@ -9,6 +9,7 @@ package loom.v1;
 
 import "google/protobuf/timestamp.proto";
 import "loom/v1/agent_config.proto";
+import "loom/v1/decision.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
@@ -295,6 +296,11 @@ message JudgeConfig {
   // Allows specifying provider, temperature, max_tokens etc. for judge evaluation.
   // When set, this takes precedence over the simple `model` string field.
   loom.v1.LLMConfig llm_config = 31;
+
+  // Decider settings for JUDGE_TYPE_DECISION (provider jev|llm, model,
+  // timeout, requests_per_minute). Bands are ignored: a judge always acts on
+  // the decider's answer and reports its confidence.
+  loom.v1.DecisionConfig decision = 32;
 }
 
 // AggregationStrategy defines how to combine multi-judge results
@@ -360,6 +366,11 @@ enum JudgeType {
 
   // Custom judge implementation
   JUDGE_TYPE_CUSTOM = 3;
+
+  // Typed decision model (pkg/decision, for example Jev): one Noul per
+  // criterion and a Score for overall quality, no generative call. Needs
+  // JudgeConfig.decision.
+  JUDGE_TYPE_DECISION = 4;
 }
 
 // JudgeDimension defines evaluation dimensions

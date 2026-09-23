@@ -980,7 +980,7 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		}
 		judgeConfig = cfg
 	}
-	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
+	judge, err := judges.NewJudgeFromConfig(judgeLLM, judgeConfig, observability.NewNoOpTracer())
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "cannot create judge for scoring: %v", err)
 	}
