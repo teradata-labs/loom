@@ -574,12 +574,12 @@ func (r *Registry) search(ctx context.Context, req *loomv1.SearchToolsRequest, d
 		if decided, acted, dreq, dout := dl.liveRerank(ctx, r.logger, req.Query, candidates); acted {
 			results = decided
 			span.SetAttribute("tool_search.rerank", "decision")
-			dl.recordAsync(ctx, r.logger, dreq, dout, nil)
+			dl.recordAsync(ctx, r.logger, dreq, dout, sites.RerankSubjectsOnly(len(candidates), toolSubjects(candidates)))
 		} else if dreq != nil {
 			results = r.rerankWithLLMOnly(ctx, req.Query, req.TaskContext, candidates)
 			span.SetAttribute("tool_search.rerank", "llm_after_decision")
 			dl.recordAsync(ctx, r.logger, dreq, dout,
-				sites.RerankReference(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank))
+				sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank, toolSubjects(candidates)))
 		} else {
 			results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates, dl)
 			span.SetAttribute("tool_search.rerank", "llm")

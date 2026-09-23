@@ -34,7 +34,7 @@ func TestLoadMigrations(t *testing.T) {
 	// 000021_human_request_kind_summary, 000022_human_request_params,
 	// 000023_tool_outcomes_admission_decision, 000024_task_attribution,
 	// then 000025_decision_shadow (typed decision layer, pkg/decision).
-	assert.Len(t, migrations, 26, "should have 26 migration versions")
+	assert.Len(t, migrations, 27, "should have 27 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {

@@ -70,8 +70,8 @@ func (s *DecisionShadowStore) RecordShadow(ctx context.Context, records []*loomv
 			recorded_at, site, session_id, question_id, kind,
 			candidate_answer, candidate_confidence, candidate_probabilities_json,
 			reference_answer, reference_source,
-			latency_ms, input_tokens, cost_usd, model, provider, path, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			latency_ms, input_tokens, cost_usd, model, provider, path, error, subject
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("decision_shadow: prepare: %w", err)
 	}
@@ -93,7 +93,7 @@ func (s *DecisionShadowStore) RecordShadow(ctx context.Context, records []*loomv
 			recordedAt.UnixMilli(), r.Site, r.SessionId, r.QuestionId, r.Kind,
 			r.CandidateAnswer, r.CandidateConfidence, string(probs),
 			r.ReferenceAnswer, r.ReferenceSource,
-			r.LatencyMs, r.InputTokens, r.CostUsd, r.Model, r.Provider, r.Path.String(), r.Error,
+			r.LatencyMs, r.InputTokens, r.CostUsd, r.Model, r.Provider, r.Path.String(), r.Error, r.Subject,
 		); err != nil {
 			return fmt.Errorf("decision_shadow: insert: %w", err)
 		}
@@ -129,7 +129,7 @@ func (s *DecisionShadowStore) QueryShadow(ctx context.Context, q decision.Shadow
 		SELECT id, recorded_at, site, session_id, question_id, kind,
 		       candidate_answer, candidate_confidence, candidate_probabilities_json,
 		       reference_answer, reference_source,
-		       latency_ms, input_tokens, cost_usd, model, provider, path, error
+		       latency_ms, input_tokens, cost_usd, model, provider, path, error, subject
 		FROM decision_shadow `+where+`
 		ORDER BY recorded_at DESC, id DESC
 		LIMIT ?`, args...)
@@ -150,7 +150,7 @@ func (s *DecisionShadowStore) QueryShadow(ctx context.Context, q decision.Shadow
 		if err := rows.Scan(&id, &recordedMs, &r.Site, &r.SessionId, &r.QuestionId, &r.Kind,
 			&r.CandidateAnswer, &r.CandidateConfidence, &probsJSON,
 			&r.ReferenceAnswer, &r.ReferenceSource,
-			&r.LatencyMs, &r.InputTokens, &r.CostUsd, &r.Model, &r.Provider, &path, &r.Error); err != nil {
+			&r.LatencyMs, &r.InputTokens, &r.CostUsd, &r.Model, &r.Provider, &path, &r.Error, &r.Subject); err != nil {
 			return nil, fmt.Errorf("decision_shadow: scan: %w", err)
 		}
 		r.Id = strconv.FormatInt(id, 10)

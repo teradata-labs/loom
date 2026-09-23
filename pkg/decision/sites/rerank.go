@@ -103,6 +103,33 @@ func RerankReference(n int, kept []int, source string) map[string]decision.Refer
 	return refs
 }
 
+// RerankReferenceSubjects is RerankReference with a subject per candidate
+// (see DecisionShadowRecord.subject), so each row can be graded against an
+// external truth later. subjects is index-aligned with the candidates; a
+// shorter slice leaves the tail without a subject.
+func RerankReferenceSubjects(n int, kept []int, source string, subjects []string) map[string]decision.Reference {
+	refs := RerankReference(n, kept, source)
+	for i := 0; i < n && i < len(subjects) && i < MaxRerankCandidates; i++ {
+		ref := refs[CandidateQuestionID(i)]
+		ref.Subject = subjects[i]
+		refs[CandidateQuestionID(i)] = ref
+	}
+	return refs
+}
+
+// RerankSubjectsOnly carries subjects with no reference answer, for rows
+// recorded when the site acted on the decider and ran no other mechanism.
+func RerankSubjectsOnly(n int, subjects []string) map[string]decision.Reference {
+	if n > MaxRerankCandidates {
+		n = MaxRerankCandidates
+	}
+	refs := make(map[string]decision.Reference, n)
+	for i := 0; i < n && i < len(subjects); i++ {
+		refs[CandidateQuestionID(i)] = decision.Reference{Subject: subjects[i]}
+	}
+	return refs
+}
+
 // RerankKeepProbability is the Noul probability at or above which a candidate
 // counts as relevant in live mode.
 const RerankKeepProbability = 0.5
