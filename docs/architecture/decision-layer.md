@@ -71,14 +71,37 @@ A shadow comparison runs the decider **in the background, alongside** a call sit
 
 - **First Jev results** (2026-09-23, gateway free tier, paced at 28 rpm because the tier allows 30): on 600 seeded failed executions scored by both deciders, Jev agreed with the refined reference on 94.0% of rows and gpt-4o on 79.9%; under the pre-refinement reference the ranking was reversed. The whole difference is 201 graph-memory foreign-key rows that Jev reads as `not_found` at 0.9 confidence and gpt-4o as `bad_input`; the reference was refined to `not_found` on the strength of the request's own option wording, and a human-labelled sample is the follow-up. Network latency 170–450 ms against 1.5 s for the adapter; list-price cost two orders of magnitude lower. Write-up: `docs/research/decision-layer-phase1-report.md` §2.4.
 
+## Live paths (Phase 3) ⚠️
+
+Code for three sites has landed; **no band is live in any shipped configuration**. The default remains shadow, and a site acts only where an operator configures a band for it after reading its shadow report.
+
+A live site follows one shape, implemented separately at each site so its fallback stays the code that ran before:
+
+1. If the site's band is shadow, run the existing mechanism and shadow the decider in the background (Phase 1 behaviour).
+2. Otherwise ask the decider **first**, synchronously, bounded by `liveDecideTimeout` (3 s). This is the latency a live band trades for skipping a generative call.
+3. If `Outcome.Act()` and the answer is actionable, return it; the generative call never happens. The row is recorded with path `DECIDER` and no reference.
+4. Otherwise run the existing mechanism and record the answer already in hand against it (path `FALLBACK`). One decider call per site visit, never two.
+
+**Band aggregate.** `DecisionBand.aggregate` is `MIN` (default: the weakest answer must clear `act_min`) or `PER_QUESTION` (each answer is judged on its own). Fan-out reranks use `PER_QUESTION`: with `MIN` one uncertain candidate out of forty would disable the whole answer. YAML: `bands[].aggregate: min | per_question`.
+
+| Site | Live behaviour | Actionable when | Fallback |
+|---|---|---|---|
+| `recall.rerank` (`Agent.rerankMemories`) ✅ code | keep a candidate when its Noul says relevant (p ≥ 0.5) **or** the answer does not clear the band (an uncertain memory is kept, never dropped) | at least one answer cleared the band (`sites.RerankContributed`); if every answer is uncertain the LLM rerank runs | `rerankMemoriesLLM` |
+| `tool_search.rerank` (`registry.Search` stage 3) ✅ code | same keep rule; results ordered by relevance probability, `Confidence` = probability, a `RelevanceSignal{type: "decision"}` appended, span attribute `tool_search.rerank = decision \| llm_after_decision \| llm` | same | `rerankWithLLMOnly` |
+| `workflow.branch` (`orchestration.ConditionalExecutor`) ✅ code | one `Choice` over the pattern's branch keys plus `none_of_these`; state is the condition prompt (≤4,000 runes) and the sorted keys; the selected key's branch runs without the condition agent's turn | the answer clears the band and names a configured branch, **or** is `none_of_these` and a default branch exists; an answer outside the option set is never acted on | the condition agent turn, coercion, retry policy, default branch (`evaluateAndSelect`), reference = the key that path selected (`none_of_these` when it fell to the default) |
+
+The executor borrows the condition agent's decision layer through `Agent.LiveDecide`, `Agent.RecordDecisionAsync` and `Agent.RunDecisionShadow`; the band is therefore configured on the condition agent's YAML. Rows for the site are keyed to the condition session id.
+
+**Status per site.** ⚠️ `recall.rerank`, `tool_search.rerank`, `workflow.branch`: live path implemented and tested with the mock decider; no shadow report has been produced for any of them against a real decider, so no band is recommended yet. 📋 `conversation.rerank`, intent, stage validation, swarm/debate: not started.
+
 ## Not yet implemented
 
 - 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
 - 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier.
-- 📋 Conversation-search rerank shadow (`segmented_memory.go`) and every other site in the plan's Phase 3–5 list.
-- 📋 Any live band. No site acts on a decider answer until its shadow report has been reviewed.
+- 📋 Conversation-search rerank shadow (`segmented_memory.go`) and the plan's Phase 3.5–3.7 and Phase 4–5 sites.
+- 📋 Shadow reports for the three Phase 3 sites against a real decider (the replay CLI covers `tool.failure_kind` only; these sites need live agent traffic with `provider: jev` in shadow, then `loom decision report --site recall.rerank` and friends).
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).
 
 ## Tests
 
-`go test -tags fts5 -race ./pkg/decision/...` covers builders (table-driven), answer math, router paths and budgets (including a concurrent band-rewrite test), the instrumented wrapper against a recording tracer, the mock, the LLM adapter against a scripted provider, shadow record construction and the recorder, the report math against hand-computed ECE, and the site builders and reference mappings. Fuzz targets: `FuzzToValueRoundTrip`, `FuzzValidateState`, `FuzzParseAnswers`, `FuzzExtractObject`. Store tests: `pkg/storage/sqlite` (temp DB through the migrator, concurrent writes) and `pkg/storage/postgres` (integration, `TEST_POSTGRES_URL`, tenant isolation). Wiring tests: `pkg/agent/decision_shadow_test.go`, `pkg/tools/registry/decision_shadow_test.go`, `cmd/loom/decision_test.go` (seeded `loom.db`, replay + report), `cmd/looms/registry_subsystems_test.go`.
+`go test -tags fts5 -race ./pkg/decision/...` covers builders (table-driven), answer math, router paths and budgets (including a concurrent band-rewrite test), the instrumented wrapper against a recording tracer, the mock, the LLM adapter against a scripted provider, shadow record construction and the recorder, the report math against hand-computed ECE, and the site builders and reference mappings. Fuzz targets: `FuzzToValueRoundTrip`, `FuzzValidateState`, `FuzzParseAnswers`, `FuzzExtractObject`. Store tests: `pkg/storage/sqlite` (temp DB through the migrator, concurrent writes) and `pkg/storage/postgres` (integration, `TEST_POSTGRES_URL`, tenant isolation). Wiring tests: `pkg/agent/decision_shadow_test.go` (shadow and live rerank paths, exported helpers with the layer off), `pkg/tools/registry/decision_shadow_test.go` (shadow, live ordering and signals, shadow band never asks, below-band recording), `pkg/orchestration/conditional_decision_test.go` (live branch skips the condition agent, `none_of_these` with and without a default, below-band fallback, shadow band, decider error), `cmd/loom/decision_test.go` (seeded `loom.db`, replay + report), `cmd/looms/registry_subsystems_test.go`.

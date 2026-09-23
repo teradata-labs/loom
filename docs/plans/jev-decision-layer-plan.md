@@ -222,8 +222,13 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] **live smoke + first Jev shadow report** — 2026-09-23 through the Vercel AI Gateway after card verification. Gateway free tier caps Jev at **30 rpm** (429 + `Retry-After: 60`); paced at 28 rpm, one worker. Paired with gpt-4o on identical seeded rows (`--seed 42`): failed-executions slice **Jev 94.0% vs gpt-4o 79.9%** and mixed slice **Jev 98.2% vs gpt-4o 94.5%** under the refined reference (77.2/93.6% vs 96.9/99.3% under the original), the difference being the foreign-key rows Jev reads as `not_found`; combined 1,200 executions: Jev 96.1%, gpt-4o 87.2%; latency 170–450 ms vs 1.5 s; cost $0.04 list vs $3.37. Details: `docs/research/decision-layer-phase1-report.md` §2.4. Follow-ups: human-label the FK/overflow classes; Noul-specific band threshold (probability, not decisiveness); direct TypeSafe endpoint for fleet rates. Command, on the rig: `AI_GATEWAY_API_KEY=… ./loom decision replay --db loom-slim-jev.db --decider jev --limit 1500 --errors-only --sample random --concurrency 8` then `report`; compare with §2.3 of the Phase 1 report
 
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
-- [ ] 3.1 recall rerank · [ ] 3.2 conversation rerank · [ ] 3.3 tool_search rerank
-- [ ] 3.4 workflow branch · [ ] 3.5 intent · [ ] 3.6 stage validation · [ ] 3.7 swarm/debate
+- [x] `DecisionBand.aggregate` (MIN | PER_QUESTION) in proto, router, YAML (`bands[].aggregate`) — 2026-09-23 on `feat/decision-layer-phase3`. Fan-out reranks need it: under MIN one uncertain candidate disables the whole answer.
+- [x] 3.1 recall rerank — live path code: decider first when the band is live, keep relevant-or-uncertain, LLM rerank when no answer clears the band; one decider call per visit. **Shadow report against a real decider: not yet run** (needs live agent traffic with graph memory on; the replay CLI only covers `tool.failure_kind`). No band recommended yet.
+- [ ] 3.2 conversation rerank — not started (no shadow either)
+- [x] 3.3 tool_search rerank — live path code in `Registry.Search` stage 3: ordered by probability, `decision` RelevanceSignal, span attribute `tool_search.rerank`. Shadow report: not yet run.
+- [x] 3.4 workflow branch — new site `workflow.branch` (`sites/branch.go`): Choice over branch keys + `none_of_these`; live path in `ConditionalExecutor.Execute` skips the condition agent's turn; `none_of_these` acts only with a default branch. Shadow report: not yet run (needs conditional workflows in traffic).
+- [ ] 3.5 intent · [ ] 3.6 stage validation · [ ] 3.7 swarm/debate
+- [ ] Phase 3 evidence: run the three sites in shadow with `provider: jev` on the rig (graph memory on, tool_search BALANCED, a conditional workflow in the mix), produce `loom decision report --site` for each, then pick bands. Recall precision on the LongMemEval harness before/after is the 3.1 acceptance gate.
 
 ### Phase 4 — Tier 2 gaps
 - [ ] P0 prerequisite: breaker counts `Result.Success==false` (from tool-calling assessment)
