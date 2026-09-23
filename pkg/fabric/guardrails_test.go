@@ -397,8 +397,13 @@ func TestInferErrorType(t *testing.T) {
 			wantType:     ErrorTypeOverflow,
 		},
 		{
-			name:         "fk constraint",
+			name:         "fk constraint is a missing referenced row",
 			errorMessage: "STORE_ERROR: link entity user: FOREIGN KEY constraint failed",
+			wantType:     ErrorTypeNotFound,
+		},
+		{
+			name:         "unique constraint",
+			errorMessage: "UNIQUE constraint failed: entities.name",
 			wantType:     ErrorTypeConstraint,
 		},
 		{

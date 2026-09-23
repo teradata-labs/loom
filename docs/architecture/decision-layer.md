@@ -1,6 +1,6 @@
 # Decision Layer
 
-**Status**: ⚠️ Partial. Core package (Phase 0), shadow harness (Phase 1) and the Jev client (Phase 2) implemented; three call sites shadow-record; no site acts on a decider yet; no Jev replay has been run yet (needs a gateway key).
+**Status**: ⚠️ Partial. Core package (Phase 0), shadow harness (Phase 1) and the Jev client (Phase 2) implemented and exercised live; three call sites shadow-record; no site acts on a decider yet.
 **Package**: `pkg/decision` (+ `jev`, `llm`, `mock`, `report`, `sites`)
 **Proto**: `proto/loom/v1/decision.proto`
 **Plan**: `docs/plans/jev-decision-layer-plan.md` · **Research**: `docs/research/jev-system-one-assessment.md`
@@ -69,9 +69,12 @@ A shadow comparison runs the decider **in the background, alongside** a call sit
 - **Cost.** Input tokens × the configured price (list $0.042 per million; output is free). A gateway response carries its own cost figure under `provider_metadata.gateway.cost`, which wins when present.
 - **Tests**: httptest contracts for every primitive and status, wire-shape assertions, retry and backoff, context cancellation during backoff, transport errors, auth-header variants, limiter pacing with an injected clock and under the race detector, and the env resolution table. Fixture keys are fake.
 
+- **First Jev results** (2026-09-23, gateway free tier, paced at 28 rpm because the tier allows 30): on 600 seeded failed executions scored by both deciders, Jev agreed with the refined reference on 94.0% of rows and gpt-4o on 79.9%; under the pre-refinement reference the ranking was reversed. The whole difference is 201 graph-memory foreign-key rows that Jev reads as `not_found` at 0.9 confidence and gpt-4o as `bad_input`; the reference was refined to `not_found` on the strength of the request's own option wording, and a human-labelled sample is the follow-up. Network latency 170–450 ms against 1.5 s for the adapter; list-price cost two orders of magnitude lower. Write-up: `docs/research/decision-layer-phase1-report.md` §2.4.
+
 ## Not yet implemented
 
-- 📋 A Jev shadow replay. The harness is ready (`loom decision replay --decider jev`); it needs `AI_GATEWAY_API_KEY` in the environment. The Vercel free tier for Jev ends 2026-09-25 and requires a card on file.
+- 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
+- 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier.
 - 📋 Conversation-search rerank shadow (`segmented_memory.go`) and every other site in the plan's Phase 3–5 list.
 - 📋 Any live band. No site acts on a decider answer until its shadow report has been reviewed.
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).

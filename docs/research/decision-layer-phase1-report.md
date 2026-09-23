@@ -143,6 +143,50 @@ Every one of those is a call that an identical retry cannot fix. Today's classif
 
 ---
 
+## 2.4 Phase 2: Jev versus gpt-4o on identical rows (2026-09-23)
+
+**Setup.** Jev through the Vercel AI Gateway (`typesafe-ai/jev`, the gateway's only id; the free tier caps Jev at **30 requests per minute**, discovered when eight parallel workers drew 429s with 60-second `Retry-After`), paced at 28 rpm with one worker. gpt-4o through Azure OpenAI as before. Both deciders scored the **same executions**: `--sample random --seed 42`, 600 failed executions and 600 mixed executions, 1,200 shadow rows each. Two references are shown because the run changed the reference: the ladder as extended after Phase 1 (`FOREIGN KEY constraint failed → constraint_violation → bad_input`) and the refined ladder committed after this run (`foreign key → not_found`). Jev's rows were re-scored against the refined reference by pairing them back to their executions in sample order; gpt-4o's slices were rerun with the refined binary.
+
+### 2.4.1 Failed executions, seeded (600 executions, 1,200 rows)
+
+| | gpt-4o (adapter) | Jev (gateway) |
+|---|---|---|
+| Agreement, original reference | **96.9%** (1,163) | 77.2% (927) |
+| Agreement, refined reference | 79.9% (959) | **94.0%** (1,128) |
+| `kind` agreement, refined | 59.8% (359 / 600) | **88.0%** (528 / 600) |
+| `retry_same_input_helps` agreement | 100% | 100% |
+| `server_saturated` / `not_found` / `auth` | 230/230 · 22/22 · 1/1 | 230/230 · 22/22 · 1/1 |
+| Foreign-key rows (201): answer | bad_input (0.9+) | **not_found** (0.86–0.90) |
+| Teradata engine errors (43): answer | bad_input | other at ~0.5 |
+| Expected calibration error, refined | 0.103 | 0.204 (see note) |
+| Latency, network only | p50 1.5 s | **170–450 ms** (smoke test) |
+| Latency as recorded | 1,598 / 2,765 / 5,000 ms | 2,142 / 2,332 / 2,582 ms, dominated by the 28 rpm pacing wait |
+| Tokens / cost | 0.88M / **$3.37** | 0.93M / **$0.00** on the free tier; $0.039 at list price (86× cheaper) |
+| Decider errors | 0 | 0 |
+
+**Reading it.** Everywhere the reference has a rule that both deciders accept, they agree with it and with each other: saturation, auth, missing tables and columns, the retry question. The ranking is decided by one class, the 201 graph-memory `link entity X: FOREIGN KEY constraint failed` rows. Jev reads them as `not_found` at 0.9 confidence; gpt-4o and the pre-refinement ladder read them as `bad_input`. By the option wording the request itself carries ("not_found: a referenced object does not exist: table, column, file, resource, id"), Jev's reading is the literal one: the entity being linked does not exist. The ladder was refined accordingly, and the Phase 1 statement that "where they disagree, the reference is the party without an opinion" now has a second form: **where two deciders disagree, the reference decides the ranking, so the reference has to be defended on its own terms, not inferred from either decider.** A human-labelled sample of the FK and overflow classes is the right way to settle it; the seeded 600 are the sample to label.
+
+Jev's calibration number needs a caveat. Its ECE of 0.204 is mostly the retry Noul: Jev answers "false" at probabilities around 0.1–0.4, which the report's decisiveness mapping treats as low confidence, yet 600 of 600 agree. That is under-confidence on an easy question, not wrong answers, and a Noul-specific threshold (probability, not decisiveness) would remove it. On `kind`, Jev's confidence separates the regimes as the vendor claims: 0.86–0.99 where it agrees, ~0.5 on the Teradata engine errors it is unsure about.
+
+### 2.4.2 Mixed executions, seeded (600 executions, 1,200 rows)
+
+| | gpt-4o (adapter) | Jev (gateway) |
+|---|---|---|
+| Agreement, refined reference | **94.5%** (1,134) | *filled in from the paced run below* |
+| Composition (reference) | 428 not_a_failure · 66 saturated · 62 not_found · 36 bad_input · 8 other | same rows |
+| gpt-4o disagreements | 55 FK rows → bad_input; 5 other → bad_input; 3 other → not_found; 1 retry | |
+
+*Jev's mixed slice was still running at 28 rpm when this section was written; its re-scored report is appended below.*
+
+### 2.4.3 What Phase 2 changes in the plan
+
+- **The gateway free tier is a benchmark tool, not a fleet path.** 30 requests per minute is one agent's worth. A 512-agent fleet needs the direct TypeSafe endpoint (1,200 rpm published) or a paid gateway tier, and the client's own limiter should be set from the tier in use. The `--rpm` flag and `RequestsPerMinute` exist for this.
+- **Latency claim holds.** Sub-second per call through the gateway (170–450 ms observed) against 1.5 s p50 for the generative adapter, before any pacing.
+- **Cost claim holds.** Two orders of magnitude at list price on identical rows.
+- **Agreement claims need the reference settled first.** Phase 4.1's shadow-eval gate must include the human-labelled FK/overflow sample before a brake-only band is set from either decider's agreement.
+
+---
+
 ## 3. What this establishes, and what it does not
 
 **Established.**

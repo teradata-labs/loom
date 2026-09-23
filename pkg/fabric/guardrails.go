@@ -281,7 +281,15 @@ func InferErrorType(errorCode, errorMessage string) string {
 	if strings.Contains(messageLower, "numeric overflow") || strings.Contains(messageLower, "overflow occurred") {
 		return ErrorTypeOverflow
 	}
-	// Write-side constraint violations.
+	// A foreign-key failure means the referenced row does not exist; that is
+	// a missing object, not a malformed statement. The first paired shadow
+	// run (Jev vs gpt-4o, 2026-09-23) read it that way at 0.9 confidence
+	// while this ladder said constraint_violation; the ladder was the coarse
+	// one. Checked before the generic constraint rule.
+	if strings.Contains(messageLower, "foreign key") {
+		return ErrorTypeNotFound
+	}
+	// Other write-side constraint violations: unique, check, not null.
 	if strings.Contains(messageLower, "constraint failed") || strings.Contains(messageLower, "constraint violation") ||
 		(strings.Contains(messageLower, "violates") && strings.Contains(messageLower, "constraint")) ||
 		strings.Contains(messageLower, "duplicate key") || strings.Contains(messageLower, "unique constraint") {
