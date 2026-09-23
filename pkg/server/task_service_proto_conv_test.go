@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // TestProtoToBoard_PreservesClientID guards the CreateBoard fix: the proto
@@ -40,4 +42,21 @@ func TestProtoToBoard_EmptyIDPropagatesEmpty(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Empty(t, got.ID,
 		"empty proto id must propagate so storage can synthesize a UUID")
+}
+
+// TestTaskProtoConversion_CarriesCreatedVia pins the wire field: before it,
+// ListTasks/GetBoard returned runtime-minted implicit tasks with no way for an
+// API or UI consumer to tell them from an agent's own — the agent's queries
+// excluded them, the API's could not.
+func TestTaskProtoConversion_CarriesCreatedVia(t *testing.T) {
+	p := taskToProto(&task.Task{ID: "t1", Title: "turn", CreatedVia: taskctx.CreatedViaImplicit})
+	require.NotNil(t, p)
+	assert.Equal(t, taskctx.CreatedViaImplicit, p.CreatedVia)
+
+	back := protoToTask(&loomv1.Task{Id: "t2", Title: "imported", CreatedVia: taskctx.CreatedViaWorkflow})
+	require.NotNil(t, back)
+	assert.Equal(t, taskctx.CreatedViaWorkflow, back.CreatedVia, "an explicit client value passes through")
+
+	assert.Empty(t, protoToTask(&loomv1.Task{Id: "t3"}).CreatedVia,
+		"the converter passes through; the CreateTask RPC is where the API default is stamped")
 }

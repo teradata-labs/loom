@@ -167,9 +167,9 @@ func (e *Emitter) EmitForActivation(ctx context.Context, req EmitRequest) (*Emit
 	// Ensure the referenced board exists before any CreateTask. The tasks
 	// table FK-references task_boards(id); a non-empty BoardID that does
 	// not exist in storage triggers `FOREIGN KEY constraint failed` on
-	// every step, silently turning Phase D into a no-op (failures landed
-	// in zap.L() warns that, until cmd_serve.go wired ReplaceGlobals,
-	// went to a Nop logger). Empty BoardID is fine and skips the ensure.
+	// every step, silently turning emission into a no-op (failures land in
+	// zap.L() warns that, until cmd_serve.go wired ReplaceGlobals, went to a
+	// Nop logger). Empty BoardID is fine and skips the ensure.
 	if err := e.ensureBoard(ctx, req.BoardID, req.Skill.Name); err != nil {
 		return nil, fmt.Errorf("emitter: ensure board: %w", err)
 	}
@@ -389,13 +389,14 @@ func (e *Emitter) emitDecomposed(ctx context.Context, req EmitRequest) (*EmitRes
 // GetBoard; if the board is missing (or the probe fails for any reason) we
 // attempt to create it. A concurrent racing emitter that beats us to the
 // create is handled by a second GetBoard probe so we don't surface the
-// duplicate-key error as a Phase D failure.
+// duplicate-key error as an emission failure.
 //
 // The auto-created board carries a generated name pointing at the skill that
 // triggered creation, so operators inspecting `task_boards` can see where
-// the row came from. Callers (agent.go Phase D) may pre-create the board
-// with a curated name to override this default — the ensure is a safety net,
-// not the documented public API for board provisioning.
+// the row came from. Callers (the agent's manage_skills load path, via
+// Agent.emitSkillTasksAsync) may pre-create the board with a curated name to
+// override this default — the ensure is a safety net, not the documented
+// public API for board provisioning.
 func (e *Emitter) ensureBoard(ctx context.Context, boardID, skillName string) error {
 	if boardID == "" {
 		return nil

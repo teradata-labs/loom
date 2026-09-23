@@ -14,12 +14,14 @@
 
 package catalog
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // priceIndex is a provider -> modelID -> {inputPer1M, outputPer1M} lookup built
-// once from BuildCatalog(). The catalog is the single source of truth for
-// pricing; calculateCost in each provider client consults this before falling
-// back to any provider-local rates.
+// once from BuildCatalog(). It is the static fallback behind LookupPricing;
+// the registered default Source is consulted first.
 var (
 	priceOnce  sync.Once
 	priceIndex map[string]map[string][2]float64
@@ -37,13 +39,28 @@ func buildPriceIndex() {
 }
 
 // LookupPricing returns the per-million-token input/output cost in USD for a
-// model in the static catalog. found is false when the provider is unknown or
-// the model is not cataloged (the caller should then use its own fallback).
+// model. found is false when the provider is unknown or the model is not
+// cataloged anywhere (the caller should then use its own fallback).
+//
+// The registered default Source (see Register) is consulted first, so an
+// embedder that registers a DB- or gateway-backed catalog prices its models
+// with the rates it actually pays — previously this read only the static
+// built-in table, and every provider client's calculateCost silently fell to
+// its hardcoded default for any id the static table did not list (a LiteLLM
+// gateway alias, for example, was billed at gpt-4o rates whatever it was).
+// A registered entry with no positive rate is treated as "unpriced" and the
+// static table is tried next, so a metadata-only row cannot zero out a price.
 //
 // The lookup is keyed by both provider and model id because the same id can
 // appear under multiple providers (e.g. "gpt-4.1" under openai and azure-openai)
 // with different pricing.
 func LookupPricing(provider, modelID string) (inputPer1M, outputPer1M float64, found bool) {
+	provider = NormalizeProvider(provider)
+	if info := DefaultSource().Lookup(context.Background(), provider, modelID); info != nil {
+		if info.CostPer_1MInputUsd > 0 || info.CostPer_1MOutputUsd > 0 {
+			return info.CostPer_1MInputUsd, info.CostPer_1MOutputUsd, true
+		}
+	}
 	priceOnce.Do(buildPriceIndex)
 	if models, ok := priceIndex[provider]; ok {
 		if p, ok := models[modelID]; ok {

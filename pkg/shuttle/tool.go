@@ -69,6 +69,21 @@ type Result struct {
 	// DataReference points to large result data in shared memory
 	// When set, Data field should contain only a brief summary
 	DataReference *loomv1.DataReference
+
+	// AwaitResource, on a SUCCESSFUL result, asks the agent to park the turn
+	// until the named resource reaches a terminal state instead of handing
+	// this result to the model — the long-running-job pattern, where the tool
+	// returns immediately and the real outcome arrives later as the resource's
+	// content. Honored only when the agent has a ResourceAwaitHandler wired
+	// (agent.WithResourceAwait); otherwise the result passes through as-is.
+	AwaitResource *AwaitResource
+}
+
+// AwaitResource names the resource whose next terminal update carries the
+// real outcome of the call that returned it.
+type AwaitResource struct {
+	// URI of the resource to await (e.g. "gdp://jobs/123").
+	URI string
 }
 
 // Error represents a tool execution error with structured information.

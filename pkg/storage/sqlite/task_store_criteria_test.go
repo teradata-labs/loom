@@ -7,7 +7,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -244,4 +246,38 @@ func TestTask_ListTasks_NewestFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tasks, 3)
 	assert.Equal(t, ids[0], tasks[0].ID, "default order must remain oldest-first")
+}
+
+// TestClassifyCriteriaProbe pins the disambiguation split directly — it is a
+// named function precisely because there is no way to fail the probe alone on a
+// live sqlite database (closing the connection fails the guard UPDATE first,
+// which is how an earlier version of this test passed without exercising the
+// split at all). Only a proven missing row may read as "not found": the one
+// real consumer — the agent's task_board tool — repeats this message to the
+// model verbatim, so a probe I/O failure narrated as absence made the agent
+// re-plan around a task that existed. The Guard test above covers the wiring
+// end to end (missing → not found, present-and-different → locked); this
+// covers the arm the live path cannot reach.
+func TestClassifyCriteriaProbe(t *testing.T) {
+	t.Run("missing row is not found", func(t *testing.T) {
+		err := classifyCriteriaProbe(fmt.Errorf("wrapped: %w", sql.ErrNoRows), "t1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+		assert.False(t, errors.Is(err, task.ErrAcceptanceCriteriaLocked))
+	})
+	t.Run("probe failure is a verification error, not absence", func(t *testing.T) {
+		cause := fmt.Errorf("connection reset by peer")
+		err := classifyCriteriaProbe(cause, "t1")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "not found",
+			"an I/O failure must not be narrated as an absent task")
+		assert.False(t, errors.Is(err, task.ErrAcceptanceCriteriaLocked))
+		assert.Contains(t, err.Error(), "connection reset by peer",
+			"the cause stays diagnosable")
+	})
+	t.Run("row exists means locked", func(t *testing.T) {
+		err := classifyCriteriaProbe(nil, "t1")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, task.ErrAcceptanceCriteriaLocked))
+	})
 }

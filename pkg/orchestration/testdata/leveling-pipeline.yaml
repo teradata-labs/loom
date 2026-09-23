@@ -1,0 +1,34 @@
+# A realistic capability-leveling workflow, used by
+# TestLoadWorkflowFromYAML_LevelingReachesExecutorGate to prove that a leveling
+# block written in YAML reaches the pipeline executor's gate and drives a real
+# escalation.
+#
+# The primary agent runs a local model (ollama/llama3.2 -> tier "local"), so
+# leveling stays active instead of short-circuiting. The single ladder rung
+# resolves "anthropic" from the agent's provider pool.
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: leveling-pipeline
+  version: "1.0.0"
+  description: Local-model stage with a schema contract and one escalation rung
+spec:
+  type: pipeline
+  initial_prompt: "Answer with JSON."
+  stages:
+    - agent_id: worker
+      prompt_template: "{{previous}}"
+      output_policy:
+        output_schema: '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+      leveling:
+        enabled: true
+        max_escalations: 1
+        max_cost_usd: 1.0
+        ladder:
+          - provider: anthropic
+            model: claude-opus-4-7
+        tier_policies:
+          local:
+            # 0 same-model retries: escalate on the first schema failure, which
+            # keeps the call counts in the test unambiguous.
+            retry_budget: 0

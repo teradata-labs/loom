@@ -63,6 +63,13 @@ func (h scopedAskHook) Evaluate(shuttle.AdmissionRequest) shuttle.Decision {
 	return shuttle.Decision{Kind: shuttle.Ask}
 }
 
+type wildcardAskHook struct{ scope shuttle.ToolScope }
+
+func (h wildcardAskHook) Matches(r shuttle.AdmissionRequest) bool { return r.MatchesTool(h.scope) }
+func (h wildcardAskHook) Evaluate(shuttle.AdmissionRequest) shuttle.Decision {
+	return shuttle.Decision{Kind: shuttle.Ask}
+}
+
 // scopedDenyHook denies exactly one tool name.
 type scopedDenyHook struct{ tool string }
 
@@ -198,6 +205,26 @@ func TestPark_AskBatchParksBeforeAnythingExecutes(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	if last.Role != "assistant" || len(last.ToolCalls) != 2 {
 		t.Fatalf("tail = %s with %d calls, want parked assistant batch", last.Role, len(last.ToolCalls))
+	}
+}
+
+func TestPark_AliasMatchedByCanonicalWildcardParksBeforeDispatch(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{wildcardAskHook{scope: shuttle.NewToolScope("mcp-server:*")}},
+		[]mockLLMResponse{{toolCalls: []llmtypes.ToolCall{{
+			ID: "c-alias", Name: "write_query", Input: map[string]interface{}{"v": "w"},
+		}}}}, "mcp-server:write_query")
+	f.ag.tools.RegisterAlias("write_query", f.tools["mcp-server:write_query"])
+
+	_, err := f.ag.Chat(context.Background(), "s-alias-park", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("Chat error = %v, want *TurnParkedError", err)
+	}
+	if got := f.tools["mcp-server:write_query"].runs.Load(); got != 0 {
+		t.Fatalf("aliased tool ran %d times before the decision", got)
+	}
+	if keys := paramKeys(f.pendingParked(t, "s-alias-park")); len(keys) != 1 || keys[0] != "c-alias" {
+		t.Fatalf("parked item IDs = %v, want [c-alias]", keys)
 	}
 }
 

@@ -20,11 +20,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -44,7 +47,14 @@ type Client struct {
 	rateLimiter  *llm.RateLimiter
 	toolNameMap  map[string]string // sanitized name → original name
 	extraHeaders map[string]string // additional headers sent with every request
+	// catalogProvider is the catalog namespace calculateCost prices under.
+	// "openai" unless Config.CatalogProvider overrides it.
+	catalogProvider string
 }
+
+// DefaultCatalogProvider is the catalog namespace the client prices under
+// when Config.CatalogProvider is empty.
+const DefaultCatalogProvider = "openai"
 
 // Config holds configuration for the OpenAI client.
 type Config struct {
@@ -63,6 +73,15 @@ type Config struct {
 	// same name is used. Use with care when targeting proxies that require
 	// a different auth scheme.
 	ExtraHeaders map[string]string
+	// CatalogProvider is the catalog namespace (the provider key passed to
+	// catalog.LookupPricing) used to price responses. Default "openai".
+	//
+	// Set it when this client fronts an OpenAI-compatible gateway (LiteLLM,
+	// vLLM, …) whose model ids are not OpenAI's: the embedder registers those
+	// ids under its own provider key via catalog.Register, and this is how the
+	// client is told to look there. Without it a gateway alias never matches
+	// the "openai" namespace and is priced at the gpt-4o default below.
+	CatalogProvider string
 }
 
 // Default OpenAI configuration values.
@@ -109,23 +128,42 @@ func NewClient(config Config) *Client {
 	if config.Temperature == 0 {
 		config.Temperature = DefaultOpenAITemperature
 	}
+	if config.CatalogProvider == "" {
+		config.CatalogProvider = DefaultCatalogProvider
+	}
 
-	// Initialize rate limiter if enabled
+	// Initialize rate limiter if enabled — keyed by credential+endpoint+model
+	// so clients with independent quotas do not throttle each other.
 	var rateLimiter *llm.RateLimiter
 	if config.RateLimiterConfig.Enabled {
-		rateLimiter = llm.SharedRateLimiter("openai|"+llm.CredentialScope(config.APIKey)+"|"+config.Endpoint+"|"+config.Model, config.RateLimiterConfig)
+		scope := "openai|" + llm.CredentialScope(config.APIKey) + "|" + config.Endpoint + "|" + config.Model
+		rateLimiter = llm.SharedRateLimiter(scope, config.RateLimiterConfig)
 	}
 
 	return &Client{
-		apiKey:       config.APIKey,
-		model:        config.Model,
-		endpoint:     config.Endpoint,
-		maxTokens:    config.MaxTokens,
-		temperature:  config.Temperature,
-		rateLimiter:  rateLimiter,
-		extraHeaders: copyHeaders(config.ExtraHeaders),
+		apiKey:          config.APIKey,
+		model:           config.Model,
+		endpoint:        config.Endpoint,
+		maxTokens:       config.MaxTokens,
+		temperature:     config.Temperature,
+		rateLimiter:     rateLimiter,
+		extraHeaders:    copyHeaders(config.ExtraHeaders),
+		catalogProvider: config.CatalogProvider,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				ForceAttemptHTTP2:     true,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConns:          100,
+				// Use a short idle-connection timeout so the pool doesn't
+				// hand out stale connections that the LLM proxy has already
+				// closed on its side (which causes EOF errors).
+				IdleConnTimeout:     30 * time.Second,
+				MaxIdleConnsPerHost: 5,
+			},
 		},
 	}
 }
@@ -141,6 +179,86 @@ func copyHeaders(m map[string]string) map[string]string {
 		cp[k] = v
 	}
 	return cp
+}
+
+// isRetryableTransportError reports whether an HTTP transport error is transient
+// and safe to retry (stale keep-alive connection recycled by the server).
+//
+// Single-retry only: a second attempt on EOF/reset is a best-effort recovery
+// for stale keep-alive connections. Go surfaces these errors both before and
+// after the server processes the request, so a retry may cause the completion
+// to execute twice. Callers must not rely on exactly-once semantics.
+func isRetryableTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, net.ErrClosed)
+}
+
+func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	newReq := func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		for key, value := range c.extraHeaders {
+			req.Header.Set(key, value)
+		}
+		return req, nil
+	}
+
+	if c.rateLimiter != nil {
+		// Each retry re-enters the limiter so every outbound attempt is paced.
+		for attempt := 1; attempt <= 2; attempt++ {
+			result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
+				req, err := newReq(ctx)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := c.httpClient.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				if resp.StatusCode == http.StatusTooManyRequests {
+					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
+					respBody, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					return nil, llm.NewThrottleError(
+						fmt.Errorf("API error (status 429): %s", string(respBody)),
+						retryAfter)
+				}
+				return resp, nil
+			})
+			if err == nil {
+				return result.(*http.Response), nil
+			}
+			if attempt == 2 || !isRetryableTransportError(err) {
+				return nil, err
+			}
+		}
+		return nil, fmt.Errorf("HTTP request failed")
+	}
+
+	// Without rate limiter: single retry on transient transport errors only.
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, err := newReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resp, doErr := c.httpClient.Do(req)
+		if doErr == nil {
+			return resp, nil
+		}
+		if attempt == 2 || !isRetryableTransportError(doErr) {
+			return nil, fmt.Errorf("HTTP request failed: %w", doErr)
+		}
+	}
+	return nil, fmt.Errorf("HTTP request failed")
 }
 
 // Name returns the provider name.
@@ -192,11 +310,24 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 // convertMessages converts agent messages to OpenAI format.
 func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	var apiMessages []ChatMessage
-
+	srcToEmitted := make(map[int]int)
+	validToolCallIDs := make(map[string]struct{})
 	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.ID != "" && llm.SanitizeToolName(toolCall.Name) != "" {
+				validToolCallIDs[toolCall.ID] = struct{}{}
+			}
+		}
+	}
+
+	for i, msg := range messages {
 		switch msg.Role {
 		case "system":
 			// System messages always use plain text
+			srcToEmitted[i] = len(apiMessages)
 			apiMessages = append(apiMessages, ChatMessage{
 				Role:    msg.Role,
 				Content: msg.Content,
@@ -236,12 +367,14 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 						}
 					}
 				}
+				srcToEmitted[i] = len(apiMessages)
 				apiMessages = append(apiMessages, ChatMessage{
 					Role:    "user",
 					Content: content,
 				})
 			} else {
 				// Fallback to plain text (backward compatible)
+				srcToEmitted[i] = len(apiMessages)
 				apiMessages = append(apiMessages, ChatMessage{
 					Role:    msg.Role,
 					Content: msg.Content,
@@ -262,6 +395,12 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []ToolCall
 				for _, tc := range msg.ToolCalls {
+					// Skip tool calls with empty id or sanitized name — sending
+					// these to Bedrock causes a 400 validation error.
+					sanitized := llm.SanitizeToolName(tc.Name)
+					if tc.ID == "" || sanitized == "" {
+						continue
+					}
 					// Marshal input to JSON string.
 					// Guard against nil Input — json.Marshal(nil) returns "null"
 					// (no error), which LiteLLM forwards to Vertex AI as a non-dict
@@ -276,18 +415,28 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 						ID:   tc.ID,
 						Type: "function",
 						Function: FunctionCall{
-							Name:      llm.SanitizeToolName(tc.Name),
+							Name:      sanitized,
 							Arguments: string(argsJSON),
 						},
 					})
 				}
-				apiMsg.ToolCalls = toolCalls
+				if len(toolCalls) > 0 {
+					apiMsg.ToolCalls = toolCalls
+				}
 			}
 
+			if apiMsg.Content == nil && len(apiMsg.ToolCalls) == 0 {
+				continue
+			}
+			srcToEmitted[i] = len(apiMessages)
 			apiMessages = append(apiMessages, apiMsg)
 
 		case "tool":
+			if _, ok := validToolCallIDs[msg.ToolUseID]; !ok {
+				continue
+			}
 			// Tool results as tool role message
+			srcToEmitted[i] = len(apiMessages)
 			apiMessages = append(apiMessages, ChatMessage{
 				Role:       "tool",
 				Content:    msg.Content,
@@ -305,9 +454,9 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	// field, and a strict OpenAI-native endpoint may reject the foreign key or
 	// the string→block content reshaping that carries it.
 	if c.emitsCacheControl() {
-		for i := range messages {
-			if i < len(apiMessages) && messages[i].CacheBreakpoint {
-				apiMessages[i].Content = withCacheControl(apiMessages[i].Content)
+		for i, msg := range messages {
+			if emittedIdx, ok := srcToEmitted[i]; ok && msg.CacheBreakpoint {
+				apiMessages[emittedIdx].Content = withCacheControl(apiMessages[emittedIdx].Content)
 			}
 		}
 	}
@@ -444,6 +593,10 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 
 // convertResponse converts OpenAI response to agent format.
 func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResponse {
+	finishReason := ""
+	if len(resp.Choices) > 0 {
+		finishReason = resp.Choices[0].FinishReason
+	}
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
 			InputTokens:              resp.Usage.PromptTokens,
@@ -455,7 +608,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 		},
 		Metadata: map[string]interface{}{
 			"model":         resp.Model,
-			"finish_reason": resp.Choices[0].FinishReason,
+			"finish_reason": finishReason,
 		},
 	}
 
@@ -497,6 +650,14 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
+			// Skip tool calls with empty id or name — strict providers (Bedrock)
+			// reject messages containing toolUse blocks where either field is empty.
+			if tc.ID == "" || tc.Function.Name == "" {
+				zap.L().Warn("dropping incomplete tool call",
+					zap.String("tool_call_id", tc.ID),
+					zap.String("tool_name", tc.Function.Name))
+				continue
+			}
 			// Parse arguments JSON string back to map
 			var input map[string]interface{}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
@@ -512,6 +673,9 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 				Input: input,
 			})
 		}
+		if llmResp.StopReason == "tool_use" && len(choice.Message.ToolCalls) > 0 && len(llmResp.ToolCalls) == 0 {
+			llmResp.StopReason = "end_turn"
+		}
 	}
 
 	return llmResp
@@ -520,9 +684,15 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 // calculateCost estimates the cost in USD based on token usage.
 // Pricing as of 2024-11 for various OpenAI models.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
-	// to the provider-local rates below only for model ids it does not list.
-	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing("openai", c.model)
+	// The catalog (pkg/llm/catalog) is the source of truth for pricing — the
+	// registered source chain first, then the static table — under the
+	// namespace Config.CatalogProvider selected. Fall back to the
+	// provider-local rates below only for model ids it does not list.
+	provider := c.catalogProvider
+	if provider == "" {
+		provider = DefaultCatalogProvider
+	}
+	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing(provider, c.model)
 	if !ok {
 		switch c.model {
 		case "gpt-4o":
@@ -638,23 +808,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// 2. Send request with rate limiting if enabled. sendOnce rebuilds the
-	// http.Request per attempt and surfaces 429 as a throttle error so the
-	// limiter's retry fires (and each retry re-sends the full body).
-	var httpResp *http.Response
-	sendOnce := c.sendOnce(c.endpoint, body)
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, sendOnce)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
-	} else {
-		result, err := sendOnce(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
+	// 2. Send request with rate limiting if enabled.
+	// Retry once on transient transport errors (stale keep-alive connection
+	// recycled by the LLM proxy, manifesting as EOF).
+	httpResp, err := c.sendRequest(ctx, body)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -718,22 +877,30 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 			}
 
-			// Extract tool call deltas
+			// Extract tool call deltas. They never reach tokenCallback (text
+			// only), so report them as stream activity.
 			if len(choice.Delta.ToolCalls) > 0 {
+				llmtypes.NotifyStreamActivity(ctx)
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
-						// New tool call - map sanitized name back to original
 						toolCallMap[idx] = &llmtypes.ToolCall{
-							ID:    tcDelta.ID,
-							Name:  llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name),
 							Input: make(map[string]interface{}),
 						}
+					}
+					tc := toolCallMap[idx]
+					// Some OpenAI-compatible proxies emit arguments before the ID
+					// and function name. Backfill identity fields on every delta so
+					// an args-first tool call is not silently discarded at the end.
+					if tcDelta.ID != "" {
+						tc.ID = tcDelta.ID
+					}
+					if tcDelta.Function.Name != "" {
+						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
 					}
 
 					// Accumulate function arguments (they come in chunks)
 					if tcDelta.Function.Arguments != "" {
-						tc := toolCallMap[idx]
 						// Note: Arguments are accumulated as string, parsed at the end
 						if existingArgs, ok := tc.Input["_args"].(string); ok {
 							tc.Input["_args"] = existingArgs + tcDelta.Function.Arguments
@@ -772,7 +939,19 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// 4. Parse accumulated tool call arguments
+	droppedToolCall := false
 	for _, tc := range toolCallMap {
+		// Skip tool calls with empty name or ID — Bedrock (and other strict
+		// providers) reject messages containing toolUse blocks where name or
+		// toolUseId is empty. This can happen when streaming produces partial
+		// delta chunks that initialize a slot before the name/id arrive.
+		if tc.ID == "" || tc.Name == "" {
+			zap.L().Warn("dropping incomplete streamed tool call",
+				zap.String("tool_call_id", tc.ID),
+				zap.String("tool_name", tc.Name))
+			droppedToolCall = true
+			continue
+		}
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {
@@ -811,7 +990,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	case "length":
 		stopReason = "max_tokens"
 	case "tool_calls", "function_call":
-		stopReason = "tool_use"
+		if droppedToolCall && len(toolCalls) == 0 {
+			stopReason = "end_turn"
+		} else {
+			stopReason = "tool_use"
+		}
 	case "content_filter":
 		stopReason = "content_filter"
 	default:
@@ -831,40 +1014,6 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}, nil
 }
 
-// sendOnce returns a closure that builds and sends ONE fresh HTTP request
-// per attempt. It must construct a new http.Request each time — a consumed
-// body cannot be re-sent, so a retry of a request built once outside the
-// closure would go out empty. It also surfaces HTTP 429 as an ERROR carrying
-// any server-specified wait (Retry-After / retry-after-ms / x-ratelimit reset
-// headers): httpClient.Do returns nil error for any HTTP status, so without
-// this the rate limiter's retry never sees throttling and 429s go straight to
-// the caller un-retried.
-func (c *Client) sendOnce(endpoint string, body []byte) func(context.Context) (interface{}, error) {
-	return func(ctx context.Context) (interface{}, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-		for k, v := range c.extraHeaders {
-			httpReq.Header.Set(k, v)
-		}
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			respBody, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			return nil, llm.NewThrottleError(
-				fmt.Errorf("API error (status 429): %s", string(respBody)),
-				llm.RetryAfterFromHeaders(resp.Header))
-		}
-		return resp, nil
-	}
-}
-
 // callAPI makes the HTTP request to OpenAI's API.
 func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	// Marshal request
@@ -873,21 +1022,12 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Send request with rate limiting if enabled
-	var httpResp *http.Response
-	sendOnce := c.sendOnce(c.endpoint, body)
-	if c.rateLimiter != nil {
-		result, err := c.rateLimiter.Do(ctx, sendOnce)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
-	} else {
-		result, err := sendOnce(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
-		}
-		httpResp = result.(*http.Response)
+	// Send request with rate limiting if enabled.
+	// Retry once on transient transport errors (stale keep-alive connection
+	// recycled by the LLM proxy, manifesting as EOF).
+	httpResp, err := c.sendRequest(ctx, body)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 

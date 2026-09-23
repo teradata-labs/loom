@@ -37,8 +37,11 @@ const (
 	RetrySessionMode_RETRY_SESSION_MODE_CONTINUE RetrySessionMode = 1
 	// Fresh session. New conversation with original prompt + error feedback.
 	RetrySessionMode_RETRY_SESSION_MODE_FRESH RetrySessionMode = 2
-	// Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH
-	// with an upgraded LLM (switches to orchestrator_llm if available).
+	// Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH.
+	// The model does NOT change across retries — no LLM upgrade is
+	// implemented for this mode (see effectiveMode in
+	// pkg/orchestration/output_validator.go). Escalating to a stronger model
+	// is LevelingPolicy.ladder in orchestration.proto.
 	RetrySessionMode_RETRY_SESSION_MODE_ESCALATE RetrySessionMode = 3
 )
 

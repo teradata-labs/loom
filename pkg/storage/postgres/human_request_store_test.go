@@ -25,6 +25,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // The postgres store is the deployed configuration: the resolve-once + expiry
@@ -164,4 +165,58 @@ func TestHumanRequestStore_ExpireRequestIsTenantScoped(t *testing.T) {
 	got, err = store.Get(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, "timeout", got.Status)
+}
+
+// TestHumanRequestStore_TaskIDStampsAndRoundTrips pins round-5 M1 for the
+// production backend: migration 000024 installed human_requests.task_id, but
+// this store's INSERT never wrote it and no SELECT read it — so hr.TaskID was
+// always empty on Postgres, and ResumeChat's durable identity restore (the
+// PRIMARY path; the emitter rebind is only the legacy fallback) was inert on
+// exactly the deployed HITL-park shape. Same attribution rule as both SQLite
+// stores: explicit TaskID wins, ambient attribution is the fallback.
+func TestHumanRequestStore_TaskIDStampsAndRoundTrips(t *testing.T) {
+	store, ctx, _ := testHumanRequestStore(t)
+	sessionID := hrUniqueID("sess-task")
+	seedSession(t, ctx, store, sessionID)
+
+	base := func(id string) *shuttle.HumanRequest {
+		return &shuttle.HumanRequest{
+			ID: hrUniqueID(id), AgentID: "agent-1", SessionID: sessionID,
+			Question: "q", RequestType: "parked", Priority: "normal", Status: "pending",
+			CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		}
+	}
+
+	explicit := base("r-explicit")
+	explicit.TaskID = "task-explicit"
+	require.NoError(t, store.Store(ctx, explicit))
+	got, err := store.Get(ctx, explicit.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "task-explicit", got.TaskID, "explicit TaskID must survive the round trip")
+
+	ambient := taskctx.ContextWithAttribution(ctx, taskctx.Attribution{
+		TaskID: "task-ambient", SessionID: sessionID})
+	ambientReq := base("r-ambient")
+	require.NoError(t, store.Store(ambient, ambientReq))
+	got, err = store.Get(ctx, ambientReq.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "task-ambient", got.TaskID,
+		"the park's ambient attribution must stamp the row — this is what ResumeChat restores from")
+
+	none := base("r-none")
+	require.NoError(t, store.Store(ctx, none))
+	got, err = store.Get(ctx, none.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Empty(t, got.TaskID, "no task reads back empty, same as a legacy row")
+
+	bySession, err := store.ListBySession(ctx, sessionID)
+	require.NoError(t, err)
+	seen := map[string]string{}
+	for _, hr := range bySession {
+		seen[hr.ID] = hr.TaskID
+	}
+	require.Equal(t, "task-explicit", seen[explicit.ID], "the list path reads task_id back too")
 }

@@ -197,7 +197,7 @@ type libraryHook struct {
 // Matches reports whether the binding governs this call: its tool is in scope
 // and its params satisfy the matcher.
 func (h libraryHook) Matches(req AdmissionRequest) bool {
-	return h.scope.MatchesTool(req.ToolName) && h.matcher.MatchesParams(req.Params)
+	return req.MatchesTool(h.scope) && h.matcher.MatchesParams(req.Params)
 }
 
 // Evaluate returns the policy's verdict for a governed call.
@@ -321,7 +321,7 @@ type libraryAuditHook struct {
 
 // Matches reports whether the audit binding governs this call.
 func (h libraryAuditHook) Matches(req AdmissionRequest) bool {
-	return h.scope.MatchesTool(req.ToolName) && h.matcher.MatchesParams(req.Params)
+	return req.MatchesTool(h.scope) && h.matcher.MatchesParams(req.Params)
 }
 
 // Evaluate always allows; audit is observability, not enforcement.

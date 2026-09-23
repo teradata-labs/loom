@@ -379,10 +379,15 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 			prop("source", "string", "Filter by source: user, generated, or agent (optional)"),
 			prop("content_type", "string", "Filter by MIME type, e.g. text/csv (optional)"),
 			prop("limit", "integer", "Maximum number of results (default: 50)"),
+			prop("session_id", "string", "Filter to one session's artifacts (optional; omit for all sessions)"),
 		), "", mv, ro),
-		tool("loom_get_artifact", "Get artifact metadata.", objectSchema(
-			reqProp("id", "string", "Artifact ID"),
+		// id is deliberately NOT required: the server accepts either id or
+		// name, and declaring id required made the name lookup undrivable from
+		// a schema-reading model even though the RPC has always supported it.
+		tool("loom_get_artifact", "Get artifact metadata. Provide either id, or name (optionally with session_id).", objectSchema(
+			prop("id", "string", "Artifact ID (either id or name is required)"),
 			prop("name", "string", "Artifact name (alternative lookup if ID not provided)"),
+			prop("session_id", "string", "Session to resolve the name in (optional; names are only unique within a session). Ignored when id is set."),
 		), "", mv, ro),
 		tool("loom_upload_artifact", "Upload a file to artifact storage.", objectSchema(
 			reqProp("name", "string", "Artifact filename"),

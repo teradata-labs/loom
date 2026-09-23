@@ -212,13 +212,17 @@ func TestStdioSubscriptionOverflowSendsCancelled(t *testing.T) {
 	}
 
 resubscribe:
-	// The listen id must be reusable once the pump cleaned up.
-	require.Eventually(t, func() bool {
-		s.subsMu.RLock()
-		defer s.subsMu.RUnlock()
-		return len(s.subscriptions) == 0
-	}, 2*time.Second, 5*time.Millisecond, "overflowed subscription must be unregistered")
+	// notifications/cancelled is the client's cue to re-subscribe, so the
+	// listen id must be reusable the moment the cue arrives: re-subscribe
+	// immediately, with no wait on server internals in between.
 	h.send(stdioListenLine(5))
 	ack2 := h.next()
 	assert.Contains(t, string(ack2["method"]), protocol.NotificationSubscriptionAcknowledged)
+
+	// The overflowed subscription was unregistered before the cue was sent,
+	// so exactly the replacement subscription remains.
+	s.subsMu.RLock()
+	remaining := len(s.subscriptions)
+	s.subsMu.RUnlock()
+	assert.Equal(t, 1, remaining, "only the replacement subscription should be registered")
 }

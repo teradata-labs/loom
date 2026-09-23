@@ -683,7 +683,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						}
 					}
 				case "input_json_delta":
-					// Accumulate tool input JSON fragments
+					// Accumulate tool input JSON fragments. These never reach
+					// tokenCallback (text only), so report them as activity.
+					llmtypes.NotifyStreamActivity(ctx)
 					if buf, exists := toolInputBuffers[event.Index]; exists {
 						buf.WriteString(event.Delta.PartialJSON)
 					}

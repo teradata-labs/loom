@@ -105,10 +105,50 @@ wired onto the agent (`WithSkillDiscovery`) for callers that drive
 `Discovery.Discover` directly, and the registry still warms and persists the
 router index. Phases C and E were replaced by the `manage_skills` load path —
 `Orchestrator.ActivatePinned`, per-session required-tool registration, and
-body delivery as a user-role message. Phase D was dropped with no
-replacement: nothing calls the emitter. `MatchSkills` and
+body delivery as a user-role message. Phase D moved to that same load path:
+`ManageSkillsTool.load` calls `Agent.emitSkillTasksAsync` for a skill that was
+not already active for the session, which runs `EmitForActivation` on a
+goroutine detached from the turn (see
+[Skill task emission](#skill-task-emission) below). `MatchSkills` and
 `FormatActiveSkillsForLLM` remain on the orchestrator for the same
 direct-caller reason.
+
+### Skill Task Emission
+
+✅ Implemented. A `manage_skills` load materializes the loaded skill's
+`task_template` onto the agent's task board:
+
+```
+ManageSkillsTool.load(ctx, sessionID, name)
+  |
+  ├─ per-name check against Orchestrator.GetActiveSkills(sessionID)
+  |    ActivatePinned REPLACES a same-name activation, so the active-set
+  |    length does not change on a repeat load — only the name comparison
+  |    identifies a genuinely new activation.
+  |
+  └─ (new activation only) Agent.emitSkillTasksAsync(ctx, sessionID, skill)
+       ├─ resolves AgentTasksEnabled from SkillsConfig.EffectiveTasksEnabled()
+       ├─ resolves BoardID: SkillsConfig.SkillTaskBoardID
+       |                    → TaskBoardConfig.DefaultBoardId → ""
+       ├─ ctx := WithTimeout(WithoutCancel(ctx), 30s)
+       |    WithoutCancel keeps context VALUES (tenant identity the storage
+       |    layer reads) and drops only the turn's cancellation.
+       └─ goroutine: Emitter.EmitForActivation(ctx, req)
+            errors are logged, never returned to the tool caller
+```
+
+Emission runs off the turn's critical path. `Manager.CreateTaskIdempotent`
+runs three transactions per step plus one per dependency edge, so a template
+costs roughly four round trips per step; nothing in the turn depends on those
+rows (the model gets the skill body regardless, the rows exist for the
+human-facing board). Goroutines are tracked on `Agent.skillTaskEmits`
+(`sync.WaitGroup`) so they can be joined rather than waited out.
+
+Emission is idempotent via `SkillIdempotencyKey`
+(`skill:<name>|sess:<id>|step:<n>`), so a repeat activation is harmless — the
+per-name check exists to avoid spending the transactions, not for correctness.
+An activation with no session id in context is skipped: an empty id collapses
+every such session onto one key.
 
 ### Package Map
 

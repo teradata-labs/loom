@@ -94,7 +94,11 @@ diagnostic data), not as a retry condition, and never triggers a park.
 
 ### What Does NOT Trigger a Park
 
-- Successful results (regardless of content).
+- Successful results — unless the result's `_meta` carries the
+  `com.teradata.loom/await-resource` marker AND the embedding application
+  wired `agent.WithResourceAwait`, in which case the TURN parks durably
+  rather than the call waiting in-turn (a different mechanism entirely; see
+  `docs/architecture/resource-await-park.md`).
 - Error results without `resource_link` content.
 - Error results with an embedded plain `resource` content item only.
 - Any call on a legacy (pre-2026-07-28) connection.
