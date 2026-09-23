@@ -128,13 +128,20 @@ How it evaluates, in one decider request at site `judge.<judge id>`:
 
 What it buys: a second opinion per criterion in one typed call (no generative tokens, calibrated probabilities), which fits weighted multi-judge aggregation next to LLM judges. What it is not: a replacement for a judge that must explain itself in prose or that needs tool use (`JUDGE_TYPE_AGENT`).
 
+## Direct use: the `decide` tool and `loom decision ask` ✅
+
+Both put one typed question to a decider about facts the asker supplies, at site `tool.decide` (`sites.SiteAsk`, `sites.AskRequest`, `sites.AskAnswerOf`). Three kinds: `yes_no` (a Noul; optional `when_yes`/`when_no` criteria), `choice` (a Choice over the given labels plus `none_of_these`), `scale` (a Score over the given levels, lowest first, 2–10). Facts are a string (≤12,000 runes) or a JSON object; the decider sees nothing else. The answer is the number to branch on first (`p_yes`, the chosen label, the expected level) and the whole distribution after, with the decider's confidence, model, cost and latency. Nothing acts on it automatically.
+
+**Tool.** `decision.expose_tool: true` on an agent with the layer on registers the `decide` builtin (`pkg/agent/decision_tool.go`); off by default, and `WithoutBuiltinTool("decide")` suppresses it. Calls go through the agent's router (budget applies; the band for `tool.decide` is irrelevant because the tool returns the answer either way) and are recorded as shadow rows with no reference, so `loom decision report --site tool.decide` shows how often agents ask and how decisive the answers were. Errors come back as tool errors (`INVALID_PARAMETER`, `DECIDER_ERROR`, `DECISION_BUDGET_EXHAUSTED`, `DECISION_LAYER_OFF`), never as a turn failure.
+
+**CLI.** `loom decision ask --decider jev|llm|mock --kind ... --options ... --facts 'text' | @file "question"` (`cmd/loom/decision_ask.go`); `--json` for machine output. `@file` with a JSON object becomes structured facts. Nothing is written to `loom.db`. The mock decider scripts a plausible answer for the question built, so the command can be exercised without credentials.
+
 ## Not yet implemented
 
 - 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
 - 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier.
 - 📋 The Phase 4–5 sites. Plan 3.2 and 3.5 are skipped as unreachable (see above).
 - 📋 Shadow reports for the six Phase 3 sites against a real decider (the replay CLI covers `tool.failure_kind` only; these sites need live agent traffic with `provider: jev` in shadow, then `loom decision report --site recall.rerank` and friends).
-- 📋 Direct use from a conversation: a `decide` builtin tool (an agent asks the decider a typed question mid-turn) and a `loom decision ask` CLI. The judge above is the only direct-use path today.
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).
 
 ## Tests

@@ -158,8 +158,11 @@ type DecisionConfigYAML struct {
 	// RequestsPerMinute is the process-wide decider budget, from the tier in
 	// use (gateway free tier: 30). Agents with identical decider settings
 	// share one client, so this is a fleet figure, not a per-agent one.
-	RequestsPerMinute int64                    `yaml:"requests_per_minute"`
-	Bands             []DecisionBandConfigYAML `yaml:"bands"`
+	RequestsPerMinute int64 `yaml:"requests_per_minute"`
+	// ExposeTool registers the "decide" builtin so the agent can ask the
+	// decider directly. Off by default.
+	ExposeTool bool                     `yaml:"expose_tool"`
+	Bands      []DecisionBandConfigYAML `yaml:"bands"`
 }
 
 // DecisionBandConfigYAML mirrors proto DecisionBand.
@@ -219,6 +222,7 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		MaxCostUsdPerSession: y.MaxCostUSDPerSession,
 		LlmRole:              y.LLMRole,
 		RequestsPerMinute:    y.RequestsPerMinute,
+		ExposeTool:           y.ExposeTool,
 	}
 	seen := make(map[string]bool, len(y.Bands))
 	for i, b := range y.Bands {

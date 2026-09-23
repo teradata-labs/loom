@@ -5170,6 +5170,10 @@
           "type": "string",
           "format": "int64",
           "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
+        },
+        "exposeTool": {
+          "type": "boolean",
+          "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
         }
       },
       "description": "DecisionConfig configures the decision layer for an agent or server."

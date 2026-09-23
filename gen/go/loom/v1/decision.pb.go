@@ -1278,8 +1278,13 @@ type DecisionConfig struct {
 	// publishes 1,200). Agents with identical decider settings share one
 	// client and therefore one budget. 0 means the provider's default.
 	RequestsPerMinute int64 `protobuf:"varint,10,opt,name=requests_per_minute,json=requestsPerMinute,proto3" json:"requests_per_minute,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Register the "decide" builtin tool on the agent so it can put one typed
+	// question (yes/no, choice, scale) to the decider mid-turn and branch on
+	// the probabilities. Off by default: the layer's other uses (reranks,
+	// gates) do not depend on it. Calls are recorded at site tool.decide.
+	ExposeTool    bool `protobuf:"varint,11,opt,name=expose_tool,json=exposeTool,proto3" json:"expose_tool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DecisionConfig) Reset() {
@@ -1380,6 +1385,13 @@ func (x *DecisionConfig) GetRequestsPerMinute() int64 {
 		return x.RequestsPerMinute
 	}
 	return 0
+}
+
+func (x *DecisionConfig) GetExposeTool() bool {
+	if x != nil {
+		return x.ExposeTool
+	}
+	return false
 }
 
 var File_loom_v1_decision_proto protoreflect.FileDescriptor
@@ -1485,7 +1497,7 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\asubject\x18\x13 \x01(\tR\asubject\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xf5\x02\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\x96\x03\n" +
 	"\x0eDecisionConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1f\n" +
@@ -1499,7 +1511,9 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x05bands\x18\b \x03(\v2\x15.loom.v1.DecisionBandR\x05bands\x12\x19\n" +
 	"\bllm_role\x18\t \x01(\tR\allmRole\x12.\n" +
 	"\x13requests_per_minute\x18\n" +
-	" \x01(\x03R\x11requestsPerMinute*\xb3\x01\n" +
+	" \x01(\x03R\x11requestsPerMinute\x12\x1f\n" +
+	"\vexpose_tool\x18\v \x01(\bR\n" +
+	"exposeTool*\xb3\x01\n" +
 	"\fDecisionPath\x12\x1d\n" +
 	"\x19DECISION_PATH_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15DECISION_PATH_DECIDER\x10\x01\x12\x1a\n" +

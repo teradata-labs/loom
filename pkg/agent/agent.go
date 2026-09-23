@@ -290,6 +290,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterTaskBoardTool()
 	a.checkAndRegisterManageSkillsTool()
 	a.checkAndRegisterLoadPatternTool()
+	a.checkAndRegisterDecideTool()
 
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between

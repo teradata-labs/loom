@@ -274,4 +274,9 @@ message DecisionConfig {
   // publishes 1,200). Agents with identical decider settings share one
   // client and therefore one budget. 0 means the provider's default.
   int64 requests_per_minute = 10;
+  // Register the "decide" builtin tool on the agent so it can put one typed
+  // question (yes/no, choice, scale) to the decider mid-turn and branch on
+  // the probabilities. Off by default: the layer's other uses (reranks,
+  // gates) do not depend on it. Calls are recorded at site tool.decide.
+  bool expose_tool = 11;
 }
