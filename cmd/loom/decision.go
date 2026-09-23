@@ -73,6 +73,8 @@ var (
 	decisionConcurrency int
 	decisionSample      string
 	decisionBaseURL     string
+	decisionSeed        int64
+	decisionRPM         float64
 )
 
 var decisionReplayCmd = &cobra.Command{
@@ -99,6 +101,8 @@ func init() {
 	decisionReplayCmd.Flags().BoolVar(&decisionDryRun, "dry-run", false, "Build requests and references but call no decider and write nothing")
 	decisionReplayCmd.Flags().IntVar(&decisionConcurrency, "concurrency", 4, "Decider calls in flight at once (1 = sequential)")
 	decisionReplayCmd.Flags().StringVar(&decisionSample, "sample", sampleNewest, "Which executions to replay: newest | random (random reaches across the whole history)")
+	decisionReplayCmd.Flags().Int64Var(&decisionSeed, "seed", 0, "With --sample random: a deterministic order so two deciders score the identical rows (0 = truly random)")
+	decisionReplayCmd.Flags().Float64Var(&decisionRPM, "rpm", 0, "For --decider jev: cap requests per minute (0 = client default; the Vercel AI Gateway free tier allows 30)")
 
 	decisionReportCmd.Flags().StringVar(&decisionSite, "site", sites.SiteFailureKind, "Site to report on (empty = all sites)")
 	decisionReportCmd.Flags().IntVar(&decisionLimit, "limit", 0, "Maximum shadow rows to read, newest first (0 = store default)")
@@ -159,7 +163,7 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	rows, err := loadToolExecutions(ctx, db, decisionLimit, decisionErrors, decisionSample)
+	rows, err := loadToolExecutions(ctx, db, decisionLimit, decisionErrors, decisionSample, decisionSeed)
 	if err != nil {
 		return err
 	}
@@ -317,7 +321,7 @@ const (
 	sampleRandom = "random"
 )
 
-func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly bool, sample string) ([]toolExecutionRow, error) {
+func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly bool, sample string, seed int64) ([]toolExecutionRow, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -327,20 +331,29 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	}
 	// Newest-first reads the tail of whatever campaign ran last, which can be
 	// one failure mode repeated thousands of times. Random reaches across the
-	// whole history and is what a class-balanced report wants.
+	// whole history and is what a class-balanced report wants. A seed makes
+	// the random order deterministic (a multiplicative hash of the row id),
+	// so two deciders can be scored on the identical rows.
 	order := "ORDER BY timestamp DESC, id DESC"
+	args := []any{}
 	switch strings.ToLower(sample) {
 	case "", sampleNewest:
 	case sampleRandom:
-		order = "ORDER BY RANDOM()"
+		if seed > 0 {
+			order = "ORDER BY ((id * 2654435761) + ?) % 4294967296, id"
+			args = append(args, seed)
+		} else {
+			order = "ORDER BY RANDOM()"
+		}
 	default:
 		return nil, fmt.Errorf("--sample %q: must be newest or random", sample)
 	}
+	args = append(args, limit)
 	rows, err := db.QueryContext(ctx, `
 		SELECT session_id, tool_name, input_json, error, timestamp
 		FROM tool_executions `+where+`
 		`+order+`
-		LIMIT ?`, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read tool_executions: %w", err)
 	}
@@ -365,6 +378,9 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{BaseUrl: decisionBaseURL, Model: decisionModel})
 		if err != nil {
 			return nil, err
+		}
+		if decisionRPM > 0 {
+			cfg.RequestsPerMinute = decisionRPM
 		}
 		client, err := jev.New(cfg)
 		if err != nil {
