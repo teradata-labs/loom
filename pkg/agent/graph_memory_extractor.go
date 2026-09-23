@@ -461,7 +461,8 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			Content:             m.Content,
 			Summary:             m.Summary,
 			MemoryType:          memoryType,
-			Source:              "auto_extracted",
+			Source:              memory.SourceAutoExtracted,
+			SourceID:            sessionID, // provenance: the session this was extracted from
 			MemoryAgentID:       agentID,
 			Tags:                m.Tags,
 			Salience:            salience,

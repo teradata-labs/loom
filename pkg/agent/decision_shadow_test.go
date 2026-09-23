@@ -157,7 +157,7 @@ func TestRerankMemoriesShadowsAgainstLLMChoice(t *testing.T) {
 	candidates := []*memory.Memory{
 		{ID: "m1", Content: "the user drives a blue car", Source: "conversation", SourceID: "sess-1"},
 		{ID: "m2", Content: "quarterly revenue table"},
-		{ID: "m3", Content: "GPS malfunction after March service", Source: "conversation", SourceID: "sess-3"},
+		{ID: "m3", Content: "GPS malfunction after March service", Source: memory.SourceAutoExtracted, SourceID: "sess-3"},
 	}
 	ctx := decision.WithSessionID(context.Background(), "sess-7")
 	kept := ag.rerankMemories(ctx, "what happened to my car's GPS?", candidates)
@@ -184,7 +184,7 @@ func TestRerankMemoriesShadowsAgainstLLMChoice(t *testing.T) {
 	assert.Equal(t, 1, dec.CallCount())
 	assert.Equal(t, "session:sess-1", byQ["c0"].Subject, "a conversation memory's subject is its source session")
 	assert.Equal(t, "memory:m2", byQ["c1"].Subject, "a memory without a source session is identified by id")
-	assert.Equal(t, "session:sess-3", byQ["c2"].Subject)
+	assert.Equal(t, "session:sess-3", byQ["c2"].Subject, "an auto-extracted memory points at the session it came from")
 }
 
 func TestRerankMemoriesWithoutRouterIsUnchanged(t *testing.T) {

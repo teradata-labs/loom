@@ -317,13 +317,27 @@ func memorySubjects(candidates []*memory.Memory) []string {
 	for i, m := range candidates {
 		switch {
 		case m == nil:
-		case m.Source == "conversation" && m.SourceID != "":
+		case memoryFromSession(m):
 			out[i] = "session:" + m.SourceID
 		default:
 			out[i] = "memory:" + m.ID
 		}
 	}
 	return out
+}
+
+// memoryFromSession reports whether a memory's SourceID names the agent
+// session it was extracted from (the extractor records it for
+// auto_extracted memories; a conversation source carries one too).
+func memoryFromSession(m *memory.Memory) bool {
+	if m.SourceID == "" {
+		return false
+	}
+	switch m.Source {
+	case memory.SourceAutoExtracted, "conversation":
+		return true
+	}
+	return false
 }
 
 // keptIndexes maps the kept memories back to candidate indexes.
