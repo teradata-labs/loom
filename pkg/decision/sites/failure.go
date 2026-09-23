@@ -116,15 +116,17 @@ func FailureKindReference(success bool, errorCode, errorText string) map[string]
 		kind = KindNotAFailure
 	default:
 		switch fabric.InferErrorType(errorCode, errorText) {
-		case "syntax_error":
+		case fabric.ErrorTypeSyntax, fabric.ErrorTypeOverflow, fabric.ErrorTypeConstraint, fabric.ErrorTypeInvalidInput:
 			kind = KindBadInput
-		case "permission_denied":
+		case fabric.ErrorTypePermission:
 			kind = KindAuth
-		case "column_not_found", "table_not_found":
+		case fabric.ErrorTypeColumnNotFound, fabric.ErrorTypeTableNotFound, fabric.ErrorTypeNotFound:
 			kind = KindNotFound
-		case "timeout":
+		case fabric.ErrorTypeTimeout:
 			kind = KindTransient
 			retry = "true"
+		case fabric.ErrorTypeSaturated:
+			kind = KindServerSaturated
 		default:
 			if looksSaturated(errorCode, errorText) {
 				kind = KindServerSaturated

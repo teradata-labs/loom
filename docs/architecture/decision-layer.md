@@ -1,7 +1,7 @@
 # Decision Layer
 
-**Status**: ⚠️ Partial. Core package (Phase 0) and shadow harness (Phase 1) implemented; three call sites shadow-record; no site acts on a decider yet; no Jev client yet.
-**Package**: `pkg/decision` (+ `mock`, `llm`, `report`, `sites`)
+**Status**: ⚠️ Partial. Core package (Phase 0), shadow harness (Phase 1) and the Jev client (Phase 2) implemented; three call sites shadow-record; no site acts on a decider yet; no Jev replay has been run yet (needs a gateway key).
+**Package**: `pkg/decision` (+ `jev`, `llm`, `mock`, `report`, `sites`)
 **Proto**: `proto/loom/v1/decision.proto`
 **Plan**: `docs/plans/jev-decision-layer-plan.md` · **Research**: `docs/research/jev-system-one-assessment.md`
 
@@ -21,10 +21,10 @@ Every question in a request is evaluated independently against the same state. T
 
 ```
 call site ──► decision.Router ──► decision.Instrumented ──► Decider
-                 │ per-site Band            │ span + metrics       ├─ llm.Adapter   (any LLMProvider)   ✅
-                 │ per-session budget       │                      ├─ mock.Decider  (tests)             ✅
-                 └─ Outcome.Path            └─ decision.evaluate   ├─ Off           (provider: off)     ✅
-                                                                    └─ jev client    (Phase 2)          📋
+                 │ per-site Band            │ span + metrics       ├─ jev.Client    (TypeSafe / gateway) ✅
+                 │ per-session budget       │                      ├─ llm.Adapter   (any LLMProvider)    ✅
+                 └─ Outcome.Path            └─ decision.evaluate   ├─ mock.Decider  (tests)              ✅
+                                                                    └─ Off           (provider: off)      ✅
 ```
 
 - **`Decider`** (`decider.go`): `Decide(ctx, *DecisionRequest) (*DecisionResponse, error)`, `Name()`, `Model()`. It is **not** an `LLMProvider` and is not registered in `pkg/llm/factory` or the model catalog.
@@ -49,7 +49,7 @@ A shadow comparison runs the decider **in the background, alongside** a call sit
 
 - **Record and store** (`shadow.go`): `BuildShadowRecords` renders candidate and reference answers the same way ("true"/"false", option key, level index); `ShadowStore` is implemented on SQLite (migration 000010) and Postgres (000025, tenant-scoped with RLS) and exposed through `backend.DecisionShadowProvider`; `ShadowRecorder` swallows store errors into `decision.shadow.errors.total`.
 - **Sites** (`sites/`): request builders and reference mappings live here, not inline, so `loom decision replay` builds the exact request a live agent builds.
-  - `tool.failure_kind` (`sites/failure.go`): `Choice` over {not_a_failure, transient, server_saturated, auth, bad_input, not_found, other} plus a `Noul` "identical retry would help". State is `{tool, error_code, error_text[:2000], input_digest}`, never the input or payload. Reference maps `Success` plus `fabric.InferErrorType` onto the kinds.
+  - `tool.failure_kind` (`sites/failure.go`): `Choice` over {not_a_failure, transient, server_saturated, auth, bad_input, not_found, other} plus a `Noul` "did the call fail in a way an identical retry would clear". State is `{tool, error_code, error_text[:2000], input_digest}`, never the input or payload. Reference maps `Success` plus `fabric.InferErrorType` onto the kinds. After the first shadow run, `InferErrorType` gained five classes (`server_saturated`, `numeric_overflow`, `constraint_violation`, `invalid_input`, `not_found`) so the reference stops answering `unknown` for 57% of failures; its six original classes and their consumers in the guardrail engine are unchanged.
   - `recall.rerank`, `tool_search.rerank` (`sites/rerank.go`): one `Noul` per candidate, up to 64; reference is the set the LLM rerank kept.
 - **Wired sites**: `Agent.rerankMemories` (`pkg/agent/decision_shadow.go`), `Agent.executeToolWithSelfCorrection`, `registry.rerankWithLLM` (`pkg/tools/registry/decision_shadow.go`). Shadows run in goroutines detached from the turn's cancellation with a 30 s cap; `WaitDecisionShadows()` exists for tests and shutdown.
 - **Configuration**: a `decision:` block in agent YAML (`provider: off|llm|mock|jev`, `llm_role`, `model` pinned unless `allow_alias`, budgets, `bands`), converted with validation in `config_loader.go`. The registry passes the server's shadow store to every agent; `looms serve` obtains it from the storage backend.
@@ -57,9 +57,21 @@ A shadow comparison runs the decider **in the background, alongside** a call sit
 - **CLI**: `loom decision replay --decider llm|mock [--provider P] [--errors-only] [--sample newest|random] [--limit N] [--concurrency N] [--dry-run]` runs `tool_executions` rows through the failure-kind classifier and writes shadow rows; `loom decision report --site S [--since 7d]` prints the report. Both read the local `loom.db`.
 - **First results** (2026-09-22, gpt-4o through the LLM adapter, 5,000 executions): `kind` agrees with today's classifier 95–100% wherever that classifier has a rule; ≥0.9-confidence rows agree 98–99.9%; the entire disagreement is the classifier's `other` bucket (57% of a random failure sample: graph-memory FK failures, Teradata overflow, parameter validation), which the decider reads as `bad_input`. The retry question was found ill-posed on successes and reworded. Full write-up: `docs/research/decision-layer-phase1-report.md`.
 
+## Jev client (Phase 2) ✅
+
+`pkg/decision/jev` is the `Decider` for TypeSafe's System One API: one JSON POST to `/v1/systemone`, answers mapped onto the proto shapes, `CheckAnswers` on the way out.
+
+- **Endpoints.** `DefaultBaseURL` is `https://api.typesafe.ai`; the Vercel AI Gateway serves the same API at `https://ai-gateway.vercel.sh/typesafe`. Base URL, path, auth header and extra headers are configuration.
+- **Credentials** come from the environment only, never from agent YAML: `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY` (which also selects the gateway URL when no base URL is set), else `JEV_API_KEY`; `TYPESAFE_BASE_URL` overrides the endpoint. `jev.FromDecisionConfig` does the resolution for both the agent and the CLI.
+- **Model ids.** Direct: a pinned release (`jev-1.13.0`, the default). Through the gateway the only id is `typesafe-ai/jev`, which is a floating alias: the gateway exposes no pinned releases and echoes that id back. Config validation therefore requires `allow_alias: true` for it, and a pinned id against the gateway is refused at construction rather than sent.
+- **Failure handling.** 401/403 → `ErrUnauthorized`, 400/422 → `ErrValidation`, 429 → `ErrRateLimited`, 5xx/529 → `ErrOverloaded`; only rate limits, overload and transport failures are retried (3 attempts, `Retry-After` honoured, jittered backoff capped at 2 s, context-aware). Requests are validated locally before anything is sent.
+- **Budget.** A per-process token-bucket limiter at 1,000 requests per minute (the published cap is 1,200), deliberately separate from the LLM slot scheduler. One client per agent would multiply that; share the client.
+- **Cost.** Input tokens × the configured price (list $0.042 per million; output is free). A gateway response carries its own cost figure under `provider_metadata.gateway.cost`, which wins when present.
+- **Tests**: httptest contracts for every primitive and status, wire-shape assertions, retry and backoff, context cancellation during backoff, transport errors, auth-header variants, limiter pacing with an injected clock and under the race detector, and the env resolution table. Fixture keys are fake.
+
 ## Not yet implemented
 
-- 📋 Jev HTTP client (`pkg/decision/jev`), including a configurable base URL for gateways (Vercel AI Gateway serves Jev) and its own rate limiter separate from the LLM slot scheduler. `provider: jev` currently logs a warning and stays off.
+- 📋 A Jev shadow replay. The harness is ready (`loom decision replay --decider jev`); it needs `AI_GATEWAY_API_KEY` in the environment. The Vercel free tier for Jev ends 2026-09-25 and requires a card on file.
 - 📋 Conversation-search rerank shadow (`segmented_memory.go`) and every other site in the plan's Phase 3–5 list.
 - 📋 Any live band. No site acts on a decider answer until its shadow report has been reviewed.
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).

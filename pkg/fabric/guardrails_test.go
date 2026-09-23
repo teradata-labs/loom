@@ -373,6 +373,55 @@ func TestInferErrorType(t *testing.T) {
 			errorMessage: "Some unknown error occurred",
 			wantType:     "unknown",
 		},
+		// Classes added after the 2026-09-22 decision-layer shadow run.
+		{
+			name:         "saturated: session budget",
+			errorCode:    "MCP_CALL_FAILED",
+			errorMessage: `tool error: {"code":"session_handle_budget_full","message":"too many live handles"}`,
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "saturated: rate limit beats timeout wording",
+			errorMessage: "Rate limit exceeded, retry later",
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "saturated: 429 code",
+			errorCode:    "429",
+			errorMessage: "Too Many Requests",
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "numeric overflow",
+			errorMessage: "[Teradata Database] [Error 2616] Numeric overflow occurred during computation.",
+			wantType:     ErrorTypeOverflow,
+		},
+		{
+			name:         "fk constraint",
+			errorMessage: "STORE_ERROR: link entity user: FOREIGN KEY constraint failed",
+			wantType:     ErrorTypeConstraint,
+		},
+		{
+			name:         "invalid input builtin",
+			errorMessage: "invalid_input: Data type 'text' requires specific query method",
+			wantType:     ErrorTypeInvalidInput,
+		},
+		{
+			name:         "invalid params by code",
+			errorCode:    "INVALID_PARAMS",
+			errorMessage: "config parameter is required for create_agent action",
+			wantType:     ErrorTypeInvalidInput,
+		},
+		{
+			name:         "not found: no rows",
+			errorMessage: "STORE_ERROR: get old memory: sql: no rows in result set",
+			wantType:     ErrorTypeNotFound,
+		},
+		{
+			name:         "not found: session handle",
+			errorMessage: `{"code":"unknown_session_handle","message":"handle expired"}`,
+			wantType:     ErrorTypeNotFound,
+		},
 	}
 
 	for _, tt := range tests {

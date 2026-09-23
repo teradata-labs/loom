@@ -214,10 +214,12 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] first report over ≥1,000 rows with the LLM adapter — three replays on the rig (gpt-4o via Azure OpenAI): newest 2,000 mixed, newest 1,500 errors, random 1,500 errors across the full history; results and findings in `docs/research/decision-layer-phase1-report.md` (kind agreement 95%+ outside the reference's `other` blind spot; ≥0.9-confidence rows agree 99.9%; retry question reworded after the run exposed it as ill-posed on successes)
 - [x] baseline capture on the gauntlet rig — from the 2026-09-22 TPC-H run: 1,494 grants / **987 starvation promotions (66%)**, sessions of 3 LLM calls taking p50 611 s; same doc §1. Gaps recorded: no per-request queue-wait metric (follow-up), recall starvation needs a graph-memory-on rerun paired with Phase 3.1.
 
-### Phase 2 — Jev client (blocked on D1)
-- [ ] client + limiter + fixtures + contract tests
-- [ ] config block, validation, `WithDecider`
-- [ ] live smoke; first Jev shadow report
+### Phase 2 — Jev client — ✅ client landed 2026-09-23
+- [x] `pkg/decision/jev`: client (TypeSafe direct or Vercel AI Gateway; configurable base URL, path, auth header), typed status mapping, retries with Retry-After, per-process 1,000 rpm limiter, cost from list price or the gateway's own figure, contract tests with fake keys
+- [x] `jev.FromDecisionConfig`: credentials from env only (`TYPESAFE_API_KEY` → `AI_GATEWAY_API_KEY` → `JEV_API_KEY`); gateway implies `typesafe-ai/jev`, which config treats as a floating alias (`allow_alias: true` required); a pinned id against the gateway is refused
+- [x] `provider: jev` wired in the agent and in `loom decision replay --decider jev [--base-url]`
+- [x] `fabric.InferErrorType` extended with the five classes the Phase 1 report surfaced; `sites.FailureKindReference` maps them
+- [ ] **live smoke + first Jev shadow report** — key obtained 2026-09-23; the gateway authenticates it (`GET /typesafe/v1/models` → 200, lists `jev`) but refuses evaluations with HTTP 403 `customer_verification_required` until the Vercel team has a credit card on file. Owner step: add the card at the team's AI Gateway page, then rerun. Free tier ends 2026-09-25. Command, on the rig: `AI_GATEWAY_API_KEY=… ./loom decision replay --db loom-slim-jev.db --decider jev --limit 1500 --errors-only --sample random --concurrency 8` then `report`; compare with §2.3 of the Phase 1 report
 
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
 - [ ] 3.1 recall rerank · [ ] 3.2 conversation rerank · [ ] 3.3 tool_search rerank

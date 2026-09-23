@@ -25,6 +25,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -64,8 +65,29 @@ func (m *memShadowStore) QueryShadow(_ context.Context, q decision.ShadowQuery) 
 	return out, nil
 }
 
+func TestInitDecisionRouterJev(t *testing.T) {
+	t.Setenv(jev.EnvTypeSafeAPIKey, "")
+	t.Setenv(jev.EnvJevAPIKey, "")
+	t.Setenv(jev.EnvAIGatewayAPIKey, "jv_test_not_a_real_key")
+	ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: "jev", Model: "typesafe-ai/jev", AllowAlias: true, TimeoutMs: 1200}, nil))
+	require.NotNil(t, ag.DecisionRouter(), "a gateway key enables the jev provider")
+	inst, ok := ag.DecisionRouter().Decider().(*decision.Instrumented)
+	require.True(t, ok)
+	client, ok := inst.Unwrap().(*jev.Client)
+	require.True(t, ok)
+	assert.Equal(t, "jev", client.Name())
+	assert.Equal(t, jev.VercelGatewayModel, client.Model())
+	assert.Equal(t, jev.VercelGatewayBaseURL+jev.DefaultPath, client.URL(), "gateway key alone routes to the gateway")
+
+	// A pinned TypeSafe id against the gateway is a misconfiguration: the
+	// layer stays off rather than sending a model the gateway rejects.
+	pinned := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: "jev", Model: "jev-1.13.0"}, nil))
+	assert.Nil(t, pinned.DecisionRouter())
+}
+
 func TestInitDecisionRouterFromConfig(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name         string
 		cfg          *loomv1.DecisionConfig
@@ -78,12 +100,13 @@ func TestInitDecisionRouterFromConfig(t *testing.T) {
 		{name: "mock", cfg: &loomv1.DecisionConfig{Provider: "mock"}, wantEnabled: true, wantProvider: "mock"},
 		{name: "llm adapts the main LLM by default", cfg: &loomv1.DecisionConfig{Provider: "llm"}, wantEnabled: true, wantProvider: "llm:mock"},
 		{name: "llm with unconfigured role falls back to main", cfg: &loomv1.DecisionConfig{Provider: "llm", LlmRole: "classifier"}, wantEnabled: true, wantProvider: "llm:mock"},
-		{name: "jev not implemented yet stays off", cfg: &loomv1.DecisionConfig{Provider: "jev"}},
+		{name: "jev without credentials stays off", cfg: &loomv1.DecisionConfig{Provider: "jev"}},
 		{name: "unknown provider stays off", cfg: &loomv1.DecisionConfig{Provider: "oracle"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			// Not parallel: the jev case depends on the credential env vars
+			// being absent, and TestInitDecisionRouterJev sets them.
 			ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"), WithDecisionConfig(tt.cfg, nil))
 			if !tt.wantEnabled {
 				assert.Nil(t, ag.DecisionRouter())
