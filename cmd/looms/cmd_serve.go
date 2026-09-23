@@ -1964,6 +1964,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				// tools.minimal/none never disables the extractor itself, so
 				// background entity extraction keeps running (via compressor_llm
 				// when declared) even when the tool is hidden from the LLM.
+
+				// Decision layer: the agent resolves its configured decider
+				// against its own LLMs after options apply; a nil config is
+				// off. Same wiring as registry.buildAgent.
+				agentOpts = append(agentOpts, agent.WithDecisionConfig(cfg.GetDecision(), decisionShadowStore))
+
 				if graphMemoryStore != nil {
 					gmCfg := cfg.Memory.GetGraphMemory()
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
@@ -3295,6 +3301,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wire graph memory SUBSYSTEM (mirrors the static-loader path).
 			// tools.minimal/none never disables the extractor; tool surfacing
 			// is gated separately via WithoutBuiltinTool below.
+
+			// Decision layer, as at startup (hot-reload path).
+			agentOpts = append(agentOpts, agent.WithDecisionConfig(agentConfig.GetDecision(), decisionShadowStore))
+
 			if graphMemoryStore != nil {
 				gmCfg := agentConfig.GetMemory().GetGraphMemory()
 				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled

@@ -2271,6 +2271,25 @@ func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
 }
 
+// WaitDecisionShadows blocks until every registered agent's in-flight
+// decision shadow evaluations have been recorded. Shadows run in background
+// goroutines detached from the turn that produced them, so a short-lived
+// process (looms workflow run) calls this before exit or it loses the rows
+// its last turn produced. A long-lived server never needs to.
+func (r *Registry) WaitDecisionShadows() {
+	r.mu.RLock()
+	agents := make([]*Agent, 0, len(r.agents))
+	for _, a := range r.agents {
+		if a != nil {
+			agents = append(agents, a)
+		}
+	}
+	r.mu.RUnlock()
+	for _, a := range agents {
+		a.WaitDecisionShadows()
+	}
+}
+
 // DB returns the registry's underlying SQLite handle. Exported so peer
 // services (e.g., the SkillsImportService) can construct their own
 // index.Store without re-opening the file. Read-only intent: callers

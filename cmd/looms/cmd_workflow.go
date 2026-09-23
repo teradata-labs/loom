@@ -508,12 +508,18 @@ func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGa
 // CLI workflow execution, plus the teardown for those dependencies.
 type workflowRuntime struct {
 	orchestrator *orchestration.Orchestrator
+	registry     *agent.Registry
 	logger       *zap.Logger
 	closers      []func()
 }
 
-// Close tears down runtime dependencies in reverse construction order.
+// Close waits for the agents' background decision shadows, then tears down
+// runtime dependencies in reverse construction order. The wait comes first
+// because the shadow store is one of the closers.
 func (rt *workflowRuntime) Close() {
+	if rt.registry != nil {
+		rt.registry.WaitDecisionShadows()
+	}
 	for i := len(rt.closers) - 1; i >= 0; i-- {
 		rt.closers[i]()
 	}
@@ -697,6 +703,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent registry: %w", err)
 	}
+	rt.registry = registry
 
 	// Decision-layer shadow store: the same storage backend `looms serve`
 	// uses, so shadow rows from workflow runs land where `loom decision
