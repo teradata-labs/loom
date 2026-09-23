@@ -135,6 +135,7 @@ type rateLimitedResult struct {
 type RateLimiterMetrics struct {
 	TotalRequests      int64
 	ThrottledRequests  int64
+	TransientRequests  int64 // provider-typed 5xx retried under the throttle budget
 	QueuedRequests     int64
 	DroppedRequests    int64
 	AverageQueueTimeMs int64
@@ -356,24 +357,37 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	result, err := req.call(req.ctx)
 	rl.recordMetric("request", 0)
 
-	// Success or non-retryable error: deliver as-is.
-	if err == nil || !isThrottlingError(err) {
+	// Success or non-retryable error: deliver as-is. Two error classes are
+	// retried, under one budget and one backoff: throttling (429 and the
+	// SDK-level equivalents) and a provider-typed transient server failure
+	// (TransientError: 500/502/503/504/529 on a response whose status was
+	// known before any content streamed).
+	throttled := isThrottlingError(err)
+	transient := !throttled && IsTransient(err)
+	if err == nil || !(throttled || transient) {
 		rl.deliver(req, &rateLimitedResult{result: result, err: err})
 		return
 	}
 
-	rl.recordMetric("throttled", 0)
+	cause := "throttling"
+	if transient {
+		cause = "a transient server error"
+		rl.recordMetric("transient", 0)
+	} else {
+		rl.recordMetric("throttled", 0)
+	}
 
 	if req.attempt >= rl.config.MaxRetries {
 		// All attempts exhausted.
 		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf(
-			"LLM request failed after %d retries due to throttling: %w",
-			rl.config.MaxRetries+1, err)})
+			"LLM request failed after %d retries due to %s: %w",
+			rl.config.MaxRetries+1, cause, err)})
 		return
 	}
 
 	delay := rl.retryDelay(req.attempt, err)
-	rl.config.Logger.Warn("LLM request throttled, retrying",
+	rl.config.Logger.Warn("LLM request failed, retrying",
+		zap.String("cause", cause),
 		zap.Int("attempt", req.attempt+1),
 		zap.Int("max_retries", rl.config.MaxRetries),
 		zap.Duration("backoff", delay),
@@ -550,6 +564,8 @@ func (rl *RateLimiter) recordMetric(event string, value int64) {
 	case "throttled":
 		rl.metrics.ThrottledRequests++
 		rl.metrics.LastThrottleTime = time.Now()
+	case "transient":
+		rl.metrics.TransientRequests++
 	case "queued":
 		rl.metrics.QueuedRequests++
 	case "dropped":
@@ -615,6 +631,7 @@ func (rl *RateLimiter) reportMetrics() {
 			rl.config.Logger.Debug("Rate limiter metrics",
 				zap.Int64("total_requests", metrics.TotalRequests),
 				zap.Int64("throttled_requests", metrics.ThrottledRequests),
+				zap.Int64("transient_requests", metrics.TransientRequests),
 				zap.Int64("queued_requests", metrics.QueuedRequests),
 				zap.Int64("dropped_requests", metrics.DroppedRequests),
 				zap.Int64("current_queue_depth", metrics.CurrentQueueDepth),

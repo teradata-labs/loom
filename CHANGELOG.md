@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### LLM provider retry
+- A provider-side 5xx (HTTP 500, 502, 503, 504, or 529 "overloaded") on a response whose status is known before any content streams is now retried by the rate limiter under exactly the rules a 429 gets: the same `max_retries` budget, the same exponential backoff with jitter, the same `Retry-After` floor, the same context/stop escapes. Previously only 429s were retried, so a single upstream hiccup ended an agent's turn (observed on the az512 rig: one Azure OpenAI 500 → conversation aborted). The classification is typed (`llm.TransientError`, built by the Azure OpenAI, OpenAI, Anthropic and Gemini clients inside their rate-limited send path) — no message text is sniffed, a 4xx is never retried, and without a rate limiter configured the error surfaces on the first attempt exactly as a 429 does. Retried 5xx are counted in `RateLimiterMetrics.TransientRequests`, apart from throttling, and do not feed the scheduler's throttle signal.
+
 #### Usage and cost accounting
 - `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
 - `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.

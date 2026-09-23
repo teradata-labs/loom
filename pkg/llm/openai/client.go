@@ -232,6 +232,16 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 						fmt.Errorf("API error (status 429): %s", string(respBody)),
 						retryAfter)
 				}
+				// 500/502/503/504/529: retried by the rate limiter under the
+				// throttle budget; status known before any content streams.
+				if llm.IsTransientStatus(resp.StatusCode) {
+					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
+					respBody, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					return nil, llm.NewTransientError(
+						fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+						resp.StatusCode, retryAfter)
+				}
 				return resp, nil
 			})
 			if err == nil {
