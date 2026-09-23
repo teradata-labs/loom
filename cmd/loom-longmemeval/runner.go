@@ -132,34 +132,89 @@ func NewRunner(cfg RunConfig, logger *zap.Logger) (*Runner, error) {
 	}
 
 	// In isolate mode, build a base agent config for creating temp agents.
-	// Each temp agent gets its own graph memory scope — no cross-entry contamination.
+	// Each temp agent gets its own graph memory scope — no cross-entry
+	// contamination. When --agent names a registered agent, the temp agents
+	// are clones of it (system prompt, LLM, tools, decision layer), with the
+	// benchmark's extraction settings applied on top; before this the named
+	// agent was ignored in isolate mode and every temp agent ran a hand-built
+	// config, so nothing configured on the agent reached the benchmark.
 	if cfg.Isolate {
-		r.baseAgent = &loomv1.AgentConfig{
-			SystemPrompt: "You are a helpful assistant with excellent memory. " +
-				"Pay close attention to dates, events, preferences, and factual details " +
-				"mentioned in conversations. When asked about past conversations, " +
-				"use your memory tools to recall relevant information.",
-			Memory: &loomv1.MemoryConfig{
-				GraphMemory: &loomv1.GraphMemoryConfig{
-					Enabled:                       true,
-					EnableExtraction:              true,
-					ExtractionCadence:             1,
-					ConversationExtractionCadence: 1,
-					MaxEntitiesPerExtraction:      15,
-					ContextBudgetPercent:          30,
-					ExtractionTimeoutSeconds:      60,
-					ExtractionWindowMessages:      30,
-				},
-			},
-			Behavior: &loomv1.BehaviorConfig{
-				MaxTurns:          50,
-				MaxToolExecutions: 100,
-			},
+		r.baseAgent = defaultIsolatedBase()
+		if cfg.AgentID != "" {
+			gctx, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			info, err := client.GetAgent(gctx, &loomv1.GetAgentRequest{AgentId: cfg.AgentID})
+			gcancel()
+			switch {
+			case err != nil:
+				logger.Warn("isolate mode: could not fetch base agent; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID), zap.Error(err))
+			case info.GetConfig() == nil:
+				logger.Warn("isolate mode: base agent has no config; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID))
+			default:
+				r.baseAgent = isolatedBaseFrom(info.GetConfig())
+				logger.Info("isolate mode: temp agents cloned from agent",
+					zap.String("agent", cfg.AgentID),
+					zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+			}
 		}
 		logger.Info("isolate mode: will create fresh agents per entry")
 	}
 
 	return r, nil
+}
+
+// benchmarkGraphMemory is what every isolated temp agent runs with: memory
+// on, extraction on every turn, a wide extraction window. Applied on top of
+// whatever the base agent configures.
+func benchmarkGraphMemory(gm *loomv1.GraphMemoryConfig) *loomv1.GraphMemoryConfig {
+	if gm == nil {
+		gm = &loomv1.GraphMemoryConfig{}
+	}
+	gm.Enabled = true
+	gm.EnableExtraction = true
+	gm.ExtractionCadence = 1
+	gm.ConversationExtractionCadence = 1
+	if gm.MaxEntitiesPerExtraction < 15 {
+		gm.MaxEntitiesPerExtraction = 15
+	}
+	if gm.ContextBudgetPercent == 0 {
+		gm.ContextBudgetPercent = 30
+	}
+	if gm.ExtractionTimeoutSeconds < 60 {
+		gm.ExtractionTimeoutSeconds = 60
+	}
+	if gm.ExtractionWindowMessages < 30 {
+		gm.ExtractionWindowMessages = 30
+	}
+	return gm
+}
+
+// defaultIsolatedBase is the temp-agent config when no base agent is named.
+func defaultIsolatedBase() *loomv1.AgentConfig {
+	return &loomv1.AgentConfig{
+		SystemPrompt: "Help the user with whatever they need. Remember dates, events, " +
+			"preferences and factual details from earlier conversations, and when asked " +
+			"about them, recall the relevant memories before answering.",
+		Memory:   &loomv1.MemoryConfig{GraphMemory: benchmarkGraphMemory(nil)},
+		Behavior: &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100},
+	}
+}
+
+// isolatedBaseFrom clones a registered agent's config for use as the temp
+// agent template. Everything the agent configures is kept (system prompt,
+// LLM, tools, decision layer, behavior); graph memory gets the benchmark's
+// extraction settings; the name and description are set per entry later.
+func isolatedBaseFrom(src *loomv1.AgentConfig) *loomv1.AgentConfig {
+	cfg := proto.Clone(src).(*loomv1.AgentConfig)
+	if cfg.Memory == nil {
+		cfg.Memory = &loomv1.MemoryConfig{}
+	}
+	cfg.Memory.GraphMemory = benchmarkGraphMemory(cfg.Memory.GraphMemory)
+	if cfg.Behavior == nil {
+		cfg.Behavior = &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100}
+	}
+	return cfg
 }
 
 // Close closes the gRPC connection.
