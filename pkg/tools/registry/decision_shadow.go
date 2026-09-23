@@ -78,6 +78,17 @@ func rerankRequest(query string, candidates []*loomv1.ToolSearchResult) (*loomv1
 // "returned" is not a relevance verdict; its score is. The first campaign
 // compared the decider against "returned" and read 13% agreement on a site
 // where the decider was the more discriminating party.
+// toolSubjects renders each candidate's tool name as a shadow-row subject.
+func toolSubjects(candidates []*loomv1.ToolSearchResult) []string {
+	out := make([]string, len(candidates))
+	for i, c := range candidates {
+		if c != nil && c.Tool != nil {
+			out[i] = "tool:" + c.Tool.Name
+		}
+	}
+	return out
+}
+
 func keptIndexes(candidates, reranked []*loomv1.ToolSearchResult) []int {
 	keptSet := make(map[*loomv1.ToolSearchResult]struct{}, len(reranked))
 	for _, k := range reranked {
@@ -126,7 +137,7 @@ func (r *Registry) shadowRerank(ctx context.Context, query string, candidates, k
 		r.logger.Debug("decision shadow: tool_search rerank request", zap.Error(err))
 		return
 	}
-	refs := sites.RerankReference(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank)
+	refs := sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank, toolSubjects(candidates))
 	sessionID := decision.SessionIDFromContext(ctx)
 	bg := decision.WithSessionID(context.WithoutCancel(ctx), sessionID)
 	r.decisionWG.Add(1)

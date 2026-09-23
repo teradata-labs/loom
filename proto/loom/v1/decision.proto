@@ -239,6 +239,12 @@ message DecisionShadowRecord {
   // Decider error text for ERROR-path rows (bounded), empty otherwise. An
   // ERROR row without its reason cannot be triaged; this is that reason.
   string error = 18;
+  // Stable identifier of what the question was about, so a row can be
+  // graded against an external truth: for a recall candidate the source
+  // session of the memory ("session:<id>") or the memory id
+  // ("memory:<id>"), for a tool search candidate "tool:<name>". Never the
+  // content itself. Empty when the site has nothing to point at.
+  string subject = 19;
 }
 
 // DecisionConfig configures the decision layer for an agent or server.

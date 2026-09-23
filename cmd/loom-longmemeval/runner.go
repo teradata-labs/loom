@@ -93,10 +93,35 @@ type EntryResult struct {
 	Sessions     int           `json:"sessions_ingested"`
 	Error        string        `json:"error,omitempty"`
 
+	// QuestionSessionID and HaystackSessions let a decision shadow row (keyed
+	// by the agent session it was recorded in, carrying a memory's source
+	// session as its subject) be graded against the dataset's evidence
+	// sessions: a memory kept from an evidence session is a true positive.
+	QuestionSessionID string               `json:"question_session_id,omitempty"`
+	HaystackSessions  []HaystackSessionRef `json:"haystack_sessions,omitempty"`
+
 	// grpcCode carries the gRPC status code of a failed Weave call so the
 	// runner can decide whether to abort the whole run. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
+}
+
+// HaystackSessionRef maps one ingested haystack session to the Loom session
+// it ran in and says whether the dataset marks it as evidence.
+type HaystackSessionRef struct {
+	LoomSessionID    string `json:"loom_session_id"`
+	DatasetSessionID string `json:"dataset_session_id"`
+	Evidence         bool   `json:"evidence"`
+}
+
+// isEvidence reports whether the dataset lists sid among the answer sessions.
+func isEvidence(entry Entry, sid string) bool {
+	for _, a := range entry.AnswerSessionIDs {
+		if a == sid {
+			return true
+		}
+	}
+	return false
 }
 
 // Runner orchestrates the benchmark execution against a running Loom server.
@@ -542,6 +567,9 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 			result.Error = fmt.Sprintf("create session %d: %v", i, err)
 			return result
 		}
+		result.HaystackSessions = append(result.HaystackSessions, HaystackSessionRef{
+			LoomSessionID: sessionID, DatasetSessionID: sess.SessionID, Evidence: isEvidence(entry, sess.SessionID),
+		})
 
 		// Feed the session content through Weave.
 		ingestMsg := fmt.Sprintf(
@@ -567,6 +595,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		result.Error = fmt.Sprintf("create question session: %v", err)
 		return result
 	}
+	result.QuestionSessionID = questionSessionID
 
 	questionMsg := fmt.Sprintf(
 		"Current date: %s\n\n"+

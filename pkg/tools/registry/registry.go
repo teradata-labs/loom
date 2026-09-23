@@ -576,14 +576,14 @@ func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (
 			results = decided
 			span.SetAttribute("tool_search.rerank", "decision")
 			if router, recorder := r.decisionParts(); router != nil {
-				r.recordAsync(ctx, router, recorder, dreq, dout, nil)
+				r.recordAsync(ctx, router, recorder, dreq, dout, sites.RerankSubjectsOnly(len(candidates), toolSubjects(candidates)))
 			}
 		} else if dreq != nil {
 			results = r.rerankWithLLMOnly(ctx, req.Query, req.TaskContext, candidates)
 			span.SetAttribute("tool_search.rerank", "llm_after_decision")
 			if router, recorder := r.decisionParts(); router != nil {
 				r.recordAsync(ctx, router, recorder, dreq, dout,
-					sites.RerankReference(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank))
+					sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank, toolSubjects(candidates)))
 			}
 		} else {
 			results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates)

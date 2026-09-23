@@ -308,6 +308,24 @@ func rerankRequest(site, userMessage string, candidates []*memory.Memory) (*loom
 	return sites.RerankRequest(site, userMessage, texts)
 }
 
+// memorySubjects renders each candidate's provenance as a shadow-row subject:
+// the session the memory was extracted from when known, else the memory id.
+// Never the content. A benchmark that knows which sessions hold the evidence
+// can grade every keep-or-drop decision from this alone.
+func memorySubjects(candidates []*memory.Memory) []string {
+	out := make([]string, len(candidates))
+	for i, m := range candidates {
+		switch {
+		case m == nil:
+		case m.Source == "conversation" && m.SourceID != "":
+			out[i] = "session:" + m.SourceID
+		default:
+			out[i] = "memory:" + m.ID
+		}
+	}
+	return out
+}
+
 // keptIndexes maps the kept memories back to candidate indexes.
 func keptIndexes(candidates, kept []*memory.Memory) []int {
 	keptSet := make(map[*memory.Memory]struct{}, len(kept))
@@ -334,7 +352,7 @@ func (a *Agent) shadowRerank(ctx context.Context, sessionID, site, userMessage s
 		zap.L().Debug("decision shadow: rerank request", zap.String("site", site), zap.Error(err))
 		return
 	}
-	a.runShadow(ctx, sessionID, req, sites.RerankReference(len(candidates), keptIndexes(candidates, kept), source))
+	a.runShadow(ctx, sessionID, req, sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), source, memorySubjects(candidates)))
 }
 
 // liveRerank is the live path for a rerank site: ask the decider first and,

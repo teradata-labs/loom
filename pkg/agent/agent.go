@@ -3837,15 +3837,16 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	sessionID := sessionIDFromContext(ctx)
 	if kept, acted, req, out := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
-		// Live: nothing to compare against; the row records what was acted on.
-		a.recordDecisionAsync(ctx, sessionID, req, out, nil)
+		// Live: nothing to compare against; the row records what was acted
+		// on, with each candidate's provenance as its subject.
+		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankSubjectsOnly(len(candidates), memorySubjects(candidates)))
 		return kept
 	} else if req != nil {
 		// Live band, but the decider did not clear it: the LLM decides and
 		// the answer already in hand is recorded against it.
 		kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
 		a.recordDecisionAsync(ctx, sessionID, req, out,
-			sites.RerankReference(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank))
+			sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank, memorySubjects(candidates)))
 		return kept
 	}
 	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)

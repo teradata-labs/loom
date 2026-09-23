@@ -212,3 +212,19 @@ func TestRerankKept(t *testing.T) {
 	assert.Equal(t, []int{0}, RerankKept(out.Response, 3, 0.8))
 	assert.Nil(t, RerankKept(nil, 3, 0.5))
 }
+
+func TestRerankReferenceSubjects(t *testing.T) {
+	t.Parallel()
+	refs := RerankReferenceSubjects(3, []int{1}, ReferenceSourceLLMRerank, []string{"session:a", "session:b"})
+	assert.Equal(t, "session:a", refs["c0"].Subject)
+	assert.Equal(t, "false", refs["c0"].Answer)
+	assert.Equal(t, "session:b", refs["c1"].Subject)
+	assert.Equal(t, "true", refs["c1"].Answer)
+	assert.Equal(t, "", refs["c2"].Subject, "shorter subject slice leaves the tail without one")
+	assert.Equal(t, "false", refs["c2"].Answer)
+
+	only := RerankSubjectsOnly(2, []string{"memory:x", "memory:y"})
+	assert.Equal(t, "memory:x", only["c0"].Subject)
+	assert.Equal(t, "", only["c0"].Answer, "acted rows carry no reference answer")
+	assert.Len(t, only, 2)
+}

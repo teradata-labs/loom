@@ -1076,7 +1076,13 @@ type DecisionShadowRecord struct {
 	Path DecisionPath `protobuf:"varint,17,opt,name=path,proto3,enum=loom.v1.DecisionPath" json:"path,omitempty"`
 	// Decider error text for ERROR-path rows (bounded), empty otherwise. An
 	// ERROR row without its reason cannot be triaged; this is that reason.
-	Error         string `protobuf:"bytes,18,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,18,opt,name=error,proto3" json:"error,omitempty"`
+	// Stable identifier of what the question was about, so a row can be
+	// graded against an external truth: for a recall candidate the source
+	// session of the memory ("session:<id>") or the memory id
+	// ("memory:<id>"), for a tool search candidate "tool:<name>". Never the
+	// content itself. Empty when the site has nothing to point at.
+	Subject       string `protobuf:"bytes,19,opt,name=subject,proto3" json:"subject,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1233,6 +1239,13 @@ func (x *DecisionShadowRecord) GetPath() DecisionPath {
 func (x *DecisionShadowRecord) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *DecisionShadowRecord) GetSubject() string {
+	if x != nil {
+		return x.Subject
 	}
 	return ""
 }
@@ -1444,7 +1457,7 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\aact_min\x18\x02 \x01(\x01R\x06actMin\x12-\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x19.loom.v1.DecisionBandModeR\x04mode\x12\x16\n" +
 	"\x06shadow\x18\x04 \x01(\bR\x06shadow\x12<\n" +
-	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\"\x8e\x06\n" +
+	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\"\xa8\x06\n" +
 	"\x14DecisionShadowRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\vrecorded_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -1468,7 +1481,8 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x05model\x18\x0f \x01(\tR\x05model\x12\x1a\n" +
 	"\bprovider\x18\x10 \x01(\tR\bprovider\x12)\n" +
 	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x12\x14\n" +
-	"\x05error\x18\x12 \x01(\tR\x05error\x1aI\n" +
+	"\x05error\x18\x12 \x01(\tR\x05error\x12\x18\n" +
+	"\asubject\x18\x13 \x01(\tR\asubject\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xf5\x02\n" +

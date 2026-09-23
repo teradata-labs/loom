@@ -44,6 +44,11 @@ type Reference struct {
 	Answer string
 	// Source names the mechanism ("llm_rerank", "fabric.InferErrorType").
 	Source string
+	// Subject identifies what the question was about (see
+	// DecisionShadowRecord.subject) so the row can be graded against an
+	// external truth later. Optional; a Reference may carry only a Subject
+	// when the site acted and has no reference answer.
+	Subject string
 }
 
 // ShadowQuery selects shadow rows for a report.
@@ -218,6 +223,7 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			Provider:               provider,
 			Path:                   out.Path,
 			Error:                  errorText(out.Err),
+			Subject:                ref.Subject,
 		})
 	}
 	return records

@@ -42,3 +42,14 @@ func TestBuildShadowRecordsCarriesDeciderError(t *testing.T) {
 	require.Len(t, ok, 1)
 	assert.Equal(t, "", ok[0].Error, "no error, empty field")
 }
+
+func TestBuildShadowRecordsCarriesSubject(t *testing.T) {
+	t.Parallel()
+	req, err := NewRequest("s", map[string]any{"x": 1}, map[string]*loomv1.DecisionQuestion{"q": Noul("Is it so?")})
+	require.NoError(t, err)
+	rows := BuildShadowRecords(req, Outcome{Path: loomv1.DecisionPath_DECISION_PATH_DECIDER}, "jev", "sess",
+		map[string]Reference{"q": {Subject: "session:abc"}})
+	require.Len(t, rows, 1)
+	assert.Equal(t, "session:abc", rows[0].Subject)
+	assert.Equal(t, "", rows[0].ReferenceAnswer, "a subject-only reference is not a reference answer")
+}
