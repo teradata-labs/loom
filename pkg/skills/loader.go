@@ -45,7 +45,7 @@ var validDomains = map[string]bool{
 
 // validModes lists allowed activation mode values.
 var validModes = map[string]bool{
-	"":       true, // defaults to MANUAL
+	"":       true, // defaults to HYBRID (see yamlToSkill)
 	"MANUAL": true,
 	"AUTO":   true,
 	"HYBRID": true,
@@ -254,10 +254,19 @@ func validateSkillYAML(sy *SkillYAML) error {
 
 // yamlToSkill converts a SkillYAML to a Skill Go struct.
 func yamlToSkill(sy *SkillYAML) *Skill {
-	// Normalize mode: empty defaults to MANUAL
+	// Normalize mode: an author who declares no mode gets HYBRID — the model may
+	// pull the skill, and a slash command invokes it.
+	//
+	// The default used to be MANUAL, on the reasoning that withholding is the
+	// safer failure. That held only while the mode was inert: nothing read it,
+	// so every skill behaved as HYBRID regardless and no author ever chose the
+	// default deliberately. Now that MANUAL withholds a skill from the model,
+	// defaulting to it would silently retire every skill that never declared a
+	// mode — which is nearly all of them. MANUAL is therefore something an
+	// author opts into, and its meaning is a decision rather than an omission.
 	mode := SkillActivationMode(strings.ToUpper(sy.Trigger.Mode))
 	if mode == "" {
-		mode = ActivationManual
+		mode = ActivationHybrid
 	}
 
 	// Normalize min_confidence: default to 0.7
