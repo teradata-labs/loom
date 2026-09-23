@@ -129,7 +129,9 @@ func (a *Agent) initDecisionRouter() {
 			zap.L().Warn("decision layer: provider \"jev\" configured but unusable; layer disabled", zap.Error(err))
 			return
 		}
-		client, err := jev.New(jcfg)
+		// Shared per process: agents with the same decider settings draw on
+		// one client and one rate budget (jev.Shared).
+		client, err := jev.Shared(jcfg)
 		if err != nil {
 			zap.L().Warn("decision layer: jev client; layer disabled", zap.Error(err))
 			return
