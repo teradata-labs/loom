@@ -56,7 +56,7 @@ func CompareWithGoldenFile(goldenFilePath string, actualOutput string, threshold
 // UpdateGoldenFile updates a golden file with new content
 func UpdateGoldenFile(goldenFilePath string, content string) error {
 	// Create directory if it doesn't exist
-	dir := strings.TrimSuffix(goldenFilePath, "/"+strings.Split(goldenFilePath, "/")[len(strings.Split(goldenFilePath, "/"))-1])
+	dir := filepath.Dir(goldenFilePath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("failed to create golden file directory: %w", err)
 	}
