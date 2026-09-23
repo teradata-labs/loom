@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -115,7 +116,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			zap.Int32("round", roundNum),
 			zap.Int32("total_rounds", config.Rounds))
 
-		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory)
+		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator)
 
 		// End round span
 		if roundSpan != nil {
@@ -238,7 +239,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 }
 
 // executeRound runs a single round of debate where all agents present positions.
-func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string) (*loomv1.DebateRound, error) {
+func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent) (*loomv1.DebateRound, error) {
 	round := &loomv1.DebateRound{
 		RoundNumber:      roundNum,
 		Positions:        make([]*loomv1.AgentPosition, 0),
@@ -274,10 +275,74 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Synthesize round
 	round.Synthesis = d.synthesizeRound(round)
 
-	// Check for consensus (simple heuristic: all agents agree)
-	round.ConsensusReached = d.checkConsensus(round)
+	// Check for consensus: the heuristic decides unless the moderator's
+	// decision layer has a live band for the site.
+	round.ConsensusReached = d.decideConsensus(ctx, workflowID, roundNum, config.Topic, round, moderator)
 
 	return round, nil
+}
+
+// decideConsensus resolves a round's consensus flag (site debate.consensus).
+// The internal moderator's decision layer is borrowed: with a live band the
+// decider reads the positions and its verdict is used when the band is
+// cleared; otherwise the confidence-mean heuristic decides and the decider's
+// answer is recorded against it. Under a TIGHTEN_ONLY band the decider may
+// only withhold consensus (keep the debate going), never declare it.
+func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID string, roundNum int32, topic string, round *loomv1.DebateRound, moderator *agent.Agent) bool {
+	heuristic := d.checkConsensus(round)
+	if moderator == nil || moderator.DecisionRouter() == nil || len(round.Positions) < 2 {
+		return heuristic
+	}
+	sessionID := fmt.Sprintf("%s-round%d-consensus", workflowID, roundNum)
+	req, err := sites.ConsensusRequest(topic, consensusPositions(round.Positions))
+	if err != nil {
+		d.logger.Debug("decision: consensus request", zap.Error(err))
+		return heuristic
+	}
+	refs := sites.ConsensusReference(heuristic)
+
+	band := moderator.DecisionRouter().Band(sites.SiteDebateConsensus)
+	if band.Shadow {
+		moderator.RunDecisionShadow(ctx, sessionID, req, refs)
+		return heuristic
+	}
+
+	out := moderator.LiveDecide(ctx, sessionID, req)
+	if out.Act() {
+		if reached, ok := sites.ConsensusVerdict(out.Response); ok {
+			tightenBlocked := reached && band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+			if !tightenBlocked {
+				d.logger.Info("Consensus judged by decision layer",
+					zap.Int32("round", roundNum),
+					zap.Bool("consensus", reached),
+					zap.Bool("heuristic", heuristic),
+					zap.Float64("confidence", out.Confidence),
+					zap.Duration("latency", out.Latency))
+				moderator.RecordDecisionAsync(ctx, sessionID, req, out, nil)
+				return reached
+			}
+			out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
+	}
+	moderator.RecordDecisionAsync(ctx, sessionID, req, out, refs)
+	return heuristic
+}
+
+// consensusPositions renders a round's positions for the decider.
+func consensusPositions(positions []*loomv1.AgentPosition) []sites.Position {
+	out := make([]sites.Position, 0, len(positions))
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		out = append(out, sites.Position{
+			AgentID:    p.AgentId,
+			Position:   p.Position,
+			Arguments:  p.Arguments,
+			Confidence: float64(p.Confidence),
+		})
+	}
+	return out
 }
 
 // getInternalModerator retrieves or uses first debating agent as internal moderator.
