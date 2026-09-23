@@ -83,7 +83,8 @@ func TestFailureKindReference(t *testing.T) {
 		{name: "rate limited", code: "429", text: "Too Many Requests", wantKind: KindServerSaturated, wantRetry: "false"},
 		// Classes added to InferErrorType after the first shadow run.
 		{name: "numeric overflow", text: `MCP_CALL_FAILED: tool error: {"code":"db_error","message":"[Error 2616] Numeric overflow occurred during computation."}`, wantKind: KindBadInput, wantRetry: "false"},
-		{name: "fk constraint", text: "STORE_ERROR: link entity user: FOREIGN KEY constraint failed", wantKind: KindBadInput, wantRetry: "false"},
+		{name: "fk constraint: referenced entity missing", text: "STORE_ERROR: link entity user: FOREIGN KEY constraint failed", wantKind: KindNotFound, wantRetry: "false"},
+		{name: "unique constraint", text: "UNIQUE constraint failed: entities.name", wantKind: KindBadInput, wantRetry: "false"},
 		{name: "invalid_input builtin", text: "invalid_input: Data type 'text' requires specific query method", wantKind: KindBadInput, wantRetry: "false"},
 		{name: "invalid params", code: "INVALID_PARAMS", text: "config parameter is required for create_agent action", wantKind: KindBadInput, wantRetry: "false"},
 		{name: "no rows", text: "STORE_ERROR: get old memory: sql: no rows in result set", wantKind: KindNotFound, wantRetry: "false"},
