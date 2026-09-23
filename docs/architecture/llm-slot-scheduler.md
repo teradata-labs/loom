@@ -140,7 +140,10 @@ Within a class: weighted fair queuing per tenant/agent, FIFO within a weight.
 one class, so `NEW` cannot be starved forever by a hot fleet. One outstanding
 slot per conversation (the conversation loop is sequential anyway).
 
-Grant lifetime: a slot covers one LLM call *including its throttle retries*.
+Grant lifetime: a slot covers one LLM call *including its rate-limiter
+retries* — throttling (429) and transient server failures (500/502/503/504/529)
+share one `max_retries` budget and one backoff, so a grant is held for at most
+`max_retries + 1` attempts with waits capped at 5 minutes each.
 The grant carries a token reservation (§3.4); the reservation is trued-up from
 the response's actual usage when it completes.
 

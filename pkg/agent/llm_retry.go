@@ -129,6 +129,14 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return nil, err
 		}
 
+		// The rate limiter already spent its whole MaxRetries budget on this
+		// error (throttling or a transient 5xx, with backoff and Retry-After
+		// honoured). Re-running that budget here would only multiply the wait —
+		// one retry budget, in one place.
+		if llm.IsRetriesExhausted(err) {
+			return nil, err
+		}
+
 		lastErr = err
 
 		// Don't retry on context cancellation or deadline exceeded

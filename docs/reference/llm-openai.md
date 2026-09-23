@@ -1110,7 +1110,13 @@ client := openai.NewClient(openai.Config{
 - Requests are queued and admitted at the configured request rate
   (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
 - 429 responses are retried inside the limiter with jittered exponential
-  backoff, honoring the server's `Retry-After`
+  backoff, honoring the server's `Retry-After` (capped at 5 minutes)
+- 500, 502, 503, 504 and 529 responses whose status is known before any
+  content streams are retried under the same budget and backoff as a 429;
+  other 4xx/5xx are not retried, and retried 5xx are counted apart from
+  throttling (`RateLimiterMetrics.TransientRequests`) and do not feed the
+  scheduler's throttle signal. Once the budget is spent the error surfaces as
+  `llm.RetriesExhaustedError`; the agent loop does not retry it again
 - `TokensPerMinute` is **observational only today**: token consumption is
   tracked and reported in rate-limiter metrics, but it is never enforced —
   size `RequestsPerSecond` against your TPM quota instead

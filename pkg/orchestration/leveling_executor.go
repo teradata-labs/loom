@@ -15,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // levelingJudgeReasonSpanChars caps how much of a judge's rejection reason is
@@ -652,7 +653,7 @@ func effectiveOutputPolicy(outputPolicy *loomv1.OutputPolicy, tierPolicy TierPol
 	if !ok {
 		return outputPolicy
 	}
-	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: int32(tierPolicy.RetryBudget)}
+	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: types.SafeInt32(tierPolicy.RetryBudget)}
 	return cloned
 }
 
