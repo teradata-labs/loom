@@ -708,7 +708,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:                   config.Name, // Preserve name from config
+			Name: config.Name, // Preserve name from config
+			// Carried explicitly as well as by WithConfig's merge: this
+			// Config replaces the one WithSystemPrompt wrote into, and every
+			// registry-built agent lost its system prompt here (found when
+			// workflow agents ignored their configured stance).
+			Description:            config.Description,
+			SystemPrompt:           config.SystemPrompt,
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
