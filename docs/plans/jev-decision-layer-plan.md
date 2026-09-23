@@ -154,6 +154,10 @@ Each site follows the same four steps: **shadow → report → band → live**, 
 
 Acceptance per step: shadow agreement ≥ the site's threshold (set from the report, default ≥0.9 vs reference), ECE reported, band configured, `-race` clean, docs status flipped to ✅ for that site.
 
+- [x] Decision judge (`JUDGE_TYPE_DECISION`, `JudgeConfig.decision`) — 2026-09-23 on `feat/decision-layer-phase3`: one Noul per criterion + a quality Score in one request at `judge.<id>`; verdict from criterion probabilities; `judges.NewJudgeFromConfig` dispatches by type at all three judge call sites (judge service, A/B scoring, `looms eval`). Tests against the mock decider. See `docs/architecture/decision-layer.md` "Decision judge".
+- [ ] Direct use: `decide` builtin tool and/or `loom decision ask` CLI (typed question from a conversation or a shell).
+- [ ] LongMemEval A/B for 3.1 (A = LLM rerank + Jev shadow, B = Jev live on `recall.rerank`, N=40 multi-session + knowledge-update, gpt-4o server, per-decision grading against evidence sessions via `grade_recall.py`). Relaunched 2026-09-23 19:55Z after finding that isolate-mode temp agents were named by question id alone, so a rerun recalled memories left by earlier runs (`DeleteAgent` does not purge graph memory); fixed with a per-run nonce in the agent name and session provenance on `graph_memory`-tool writes.
+
 ### Phase 4 — Tier 2 gaps (guard-railed)
 
 | Step | Site | Semantics | Guard |
