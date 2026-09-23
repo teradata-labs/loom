@@ -172,11 +172,17 @@ Jev's calibration number needs a caveat. Its ECE of 0.204 is mostly the retry No
 
 | | gpt-4o (adapter) | Jev (gateway) |
 |---|---|---|
-| Agreement, refined reference | **94.5%** (1,134) | *filled in from the paced run below* |
+| Agreement, original reference | **99.3%** (1,192) | 93.6% (1,123) |
+| Agreement, refined reference | 94.5% (1,134) | **98.2%** (1,178) |
 | Composition (reference) | 428 not_a_failure · 66 saturated · 62 not_found · 36 bad_input · 8 other | same rows |
-| gpt-4o disagreements | 55 FK rows → bad_input; 5 other → bad_input; 3 other → not_found; 1 retry | |
+| `not_a_failure` / `server_saturated` / `not_found` / retry | 427/428 · 66/66 · 7/62 · 599/600 | **428/428 · 66/66 · 62/62 · 600/600** |
+| Disagreements, refined | 55 FK rows → bad_input; 5 other → bad_input; 3 other → not_found; 1 success → bad_input; 1 retry | 14 overflow rows → other (~0.5); 5 other → bad_input; 3 other → not_found |
+| Expected calibration error, refined | 0.029 | 0.393 (Noul under-confidence, see §2.4.1) |
+| Tokens / cost | 0.79M / **$3.14** | 0.83M / **$0.00** (list $0.035) |
 
-*Jev's mixed slice was still running at 28 rpm when this section was written; its re-scored report is appended below.*
+Same shape as the failures slice: the two deciders agree with each other and the reference on everything the reference has a rule for, and part company only on the foreign-key rows (55 here). Jev's residual misses are the Teradata overflow errors it declines to classify, answered `other` at about 0.5 confidence, which is what a calibrated hedge looks like.
+
+**Combined, 1,200 seeded executions, refined reference:** Jev 96.1% (2,306 / 2,400 rows), gpt-4o 87.2% (2,093 / 2,400). Under the original reference: gpt-4o 98.1%, Jev 85.4%. Same rows, same answers, different label on one error class.
 
 ### 2.4.3 What Phase 2 changes in the plan
 
