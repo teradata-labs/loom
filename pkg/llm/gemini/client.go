@@ -233,7 +233,7 @@ func (c *Client) sendOnce(apiURL string, body []byte) func(context.Context) (int
 		// 500/502/503/504/529: retried by the rate limiter under the throttle
 		// budget; status known before any content streams.
 		if llm.IsTransientStatus(resp.StatusCode) {
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 			_ = resp.Body.Close()
 			return nil, llm.NewTransientError(
 				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),

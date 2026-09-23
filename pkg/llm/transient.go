@@ -21,6 +21,11 @@ import (
 	"time"
 )
 
+// MaxErrorBodyBytes bounds how much of a non-2xx response body a provider
+// client reads into an error message. Gateway 502/503 pages can be large and
+// the message is logged on every retry.
+const MaxErrorBodyBytes = 16 << 10
+
 // TransientError is a server-side failure the provider itself reports as
 // temporary — HTTP 500, 502, 503, 504 or 529 (overloaded) — on a response
 // whose status was known before any content streamed, so the request can be
@@ -72,4 +77,31 @@ func IsTransientStatus(status int) bool {
 func IsTransient(err error) bool {
 	var te *TransientError
 	return errors.As(err, &te)
+}
+
+// RetriesExhaustedError is what the rate limiter returns when a retryable
+// error — throttling or a transient server failure — survived every attempt
+// in its MaxRetries budget. Callers that run their own retry loop around the
+// provider (the agent's non-streaming path does) must treat it as final: the
+// budget for this class of error lives in the limiter, and re-running it
+// outside would multiply the wait without changing the outcome.
+type RetriesExhaustedError struct {
+	Attempts int    // total attempts made, MaxRetries+1
+	Cause    string // "throttling" or "a transient server error"
+	Err      error  // the last provider error
+}
+
+// Error keeps the historical wording so log greps and tests keep matching.
+func (e *RetriesExhaustedError) Error() string {
+	return fmt.Sprintf("LLM request failed after %d retries due to %s: %v", e.Attempts, e.Cause, e.Err)
+}
+
+// Unwrap exposes the last provider error, so IsThrottle / IsTransient and
+// errors.Is on the original cause keep working through the wrap.
+func (e *RetriesExhaustedError) Unwrap() error { return e.Err }
+
+// IsRetriesExhausted reports whether err carries a *RetriesExhaustedError.
+func IsRetriesExhausted(err error) bool {
+	var re *RetriesExhaustedError
+	return errors.As(err, &re)
 }

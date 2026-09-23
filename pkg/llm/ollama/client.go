@@ -503,6 +503,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// 500/502/503/504 (a model loading or being evicted on a shared
+		// server): retried by the rate limiter under the throttle budget, as
+		// for every other HTTP provider; status known before any content.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
