@@ -16,6 +16,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +25,19 @@ type ConditionalExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ConditionalPattern
 	workflowID   string
+
+	// conditionCost accumulates the condition agent's calls (first
+	// evaluation and retries), which are not branch results and were
+	// previously missing from the reported workflow cost.
+	conditionCost *loomv1.WorkflowCost
+}
+
+// addConditionUsage records one condition-agent call.
+func (e *ConditionalExecutor) addConditionUsage(u types.Usage) {
+	if e.conditionCost == nil {
+		e.conditionCost = &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)}
+	}
+	addUsageToCost(e.conditionCost, e.pattern.ConditionAgentId, u)
 }
 
 // NewConditionalExecutor creates a new conditional executor.
@@ -147,7 +161,9 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 			"condition_agent":  e.pattern.ConditionAgentId,
 		},
 		DurationMs: duration.Milliseconds(),
-		Cost:       branchResult.Cost, // Inherit cost from branch execution
+		// Branch cost plus the condition agent's own calls; before this the
+		// classifier turn was missing from every conditional's reported cost.
+		Cost: mergeCost(branchResult.Cost, e.conditionCost),
 	}, nil
 }
 
@@ -294,6 +310,7 @@ func (e *ConditionalExecutor) evaluateConditionWithSpan(ctx context.Context, con
 	if err != nil {
 		return "", "", fmt.Errorf("condition agent chat failed: %w", err)
 	}
+	e.addConditionUsage(response.Usage)
 
 	// Get model information
 	model := conditionAgent.GetLLMModel()
@@ -411,6 +428,7 @@ func (e *ConditionalExecutor) retryConditionEvaluation(
 				zap.Error(err))
 			continue
 		}
+		e.addConditionUsage(response.Usage)
 
 		result := strings.TrimSpace(strings.ToLower(response.Content))
 

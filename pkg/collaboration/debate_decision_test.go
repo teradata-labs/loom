@@ -36,7 +36,33 @@ import (
 type positionLLM struct{ position string }
 
 func (l positionLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
-	return &llmtypes.LLMResponse{Content: fmt.Sprintf("POSITION: %s\n\nCONFIDENCE: 90", l.position), StopReason: "end_turn"}, nil
+	return &llmtypes.LLMResponse{
+		Content:    fmt.Sprintf("POSITION: %s\n\nCONFIDENCE: 90", l.position),
+		StopReason: "end_turn",
+		Usage:      llmtypes.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30, CostUSD: 0.001},
+	}, nil
+}
+
+// TestDebateCostAccounting: a debate's reported cost covers every call it
+// made. Before this the result carried an empty cost (zero calls, $0).
+func TestDebateCostAccounting(t *testing.T) {
+	t.Parallel()
+	a1 := agent.NewAgent(nil, positionLLM{"x"}, agent.WithName("a1"))
+	a2 := agent.NewAgent(nil, positionLLM{"y"}, agent.WithName("a2"))
+	d := NewDebateOrchestrator(mapProvider{agents: map[string]*agent.Agent{"a1": a1, "a2": a2}})
+	res, err := d.Execute(context.Background(), &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a1", "a2"}, Rounds: 1})
+	require.NoError(t, err)
+	require.NotNil(t, res.Cost)
+	// Two positions; the one-word positions are short enough that the
+	// moderator summaries are done without a call.
+	assert.Equal(t, int32(2), res.Cost.LlmCalls)
+	assert.InDelta(t, 0.002, res.Cost.TotalCostUsd, 1e-9)
+	assert.Equal(t, int32(60), res.Cost.TotalTokens)
+	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["a1"], 1e-9)
+	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["a2"], 1e-9)
+	require.Len(t, res.AgentResults, 2)
+	require.NotNil(t, res.AgentResults[0].Cost)
+	assert.InDelta(t, 0.001, res.AgentResults[0].Cost.CostUsd, 1e-9)
 }
 func (positionLLM) Name() string  { return "mock" }
 func (positionLLM) Model() string { return "mock-model" }

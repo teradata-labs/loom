@@ -122,6 +122,8 @@ func TestConditionalDecision_LiveBandSkipsConditionAgent(t *testing.T) {
 	assert.Equal(t, 0, classifierLLM.calls(), "the condition agent's turn was skipped")
 	assert.Equal(t, 1, worker.calls(), "the branch still ran")
 	assert.Equal(t, 1, dec.CallCount())
+	require.NotNil(t, res.Cost)
+	assert.Equal(t, int32(1), res.Cost.LlmCalls, "only the branch worker was called")
 
 	classifier.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
@@ -182,6 +184,9 @@ func TestConditionalDecision_BelowBandFallsBackToAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "feature", res.Metadata["selected_branch"], "the agent decided")
 	assert.Equal(t, 1, classifierLLM.calls())
+	require.NotNil(t, res.Cost)
+	assert.Equal(t, int32(2), res.Cost.LlmCalls, "classifier turn + branch worker; the classifier used to be missing")
+	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["classifier"], 1e-9)
 
 	classifier.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})

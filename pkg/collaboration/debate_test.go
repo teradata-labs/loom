@@ -108,7 +108,7 @@ func TestDebateOrchestrator_FormatRoundHistory(t *testing.T) {
 	}
 
 	// Test without moderator (should use fallback)
-	history := orchestrator.formatRoundHistory(ctx, "test-workflow", round, nil)
+	history := orchestrator.formatRoundHistory(ctx, "test-workflow", round, nil, nil)
 
 	assert.Contains(t, history, "agent1")
 	assert.Contains(t, history, "Use indexing")
@@ -254,7 +254,7 @@ func TestDebateOrchestrator_SummarizePosition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test without moderator (should use fallback truncation)
-			result := orchestrator.summarizePosition(ctx, "test-workflow", "agent1", tt.position, tt.arguments, nil)
+			result := orchestrator.summarizePosition(ctx, "test-workflow", "agent1", tt.position, tt.arguments, nil, nil)
 
 			for _, content := range tt.checkContent {
 				assert.Contains(t, result, content)
