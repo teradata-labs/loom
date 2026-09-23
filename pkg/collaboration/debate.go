@@ -18,8 +18,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 )
 
 // DebateOrchestrator manages multi-agent debates with round-by-round tracking.
@@ -377,33 +375,14 @@ func (d *DebateOrchestrator) getInternalModerator(ctx context.Context, config *l
 	return nil, fmt.Errorf("no agents available for moderator role")
 }
 
-// generatePerspectiveGuidance creates agent-specific guidance to encourage diverse viewpoints.
-func (d *DebateOrchestrator) generatePerspectiveGuidance(agentID string) string {
-	// Extract perspective from agent ID (e.g., "td-expert-performance" -> "performance")
-	parts := strings.Split(agentID, "-")
-	perspective := parts[len(parts)-1]
-
-	// Define perspective-specific guidance
-	perspectives := map[string]string{
-		"performance":  "Focus on performance optimization, speed, throughput, and efficiency metrics. Consider scalability and resource utilization. Prioritize quantifiable performance gains.",
-		"analytics":    "Focus on data analysis, statistical validity, insights extraction, and analytical rigor. Consider data quality, sampling strategies, and analytical methodologies.",
-		"quality":      "Focus on correctness, reliability, testing strategies, and quality assurance. Consider edge cases, error handling, validation approaches, and test coverage.",
-		"architecture": "Focus on system design, modularity, maintainability, and architectural patterns. Consider long-term sustainability, technical debt, and design principles.",
-		"transcend":    "Focus on integration capabilities, cross-system compatibility, and interoperability. Consider API design, data exchange formats, and system boundaries.",
-		"security":     "Focus on security implications, threat modeling, access control, and vulnerability assessment. Consider attack surfaces and defense in depth.",
-		"cost":         "Focus on resource costs, efficiency, budget constraints, and cost-benefit analysis. Consider TCO (total cost of ownership) and ROI.",
-		"user":         "Focus on user experience, usability, accessibility, and end-user impact. Consider user workflows and adoption barriers.",
-		"ops":          "Focus on operational concerns, deployment, monitoring, and production readiness. Consider observability, debugging, and incident response.",
-	}
-
-	// Return specific guidance or general guidance
-	if guidance, ok := perspectives[perspective]; ok {
-		return fmt.Sprintf("Your perspective: %s\n%s", cases.Title(language.English).String(perspective), guidance)
-	}
-
-	// Default: encourage unique perspective based on agent name
-	return fmt.Sprintf("Your perspective: %s\nApproach this problem from your unique angle, considering aspects that other agents might overlook. Avoid generic responses.", agentID)
-}
+// standpointGuidance is the one instruction the debate adds about how to
+// argue. The standpoint itself comes from the agent's own configuration; the
+// orchestrator does not assign perspectives. An earlier version guessed a
+// perspective from the agent id's suffix and told unknown agents to "approach
+// this from your unique angle, considering aspects other agents might
+// overlook", and under that framing two agents configured to take opposite
+// sides argued the same side in 11 of 15 debates.
+const standpointGuidance = `Take the standpoint set out in your own instructions and hold it. Where your instructions assign you a side, argue that side, even if you would personally choose otherwise. Present the strongest honest case for it. Other participants may argue the opposite; do not move toward their conclusions to reduce disagreement.`
 
 // getAgentPosition gets an agent's position on the debate topic.
 func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, agentID, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (*loomv1.AgentPosition, error) {
@@ -435,15 +414,13 @@ func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, a
 		agentSpan.SetAttribute("agent.provider", provider)
 	}
 
-	// Add agent-specific perspective to encourage diversity
-	perspectiveGuidance := d.generatePerspectiveGuidance(agentID)
-
-	// Construct debate prompt
+	// Construct debate prompt. The standpoint comes from the agent's own
+	// instructions; the orchestrator only asks the agent to hold it.
 	prompt := fmt.Sprintf(`%s
 
 %s
 
-Please provide your position on this topic. Structure your response as:
+State your position on this topic. Structure your response as:
 
 POSITION: [Your clear stance/conclusion]
 
@@ -454,7 +431,7 @@ ARGUMENTS:
 
 CONFIDENCE: [0-100]
 
-Be specific, evidence-based, and consider alternative perspectives.`, contextPrompt, perspectiveGuidance)
+Be specific and evidence-based. Anticipate the strongest objection to your position and answer it; do not soften or abandon your position to accommodate it.`, contextPrompt, standpointGuidance)
 
 	// Execute agent with session ID for database persistence
 	resp, err := a.Chat(ctx, sessionID, prompt)
@@ -548,7 +525,7 @@ func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, 
 Other agents have presented these positions:
 %s
 
-Provide brief responses to the key points raised by other agents. What do you agree with? What do you challenge? What new insights emerge?`,
+Respond briefly to the key points the other agents raised: which do you challenge, and why; which do you concede. Conceding a point is not adopting the other side's position. Hold the standpoint set out in your instructions unless those instructions tell you to change your mind on the evidence.`,
 		myPosition.Position,
 		strings.Join(otherPositions, "\n\n---\n\n"))
 
