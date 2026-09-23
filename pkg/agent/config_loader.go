@@ -133,9 +133,11 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 // YAML files.
 //
 //	decision:
-//	  provider: llm          # off | llm | mock | jev (jev: plan Phase 2)
+//	  provider: llm          # off | llm | mock | jev
 //	  llm_role: classifier   # which role LLM the "llm" provider adapts
 //	  model: jev-1.13.0      # pinned; aliases rejected unless allow_alias
+//	                         # (jev via the Vercel AI Gateway: typesafe-ai/jev + allow_alias: true;
+//	                         #  credentials from TYPESAFE_API_KEY / AI_GATEWAY_API_KEY, never YAML)
 //	  timeout_ms: 2000
 //	  max_per_session: 200
 //	  max_cost_usd_per_session: 0.05
@@ -170,7 +172,7 @@ var decisionProviders = map[string]bool{"off": true, "llm": true, "mock": true, 
 // decisionAliases are floating model names a pinned production config
 // rejects unless allow_alias is set. The response carries the resolved
 // version either way; the point is that a config names what it runs.
-var decisionAliases = map[string]bool{"jev-latest": true, "jev-preview": true, "latest": true}
+var decisionAliases = map[string]bool{"jev-latest": true, "jev-preview": true, "latest": true, "typesafe-ai/jev": true}
 
 // convertDecisionConfigYAMLToProto validates and converts the decision block.
 // A nil block converts to nil (layer off).

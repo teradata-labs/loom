@@ -87,6 +87,8 @@ func TestLoadConfig_DecisionValidation(t *testing.T) {
 		{name: "unknown provider", block: "  decision:\n    provider: gemini\n", wantErr: "decision.provider"},
 		{name: "alias rejected", block: "  decision:\n    provider: jev\n    model: jev-latest\n", wantErr: "floating alias"},
 		{name: "alias allowed", block: "  decision:\n    provider: jev\n    model: jev-latest\n    allow_alias: true\n"},
+		{name: "gateway model is an alias", block: "  decision:\n    provider: jev\n    model: typesafe-ai/jev\n", wantErr: "floating alias"},
+		{name: "gateway model allowed explicitly", block: "  decision:\n    provider: jev\n    model: typesafe-ai/jev\n    allow_alias: true\n"},
 		{name: "negative timeout", block: "  decision:\n    provider: llm\n    timeout_ms: -1\n", wantErr: "timeout_ms"},
 		{name: "negative budget", block: "  decision:\n    provider: llm\n    max_per_session: -5\n", wantErr: "max_per_session"},
 		{name: "negative cost", block: "  decision:\n    provider: llm\n    max_cost_usd_per_session: -0.1\n", wantErr: "max_cost_usd_per_session"},

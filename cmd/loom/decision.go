@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	decisionllm "github.com/teradata-labs/loom/pkg/decision/llm"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/report"
@@ -70,6 +72,7 @@ var (
 	decisionErrors      bool
 	decisionConcurrency int
 	decisionSample      string
+	decisionBaseURL     string
 )
 
 var decisionReplayCmd = &cobra.Command{
@@ -88,7 +91,8 @@ func init() {
 	decisionCmd.PersistentFlags().StringVar(&decisionDBPath, "db", "", "Path to loom.db (default: $LOOM_DATA_DIR/loom.db)")
 
 	decisionReplayCmd.Flags().IntVar(&decisionLimit, "limit", 1000, "Maximum tool executions to replay, newest first")
-	decisionReplayCmd.Flags().StringVar(&decisionDecider, "decider", "llm", "Decider to shadow: llm | mock")
+	decisionReplayCmd.Flags().StringVar(&decisionDecider, "decider", "llm", "Decider to shadow: jev | llm | mock (jev reads TYPESAFE_API_KEY or AI_GATEWAY_API_KEY)")
+	decisionReplayCmd.Flags().StringVar(&decisionBaseURL, "base-url", "", "Endpoint base URL for --decider jev (default: TypeSafe direct, or the Vercel AI Gateway when only AI_GATEWAY_API_KEY is set)")
 	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm: anthropic | bedrock | azure-openai | openai | gemini | mistral | ollama | litellm (default: $LOOM_LLM_PROVIDER or anthropic; credentials from the usual env vars)")
 	decisionReplayCmd.Flags().StringVar(&decisionModel, "model", "", "LLM model for --decider llm (default: provider default)")
 	decisionReplayCmd.Flags().BoolVar(&decisionErrors, "errors-only", false, "Replay only executions that recorded an error")
@@ -195,11 +199,6 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 	// Workers evaluate; the main goroutine is the single writer to the store
 	// and the only one printing progress. Results arrive in completion order,
 	// which is fine: rows are independent and the report does not care.
-	type replayResult struct {
-		records []*loomv1.DecisionShadowRecord
-		skipped bool
-		errored bool
-	}
 	jobs := make(chan toolExecutionRow)
 	results := make(chan replayResult)
 	var wg sync.WaitGroup
@@ -222,6 +221,10 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 	}()
 
 	var written, errored, skipped, done int
+	// Distinct decider errors, so a failing run says why instead of only how
+	// often. Bounded: a broken key produces one message thousands of times.
+	const maxDistinctErrors = 3
+	distinctErrors := map[string]int{}
 	start := time.Now()
 	for res := range results {
 		done++
@@ -233,6 +236,9 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 		default:
 			if res.errored {
 				errored++
+				if _, seen := distinctErrors[res.errMsg]; seen || len(distinctErrors) < maxDistinctErrors {
+					distinctErrors[res.errMsg]++
+				}
 			}
 			if err := recorder.Record(ctx, res.records); err != nil {
 				return fmt.Errorf("record shadow rows: %w", err)
@@ -246,21 +252,36 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 	}
 	emitf(cmd.OutOrStdout(), "done: %d executions, %d shadow rows written, %d decider errors, %d skipped, %d workers, %s\n",
 		len(rows), written, errored, skipped, workers, time.Since(start).Round(time.Millisecond))
+	if len(distinctErrors) > 0 {
+		msgs := make([]string, 0, len(distinctErrors))
+		for m := range distinctErrors {
+			msgs = append(msgs, m)
+		}
+		sort.Strings(msgs)
+		emit(cmd.OutOrStdout(), "decider errors (distinct, first seen):\n")
+		for _, m := range msgs {
+			emitf(cmd.OutOrStdout(), "  %dx %s\n", distinctErrors[m], m)
+		}
+	}
 	if !decisionDryRun {
 		emitf(cmd.OutOrStdout(), "next: loom decision report --site %s --db %s\n", sites.SiteFailureKind, path)
 	}
 	return nil
 }
 
+// replayResult is one execution's outcome from replayOne.
+type replayResult struct {
+	records []*loomv1.DecisionShadowRecord
+	skipped bool
+	errored bool
+	errMsg  string
+}
+
 // replayOne builds the failure-kind request and reference for one recorded
 // execution and, unless dry-running, asks the router. It never returns an
 // error: a decider failure becomes ERROR-path rows, a malformed row is
 // skipped.
-func replayOne(ctx context.Context, router *decision.Router, deciderName string, row toolExecutionRow, dryRun bool) (res struct {
-	records []*loomv1.DecisionShadowRecord
-	skipped bool
-	errored bool
-}) {
+func replayOne(ctx context.Context, router *decision.Router, deciderName string, row toolExecutionRow, dryRun bool) (res replayResult) {
 	input := map[string]any{}
 	if row.inputJSON.Valid && row.inputJSON.String != "" {
 		_ = json.Unmarshal([]byte(row.inputJSON.String), &input)
@@ -282,7 +303,10 @@ func replayOne(ctx context.Context, router *decision.Router, deciderName string,
 		return res
 	}
 	out := router.Decide(decision.WithSessionID(ctx, row.sessionID), req)
-	res.errored = out.Err != nil
+	if out.Err != nil {
+		res.errored = true
+		res.errMsg = out.Err.Error()
+	}
 	res.records = decision.BuildShadowRecords(req, out, deciderName, row.sessionID, refs)
 	return res
 }
@@ -337,6 +361,19 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 // built from the environment the way the agent CLI does.
 func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 	switch strings.ToLower(decisionDecider) {
+	case "jev":
+		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{BaseUrl: decisionBaseURL, Model: decisionModel})
+		if err != nil {
+			return nil, err
+		}
+		client, err := jev.New(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+	case "mock-error":
+		// A decider that always fails, for exercising the error summary.
+		return decisionmock.New().SetError(decision.ErrUnauthorized), nil
 	case "mock":
 		m := decisionmock.New().
 			AnswerChoice(sites.QFailureKind, map[string]float64{
@@ -380,7 +417,7 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 		}
 		return decisionllm.New(llmProvider), nil
 	default:
-		return nil, fmt.Errorf("--decider %q: must be llm or mock", decisionDecider)
+		return nil, fmt.Errorf("--decider %q: must be jev, llm or mock", decisionDecider)
 	}
 }
 

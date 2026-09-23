@@ -166,6 +166,18 @@ func TestDecisionReplayConcurrent(t *testing.T) {
 	assert.Contains(t, rep.String(), "| Rows | 8 |")
 }
 
+func TestDecisionReplayPrintsDistinctDeciderErrors(t *testing.T) {
+	resetDecisionFlags(t)
+	path := seedTelemetryDB(t)
+	decisionDBPath, decisionDecider, decisionLimit, decisionDryRun, decisionErrors = path, "mock-error", 100, false, false
+	var out bytes.Buffer
+	decisionReplayCmd.SetOut(&out)
+	require.NoError(t, runDecisionReplay(decisionReplayCmd, nil))
+	assert.Contains(t, out.String(), "4 decider errors")
+	assert.Contains(t, out.String(), "decider errors (distinct, first seen):")
+	assert.Contains(t, out.String(), "4x decision: unauthorized", "the same error is counted once with its multiplicity")
+}
+
 func TestDecisionReportEmptyAndMissingDB(t *testing.T) {
 	resetDecisionFlags(t)
 	path := seedTelemetryDB(t)

@@ -24,6 +24,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	decisionllm "github.com/teradata-labs/loom/pkg/decision/llm"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
@@ -121,10 +122,20 @@ func (a *Agent) initDecisionRouter() {
 	case DecisionProviderMock:
 		decider = decisionmock.New()
 	case DecisionProviderJev:
-		// Phase 2 of the plan: the Jev client is not implemented yet. Say so
-		// once, loudly, and stay disabled rather than pretend.
-		zap.L().Warn("decision layer: provider \"jev\" is not implemented yet (plan Phase 2); layer disabled")
-		return
+		// Credentials come from the environment only (TYPESAFE_API_KEY or a
+		// Vercel AI Gateway key), never from agent YAML.
+		jcfg, err := jev.FromDecisionConfig(cfg)
+		if err != nil {
+			zap.L().Warn("decision layer: provider \"jev\" configured but unusable; layer disabled", zap.Error(err))
+			return
+		}
+		client, err := jev.New(jcfg)
+		if err != nil {
+			zap.L().Warn("decision layer: jev client; layer disabled", zap.Error(err))
+			return
+		}
+		zap.L().Info("decision layer: jev client", zap.String("url", client.URL()), zap.String("model", client.Model()))
+		decider = client
 	default:
 		zap.L().Warn("decision layer: unknown provider; layer disabled", zap.String("provider", cfg.Provider))
 		return
