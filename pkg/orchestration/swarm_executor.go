@@ -374,8 +374,9 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 // buildCollaborativeVotingPrompt constructs a prompt with previous votes visible.
 func (e *SwarmExecutor) buildCollaborativeVotingPrompt(agentID string, voteNumber int, previousVotes []*loomv1.SwarmVote) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are participating in a collaborative swarm voting process (Vote #%d).\n\n", voteNumber))
+	sb.WriteString(fmt.Sprintf("Cast a vote (vote #%d) on the question below, with sight of the votes already cast.\n\n", voteNumber))
 	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
+	sb.WriteString(votingStandpoint)
 
 	// Include previous votes
 	if len(previousVotes) > 0 {
@@ -394,29 +395,37 @@ func (e *SwarmExecutor) buildCollaborativeVotingPrompt(agentID string, voteNumbe
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("Now provide your vote, considering the previous votes:\n\n")
+	sb.WriteString("Weigh the previous votes' reasoning, then reply in exactly this format:\n\n")
 	sb.WriteString("VOTE: <your choice>\n")
 	sb.WriteString("CONFIDENCE: <0.0-1.0>\n")
 	sb.WriteString("REASONING: <your reasoning>\n\n")
-	sb.WriteString("Your choice should be a single, clear answer to the question.\n")
-	sb.WriteString("Confidence should be a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
-	sb.WriteString("Provide detailed reasoning for your vote, taking into account the previous votes.\n")
+	sb.WriteString("The VOTE is a single, clear answer to the question, spelled as the question spells it.\n")
+	sb.WriteString("Confidence is a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
+	sb.WriteString("Give the reasoning behind your vote, including what in the previous votes you weighed.\n")
 
 	return sb.String()
 }
 
+// votingStandpoint is the one instruction every voting prompt carries about
+// how to vote. The standpoint comes from the agent's own instructions; the
+// swarm does not assign one. Without it, voters configured to take opposite
+// sides voted the same way in 34 of 40 swarms on the rig, because the prompt
+// read as "evaluate the question", which every voter did on the merits.
+const votingStandpoint = "Vote from the standpoint set out in your own instructions. Where those instructions assign you a side or a preference, vote for it and argue for it honestly, even if you would personally choose otherwise. Each voter answers independently; disagreeing with other voters is expected.\n\n"
+
 // buildVotingPrompt constructs the prompt for an agent to cast an independent vote.
 func (e *SwarmExecutor) buildVotingPrompt(agentID string, voteNumber int) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are participating in a swarm voting process (Vote #%d).\n\n", voteNumber))
+	sb.WriteString(fmt.Sprintf("Cast an independent vote (vote #%d) on the question below.\n\n", voteNumber))
 	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
-	sb.WriteString("Please evaluate this question and provide your vote in the following format:\n\n")
+	sb.WriteString(votingStandpoint)
+	sb.WriteString("Reply in exactly this format:\n\n")
 	sb.WriteString("VOTE: <your choice>\n")
 	sb.WriteString("CONFIDENCE: <0.0-1.0>\n")
 	sb.WriteString("REASONING: <your reasoning>\n\n")
-	sb.WriteString("Your choice should be a single, clear answer to the question.\n")
-	sb.WriteString("Confidence should be a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
-	sb.WriteString("Provide detailed reasoning for your vote.\n")
+	sb.WriteString("The VOTE is a single, clear answer to the question, spelled as the question spells it.\n")
+	sb.WriteString("Confidence is a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
+	sb.WriteString("Give the reasoning behind your vote.\n")
 
 	return sb.String()
 }
