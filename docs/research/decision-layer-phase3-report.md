@@ -93,3 +93,10 @@ Reading the outputs, not just the shadow rows, found things about Loom's workflo
 - **Does not support** any claim that Jev is right. Every figure here is agreement with what Loom does today, except where the outputs were read by hand (debates, conditionals).
 
 Nothing is switched on. Every site remains in shadow.
+
+## 7. LongMemEval A/B for `recall.rerank` (in flight)
+
+Cell design: A = today's LLM rerank with Jev in shadow (`longmemeval` agent), B = Jev live on `recall.rerank` (`longmemeval-jev`, band `act_min 0.5`, `per_question`, `replace`); multi-session and knowledge-update questions, N=40 each, isolate mode, gpt-4o server on the LongMemEval VM, one judge for both. Two readouts: end-to-end accuracy per cell (official metric) and, the primary one, per-decision grading: every recall shadow row carries `subject = session:<loom session>` for the memory it judged, `EntryResult.haystack_sessions` maps those to the dataset's evidence flags, and `grade_recall.py` reports precision/recall of "keep" for Jev and for the LLM rerank against the same truth.
+
+**Found before the numbers count.** The first launch of cell A recalled, for every question, memories that had no session provenance and predated the run. Cause: isolate-mode temp agents were named `lme-tmp-<question id>`, graph memory is scoped by agent name, and `DeleteAgent` does not purge graph memory, so a rerun of a question recalled everything earlier runs (the August 4×500 matrix included) had extracted for it. Every earlier isolate-mode run on this VM shared that flaw; it duplicates the retrieval pool rather than changing its content, so it does not by itself invalidate earlier accuracy figures, but it made per-decision grading impossible (no provenance) and it is not the experiment described. Fixed 2026-09-23: temp agent names carry a per-run nonce, and memories the agent writes through the `graph_memory` tool record their session too (`source: agent`, `source_id: <session>`). Cell A relaunched at 19:55Z on the rebuilt server and runner; the partial first attempt is kept as `out/A-multi-session.*.stale-scope`. Results follow when the four cells finish (~15 h).
+

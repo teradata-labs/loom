@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -131,6 +133,11 @@ type Runner struct {
 	client    loomv1.LoomServiceClient
 	conn      *grpc.ClientConn
 	baseAgent *loomv1.AgentConfig // cached config for isolation mode
+	// runNonce makes every temp agent name unique to this run. Graph memory
+	// is scoped by agent name and DeleteAgent does not purge it, so a name
+	// built from the question id alone would let a rerun of the same
+	// question recall memories ingested by earlier runs.
+	runNonce string
 }
 
 // NewRunner creates a new benchmark runner that connects to a Loom gRPC server.
@@ -156,10 +163,11 @@ func NewRunner(cfg RunConfig, logger *zap.Logger) (*Runner, error) {
 	logger.Info("connected to Loom server", zap.String("addr", cfg.ServerAddr))
 
 	r := &Runner{
-		config: cfg,
-		logger: logger,
-		client: client,
-		conn:   conn,
+		config:   cfg,
+		logger:   logger,
+		client:   client,
+		conn:     conn,
+		runNonce: newRunNonce(),
 	}
 
 	// In isolate mode, build a base agent config for creating temp agents.
@@ -408,13 +416,28 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 	return result
 }
 
+// newRunNonce returns 8 hex characters of randomness for tempAgentName.
+func newRunNonce() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to the clock; uniqueness across runs is what matters.
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// tempAgentName is the graph-memory scope of one entry in one run.
+func tempAgentName(runNonce, questionID string) string {
+	return fmt.Sprintf("lme-tmp-%s-%s", runNonce, questionID)
+}
+
 // createTempAgent creates an ephemeral agent cloned from the base config.
 // The agent gets its own graph memory store, ensuring full isolation.
 func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string, error) {
 	// Clone via proto marshal/unmarshal to avoid copying the embedded
 	// MessageState / sync.Mutex by value (govet copylocks).
 	cfg := proto.Clone(r.baseAgent).(*loomv1.AgentConfig)
-	cfg.Name = fmt.Sprintf("lme-tmp-%s", questionID)
+	cfg.Name = tempAgentName(r.runNonce, questionID)
 	cfg.Description = fmt.Sprintf("LongMemEval temp agent for %s", questionID)
 
 	info, err := r.client.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{
@@ -427,7 +450,8 @@ func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string
 	return info.Id, nil
 }
 
-// deleteTempAgent removes an ephemeral agent and its graph memory.
+// deleteTempAgent removes an ephemeral agent. Its graph memory stays in the
+// store under the agent's run-unique name, where no later agent reads it.
 func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 	_, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{
 		AgentId: agentID,

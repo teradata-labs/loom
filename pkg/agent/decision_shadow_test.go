@@ -371,3 +371,19 @@ func TestExportedDecisionHelpersNoRouter(t *testing.T) {
 	ag.RunDecisionShadow(context.Background(), "s", req, nil)
 	ag.WaitDecisionShadows()
 }
+
+// A shadow row's subject is the memory's source session whenever the memory
+// carries one, for both the extractor and the graph_memory tool, so a grader
+// that knows the evidence sessions can score each keep-or-drop decision.
+func TestMemorySubjectsUseSessionProvenance(t *testing.T) {
+	candidates := []*memory.Memory{
+		{ID: "m1", Source: memory.SourceAutoExtracted, SourceID: "sess-a"},
+		{ID: "m2", Source: memory.SourceAgent, SourceID: "sess-b"},
+		{ID: "m3", Source: "conversation", SourceID: "sess-c"},
+		{ID: "m4", Source: memory.SourceAutoExtracted}, // legacy row, no provenance
+		{ID: "m5", Source: "task", SourceID: "task-9"}, // SourceID is not a session
+		nil,
+	}
+	got := memorySubjects(candidates)
+	assert.Equal(t, []string{"session:sess-a", "session:sess-b", "session:sess-c", "memory:m4", "memory:m5", ""}, got)
+}

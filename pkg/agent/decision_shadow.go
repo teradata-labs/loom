@@ -334,7 +334,7 @@ func memoryFromSession(m *memory.Memory) bool {
 		return false
 	}
 	switch m.Source {
-	case memory.SourceAutoExtracted, "conversation":
+	case memory.SourceAutoExtracted, memory.SourceAgent, "conversation":
 		return true
 	}
 	return false
