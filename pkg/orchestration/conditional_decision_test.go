@@ -55,17 +55,22 @@ func (m *memShadowStore) QueryShadow(context.Context, decision.ShadowQuery) ([]*
 	return append([]*loomv1.DecisionShadowRecord(nil), m.rows...), nil
 }
 
-// decisionClassifier is createMockAgent with a decision router injected.
-func decisionClassifier(t *testing.T, llm agent.LLMProvider, dec decision.Decider, store decision.ShadowStore, opts ...decision.RouterOption) *agent.Agent {
+// newDecisionAgent is createMockAgent with a decision router injected.
+func newDecisionAgent(t *testing.T, name string, llm agent.LLMProvider, dec decision.Decider, store decision.ShadowStore, opts ...decision.RouterOption) *agent.Agent {
 	t.Helper()
 	cfg := agent.DefaultConfig()
 	cfg.PatternConfig = agent.DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	return agent.NewAgent(&mockBackend{}, llm,
-		agent.WithName("classifier"),
+		agent.WithName(name),
 		agent.WithConfig(cfg),
 		agent.WithDecisionRouter(decision.NewRouter(dec, opts...)),
 		agent.WithDecisionShadowStore(store))
+}
+
+func decisionClassifier(t *testing.T, llm agent.LLMProvider, dec decision.Decider, store decision.ShadowStore, opts ...decision.RouterOption) *agent.Agent {
+	t.Helper()
+	return newDecisionAgent(t, "classifier", llm, dec, store, opts...)
 }
 
 func liveBranchBand(actMin float64) decision.RouterOption {
