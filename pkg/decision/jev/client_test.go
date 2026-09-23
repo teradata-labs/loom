@@ -360,8 +360,8 @@ func TestParseRetryAfterAndBackoff(t *testing.T) {
 
 	for attempt := 1; attempt <= 6; attempt++ {
 		d := backoff(attempt, 0)
-		assert.GreaterOrEqual(t, d, 100*time.Millisecond)
-		assert.LessOrEqual(t, d, 2*time.Second)
+		assert.GreaterOrEqual(t, d, 250*time.Millisecond)
+		assert.LessOrEqual(t, d, 4*time.Second)
 	}
 	assert.Equal(t, 5*time.Second, backoff(1, 5*time.Second), "Retry-After wins")
 }

@@ -59,6 +59,9 @@ type Summary struct {
 	Rows, Compared, Agreed int
 	// DeciderErrors is rows whose path is ERROR (no candidate).
 	DeciderErrors int
+	// Errors counts ERROR rows by their recorded error text, so a report
+	// says why the decider failed, not only how often.
+	Errors map[string]int
 	// Agreement is Agreed / Compared, or 0.
 	Agreement float64
 	// ECE is the expected calibration error over Compared rows using
@@ -115,6 +118,12 @@ func SummarizeWithBins(site string, rows []*loomv1.DecisionShadowRecord, bins in
 		}
 		if r.Path == loomv1.DecisionPath_DECISION_PATH_ERROR {
 			s.DeciderErrors++
+			if r.Error != "" {
+				if s.Errors == nil {
+					s.Errors = make(map[string]int)
+				}
+				s.Errors[r.Error]++
+			}
 		}
 		if r.Path != loomv1.DecisionPath_DECISION_PATH_DISABLED && r.Path != loomv1.DecisionPath_DECISION_PATH_BUDGET {
 			latencies = append(latencies, r.LatencyMs)
@@ -207,6 +216,19 @@ func RenderMarkdown(s Summary) string {
 	fmt.Fprintf(&b, "| Latency p50 / p95 / p99 (ms) | %d / %d / %d |\n", s.LatencyP50, s.LatencyP95, s.LatencyP99)
 	fmt.Fprintf(&b, "| Input tokens / cost | %d / $%.4f |\n", s.TotalInputTokens, s.TotalCostUSD)
 	b.WriteString("\n")
+
+	if len(s.Errors) > 0 {
+		b.WriteString("## Decider errors\n\n| Rows | Error |\n|---|---|\n")
+		keys := sortedKeys(s.Errors)
+		sort.SliceStable(keys, func(i, j int) bool { return s.Errors[keys[i]] > s.Errors[keys[j]] })
+		if len(keys) > 10 {
+			keys = keys[:10]
+		}
+		for _, k := range keys {
+			fmt.Fprintf(&b, "| %d | %s |\n", s.Errors[k], strings.ReplaceAll(k, "|", "\\|"))
+		}
+		b.WriteString("\n")
+	}
 
 	if len(s.Kinds) > 0 || len(s.ReferenceSources) > 0 {
 		b.WriteString("## Composition\n\n| Dimension | Value | Rows |\n|---|---|---|\n")

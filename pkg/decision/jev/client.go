@@ -293,14 +293,16 @@ func isRetryable(err error) bool {
 }
 
 // backoff is the wait before attempt+1: Retry-After when the server said,
-// else 200 ms doubling with jitter, capped at 2 s.
+// else 500 ms doubling with jitter, capped at 4 s. The gateway's transient
+// 503 ("try again shortly") clears in about a second; the first campaign's
+// 200 ms base burned all three attempts inside that window.
 func backoff(attempt int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
 		return retryAfter
 	}
-	base := 200 * time.Millisecond << (attempt - 1)
-	if base > 2*time.Second {
-		base = 2 * time.Second
+	base := 500 * time.Millisecond << (attempt - 1)
+	if base > 4*time.Second {
+		base = 4 * time.Second
 	}
 	jitter := time.Duration(rand.Int64N(int64(base) / 2)) // #nosec G404 -- backoff jitter, not a security boundary
 	return base/2 + jitter

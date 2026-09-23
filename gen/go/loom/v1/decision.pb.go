@@ -1073,7 +1073,10 @@ type DecisionShadowRecord struct {
 	Model           string  `protobuf:"bytes,15,opt,name=model,proto3" json:"model,omitempty"`
 	Provider        string  `protobuf:"bytes,16,opt,name=provider,proto3" json:"provider,omitempty"`
 	// Router path for the request this record came from.
-	Path          DecisionPath `protobuf:"varint,17,opt,name=path,proto3,enum=loom.v1.DecisionPath" json:"path,omitempty"`
+	Path DecisionPath `protobuf:"varint,17,opt,name=path,proto3,enum=loom.v1.DecisionPath" json:"path,omitempty"`
+	// Decider error text for ERROR-path rows (bounded), empty otherwise. An
+	// ERROR row without its reason cannot be triaged; this is that reason.
+	Error         string `protobuf:"bytes,18,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1225,6 +1228,13 @@ func (x *DecisionShadowRecord) GetPath() DecisionPath {
 		return x.Path
 	}
 	return DecisionPath_DECISION_PATH_UNSPECIFIED
+}
+
+func (x *DecisionShadowRecord) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
 }
 
 // DecisionConfig configures the decision layer for an agent or server.
@@ -1434,7 +1444,7 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\aact_min\x18\x02 \x01(\x01R\x06actMin\x12-\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x19.loom.v1.DecisionBandModeR\x04mode\x12\x16\n" +
 	"\x06shadow\x18\x04 \x01(\bR\x06shadow\x12<\n" +
-	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\"\xf8\x05\n" +
+	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\"\x8e\x06\n" +
 	"\x14DecisionShadowRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\vrecorded_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -1457,7 +1467,8 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\bcost_usd\x18\x0e \x01(\x01R\acostUsd\x12\x14\n" +
 	"\x05model\x18\x0f \x01(\tR\x05model\x12\x1a\n" +
 	"\bprovider\x18\x10 \x01(\tR\bprovider\x12)\n" +
-	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x1aI\n" +
+	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x12\x14\n" +
+	"\x05error\x18\x12 \x01(\tR\x05error\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xf5\x02\n" +

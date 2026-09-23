@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -216,9 +217,26 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			Model:                  model,
 			Provider:               provider,
 			Path:                   out.Path,
+			Error:                  errorText(out.Err),
 		})
 	}
 	return records
+}
+
+// maxErrorTextRunes bounds the error carried on a shadow row; a gateway
+// body can be long and the first few hundred runes hold the reason.
+const maxErrorTextRunes = 500
+
+// errorText renders an outcome error for a shadow row, empty for nil.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if utf8.RuneCountInString(s) <= maxErrorTextRunes {
+		return s
+	}
+	return string([]rune(s)[:maxErrorTextRunes]) + "…"
 }
 
 // ShadowRecorder writes shadow rows and counts store failures as metrics

@@ -230,6 +230,13 @@ func (a *Agent) runShadow(ctx context.Context, sessionID string, req *loomv1.Dec
 		shadowCtx, cancel := context.WithTimeout(bg, shadowTimeout)
 		defer cancel()
 		out := a.decisionRouter.Decide(shadowCtx, req)
+		if out.Path == loomv1.DecisionPath_DECISION_PATH_ERROR {
+			// Warn, not Debug: an ERROR row without a log line was the only
+			// trace the first campaign left, and it was not enough to triage.
+			zap.L().Warn("decision shadow: decider error",
+				zap.String("site", req.Site), zap.Int("questions", len(req.Questions)),
+				zap.Duration("latency", out.Latency), zap.Error(out.Err))
+		}
 		a.recordDecision(shadowCtx, sessionID, req, out, refs)
 	}()
 }
