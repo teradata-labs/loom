@@ -1765,6 +1765,9 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
+	// Proto configs of the statically loaded agents, keyed like agents, so the
+	// server can report them from GetAgent/ListAgents (SetAgentConfig below).
+	staticAgentConfigs := make(map[string]*loomv1.AgentConfig)
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
 
 	// Also load agents from $LOOM_DATA_DIR/agents/ directory (created by meta-agent)
@@ -2251,6 +2254,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Store agent with GUID as key for stable references
 				agents[agentGUID] = ag
+				staticAgentConfigs[agentGUID] = cfg
 			}
 		}
 		// DO NOT close registry - keep it alive for hot-reload
@@ -2410,6 +2414,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		grpcServer = grpc.NewServer(serverOpts...)
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
+	for guid, cfg := range staticAgentConfigs {
+		loomService.SetAgentConfig(guid, cfg)
+	}
 	// Authenticated deployments are multi-tenant: blank identities must not
 	// act as session-ownership wildcards. Unauthenticated deployments keep
 	// the explicit single-tenant compatibility mode.
@@ -3512,12 +3519,14 @@ func runServe(cmd *cobra.Command, args []string) {
 				if err := loomService.UpdateAgent(agentGUIDToUse, newAgent); err != nil {
 					return fmt.Errorf("failed to update agent in server: %w", err)
 				}
+				loomService.SetAgentConfig(agentGUIDToUse, agentConfig)
 				logger.Info("  Agent reloaded in server successfully",
 					zap.String("agent", name),
 					zap.String("guid", agentGUIDToUse))
 			} else {
 				// New agent from metaagent: add to server
 				loomService.AddAgent(agentGUIDToUse, newAgent)
+				loomService.SetAgentConfig(agentGUIDToUse, agentConfig)
 				logger.Info("  Agent added to server successfully",
 					zap.String("agent", name),
 					zap.String("guid", agentGUIDToUse))

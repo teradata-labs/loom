@@ -26,6 +26,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -59,12 +60,17 @@ const (
 
 // RunConfig holds configuration for a benchmark run.
 type RunConfig struct {
-	Mode        RunMode
-	ServerAddr  string
-	AgentID     string // target agent in multi-agent server (empty = default)
-	Concurrency int
-	Verbose     bool
-	Isolate     bool // create a fresh agent per entry for graph memory isolation
+	Mode       RunMode
+	ServerAddr string
+	AgentID    string // target agent in multi-agent server (empty = default)
+	// AgentConfigPath, when set, is an agent YAML whose config is the temp
+	// agent template in isolate mode. It takes precedence over fetching the
+	// named agent's config from the server, which is not available for
+	// agents the server loaded statically at startup.
+	AgentConfigPath string
+	Concurrency     int
+	Verbose         bool
+	Isolate         bool // create a fresh agent per entry for graph memory isolation
 
 	// UseOccurredAt sends each haystack session's date (and the question date)
 	// as WeaveRequest.occurred_at. Without it, the server anchors temporal
@@ -140,7 +146,18 @@ func NewRunner(cfg RunConfig, logger *zap.Logger) (*Runner, error) {
 	// config, so nothing configured on the agent reached the benchmark.
 	if cfg.Isolate {
 		r.baseAgent = defaultIsolatedBase()
-		if cfg.AgentID != "" {
+		switch {
+		case cfg.AgentConfigPath != "":
+			base, err := agent.LoadAgentConfig(cfg.AgentConfigPath)
+			if err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("isolate mode: load --agent-config %s: %w", cfg.AgentConfigPath, err)
+			}
+			r.baseAgent = isolatedBaseFrom(base)
+			logger.Info("isolate mode: temp agents cloned from agent config file",
+				zap.String("path", cfg.AgentConfigPath),
+				zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+		case cfg.AgentID != "":
 			gctx, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
 			info, err := client.GetAgent(gctx, &loomv1.GetAgentRequest{AgentId: cfg.AgentID})
 			gcancel()

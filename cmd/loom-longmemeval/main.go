@@ -53,18 +53,19 @@ var (
 	verbose bool
 
 	// Run flags
-	dataset       string
-	output        string
-	detailed      string
-	concurrency   int
-	serverAddr    string
-	agentID       string
-	limit         int
-	offset        int
-	questionTypes string
-	mode          string
-	isolate       bool
-	useOccurredAt bool
+	dataset         string
+	output          string
+	detailed        string
+	concurrency     int
+	serverAddr      string
+	agentID         string
+	agentConfigPath string
+	limit           int
+	offset          int
+	questionTypes   string
+	mode            string
+	isolate         bool
+	useOccurredAt   bool
 )
 
 func main() {
@@ -164,6 +165,7 @@ Three benchmark modes:
 
 	cmd.Flags().StringVar(&serverAddr, "server", "localhost:60051", "Loom gRPC server address")
 	cmd.Flags().StringVar(&agentID, "agent", "", "Target agent ID (empty = default agent)")
+	cmd.Flags().StringVar(&agentConfigPath, "agent-config", "", "Agent YAML to clone for isolated temp agents (isolate mode); overrides fetching --agent's config from the server")
 	cmd.Flags().StringVar(&dataset, "dataset", "", "Path to dataset JSON (auto-detects from data-dir if empty)")
 	cmd.Flags().StringVar(&output, "output", "results.jsonl", "Output JSONL file path (LongMemEval-compatible)")
 	cmd.Flags().StringVar(&detailed, "detailed", "", "Optional detailed results JSON path")
@@ -349,13 +351,14 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 
 	// Create runner (connects to running Loom server via gRPC)
 	runner, err := NewRunner(RunConfig{
-		Mode:          RunMode(mode),
-		ServerAddr:    serverAddr,
-		AgentID:       agentID,
-		Concurrency:   concurrency,
-		Verbose:       verbose,
-		Isolate:       isolate,
-		UseOccurredAt: useOccurredAt,
+		Mode:            RunMode(mode),
+		ServerAddr:      serverAddr,
+		AgentID:         agentID,
+		AgentConfigPath: agentConfigPath,
+		Concurrency:     concurrency,
+		Verbose:         verbose,
+		Isolate:         isolate,
+		UseOccurredAt:   useOccurredAt,
 	}, logger)
 	if err != nil {
 		return err
