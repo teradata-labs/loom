@@ -311,7 +311,9 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 		// limiter under the throttle budget. The status is known before any
 		// content streams, so re-sending duplicates nothing.
 		if llm.IsTransientStatus(resp.StatusCode) {
-			respBody, _ := io.ReadAll(resp.Body)
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 			_ = resp.Body.Close()
 			return nil, llm.NewTransientError(
 				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
@@ -787,7 +789,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// limiter under the throttle budget. The status is known before any
 		// content streams, so re-sending duplicates nothing.
 		if llm.IsTransientStatus(resp.StatusCode) {
-			respBody, _ := io.ReadAll(resp.Body)
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 			_ = resp.Body.Close()
 			return nil, llm.NewTransientError(
 				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),

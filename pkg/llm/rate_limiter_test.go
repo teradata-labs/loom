@@ -273,6 +273,82 @@ func TestRateLimiter_TransientRetryAfterHonored(t *testing.T) {
 	assert.GreaterOrEqual(t, arrivals[1].Sub(arrivals[0]), 300*time.Millisecond)
 }
 
+// The typed class wins over message sniffing: a 5xx whose body happens to
+// contain "429" (request ids, upstream prose) is a transient failure, not a
+// throttle — it must not touch the throttle metrics or the throttle signal.
+func TestRateLimiter_TypedTransientWinsOverThrottleSniffing(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 1
+	config.RetryBackoff = time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	body := errors.New(`API error (status 529): {"error":{"type":"overloaded_error","request_id":"req_011CV6xt429Kk"}}`)
+	callCount := 0
+	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		callCount++
+		return nil, NewTransientError(body, 529, 0)
+	})
+	require.Error(t, err)
+	assert.Equal(t, 2, callCount)
+	m := rl.GetMetrics()
+	assert.Equal(t, int64(2), m.TransientRequests)
+	assert.Equal(t, int64(0), m.ThrottledRequests)
+	assert.True(t, m.LastThrottleTime.IsZero())
+	assert.False(t, IsThrottle(err), "must not feed the scheduler's throttle signal")
+	assert.Contains(t, err.Error(), "due to a transient server error")
+}
+
+// Exhaustion is typed so an outer retry loop can recognise a budget already
+// spent, and the original cause stays reachable through the wrap.
+func TestRateLimiter_ExhaustionIsTyped(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 1
+	config.RetryBackoff = time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		return nil, errors.New("HTTP 429: rate limit exceeded")
+	})
+	require.Error(t, err)
+	var re *RetriesExhaustedError
+	require.True(t, errors.As(err, &re))
+	assert.Equal(t, 2, re.Attempts)
+	assert.Equal(t, "throttling", re.Cause)
+	assert.True(t, IsRetriesExhausted(err))
+	assert.True(t, IsThrottle(err), "the throttle cause is still visible through the wrap")
+	assert.Contains(t, err.Error(), "LLM request failed after 2 retries due to throttling")
+}
+
+// A server-specified Retry-After is honoured only up to maxRetryDelay: a
+// maintenance-window 503 with Retry-After: 3600 must not pin the caller (and
+// its scheduler grant) for an hour.
+func TestRateLimiter_RetryAfterFloorIsCapped(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RetryBackoff = time.Millisecond
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	err := NewTransientError(errors.New("API error (status 503): maintenance"), 503, time.Hour)
+	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, err))
+
+	throttle := NewThrottleError(errors.New("API error (status 429)"), 2*time.Hour)
+	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, throttle), "same cap for a throttle's Retry-After")
+
+	short := NewTransientError(errors.New("API error (status 503)"), 503, 300*time.Millisecond)
+	assert.Equal(t, 300*time.Millisecond, rl.retryDelay(0, short), "a modest Retry-After still floors the wait")
+}
+
 // A cancelled context ends a transient retry wait immediately with ctx.Err().
 func TestRateLimiter_TransientRetryRespectsContext(t *testing.T) {
 	config := DefaultRateLimiterConfig()

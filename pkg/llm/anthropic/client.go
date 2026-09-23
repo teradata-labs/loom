@@ -607,7 +607,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// under the throttle budget; status known before any content
 			// streams, so the re-send duplicates nothing.
 			if llm.IsTransientStatus(resp.StatusCode) {
-				respBody, _ := io.ReadAll(resp.Body)
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 				_ = resp.Body.Close()
 				return nil, llm.NewTransientError(
 					fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
@@ -851,7 +851,7 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 			// under the throttle budget; status known before any content
 			// streams, so the re-send duplicates nothing.
 			if llm.IsTransientStatus(resp.StatusCode) {
-				respBody, _ := io.ReadAll(resp.Body)
+				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 				_ = resp.Body.Close()
 				return nil, llm.NewTransientError(
 					fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),

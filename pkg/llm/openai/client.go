@@ -236,7 +236,7 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 				// throttle budget; status known before any content streams.
 				if llm.IsTransientStatus(resp.StatusCode) {
 					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
-					respBody, _ := io.ReadAll(resp.Body)
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 					_ = resp.Body.Close()
 					return nil, llm.NewTransientError(
 						fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),

@@ -362,8 +362,11 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	// SDK-level equivalents) and a provider-typed transient server failure
 	// (TransientError: 500/502/503/504/529 on a response whose status was
 	// known before any content streamed).
-	throttled := isThrottlingError(err)
-	transient := !throttled && IsTransient(err)
+	// The typed classification wins: a TransientError's body may well contain
+	// "429" or "rate limit" (request ids, upstream prose), and string-sniffing
+	// it into throttling would feed a server outage into the throttle signal.
+	transient := IsTransient(err)
+	throttled := !transient && isThrottlingError(err)
 	if err == nil || (!throttled && !transient) {
 		rl.deliver(req, &rateLimitedResult{result: result, err: err})
 		return
@@ -378,10 +381,10 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	}
 
 	if req.attempt >= rl.config.MaxRetries {
-		// All attempts exhausted.
-		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf(
-			"LLM request failed after %d retries due to %s: %w",
-			rl.config.MaxRetries+1, cause, err)})
+		// All attempts exhausted. The typed wrap lets callers with their own
+		// retry loop recognise a budget that has already been spent here.
+		rl.deliver(req, &rateLimitedResult{err: &RetriesExhaustedError{
+			Attempts: rl.config.MaxRetries + 1, Cause: cause, Err: err}})
 		return
 	}
 
@@ -453,9 +456,15 @@ func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
 
 	// Honor the server-specified wait when it is longer than the jittered
 	// backoff (delta-seconds, HTTP-date, and x-ratelimit reset forms all
-	// arrive here via ThrottleError.RetryAfter).
+	// arrive here via ThrottleError/TransientError.RetryAfter) — but never
+	// beyond maxRetryDelay: a 503 during a maintenance window can carry
+	// Retry-After: 3600 or an HTTP-date an hour out, and sleeping that long
+	// inside execute() would pin the caller and its scheduler grant.
 	if ra := RetryAfter(err); ra > delay {
 		delay = ra
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
 	}
 	return delay
 }
@@ -490,6 +499,14 @@ func isThrottlingError(err error) bool {
 	var te *ThrottleError
 	if errors.As(err, &te) {
 		return true
+	}
+	// A typed transient server failure is never throttling, regardless of
+	// what its body says: 5xx bodies routinely carry request ids or upstream
+	// prose containing "429" / "rate limit", and sniffing those would feed a
+	// server outage into the scheduler's throttle signal.
+	var tr *TransientError
+	if errors.As(err, &tr) {
+		return false
 	}
 	errStr := err.Error()
 	return contains(errStr, "429") ||

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func retryingClient(t *testing.T, url string) *Client {
 // any content streams is now retried under the same budget as a 429.
 func TestCallAPI5xxIsRetriedThroughRateLimiter(t *testing.T) {
 	for _, status := range []int{500, 502, 503, 504, 529} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if calls.Add(1) <= 2 {
@@ -85,7 +86,7 @@ func TestCallAPI5xxExhaustsBudget(t *testing.T) {
 // A 4xx is the caller's problem and is never retried — one call, error out.
 func TestCallAPI4xxIsNotRetried(t *testing.T) {
 	for _, status := range []int{400, 401, 403, 404, 413, 422} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
