@@ -25,6 +25,21 @@ type SwarmExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.SwarmPattern
 	workflowID   string
+
+	// auxCost accumulates the judge's calls (tie-break and retries), which
+	// are not votes and were missing from the reported cost.
+	auxMu   sync.Mutex
+	auxCost *loomv1.WorkflowCost
+}
+
+// addAuxUsage records one non-vote LLM call under agentID.
+func (e *SwarmExecutor) addAuxUsage(agentID string, u types.Usage) {
+	e.auxMu.Lock()
+	defer e.auxMu.Unlock()
+	if e.auxCost == nil {
+		e.auxCost = &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)}
+	}
+	addUsageToCost(e.auxCost, agentID, u)
 }
 
 // NewSwarmExecutor creates a new swarm executor.
@@ -734,6 +749,7 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, judge *agent.Agent, ses
 	if err != nil {
 		return "", fmt.Errorf("judge chat failed: %w", err)
 	}
+	e.addAuxUsage(e.pattern.JudgeAgentId, response.Usage)
 
 	// Parse judge's decision (should be a simple choice)
 	decision := strings.TrimSpace(response.Content)
@@ -939,6 +955,7 @@ func (e *SwarmExecutor) retryJudge(
 			continue
 		}
 
+		e.addAuxUsage(e.pattern.JudgeAgentId, response.Usage)
 		decision := strings.TrimSpace(response.Content)
 
 		// Check exact match
@@ -993,10 +1010,19 @@ func (e *SwarmExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.Wor
 		}
 	}
 
-	return &loomv1.WorkflowCost{
+	votes := &loomv1.WorkflowCost{
 		TotalCostUsd:  totalCostUsd,
 		TotalTokens:   totalTokens,
-		AgentCostsUsd: make(map[string]float64), // Could populate if needed
+		AgentCostsUsd: make(map[string]float64),
 		LlmCalls:      types.SafeInt32(len(results)),
 	}
+	for _, result := range results {
+		if result.Cost != nil {
+			votes.AgentCostsUsd[result.AgentId] += result.Cost.CostUsd
+		}
+	}
+	// Plus the judge's calls, which are not votes.
+	e.auxMu.Lock()
+	defer e.auxMu.Unlock()
+	return mergeCost(votes, e.auxCost)
 }

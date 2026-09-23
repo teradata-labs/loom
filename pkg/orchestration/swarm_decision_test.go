@@ -98,6 +98,9 @@ func TestSwarmTieBreakDecision_NoneOfTheseFallsBackToJudge(t *testing.T) {
 	assert.Equal(t, "PostgreSQL", res.MergedOutput, "the judge decided")
 	assert.Equal(t, 1, judgeLLM.calls())
 	assert.Equal(t, 1, dec.CallCount(), "the live answer is recorded, not re-asked")
+	require.NotNil(t, res.Cost)
+	assert.Equal(t, int32(5), res.Cost.LlmCalls, "four votes + the judge; the judge used to be missing from the cost")
+	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["judge"], 1e-9)
 
 	judge.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
