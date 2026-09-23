@@ -39,11 +39,11 @@ CREATE TABLE IF NOT EXISTS decision_shadow (
 CREATE INDEX IF NOT EXISTS idx_decision_shadow_site_time ON decision_shadow(site, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_decision_shadow_user ON decision_shadow(user_id);
 
+-- FORCE so the policy binds the table owner too: the application role
+-- usually owns the table, and without FORCE Postgres skips RLS for it.
+-- Same posture as sessions/messages (000007) and graph memory (000010).
 ALTER TABLE decision_shadow ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decision_shadow FORCE ROW LEVEL SECURITY;
 CREATE POLICY decision_shadow_user_isolation ON decision_shadow
-    USING (user_id = current_setting('app.current_user_id', true)
-        OR current_setting('app.current_user_id', true) = ''
-        OR current_setting('app.current_user_id', true) IS NULL)
-    WITH CHECK (user_id = current_setting('app.current_user_id', true)
-        OR current_setting('app.current_user_id', true) = ''
-        OR current_setting('app.current_user_id', true) IS NULL);
+    USING (user_id = current_setting('app.current_user_id', true))
+    WITH CHECK (user_id = current_setting('app.current_user_id', true));

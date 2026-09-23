@@ -114,8 +114,12 @@ func (s *DecisionShadowStore) QueryShadow(ctx context.Context, q decision.Shadow
 	if limit <= 0 {
 		limit = DefaultShadowQueryLimit
 	}
-	where := "WHERE TRUE"
-	args := []any{}
+	// Explicit tenant predicate in addition to RLS, as every other store in
+	// this package does: the query is correct even where RLS is not in force
+	// (an owner role before FORCE, or a policy dropped by hand). execInTx has
+	// already refused an empty user ID by the time this runs.
+	args := []any{UserIDFromContext(ctx)}
+	where := "WHERE user_id = $1"
 	if q.Site != "" {
 		args = append(args, q.Site)
 		where += fmt.Sprintf(" AND site = $%d", len(args))
