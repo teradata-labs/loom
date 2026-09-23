@@ -1249,9 +1249,14 @@ type DecisionConfig struct {
 	Bands []*DecisionBand `protobuf:"bytes,8,rep,name=bands,proto3" json:"bands,omitempty"`
 	// LLM role the "llm" provider adapts (for example "classifier",
 	// "compressor"). Empty means the agent's main LLM.
-	LlmRole       string `protobuf:"bytes,9,opt,name=llm_role,json=llmRole,proto3" json:"llm_role,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LlmRole string `protobuf:"bytes,9,opt,name=llm_role,json=llmRole,proto3" json:"llm_role,omitempty"`
+	// Requests per minute the process may send to the decider, set from the
+	// tier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct
+	// publishes 1,200). Agents with identical decider settings share one
+	// client and therefore one budget. 0 means the provider's default.
+	RequestsPerMinute int64 `protobuf:"varint,10,opt,name=requests_per_minute,json=requestsPerMinute,proto3" json:"requests_per_minute,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DecisionConfig) Reset() {
@@ -1345,6 +1350,13 @@ func (x *DecisionConfig) GetLlmRole() string {
 		return x.LlmRole
 	}
 	return ""
+}
+
+func (x *DecisionConfig) GetRequestsPerMinute() int64 {
+	if x != nil {
+		return x.RequestsPerMinute
+	}
+	return 0
 }
 
 var File_loom_v1_decision_proto protoreflect.FileDescriptor
@@ -1448,7 +1460,7 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xc5\x02\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xf5\x02\n" +
 	"\x0eDecisionConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1f\n" +
@@ -1460,7 +1472,9 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x0fmax_per_session\x18\x06 \x01(\x03R\rmaxPerSession\x126\n" +
 	"\x18max_cost_usd_per_session\x18\a \x01(\x01R\x14maxCostUsdPerSession\x12+\n" +
 	"\x05bands\x18\b \x03(\v2\x15.loom.v1.DecisionBandR\x05bands\x12\x19\n" +
-	"\bllm_role\x18\t \x01(\tR\allmRole*\xb3\x01\n" +
+	"\bllm_role\x18\t \x01(\tR\allmRole\x12.\n" +
+	"\x13requests_per_minute\x18\n" +
+	" \x01(\x03R\x11requestsPerMinute*\xb3\x01\n" +
 	"\fDecisionPath\x12\x1d\n" +
 	"\x19DECISION_PATH_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15DECISION_PATH_DECIDER\x10\x01\x12\x1a\n" +

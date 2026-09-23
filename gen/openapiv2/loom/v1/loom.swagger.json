@@ -5148,6 +5148,11 @@
         "llmRole": {
           "type": "string",
           "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        },
+        "requestsPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
         }
       },
       "description": "DecisionConfig configures the decision layer for an agent or server."

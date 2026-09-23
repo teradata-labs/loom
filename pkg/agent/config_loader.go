@@ -147,15 +147,19 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 //	      mode: replace        # replace | tighten_only
 //	      shadow: true         # record only, never act
 type DecisionConfigYAML struct {
-	Provider             string                   `yaml:"provider"`
-	Model                string                   `yaml:"model"`
-	AllowAlias           bool                     `yaml:"allow_alias"`
-	TimeoutMs            int64                    `yaml:"timeout_ms"`
-	BaseURL              string                   `yaml:"base_url"`
-	MaxPerSession        int64                    `yaml:"max_per_session"`
-	MaxCostUSDPerSession float64                  `yaml:"max_cost_usd_per_session"`
-	LLMRole              string                   `yaml:"llm_role"`
-	Bands                []DecisionBandConfigYAML `yaml:"bands"`
+	Provider             string  `yaml:"provider"`
+	Model                string  `yaml:"model"`
+	AllowAlias           bool    `yaml:"allow_alias"`
+	TimeoutMs            int64   `yaml:"timeout_ms"`
+	BaseURL              string  `yaml:"base_url"`
+	MaxPerSession        int64   `yaml:"max_per_session"`
+	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
+	LLMRole              string  `yaml:"llm_role"`
+	// RequestsPerMinute is the process-wide decider budget, from the tier in
+	// use (gateway free tier: 30). Agents with identical decider settings
+	// share one client, so this is a fleet figure, not a per-agent one.
+	RequestsPerMinute int64                    `yaml:"requests_per_minute"`
+	Bands             []DecisionBandConfigYAML `yaml:"bands"`
 }
 
 // DecisionBandConfigYAML mirrors proto DecisionBand.
@@ -202,6 +206,9 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 	if y.MaxCostUSDPerSession < 0 {
 		return nil, fmt.Errorf("decision.max_cost_usd_per_session must be >= 0, got %v", y.MaxCostUSDPerSession)
 	}
+	if y.RequestsPerMinute < 0 {
+		return nil, fmt.Errorf("decision.requests_per_minute must be >= 0, got %d", y.RequestsPerMinute)
+	}
 	cfg := &loomv1.DecisionConfig{
 		Provider:             provider,
 		Model:                y.Model,
@@ -211,6 +218,7 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		MaxPerSession:        y.MaxPerSession,
 		MaxCostUsdPerSession: y.MaxCostUSDPerSession,
 		LlmRole:              y.LLMRole,
+		RequestsPerMinute:    y.RequestsPerMinute,
 	}
 	seen := make(map[string]bool, len(y.Bands))
 	for i, b := range y.Bands {
