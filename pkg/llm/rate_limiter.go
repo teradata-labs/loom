@@ -364,7 +364,7 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	// known before any content streamed).
 	throttled := isThrottlingError(err)
 	transient := !throttled && IsTransient(err)
-	if err == nil || !(throttled || transient) {
+	if err == nil || (!throttled && !transient) {
 		rl.deliver(req, &rateLimitedResult{result: result, err: err})
 		return
 	}
