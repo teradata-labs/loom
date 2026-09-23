@@ -38,7 +38,7 @@ func validationBand(actMin float64, mode loomv1.DecisionBandMode) decision.Route
 // with a validation prompt. validator is the orchestrator's merge LLM (what
 // the generative validator calls); it is a counted mock so a test can prove
 // it was or was not consulted.
-func stageValidationRig(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, error, *lvlMockLLM, *lvlMockLLM, *agent.Agent) {
+func stageValidationRig(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, *lvlMockLLM, *lvlMockLLM, *agent.Agent, error) {
 	t.Helper()
 	validator := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0, validatorReply)
 	orch := NewOrchestrator(Config{
@@ -62,14 +62,14 @@ func stageValidationRig(t *testing.T, dec decision.Decider, store decision.Shado
 		PromptTemplate:   "{{previous}}",
 		ValidationPrompt: "Is {{output}} a complete answer?",
 	})
-	return res, err, validator, worker, ag
+	return res, validator, worker, ag, err
 }
 
 func TestStageValidationDecision_LiveBandSkipsValidatorLLM(t *testing.T) {
 	t.Parallel()
 	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.95)
 	store := &memShadowStore{}
-	res, err, validator, worker, ag := stageValidationRig(t, dec, store, "invalid", // would fail it if consulted
+	res, validator, worker, ag, err := stageValidationRig(t, dec, store, "invalid", // would fail it if consulted
 		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
 	require.NoError(t, err)
 	assert.Equal(t, "a prose answer", res.MergedOutput)
@@ -93,7 +93,7 @@ func TestStageValidationDecision_TightenOnlyNeverPassesOnItsOwn(t *testing.T) {
 		t.Parallel()
 		dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.95)
 		store := &memShadowStore{}
-		res, err, validator, _, ag := stageValidationRig(t, dec, store, "valid",
+		res, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
 			validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY))
 		require.NoError(t, err)
 		assert.Equal(t, "a prose answer", res.MergedOutput)
@@ -110,7 +110,7 @@ func TestStageValidationDecision_TightenOnlyNeverPassesOnItsOwn(t *testing.T) {
 	t.Run("confident invalid acts", func(t *testing.T) {
 		t.Parallel()
 		dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.05)
-		res, err, validator, _, _ := stageValidationRig(t, dec, &memShadowStore{}, "valid", // would pass it if consulted
+		res, validator, _, _, err := stageValidationRig(t, dec, &memShadowStore{}, "valid", // would pass it if consulted
 			validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY))
 		// No retry policy: a failed validation is a hard stage error, exactly
 		// as it is when the LLM validator fails an output.
@@ -125,7 +125,7 @@ func TestStageValidationDecision_BelowBandFallsBackAndRecords(t *testing.T) {
 	t.Parallel()
 	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55) // decisiveness 0.1
 	store := &memShadowStore{}
-	res, err, validator, _, ag := stageValidationRig(t, dec, store, "valid",
+	res, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
 		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
 	require.NoError(t, err)
 	assert.Equal(t, "a prose answer", res.MergedOutput)
@@ -146,7 +146,7 @@ func TestStageValidationDecision_ShadowBandRecordsAgainstScrapedVerdict(t *testi
 	t.Parallel()
 	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.1)
 	store := &memShadowStore{}
-	_, err, validator, _, ag := stageValidationRig(t, dec, store, "yes, this is fine") // no band: shadow
+	_, validator, _, ag, err := stageValidationRig(t, dec, store, "yes, this is fine") // no band: shadow
 	require.NoError(t, err)
 	assert.Equal(t, 1, validator.count())
 
@@ -165,7 +165,7 @@ func TestStageValidationDecision_ShadowBandRecordsAgainstScrapedVerdict(t *testi
 func TestStageValidationDecision_DeciderErrorFallsBack(t *testing.T) {
 	t.Parallel()
 	dec := decisionmock.New().SetError(decision.ErrOverloaded)
-	res, err, validator, _, ag := stageValidationRig(t, dec, &memShadowStore{}, "valid",
+	res, validator, _, ag, err := stageValidationRig(t, dec, &memShadowStore{}, "valid",
 		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
 	require.NoError(t, err)
 	assert.Equal(t, "a prose answer", res.MergedOutput)
