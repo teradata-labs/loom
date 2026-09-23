@@ -15,6 +15,8 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -863,17 +865,98 @@ func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *Le
 // validateStageOutput validates a stage's output using the validation prompt.
 // Uses the orchestrator's merge LLM (GetMergeLLM) which resolves through the
 // fallback chain: explicit LLM -> orchestrator role LLM from agents -> error.
+//
+// Decision layer (site stage.validation): the stage agent's decision layer is
+// borrowed the way the conditional executor borrows the condition agent's.
+// With a live band the decider judges first and, when its band says to act,
+// the LLM validator is skipped; otherwise the LLM decides and the decider's
+// answer is recorded against the scraped verdict. A TIGHTEN_ONLY band lets
+// the decider fail an output but never pass one: a confident "valid" still
+// runs the LLM.
 func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID string, stage *loomv1.PipelineStage, output string, stageNum int) (bool, error) {
+	sessionID := fmt.Sprintf("%s-stage%d-%s-validation", workflowID, stageNum, stage.AgentId)
+
+	// The stage agent may be missing only when validation runs against a
+	// stage that was never executed; the layer is then simply off.
+	stageAgent, _ := e.orchestrator.GetAgent(ctx, stage.AgentId)
+
+	dreq, dout, verdict, acted := e.liveValidation(ctx, stageAgent, sessionID, stage.ValidationPrompt, output)
+	if acted {
+		e.orchestrator.logger.Info("Stage output judged by decision layer",
+			zap.Int("stage", stageNum),
+			zap.Bool("valid", verdict),
+			zap.Float64("confidence", dout.Confidence),
+			zap.Duration("latency", dout.Latency))
+		stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+		return verdict, nil
+	}
+
+	valid, err := e.validateStageOutputLLM(ctx, sessionID, stage, output)
+	if err != nil {
+		return valid, err
+	}
+	refs := sites.ValidationReference(valid)
+	switch {
+	case dreq != nil:
+		// Live band, decider did not clear it (or may only tighten): reuse
+		// the answer in hand.
+		stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, refs)
+	case stageAgent != nil && stageAgent.DecisionRouter() != nil:
+		if req, rerr := sites.ValidationRequest(stage.ValidationPrompt, output); rerr == nil {
+			stageAgent.RunDecisionShadow(ctx, sessionID, req, refs)
+		} else {
+			e.orchestrator.logger.Debug("decision shadow: validation request", zap.Error(rerr))
+		}
+	}
+	return valid, nil
+}
+
+// liveValidation is the decision layer's live path for stage.validation.
+// acted is true when the stage agent's band for the site is live, the
+// decider cleared it, and the band's mode allows the verdict: REPLACE acts on
+// either verdict, TIGHTEN_ONLY only on "invalid". When the decider answered
+// but the site must still run the LLM, req and out come back non-nil so the
+// caller records them against the LLM's verdict.
+func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent.Agent, sessionID, requirement, output string) (req *loomv1.DecisionRequest, out decision.Outcome, valid bool, acted bool) {
+	if stageAgent == nil {
+		return nil, decision.Outcome{}, false, false
+	}
+	router := stageAgent.DecisionRouter()
+	if router == nil || router.Band(sites.SiteStageValidation).Shadow {
+		return nil, decision.Outcome{}, false, false
+	}
+	req, err := sites.ValidationRequest(requirement, output)
+	if err != nil {
+		e.orchestrator.logger.Debug("decision: validation request", zap.Error(err))
+		return nil, decision.Outcome{}, false, false
+	}
+	out = stageAgent.LiveDecide(ctx, sessionID, req)
+	if !out.Act() {
+		return req, out, false, false
+	}
+	valid, ok := sites.ValidationVerdict(out.Response)
+	if !ok {
+		return req, out, false, false
+	}
+	if valid && out.Band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY {
+		// A gate may only tighten: the decider cannot pass an output on its
+		// own, so the LLM still decides and the row is a fallback.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		return req, out, false, false
+	}
+	return req, out, valid, true
+}
+
+// validateStageOutputLLM is the generative validator: the stage's validation
+// prompt with the output substituted in, judged by scraping the reply.
+func (e *PipelineExecutor) validateStageOutputLLM(ctx context.Context, sessionID string, stage *loomv1.PipelineStage, output string) (bool, error) {
 	validationLLM := e.orchestrator.GetMergeLLM()
 	if validationLLM == nil {
 		return true, fmt.Errorf("LLM provider required for validation (configure orchestrator LLM or agent orchestrator role LLM)")
 	}
 
 	// Build validation prompt
-	validationPrompt := strings.ReplaceAll(stage.ValidationPrompt, "{{output}}", output)
-
-	// Generate unique session ID for validation
-	sessionID := fmt.Sprintf("%s-stage%d-%s-validation", workflowID, stageNum, stage.AgentId)
+	validationPrompt := strings.ReplaceAll(stage.ValidationPrompt, sites.OutputPlaceholder, output)
 
 	// Create a wrapper context
 	validationSession := &agent.Session{
