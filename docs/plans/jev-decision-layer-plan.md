@@ -145,11 +145,11 @@ Each site follows the same four steps: **shadow → report → band → live**, 
 | Step | Site | Request shape | Fallback | Success metric |
 |---|---|---|---|---|
 | 3.1 | Recall rerank `pkg/agent/agent.go:3398` | `Noul` per candidate ("could this memory bear on the message?"), state = `{message[:500], candidate}` fan-out in one request; batch >~40 candidates | current LLM rerank | recall precision on LongMemEval harness ≥ current; `rerank.duration_ms` p50 |
-| 3.2 | Conversation search rerank `segmented_memory.go:844` | `Score` 0–10 collapsed to 5 levels per candidate | BM25 order | same harness |
+| 3.2 | Conversation search rerank `segmented_memory.go:844` — **unreachable on `main` (no production caller), skipped 2026-09-23** | `Score` 0–10 collapsed to 5 levels per candidate | BM25 order | same harness |
 | 3.3 | tool_search rerank `registry.go:799` | `Score` per candidate; replaces the `1/(1+(-bm25/10))` confidence with a calibrated one | current LLM rerank | wrong-tool rate on the tool_search eval |
 | 3.4 | Workflow branch `conditional_executor.go:166` | `Choice` over `Branches` keys + `none_of_these`; state = condition prompt rendered with stage output | existing agent turn + `retryConditionEvaluation` | branch-selection latency; retry count → 0 on confident cases |
-| 3.5 | Intent `patterns/llm_classifier.go:84` | `Choice` over `Intents` + `none`; confidence feeds `shouldInvokeLLMReRanker` directly, deleting the 0.70/0.20/0.60 constants | keyword classifier | pattern-selection accuracy on the Teradata library eval |
-| 3.6 | Stage validation `pipeline_executor.go:720` + acceptance criteria `output_validator.go:184` | `Noul` per criterion | current LLM call | removes `contains("valid")` scraping; implements `acceptance_criteria` |
+| 3.5 | Intent `patterns/llm_classifier.go:84` — **unreachable on `main` (`ClassifyIntent` never called), skipped 2026-09-23** | `Choice` over `Intents` + `none`; confidence feeds `shouldInvokeLLMReRanker` directly, deleting the 0.70/0.20/0.60 constants | keyword classifier | pattern-selection accuracy on the Teradata library eval |
+| 3.6 | Stage validation `pipeline_executor.go:866` (done); acceptance criteria `output_validator.go:274` (deferred: nothing evaluates the field today) | one `Noul` {requirement, output}; `tighten_only` honoured | current LLM call + scraped verdict | replaces `contains("valid")` scraping when a band is live |
 | 3.7 | Swarm tie-break / debate consensus | `Choice` over candidates / `Noul` agree | current | n/a, correctness only |
 
 Acceptance per step: shadow agreement ≥ the site's threshold (set from the report, default ≥0.9 vs reference), ECE reported, band configured, `-race` clean, docs status flipped to ✅ for that site.
@@ -224,11 +224,13 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
 - [x] `DecisionBand.aggregate` (MIN | PER_QUESTION) in proto, router, YAML (`bands[].aggregate`) — 2026-09-23 on `feat/decision-layer-phase3`. Fan-out reranks need it: under MIN one uncertain candidate disables the whole answer.
 - [x] 3.1 recall rerank — live path code: decider first when the band is live, keep relevant-or-uncertain, LLM rerank when no answer clears the band; one decider call per visit. **Shadow report against a real decider: not yet run** (needs live agent traffic with graph memory on; the replay CLI only covers `tool.failure_kind`). No band recommended yet.
-- [ ] 3.2 conversation rerank — not started (no shadow either)
+- [~] 3.2 conversation rerank — **SKIPPED, unreachable**: `SegmentedMemory.SearchMessages` (the BM25 + LLM rerank at `segmented_memory.go`) has no production caller on `main` as of 2026-09-23; only tests reach it. Instrumenting it would measure nothing. Revisit if a `search_conversation` tool or equivalent lands.
 - [x] 3.3 tool_search rerank — live path code in `Registry.Search` stage 3: ordered by probability, `decision` RelevanceSignal, span attribute `tool_search.rerank`. Shadow report: not yet run.
 - [x] 3.4 workflow branch — new site `workflow.branch` (`sites/branch.go`): Choice over branch keys + `none_of_these`; live path in `ConditionalExecutor.Execute` skips the condition agent's turn; `none_of_these` acts only with a default branch. Shadow report: not yet run (needs conditional workflows in traffic).
-- [ ] 3.5 intent · [ ] 3.6 stage validation · [ ] 3.7 swarm/debate
-- [ ] Phase 3 evidence: run the three sites in shadow with `provider: jev` on the rig (graph memory on, tool_search BALANCED, a conditional workflow in the mix), produce `loom decision report --site` for each, then pick bands. Recall precision on the LongMemEval harness before/after is the 3.1 acceptance gate.
+- [~] 3.5 intent — **SKIPPED, unreachable**: the agent builds and installs `patterns.NewLLMIntentClassifier` (agent.go, `UseLLMClassifier`) but nothing ever calls `Orchestrator.ClassifyIntent` or `RecommendPattern` on `main` (pattern auto-injection was removed in the 2026-07 recut). The `shouldInvokeLLMReRanker` constants this step was to delete are equally dead. Revisit if pattern recommendation returns to the turn loop.
+- [x] 3.6 stage validation — new site `stage.validation` (`sites/validation.go`): one Noul over {requirement, output}; live path in `PipelineExecutor.validateStageOutput` skips the validator LLM; **first site honouring `DecisionBandMode`** (`tighten_only` = decider may fail an output, never pass one). Shadow report: not yet run. `OutputPolicy.acceptance_criteria` left as a separate feature: nothing evaluates it today.
+- [ ] 3.7 swarm/debate
+- [ ] Phase 3 evidence: run the four sites in shadow with `provider: jev` on the rig (graph memory on, tool_search BALANCED, a conditional workflow in the mix), produce `loom decision report --site` for each, then pick bands. Recall precision on the LongMemEval harness before/after is the 3.1 acceptance gate.
 
 ### Phase 4 — Tier 2 gaps
 - [ ] P0 prerequisite: breaker counts `Result.Success==false` (from tool-calling assessment)
