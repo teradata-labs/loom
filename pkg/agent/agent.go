@@ -535,6 +535,28 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 // WithConfig sets the agent configuration.
 func WithConfig(config *Config) Option {
 	return func(a *Agent) {
+		if config == nil {
+			return
+		}
+		// Identity fields that other options write (WithName, WithDescription,
+		// WithSystemPrompt) survive a later WithConfig whose copy of them is
+		// empty. Every registry- and CLI-built agent applied WithSystemPrompt
+		// and then WithConfig with a fresh Config, and lost its system prompt;
+		// agents configured to hold a stance answered on the merits instead.
+		if prev := a.config; prev != nil {
+			if config.Name == "" {
+				config.Name = prev.Name
+			}
+			if config.Description == "" {
+				config.Description = prev.Description
+			}
+			if config.SystemPrompt == "" {
+				config.SystemPrompt = prev.SystemPrompt
+			}
+			if config.SystemPromptKey == "" {
+				config.SystemPromptKey = prev.SystemPromptKey
+			}
+		}
 		a.config = config
 	}
 }
