@@ -115,3 +115,32 @@ Both kept at least one evidence memory in 30 of the 31 questions; Jev kept 6.5 o
 
 **The cap, not the provider, was next.** With chunking deployed the provider stopped failing (4,915 recall visits, 0 provider errors), but cells B lost 14-17% of visits to `context deadline exceeded`: our own flat 3 s live cap, which a multi-round chunked request outgrows. The shadow cell in the same window, which has no such cap, failed 0 of 1,360. Measured on 476 uncapped requests of 41-64 candidates: p50 427 ms, p90 1.9 s, 91% inside 4 s, and a 9% tail of 17-30 s spent in the client's retry ladder. So the live budget now scales with the rounds a request takes (`decision.Budget`, 4 s each, capped at 12 s) and the client returns early rather than starting a backoff its caller's deadline cannot hold. Cell B's numbers below were collected under the old flat cap, so Jev decided about 84% of B's visits and the LLM rerank covered the rest; B's accuracy is therefore a floor.
 
+## 8. LongMemEval A/B, final results (2026-09-24)
+
+Four cells, 40 questions each, same server, same judge (gpt-5.2), isolate mode. A = today's LLM rerank with Jev shadowed; B = Jev live on `recall.rerank` with a per-question band at `act_min 0.5`.
+
+| Cell | End to end | Jev precision / recall | LLM rerank precision / recall |
+|---|---|---|---|
+| A multi-session | 20/37 (54%) | 95.0% / 56.0% (shadow) | 97.9% / 40.4% (acted) |
+| B multi-session | 22/37 (59%) | 93.9% / 56.4% (acted) | did not run |
+| A knowledge-update | 25/39 (64%) | 98.8% / 56.7% (shadow) | 97.6% / 54.0% (acted) |
+| B knowledge-update | 17/39 (44%) | 98.6% / 49.7% (acted) | did not run |
+
+**No end-to-end difference is statistically significant at this sample size.** Pooled, A is 45/76 and B 39/76 (z = 0.98, p = 0.33). Multi-session favours B by 5 points (p = 0.64); knowledge-update favours A by 20 points (p = 0.07), the only comparison that is even suggestive. Two caveats bound how far B can be read: both B cells ran under the old flat 3 s live cap, so Jev decided roughly 84% of their visits and the LLM rerank covered the rest, and evidence is labelled per session, so a memory extracted from an evidence session counts as evidence whether or not it carries the answer. The label noise inflates false negatives for both mechanisms equally, so the comparison between them stands while the absolute recall figures do not.
+
+**What is consistent across all four cells** is Jev's shape: precision in the mid-to-high 90s, recall between 50% and 57%. It keeps fewer memories than the LLM rerank on knowledge-update (2.6 per question against 3.0) and more on multi-session (6.5 against 4.5). That fits the two question types: a multi-session answer needs any one of several sessions, so extra recall helps, while a knowledge-update answer needs every version of a fact in order to tell which is current, so dropping one version loses the question even though some evidence survived. Jev surfaced at least one evidence memory in 28 of 28 knowledge-update questions and still lost 8 of them relative to A.
+
+**The band, not the model, is the thing to tune.** Sweeping the keep threshold over the 1,912 graded candidates from the three session-id cells:
+
+| Threshold | Candidates kept | Precision | Recall |
+|---|---|---|---|
+| 0.2 | 417 | 92.1% | 74.6% |
+| 0.3 | 353 | 94.1% | 64.5% |
+| 0.4 | 314 | 95.2% | 58.1% |
+| 0.5 (used) | 291 | 96.6% | 54.6% |
+| 0.7 | 248 | 97.6% | 47.0% |
+
+Recall rises 20 points between 0.5 and 0.2 for 4.5 points of precision, and a rerank's job is to avoid dropping the answer, not to keep the list short. `act_min 0.2`–`0.3` is the band this data supports for `recall.rerank`, not the 0.5 the A/B ran. Beyond that the returns stop: 56% of the evidence candidates Jev dropped scored below 0.2, where no threshold recovers them.
+
+**Recommended next experiment**, if the question is worth more compute: rerun both B cells on the fixed live budget with `act_min 0.3`. That removes the 16% of visits the old cap handed back to the LLM and tests the band this data actually supports. Roughly 9 hours on the current VM.
+
