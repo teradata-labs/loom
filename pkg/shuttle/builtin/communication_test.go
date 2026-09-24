@@ -24,6 +24,7 @@ func createTestQueue(t *testing.T) *communication.MessageQueue {
 	queue, err := communication.NewMessageQueue(tmpFile, nil, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, queue)
+	t.Cleanup(func() { _ = queue.Close() })
 	return queue
 }
 

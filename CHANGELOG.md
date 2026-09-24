@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Skills: trigger modes are enforced, and a slash command loads a skill
+- **`trigger.mode: MANUAL` now means the user activates the skill and the model does not.** The mode was stored, shown and read by nothing on a turn — every bound skill was named with its description on the system-prompt menu and loadable through `manage_skills`, so a model routed to MANUAL skills on its own. A MANUAL skill is now left off the menu and out of `manage_skills list`, and a model-issued `load` is refused with a message naming the skill's slash command. A MANUAL skill the user has already activated loads again freely: the rule withholds a skill, not a session.
+- **A leading slash command loads the named skill**, before the model reads the turn — the user's route in, and the only one that reaches a MANUAL skill. It runs the same load path `manage_skills` uses (activation, required-tool wiring, task emission) and writes the same three conversation rows, so restore replay, folding and any embedder's tool timeline see a load indistinguishable from the model's own. A command matching no bound skill is left alone as ordinary text. `Orchestrator.MatchSkills` and `Discovery.Discover` are unchanged and remain off the conversation loop: nothing else activates a skill.
+- **`manage_skills list` reports the session's real library.** It read the index of the search paths and embedded FS, so skills an embedder injected with `Register` — database-backed, marketplace, or an admin's draft under test — were missing from it, which for an embedder that registers everything meant an empty answer. It now merges both stores and returns a stable, sorted list.
+
+### Breaking Changes
+
+- **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
+
+#### Usage and cost accounting
+- `catalog.LookupPricing` now consults the registered default `Source` (via `catalog.Register`) before the static built-in table, so an embedder's DB- or gateway-backed catalog prices models at the rates it actually pays. Previously only the static table was read, and every provider client's `calculateCost` fell to its hardcoded default for any id the static table did not list — on the OpenAI client that is the gpt-4o rate, applied to every OpenAI-compatible gateway alias regardless of model.
+- `openai.Config.CatalogProvider` selects the catalog namespace the OpenAI client prices under (default `"openai"`), so a client fronting a gateway (LiteLLM, vLLM, …) can be pointed at the provider key the embedder registered the gateway's ids under.
+- `agent.Response.TurnUsage` and `agent.TurnParkedError.TurnUsage` report the sum of every LLM call the turn made (tool-loop iterations, empty-response and hygiene retries, final synthesis). `Response.Usage` keeps its final-call meaning — it is what the persisted assistant row carries as its own token count and cost — so embedders metering a turn should read `TurnUsage`. The conversation span attributes (`conversation.tokens.*`, `conversation.cost.usd`) and the `agent.cost.usd` / `agent.tokens.total` metrics now report the turn total instead of the final call's share.
+
+#### MCP client negotiation
+- The streamable-HTTP transport routes a 4xx JSON-RPC error body as a protocol message **only when its `id` matches the request it answers**. A server that refuses a request at the HTTP layer can reply with a synthetic id — teradata-mcp-server answers the `server/discover` probe's `MCP-Protocol-Version: 2026-07-28` with HTTP 400 and `"id":"server-error"` — and routing that left the pending request waiting for a response that never came, so `client.Connect` ran out its deadline instead of falling back to the `initialize` handshake. The body now surfaces as `HTTPStatusError`, which `isLegacyServerSignal` already classifies (a 400 without a modern error code is a legacy server), and negotiation proceeds in one round trip.
+
+### Breaking Changes
+
+- **2 new database migrations** (SQLite `000009_task_created_via`, Postgres `000024_task_attribution`) apply automatically on first start of the upgraded server. They add `tasks.created_via`, `messages.task_id` and `human_requests.task_id`. The SQLite session store's own schema pass additionally adds `sessions.incarnation` (surfaced as the new exported field `Session.Incarnation`); Postgres does not persist it yet, and sessions without it fall back to a CreatedAt-derived epoch. Back up databases before upgrading.
+- **Implicit task recording is ON by default** for every agent with a task subsystem: one task row per turn that calls a tool or asks a human, excluded from the agent's own task queries. Disable with `memory.task_board.implicit_tasks.mode: disabled`.
+- **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
+
+### Added
+
+- **Task attribution and timeline read model (#378)** — `taskctx.Attribution` on the context stamps `task_id` onto messages and human requests on both backends; `TimelineReader` merges `messages`, `task_history` and `human_requests` projections for a task (no RPC yet). `ImplicitTaskConfig` (`TaskBoardConfig` field 7) tunes runtime recording: `mode`, `triggers`, `excluded_triggers`, `max_per_session`, `agent_visible`; unparseable values fail closed.
+- **`Task.created_via` on the wire** (`task.proto` field 29) so API and UI consumers of `ListTasks`/`GetBoard` can tell runtime-minted tasks from an agent's own. Tasks created over the `CreateTask` RPC without an explicit value are stamped `user`.
+- **`task.TaskCanceller`** optional store capability: a status-guarded cancel, implemented by the SQLite and Postgres stores, so a cancel racing a close is decided at the row and never flips a DONE task to CANCELLED. Stores without it take a guarded read-modify-write fallback.
+- `task.StatusCounter` optional store capability and `Manager.CountByStatus`, so `GetBoard` stats are exact past 1,000 rows.
+
+#### MCP Streamable-HTTP Session & 202 Handling
+- Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
+- Handle HTTP 202 Accepted (async MCP responses) correctly for non-request messages; for JSON-RPC requests, 202 is now treated as an error since the spec requires a response body.
+- Forward the `DELETE` verb (session teardown) with the correct headers.
+
+#### OpenAI Client Transport Hardening
+- Automatic single-retry on EOF/connection-reset transport errors so transient proxy disconnects don't fail a completion mid-stream.
+- Sanitise empty tool-call entries from the provider response before unmarshalling to avoid downstream nil-pointer panics.
+
+#### SSE Server Improvements (StreamWeave HTTP path)
+- Periodic 15-second heartbeat SSE comments to prevent upstream proxy idle-timeout kills during long LLM thinking stages.
+- Preserve the existing `encoding/json` SSE wire format (snake_case fields and numeric enum values) for compatibility with current clients.
+
+#### LiteLLM Health Checks
+- Probe LiteLLM's `/health/liveliness` endpoint without issuing a model completion.
+- Expand `${VAR}` placeholders in `litellm_model`, including Tera runtime artifacts that inject the selected model as `LITELLM_MODEL`.
+
+#### OTLP Runtime Integration
+- `looms serve` and `looms workflow` resolve standard OTLP endpoint and header variables after `mode: otel` or `observability.otlp_endpoint` explicitly selects OTLP; generic cluster OTEL variables never replace Hawk or embedded tracing.
+- In-process parent-linkage test added to the OTLP test suite.
+
+#### Runtime Image and Configuration
+- Multi-architecture `teradata/loom-runtime` image build recipes for Linux amd64 and arm64, with only the `looms` server, runtime patterns, and built-in skills included.
+- Trusted startup configuration supports single-pass `${VAR}` expansion; bare dollar signs are preserved, `$$` emits a literal dollar sign, and unresolved placeholders remain visible for diagnostics.
+
+### Changed
+
+- The default implicit trigger set is now exactly the set the runtime fires (`tool_call`, `human_request`); `subagent_spawn` was in the default while nothing fired it. An enabled policy whose triggers cannot fire is logged at agent wiring.
+- The agent config loader warns when a `task_board` block is written anywhere other than `memory.task_board`, where it is silently ignored.
+- Both task stores order list pages on a unique tiebreak, so offset paging no longer double-counts or drops rows.
+- `GetBoard` returns `Internal` on a count failure instead of silently reporting zeros.
+
+### Fixed
+
+- Postgres `CloseTask` on an already-terminal task returned no row with its sentinel, which the `task_board close` tool dereferenced.
+- Postgres never read `messages.task_id` back, so `Message.TaskID` was always empty there.
+- Every read of the agent id in `pkg/agent` now goes through the locked accessor; several stamped identity onto rows without the lock while `SetID` could run.
+- An int32-overflowing `implicit_tasks.max_per_session` failed open to the default cap instead of disabling emission.
+- Fork-join and swarm stage titles showed raw agent UUIDs; stage output copied into task notes could split a multi-byte rune and fail proto marshalling.
+
 ## [1.4.0] - 2026-08-12
 
 ### Breaking Changes

@@ -54,7 +54,9 @@ client := openai.NewClient(openai.Config{
     Endpoint:    "https://api.openai.com/v1/chat/completions", // Default
     MaxTokens:   4096,                       // Default: 4096
     Temperature: 1.0,                        // Default: 1.0
-    Timeout:     60 * time.Second,           // Default: 60s
+    Timeout:                60 * time.Second, // Default: 60s
+    StreamFirstByteTimeout: 90 * time.Second, // Optional: max wait for first body bytes
+    StreamIdleTimeout:      30 * time.Second, // Optional: max silence between later reads
 })
 ```
 
@@ -116,6 +118,12 @@ curl https://api.openai.com/v1/chat/completions \
 | `MaxTokens` | `int` | No | `4096` | 1-128000 (model dependent) |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 |
 | `Timeout` | `duration` | No | `60s` | 1s-10m |
+| `StreamFirstByteTimeout` | `duration` | No | `90s` | Maximum wait for the first response-body bytes in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `30s` | Maximum silence between subsequent network reads in `ChatStream` |
+
+Streaming requests use the two phase-specific timeouts instead of applying
+`Timeout` to the entire response. `StreamFirstByteTimeout` also bounds streaming
+response headers, while `Timeout` continues to bound non-streaming requests.
 
 
 ## Overview
@@ -254,12 +262,14 @@ import (
 
 // Create client with custom configuration
 client := openai.NewClient(openai.Config{
-    APIKey:      "sk-proj-...",
-    Model:       "gpt-4.1",
-    Endpoint:    "https://api.openai.com/v1/chat/completions", // Optional
-    MaxTokens:   8192,        // Increase for longer responses
-    Temperature: 0.7,         // Lower for more deterministic
-    Timeout:     120 * time.Second, // Longer timeout for complex tasks
+    APIKey:                  "sk-proj-...",
+    Model:                   "gpt-4.1",
+    Endpoint:                "https://api.openai.com/v1/chat/completions", // Optional
+    MaxTokens:               8192,             // Increase for longer responses
+    Temperature:             0.7,              // Lower for more deterministic
+    Timeout:                 120 * time.Second, // Non-streaming and response headers
+    StreamFirstByteTimeout:  90 * time.Second, // Wait for initial body bytes
+    StreamIdleTimeout:       30 * time.Second, // Silence after streaming starts
 })
 
 // Use as LLMProvider
@@ -314,6 +324,8 @@ agent, err := builder.NewAgentBuilder().
 | `MaxTokens` | `int` | No | `4096` | 1-128000 | Maximum tokens in response |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 | Sampling temperature |
 | `Timeout` | `duration` | No | `60s` | 1s-10m | Request timeout |
+| `StreamFirstByteTimeout` | `duration` | No | `90s` | >0 | Maximum wait for the first response-body bytes in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `30s` | >0 | Maximum silence between subsequent network reads in `ChatStream` |
 
 
 ## Model Support and Pricing

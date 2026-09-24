@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,15 @@ type ManageSkillsTool struct {
 	// Per-mutation debug carrier, set by the agent after construction. When its
 	// switch is on, each load emits a debug log; nil or off is a no-op.
 	ctxDebug *contextDebug
+
+	// emitSkillTasks materializes the loaded skill's task_template onto the
+	// agent's task board. Set by the agent after construction; nil is a no-op.
+	// Invoked only for a skill that was not already active for this session.
+	//
+	// The agent's implementation (Agent.emitSkillTasksAsync) returns before the
+	// writes happen and reports its own failures, so load neither waits for the
+	// board to fill nor fails when it does not.
+	emitSkillTasks func(ctx context.Context, sessionID string, skill *skills.Skill)
 }
 
 // NewManageSkillsTool constructs the manage_skills builtin. enforceTools is the
@@ -118,7 +128,7 @@ func (t *ManageSkillsTool) Execute(ctx context.Context, params map[string]interf
 	switch action {
 	case "load":
 		name, _ := params["name"].(string)
-		return t.load(sessionID, name)
+		return t.load(ctx, sessionID, name, loadByModel)
 	case "list":
 		return t.list(sessionID)
 	default:
@@ -132,9 +142,30 @@ func (t *ManageSkillsTool) Execute(ctx context.Context, params map[string]interf
 	}
 }
 
+// loadOrigin distinguishes who asked for a load. The two differ on one rule:
+// a MANUAL skill is the user's to invoke, so the model may not load it while
+// the harness — acting on the user's slash command — may.
+type loadOrigin int
+
+const (
+	// loadByModel is a manage_skills(load) call the model made itself.
+	loadByModel loadOrigin = iota
+	// loadByUser is a load the harness performs on the user's behalf, i.e. the
+	// slash command the user typed (see Agent.loadSkillFromSlashCommand).
+	loadByUser
+)
+
 // load activates a skill for the session and returns its body plus a structured
-// activation marker. High-risk skills are gated on approval.
-func (t *ManageSkillsTool) load(sessionID, name string) (*shuttle.Result, error) {
+// activation marker. High-risk skills are gated on approval. ctx carries the
+// values the detached task emit needs (session, and any tenant identity the
+// storage layer reads); load itself performs no context-bound I/O.
+//
+// origin decides whether the MANUAL trigger mode blocks this load: MANUAL means
+// "only the user activates this skill", so a model-issued load is refused and
+// pointed at the skill's slash command. An already-active MANUAL skill loads
+// again freely — the user already activated it this session, so re-reading its
+// body is not a way around the rule.
+func (t *ManageSkillsTool) load(ctx context.Context, sessionID, name string, origin loadOrigin) (*shuttle.Result, error) {
 	if name == "" {
 		return &shuttle.Result{
 			Success: false,
@@ -176,13 +207,60 @@ func (t *ManageSkillsTool) load(sessionID, name string) (*shuttle.Result, error)
 		}, nil
 	}
 
-	activeBefore := len(t.orch.GetActiveSkills(sessionID))
-	active := t.orch.ActivatePinned(sessionID, skill, "manual_load", name, 1.0)
+	// One read of the pre-activation set serves three decisions: the MANUAL gate
+	// below, the debug delta further down, and the was-it-already-active check
+	// that gates task emission.
+	beforeSet := t.orch.GetActiveSkills(sessionID)
+	activeBefore := len(beforeSet)
+	wasActive := false
+	for _, as := range beforeSet {
+		if as != nil && as.Skill != nil && as.Skill.Name == name {
+			wasActive = true
+			break
+		}
+	}
+
+	// MANUAL gate: the skill's author reserved activation for the user, so the
+	// model cannot pull it into the conversation. The refusal names the slash
+	// command because that is the one thing that does activate it, and the model
+	// can relay it to the user. Not an error the model should retry: a MANUAL
+	// skill stays out of the menu and out of list(), so reaching here at all
+	// means the model guessed the name.
+	if origin == loadByModel && isManualSkill(skill) && !wasActive {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "manual_skill",
+				Message: manualSkillRefusal(skill),
+			},
+			Metadata: map[string]interface{}{
+				"skill":     name,
+				"activated": false,
+			},
+		}, nil
+	}
+
+	activationSource := "manual_load"
+	if origin == loadByUser {
+		activationSource = "slash_command"
+	}
+	active := t.orch.ActivatePinned(sessionID, skill, activationSource, name, 1.0)
 
 	// Wire the skill's required tools for this session. The loop re-projects the
 	// advertised tool set per provider call, so they surface this turn.
 	if t.enforceRequiredSkillTools != nil {
 		t.enforceRequiredSkillTools(sessionID)
+	}
+
+	// Materialize the skill's task_template, once per (skill, session).
+	//
+	// The per-name check above is what decides that, and the active-set LENGTH
+	// cannot substitute for it: ActivatePinned replaces a same-name activation
+	// in place, so re-loading an already-active skill leaves the count
+	// unchanged, while loading any different skill raises it. Only the name
+	// comparison separates a genuinely new activation from a repeat.
+	if !wasActive && t.emitSkillTasks != nil {
+		t.emitSkillTasks(ctx, sessionID, skill)
 	}
 
 	body := skill.FormatForLLM()
@@ -247,11 +325,23 @@ type skillListResult struct {
 	Skills      []skillListEntry `json:"skills"`
 }
 
-// list returns the full library annotated with which skills are active for this
+// list returns the library annotated with which skills are active for this
 // session, rendered as JSON.
+//
+// The library answers "what skills exist" from two stores and neither is the
+// whole truth: ListAll indexes the search paths and the embedded FS, while
+// Register — which is how an embedder injects database-backed, marketplace and
+// admin-draft skills, and how the cloud builds every session library — writes
+// to the skill cache that List reads. Listing from the index alone reported
+// none of a cloud session's skills; listing from the cache alone would drop the
+// on-disk ones until something loaded them. This reads both and merges by name.
+//
+// MANUAL skills are omitted: the model cannot load them (see load's gate), so
+// listing them would only advertise a name every load call refuses. The one
+// exception is a MANUAL skill the user already activated by slash command —
+// it is part of this session's state, so the model's picture of what is active
+// stays complete.
 func (t *ManageSkillsTool) list(sessionID string) (*shuttle.Result, error) {
-	summaries := t.library.ListAll()
-
 	activeSet := make(map[string]bool)
 	for _, as := range t.orch.GetActiveSkills(sessionID) {
 		if as != nil && as.Skill != nil {
@@ -259,15 +349,42 @@ func (t *ManageSkillsTool) list(sessionID string) (*shuttle.Result, error) {
 		}
 	}
 
-	entries := make([]skillListEntry, 0, len(summaries))
+	entries := make([]skillListEntry, 0)
 	activeCount := 0
-	for _, s := range summaries {
+	seen := make(map[string]bool)
+	add := func(s *skills.Skill) {
+		if s == nil || s.Name == "" || seen[s.Name] {
+			return
+		}
+		seen[s.Name] = true
 		isActive := activeSet[s.Name]
+		if isManualSkill(s) && !isActive {
+			return
+		}
 		if isActive {
 			activeCount++
 		}
-		entries = append(entries, skillListEntry{SkillSummary: s, Active: isActive})
+		entries = append(entries, skillListEntry{SkillSummary: s.Summary(), Active: isActive})
 	}
+
+	for _, s := range t.library.List() {
+		add(s)
+	}
+	// Load resolves an indexed skill from its source and caches it, so the
+	// trigger mode this filter needs is available for index-only entries too.
+	for _, summary := range t.library.ListAll() {
+		if seen[summary.Name] {
+			continue
+		}
+		if s, err := t.library.Load(summary.Name); err == nil {
+			add(s)
+		}
+	}
+
+	// List walks a map, so its order varies per call. The rendered list is part
+	// of the model's context: an unstable order would churn the prompt cache and
+	// make two identical sessions read differently.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	composite := skillListResult{
 		SessionID:   sessionID,

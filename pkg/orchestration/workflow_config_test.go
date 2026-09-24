@@ -8,6 +8,7 @@ package orchestration
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -570,6 +571,9 @@ spec:
 }
 
 func TestLoadWorkflowFromYAML_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on Windows only toggles the read-only attribute; it cannot make a file unreadable to its owner")
+	}
 	yaml := `
 apiVersion: loom/v1
 kind: Workflow

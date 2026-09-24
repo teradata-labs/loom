@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,6 +102,9 @@ func TestEmbeddedTracer_WithSpanExporter(t *testing.T) {
 	_, span := tracer.StartSpan(ctx, "test.operation",
 		WithAttribute("key", "value"),
 	)
+	// Ensure real wall-clock time elapses so Duration is deterministically
+	// nonzero regardless of the OS clock's tick resolution.
+	time.Sleep(1 * time.Millisecond)
 	tracer.EndSpan(span)
 
 	// Verify span was exported with all lifecycle fields

@@ -2,7 +2,9 @@
 
 ## Overview
 
-Skills are YAML-defined units of expertise that the **model pulls into a session on demand**. The system prompt carries a menu of the skills bound to the agent — name and description only. When the model decides it needs one, it calls the `manage_skills` builtin with the `load` action: the skill activates for that session, the tools it declares as required are registered and advertised to that session, and the verbatim skill body enters the conversation as a user-role message. Skill bodies are never written into the system prompt, and nothing activates a skill on the model's behalf.
+Skills are YAML-defined units of expertise that the **model pulls into a session on demand**. The system prompt carries a menu of the skills bound to the agent — name and description only. When the model decides it needs one, it calls the `manage_skills` builtin with the `load` action: the skill activates for that session, the tools it declares as required are registered and advertised to that session, and the verbatim skill body enters the conversation as a user-role message. Skill bodies are never written into the system prompt.
+
+A skill has one other way in, and it belongs to the user: a message that opens with the skill's slash command. The harness loads it before the model reads the turn, writing the same rows a model-issued load writes. That is the only route into a skill whose trigger mode is `MANUAL`, which the menu withholds and `load` refuses (see [Trigger Modes](#trigger-modes)). Nothing else activates a skill: there is still no per-turn matching or scoring.
 
 **Version**: v1.3.0
 **Status**: ✅ Shipped. The pull path (`manage_skills` list/load, sidecar body delivery, per-session required-tool registration, restore replay) is wired and live. Anthropic-style skill import (PR #182) and the `SkillsImportService` gRPC surface with post-write router reload (PR #183) are live; end-of-turn task-board hygiene (PR #184) gates each turn's return. Hierarchical discovery (PR #174) is built and wired onto the agent as a component, but the conversation loop does not drive it — see [Discovery Components](#discovery-components-off-the-pull-path). Remaining gaps are tracked in [`skills-overhaul.md`](./skills-overhaul.md#limitations-and-known-gaps) (notably `mcp_servers` activation, skill-activation task emission, and registry-side hot-reload wiring).
@@ -93,7 +95,7 @@ Skills are YAML-defined units of expertise that the **model pulls into a session
               Response → USER
 ```
 
-There is no per-turn matching, scoring, or auto-activation step anywhere on this path. A skill is in the session because the model asked for it, or because a restore replayed an earlier ask.
+There is no per-turn matching, scoring, or auto-activation step anywhere on this path. A skill is in the session because the model asked for it, because the user sent its slash command, or because a restore replayed an earlier ask.
 
 ---
 
@@ -110,7 +112,9 @@ Two actions, and only two:
 
 **There is no `unload`.** A load appends to the session's active set and the required-tool wiring stays until the session ends (`Orchestrator.CleanupSession`). The active set has a single source — the orchestrator's per-session map — read by both the load path and the `list` annotation, so "which skills are loaded" is never re-derived from the conversation.
 
-`list` returns the **whole library**; the system-prompt menu lists only the skills **bound to this agent** (see [Binding Resolution](#binding-resolution)). The two views differ by design: the menu is what the agent is meant to reach for, `list` is what exists.
+`list` returns the **whole library**; the system-prompt menu lists only the skills **bound to this agent** (see [Binding Resolution](#binding-resolution)). The two views differ by design: the menu is what the agent is meant to reach for, `list` is what exists. Both withhold `MANUAL` skills, which are the user's to invoke — `list` still shows one the user has activated, since it is then part of the session's state.
+
+"The whole library" means both of the library's stores: the index built from the search paths and embedded FS, and the skills an embedder injected with `Register` (database-backed, marketplace, or an admin's draft under test). Reading either alone under-reports — an embedder that registers everything has an empty index, and a library that has only answered a `Load` by name has a cache of one.
 
 ### Load Sequence
 
@@ -189,6 +193,42 @@ The body is `Skill.FormatForLLM()` — title header, instructions, constraints, 
 ### Restore Replay
 
 A load result carries a durable `{skill, activated}` marker on the tool message. On session restore, the memory manager's replay walk calls `reFireSkillActivation` for each marker: `ActivatePinned` + `enforceRequiredSkillTools`, so a restored session's active set and advertised tools match a live one. A blocked load carries `activated:false` and is not re-fired. Replay re-activates and re-registers only — it adds no message to the conversation (the original body is already in the restored history) and emits nothing else.
+
+---
+
+## Trigger Modes
+
+`trigger.mode` decides who may put a skill into a session. An author who declares no mode gets `HYBRID`.
+
+| Mode | The model may pull it | The user's slash command loads it | On the prompt menu |
+|---|---|---|---|
+| `HYBRID` *(undeclared default)* | yes | yes | yes |
+| `AUTO` | yes | yes | yes |
+| `MANUAL` | **no** | yes | **no** |
+| `ALWAYS` | n/a — its binding forces it active every turn | yes | yes |
+
+`MANUAL` means the skill is the user's to invoke: it is left off the system-prompt menu and out of `manage_skills list`, and a model-issued `load` is refused with a message naming its slash command. Once the user has activated it, the model may re-read it — the rule withholds a skill, not a session. Use it for a skill whose side effects should never start on the model's own initiative.
+
+Why `HYBRID` is the default rather than the more restrictive `MANUAL`: the mode had no runtime effect until the menu and `load` began enforcing it, so every skill behaved as `HYBRID` and no author ever selected a default deliberately. Defaulting to `MANUAL` would have silently withheld every skill that omits the field — in practice nearly all of them. `MANUAL` is therefore opt-in, which is the only way it carries intent.
+
+### Slash-Command Load
+
+```
+  user: "/td-analytics revenue by region"
+     |
+     +-- ParseSlashCommand + FindBySlashCommand, restricted to bound skills
+     |
+     +-- the SAME load path manage_skills uses (activation, required tools, task emission)
+     |
+     +-- three rows, identical in shape to a model-issued load:
+     |     assistant  tool_calls=[manage_skills{action:load,name}]
+     |     tool       "Skill loaded: <name>"
+     |     user       the skill body
+     |
+     +-- then the model reads the turn, with the instructions already in context
+```
+
+The row shape is load-bearing, not cosmetic: [Restore Replay](#restore-replay) rebuilds a reloaded session's active set from exactly that assistant/tool pair. A message whose command matches no bound skill is left alone and reaches the model as ordinary text.
 
 ---
 
@@ -762,10 +802,11 @@ metadata:
   risk_level: ""                       # "" | LOW | MEDIUM | HIGH | RESTRICTED
                                        #   HIGH/RESTRICTED gate the load on approval
 
-trigger:                               # Search-path metadata; no effect on
-  slash_commands: ["/td-analytics"]    #   manage_skills, which loads by name
-  keywords: ["teradata", "vantage"]
+trigger:                               # keywords are search-path metadata;
+  slash_commands: ["/td-analytics"]    #   slash_commands and mode are not —
+  keywords: ["teradata", "vantage"]    #   see Trigger Modes below
   mode: HYBRID                         # MANUAL | AUTO | HYBRID | ALWAYS
+                                       #   undeclared = HYBRID
 
 prompt:                                # Body returned by manage_skills(load),
   instructions: |                      #   delivered as a user-role message

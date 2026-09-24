@@ -105,6 +105,9 @@ type MultiAgentServer struct {
 
 	// Agent registry for workflow execution
 	registry *agent.Registry
+	// spawnEnabled is the explicit opt-in path for programmatic embedders that
+	// do not configure an agent registry.
+	spawnEnabled map[string]bool
 
 	// Workflow scheduler for cron-based execution
 	scheduler *scheduler.Scheduler
@@ -259,9 +262,10 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store agent.SessionStor
 		modelRegistry:                     factory.NewModelRegistry(), // Initialize with all models
 		progressMultiplexers:              make(map[string]*metaagent.ProgressMultiplexer),
 		pendingQuestions:                  make(map[string]*metaagent.Question),
-		clarificationChannelSendTimeoutMs: 100,                                       // Default 100ms, can be configured via SetClarificationConfig()
-		workflowStore:                     NewWorkflowStore(),                        // Initialize workflow execution store
-		registry:                          nil,                                       // Set via SetAgentRegistry()
+		clarificationChannelSendTimeoutMs: 100,                // Default 100ms, can be configured via SetClarificationConfig()
+		workflowStore:                     NewWorkflowStore(), // Initialize workflow execution store
+		registry:                          nil,                // Set via SetAgentRegistry()
+		spawnEnabled:                      make(map[string]bool),
 		workflowSubAgents:                 make(map[string]*workflowSubAgentContext), // Initialize workflow sub-agent tracking
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
@@ -520,6 +524,49 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 	s.mu.RUnlock()
 
 	return nil, "", status.Errorf(codes.NotFound, "agent not found: %s (available: %v)", agentID, available)
+}
+
+// agentAllowsSpawn returns true when the agent's config explicitly lists
+// "manage_ephemeral_agents" in tools.builtin. This gates server-side
+// injection so spawning is an opt-in capability, not a default for all agents.
+func (s *MultiAgentServer) agentAllowsSpawn(agentID string) bool {
+	s.mu.RLock()
+	programmaticOptIn := s.spawnEnabled[agentID]
+	s.mu.RUnlock()
+	if programmaticOptIn {
+		return true
+	}
+	if s.registry == nil {
+		return false
+	}
+	// Resolve GUID → name if needed so GetConfig can find the config.
+	name := agentID
+	if info, err := s.registry.GetAgentInfo(agentID); err == nil {
+		name = info.Name
+	}
+	cfg := s.registry.GetConfig(name)
+	if cfg == nil || cfg.Tools == nil {
+		return false
+	}
+	for _, b := range cfg.Tools.Builtin {
+		if b == "manage_ephemeral_agents" {
+			return true
+		}
+	}
+	return false
+}
+
+// SetAgentSpawnEnabled explicitly controls ephemeral-agent spawning for an
+// agent in programmatic servers that do not load YAML through AgentRegistry.
+// Registry-backed servers should opt in with tools.builtin instead.
+func (s *MultiAgentServer) SetAgentSpawnEnabled(agentID string, enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if enabled {
+		s.spawnEnabled[agentID] = true
+	} else {
+		delete(s.spawnEnabled, agentID)
+	}
 }
 
 // findAgentBySession iterates all agents to find which one owns the given session.
@@ -1030,23 +1077,26 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	}
 	s.mu.RUnlock()
 
-	// Register manage_ephemeral_agents tool if not already registered
-	// This allows agents to spawn and despawn sub-agents dynamically
-	toolNames := ag.ListTools()
-	hasManageTool := false
-	for _, name := range toolNames {
-		if name == "manage_ephemeral_agents" {
-			hasManageTool = true
-			break
+	// Register manage_ephemeral_agents tool only when the agent config
+	// explicitly opts in via tools.builtin. This prevents agents from
+	// spawning sub-agents unless the operator has consciously enabled it.
+	if s.agentAllowsSpawn(agentID) {
+		toolNames := ag.ListTools()
+		hasManageTool := false
+		for _, name := range toolNames {
+			if name == "manage_ephemeral_agents" {
+				hasManageTool = true
+				break
+			}
 		}
-	}
-	if !hasManageTool {
-		manageTool := builtin.NewManageEphemeralAgentsTool(s, sessionID, agentID)
-		ag.RegisterTool(manageTool)
-		if s.logger != nil {
-			s.logger.Debug("Registered manage_ephemeral_agents tool for session",
-				zap.String("session_id", sessionID),
-				zap.String("agent_id", agentID))
+		if !hasManageTool {
+			manageTool := builtin.NewManageEphemeralAgentsTool(s, sessionID, agentID)
+			ag.RegisterTool(manageTool)
+			if s.logger != nil {
+				s.logger.Debug("Registered manage_ephemeral_agents tool for session",
+					zap.String("session_id", sessionID),
+					zap.String("agent_id", agentID))
+			}
 		}
 	}
 
@@ -1245,23 +1295,26 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	}
 	defer releaseDoor()
 
-	// Register manage_ephemeral_agents tool if not already registered
-	// This allows agents to spawn and despawn sub-agents dynamically
-	toolNames := ag.ListTools()
-	hasManageTool := false
-	for _, name := range toolNames {
-		if name == "manage_ephemeral_agents" {
-			hasManageTool = true
-			break
+	// Register manage_ephemeral_agents tool only when the agent config
+	// explicitly opts in via tools.builtin. This prevents agents from
+	// spawning sub-agents unless the operator has consciously enabled it.
+	if s.agentAllowsSpawn(resolvedAgentID) {
+		toolNames := ag.ListTools()
+		hasManageTool := false
+		for _, name := range toolNames {
+			if name == "manage_ephemeral_agents" {
+				hasManageTool = true
+				break
+			}
 		}
-	}
-	if !hasManageTool {
-		manageTool := builtin.NewManageEphemeralAgentsTool(s, sessionID, resolvedAgentID)
-		ag.RegisterTool(manageTool)
-		if s.logger != nil {
-			s.logger.Debug("Registered manage_ephemeral_agents tool for streaming session",
-				zap.String("session_id", sessionID),
-				zap.String("agent_id", resolvedAgentID))
+		if !hasManageTool {
+			manageTool := builtin.NewManageEphemeralAgentsTool(s, sessionID, resolvedAgentID)
+			ag.RegisterTool(manageTool)
+			if s.logger != nil {
+				s.logger.Debug("Registered manage_ephemeral_agents tool for streaming session",
+					zap.String("session_id", sessionID),
+					zap.String("agent_id", resolvedAgentID))
+			}
 		}
 	}
 
@@ -3411,10 +3464,13 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check by pinging each unique LLM provider.
-// Providers are deduplicated across agents (many agents share the same provider)
-// and checked concurrently, so latency is O(slowest_provider) not O(agents × latency).
-// Returns per-provider status in the components map.
+// GetHealth performs a health check against each unique LLM provider, preferring
+// each provider's lightweight HealthCheck (see pingProvider in health.go) over a
+// real chat completion so transient LLM latency/rate limits don't falsely report
+// a live agent as unhealthy. Providers are deduplicated across agents (many agents
+// share the same provider) and checked concurrently, so latency is
+// O(slowest_provider) not O(agents × latency). Returns per-provider status in the
+// components map.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
 	s.mu.RLock()
 	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
@@ -3452,9 +3508,7 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 		go func() {
 			start := time.Now()
 			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_, err := info.provider.Chat(checkCtx, []types.Message{
-				{Role: "user", Content: "ping"},
-			}, nil)
+			err := pingProvider(checkCtx, info.provider)
 			cancel()
 			latency := time.Since(start).Milliseconds()
 
@@ -4691,6 +4745,72 @@ func (s *MultiAgentServer) PauseSchedule(ctx context.Context, req *loomv1.PauseS
 	return &emptypb.Empty{}, nil
 }
 
+// CancelScheduledExecution stops a scheduled execution that is in flight.
+//
+// Pausing a schedule prevents future runs but leaves one already in flight
+// alone, and max_execution_seconds only notices a stuck run once its deadline
+// passes. This is the stop button in between.
+//
+// Scope: only executions the scheduler minted. An execution ID from
+// ExecuteWorkflow or StreamWorkflow lives in the workflowStore namespace that
+// GetWorkflowExecution reads, and returns NotFound here rather than being
+// silently reported as already finished.
+//
+// No CLI or TUI surface invokes this yet: the schedule RPC family has no CLI
+// commands at all, so wiring one up is a follow-up for the family rather than
+// for this RPC alone.
+func (s *MultiAgentServer) CancelScheduledExecution(ctx context.Context, req *loomv1.CancelScheduledExecutionRequest) (*loomv1.CancelScheduledExecutionResponse, error) {
+	if req.ExecutionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "execution_id is required")
+	}
+
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+
+	if sched == nil {
+		return nil, status.Error(codes.FailedPrecondition, "scheduler not configured")
+	}
+
+	outcome, err := sched.CancelExecution(ctx, req.ExecutionId, req.Reason)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to cancel execution: %v", err)
+	}
+
+	switch outcome {
+	case scheduler.CancelOutcomeNotFound:
+		// The scheduler has never heard of this ID, in flight or in history.
+		// Saying "already finished" here would be a lie an operator acts on, so
+		// name the namespace boundary instead.
+		return nil, status.Errorf(codes.NotFound,
+			"no scheduled execution %q, in flight or in history; execution IDs returned by "+
+				"ExecuteWorkflow or StreamWorkflow are a different namespace and cannot be canceled here",
+			req.ExecutionId)
+
+	case scheduler.CancelOutcomeAlreadyFinished:
+		// A successful no-op, not an error: an execution that reached its
+		// verdict a moment before the request already gave the caller what they
+		// asked for. Reporting an error here would make the UI apologize for a
+		// race it won.
+		return &loomv1.CancelScheduledExecutionResponse{
+			Canceled: false,
+			Message:  "execution already finished before the request; its recorded outcome stands",
+		}, nil
+
+	case scheduler.CancelOutcomeSignaled:
+		return &loomv1.CancelScheduledExecutionResponse{
+			Canceled: true,
+			Message:  "cancellation signaled; the run stops at its next checkpoint and is recorded as canceled",
+		}, nil
+
+	default:
+		// A new outcome the scheduler grew and this handler has not learned.
+		// Mapping it onto one of the cases above would report a state that was
+		// never observed, so fail loudly instead.
+		return nil, status.Errorf(codes.Internal, "unhandled cancel outcome %v", outcome)
+	}
+}
+
 // ResumeSchedule resumes a paused schedule.
 // The schedule will start executing again according to its cron expression.
 func (s *MultiAgentServer) ResumeSchedule(ctx context.Context, req *loomv1.ResumeScheduleRequest) (*emptypb.Empty, error) {
@@ -4743,6 +4863,23 @@ func (s *MultiAgentServer) GetScheduleHistory(ctx context.Context, req *loomv1.G
 	return &loomv1.GetScheduleHistoryResponse{
 		Executions: executions,
 	}, nil
+}
+
+// isNewMessageUpdateRole reports whether a persisted message role should
+// produce a SessionUpdate_NewMessage on the live WeaveProgress stream.
+// skill_body and hygiene_injection are synthetic (agent-authored) content,
+// not the literal end user, but a streaming consumer still needs to see
+// them arrive in real time with their own role — the same way
+// GetConversationHistory already returns them (server.go:547-567).
+// Delegates the synthetic-role check to agent.IsSyntheticWireUserRole
+// rather than re-declaring that two-string set here.
+func isNewMessageUpdateRole(role string) bool {
+	switch role {
+	case "assistant", "user", "tool":
+		return true
+	default:
+		return agent.IsSyntheticWireUserRole(role)
+	}
 }
 
 // SubscribeToSession subscribes to real-time updates for a session.
@@ -4840,7 +4977,7 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 				}
 
 				// Populate based on message role
-				if msg.Role == "assistant" || msg.Role == "user" || msg.Role == "tool" {
+				if isNewMessageUpdateRole(msg.Role) {
 					update.UpdateType = &loomv1.SessionUpdate_NewMessage{
 						NewMessage: &loomv1.NewMessageUpdate{
 							Role:             msg.Role,

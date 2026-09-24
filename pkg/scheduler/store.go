@@ -599,6 +599,47 @@ func (s *Store) RecordFailure(ctx context.Context, scheduleID, errorMsg string) 
 	return nil
 }
 
+// RecordCanceled marks a schedule's last run as canceled.
+//
+// Like a skip, a canceled run reached no verdict, so it does not increment
+// total_executions and is not counted among successes or failures — that keeps
+// the success rate consumers derive from those counters honest.
+//
+// last_execution_at is left alone for the same reason, and that is deliberate
+// rather than an oversight: RecordSuccess and RecordFailure both move it
+// because they record a run that produced an outcome, while IncrementSkipped
+// leaves it untouched because a skipped run never happened. A canceled run sits
+// on the skip's side of that line — it ran, but it reached nothing worth
+// dating, and moving the field would tell an operator the schedule last
+// executed at a moment when nothing was actually delivered.
+//
+// What it must do is move last_status. Without this a canceled run would leave
+// last_status showing the *previous* run's outcome, so a routine someone just
+// stopped would report itself as having last succeeded.
+//
+// Cancellations remain visible in schedule_executions. Giving them their own
+// counter would mean a new column and a new ScheduleStats field, which is a
+// schema change worth making on its own rather than inside this one.
+func (s *Store) RecordCanceled(ctx context.Context, scheduleID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `
+		UPDATE scheduled_workflows
+		SET last_status = 'canceled',
+		    last_error = ?,
+		    updated_at = ?
+		WHERE id = ?
+	`
+
+	_, err := s.db.ExecContext(ctx, query, reason, time.Now().Unix(), scheduleID)
+	if err != nil {
+		return fmt.Errorf("failed to record cancellation: %w", err)
+	}
+
+	return nil
+}
+
 // IncrementSkipped increments the skipped execution counter.
 func (s *Store) IncrementSkipped(ctx context.Context, scheduleID string) error {
 	s.mu.Lock()
@@ -618,6 +659,32 @@ func (s *Store) IncrementSkipped(ctx context.Context, scheduleID string) error {
 	}
 
 	return nil
+}
+
+// ExecutionExists reports whether an execution ID appears in the schedule
+// execution history.
+//
+// CancelExecution needs this to tell two states apart that would otherwise look
+// identical from the in-flight map alone: an execution this scheduler ran and
+// has since finished, and an ID it has never heard of. Reporting the second as
+// "already finished" is the failure mode that matters, because the IDs minted by
+// ExecuteWorkflow and StreamWorkflow live in a different namespace, and an
+// operator who pastes one deserves to be told it cannot be canceled here rather
+// than that the run they are watching has stopped.
+func (s *Store) ExecutionExists(ctx context.Context, executionID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var exists int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM schedule_executions WHERE execution_id = ?)`,
+		executionID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to look up execution %s: %w", executionID, err)
+	}
+
+	return exists == 1, nil
 }
 
 // RecordExecution stores an execution record for audit trail.

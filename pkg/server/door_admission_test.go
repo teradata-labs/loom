@@ -289,6 +289,18 @@ func TestWithHTTPSlotOriginMapsHeader(t *testing.T) {
 	assert.Equal(t, loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
 		slotOriginFromMetadata(withHTTPSlotOrigin(r.Context(), r)),
 		"absent header defaults to BATCH")
+
+	r = newReq("interactive")
+	ctx := mdCtx(SlotOriginMetadataKey, "batch")
+	assert.Equal(t, loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE,
+		slotOriginFromMetadata(withHTTPSlotOrigin(ctx, r)),
+		"a supplied HTTP header must replace prior slot-origin metadata")
+
+	r = newReq("")
+	ctx = mdCtx(SlotOriginMetadataKey, "interactive")
+	assert.Equal(t, loomv1.SlotOrigin_SLOT_ORIGIN_INTERACTIVE,
+		slotOriginFromMetadata(withHTTPSlotOrigin(ctx, r)),
+		"an absent HTTP header must preserve prior slot-origin metadata")
 }
 
 // TestHTTPInteractiveHeaderBypassesFullDoor composes the header mapping with
