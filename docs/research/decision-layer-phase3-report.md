@@ -144,3 +144,33 @@ Recall rises 20 points between 0.5 and 0.2 for 4.5 points of precision, and a re
 
 **Recommended next experiment**, if the question is worth more compute: rerun both B cells on the fixed live budget with `act_min 0.3`. That removes the 16% of visits the old cap handed back to the LLM and tests the band this data actually supports. Roughly 9 hours on the current VM.
 
+## 9. Calibration: Jev ranks well and scores low (2026-09-24)
+
+Grading 1,536 labelled candidates from the A cells by Jev's probability rather than by a verdict:
+
+| Probability | Candidates | Share that came from an evidence session |
+|---|---|---|
+| 0.0-0.1 | 1,132 | 3.1% |
+| 0.1-0.2 | 84 | 61.9% |
+| 0.2-0.3 | 46 | 67.4% |
+| 0.3-0.4 | 41 | 85.4% |
+| 0.4-0.5 | 26 | 88.5% |
+| 0.5-0.9 | 89 | 76.9-95.0% |
+| 0.9-1.0 | 118 | 99.2% |
+
+The ordering is sound and close to a step function at 0.1: below it almost nothing is evidence, above it most things are. The scale is not. A calibrated 0.15 would mean 15% evidence; here it means 62%. This is the under-confidence the Phase 2 replay saw as ECE 0.204, now measured against labels instead of against another model, and it means every threshold used so far has been far too strict:
+
+| Cut | Precision | Recall | Kept per 100 candidates |
+|---|---|---|---|
+| 0.05 | 71.5% | 97.9% | 33.3 |
+| 0.10 | 83.9% | 90.6% | 26.3 |
+| 0.20 | 89.7% | 76.7% | 20.8 |
+| 0.30 | 93.4% | 68.4% | 17.8 |
+| 0.50 (the A/B's) | 95.7% | 52.9% | 13.5 |
+
+`true_min 0.1` recovers 91% of the evidence for a quarter of the candidate list, against 53% at the 0.5 the first A/B ran. The B cells were restarted at that value on 2026-09-24 17:59Z; the `true_min 0.3` and `act_min 0.3` attempts are kept as `*.truemin30` and `*.actmin30`.
+
+**Two corrections to earlier readings in this report.** On knowledge-update, Jev and gpt-4o agree on 99% of individual candidates (645 of 652), so the gap there is noise, not a win; the multi-session recall gap (56.0% against 40.4%) is the real difference. And the Phase 2 headline of 94.0% against gpt-4o's 79.9% on failure classification reverses to 77.2% against 96.9% under the original reference: 201 foreign-key rows decide it, and which label they get is a judgement we made. Neither number is ground truth, and the report should not be read as if they were.
+
+A caveat that bounds all of §9: evidence is labelled per session, so a memory extracted from an evidence session counts as evidence whether or not it carries the answer. That inflates the apparent under-confidence. The monotonic ordering and the step at 0.1 survive it.
+
