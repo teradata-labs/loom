@@ -842,6 +842,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 
 			if len(choice.Delta.ToolCalls) > 0 {
+				// Tool-call deltas never reach tokenCallback (text only);
+				// report them as stream activity.
+				llmtypes.NotifyStreamActivity(ctx)
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {

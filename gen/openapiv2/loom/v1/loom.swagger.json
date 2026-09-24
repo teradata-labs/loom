@@ -3006,6 +3006,47 @@
         ]
       }
     },
+    "/v1/workflows/schedules/executions/{executionId}:cancel": {
+      "post": {
+        "summary": "CancelScheduledExecution stops a scheduled execution that is in flight.",
+        "description": "Pausing a schedule prevents future runs but does nothing about one already\nin flight, and max_execution_seconds only detects a stuck run after the\nfact. This is the operator's stop button: without it a workflow that hangs\nholds its schedule's slot until the timeout expires, and skip_if_running\nsilently skips every run in the meantime.\n\nScope: this cancels executions minted by the scheduler — the IDs reported\nin ScheduledWorkflow.current_execution_id and in the response to\nTriggerScheduledWorkflow. Execution IDs from ExecuteWorkflow and\nStreamWorkflow live in a different namespace (the one GetWorkflowExecution\nand ListWorkflowExecutions read) and cannot be canceled here; passing one\nreturns NOT_FOUND.\n\nNOT_FOUND means no scheduled execution with that ID exists, neither in\nflight nor in the schedule's history. A response with canceled = false and\na message means the execution was found but had already reached its verdict\nbefore the request arrived; that is deliberately not an error, because a\ncaller stopping a run that just finished got the state it asked for.\n\nCancellation is cooperative — the execution's context is canceled and the\nrun is recorded as canceled once it unwinds. Work already committed by\nearlier stages is not rolled back.\n\nAuthorization: like the sibling schedule RPCs (PauseSchedule,\nResumeSchedule, DeleteScheduledWorkflow, TriggerScheduledWorkflow), this\nperforms no ownership check — the scheduled_workflows table has no owner\ncolumn, so there is nothing to check against. Any caller that reaches the\nservice can stop any scheduled execution. Adding ownership is a follow-up\nfor the whole schedule surface rather than something this one RPC can\nsolve; it is recorded here so the gap is not mistaken for an oversight.",
+        "operationId": "LoomService_CancelScheduledExecution",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelScheduledExecutionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "executionId",
+            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\nor by the response to TriggerScheduledWorkflow. An ID that names no\nscheduled execution — in flight or in history — returns NOT_FOUND.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCancelScheduledExecutionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/workflows/schedules/{scheduleId}": {
       "get": {
         "summary": "GetScheduledWorkflow retrieves a scheduled workflow by ID.",
@@ -3365,6 +3406,16 @@
         }
       },
       "description": "AnswerClarificationRequest provides an answer to a clarification question."
+    },
+    "LoomServiceCancelScheduledExecutionBody": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable reason, recorded in the execution history so the\nrecord distinguishes an operator stop from a crash."
+        }
+      },
+      "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
     "LoomServicePauseScheduleBody": {
       "type": "object",
@@ -4349,6 +4400,20 @@
         }
       },
       "description": "BusMessage is the envelope for pub/sub messages broadcast to topic subscribers.\nUnlike point-to-point CommunicationMessage, BusMessage is one-to-many."
+    },
+    "v1CancelScheduledExecutionResponse": {
+      "type": "object",
+      "properties": {
+        "canceled": {
+          "type": "boolean",
+          "description": "True when the execution was in flight and its context was canceled; the\nrun is recorded as canceled once it unwinds. False means the execution had\nalready reached its verdict before the request arrived, so nothing was\nsignaled and the recorded outcome stands — not an error, since a caller\nstopping a run that just completed got the state it asked for.\n\nCancellation is cooperative: true says the signal was delivered, not that\nthe run has stopped yet, and work already committed is not rolled back."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable outcome, suitable for showing directly. It is the only thing\nthat distinguishes \"signaled\" from \"already finished\" beyond the boolean."
+        }
+      },
+      "description": "CancelScheduledExecutionResponse reports what the cancellation did.\n\nReaching this message at all means the execution exists in the scheduler's\nnamespace; an unknown ID is a NOT_FOUND error instead."
     },
     "v1CertificateInfo": {
       "type": "object",
@@ -5653,6 +5718,62 @@
       ],
       "default": "HYGIENE_POLICY_UNSPECIFIED",
       "description": "HygienePolicy controls how the end-of-turn auditor handles task-board\nviolations left by an active skill.\n\n - HYGIENE_POLICY_REQUIRE_FIX: Inject a synthetic user message describing the violations and re-run the\nLLM turn so the agent resolves them itself. Capped by max_retries; on\nexhaustion the auditor falls through to AUTO_FIX so the loop terminates.\n - HYGIENE_POLICY_AUTO_FIX: Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)\nwith reason notes. Cheaper but hides agent bugs.\n - HYGIENE_POLICY_WARN_ONLY: Emit observability events and add a violations summary to the response\nmetadata; do not change task state and do not retry."
+    },
+    "v1ImplicitTaskConfig": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/v1ImplicitTaskMode",
+          "description": "Whether the runtime mints tasks. Unset means enabled."
+        },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Restricts minting to these triggers. Empty means the built-in default set.\nUse this for \"only these\"."
+        },
+        "excludedTriggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Subtracted from the effective set, applied after `triggers`. Use this for\n\"everything except these\", which otherwise requires enumerating the rest\nand silently opting out of any trigger added in a later release."
+        },
+        "maxPerSession": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Caps implicit tasks per session. 0 means the built-in default. Once the cap\nis hit, later turns record no implicit task rather than growing the board\nwithout bound; the count of skipped turns is exported as a metric."
+        },
+        "agentVisible": {
+          "type": "boolean",
+          "description": "Surfaces implicit tasks in the AGENT's task context block and ready front.\n\nDefault false, and that default is load-bearing. The task context block is\nrebuilt into the system prompt every turn; if each turn minted a task that\nthen appeared in that block, the prompt would accumulate the agent's own\nbookkeeping turn over turn — the exact context-window growth the task\nsystem's compaction design exists to avoid. Implicit tasks are a rendering\nartifact for humans, so by default the agent never sees them."
+        }
+      },
+      "description": "ImplicitTaskConfig tunes runtime task minting."
+    },
+    "v1ImplicitTaskMode": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_MODE_UNSPECIFIED",
+        "IMPLICIT_TASK_MODE_ENABLED",
+        "IMPLICIT_TASK_MODE_DISABLED"
+      ],
+      "default": "IMPLICIT_TASK_MODE_UNSPECIFIED",
+      "description": "ImplicitTaskMode controls whether the runtime mints tasks on its own.\n\nUNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot\ndefault to true, and an inverted `bool disable_x` field reads badly at every\ncall site, so the tri-state enum carries the default instead. It also means\nthe default can change later without a proto change.\n\n - IMPLICIT_TASK_MODE_UNSPECIFIED: Not set — treated as ENABLED.\n - IMPLICIT_TASK_MODE_ENABLED: The runtime mints a task on the first qualifying event of a turn.\n - IMPLICIT_TASK_MODE_DISABLED: No implicit tasks. Only the agent and explicit API calls create tasks."
+    },
+    "v1ImplicitTaskTrigger": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+        "IMPLICIT_TASK_TRIGGER_TOOL_CALL",
+        "IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION",
+        "IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST",
+        "IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN",
+        "IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP"
+      ],
+      "default": "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+      "description": "ImplicitTaskTrigger is an event that can cause the runtime to mint a task.\n\nGranularity matters because the triggers have very different cardinality and\nvalue. A tool call happens dozens of times a turn; a human-in-the-loop\nrequest happens rarely but is the one a human most needs to find. An operator\ntuning board noise needs to keep the latter while dropping the former.\n\nStatus per value is stated on the value. Only the ✅ triggers are fired by the\nruntime today; the 📋 ones parse, validate and resolve, but no code path\npasses them to the emitter yet, so selecting only those records nothing (the\nagent logs a warning when the resolved set cannot fire).\n\n - IMPLICIT_TASK_TRIGGER_UNSPECIFIED: Not a trigger. Load-bearing for fail-closed config parsing: an\nunrecognised trigger name resolves to this and disables emission, and the\npolicy resolver drops it from any trigger set.\n - IMPLICIT_TASK_TRIGGER_TOOL_CALL: ✅ Fired: the agent invoked a tool.\n - IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION: 📋 Not yet fired by the runtime: a skill activated for this turn. The\nskills task emitter already creates tasks on activation, which is why this\nis outside the default set.\n - IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST: ✅ Fired: the agent asked a human for approval, a decision, input, or\nreview.\n - IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN: 📋 Not yet fired by the runtime: the agent spawned an ephemeral subagent.\n - IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP: 📋 Not yet fired by the runtime: a workflow stage began executing. The\ntask-tracked orchestrator already creates a task per stage, which is why\nthis is outside the default set."
     },
     "v1IterativeWorkflowPattern": {
       "type": "object",
@@ -7888,7 +8009,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Status: \"success\", \"failed\", \"skipped\""
+          "description": "Status: \"success\", \"failed\", \"skipped\", \"canceled\"\nThe US spelling matches WorkflowStatus \"canceled\" in the workflow-execution\nnamespace, so both surfaces report the same word for the same outcome."
         },
         "error": {
           "type": "string",
@@ -7931,7 +8052,7 @@
         },
         "lastStatus": {
           "type": "string",
-          "title": "Last execution status: \"success\", \"failed\", \"skipped\""
+          "title": "Last execution status: \"success\", \"failed\", \"skipped\", \"canceled\""
         },
         "lastError": {
           "type": "string",
@@ -9204,6 +9325,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Maximum tokens for the task context block injected into the system prompt.\nDefault: 500. Set to 0 to disable context injection."
+        },
+        "implicitTasks": {
+          "$ref": "#/definitions/v1ImplicitTaskConfig",
+          "description": "Implicit task emission, controlled independently of `enabled` above.\n\n`enabled` governs whether the AGENT sees the task_board tool and the task\ncontext block. This governs whether the RUNTIME mints a task when a turn\ndoes real work, so that a human-facing timeline has something to attach to\neven when the agent never touches tasks itself.\n\nUnset means implicit emission is ON. It is deliberately opt-out: a task\ntimeline nobody can see by default is a feature nobody has."
         }
       },
       "description": "TaskBoardConfig configures the dependency-aware task decomposition and kanban system."

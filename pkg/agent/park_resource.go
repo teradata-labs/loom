@@ -150,7 +150,7 @@ func (a *Agent) maybeParkResourceBatch(ctx Context, sess *Session, st *batchStat
 	kind, question := parkKindAndQuestion(items)
 	hr := &shuttle.HumanRequest{
 		ID:              uuid.New().String(),
-		AgentID:         a.id,
+		AgentID:         a.GetID(),
 		SessionID:       sess.ID,
 		Question:        question,
 		Context:         map[string]interface{}{"kind": "parked"},

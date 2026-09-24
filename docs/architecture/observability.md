@@ -1260,9 +1260,9 @@ Total time: 7s (max)
 
 **Impact**: Cannot export to gRPC-only backends
 
-**Workaround**: HTTP/gRPC gateway, or implement OTLP tracer
+**Workaround**: Use an HTTP/gRPC gateway for gRPC-only backends
 
-**Status**: OTLPTracer planned (📋)
+**Status**: `OTelTracer` supports OTLP/HTTP; OTLP/gRPC is not implemented
 
 
 ### Constraint 5: 10s Flush Latency

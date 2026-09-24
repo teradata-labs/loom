@@ -49,6 +49,24 @@ func collectUniqueProviders(agents map[string]*agent.Agent) map[string]*provider
 	return seen
 }
 
+// pingProvider performs a lightweight reachability check on a single LLM
+// provider. It prefers the provider's optional HealthCheck method (a cheap,
+// dedicated probe, e.g. Ollama's tags endpoint) over a real Chat "ping"
+// completion when available, since a full chat completion is slower, costs
+// real tokens, and is more prone to transient failures (rate limits, cold
+// starts, proxy blips) that don't reflect the agent's actual liveness.
+// Callers (ValidateProviders, GetHealth) share this so all health-check
+// call sites benefit consistently as providers add HealthCheck support.
+func pingProvider(ctx context.Context, provider types.LLMProvider) error {
+	if hc, ok := provider.(types.HealthChecker); ok {
+		return hc.HealthCheck(ctx)
+	}
+	_, err := provider.Chat(ctx, []types.Message{
+		{Role: "user", Content: "ping"},
+	}, nil)
+	return err
+}
+
 // ValidateProviders performs a preflight health check on all configured LLM providers.
 // It deduplicates providers across agents (many agents often share one provider) and
 // runs all checks concurrently, so startup time is bounded by the slowest provider
@@ -73,15 +91,7 @@ func ValidateProviders(ctx context.Context, agents map[string]*agent.Agent) erro
 			checkCtx, cancel := context.WithTimeout(gCtx, 10*time.Second)
 			defer cancel()
 
-			var err error
-			if hc, ok := entry.provider.(types.HealthChecker); ok {
-				err = hc.HealthCheck(checkCtx)
-			} else {
-				_, err = entry.provider.Chat(checkCtx, []types.Message{
-					{Role: "user", Content: "ping"},
-				}, nil)
-			}
-
+			err := pingProvider(checkCtx, entry.provider)
 			if err != nil {
 				agentList := entry.agents
 				sort.Strings(agentList)

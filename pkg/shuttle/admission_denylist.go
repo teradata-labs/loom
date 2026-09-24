@@ -26,7 +26,7 @@ type denylist struct {
 // Matches reports whether the binding governs this call: its tool is in scope
 // and its params satisfy the deny matcher.
 func (h denylist) Matches(req AdmissionRequest) bool {
-	return h.scope.MatchesTool(req.ToolName) && h.matcher.MatchesParams(req.Params)
+	return req.MatchesTool(h.scope) && h.matcher.MatchesParams(req.Params)
 }
 
 // Evaluate denies a governed call so the tool body does not run; a non-matching

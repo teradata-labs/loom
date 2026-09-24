@@ -25,7 +25,7 @@ type askRule struct {
 // Matches reports whether the binding governs this call: its tool is in scope
 // and its params satisfy the ask matcher.
 func (h askRule) Matches(req AdmissionRequest) bool {
-	return h.scope.MatchesTool(req.ToolName) && h.matcher.MatchesParams(req.Params)
+	return req.MatchesTool(h.scope) && h.matcher.MatchesParams(req.Params)
 }
 
 // Evaluate holds a governed call for a human: the Ask verdict defers to the

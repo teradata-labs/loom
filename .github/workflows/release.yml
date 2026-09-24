@@ -252,7 +252,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           tar czf ${{ matrix.output }}.tar.gz ${{ matrix.output }}
-          sha256sum ${{ matrix.output }}.tar.gz > ${{ matrix.output }}.tar.gz.sha256
+          sha256sum --binary ${{ matrix.output }}.tar.gz > ${{ matrix.output }}.tar.gz.sha256
 
       - name: Sign checksums (Unix)
         if: matrix.os != 'windows-latest'
@@ -271,9 +271,11 @@ jobs:
 
       - name: Compress binary (Windows)
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
           7z a ${{ matrix.output }}.zip ${{ matrix.output }}
-          Get-FileHash ${{ matrix.output }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash > ${{ matrix.output }}.zip.sha256
+          $hash = (Get-FileHash ${{ matrix.output }}.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.output }}.zip" | Set-Content -NoNewline ${{ matrix.output }}.zip.sha256
 
       - name: Sign checksums (Windows)
         if: matrix.os == 'windows-latest'
@@ -365,8 +367,10 @@ jobs:
           7z a loom-windows-x64.zip loom-package/*
 
       - name: Generate SHA256
+        shell: pwsh
         run: |
-          Get-FileHash loom-windows-x64.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash > loom-windows-x64.zip.sha256
+          $hash = (Get-FileHash loom-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  loom-windows-x64.zip" | Set-Content -NoNewline loom-windows-x64.zip.sha256
           Write-Host "Combined package SHA256:"
           Get-Content loom-windows-x64.zip.sha256
 

@@ -22,3 +22,10 @@ type LLMProvider = types.LLMProvider
 type HealthChecker = types.HealthChecker
 type TokenCallback = types.TokenCallback
 type StreamingLLMProvider = types.StreamingLLMProvider
+
+// Stream-activity hook for deltas that never reach TokenCallback (tool-input
+// JSON). See types.WithStreamActivity.
+var (
+	WithStreamActivity   = types.WithStreamActivity
+	NotifyStreamActivity = types.NotifyStreamActivity
+)

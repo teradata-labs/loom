@@ -56,6 +56,7 @@ func setupTestScheduler(t *testing.T) *Scheduler {
 		HotReload:    false,
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
 
 	return scheduler
 }
@@ -347,9 +348,9 @@ func TestScheduler_SkipIfRunning(t *testing.T) {
 	err := scheduler.AddSchedule(ctx, schedule)
 	require.NoError(t, err)
 
-	// Mark workflow as running by adding to runningWorkflows map
+	// Mark workflow as running by registering an in-flight run
 	scheduler.mu.Lock()
-	scheduler.runningWorkflows[schedule.Id] = "execution-1"
+	scheduler.runs["execution-1"] = &runState{scheduleID: schedule.Id, cancel: func() {}}
 	scheduler.mu.Unlock()
 
 	// Trigger execution (should be skipped because SkipIfRunning=true and workflow is marked as running)
@@ -359,7 +360,7 @@ func TestScheduler_SkipIfRunning(t *testing.T) {
 
 	// Clean up
 	scheduler.mu.Lock()
-	delete(scheduler.runningWorkflows, schedule.Id)
+	delete(scheduler.runs, "execution-1")
 	scheduler.mu.Unlock()
 }
 

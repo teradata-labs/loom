@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
+	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
@@ -124,6 +126,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // startServer initializes a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, name string, config ServerConfig) error {
+	for _, variable := range unresolvedEnvVariables(config.URL, config.Headers) {
+		m.logger.Warn("MCP configuration references an unset environment variable",
+			zap.String("server", name),
+			zap.String("variable", variable))
+	}
+
 	// Add timeout for the entire server startup
 	// This prevents hanging on unreachable servers
 	var cancel context.CancelFunc
@@ -156,7 +164,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Logger:  m.logger.With(zap.String("server", name)),
 		})
 	case "streamable-http":
-		// Streamable HTTP transport (MCP 2025-03-26 spec)
+		// Streamable HTTP transport (MCP 2025-03-26 spec).
 		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
 			Endpoint:         config.URL,
 			Headers:          config.Headers,
@@ -165,10 +173,11 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Logger:           m.logger.With(zap.String("server", name)),
 		})
 	case "http", "sse":
-		// Legacy HTTP/SSE transport (deprecated, backwards compatibility)
+		// Legacy HTTP/SSE transport (deprecated, backwards compatibility).
 		//nolint:staticcheck // frozen legacy path retained through the 2026-07-28 deprecation window
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.URL,
+			Headers:  config.Headers,
 			Logger:   m.logger.With(zap.String("server", name)),
 		})
 	default:
@@ -382,6 +391,25 @@ func (m *Manager) ServerNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func unresolvedEnvVariables(endpoint string, headers map[string]string) []string {
+	missing := make(map[string]struct{})
+	check := func(value string) {
+		for _, variable := range loomconfig.UnresolvedEnvPlaceholders(value) {
+			missing[variable] = struct{}{}
+		}
+	}
+	check(endpoint)
+	for _, value := range headers {
+		check(value)
+	}
+	variables := make([]string, 0, len(missing))
+	for variable := range missing {
+		variables = append(variables, variable)
+	}
+	slices.Sort(variables)
+	return variables
 }
 
 // IsHealthy checks if a server is healthy. Legacy-revision connections use

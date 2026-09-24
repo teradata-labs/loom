@@ -289,21 +289,21 @@ func TestResolveRelativePath(t *testing.T) {
 	}{
 		{
 			name:    "relative path",
-			baseDir: "/project",
+			baseDir: absPathFixture("project"),
 			path:    "./agents/test.yaml",
-			want:    "/project/agents/test.yaml",
+			want:    filepath.Join(absPathFixture("project"), "agents", "test.yaml"),
 		},
 		{
 			name:    "absolute path unchanged",
-			baseDir: "/project",
-			path:    "/absolute/path/test.yaml",
-			want:    "/absolute/path/test.yaml",
+			baseDir: absPathFixture("project"),
+			path:    absPathFixture("absolute", "path", "test.yaml"),
+			want:    absPathFixture("absolute", "path", "test.yaml"),
 		},
 		{
 			name:    "parent directory",
-			baseDir: "/project/subdir",
+			baseDir: absPathFixture("project", "subdir"),
 			path:    "../agents/test.yaml",
-			want:    "/project/agents/test.yaml", // filepath.Join cleans paths
+			want:    filepath.Join(absPathFixture("project"), "agents", "test.yaml"), // filepath.Join cleans paths
 		},
 	}
 
