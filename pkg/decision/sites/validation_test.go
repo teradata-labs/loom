@@ -55,7 +55,7 @@ func TestValidationReferenceAndVerdict(t *testing.T) {
 	require.NoError(t, err)
 	out := decision.NewRouter(mock.New().AnswerNoul(QOutputValid, 0.1)).Decide(context.Background(), req)
 	require.NoError(t, out.Err)
-	valid, ok := ValidationVerdict(out.Response)
+	valid, ok := ValidationVerdict(out.Response, decision.Band{})
 	assert.True(t, ok)
 	assert.False(t, valid)
 	assert.InDelta(t, 0.8, out.Confidence, 1e-9, "decisiveness |2p−1|")
@@ -65,6 +65,6 @@ func TestValidationReferenceAndVerdict(t *testing.T) {
 	assert.Equal(t, "false", records[0].CandidateAnswer)
 	assert.Equal(t, "true", records[0].ReferenceAnswer, "the disagreement is what a shadow row is for")
 
-	_, ok = ValidationVerdict(nil)
+	_, ok = ValidationVerdict(nil, decision.Band{})
 	assert.False(t, ok)
 }

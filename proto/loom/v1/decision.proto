@@ -207,6 +207,16 @@ message DecisionBand {
   bool shadow = 4;
   // How multi-question requests are judged against act_min.
   DecisionBandAggregate aggregate = 5;
+  // Probability at or above which a Noul answer counts as true at this
+  // site: the keep threshold at a rerank, "valid" at a stage gate,
+  // "consensus reached" at a debate. 0 means the site default (0.5).
+  //
+  // It is not act_min. act_min asks how decisive an answer is (its distance
+  // from 0.5) before the site may act at all; true_min asks which side of
+  // the line a decisive answer falls on. Lowering act_min makes the site
+  // act on more answers, including ones it will then call false; lowering
+  // true_min makes more answers count as true.
+  double true_min = 6;
 }
 
 // DecisionShadowRecord is one question's shadow comparison: what the decider

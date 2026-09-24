@@ -181,6 +181,11 @@ type DecisionBandConfigYAML struct {
 	// Aggregate: min (default) | per_question. Fan-out sites such as the
 	// reranks use per_question so one uncertain candidate cannot veto the rest.
 	Aggregate string `yaml:"aggregate"`
+	// TrueMin is the probability at or above which a yes/no answer counts as
+	// true at this site: the keep threshold at a rerank, "valid" at a stage
+	// gate. 0 means the site default (0.5). It is not act_min, which asks
+	// how decisive an answer must be before the site acts at all.
+	TrueMin float64 `yaml:"true_min"`
 }
 
 // convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
@@ -194,6 +199,11 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 	provider := strings.ToLower(strings.TrimSpace(y.Provider))
 	if provider == "" {
 		provider = DecisionProviderOff
+	}
+	for i, b := range y.Bands {
+		if b.TrueMin < 0 || b.TrueMin > 1 {
+			return nil, fmt.Errorf("decision.bands[%d].true_min must be within [0,1], got %v", i, b.TrueMin)
+		}
 	}
 	if y.MaxQuestionsPerRequest < 0 {
 		return nil, fmt.Errorf("decision.max_questions_per_request must be >= 0, got %d", y.MaxQuestionsPerRequest)
@@ -233,6 +243,7 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
 			Site:      b.Site,
 			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
 			Mode:      mode,
 			Shadow:    b.Shadow,
 			Aggregate: agg,

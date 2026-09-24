@@ -84,7 +84,7 @@ func ValidationReference(valid bool) map[string]decision.Reference {
 // ValidationVerdict returns the decider's verdict: valid when the Noul
 // probability is at least 0.5. ok is false when the response carries no
 // usable answer.
-func ValidationVerdict(resp *loomv1.DecisionResponse) (valid bool, ok bool) {
+func ValidationVerdict(resp *loomv1.DecisionResponse, band decision.Band) (valid bool, ok bool) {
 	if resp == nil {
 		return false, false
 	}
@@ -92,5 +92,5 @@ func ValidationVerdict(resp *loomv1.DecisionResponse) (valid bool, ok bool) {
 	if err != nil || a == nil {
 		return false, false
 	}
-	return a.Probability >= 0.5, true
+	return band.IsTrue(a.Probability), true
 }
