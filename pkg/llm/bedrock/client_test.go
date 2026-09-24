@@ -429,7 +429,7 @@ func TestClient_CalculateCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cost := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			cost := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.InDelta(t, tt.expectedCost, cost, 0.0001)
 		})
 	}
@@ -510,7 +510,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &Client{modelID: tt.modelID}
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.InDelta(t, tt.wantCost, got, 0.001,
 				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
 		})

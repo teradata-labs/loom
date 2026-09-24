@@ -494,11 +494,18 @@ Under `spec.memory.memory_compression`.
 
 | Profile | L1 token target | min_l1 | warning | critical | batch (N/W/C) | Use case |
 |---|---|---|---|---|---|---|
-| `balanced` | 6400 | 4 | 60% | 75% | 3/5/7 | General-purpose agents |
-| `data_intensive` | 4000 | 3 | 50% | 70% | 2/4/6 | SQL, large file operations |
-| `conversational` | 9600 | 6 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
+| `balanced` | 6400 | 4 | 60% | 90% | 3/5/7 | General-purpose agents |
+| `data_intensive` | 4000 | 3 | 45% | 80% | 2/4/6 | SQL, large file operations |
+| `conversational` | 9600 | 6 | 70% | 92% | 4/6/8 | Chat-heavy, minimal tool usage |
 
-The L1 token target is a reporting figure only; `warning` is the value that triggers compression.
+The two percentages are the relief water marks, as percentages of usable context
+(window minus reserved): `critical` is the high mark where relief begins, and
+`warning` is the low mark it sheds down to. The band between them decides how
+often relief runs and how much each pass sheds — `data_intensive` starts early
+and sheds deep because one tool result can add tens of points in a single call,
+while `conversational` starts late and sheds shallow to keep recency.
+
+The L1 token target is a reporting figure only.
 
 ---
 

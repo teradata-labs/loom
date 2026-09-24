@@ -52,13 +52,13 @@ func TestCalculateCost_CatalogProvider(t *testing.T) {
 	const in, out = 1_000_000, 100_000
 
 	priced := NewClient(Config{APIKey: "k", Model: "deepseek.v3.2", Endpoint: "http://gateway/v1/chat/completions", CatalogProvider: "litellm"})
-	assert.InDelta(t, 0.27+0.11, priced.calculateCost(in, out), 1e-9, "gateway alias priced from the registered catalog")
+	assert.InDelta(t, 0.27+0.11, priced.calculateCost(in, out, 0, 0), 1e-9, "gateway alias priced from the registered catalog")
 
 	unpriced := NewClient(Config{APIKey: "k", Model: "deepseek.v3.2", Endpoint: "http://gateway/v1/chat/completions"})
 	assert.Equal(t, DefaultCatalogProvider, unpriced.catalogProvider)
-	assert.InDelta(t, 2.50+1.00, unpriced.calculateCost(in, out), 1e-9, "no namespace → the alias misses \"openai\" and falls to the gpt-4o default")
+	assert.InDelta(t, 2.50+1.00, unpriced.calculateCost(in, out, 0, 0), 1e-9, "no namespace → the alias misses \"openai\" and falls to the gpt-4o default")
 
 	// A real OpenAI id is unaffected by the option's default.
-	assert.Equal(t, NewClient(Config{APIKey: "k", Model: "gpt-4.1-mini"}).calculateCost(in, out),
-		NewClient(Config{APIKey: "k", Model: "gpt-4.1-mini", CatalogProvider: "openai"}).calculateCost(in, out))
+	assert.Equal(t, NewClient(Config{APIKey: "k", Model: "gpt-4.1-mini"}).calculateCost(in, out, 0, 0),
+		NewClient(Config{APIKey: "k", Model: "gpt-4.1-mini", CatalogProvider: "openai"}).calculateCost(in, out, 0, 0))
 }
