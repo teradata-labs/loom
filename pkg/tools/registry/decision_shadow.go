@@ -32,7 +32,11 @@ const shadowTimeout = 30 * time.Second
 
 // liveDecideTimeout bounds a decider call made on the search path ahead of
 // the LLM rerank; slower than this and the search falls back.
-const liveDecideTimeout = 3 * time.Second
+const liveDecidePerWave = 4 * time.Second
+
+// maxLiveDecideBudget caps the whole live call; see the agent's copy for the
+// measurement behind these numbers.
+const maxLiveDecideBudget = 12 * time.Second
 
 // decisionSignal is the RelevanceSignal type written on results the decider
 // ranked.
@@ -205,7 +209,8 @@ func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, que
 		logger.Debug("decision: tool_search rerank request", zap.Error(err))
 		return nil, false, nil, decision.Outcome{}
 	}
-	liveCtx, cancel := context.WithTimeout(ctx, liveDecideTimeout)
+	budget := decision.Budget(d.router.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
+	liveCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	out = d.router.Decide(liveCtx, req)
 	if !out.Act() {

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -96,6 +97,54 @@ func Chunk(d Decider, opts ...ChunkOption) Decider {
 		c.size = 0
 	}
 	return c
+}
+
+// Waves reports how many sequential rounds of provider requests a request
+// of n questions takes: the chunks it splits into, divided by how many run
+// at once. Callers size a deadline with it, because a chunked request costs
+// wall time in rounds, not in questions.
+func (c *Chunked) Waves(n int) int {
+	if c.size <= 0 || n <= c.size {
+		return 1
+	}
+	chunks := (n + c.size - 1) / c.size
+	waves := (chunks + c.concurrency - 1) / c.concurrency
+	if waves < 1 {
+		return 1
+	}
+	return waves
+}
+
+// Waves reports the sequential rounds a request of n questions takes through
+// d, looking through wrapper deciders (Instrumented, Chunked). A decider
+// that does not chunk takes one.
+func Waves(d Decider, n int) int {
+	for i := 0; d != nil && i < 8; i++ {
+		if c, ok := d.(*Chunked); ok {
+			return c.Waves(n)
+		}
+		u, ok := d.(interface{ Unwrap() Decider })
+		if !ok {
+			break
+		}
+		d = u.Unwrap()
+	}
+	return 1
+}
+
+// Budget is the deadline a caller should give a live request of n questions:
+// perWave for every sequential round the decider needs, never more than max.
+// A live call is racing a fallback that still has to run, so the cap matters
+// as much as the scaling.
+func Budget(d Decider, n int, perWave, max time.Duration) time.Duration {
+	if perWave <= 0 {
+		return max
+	}
+	total := perWave * time.Duration(Waves(d, n))
+	if max > 0 && total > max {
+		return max
+	}
+	return total
 }
 
 // Name implements Decider.
