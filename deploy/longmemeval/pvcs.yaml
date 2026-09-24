@@ -1,0 +1,31 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
+#
+# lme-results holds benchmark outputs — NEVER auto-delete; these represent
+# days of paid LLM compute. teardown-cluster.sh refuses to run while it exists.
+# azurefile (RWX) so pull-results.sh can mount read-only mid-run.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lme-results
+  namespace: ${LME_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: 10Gi
+---
+# lme-data caches the HuggingFace dataset download (~285 MB) across job runs.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lme-data
+  namespace: ${LME_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,99 @@
+# Template — rendered by run-500.sh (render-common.sh, allowlisted envsubst).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lme-server
+  namespace: ${LME_NAMESPACE}
+  labels:
+    app: lme-server
+spec:
+  replicas: 1
+  # The server holds per-run sqlite state on an emptyDir; never run two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lme-server
+  template:
+    metadata:
+      labels:
+        app: lme-server
+      annotations:
+        # looms reads its config once at startup (cobra.OnInitialize) and has
+        # no watcher, so a ConfigMap-only change — a different LME_MODEL, say
+        # — would leave the OLD model serving while the run manifest claims
+        # the new one. Stamping the rendered config's hash into the pod
+        # template makes such a change roll the pod, so the server that
+        # answers is always the one this run's identity records.
+        loom.dev/config-checksum: "${LME_CONFIG_HASH}"
+    spec:
+      nodeSelector:
+        loom-role: lme
+      tolerations:
+        - key: loom-role
+          value: lme
+          effect: NoSchedule
+      containers:
+        - name: server
+          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
+          # Any tag other than the floating default pulls IfNotPresent, so a
+          # node with a cached layer under a moved tag would keep serving the
+          # old bytes.
+          imagePullPolicy: Always
+          command: ["/looms"]
+          args: ["serve", "--config", "/etc/loom/looms.yaml"]
+          ports:
+            - name: grpc
+              containerPort: ${LME_GRPC_PORT}
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /var/lib/loom
+            - name: LOOM_LLM_BEDROCK_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lme-bedrock
+                  key: bearer-token
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loom
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/loom
+          resources:
+            requests:
+              cpu: "3"
+              memory: "8Gi"
+            limits:
+              cpu: "6"
+              memory: "16Gi"
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: lme-server-config
+        - name: state
+          emptyDir:
+            sizeLimit: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lme-server
+  namespace: ${LME_NAMESPACE}
+spec:
+  selector:
+    app: lme-server
+  ports:
+    - name: grpc
+      port: ${LME_GRPC_PORT}
+      targetPort: grpc
