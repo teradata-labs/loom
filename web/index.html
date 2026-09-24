@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:ital,wght@0,500;0,600;0,700;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:ital,wght@0,500;0,600;0,700;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
     --paper:      #F4F2EB;
@@ -277,6 +277,109 @@
     .feature-table td:first-child{ width:120px; white-space:normal; }
     #weave{ height:120px; }
   }
+
+  /* ---------- one turn (retro diagram) ----------
+     A dark band styled after the TUI. Yarn colors are sampled from the Loom
+     mark (favicon.png): teal #6BCAD1, magenta #B14F9D (lifted), violet #725DA8
+     (lifted), lime #ACD481; yellow/orange come from the TUI wordmark and its
+     //// hatch bands. Everything is scoped under #turn. */
+  #turn{
+    --lt-bg:#15131F; --lt-panel:#1E1B2E; --lt-panel-strong:#28243B; --lt-chamber:rgba(107,202,209,.07);
+    --lt-grid:rgba(236,231,243,.16); --lt-line:rgba(236,231,243,.15); --lt-line-strong:rgba(236,231,243,.42);
+    --lt-text:#ECE7F3; --lt-muted:#BDB5CE; --lt-faint:#8C85A3;
+    --teal:#6BCAD1; --magenta:#D06BBC; --violet:#A08BE0; --lime:#ACD481; --yellow:#E8D25A; --orange:#F0A06A; --red:#F07A6E;
+    --lt-hard:#07060C; --lt-scan:rgba(0,0,0,.18); --lt-dim:.45;
+    --lt-accent:var(--teal); --lt-llm:var(--violet); --lt-memory:var(--violet);
+    --lt-allow:var(--lime); --lt-deny:var(--red); --lt-ask:var(--yellow); --lt-fix:var(--magenta); --lt-backend:var(--lime);
+
+    margin-top:72px; padding:48px 0 56px; background:var(--lt-bg); color:var(--lt-text);
+    font-family:'IBM Plex Mono', ui-monospace, monospace;
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  #turn ::selection{ background:var(--magenta); color:var(--lt-bg); }
+  #turn .lt-wrap{ max-width:1240px; margin:0 auto; padding:0 16px; }
+  #turn .lt-banner{ display:flex; align-items:center; gap:14px; margin-bottom:30px; }
+  #turn .lt-hatch{ flex:1; height:44px; background:repeating-linear-gradient(-60deg, var(--orange) 0 2px, transparent 2px 7px); opacity:.85; }
+  #turn .lt-hatch.short{ flex:0 0 48px; }
+  #turn .lt-brand{ display:flex; align-items:center; gap:12px; }
+  #turn .lt-brand img{ width:52px; height:52px; display:block; }
+  #turn .lt-word{ position:relative; }
+  #turn .lt-word svg{ display:block; height:40px; width:auto; }
+  #turn .lt-word small{ position:absolute; font:500 10px 'IBM Plex Mono',monospace; top:-12px; }
+  #turn .lt-word .tm{ left:0; color:var(--orange); }
+  #turn .lt-word .ver{ right:0; color:var(--teal); }
+
+  #turn h2{ font:700 clamp(22px,3.2vw,36px)/1.15 'Silkscreen',monospace; text-align:center; margin:0 auto 14px; max-width:28ch; letter-spacing:.5px; }
+  #turn h2 .c1{ color:var(--teal); } #turn h2 .c2{ color:var(--magenta); }
+  #turn .lt-sub{ text-align:center; color:var(--lt-muted); max-width:66ch; margin:0 auto 26px; font-size:14px; line-height:1.7; }
+
+  #turn .lt-tabs{ display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+  #turn .lt-tab{ font:400 12px 'Silkscreen',monospace; letter-spacing:.5px; color:var(--lt-muted);
+        background:var(--lt-panel); border:2px solid var(--lt-line-strong); padding:8px 14px; cursor:pointer;
+        box-shadow:3px 3px 0 var(--lt-hard); }
+  #turn .lt-tab:hover{ color:var(--lt-text); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--lt-hard); }
+  #turn .lt-tab[aria-selected="true"]{ color:var(--lt-bg); background:var(--tab-c); border-color:var(--tab-c); }
+  #turn .lt-tab[aria-selected="true"]::before{ content:"▶ "; }
+  #turn :focus-visible{ outline:2px dashed var(--magenta); outline-offset:4px; }
+
+  #turn .lt-stages{ display:flex; justify-content:center; gap:4px 22px; flex-wrap:wrap; margin-bottom:14px; font:400 11px 'Silkscreen',monospace; }
+  #turn .lt-stages span{ color:var(--lt-faint); opacity:.6; }
+  #turn .lt-stages span::before{ content:"◇ "; }
+  #turn .lt-stages span.done{ opacity:1; color:var(--lt-muted); }
+  #turn .lt-stages span.done::before{ content:"◆ "; color:var(--lime); }
+  #turn .lt-stages span.now{ color:var(--lt-text); opacity:1; }
+  #turn .lt-stages span.now::before{ content:"▶ "; color:var(--orange); }
+
+  #turn .lt-frame{ position:relative; border:2px solid var(--lt-line-strong); background:var(--lt-bg); box-shadow:6px 6px 0 var(--lt-hard); overflow:hidden; }
+  #turn .lt-frame::after{ content:""; position:absolute; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg, var(--lt-scan) 0 1px, transparent 1px 3px); }
+  #turn .lt-frame-bar{ display:flex; justify-content:space-between; align-items:center; padding:7px 12px; border-bottom:2px solid var(--lt-line-strong);
+    font:400 11px 'Silkscreen',monospace; color:var(--lt-muted); background:var(--lt-panel); }
+  #turn .lt-frame-bar .dots i{ display:inline-block; width:9px; height:9px; margin-right:5px; }
+  #turn .lt-frame-bar .dots i:nth-child(1){ background:var(--teal); }
+  #turn .lt-frame-bar .dots i:nth-child(2){ background:var(--magenta); }
+  #turn .lt-frame-bar .dots i:nth-child(3){ background:var(--lime); }
+  #turn .lt-dia{ display:block; width:100%; height:auto; }
+
+  #turn .lt-prompt{ margin:18px auto 0; max-width:900px; font-size:14px; color:var(--lt-muted); text-align:center; min-height:24px; }
+  #turn .lt-prompt::before{ content:"> "; color:var(--orange); }
+  #turn .lt-prompt b{ color:var(--lt-text); font-weight:600; }
+  #turn .lt-prompt .cur{ display:inline-block; width:8px; height:15px; background:var(--yellow); vertical-align:-2px; margin-left:4px; animation:lt-blink 1s steps(1) infinite; }
+  @keyframes lt-blink{ 50%{ opacity:0; } }
+  #turn .lt-controls{ display:flex; justify-content:center; gap:10px; margin-top:14px; flex-wrap:wrap; }
+  #turn .lt-controls button{ font:400 11px 'Silkscreen',monospace; color:var(--lt-text); background:var(--lt-panel); border:2px solid var(--lt-line-strong); padding:5px 12px; cursor:pointer; box-shadow:2px 2px 0 var(--lt-hard); }
+  #turn .lt-controls button:hover{ transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--lt-hard); }
+  #turn .lt-controls button:active{ transform:translate(2px,2px); box-shadow:none; }
+  #turn .lt-keys{ text-align:center; margin-top:14px; font-size:11.5px; color:var(--lt-faint); }
+  #turn .lt-keys b{ color:var(--lt-muted); font-weight:500; }
+  #turn .lt-note{ text-align:center; margin-top:14px; color:var(--lt-faint); font-size:11.5px; line-height:1.6; max-width:84ch; margin-inline:auto; }
+
+  #turn .t-px{ font:400 11px 'Silkscreen',monospace; }
+  #turn .t-label{ font:600 11px 'IBM Plex Mono',monospace; letter-spacing:.06em; }
+  #turn .t-micro{ font:500 9px 'IBM Plex Mono',monospace; letter-spacing:.1em; }
+  #turn .t-body{ font:400 12px 'IBM Plex Mono',monospace; }
+  #turn .t-code{ font:400 10.5px 'IBM Plex Mono',monospace; }
+  #turn .t-tool{ font:600 16px 'IBM Plex Mono',monospace; }
+  #turn .t-big{ font:700 28px 'Silkscreen',monospace; }
+
+  #turn .fade{ transition:opacity .35s steps(3), stroke .3s steps(3), fill .3s steps(3); }
+  #turn .node{ transition:opacity .35s steps(3); }
+  #turn .dim{ opacity:var(--lt-dim); }
+  #turn .blink{ animation:lt-blink 1s steps(1) infinite; }
+  #turn .ev{ animation:lt-evin .3s steps(3) both; }
+  @keyframes lt-evin{ from{ opacity:0; } to{ opacity:1; } }
+  #turn .scan{ opacity:0; }
+  #turn .scan.run{ animation:lt-scan 1.4s steps(12) infinite; }
+  @keyframes lt-scan{ 0%{ opacity:0; transform:translateY(0) } 10%{ opacity:.8 } 90%{ opacity:.8 } 100%{ opacity:0; transform:translateY(240px) } }
+  @media (prefers-reduced-motion: reduce){
+    #turn .scan.run, #turn .blink, #turn .ev, #turn .lt-prompt .cur{ animation:none; }
+    #turn .fade, #turn .node{ transition:none; }
+  }
+  @media (max-width: 760px){
+    #turn .lt-frame{ overflow-x:auto; }
+    #turn .lt-dia{ width:980px; }
+    #turn .lt-hatch.short{ display:none; }
+  }
 </style>
 </head>
 <body>
@@ -286,6 +389,7 @@
     <a class="wordmark" href="#">loom<span class="cursor">_</span></a>
     <ul>
       <li><a href="#weaver">weaver</a></li>
+      <li class="hide-sm"><a href="#turn">one turn</a></li>
       <li class="hide-sm"><a href="#harness">harness</a></li>
       <li class="hide-sm"><a href="#patterns">patterns</a></li>
       <li class="hide-sm"><a href="#workflows">workflows</a></li>
@@ -343,6 +447,284 @@
 <span class="t-dim">$</span> <span class="t-cmd">loom --thread explain-optimizer</span></pre>
     </div>
   </header>
+</div>
+
+<section id="turn" aria-labelledby="turn-title">
+  <div class="lt-wrap">
+    <div class="lt-banner" aria-hidden="true">
+      <div class="lt-hatch short"></div>
+      <div class="lt-brand">
+        <img src="favicon.png" alt="" width="52" height="52">
+        <div class="lt-word"><small class="tm">Teradata™</small><small class="ver"><span data-loom-version>v1.4.0</span></small><svg id="lt-wordmark"></svg></div>
+      </div>
+      <div class="lt-hatch"></div>
+    </div>
+
+    <h2 id="turn-title"><span class="c1">Every tool call</span> passes through <span class="c2">the harness.</span></h2>
+    <p class="lt-sub">Context is assembled before the model speaks. Tool calls go through an admission chain before anything runs. Failures feed back into the loop, and every step is traced.</p>
+
+    <div class="lt-tabs" role="tablist" id="lt-tabs"></div>
+    <div class="lt-stages" id="lt-stages" aria-hidden="true"></div>
+
+    <div class="lt-frame" tabindex="0" aria-label="Turn diagram. Use arrow keys to step, space to play or pause, 1 to 4 to pick a scenario.">
+      <div class="lt-frame-bar"><span class="dots"><i></i><i></i><i></i></span><span id="lt-bar-title">loom · one turn</span><span id="lt-bar-step">01/07</span></div>
+<svg id="lt-dia" class="lt-dia" viewBox="0 40 1340 530" role="img" aria-labelledby="lt-dia-title">
+<title id="lt-dia-title">Loom turn pipeline: session, context assembly, LLM, admission chain, shuttle executor, backend, and trace timeline</title>
+<defs>
+  <image id="lt-loom-mark" width="256" height="256" href="favicon.png"/>
+  <pattern id="lt-dots" width="16" height="16" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="1.4" height="1.4" fill="var(--lt-grid)"/></pattern>
+  <pattern id="lt-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(30)"><rect width="2" height="7" fill="var(--orange)"/></pattern>
+  <linearGradient id="lt-yarn" gradientUnits="userSpaceOnUse" x1="290" y1="0" x2="1226" y2="0">
+    <stop offset="0" stop-color="var(--teal)"/><stop offset=".3" stop-color="var(--violet)"/>
+    <stop offset=".5" stop-color="var(--magenta)"/><stop offset=".75" stop-color="var(--teal)"/><stop offset="1" stop-color="var(--lime)"/>
+  </linearGradient>
+  <filter id="lt-hard" x="-5%" y="-5%" width="115%" height="115%">
+    <feFlood style="flood-color:var(--lt-hard)" result="f"/>
+    <feComposite in="f" in2="SourceAlpha" operator="in" result="s"/>
+    <feOffset in="s" dx="4" dy="4" result="o"/>
+    <feMerge><feMergeNode in="o"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+<rect x="0" y="40" width="1340" height="530" fill="url(#lt-dots)"/>
+
+<!-- ===== resolved call bar ===== -->
+<g id="lt-callbar" class="node dim">
+  <rect x="330" y="58" width="848" height="36" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+  <rect x="330" y="58" width="92" height="36" fill="var(--teal)"/>
+  <text x="340" y="80" class="t-px" fill="var(--lt-bg)">&gt;_ call</text>
+  <text id="lt-callbar-text" x="436" y="80" class="t-code" fill="var(--lt-text)">—</text>
+</g>
+
+<!-- ===== session ===== -->
+<g>
+  <rect x="20" y="112" width="270" height="358" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+  <rect x="20" y="112" width="270" height="30" fill="var(--teal)"/>
+  <text x="32" y="132" class="t-px" fill="var(--lt-bg)">agent session</text>
+  <text x="278" y="132" text-anchor="end" class="t-micro" fill="var(--lt-bg)">THREAD</text>
+
+  <g id="lt-s-user" class="node">
+    <rect x="30" y="161" width="18" height="18" fill="var(--teal)"/>
+    <text x="39" y="174" text-anchor="middle" class="t-px" fill="var(--lt-bg)">u</text>
+    <text x="56" y="164" class="t-micro" fill="var(--teal)">USER</text>
+    <text id="lt-s-user-text" x="56" y="183" class="t-body" fill="var(--lt-text)"></text>
+  </g>
+  <path d="M 30 200 H 280" stroke="var(--lt-line)" stroke-dasharray="3 3"/>
+  <g id="lt-s-agent" class="node dim">
+    <use href="#lt-loom-mark" transform="translate(29 210) scale(.078)"/>
+    <text x="56" y="214" class="t-micro" fill="var(--magenta)">LOOM</text>
+    <text id="lt-s-agent-text" x="56" y="233" class="t-body" fill="var(--lt-text)"></text>
+  </g>
+  <g id="lt-s-call" class="node dim">
+    <rect x="31" y="252" width="249" height="70" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)"/>
+    <rect x="37" y="266" width="26" height="26" fill="var(--violet)"/>
+    <text id="lt-s-call-badge" x="50" y="283" text-anchor="middle" class="t-code" fill="var(--lt-bg)">sh</text>
+    <text x="73" y="270" class="t-micro" fill="var(--violet)">TOOL CALL</text>
+    <text id="lt-s-call-name" x="73" y="289" class="t-body" fill="var(--lt-text)"></text>
+    <text id="lt-s-call-args" x="73" y="308" class="t-code" fill="var(--lt-muted)"></text>
+  </g>
+  <g id="lt-s-result" class="node dim">
+    <rect id="lt-s-result-box" x="31" y="336" width="249" height="66" fill="transparent" stroke="var(--lt-line)" stroke-width="1.5" class="fade"/>
+    <text id="lt-s-result-head" x="44" y="354" class="t-micro" fill="var(--lt-allow)">TOOL RESULT</text>
+    <text id="lt-s-result-1" x="44" y="374" class="t-body" fill="var(--lt-text)">Awaiting admission…</text>
+    <text id="lt-s-result-2" x="44" y="392" class="t-code" fill="var(--lt-muted)">not yet executed</text>
+  </g>
+  <g id="lt-s-final" class="node dim">
+    <use href="#lt-loom-mark" transform="translate(29 416) scale(.078)"/>
+    <text x="56" y="421" class="t-micro" fill="var(--magenta)">LOOM · STREAMED</text>
+    <text id="lt-s-final-text" x="56" y="440" class="t-body" fill="var(--lt-text)"></text>
+    <rect x="56" y="448" width="7" height="12" fill="var(--yellow)" class="blink"/>
+  </g>
+</g>
+
+<!-- ===== context assembly ===== -->
+<text x="330" y="128" class="t-px" fill="var(--violet)">context · per turn</text>
+<path d="M 318 142 V 394" stroke="var(--violet)" stroke-width="2" stroke-dasharray="4 4"/>
+<g id="lt-ctx">
+  <g id="lt-c1" class="node dim"><path d="M 318 169 H 330" stroke="var(--violet)" stroke-width="2"/>
+    <rect id="lt-c1-box" class="fade" x="330" y="142" width="169" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <rect x="330" y="142" width="26" height="54" fill="var(--teal)"/><text x="343" y="174" text-anchor="middle" class="t-px" fill="var(--lt-bg)">01</text>
+    <text x="366" y="161" class="t-label" fill="var(--lt-text)">PATTERNS</text>
+    <text id="lt-c1-text" x="366" y="182" class="t-code" fill="var(--lt-muted)"></text></g>
+  <g id="lt-c2" class="node dim"><path d="M 318 235 H 330" stroke="var(--violet)" stroke-width="2"/>
+    <rect id="lt-c2-box" class="fade" x="330" y="208" width="169" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <rect x="330" y="208" width="26" height="54" fill="var(--violet)"/><text x="343" y="240" text-anchor="middle" class="t-px" fill="var(--lt-bg)">02</text>
+    <text x="366" y="227" class="t-label" fill="var(--lt-text)">GRAPH MEMORY</text>
+    <text x="366" y="248" class="t-code" fill="var(--lt-muted)">salience-ranked</text></g>
+  <g id="lt-c3" class="node dim"><path d="M 318 301 H 330" stroke="var(--violet)" stroke-width="2"/>
+    <rect id="lt-c3-box" class="fade" x="330" y="274" width="169" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <rect x="330" y="274" width="26" height="54" fill="var(--magenta)"/><text x="343" y="306" text-anchor="middle" class="t-px" fill="var(--lt-bg)">03</text>
+    <text x="366" y="293" class="t-label" fill="var(--lt-text)">HISTORY</text>
+    <text x="366" y="314" class="t-code" fill="var(--lt-muted)">FTS5 · on attach</text></g>
+  <g id="lt-c4" class="node dim"><path d="M 318 367 H 330" stroke="var(--violet)" stroke-width="2"/>
+    <rect id="lt-c4-box" class="fade" x="330" y="340" width="169" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <rect x="330" y="340" width="26" height="54" fill="var(--lime)"/><text x="343" y="372" text-anchor="middle" class="t-px" fill="var(--lt-bg)">04</text>
+    <text x="366" y="359" class="t-label" fill="var(--lt-text)">TOKEN BUDGET</text>
+    <g id="lt-c4-cells"></g>
+    <text x="464" y="380" class="t-code" fill="var(--lt-muted)">/20%</text></g>
+</g>
+
+<!-- ===== human approval ===== -->
+<g id="lt-human" class="node dim">
+  <rect id="lt-human-box" class="fade" x="540" y="110" width="152" height="94" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+  <rect x="540" y="110" width="152" height="24" fill="var(--yellow)"/>
+  <text x="550" y="127" class="t-px" fill="var(--lt-bg)">ask resolver</text>
+  <text x="552" y="153" class="t-label" fill="var(--lt-text)">contact_human</text>
+  <path d="M 552 163 H 680" stroke="var(--lt-line)" stroke-dasharray="3 3"/>
+  <text id="lt-human-state" x="552" y="181" class="t-code" fill="var(--lt-muted)">approve · deny</text>
+  <text x="552" y="196" class="t-micro" fill="var(--lt-faint)">HUMAN-IN-THE-LOOP</text>
+</g>
+
+<!-- ===== LLM ===== -->
+<g id="lt-llm" class="node dim">
+  <rect id="lt-llm-box" class="fade" x="540" y="236" width="152" height="116" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)" stroke-width="2" filter="url(#lt-hard)"/>
+  <rect x="540" y="236" width="152" height="24" fill="var(--violet)"/>
+  <text x="616" y="253" text-anchor="middle" class="t-px" fill="var(--lt-bg)">reasoning role</text>
+  <text x="616" y="298" text-anchor="middle" class="t-big" fill="var(--violet)">LLM</text>
+  <text id="lt-llm-state" x="616" y="320" text-anchor="middle" class="t-code" fill="var(--lt-text)">idle</text>
+  <text x="616" y="340" text-anchor="middle" class="t-micro" fill="var(--lt-faint)">PER-ROLE PROVIDER</text>
+</g>
+
+<!-- ===== admission chain ===== -->
+<text x="730" y="128" class="t-px" fill="var(--magenta)">admission chain</text>
+<path d="M 722 142 V 394" stroke="var(--magenta)" stroke-width="2" stroke-dasharray="4 4"/>
+<g id="lt-adm">
+  <g id="lt-a1" class="node dim"><path d="M 722 169 H 730" stroke="var(--magenta)" stroke-width="2"/>
+    <rect id="lt-a1-box" class="fade" x="730" y="142" width="160" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <text x="742" y="161" class="t-label" fill="var(--lt-text)">DENYLIST</text>
+    <text id="lt-a1-text" x="742" y="183" class="t-code" fill="var(--lt-muted)">—</text>
+    <rect id="lt-a1-dot" x="870" y="153" width="9" height="9" fill="var(--lt-line-strong)" class="fade"/></g>
+  <g id="lt-a2" class="node dim"><path d="M 722 235 H 730" stroke="var(--magenta)" stroke-width="2"/>
+    <rect id="lt-a2-box" class="fade" x="730" y="208" width="160" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <text x="742" y="227" class="t-label" fill="var(--lt-text)">ASK</text>
+    <text id="lt-a2-text" x="742" y="249" class="t-code" fill="var(--lt-muted)">—</text>
+    <rect id="lt-a2-dot" x="870" y="219" width="9" height="9" fill="var(--lt-line-strong)" class="fade"/></g>
+  <g id="lt-a3" class="node dim"><path d="M 722 301 H 730" stroke="var(--magenta)" stroke-width="2"/>
+    <rect id="lt-a3-box" class="fade" x="730" y="274" width="160" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <text x="742" y="293" class="t-label" fill="var(--lt-text)">GATED ALLOWLIST</text>
+    <text id="lt-a3-text" x="742" y="315" class="t-code" fill="var(--lt-muted)">—</text>
+    <rect id="lt-a3-dot" x="870" y="285" width="9" height="9" fill="var(--lt-line-strong)" class="fade"/></g>
+  <g id="lt-a4" class="node dim"><path d="M 722 367 H 730" stroke="var(--magenta)" stroke-width="2"/>
+    <rect id="lt-a4-box" class="fade" x="730" y="340" width="160" height="54" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+    <text x="742" y="359" class="t-label" fill="var(--lt-text)">AUDIT</text>
+    <text id="lt-a4-text" x="742" y="381" class="t-code" fill="var(--lt-muted)">—</text>
+    <rect id="lt-a4-dot" x="870" y="351" width="9" height="9" fill="var(--lt-line-strong)" class="fade"/></g>
+</g>
+<text x="730" y="418" class="t-micro" fill="var(--lt-faint)">MOST RESTRICTIVE WINS</text>
+<text x="730" y="432" class="t-code" fill="var(--lt-muted)"><tspan fill="var(--red)">deny</tspan> › <tspan fill="var(--yellow)">ask</tspan> › <tspan fill="var(--lime)">allow</tspan></text>
+<path d="M 692 170 H 706 V 235 H 730" fill="none" stroke="var(--lt-line)" stroke-width="1.5" stroke-dasharray="3 3" id="lt-ask-link" class="fade"/>
+
+<!-- ===== shuttle executor ===== -->
+<g id="lt-exec" class="node dim">
+  <rect x="920" y="128" width="270" height="316" fill="var(--lt-chamber)" stroke="var(--lt-line-strong)" stroke-width="2" filter="url(#lt-hard)"/>
+  <rect id="lt-exec-edge" class="fade" x="920" y="128" width="270" height="316" fill="none" stroke="transparent" stroke-width="2.5"/>
+  <rect x="920" y="128" width="270" height="26" fill="url(#lt-hatch)" opacity=".55"/>
+  <rect x="930" y="132" width="140" height="18" fill="var(--lt-bg)"/>
+  <text x="936" y="146" class="t-px" fill="var(--teal)">shuttle executor</text>
+  <rect x="1122" y="132" width="60" height="18" fill="var(--lt-bg)"/>
+  <text x="1178" y="145" text-anchor="end" class="t-micro" fill="var(--lt-muted)">PER CALL</text>
+
+  <g>
+    <rect x="936" y="170" width="112" height="40" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)"/>
+    <rect x="936" y="170" width="4" height="40" fill="var(--teal)"/>
+    <text x="948" y="185" class="t-micro" fill="var(--lt-faint)">WORKDIR</text>
+    <text id="lt-p1" x="948" y="201" class="t-code" fill="var(--lt-text)">LOOM_SANDBOX_DIR</text>
+  </g>
+  <g>
+    <rect x="1062" y="170" width="112" height="40" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)"/>
+    <rect id="lt-p2-bar" x="1170" y="170" width="4" height="40" fill="var(--violet)" class="fade"/>
+    <text x="1072" y="185" class="t-micro" fill="var(--lt-faint)">PARAMS</text>
+    <text id="lt-p2" x="1072" y="201" class="t-code" fill="var(--lt-text)">SCHEMA CHECK</text>
+  </g>
+  <g>
+    <rect x="936" y="388" width="112" height="40" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)"/>
+    <rect id="lt-p3-bar" x="936" y="388" width="4" height="40" fill="var(--lime)" class="fade"/>
+    <text x="948" y="403" class="t-micro" fill="var(--lt-faint)">CIRCUIT BREAKER</text>
+    <text id="lt-p3" x="948" y="419" class="t-code" fill="var(--lt-text)">CLOSED</text>
+  </g>
+  <g>
+    <rect x="1062" y="388" width="112" height="40" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)"/>
+    <rect id="lt-p4-bar" x="1170" y="388" width="4" height="40" fill="var(--teal)" class="fade"/>
+    <text x="1072" y="403" class="t-micro" fill="var(--lt-faint)">GUARDRAILS</text>
+    <text id="lt-p4" x="1072" y="419" class="t-code" fill="var(--lt-text)">NO ERRORS</text>
+  </g>
+
+  <g id="lt-proc">
+    <rect id="lt-proc-box" class="fade" x="978" y="236" width="154" height="116" fill="var(--lt-panel-strong)" stroke="var(--lt-line-strong)" stroke-width="2"/>
+    <rect x="978" y="236" width="154" height="22" fill="var(--teal)"/>
+    <text x="1055" y="252" text-anchor="middle" class="t-px" fill="var(--lt-bg)">tool</text>
+    <text x="1055" y="294" text-anchor="middle" class="t-tool" fill="var(--lt-text)"><tspan fill="var(--orange)">&gt;_ </tspan><tspan id="lt-proc-name">—</tspan></text>
+    <text id="lt-proc-state" x="1055" y="318" text-anchor="middle" class="t-code" fill="var(--lt-muted)">not started</text>
+    <g id="lt-proc-meter"></g>
+  </g>
+  <rect id="lt-scan" x="936" y="160" width="238" height="3" fill="var(--teal)" class="scan"/>
+</g>
+<g id="lt-exec-skip" opacity="0" class="fade">
+  <path d="M 1030 262 L 1080 312 M 1080 262 L 1030 312" stroke="var(--lt-deny)" stroke-width="4" stroke-linecap="square"/>
+</g>
+
+<!-- ===== backend ===== -->
+<g id="lt-backend" class="node dim">
+  <rect id="lt-be-ring" class="fade" x="1226" y="250" width="84" height="88" fill="var(--lt-panel)" stroke="var(--lt-line-strong)" stroke-width="1.5" filter="url(#lt-hard)"/>
+  <!-- pixel database stack -->
+  <g fill="var(--lime)">
+    <rect x="1248" y="266" width="40" height="10"/><rect x="1248" y="282" width="40" height="10" opacity=".75"/><rect x="1248" y="298" width="40" height="10" opacity=".5"/>
+  </g>
+  <rect x="1280" y="269" width="4" height="4" fill="var(--lt-bg)"/><rect x="1280" y="285" width="4" height="4" fill="var(--lt-bg)"/><rect x="1280" y="301" width="4" height="4" fill="var(--lt-bg)"/>
+  <text x="1268" y="327" text-anchor="middle" class="t-micro" fill="var(--lt-faint)">BACKEND</text>
+  <text id="lt-be-name" x="1268" y="362" text-anchor="middle" class="t-px" fill="var(--lime)">backend</text>
+  <text id="lt-be-sub" x="1268" y="378" text-anchor="middle" class="t-micro" fill="var(--lt-faint)">ExecutionBackend</text>
+</g>
+
+<!-- ===== wires ===== -->
+<g fill="none" stroke="url(#lt-yarn)" stroke-width="3">
+  <path id="lt-w-main" d="M 290 294 H 318 M 499 294 H 540 M 692 294 H 722 M 890 294 H 920 M 1190 294 H 1226"/>
+</g>
+<g fill="none" stroke="none">
+  <path id="lt-r-in"   d="M 290 294 H 318"/>
+  <path id="lt-r-ctx"  d="M 318 294 H 330 M 499 294 H 540"/>
+  <path id="lt-r-call" d="M 692 294 H 722"/>
+  <path id="lt-r-exec" d="M 890 294 H 920 L 978 294"/>
+  <path id="lt-r-be"   d="M 1132 294 H 1226"/>
+  <path id="lt-r-back" d="M 1055 444 V 488 H 616 V 352"/>
+  <path id="lt-r-deny" d="M 880 394 V 488 H 616 V 352"/>
+  <path id="lt-r-out"  d="M 540 294 H 290"/>
+</g>
+<g fill="none" stroke="var(--lt-line)" stroke-width="2" stroke-dasharray="4 4">
+  <path id="lt-ret-exec" d="M 1055 444 V 488 H 616 V 352" class="fade"/>
+  <path id="lt-ret-deny" d="M 880 394 V 488" class="fade"/>
+</g>
+<g id="lt-packets"></g>
+
+<!-- ===== trace timeline ===== -->
+<g>
+  <rect x="176" y="500" width="150" height="20" fill="var(--lime)"/>
+  <text x="184" y="514" class="t-px" fill="var(--lt-bg)">trace · otlp</text>
+  <path d="M 176 532 H 1180" stroke="var(--lt-line-strong)" stroke-width="2" stroke-dasharray="2 4"/>
+  <g id="lt-trace"></g>
+  <g transform="translate(1212 504)">
+    <text x="0" y="10" class="t-micro" fill="var(--lt-faint)">TOKENS</text>
+    <text id="lt-tok" x="108" y="10" text-anchor="end" class="t-code" fill="var(--yellow)">0</text>
+    <text x="0" y="30" class="t-micro" fill="var(--lt-faint)">SPANS</text>
+    <text id="lt-spans" x="108" y="30" text-anchor="end" class="t-code" fill="var(--teal)">0</text>
+    <text x="0" y="50" class="t-micro" fill="var(--lt-faint)">COST</text>
+    <text x="108" y="50" text-anchor="end" class="t-code" fill="var(--lt-muted)">in TUI</text>
+  </g>
+</g>
+</svg>
+    </div>
+
+    <div class="lt-prompt" aria-live="polite"><span id="lt-caption"></span><span class="cur"></span></div>
+    <div class="lt-controls">
+      <button id="lt-btn-prev" type="button">‹ step</button>
+      <button id="lt-btn-play" type="button">pause</button>
+      <button id="lt-btn-next" type="button">step ›</button>
+    </div>
+    <p class="lt-keys">focus the diagram, then <b>←/→</b> step · <b>space</b> play/pause · <b>1–4</b> scenario</p>
+    <p class="lt-note">Illustrative walkthrough. Stage names follow pkg/types execution stages; admission kinds (denylist, ask, gated-allowlist, audit) follow pkg/shuttle. Commands, rows, and token counts are example values.</p>
+  </div>
+</section>
+
+<div class="wrap">
 
   <section id="harness">
     <div class="harness-grid">
@@ -790,6 +1172,396 @@
       } else { flash(false); }
     });
   });
+})();
+</script>
+
+<script>
+// ---- one turn diagram ----------------------------------------------
+(function(){
+  // every element id in this section carries an lt- prefix
+  const $ = id => document.getElementById('lt-' + id);
+  const NS = 'http://www.w3.org/2000/svg';
+  const STAGES = ['REQUEST','ASSEMBLE','GENERATE','ADMIT','EXECUTE','OBSERVE','RESPOND'];
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const color = {
+    accent:'var(--lt-accent)', llm:'var(--lt-llm)', allow:'var(--lt-allow)', deny:'var(--lt-deny)',
+    ask:'var(--lt-ask)', fix:'var(--lt-fix)', memory:'var(--lt-memory)', backend:'var(--lt-backend)', faint:'var(--lt-line-strong)'
+  };
+  const row = (t, c, hot) => ({t, c, hot});
+  const NONE = row('no match', color.faint);
+
+  // ---- pixel wordmark, TUI style: teal → lime → yellow → orange ----
+  (function wordmark(){
+    const G = {
+      L:['10000','10000','10000','10000','11111'],
+      O:['11111','10001','10001','10001','11111'],
+      M:['10001','11011','10101','10001','10001']
+    };
+    const P = 8, GAP = 1, word = 'LOOM';
+    const svg = $('wordmark');
+    const w = word.length * 6 * P - P, h = 5 * P;
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    const cols = ['var(--teal)','var(--lime)','var(--yellow)','var(--orange)'];
+    [...word].forEach((ch, i) => {
+      G[ch].forEach((line, y) => [...line].forEach((bit, x) => {
+        if (bit !== '1') return;
+        const r = document.createElementNS(NS, 'rect');
+        r.setAttribute('x', (i * 6 + x) * P); r.setAttribute('y', y * P);
+        r.setAttribute('width', P - GAP); r.setAttribute('height', P - GAP);
+        r.setAttribute('fill', cols[i]);
+        svg.appendChild(r);
+      }));
+    });
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'Loom');
+  })();
+
+  const SCENARIOS = [
+    {
+      id:'allow', label:'Allowed call', tab:color.allow,
+      user:'Summarize Q3 revenue by region.',
+      agent:'Reading the Q3 export first.',
+      badge:'sh', tool:'shell_execute', args:'head -n 20 reports/q3.csv',
+      call:'shell_execute {"command": "head -n 20 reports/q3.csv"}',
+      pattern:'documents/csv_import', budget:62,
+      backend:['LOCAL FILES','sandbox dir'],
+      steps:[
+        {stage:0, cap:'the user message lands on the <b>thread</b>', on:['s-user'], packet:'r-in'},
+        {stage:1, cap:'the harness assembles context: matched <b>patterns</b>, graph memory, history — inside the <b>token budget</b>', on:['s-user','ctx'], ctx:true, packet:'r-ctx', trace:['pattern.match',color.memory]},
+        {stage:2, cap:'the model plans and emits a <b>tool call</b>', on:['s-user','s-agent','s-call','llm','callbar'], llm:'tool_use', packet:'r-call', trace:['llm.generate',color.llm], tok:2140},
+        {stage:3, cap:'every matching hook votes; no deny, no ask — the call is <b>admitted</b> and the audit hook records it', on:['s-user','s-agent','s-call','callbar','adm'], adm:[NONE,NONE,row('not governed',color.faint),row('recorded · allow',color.allow,true)], trace:['admit.allow',color.allow]},
+        {stage:4, cap:'shuttle validates params and runs the tool in <b>LOOM_SANDBOX_DIR</b> behind a circuit breaker', on:['s-call','callbar','exec','backend'], exec:'running', packet:'r-exec', packet2:'r-be', trace:['tool.execute',color.accent]},
+        {stage:5, cap:'the result flows back into the loop as the model\'s next input', on:['s-call','s-result','llm','exec'], exec:'exit 0 · 38 ms', result:['allow','TOOL RESULT','20 rows · region, revenue','exit 0 · 38 ms'], packet:'r-back', llm:'synthesis', tok:3412},
+        {stage:6, cap:'the answer streams to the thread; spans export over <b>OTLP</b>', on:['s-user','s-agent','s-call','s-result','s-final','llm'], final:'West led Q3 at 41%; EMEA was flat.', packet:'r-out', trace:['llm.synthesize',color.llm]}
+      ]
+    },
+    {
+      id:'ask', label:'Human approval', tab:color.ask,
+      user:'Save that summary to reports/q3.md.',
+      agent:'Writing the summary file.',
+      badge:'fs', tool:'file_write', args:'path: reports/q3.md',
+      call:'file_write {"path": "reports/q3.md", "content": "# Q3 revenue…"}',
+      pattern:'documents/csv_import', budget:68,
+      backend:['LOCAL FILES','sandbox dir'],
+      steps:[
+        {stage:0, cap:'the follow-up arrives on the same thread; <b>history</b> carries the prior turn', on:['s-user'], packet:'r-in'},
+        {stage:1, cap:'context re-assembled; the previous summary is in history, not re-generated', on:['s-user','ctx'], ctx:true, packet:'r-ctx', trace:['pattern.match',color.memory]},
+        {stage:2, cap:'the model emits a <b>file_write</b> call', on:['s-user','s-agent','s-call','llm','callbar'], llm:'tool_use', packet:'r-call', trace:['llm.generate',color.llm], tok:2610},
+        {stage:3, cap:'an <b>ask</b> policy governs writes; the chain parks the call and hands it to the resolver', on:['s-call','callbar','adm','human'], adm:[NONE,row('match · ask',color.ask,true),NONE,row('pending',color.faint)], human:['waiting for operator',color.ask], askLink:true, trace:['admit.ask',color.ask]},
+        {stage:3, cap:'an operator approves through <b>contact_human</b>; the chain resolves Ask to Allow', on:['s-call','callbar','adm','human'], adm:[NONE,row('approved',color.allow,true),NONE,row('recorded · ask→allow',color.allow,true)], human:['approved by operator',color.allow], askLink:true, trace:['hitl.approve',color.allow]},
+        {stage:4, cap:'the write runs inside the sandbox dir', on:['s-call','callbar','exec','backend'], exec:'running', packet:'r-exec', packet2:'r-be', trace:['tool.execute',color.accent]},
+        {stage:5, cap:'result returns to the loop', on:['s-call','s-result','llm','exec'], exec:'ok · 1.2 KB', result:['allow','TOOL RESULT','wrote reports/q3.md','1.2 KB · approved'], packet:'r-back', llm:'synthesis', tok:3190},
+        {stage:6, cap:'the agent confirms; the approval is part of the trace', on:['s-user','s-agent','s-call','s-result','s-final','llm'], final:'Saved to reports/q3.md.', packet:'r-out', trace:['llm.synthesize',color.llm]}
+      ]
+    },
+    {
+      id:'deny', label:'Denied by policy', tab:color.deny,
+      user:'Clear out the old reports.',
+      agent:'Removing the reports directory.',
+      badge:'sh', tool:'shell_execute', args:'rm -rf reports/',
+      call:'shell_execute {"command": "rm -rf reports/"}',
+      pattern:'documents/csv_import', budget:55,
+      backend:['LOCAL FILES','untouched'],
+      steps:[
+        {stage:0, cap:'a destructive request lands on the thread', on:['s-user'], packet:'r-in'},
+        {stage:1, cap:'context assembled as usual', on:['s-user','ctx'], ctx:true, packet:'r-ctx', trace:['pattern.match',color.memory]},
+        {stage:2, cap:'the model emits <b>rm -rf reports/</b>', on:['s-user','s-agent','s-call','llm','callbar'], llm:'tool_use', packet:'r-call', trace:['llm.generate',color.llm], tok:1980},
+        {stage:3, cap:'a <b>denylist</b> binding matches the params; Deny outranks everything — the tool body never runs', on:['s-call','callbar','adm'], adm:[row('match · deny',color.deny,true),NONE,NONE,row('recorded · deny',color.deny,true)], trace:['admit.deny',color.deny]},
+        {stage:4, cap:'execution is <b>skipped</b>; the backend is never reached', on:['s-call','callbar','adm'], skip:true, adm:[row('match · deny',color.deny,true),NONE,NONE,row('recorded · deny',color.deny,true)]},
+        {stage:5, cap:'the model receives a <b>permission_denied</b> result instead of silence', on:['s-call','s-result','llm'], skip:true, result:['deny','PERMISSION DENIED','blocked by denylist','tool body not executed'], packet:'r-deny', llm:'replanning', tok:2350},
+        {stage:6, cap:'the agent replans and tells the user why', on:['s-user','s-agent','s-call','s-result','s-final','llm'], skip:true, final:'Blocked by policy. Want a list instead?', packet:'r-out', trace:['llm.synthesize',color.llm]}
+      ]
+    },
+    {
+      id:'fix', label:'Self-correction', tab:color.fix,
+      user:'Top 10 customers by Q3 spend?',
+      agent:'Querying the sales warehouse.',
+      badge:'sql', tool:'execute_sql', args:'SELECT TOP 10 cust_name, …',
+      call:'execute_sql {"query": "SELECT TOP 10 cust_name, SUM(amount) …"}',
+      pattern:'teradata/analytics', budget:74,
+      backend:['TERADATA','ExecutionBackend'],
+      steps:[
+        {stage:0, cap:'the question arrives', on:['s-user'], packet:'r-in'},
+        {stage:1, cap:'patterns for the domain and remembered schema facts are injected', on:['s-user','ctx'], ctx:true, packet:'r-ctx', trace:['pattern.match',color.memory]},
+        {stage:2, cap:'the model writes SQL and calls <b>execute_sql</b>', on:['s-user','s-agent','s-call','llm','callbar'], llm:'tool_use', packet:'r-call', trace:['llm.generate',color.llm], tok:2480},
+        {stage:3, cap:'admitted — read-only SQL matches no deny or ask binding', on:['s-call','callbar','adm'], adm:[NONE,NONE,row('not governed',color.faint),row('recorded · allow',color.allow,true)], trace:['admit.allow',color.allow]},
+        {stage:4, cap:'the backend rejects the query; <b>guardrails</b> record the error', on:['s-call','callbar','exec','backend'], exec:'error', packet:'r-exec', packet2:'r-be', guard:['ERROR RECORDED',color.fix], proc:color.fix, trace:['tool.error',color.fix]},
+        {stage:5, cap:'error analysis goes back to the model, not to the user', on:['s-call','s-result','llm','exec'], exec:'column not found', guard:['ERROR RECORDED',color.fix], result:['fix','TOOL ERROR','column cust_name not found','→ self_correction'], packet:'r-back', llm:'self_correction', tok:3050, trace:['self.correct',color.fix]},
+        {stage:2, cap:'the model corrects the column name and retries', on:['s-call','llm','callbar'], llm:'tool_use', callArgs:'SELECT TOP 10 customer_name, …', callbar:'execute_sql {"query": "SELECT TOP 10 customer_name, SUM(amount) …"}', packet:'r-call', guard:['ERROR RECORDED',color.fix], tok:3390},
+        {stage:4, cap:'second attempt runs clean; the guardrail error record is cleared', on:['s-call','callbar','exec','backend'], exec:'running', packet:'r-exec', packet2:'r-be', guard:['CLEARED',color.allow], trace:['tool.execute',color.accent]},
+        {stage:5, cap:'rows return to the loop', on:['s-call','s-result','llm','exec'], exec:'10 rows · 212 ms', guard:['CLEARED',color.allow], result:['allow','TOOL RESULT','10 rows · customer_name, spend','retry 1 · 212 ms'], packet:'r-back', llm:'synthesis', tok:4020},
+        {stage:6, cap:'one answer to the user; the failed attempt stays in the trace', on:['s-user','s-agent','s-call','s-result','s-final','llm'], final:'Acme Corp leads at $1.8M.', packet:'r-out', trace:['llm.synthesize',color.llm]}
+      ]
+    }
+  ];
+
+  let sc = 0, st = 0, playing = !reduce, timer = null, raf = null, traceCount = 0, visible = false;
+
+  const tabs = $('tabs');
+  SCENARIOS.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'lt-tab'; b.type = 'button'; b.setAttribute('role', 'tab'); b.textContent = s.label;
+    b.style.setProperty('--tab-c', s.tab);
+    b.addEventListener('click', () => select(i));
+    tabs.appendChild(b);
+  });
+  const stagesEl = $('stages');
+  STAGES.forEach(s => { const sp = document.createElement('span'); sp.textContent = s; stagesEl.appendChild(sp); });
+
+  function select(i){ sc = i; st = 0; render(); schedule(); }
+
+  const NODES = ['s-user','s-agent','s-call','s-result','s-final','ctx','llm','human','adm','exec','backend','callbar'];
+  const SUBS = {ctx:['c1','c2','c3','c4'], adm:['a1','a2','a3','a4']};
+  function setOn(list){
+    NODES.forEach(n => {
+      const on = list.includes(n);
+      if (SUBS[n]) SUBS[n].forEach(c => $(c).classList.toggle('dim', !on));
+      else $(n).classList.toggle('dim', !on);
+    });
+  }
+
+  // token budget as 10 pixel cells
+  function budgetCells(pct){
+    const g = $('c4-cells'); g.innerHTML = '';
+    const lit = Math.round(pct / 10);
+    for (let i = 0; i < 10; i++){
+      const r = document.createElementNS(NS, 'rect');
+      r.setAttribute('x', 366 + i * 9); r.setAttribute('y', 372); r.setAttribute('width', 7); r.setAttribute('height', 9);
+      r.setAttribute('fill', i < lit ? 'var(--lime)' : 'var(--lt-line)');
+      g.appendChild(r);
+    }
+  }
+
+  function resetScene(){
+    const s = SCENARIOS[sc];
+    $('s-user-text').textContent = s.user;
+    $('s-agent-text').textContent = s.agent;
+    $('s-call-badge').textContent = s.badge;
+    $('s-call-name').textContent = s.tool;
+    $('s-call-args').textContent = s.args;
+    $('callbar-text').textContent = s.call;
+    $('c1-text').textContent = s.pattern;
+    $('proc-name').textContent = s.tool;
+    $('be-name').textContent = s.backend[0].toLowerCase();
+    $('be-sub').textContent = s.backend[1];
+    $('s-final-text').textContent = '';
+    $('trace').innerHTML = ''; traceCount = 0;
+    $('tok').textContent = '0'; $('spans').textContent = '0';
+    budgetCells(0);
+    setResult(null);
+  }
+
+  function setResult(r){
+    if (!r){
+      $('s-result-head').textContent = 'TOOL RESULT';
+      $('s-result-head').setAttribute('fill', color.allow);
+      $('s-result-1').textContent = 'Awaiting admission…';
+      $('s-result-2').textContent = 'not yet executed';
+      $('s-result-box').setAttribute('stroke', 'var(--lt-line)');
+      return;
+    }
+    const c = color[r[0]];
+    $('s-result-head').textContent = r[1];
+    $('s-result-head').setAttribute('fill', c);
+    $('s-result-1').textContent = r[2];
+    $('s-result-2').textContent = r[3];
+    $('s-result-box').setAttribute('stroke', c);
+  }
+
+  function addTrace(name, c, fresh){
+    const x = 220 + traceCount * 118;
+    const g = document.createElementNS(NS, 'g');
+    if (fresh && !reduce) g.setAttribute('class', 'ev');
+    g.innerHTML =
+      (traceCount ? `<path d="M ${x-112} 532 H ${x-6}" stroke="${c}" stroke-width="2"/>` : '') +
+      `<rect x="${x-5}" y="527" width="10" height="10" fill="${c}"/>` +
+      `<text x="${x}" y="556" text-anchor="middle" class="t-code" fill="var(--lt-text)">${name}</text>`;
+    $('trace').appendChild(g);
+    traceCount++;
+    $('spans').textContent = traceCount;
+  }
+
+  // squeeze a line that would overrun its panel instead of letting it spill out
+  function fit(id, maxW){
+    const el = $(id);
+    el.removeAttribute('textLength'); el.removeAttribute('lengthAdjust');
+    if (el.getComputedTextLength() > maxW){ el.setAttribute('textLength', maxW); el.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+  }
+
+  function box(id, stroke){ $(id).setAttribute('stroke', stroke || 'var(--lt-line-strong)'); }
+
+  function render(){
+    const s = SCENARIOS[sc];
+    [...tabs.children].forEach((b, i) => b.setAttribute('aria-selected', i === sc));
+    resetScene();
+
+    let tok = 0, final = '', result = null, callArgs = null, callbarTxt = null, lastLLM = 'idle', lastAdm = null;
+    for (let k = 0; k <= st; k++){
+      const p = s.steps[k];
+      if (p.trace) addTrace(p.trace[0], p.trace[1], k === st);
+      if (p.tok) tok = p.tok;
+      if (p.final) final = p.final;
+      if (p.result) result = p.result;
+      if (p.callArgs) callArgs = p.callArgs;
+      if (p.callbar) callbarTxt = p.callbar;
+      if (p.llm) lastLLM = p.llm;
+      if (p.stage === 2) lastAdm = null;  // a new generation starts a fresh admission
+      if (p.adm) lastAdm = p.adm;
+    }
+    const step = s.steps[st];
+    $('tok').textContent = tok.toLocaleString();
+    $('s-final-text').textContent = final;
+    if (callArgs) $('s-call-args').textContent = callArgs;
+    if (callbarTxt) $('callbar-text').textContent = callbarTxt;
+    setResult(result);
+    setOn(step.on);
+    [['s-user-text',226],['s-agent-text',226],['s-final-text',226],['s-call-name',200],['s-call-args',200],
+     ['s-result-1',228],['s-result-2',228],['callbar-text',730],['c1-text',128]].forEach(([id, w]) => fit(id, w));
+
+    const seen = new Set(s.steps.slice(0, st).map(x => x.stage));
+    [...stagesEl.children].forEach((sp, i) => {
+      sp.className = i === step.stage ? 'now' : (seen.has(i) ? 'done' : '');
+    });
+    $('caption').innerHTML = step.cap;
+    $('bar-title').textContent = 'loom · ' + s.label.toLowerCase();
+    $('bar-step').textContent = String(st + 1).padStart(2, '0') + '/' + String(s.steps.length).padStart(2, '0');
+
+    // context
+    const ctxCols = ['var(--teal)','var(--violet)','var(--magenta)','var(--lime)'];
+    ['c1-box','c2-box','c3-box','c4-box'].forEach((id, i) => box(id, step.ctx ? ctxCols[i] : null));
+    if (st >= 1) budgetCells(s.budget);
+
+    // llm
+    const llmOn = step.on.includes('llm');
+    $('llm-state').textContent = llmOn ? lastLLM : 'idle';
+    box('llm-box', llmOn ? (lastLLM === 'self_correction' ? color.fix : color.llm) : null);
+    $('llm-state').classList.toggle('blink', llmOn && !reduce);
+
+    // admission
+    const adm = lastAdm || [null,null,null,null];
+    adm.forEach((r, i) => {
+      const n = i + 1;
+      $(`a${n}-text`).textContent = r ? r.t : '—';
+      $(`a${n}-dot`).setAttribute('fill', r ? r.c : color.faint);
+      box(`a${n}-box`, r && r.hot ? r.c : null);
+    });
+    $('ask-link').setAttribute('stroke', step.askLink ? color.ask : 'var(--lt-line)');
+
+    // human
+    if (step.human){ $('human-state').textContent = step.human[0]; box('human-box', step.human[1]); }
+    else { $('human-state').textContent = 'approve · deny'; box('human-box', null); }
+
+    // executor
+    const running = step.exec === 'running';
+    $('proc-state').textContent = step.skip ? 'skipped' : (step.exec || 'not started');
+    box('exec-edge', step.on.includes('exec') ? (step.proc || color.accent) : 'transparent');
+    box('proc-box', step.proc || (step.on.includes('exec') ? color.accent : null));
+    $('scan').classList.toggle('run', running && !reduce);
+    $('p2').textContent = st >= 4 && !step.skip ? 'VALIDATED' : 'SCHEMA CHECK';
+    $('p4').textContent = step.guard ? step.guard[0] : 'NO ERRORS';
+    $('p4-bar').setAttribute('fill', step.guard ? step.guard[1] : 'var(--teal)');
+    $('exec-skip').setAttribute('opacity', step.skip ? 1 : 0);
+    procMeter(running);
+    box('be-ring', step.packet2 ? color.backend : null);
+
+    $('ret-exec').setAttribute('stroke', step.packet === 'r-back' ? color.accent : 'var(--lt-line)');
+    $('ret-deny').setAttribute('stroke', step.packet === 'r-deny' ? color.deny : 'var(--lt-line)');
+
+    animatePackets(step);
+  }
+
+  // retro progress bar inside the tool box while running
+  let meterTimer = null;
+  function procMeter(on){
+    clearInterval(meterTimer);
+    const g = $('proc-meter'); g.innerHTML = '';
+    if (!on) return;
+    const cells = [];
+    for (let i = 0; i < 12; i++){
+      const r = document.createElementNS(NS, 'rect');
+      r.setAttribute('x', 995 + i * 10); r.setAttribute('y', 330); r.setAttribute('width', 8); r.setAttribute('height', 8);
+      r.setAttribute('fill', 'var(--lt-line)'); g.appendChild(r); cells.push(r);
+    }
+    let n = reduce ? 12 : 0;
+    const paint = () => cells.forEach((c, i) => c.setAttribute('fill', i < n ? 'var(--teal)' : 'var(--lt-line)'));
+    paint();
+    if (!reduce) meterTimer = setInterval(() => { n = (n + 1) % 13; paint(); }, 120);
+  }
+
+  // square pixel packet with a short trail
+  const ROUTE_COLOR = {'r-in':'var(--teal)','r-ctx':'var(--violet)','r-call':'var(--magenta)','r-exec':'var(--teal)',
+                       'r-be':'var(--lime)','r-back':'var(--teal)','r-deny':'var(--red)','r-out':'var(--violet)'};
+  const TRAIL = 4, pk = [];
+  for (let i = 0; i < TRAIL; i++){
+    const r = document.createElementNS(NS, 'rect');
+    const sz = 10 - i * 2;
+    r.setAttribute('width', sz); r.setAttribute('height', sz); r.dataset.sz = sz;
+    r.setAttribute('opacity', 0);
+    $('packets').appendChild(r); pk.push(r);
+  }
+  function animatePackets(step){
+    cancelAnimationFrame(raf);
+    const ids = [step.packet, step.packet2].filter(Boolean);
+    const routes = ids.map(id => $(id));
+    pk.forEach(r => r.setAttribute('opacity', 0));
+    if (!routes.length || reduce) return;
+    const lens = routes.map(r => r.getTotalLength());
+    const total = lens.reduce((a, b) => a + b, 0);
+    const dur = Math.min(1600, 500 + total * 1.4);
+    const t0 = performance.now();
+    const at = d => {
+      let i = 0;
+      while (i < routes.length - 1 && d > lens[i]){ d -= lens[i]; i++; }
+      return { p: routes[i].getPointAtLength(Math.max(0, Math.min(d, lens[i]))), i };
+    };
+    function frame(t){
+      const d = Math.min(1, (t - t0) / dur) * total;
+      pk.forEach((r, k) => {
+        const { p, i } = at(d - k * 12);
+        const sz = +r.dataset.sz;
+        // snap to a 2px grid for a chunky, stepped motion
+        r.setAttribute('x', Math.round((p.x - sz / 2) / 2) * 2);
+        r.setAttribute('y', Math.round((p.y - sz / 2) / 2) * 2);
+        r.setAttribute('fill', step.proc && ids[i] !== 'r-be' ? step.proc : ROUTE_COLOR[ids[i]]);
+        r.setAttribute('opacity', d - k * 12 < 0 ? 0 : 1 - k * 0.22);
+      });
+      if (t - t0 < dur) raf = requestAnimationFrame(frame);
+      else pk.forEach(r => r.setAttribute('opacity', 0));
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  function schedule(){
+    clearTimeout(timer);
+    if (!playing || !visible) return;
+    const last = st === SCENARIOS[sc].steps.length - 1;
+    timer = setTimeout(() => {
+      if (last){ sc = (sc + 1) % SCENARIOS.length; st = 0; } else st++;
+      render(); schedule();
+    }, last ? 3600 : 2300);
+  }
+  function next(){ const n = SCENARIOS[sc].steps.length; if (st < n - 1) st++; else { sc = (sc + 1) % SCENARIOS.length; st = 0; } render(); schedule(); }
+  function prev(){ if (st > 0) st--; else { sc = (sc + SCENARIOS.length - 1) % SCENARIOS.length; st = SCENARIOS[sc].steps.length - 1; } render(); schedule(); }
+  function togglePlay(){ playing = !playing; $('btn-play').textContent = playing ? 'pause' : 'play'; schedule(); }
+  $('btn-play').addEventListener('click', togglePlay);
+  $('btn-next').addEventListener('click', next);
+  $('btn-prev').addEventListener('click', prev);
+  if (!playing) $('btn-play').textContent = 'play';
+  const section = document.getElementById('turn');
+  section.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') next();
+    else if (e.key === 'ArrowLeft') prev();
+    else if (e.key === ' '){ e.preventDefault(); togglePlay(); }
+    else if (/^[1-4]$/.test(e.key)) select(+e.key - 1);
+  });
+
+  if ('IntersectionObserver' in window){
+    new IntersectionObserver(entries => {
+      visible = entries[0].isIntersecting; schedule();
+    }, { threshold: 0.25 }).observe($('dia'));
+  } else { visible = true; }
+
+  render(); schedule();
 })();
 </script>
 </body>
