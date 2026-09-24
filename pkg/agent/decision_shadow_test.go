@@ -30,6 +30,7 @@ import (
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -386,4 +387,23 @@ func TestMemorySubjectsUseSessionProvenance(t *testing.T) {
 	}
 	got := memorySubjects(candidates)
 	assert.Equal(t, []string{"session:sess-a", "session:sess-b", "session:sess-c", "memory:m4", "memory:m5", ""}, got)
+}
+
+// A live turn carries the agent session through pkg/session only. The recall
+// shadow rows must be keyed to it; the LongMemEval A/B recorded 66,000 rows
+// with an empty session id before this was checked.
+func TestRerankMemoriesShadowRowsCarryAgentSession(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul("c0", 0.9)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, rerankReplyLLM{reply: "1"}, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec)),
+		WithDecisionShadowStore(store))
+	ctx := session.WithSessionID(context.Background(), "sess-agent-9")
+	_ = ag.rerankMemories(ctx, "q", []*memory.Memory{{ID: "m1", Content: "x"}})
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "sess-agent-9", rows[0].SessionId)
 }
