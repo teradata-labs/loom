@@ -115,6 +115,11 @@ func NewDecisionJudge(decider decision.Decider, config *loomv1.JudgeConfig, trac
 		criteria = append([]string(nil), defaultJudgeCriteria...)
 	}
 	site := judgeSitePrefix + id
+	size := 0
+	if dc := config.GetDecision(); dc != nil {
+		size = int(dc.MaxQuestionsPerRequest)
+	}
+	decider = decision.Chunk(decider, decision.WithChunkSize(size))
 	router := decision.NewRouter(decision.NewInstrumented(decider, tracer),
 		decision.WithTracer(tracer),
 		// A judge always acts on the decider's answer; its confidence is
@@ -251,7 +256,14 @@ func (j *DecisionJudge) buildRequest(evalCtx *loomv1.EvaluationContext) (*loomv1
 		"response": truncateRunes(evalCtx.GetResponse(), maxJudgeResponseRunes),
 		"criteria": crits,
 	}
-	return decision.NewRequest(j.site, state, questions)
+	req, err := decision.NewRequest(j.site, state, questions)
+	if err != nil {
+		return nil, err
+	}
+	// The criteria list pairs with the criterion questions; the quality
+	// question has no item and sees the whole list when chunked.
+	req.FanOutKey = "criteria"
+	return req, nil
 }
 
 // Evaluate implements Judge.

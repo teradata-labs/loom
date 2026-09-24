@@ -615,3 +615,24 @@ func FuzzCheckEndpoint(f *testing.F) {
 		}
 	})
 }
+
+// The client tells decision.Chunked how many questions one request should
+// carry: the config's value, else the measured default.
+func TestClientSizeHint(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	c, err := fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev"}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
+	require.NoError(t, err)
+	assert.Equal(t, 0, c.MaxQuestionsPerRequest, "config leaves the default to the client")
+	cl, err := New(c)
+	require.NoError(t, err)
+	var hinter decision.SizeHinter = cl
+	assert.Equal(t, DefaultMaxQuestionsPerRequest, hinter.MaxQuestionsPerRequest())
+
+	c, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev", MaxQuestionsPerRequest: 24}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
+	require.NoError(t, err)
+	cl, err = New(c)
+	require.NoError(t, err)
+	assert.Equal(t, 24, cl.MaxQuestionsPerRequest())
+}

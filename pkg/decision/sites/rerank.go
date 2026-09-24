@@ -51,6 +51,10 @@ const maxRerankQueryRunes = 500
 // maxRerankCandidateRunes bounds each candidate's text in state.
 const maxRerankCandidateRunes = 1000
 
+// RerankFanOutKey is the state array whose items pair with the candidate
+// questions (DecisionRequest.fan_out_key).
+const RerankFanOutKey = "candidates"
+
 // CandidateQuestionID is the question id for candidate index i.
 func CandidateQuestionID(i int) string { return "c" + strconv.Itoa(i) }
 
@@ -81,7 +85,15 @@ func RerankRequest(site, query string, candidates []string) (*loomv1.DecisionReq
 		"query":      truncateRunes(query, maxRerankQueryRunes),
 		"candidates": items,
 	}
-	return decision.NewRequest(site, state, questions)
+	req, err := decision.NewRequest(site, state, questions)
+	if err != nil {
+		return nil, err
+	}
+	// One question per candidate: a chunked request keeps only its own
+	// candidates in state (decision.Chunked), so the provider never sees
+	// more text than the questions it is asked.
+	req.FanOutKey = RerankFanOutKey
+	return req, nil
 }
 
 // RerankReference renders which candidate indexes the existing mechanism

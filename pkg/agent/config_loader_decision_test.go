@@ -76,15 +76,16 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
 // silently stayed at its zero value would look like "configured but inert".
 func TestConvertDecisionConfigYAMLCarriesEveryField(t *testing.T) {
 	cfg, err := convertDecisionConfigYAMLToProto(&DecisionConfigYAML{
-		Provider:             "jev",
-		Model:                "typesafe-ai/jev",
-		AllowAlias:           true,
-		TimeoutMs:            1500,
-		MaxPerSession:        40,
-		MaxCostUSDPerSession: 0.5,
-		LLMRole:              "classifier",
-		RequestsPerMinute:    30,
-		ExposeTool:           true,
+		Provider:               "jev",
+		Model:                  "typesafe-ai/jev",
+		AllowAlias:             true,
+		TimeoutMs:              1500,
+		MaxPerSession:          40,
+		MaxCostUSDPerSession:   0.5,
+		LLMRole:                "classifier",
+		RequestsPerMinute:      30,
+		ExposeTool:             true,
+		MaxQuestionsPerRequest: 12,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "jev", cfg.Provider)
@@ -97,6 +98,7 @@ func TestConvertDecisionConfigYAMLCarriesEveryField(t *testing.T) {
 	assert.Equal(t, "classifier", cfg.LlmRole)
 	assert.Equal(t, int64(30), cfg.RequestsPerMinute)
 	assert.True(t, cfg.ExposeTool)
+	assert.Equal(t, int64(12), cfg.MaxQuestionsPerRequest)
 
 	_, err = convertDecisionConfigYAMLToProto(&DecisionConfigYAML{Provider: "jev", RequestsPerMinute: -1})
 	require.Error(t, err)
@@ -104,4 +106,6 @@ func TestConvertDecisionConfigYAMLCarriesEveryField(t *testing.T) {
 	// The endpoint is server-level only: a YAML base_url is refused.
 	_, err = convertDecisionConfigYAMLToProto(&DecisionConfigYAML{Provider: "jev", BaseURL: "https://example.test"})
 	require.ErrorIs(t, err, decision.ErrEndpointNotServerLevel)
+	_, err = convertDecisionConfigYAMLToProto(&DecisionConfigYAML{Provider: "jev", MaxQuestionsPerRequest: -1})
+	require.Error(t, err)
 }

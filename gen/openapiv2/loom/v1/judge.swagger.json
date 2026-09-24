@@ -239,6 +239,11 @@
         "exposeTool": {
           "type": "boolean",
           "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
+        },
+        "maxQuestionsPerRequest": {
+          "type": "string",
+          "format": "int64",
+          "description": "Most questions one request may carry before the router splits it into\nconcurrent chunks (see DecisionRequest.fan_out_key). 0 means the\ndecider's own default (Jev: 16; a chunk that still fails with an\noverload or size error is bisected and retried). Providers that accept\nany size may set it high; it never changes answers, only how many\nround trips carry them."
         }
       },
       "description": "DecisionConfig configures the decision layer for an agent or server."
