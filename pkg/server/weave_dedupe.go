@@ -34,6 +34,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -111,16 +112,19 @@ func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, en
 }
 
 // wrapAgentError maps an agent execution failure to its gRPC status.
-// Cancellation and deadline keep their own codes: correct for callers, and
-// the dedupe release classifies on them — flattening them into Internal via
-// %v would cache a caller disconnect as a durable outcome for the full TTL
-// (round-3 finding 2). Everything else is Internal.
+// Cancellation and deadline keep their own codes, while a provider stream
+// timeout is Unavailable. The dedupe release classifies these statuses as
+// transient so a retry does not join a cached transport failure. Everything
+// else is Internal.
 func wrapAgentError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Errorf(codes.Canceled, "agent execution canceled: %v", err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return status.Errorf(codes.DeadlineExceeded, "agent execution deadline exceeded: %v", err)
+	}
+	if errors.Is(err, llm.ErrStreamTimeout) {
+		return status.Errorf(codes.Unavailable, "LLM provider stream timed out: %v", err)
 	}
 	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
 }
@@ -138,8 +142,11 @@ func isTransientOutcome(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	if errors.Is(err, llm.ErrStreamTimeout) {
+		return true
+	}
 	switch status.Code(err) {
-	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted:
+	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Unavailable:
 		return true
 	}
 	return false

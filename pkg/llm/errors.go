@@ -30,6 +30,10 @@ import (
 // today.
 var ErrContextTooLong = errors.New("context too long")
 
+// ErrStreamTimeout marks a provider response stream that stopped producing
+// bytes while the caller's context remained active.
+var ErrStreamTimeout = errors.New("provider stream timeout")
+
 // IsAnthropicContextTooLong positively identifies anthropic's prompt-too-long
 // refusal from the HTTP status and raw response body.
 func IsAnthropicContextTooLong(statusCode int, body []byte) bool {

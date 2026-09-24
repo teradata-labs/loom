@@ -42,6 +42,7 @@ type Client struct {
 	model                  string
 	endpoint               string
 	httpClient             *http.Client
+	streamHTTPClient       *http.Client
 	streamFirstByteTimeout time.Duration
 	streamIdleTimeout      time.Duration
 	maxTokens              int
@@ -65,7 +66,7 @@ type Config struct {
 	Endpoint string        // Default: https://api.openai.com/v1/chat/completions
 	Timeout  time.Duration // Default: 60s
 	// StreamFirstByteTimeout limits the wait for the first response-body bytes in
-	// ChatStream. StreamIdleTimeout limits silence between subsequent network
+	// ChatStream. StreamIdleTimeout limits silence during subsequent network
 	// reads. Non-positive values use DefaultOpenAIStreamFirstByteTimeout and
 	// DefaultOpenAIStreamIdleTimeout.
 	StreamFirstByteTimeout time.Duration
@@ -102,7 +103,7 @@ const (
 	DefaultOpenAIEndpoint               = "https://api.openai.com/v1/chat/completions"
 	DefaultOpenAITimeout                = 60 * time.Second
 	DefaultOpenAIStreamFirstByteTimeout = 90 * time.Second
-	DefaultOpenAIStreamIdleTimeout      = 30 * time.Second
+	DefaultOpenAIStreamIdleTimeout      = 60 * time.Second
 	DefaultOpenAIMaxTokens              = 4096
 	DefaultOpenAITemperature            = 1.0
 )
@@ -147,6 +148,29 @@ func NewClient(config Config) *Client {
 	if config.CatalogProvider == "" {
 		config.CatalogProvider = DefaultCatalogProvider
 	}
+	httpTransport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: config.Timeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConns:          100,
+		// Use a short idle-connection timeout so the pool doesn't
+		// hand out stale connections that the LLM proxy has already
+		// closed on its side (which causes EOF errors).
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConnsPerHost: 5,
+	}
+	httpClient := &http.Client{
+		Timeout:   config.Timeout,
+		Transport: httpTransport,
+	}
+	streamTransport := httpTransport.Clone()
+	streamTransport.ResponseHeaderTimeout = config.StreamFirstByteTimeout
+	streamHTTPClient := *httpClient
+	streamHTTPClient.Timeout = 0
+	streamHTTPClient.Transport = streamTransport
 
 	// Initialize rate limiter if enabled — keyed by credential+endpoint+model
 	// so clients with independent quotas do not throttle each other.
@@ -167,23 +191,8 @@ func NewClient(config Config) *Client {
 		rateLimiter:            rateLimiter,
 		extraHeaders:           copyHeaders(config.ExtraHeaders),
 		catalogProvider:        config.CatalogProvider,
-		httpClient: &http.Client{
-			Timeout: config.Timeout,
-			Transport: &http.Transport{
-				Proxy:                 http.ProxyFromEnvironment,
-				DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-				ForceAttemptHTTP2:     true,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: config.Timeout,
-				ExpectContinueTimeout: 1 * time.Second,
-				MaxIdleConns:          100,
-				// Use a short idle-connection timeout so the pool doesn't
-				// hand out stale connections that the LLM proxy has already
-				// closed on its side (which causes EOF errors).
-				IdleConnTimeout:     30 * time.Second,
-				MaxIdleConnsPerHost: 5,
-			},
-		},
+		httpClient:             httpClient,
+		streamHTTPClient:       &streamHTTPClient,
 	}
 }
 
@@ -222,14 +231,7 @@ func (c *Client) sendRequest(ctx context.Context, body []byte) (*http.Response, 
 }
 
 func (c *Client) streamingHTTPClient() *http.Client {
-	streamClient := *c.httpClient
-	streamClient.Timeout = 0
-	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
-		streamTransport := transport.Clone()
-		streamTransport.ResponseHeaderTimeout = c.streamFirstByteTimeout
-		streamClient.Transport = streamTransport
-	}
-	return &streamClient
+	return c.streamHTTPClient
 }
 
 func (c *Client) sendStreamingRequest(ctx context.Context, body []byte) (*http.Response, error) {
@@ -317,9 +319,34 @@ func sendHTTPRequest(
 	streamFirstByteTimeout time.Duration,
 	streamIdleTimeout time.Duration,
 ) (*http.Response, error) {
+	var cancelStream context.CancelFunc
+	if streamFirstByteTimeout > 0 || streamIdleTimeout > 0 {
+		streamCtx, cancel := context.WithCancel(req.Context())
+		cancelStream = cancel
+		req = req.Clone(streamCtx)
+	}
+	startedAt := time.Now()
 	resp, err := httpClient.Do(req)
+	if err != nil && cancelStream != nil {
+		cancelStream()
+	}
 	if err == nil && (streamFirstByteTimeout > 0 || streamIdleTimeout > 0) {
-		resp.Body = newStreamReadTimeoutReadCloser(resp.Body, streamFirstByteTimeout, streamIdleTimeout)
+		firstByteWait := streamFirstByteTimeout
+		if firstByteWait > 0 {
+			firstByteWait -= time.Since(startedAt)
+			if firstByteWait <= 0 {
+				cancelStream()
+				_ = resp.Body.Close()
+				return nil, streamIdleTimeoutError{phase: "first-byte", timeout: streamFirstByteTimeout}
+			}
+		}
+		resp.Body = newStreamReadTimeoutReadCloser(
+			resp.Body,
+			firstByteWait,
+			streamFirstByteTimeout,
+			streamIdleTimeout,
+			cancelStream,
+		)
 	}
 	return resp, err
 }
