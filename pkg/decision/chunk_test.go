@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -247,4 +248,47 @@ func TestChunkNilAndNoSize(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, resp.Answers, 3)
 	assert.Equal(t, 1, m.CallCount())
+}
+
+func TestChunkedWaves(t *testing.T) {
+	tests := []struct {
+		name        string
+		size        int
+		concurrency int
+		questions   int
+		want        int
+	}{
+		{"fits in one chunk", 16, 4, 16, 1},
+		{"four chunks, four at a time", 16, 4, 64, 1},
+		{"five chunks, four at a time", 16, 4, 65, 2},
+		{"four chunks, two at a time", 16, 2, 64, 2},
+		{"thirteen chunks, four at a time", 16, 4, 200, 4},
+		{"no chunking configured", 0, 4, 200, 1},
+		{"serial chunks", 8, 1, 40, 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := decision.Chunk(mock.New(), decision.WithChunkSize(tt.size), decision.WithChunkConcurrency(tt.concurrency))
+			assert.Equal(t, tt.want, d.(*decision.Chunked).Waves(tt.questions))
+			// The package function finds the chunker through wrappers.
+			assert.Equal(t, tt.want, decision.Waves(decision.NewInstrumented(d, nil), tt.questions))
+		})
+	}
+	assert.Equal(t, 1, decision.Waves(mock.New(), 500), "a decider that does not chunk takes one round")
+	assert.Equal(t, 1, decision.Waves(nil, 10))
+}
+
+// A live caller's deadline has to cover the rounds its request will take, or
+// the biggest requests always time out; the cap keeps a pathological one
+// from outlasting the fallback it was meant to skip.
+func TestBudgetScalesWithWavesAndCaps(t *testing.T) {
+	d := decision.Chunk(mock.New(), decision.WithChunkSize(16), decision.WithChunkConcurrency(4))
+	perWave, max := 4*time.Second, 12*time.Second
+	assert.Equal(t, 4*time.Second, decision.Budget(d, 64, perWave, max), "four chunks go out together: one round")
+	assert.Equal(t, 8*time.Second, decision.Budget(d, 65, perWave, max))
+	assert.Equal(t, 12*time.Second, decision.Budget(d, 400, perWave, max), "capped")
+	assert.Equal(t, 4*time.Second, decision.Budget(mock.New(), 400, perWave, max), "unchunked stays at one round")
+	assert.Equal(t, max, decision.Budget(d, 64, 0, max), "no per-wave allowance falls back to the cap")
+	// 400 questions = 25 chunks of 16, four at a time: seven rounds.
+	assert.Equal(t, 28*time.Second, decision.Budget(d, 400, perWave, 0), "no cap means no cap")
 }

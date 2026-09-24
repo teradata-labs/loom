@@ -214,11 +214,20 @@ func (a *Agent) deciderName() string {
 	return a.decisionRouter.Decider().Name()
 }
 
-// liveDecideTimeout bounds a decider call made on the hot path, ahead of the
-// existing mechanism. A live band trades this much latency for skipping a
-// generative call; when the decider is slower than this the site falls back
-// and the turn is no worse than before.
-const liveDecideTimeout = 3 * time.Second
+// liveDecidePerWave bounds one round of provider requests made on the hot
+// path, ahead of the existing mechanism. A live band trades this much
+// latency for skipping a generative call; when the decider is slower the
+// site falls back and the turn is no worse than before. A chunked request
+// costs several sequential rounds (decision.Chunked), so the budget scales
+// with them rather than staying flat: decision.Budget does the arithmetic.
+const liveDecidePerWave = 4 * time.Second
+
+// maxLiveDecideBudget caps the whole live call however many rounds it needs.
+// Measured on the LongMemEval A/B with chunking on (476 uncapped requests of
+// 41-64 candidates): 91% finished inside 4 s and the p90 was 1.9 s, while
+// the tail that missed it ran 17-30 s in the client's retry ladder. Waiting
+// for that tail costs more than the generative rerank it was meant to skip.
+const maxLiveDecideBudget = 12 * time.Second
 
 // runShadow evaluates req in the background and records the outcome against
 // refs. It never blocks the caller and never surfaces an error; failures
@@ -300,7 +309,8 @@ func (a *Agent) recordDecisionAsync(ctx context.Context, sessionID string, req *
 // liveDecide asks the router synchronously, bounded by liveDecideTimeout.
 // Only called when the site's band is live; a shadow band never pays this.
 func (a *Agent) liveDecide(ctx context.Context, sessionID string, req *loomv1.DecisionRequest) decision.Outcome {
-	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), liveDecideTimeout)
+	budget := decision.Budget(a.decisionRouter.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
+	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
 	defer cancel()
 	return a.decisionRouter.Decide(liveCtx, req)
 }

@@ -208,7 +208,15 @@ func (c *Client) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loom
 		if !isRetryable(err) || attempt == c.cfg.MaxAttempts {
 			break
 		}
-		if err := sleepCtx(ctx, backoff(attempt, retryAfter)); err != nil {
+		wait := backoff(attempt, retryAfter)
+		if !fitsBeforeDeadline(ctx, wait) {
+			// The caller's deadline expires inside this backoff. Returning
+			// now lets it fall back with time to spare, instead of sleeping
+			// the budget away and handing back a deadline error. A patient
+			// caller (the shadow path) has the room and still retries.
+			break
+		}
+		if err := sleepCtx(ctx, wait); err != nil {
 			return nil, err
 		}
 	}
@@ -322,6 +330,21 @@ func backoff(attempt int, retryAfter time.Duration) time.Duration {
 	}
 	jitter := time.Duration(rand.Int64N(int64(base) / 2)) // #nosec G404 -- backoff jitter, not a security boundary
 	return base/2 + jitter
+}
+
+// retryRoundTripFloor is the least time another attempt needs to be worth
+// starting: about the measured median round trip (215-440 ms across 3,700
+// chunked requests through the gateway).
+const retryRoundTripFloor = 250 * time.Millisecond
+
+// fitsBeforeDeadline reports whether ctx leaves room to wait out a backoff
+// and still make an attempt that could finish. Without a deadline, yes.
+func fitsBeforeDeadline(ctx context.Context, wait time.Duration) bool {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(dl) > wait+retryRoundTripFloor
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

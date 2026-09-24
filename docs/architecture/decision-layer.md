@@ -78,7 +78,7 @@ Code for three sites has landed; **no band is live in any shipped configuration*
 A live site follows one shape, implemented separately at each site so its fallback stays the code that ran before:
 
 1. If the site's band is shadow, run the existing mechanism and shadow the decider in the background (Phase 1 behaviour).
-2. Otherwise ask the decider **first**, synchronously, bounded by `liveDecideTimeout` (3 s). This is the latency a live band trades for skipping a generative call.
+2. Otherwise ask the decider **first**, synchronously, bounded by `decision.Budget`: 4 s for every sequential round of provider requests the decider needs for this question count (`liveDecidePerWave`), capped at 12 s (`maxLiveDecideBudget`). This is the latency a live band trades for skipping a generative call.
 3. If `Outcome.Act()` and the answer is actionable, return it; the generative call never happens. The row is recorded with path `DECIDER` and no reference.
 4. Otherwise run the existing mechanism and record the answer already in hand against it (path `FALLBACK`). One decider call per site visit, never two.
 
@@ -146,7 +146,11 @@ The provider fails big requests, not busy ones. On the LongMemEval A/B through t
 - **State carved with the questions.** A fan-out request names the state array whose items pair with its questions (`DecisionRequest.fan_out_key`; items carry an `id` equal to a question id). Each chunk keeps only its own items, so the text the provider sees shrinks with the question set instead of the 64-candidate list travelling with every chunk. Items without an `id` and every other state field are copied unchanged. The rerank sites set `candidates`; the decision judge sets `criteria`. Answers are the same either way: each Noul is answered about its own candidate.
 - **Bisection.** Whatever the limit, a chunk that fails with an overload, rate-limit, size or transport error and still has more than one question is split in half and both halves retried, down to single questions, so an unknown or shifting provider limit is found at run time. Auth, validation, malformed-answer, disabled and budget errors are not retried, and a cancelled caller context stops everything.
 
-Costs: a chunked request is several round trips against the same per-minute budget, and repeated shared state (the query) is billed per chunk; on the rerank sites that is a few hundred tokens. The 3-second live cap still bounds the whole request, so a chunk that needs the provider's own retries can still fall back to the generative path.
+**The deadline has to cover the rounds.** A live caller's budget is `decision.Budget(decider, questions, perWave, max)`: `decision.Waves` looks through the wrapper chain for the chunker and reports how many rounds the chunks take at the configured concurrency, and the budget is that many times the per-round allowance, capped. A flat cap fails the biggest requests first, which are exactly the ones chunking exists for: in cell B of the LongMemEval A/B, 24% of 49–64-candidate visits were cut off by the old flat 3 s even though 91% of the same requests, run uncapped, finished inside 4 s.
+
+**The client stops retrying when the caller's deadline will not allow it.** The Jev client's retry ladder (three attempts, 500 ms doubling to 4 s, or the server's `Retry-After`) can take longer than a live budget by itself. Before each backoff it checks the context deadline and, when the wait plus a median round trip will not fit, returns the provider's error immediately. A live caller falls back with time to spare and keeps a typed error instead of an indistinguishable deadline error; the shadow path, which has room, still uses every attempt.
+
+Costs: a chunked request is several round trips against the same per-minute budget, and repeated shared state (the query) is billed per chunk; on the rerank sites that is a few hundred tokens.
 
 ## Not yet implemented
 

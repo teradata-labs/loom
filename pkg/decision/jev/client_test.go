@@ -305,7 +305,11 @@ func TestDecideHonoursContextDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
-	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got %v", err)
+	// A 30 s Retry-After cannot fit in a 100 ms budget, so the client hands
+	// back the provider's own error instead of starting the sleep; if the
+	// first attempt itself outran the deadline, a deadline error is the
+	// honest answer. Either way it must not wait out the Retry-After.
+	assert.True(t, errors.Is(err, decision.ErrRateLimited) || errors.Is(err, context.DeadlineExceeded), "got %v", err)
 	assert.Less(t, time.Since(start), 5*time.Second, "did not sleep the full Retry-After")
 }
 
@@ -469,4 +473,59 @@ func TestClientSizeHint(t *testing.T) {
 	cl, err = New(c)
 	require.NoError(t, err)
 	assert.Equal(t, 24, cl.MaxQuestionsPerRequest())
+}
+
+// A live caller gives the client a deadline it intends to act on: when the
+// backoff would outlast it, the client returns the provider's error now so
+// the caller can fall back, instead of sleeping the budget away and handing
+// back a deadline error it cannot tell apart from a hung provider.
+func TestDecideStopsRetryingBeforeTheDeadline(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"busy"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, decision.ErrOverloaded), "the provider's error survives, not a deadline error: %v", err)
+	assert.Equal(t, int32(1), calls.Load(), "a 5 s Retry-After does not fit in a 900 ms budget")
+	assert.Less(t, elapsed, 800*time.Millisecond, "returned early instead of sleeping out the budget")
+}
+
+// A patient caller (the shadow path) still gets the full retry ladder.
+func TestDecideStillRetriesWithRoomToSpare(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"busy"}`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
+	require.Error(t, err)
+	assert.Equal(t, int32(3), calls.Load(), "every attempt is used when the deadline allows")
+}
+
+func TestFitsBeforeDeadline(t *testing.T) {
+	t.Parallel()
+	assert.True(t, fitsBeforeDeadline(context.Background(), time.Hour), "no deadline, no limit")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	assert.True(t, fitsBeforeDeadline(ctx, 500*time.Millisecond))
+	assert.False(t, fitsBeforeDeadline(ctx, 2*time.Second), "the wait alone would consume the budget")
+	assert.False(t, fitsBeforeDeadline(ctx, 1900*time.Millisecond), "no room left for the attempt after the wait")
 }
