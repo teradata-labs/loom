@@ -9,7 +9,7 @@ This file covers the components compiled into the distributed binaries
 (`loom`, `looms`, `loom-standalone`), not the full development dependency
 graph — test-only and build-time modules are not distributed and are excluded.
 
-149 components, 92 distinct license texts.
+150 components, 92 distinct license texts.
 
 ## Components
 
@@ -20,29 +20,30 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `charm.land/lipgloss/v2` | `v2.0.6` |
 | `filippo.io/edwards25519` | `v1.2.0` |
 | `github.com/MakeNowJust/heredoc` | `v1.0.0` |
-| `github.com/MicahParks/jwkset` | `v0.11.1` |
-| `github.com/MicahParks/keyfunc/v3` | `v3.8.1` |
+| `github.com/MicahParks/jwkset` | `v0.11.3` |
+| `github.com/MicahParks/keyfunc/v3` | `v3.8.2` |
 | `github.com/alecthomas/chroma/v2` | `v2.27.0` |
-| `github.com/anthropics/anthropic-sdk-go` | `v1.70.1` |
+| `github.com/anthropics/anthropic-sdk-go` | `v1.73.0` |
 | `github.com/atotto/clipboard` | `v0.1.4` |
-| `github.com/aws/aws-sdk-go-v2` | `v1.45.1` |
+| `github.com/aws/aws-sdk-go-v2` | `v1.47.0` |
 | `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.20` |
-| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.2` |
-| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.2` |
-| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.19.1` |
-| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.1` |
-| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.1` |
-| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.45.1` |
-| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.1` |
-| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.60.0` |
+| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.5` |
+| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.5` |
+| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.20.0` |
+| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.3` |
+| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.3` |
+| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.0` |
+| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.3` |
+| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.0` |
 | `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.19` |
-| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.1` |
-| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.8.0` |
-| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.36.0` |
-| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.41.0` |
-| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.48.0` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.3` |
+| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.0` |
+| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.38.0` |
+| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.43.0` |
+| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.51.0` |
 | `github.com/aws/smithy-go` | `v1.28.1` |
 | `github.com/aws/smithy-go/internal/sync/singleflight` | `v1.28.1` |
+| `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib` | `v1.28.1` |
 | `github.com/aymanbagabas/go-osc52/v2` | `v2.0.1` |
 | `github.com/bahlo/generic-list-go` | `v0.2.0` |
 | `github.com/buger/jsonparser` | `v1.1.2` |
@@ -79,7 +80,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/invopop/jsonschema` | `v0.14.0` |
 | `github.com/jackc/pgpassfile` | `v1.0.0` |
 | `github.com/jackc/pgservicefile` | `v0.0.0-20240606120523-5a60cdf6a761` |
-| `github.com/jackc/pgx/v5` | `v5.10.0` |
+| `github.com/jackc/pgx/v5` | `v5.11.0` |
 | `github.com/jackc/puddle/v2` | `v2.2.2` |
 | `github.com/jhump/protoreflect` | `v1.18.1` |
 | `github.com/jhump/protoreflect/v2` | `v2.0.0-beta.1` |
@@ -145,25 +146,25 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `go.uber.org/zap` | `v1.28.0` |
 | `go.yaml.in/yaml/v3` | `v3.0.5` |
 | `go.yaml.in/yaml/v4` | `v4.0.0-rc.2` |
-| `golang.org/x/crypto` | `v0.56.0` |
+| `golang.org/x/crypto` | `v0.57.0` |
 | `golang.org/x/image` | `v0.41.0` |
-| `golang.org/x/mod` | `v0.40.0` |
+| `golang.org/x/mod` | `v0.41.0` |
 | `golang.org/x/net` | `v0.58.0` |
-| `golang.org/x/sync` | `v0.22.0` |
-| `golang.org/x/sys` | `v0.47.0` |
-| `golang.org/x/term` | `v0.45.0` |
-| `golang.org/x/text` | `v0.41.0` |
+| `golang.org/x/sync` | `v0.23.0` |
+| `golang.org/x/sys` | `v0.48.0` |
+| `golang.org/x/term` | `v0.46.0` |
+| `golang.org/x/text` | `v0.42.0` |
 | `golang.org/x/time` | `v0.15.0` |
 | `google.golang.org/genproto/googleapis/api` | `v0.0.0-20260819154853-08b0e4226688` |
 | `google.golang.org/genproto/googleapis/rpc` | `v0.0.0-20260819154853-08b0e4226688` |
-| `google.golang.org/grpc` | `v1.83.2` |
+| `google.golang.org/grpc` | `v1.84.0` |
 | `google.golang.org/protobuf` | `v1.36.12` |
 | `gopkg.in/cenkalti/backoff.v1` | `v1.1.0` |
 | `gopkg.in/yaml.v3` | `v3.0.1` |
-| `modernc.org/libc` | `v1.75.6` |
+| `modernc.org/libc` | `v1.75.7` |
 | `modernc.org/mathutil` | `v1.7.1` |
 | `modernc.org/memory` | `v1.12.1` |
-| `modernc.org/sqlite` | `v1.58.0` |
+| `modernc.org/sqlite` | `v1.59.0` |
 
 ## The Go standard library
 
@@ -247,8 +248,9 @@ SOFTWARE.
 
 ### `filippo.io/edwards25519`
 
-and 2 further component(s) under the identical license text:
+and 3 further component(s) under the identical license text:
 
+- `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib`
 - `github.com/bahlo/generic-list-go`
 - `github.com/ledongthuc/pdf`
 

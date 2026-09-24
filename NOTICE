@@ -15,7 +15,7 @@ Full license texts for every bundled component are in THIRD-PARTY-NOTICES.md.
 
 ----------------------------------------------------------------------------
 
-github.com/aws/aws-sdk-go-v2 v1.45.1
+github.com/aws/aws-sdk-go-v2 v1.47.0
 
 AWS SDK for Go
 Copyright 2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -65,7 +65,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------------
 
-google.golang.org/grpc v1.83.2
+google.golang.org/grpc v1.84.0
 
 Copyright 2014 gRPC authors.
 
