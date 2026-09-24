@@ -143,6 +143,12 @@ func (a *Agent) initDecisionRouter() {
 		return
 	}
 
+	// Large fan-out requests (a 64-candidate rerank) are split into
+	// concurrent chunks sized by the config or the decider's own hint, and a
+	// chunk that still overloads the provider is bisected; see
+	// decision.Chunked. Answers do not change, only round trips.
+	decider = decision.Chunk(decider, decision.WithChunkSize(int(cfg.MaxQuestionsPerRequest)))
+
 	routerOpts := []decision.RouterOption{
 		decision.WithTracer(a.tracer),
 		decision.WithBands(cfg.Bands),

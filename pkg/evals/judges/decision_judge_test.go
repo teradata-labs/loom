@@ -148,6 +148,7 @@ func TestDecisionJudge_Evaluate_RequestShape(t *testing.T) {
 	require.Len(t, calls, 1)
 	req := calls[0]
 	assert.Equal(t, "judge.dj-1", req.Site)
+	assert.Equal(t, "criteria", req.FanOutKey)
 	assert.Len(t, req.Questions, 2, "one noul per criterion + quality score")
 	_, isNoul := req.Questions[criterionID(0)].Kind.(*loomv1.DecisionQuestion_Noul)
 	assert.True(t, isNoul)

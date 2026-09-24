@@ -136,10 +136,22 @@ Both put one typed question to a decider about facts the asker supplies, at site
 
 **CLI.** `loom decision ask --decider jev|llm|mock --kind ... --options ... --facts 'text' | @file "question"` (`cmd/loom/decision_ask.go`); `--json` for machine output. `@file` with a JSON object becomes structured facts. Nothing is written to `loom.db`. The mock decider scripts a plausible answer for the question built, so the command can be exercised without credentials.
 
+## Large requests: chunking and bisection ✅
+
+The provider fails big requests, not busy ones. On the LongMemEval A/B through the Vercel gateway (2,215 rerank requests), failures were the upstream's HTTP 503 "Service temporarily unavailable" and scaled with request size: 0% at 1–10 questions, 1% at 11–20, 9% at 21–40, 27% at 41–50, 39% at 51–64; the one-question failure-kind site failed 5 times in 2,075 requests. Only 4 failures were 429s, and those said the upstream was busy, not that our key was over its limit.
+
+`decision.Chunk(decider, opts...)` wraps any decider (`pkg/decision/chunk.go`) and every router construction uses it (agent, judge, CLI):
+
+- **Pre-split.** A request with more questions than the limit is split into chunks sent concurrently (default 4 in flight) and the answers merged; usage is summed. The limit is `decision.max_questions_per_request` (proto field 12, YAML `max_questions_per_request`), else the decider's own hint (`decision.SizeHinter`; the Jev client says 16), else none.
+- **State carved with the questions.** A fan-out request names the state array whose items pair with its questions (`DecisionRequest.fan_out_key`; items carry an `id` equal to a question id). Each chunk keeps only its own items, so the text the provider sees shrinks with the question set instead of the 64-candidate list travelling with every chunk. Items without an `id` and every other state field are copied unchanged. The rerank sites set `candidates`; the decision judge sets `criteria`. Answers are the same either way: each Noul is answered about its own candidate.
+- **Bisection.** Whatever the limit, a chunk that fails with an overload, rate-limit, size or transport error and still has more than one question is split in half and both halves retried, down to single questions, so an unknown or shifting provider limit is found at run time. Auth, validation, malformed-answer, disabled and budget errors are not retried, and a cancelled caller context stops everything.
+
+Costs: a chunked request is several round trips against the same per-minute budget, and repeated shared state (the query) is billed per chunk; on the rerank sites that is a few hundred tokens. The 3-second live cap still bounds the whole request, so a chunk that needs the provider's own retries can still fall back to the generative path.
+
 ## Not yet implemented
 
 - 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
-- 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier.
+- 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier. Chunking multiplies requests per visit (a 64-candidate rerank is 4), so the budget matters more with it on.
 - 📋 The Phase 4–5 sites. Plan 3.2 and 3.5 are skipped as unreachable (see above).
 - 📋 Shadow reports for the six Phase 3 sites against a real decider (the replay CLI covers `tool.failure_kind` only; these sites need live agent traffic with `provider: jev` in shadow, then `loom decision report --site recall.rerank` and friends).
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).

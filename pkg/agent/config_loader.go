@@ -161,8 +161,11 @@ type DecisionConfigYAML struct {
 	RequestsPerMinute int64 `yaml:"requests_per_minute"`
 	// ExposeTool registers the "decide" builtin so the agent can ask the
 	// decider directly. Off by default.
-	ExposeTool bool                     `yaml:"expose_tool"`
-	Bands      []DecisionBandConfigYAML `yaml:"bands"`
+	ExposeTool bool `yaml:"expose_tool"`
+	// MaxQuestionsPerRequest splits larger requests into concurrent chunks
+	// (0 = the decider's default; Jev 16).
+	MaxQuestionsPerRequest int64                    `yaml:"max_questions_per_request"`
+	Bands                  []DecisionBandConfigYAML `yaml:"bands"`
 }
 
 // DecisionBandConfigYAML mirrors proto DecisionBand.
@@ -212,17 +215,21 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 	if y.RequestsPerMinute < 0 {
 		return nil, fmt.Errorf("decision.requests_per_minute must be >= 0, got %d", y.RequestsPerMinute)
 	}
+	if y.MaxQuestionsPerRequest < 0 {
+		return nil, fmt.Errorf("decision.max_questions_per_request must be >= 0, got %d", y.MaxQuestionsPerRequest)
+	}
 	cfg := &loomv1.DecisionConfig{
-		Provider:             provider,
-		Model:                y.Model,
-		AllowAlias:           y.AllowAlias,
-		TimeoutMs:            y.TimeoutMs,
-		BaseUrl:              y.BaseURL,
-		MaxPerSession:        y.MaxPerSession,
-		MaxCostUsdPerSession: y.MaxCostUSDPerSession,
-		LlmRole:              y.LLMRole,
-		RequestsPerMinute:    y.RequestsPerMinute,
-		ExposeTool:           y.ExposeTool,
+		Provider:               provider,
+		Model:                  y.Model,
+		AllowAlias:             y.AllowAlias,
+		TimeoutMs:              y.TimeoutMs,
+		BaseUrl:                y.BaseURL,
+		MaxPerSession:          y.MaxPerSession,
+		MaxCostUsdPerSession:   y.MaxCostUSDPerSession,
+		LlmRole:                y.LLMRole,
+		RequestsPerMinute:      y.RequestsPerMinute,
+		ExposeTool:             y.ExposeTool,
+		MaxQuestionsPerRequest: y.MaxQuestionsPerRequest,
 	}
 	seen := make(map[string]bool, len(y.Bands))
 	for i, b := range y.Bands {

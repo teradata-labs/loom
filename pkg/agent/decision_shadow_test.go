@@ -76,7 +76,10 @@ func TestInitDecisionRouterJev(t *testing.T) {
 	require.NotNil(t, ag.DecisionRouter(), "a gateway key enables the jev provider")
 	inst, ok := ag.DecisionRouter().Decider().(*decision.Instrumented)
 	require.True(t, ok)
-	client, ok := inst.Unwrap().(*jev.Client)
+	chunked, ok := inst.Unwrap().(*decision.Chunked)
+	require.True(t, ok, "chunking sits between instrumentation and the provider")
+	assert.Equal(t, jev.DefaultMaxQuestionsPerRequest, chunked.Size(), "the client's size hint is picked up")
+	client, ok := chunked.Unwrap().(*jev.Client)
 	require.True(t, ok)
 	assert.Equal(t, "jev", client.Name())
 	assert.Equal(t, jev.VercelGatewayModel, client.Model())
@@ -406,4 +409,24 @@ func TestRerankMemoriesShadowRowsCarryAgentSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, "sess-agent-9", rows[0].SessionId)
+}
+
+// The router's decider chain is Instrumented → Chunked → provider, with the
+// chunk size from decision.max_questions_per_request.
+func TestInitDecisionRouterChunksBySizeFromConfig(t *testing.T) {
+	ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: DecisionProviderMock, MaxQuestionsPerRequest: 8}, nil))
+	require.NotNil(t, ag.DecisionRouter())
+	inst, ok := ag.DecisionRouter().Decider().(*decision.Instrumented)
+	require.True(t, ok)
+	chunked, ok := inst.Unwrap().(*decision.Chunked)
+	require.True(t, ok, "every configured decider is wrapped for chunking")
+	assert.Equal(t, 8, chunked.Size())
+	assert.Equal(t, "mock", chunked.Name())
+
+	// No size and a decider without a hint: wrapped, no pre-split.
+	ag2 := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec2"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: DecisionProviderMock}, nil))
+	chunked2 := ag2.DecisionRouter().Decider().(*decision.Instrumented).Unwrap().(*decision.Chunked)
+	assert.Equal(t, 0, chunked2.Size())
 }

@@ -65,6 +65,12 @@ const (
 	DefaultMaxAttempts = 3
 	// DefaultRequestsPerMinute stays under the published 1,200 rpm.
 	DefaultRequestsPerMinute = 1000
+	// DefaultMaxQuestionsPerRequest is the chunk size decision.Chunked uses
+	// for this client when the config does not set one. Measured on the
+	// LongMemEval A/B through the Vercel gateway (2,215 rerank requests):
+	// requests of 1–10 questions failed 0%, 11–20 1%, 21–40 9%, 41–50 27%,
+	// 51–64 39%, all with the upstream's 503 "temporarily unavailable".
+	DefaultMaxQuestionsPerRequest = 16
 	// DefaultPricePerMillionInputTokens is TypeSafe's list price; output is
 	// free. Configurable so a price change is one line of config.
 	DefaultPricePerMillionInputTokens = 0.042
@@ -93,6 +99,9 @@ type Config struct {
 	// limiter.
 	RequestsPerMinute          float64
 	PricePerMillionInputTokens float64
+	// MaxQuestionsPerRequest is the size hint decision.Chunked reads
+	// (decision.SizeHinter); <= 0 means DefaultMaxQuestionsPerRequest.
+	MaxQuestionsPerRequest int
 	// HTTPClient overrides the transport; its Timeout is ignored in favour of
 	// per-attempt contexts.
 	HTTPClient *http.Client
@@ -131,6 +140,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
+	if cfg.MaxQuestionsPerRequest <= 0 {
+		cfg.MaxQuestionsPerRequest = DefaultMaxQuestionsPerRequest
+	}
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = DefaultMaxAttempts
 	}
@@ -159,6 +171,10 @@ func (c *Client) Name() string { return Name }
 
 // Model implements decision.Decider.
 func (c *Client) Model() string { return c.cfg.Model }
+
+// MaxQuestionsPerRequest implements decision.SizeHinter: the chunk size
+// decision.Chunked uses for requests sent through this client.
+func (c *Client) MaxQuestionsPerRequest() int { return c.cfg.MaxQuestionsPerRequest }
 
 // URL is the resolved endpoint, for logs.
 func (c *Client) URL() string { return c.url }

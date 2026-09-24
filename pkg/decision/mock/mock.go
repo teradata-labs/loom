@@ -37,6 +37,7 @@ type Decider struct {
 	model   string
 	usage   *loomv1.DecisionUsage
 	calls   []*loomv1.DecisionRequest
+	hook    func(*loomv1.DecisionRequest) error
 }
 
 // New returns an empty mock answering as model "mock-1".
@@ -75,6 +76,16 @@ func (m *Decider) SetError(err error) *Decider {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.err = err
+	return m
+}
+
+// SetHook installs a function run on every Decide after validation and
+// recording; a non-nil error is returned instead of the scripted answers.
+// Tests use it to fail requests by shape (for example, too many questions).
+func (m *Decider) SetHook(h func(*loomv1.DecisionRequest) error) *Decider {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hook = h
 	return m
 }
 
@@ -131,7 +142,7 @@ func (m *Decider) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loo
 
 	m.mu.Lock()
 	m.calls = append(m.calls, proto.Clone(req).(*loomv1.DecisionRequest))
-	err, latency, model, usage := m.err, m.latency, m.model, m.usage
+	err, latency, model, usage, hook := m.err, m.latency, m.model, m.usage, m.hook
 	answers := make(map[string]*loomv1.DecisionAnswer, len(req.Questions))
 	for id := range req.Questions {
 		if a, ok := m.answers[id]; ok {
@@ -149,6 +160,11 @@ func (m *Decider) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loo
 	}
 	if err != nil {
 		return nil, err
+	}
+	if hook != nil {
+		if err := hook(req); err != nil {
+			return nil, err
+		}
 	}
 
 	for id, q := range req.Questions {

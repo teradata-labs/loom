@@ -219,7 +219,15 @@ type DecisionRequest struct {
 	// Site names the call site that issued the request (for example
 	// "recall.rerank"). It selects the confidence band and labels traces and
 	// shadow records. Not sent to any vendor.
-	Site          string `protobuf:"bytes,4,opt,name=site,proto3" json:"site,omitempty"`
+	Site string `protobuf:"bytes,4,opt,name=site,proto3" json:"site,omitempty"`
+	// Optional: the name of a top-level array in state whose items each carry
+	// an "id" equal to a question id (a fan-out request: one question per
+	// candidate). When a request is split into chunks to stay within a
+	// decider's size limits, each chunk keeps only the items for its own
+	// questions, so the state shrinks with the question set instead of being
+	// repeated whole. Empty means the state is shared by every question and
+	// is copied unchanged into every chunk.
+	FanOutKey     string `protobuf:"bytes,5,opt,name=fan_out_key,json=fanOutKey,proto3" json:"fan_out_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -278,6 +286,13 @@ func (x *DecisionRequest) GetModel() string {
 func (x *DecisionRequest) GetSite() string {
 	if x != nil {
 		return x.Site
+	}
+	return ""
+}
+
+func (x *DecisionRequest) GetFanOutKey() string {
+	if x != nil {
+		return x.FanOutKey
 	}
 	return ""
 }
@@ -1282,9 +1297,16 @@ type DecisionConfig struct {
 	// question (yes/no, choice, scale) to the decider mid-turn and branch on
 	// the probabilities. Off by default: the layer's other uses (reranks,
 	// gates) do not depend on it. Calls are recorded at site tool.decide.
-	ExposeTool    bool `protobuf:"varint,11,opt,name=expose_tool,json=exposeTool,proto3" json:"expose_tool,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExposeTool bool `protobuf:"varint,11,opt,name=expose_tool,json=exposeTool,proto3" json:"expose_tool,omitempty"`
+	// Most questions one request may carry before the router splits it into
+	// concurrent chunks (see DecisionRequest.fan_out_key). 0 means the
+	// decider's own default (Jev: 16; a chunk that still fails with an
+	// overload or size error is bisected and retried). Providers that accept
+	// any size may set it high; it never changes answers, only how many
+	// round trips carry them.
+	MaxQuestionsPerRequest int64 `protobuf:"varint,12,opt,name=max_questions_per_request,json=maxQuestionsPerRequest,proto3" json:"max_questions_per_request,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DecisionConfig) Reset() {
@@ -1394,16 +1416,24 @@ func (x *DecisionConfig) GetExposeTool() bool {
 	return false
 }
 
+func (x *DecisionConfig) GetMaxQuestionsPerRequest() int64 {
+	if x != nil {
+		return x.MaxQuestionsPerRequest
+	}
+	return 0
+}
+
 var File_loom_v1_decision_proto protoreflect.FileDescriptor
 
 const file_loom_v1_decision_proto_rawDesc = "" +
 	"\n" +
-	"\x16loom/v1/decision.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x89\x02\n" +
+	"\x16loom/v1/decision.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa9\x02\n" +
 	"\x0fDecisionRequest\x12,\n" +
 	"\x05state\x18\x01 \x01(\v2\x16.google.protobuf.ValueR\x05state\x12E\n" +
 	"\tquestions\x18\x02 \x03(\v2'.loom.v1.DecisionRequest.QuestionsEntryR\tquestions\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12\x12\n" +
-	"\x04site\x18\x04 \x01(\tR\x04site\x1aW\n" +
+	"\x04site\x18\x04 \x01(\tR\x04site\x12\x1e\n" +
+	"\vfan_out_key\x18\x05 \x01(\tR\tfanOutKey\x1aW\n" +
 	"\x0eQuestionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
 	"\x05value\x18\x02 \x01(\v2\x19.loom.v1.DecisionQuestionR\x05value:\x028\x01\"\xe6\x01\n" +
@@ -1497,7 +1527,7 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\asubject\x18\x13 \x01(\tR\asubject\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\x96\x03\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xd1\x03\n" +
 	"\x0eDecisionConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1f\n" +
@@ -1513,7 +1543,8 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x13requests_per_minute\x18\n" +
 	" \x01(\x03R\x11requestsPerMinute\x12\x1f\n" +
 	"\vexpose_tool\x18\v \x01(\bR\n" +
-	"exposeTool*\xb3\x01\n" +
+	"exposeTool\x129\n" +
+	"\x19max_questions_per_request\x18\f \x01(\x03R\x16maxQuestionsPerRequest*\xb3\x01\n" +
 	"\fDecisionPath\x12\x1d\n" +
 	"\x19DECISION_PATH_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15DECISION_PATH_DECIDER\x10\x01\x12\x1a\n" +

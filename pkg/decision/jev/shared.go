@@ -71,9 +71,9 @@ func sharedKey(cfg Config) string {
 	sort.Strings(extras)
 	h := sha256.New()
 	// hash.Hash never returns an error from Write.
-	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%g\x00%g",
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%g\x00%g\x00%d",
 		cfg.BaseURL, cfg.Path, cfg.Model, cfg.AuthHeader, cfg.AuthScheme, cfg.APIKey,
 		strings.Join(extras, "\x01"), cfg.Timeout, cfg.MaxAttempts, cfg.RequestsPerMinute,
-		cfg.PricePerMillionInputTokens)
+		cfg.PricePerMillionInputTokens, cfg.MaxQuestionsPerRequest)
 	return hex.EncodeToString(h.Sum(nil))
 }

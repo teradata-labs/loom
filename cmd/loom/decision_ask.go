@@ -134,7 +134,7 @@ func runDecisionAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 	tracer := observability.NewNoOpTracer()
-	router := decision.NewRouter(decision.NewInstrumented(decider, tracer), decision.WithTracer(tracer))
+	router := decision.NewRouter(decision.NewInstrumented(decision.Chunk(decider), tracer), decision.WithTracer(tracer))
 
 	callCtx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()

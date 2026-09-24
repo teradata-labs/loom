@@ -179,7 +179,7 @@ func runDecisionReplay(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	router := decision.NewRouter(decision.NewInstrumented(decider, tracer), decision.WithTracer(tracer))
+	router := decision.NewRouter(decision.NewInstrumented(decision.Chunk(decider), tracer), decision.WithTracer(tracer))
 	store := sqlite.NewDecisionShadowStore(db, tracer)
 	recorder := decision.NewShadowRecorder(store, tracer)
 

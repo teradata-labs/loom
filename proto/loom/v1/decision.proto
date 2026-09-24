@@ -45,6 +45,15 @@ message DecisionRequest {
   // "recall.rerank"). It selects the confidence band and labels traces and
   // shadow records. Not sent to any vendor.
   string site = 4;
+
+  // Optional: the name of a top-level array in state whose items each carry
+  // an "id" equal to a question id (a fan-out request: one question per
+  // candidate). When a request is split into chunks to stay within a
+  // decider's size limits, each chunk keeps only the items for its own
+  // questions, so the state shrinks with the question set instead of being
+  // repeated whole. Empty means the state is shared by every question and
+  // is copied unchanged into every chunk.
+  string fan_out_key = 5;
 }
 
 // DecisionQuestion is one typed question. Instructions and criteria accept
@@ -279,4 +288,11 @@ message DecisionConfig {
   // the probabilities. Off by default: the layer's other uses (reranks,
   // gates) do not depend on it. Calls are recorded at site tool.decide.
   bool expose_tool = 11;
+  // Most questions one request may carry before the router splits it into
+  // concurrent chunks (see DecisionRequest.fan_out_key). 0 means the
+  // decider's own default (Jev: 16; a chunk that still fails with an
+  // overload or size error is bisected and retried). Providers that accept
+  // any size may set it high; it never changes answers, only how many
+  // round trips carry them.
+  int64 max_questions_per_request = 12;
 }

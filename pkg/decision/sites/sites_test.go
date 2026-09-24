@@ -136,6 +136,8 @@ func TestRerankRequestAndReference(t *testing.T) {
 	cands := []string{"alpha memory", "beta memory", strings.Repeat("x", maxRerankCandidateRunes+10)}
 	req, err := RerankRequest(SiteRecallRerank, strings.Repeat("q", maxRerankQueryRunes+10), cands)
 	require.NoError(t, err)
+	assert.Equal(t, RerankFanOutKey, req.FanOutKey, "candidates travel only with their own chunk")
+	require.NoError(t, err)
 	assert.Equal(t, SiteRecallRerank, req.Site)
 	assert.Len(t, req.Questions, 3)
 	for i := range cands {

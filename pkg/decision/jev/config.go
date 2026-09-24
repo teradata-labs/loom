@@ -78,6 +78,9 @@ func fromDecisionConfig(cfg *loomv1.DecisionConfig, getenv func(string) string) 
 		if cfg.TimeoutMs > 0 {
 			out.Timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 		}
+		if cfg.MaxQuestionsPerRequest > 0 {
+			out.MaxQuestionsPerRequest = int(cfg.MaxQuestionsPerRequest)
+		}
 		if cfg.RequestsPerMinute > 0 {
 			out.RequestsPerMinute = float64(cfg.RequestsPerMinute)
 		}
