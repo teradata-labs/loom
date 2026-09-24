@@ -161,6 +161,11 @@
         "aggregate": {
           "$ref": "#/definitions/v1DecisionBandAggregate",
           "description": "How multi-question requests are judged against act_min."
+        },
+        "trueMin": {
+          "type": "number",
+          "format": "double",
+          "description": "Probability at or above which a Noul answer counts as true at this\nsite: the keep threshold at a rerank, \"valid\" at a stage gate,\n\"consensus reached\" at a debate. 0 means the site default (0.5).\n\nIt is not act_min. act_min asks how decisive an answer is (its distance\nfrom 0.5) before the site may act at all; true_min asks which side of\nthe line a decisive answer falls on. Lowering act_min makes the site\nact on more answers, including ones it will then call false; lowering\ntrue_min makes more answers count as true."
         }
       },
       "description": "DecisionBand is a call site's confidence routing rule."

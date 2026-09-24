@@ -982,7 +982,17 @@ type DecisionBand struct {
 	// without branching on it. Overrides act_min: the path is always FALLBACK.
 	Shadow bool `protobuf:"varint,4,opt,name=shadow,proto3" json:"shadow,omitempty"`
 	// How multi-question requests are judged against act_min.
-	Aggregate     DecisionBandAggregate `protobuf:"varint,5,opt,name=aggregate,proto3,enum=loom.v1.DecisionBandAggregate" json:"aggregate,omitempty"`
+	Aggregate DecisionBandAggregate `protobuf:"varint,5,opt,name=aggregate,proto3,enum=loom.v1.DecisionBandAggregate" json:"aggregate,omitempty"`
+	// Probability at or above which a Noul answer counts as true at this
+	// site: the keep threshold at a rerank, "valid" at a stage gate,
+	// "consensus reached" at a debate. 0 means the site default (0.5).
+	//
+	// It is not act_min. act_min asks how decisive an answer is (its distance
+	// from 0.5) before the site may act at all; true_min asks which side of
+	// the line a decisive answer falls on. Lowering act_min makes the site
+	// act on more answers, including ones it will then call false; lowering
+	// true_min makes more answers count as true.
+	TrueMin       float64 `protobuf:"fixed64,6,opt,name=true_min,json=trueMin,proto3" json:"true_min,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1050,6 +1060,13 @@ func (x *DecisionBand) GetAggregate() DecisionBandAggregate {
 		return x.Aggregate
 	}
 	return DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED
+}
+
+func (x *DecisionBand) GetTrueMin() float64 {
+	if x != nil {
+		return x.TrueMin
+	}
+	return 0
 }
 
 // DecisionShadowRecord is one question's shadow comparison: what the decider
@@ -1493,13 +1510,14 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\rDecisionUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\x02 \x01(\x03R\foutputTokens\x12\x19\n" +
-	"\bcost_usd\x18\x03 \x01(\x01R\acostUsd\"\xc0\x01\n" +
+	"\bcost_usd\x18\x03 \x01(\x01R\acostUsd\"\xdb\x01\n" +
 	"\fDecisionBand\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x17\n" +
 	"\aact_min\x18\x02 \x01(\x01R\x06actMin\x12-\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x19.loom.v1.DecisionBandModeR\x04mode\x12\x16\n" +
 	"\x06shadow\x18\x04 \x01(\bR\x06shadow\x12<\n" +
-	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\"\xa8\x06\n" +
+	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\x12\x19\n" +
+	"\btrue_min\x18\x06 \x01(\x01R\atrueMin\"\xa8\x06\n" +
 	"\x14DecisionShadowRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\vrecorded_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +

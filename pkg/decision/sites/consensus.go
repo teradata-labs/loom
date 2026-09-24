@@ -98,7 +98,7 @@ func ConsensusReference(reached bool) map[string]decision.Reference {
 
 // ConsensusVerdict returns the decider's verdict: consensus when the Noul
 // probability is at least 0.5. ok is false when there is no usable answer.
-func ConsensusVerdict(resp *loomv1.DecisionResponse) (reached bool, ok bool) {
+func ConsensusVerdict(resp *loomv1.DecisionResponse, band decision.Band) (reached bool, ok bool) {
 	if resp == nil {
 		return false, false
 	}
@@ -106,5 +106,5 @@ func ConsensusVerdict(resp *loomv1.DecisionResponse) (reached bool, ok bool) {
 	if err != nil || a == nil {
 		return false, false
 	}
-	return a.Probability >= 0.5, true
+	return band.IsTrue(a.Probability), true
 }

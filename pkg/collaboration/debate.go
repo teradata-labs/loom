@@ -308,7 +308,7 @@ func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID str
 
 	out := moderator.LiveDecide(ctx, sessionID, req)
 	if out.Act() {
-		if reached, ok := sites.ConsensusVerdict(out.Response); ok {
+		if reached, ok := sites.ConsensusVerdict(out.Response, out.Band); ok {
 			tightenBlocked := reached && band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
 			if !tightenBlocked {
 				d.logger.Info("Consensus judged by decision layer",

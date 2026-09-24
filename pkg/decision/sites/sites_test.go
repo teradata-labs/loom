@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/decision/mock"
 )
@@ -229,4 +230,42 @@ func TestRerankReferenceSubjects(t *testing.T) {
 	assert.Equal(t, "memory:x", only["c0"].Subject)
 	assert.Equal(t, "", only["c0"].Answer, "acted rows carry no reference answer")
 	assert.Len(t, only, 2)
+}
+
+// true_min is the keep threshold; act_min is how decisive an answer must be
+// before the site acts at all. Confusing the two inverts the effect: the
+// LongMemEval rerun set act_min 0.3 meaning "keep more" and got "keep less",
+// because candidates at p 0.25-0.35 became decisive enough to drop.
+func TestRerankKeptHonoursTrueMin(t *testing.T) {
+	t.Parallel()
+	// Four candidates at 0.2, 0.35, 0.45 and 0.8.
+	m := mock.New().AnswerNoul(CandidateQuestionID(0), 0.2).AnswerNoul(CandidateQuestionID(1), 0.35).
+		AnswerNoul(CandidateQuestionID(2), 0.45).AnswerNoul(CandidateQuestionID(3), 0.8)
+	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	resp := decision.NewRouter(m).Decide(context.Background(), req)
+	require.NoError(t, resp.Err)
+
+	perQuestion := loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+
+	// Default: keep at p >= 0.5, and keep anything not decisive enough to
+	// judge. At act_min 0.5 only p<=0.25 and p>=0.75 are decisive, so 0.35
+	// and 0.45 survive as uncertain.
+	kept, uncertain := RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.5, Aggregate: perQuestion})
+	assert.Equal(t, []int{1, 2, 3}, kept)
+	assert.Equal(t, 2, uncertain)
+
+	// Lowering act_min alone drops more, not fewer: 0.35 is now decisive and
+	// still below the keep line.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.3, Aggregate: perQuestion})
+	assert.Equal(t, []int{2, 3}, kept, "act_min is not a keep threshold")
+
+	// true_min is the knob that keeps more: at 0.3 the 0.35 candidate counts
+	// as relevant on its own merits.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.3, TrueMin: 0.3, Aggregate: perQuestion})
+	assert.Equal(t, []int{1, 2, 3}, kept)
+
+	// And at 0.2 everything but the least relevant candidate is kept.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.9, TrueMin: 0.2, Aggregate: perQuestion})
+	assert.Equal(t, []int{0, 1, 2, 3}, kept, "a high act_min keeps uncertain candidates regardless")
 }

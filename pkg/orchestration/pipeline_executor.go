@@ -952,7 +952,7 @@ func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent
 	if !out.Act() {
 		return req, out, false, false
 	}
-	valid, ok := sites.ValidationVerdict(out.Response)
+	valid, ok := sites.ValidationVerdict(out.Response, out.Band)
 	if !ok {
 		return req, out, false, false
 	}

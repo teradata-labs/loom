@@ -313,3 +313,22 @@ func TestRouterConcurrent(t *testing.T) {
 	assert.Equal(t, sessions*perSession, total, "every call under budget and above band acts")
 	assert.Equal(t, sessions*perSession, m.CallCount())
 }
+
+func TestBandIsTrue(t *testing.T) {
+	t.Parallel()
+	var none decision.Band
+	assert.True(t, none.IsTrue(0.5), "the default threshold is 0.5")
+	assert.False(t, none.IsTrue(0.49))
+	assert.True(t, none.IsTrue(decision.DefaultTrueMin))
+
+	lower := decision.Band{TrueMin: 0.3}
+	assert.True(t, lower.IsTrue(0.3))
+	assert.False(t, lower.IsTrue(0.29))
+
+	// A band from the proto carries it, clamped.
+	b := decision.BandFromProto(&loomv1.DecisionBand{Site: "s", ActMin: 0.5, TrueMin: 0.3})
+	assert.InDelta(t, 0.3, b.TrueMin, 1e-9)
+	assert.True(t, b.IsTrue(0.31))
+	assert.InDelta(t, 0, decision.BandFromProto(&loomv1.DecisionBand{Site: "s", TrueMin: -1}).TrueMin, 1e-9)
+	assert.InDelta(t, 1, decision.BandFromProto(&loomv1.DecisionBand{Site: "s", TrueMin: 5}).TrueMin, 1e-9)
+}

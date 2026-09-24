@@ -55,3 +55,28 @@ func TestConvertDecisionConfigYAMLCarriesEveryField(t *testing.T) {
 	_, err = convertDecisionConfigYAMLToProto(&DecisionConfigYAML{Provider: "jev", MaxQuestionsPerRequest: -1})
 	require.Error(t, err)
 }
+
+// true_min is per band and is not act_min: the two answer different
+// questions and a config that confuses them inverts the site's behaviour.
+func TestConvertDecisionBandYAMLCarriesTrueMin(t *testing.T) {
+	cfg, err := convertDecisionConfigYAMLToProto(&DecisionConfigYAML{
+		Provider: "jev",
+		Bands: []DecisionBandConfigYAML{
+			{Site: "recall.rerank", ActMin: 0.5, TrueMin: 0.3, Aggregate: "per_question"},
+			{Site: "stage.validation", ActMin: 0.6},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, cfg.Bands, 2)
+	assert.InDelta(t, 0.5, cfg.Bands[0].ActMin, 1e-9)
+	assert.InDelta(t, 0.3, cfg.Bands[0].TrueMin, 1e-9)
+	assert.InDelta(t, 0, cfg.Bands[1].TrueMin, 1e-9, "unset means the site default")
+
+	for _, bad := range []float64{-0.1, 1.5} {
+		_, err = convertDecisionConfigYAMLToProto(&DecisionConfigYAML{
+			Provider: "jev",
+			Bands:    []DecisionBandConfigYAML{{Site: "recall.rerank", TrueMin: bad}},
+		})
+		require.Error(t, err, "true_min %v", bad)
+	}
+}

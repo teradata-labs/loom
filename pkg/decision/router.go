@@ -35,6 +35,12 @@ type Band struct {
 	// Shadow records the decider's answer but never acts on it: the path is
 	// always FALLBACK and the response is attached for comparison.
 	Shadow bool
+	// TrueMin is the probability at or above which a Noul answer counts as
+	// true at this site (the keep threshold at a rerank, "valid" at a stage
+	// gate). 0 means the site's own default; use IsTrue, never the field.
+	// It is a different question from ActMin: ActMin asks how decisive an
+	// answer is, TrueMin which side of the line a decisive answer falls on.
+	TrueMin float64
 	// Aggregate says how a multi-question request is judged against ActMin:
 	// MIN (the weakest answer must clear it) or PER_QUESTION (act when the
 	// decider answered; the site applies ActMin per answer). Fan-out sites
@@ -46,6 +52,19 @@ type Band struct {
 // PerQuestion reports whether the band judges answers individually.
 func (b Band) PerQuestion() bool {
 	return b.Aggregate == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+}
+
+// DefaultTrueMin is the probability at or above which a Noul answer counts
+// as true when a band does not say otherwise.
+const DefaultTrueMin = 0.5
+
+// IsTrue reports whether a Noul probability counts as true under this band.
+func (b Band) IsTrue(probability float64) bool {
+	threshold := b.TrueMin
+	if threshold <= 0 {
+		threshold = DefaultTrueMin
+	}
+	return probability >= threshold
 }
 
 // Confident reports whether one answer clears the band's threshold.
@@ -72,7 +91,7 @@ func BandFromProto(b *loomv1.DecisionBand) Band {
 	if agg == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED {
 		agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
 	}
-	return Band{ActMin: clamp01(b.ActMin), Mode: mode, Shadow: b.Shadow, Aggregate: agg}
+	return Band{ActMin: clamp01(b.ActMin), TrueMin: clamp01(b.TrueMin), Mode: mode, Shadow: b.Shadow, Aggregate: agg}
 }
 
 // Outcome is what a Router returns: the decider's response when it produced

@@ -63,10 +63,10 @@ func TestConsensusReferenceAndVerdict(t *testing.T) {
 	require.NoError(t, err)
 	out := decision.NewRouter(mock.New().AnswerNoul(QConsensus, 0.15)).Decide(context.Background(), req)
 	require.NoError(t, out.Err)
-	reached, ok := ConsensusVerdict(out.Response)
+	reached, ok := ConsensusVerdict(out.Response, decision.Band{})
 	assert.True(t, ok)
 	assert.False(t, reached)
 
-	_, ok = ConsensusVerdict(nil)
+	_, ok = ConsensusVerdict(nil, decision.Band{})
 	assert.False(t, ok)
 }

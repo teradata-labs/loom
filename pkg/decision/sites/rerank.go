@@ -177,7 +177,7 @@ func RerankKeptWithBand(resp *loomv1.DecisionResponse, n int, band decision.Band
 		case !band.Confident(resp.Answers[id]):
 			kept = append(kept, i)
 			uncertain++
-		case a.Probability >= RerankKeepProbability:
+		case band.IsTrue(a.Probability):
 			kept = append(kept, i)
 		}
 	}
