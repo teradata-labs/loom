@@ -1557,7 +1557,20 @@
 
   if ('IntersectionObserver' in window){
     new IntersectionObserver(entries => {
-      visible = entries[0].isIntersecting; schedule();
+      visible = entries[0].isIntersecting;
+      // Off screen the scheduler stops calling render, so nothing would ever
+      // clear the meter's interval: stop the timers here instead of leaving
+      // them repainting a diagram nobody is looking at. render() on the way
+      // back in restores them, and is safe to call because it rebuilds the
+      // whole scene from step 0.
+      if (visible) render();
+      else {
+        clearInterval(meterTimer);
+        cancelAnimationFrame(raf);
+        $('scan').classList.remove('run');
+        $('llm-state').classList.remove('blink');
+      }
+      schedule();
     }, { threshold: 0.25 }).observe($('dia'));
   } else { visible = true; }
 
