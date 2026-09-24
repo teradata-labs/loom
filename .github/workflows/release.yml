@@ -251,7 +251,11 @@ jobs:
       - name: Compress binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          tar czf ${{ matrix.output }}.tar.gz ${{ matrix.output }}
+          # LICENSE, NOTICE and THIRD-PARTY-NOTICES.md travel with the binary:
+          # the permissive licenses in the tree require their text to accompany
+          # the distribution, and Apache-2.0 section 4(d) requires the NOTICE.
+          tar czf ${{ matrix.output }}.tar.gz \
+            ${{ matrix.output }} LICENSE NOTICE THIRD-PARTY-NOTICES.md
           sha256sum --binary ${{ matrix.output }}.tar.gz > ${{ matrix.output }}.tar.gz.sha256
 
       - name: Sign checksums (Unix)
@@ -273,7 +277,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          7z a ${{ matrix.output }}.zip ${{ matrix.output }}
+          7z a ${{ matrix.output }}.zip ${{ matrix.output }} LICENSE NOTICE THIRD-PARTY-NOTICES.md
           $hash = (Get-FileHash ${{ matrix.output }}.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  ${{ matrix.output }}.zip" | Set-Content -NoNewline ${{ matrix.output }}.zip.sha256
 
