@@ -100,3 +100,15 @@ Cell design: A = today's LLM rerank with Jev in shadow (`longmemeval` agent), B 
 
 **Found before the numbers count.** The first launch of cell A recalled, for every question, memories that had no session provenance and predated the run. Cause: isolate-mode temp agents were named `lme-tmp-<question id>`, graph memory is scoped by agent name, and `DeleteAgent` does not purge graph memory, so a rerun of a question recalled everything earlier runs (the August 4×500 matrix included) had extracted for it. Every earlier isolate-mode run on this VM shared that flaw; it duplicates the retrieval pool rather than changing its content, so it does not by itself invalidate earlier accuracy figures, but it made per-decision grading impossible (no provenance) and it is not the experiment described. Fixed 2026-09-23: temp agent names carry a per-run nonce, and memories the agent writes through the `graph_memory` tool record their session too (`source: agent`, `source_id: <session>`). Cell A relaunched at 19:55Z on the rebuilt server and runner; the partial first attempt is kept as `out/A-multi-session.*.stale-scope`. Results follow when the four cells finish (~15 h).
 
+**Second finding before the numbers count.** Every recall shadow row from a live turn had an empty `session_id`: `decision.SessionIDFromContext` read only its own context key, while the conversation loop sets the agent session with `pkg/session`. Fixed in the decision package (fallback to the agent session; regression tests on the recall path). Cell A multi-session was graded anyway by attributing each rerank visit to the entry whose haystack sessions its subjects name and taking the last visit per entry as the question turn (`grade_recall_by_subject.py`); later cells join on `session_id` directly (`grade_recall.py`). Cell A knowledge-update was restarted on the fixed server.
+
+**Cell A multi-session, first readout (2026-09-24 00:20Z; 37 of 40 entries answered, 3 lost to Azure OpenAI's content filter on a haystack session; 31 question turns graded, 6 lost to gateway 503s on the question turn; 1,061 keep-or-drop decisions).** End-to-end: 20/37 (54.1%) under the gpt-5.2 judge, on the same server whose earlier isolate-mode multi-session runs scored 9% with the hand-built agent config that ignored `--agent`. Per decision, against the dataset's evidence sessions:
+
+| Mechanism | Kept evidence | Kept non-evidence | Dropped evidence | Dropped non-evidence | Precision | Recall |
+|---|---|---|---|---|---|---|
+| Jev (shadow) | 190 | 10 | 149 | 712 | 95.0% | 56.0% |
+| LLM rerank (acted) | 137 | 3 | 202 | 719 | 97.9% | 40.4% |
+
+Both kept at least one evidence memory in 30 of the 31 questions; Jev kept 6.5 of 34 candidates on average, the LLM rerank 4.5. Read: the 61.6% "agreement" from the rig campaign was Jev disagreeing with a reference that drops evidence. Jev keeps 39% more evidence memories at a cost of 7 extra non-evidence memories per 1,000 decisions. Whether that turns into answers is what cell B measures; a rerank can only surface what retrieval fetched, and here every graded question had evidence among the candidates.
+
+
