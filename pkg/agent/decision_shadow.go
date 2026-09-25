@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // Decision-layer wiring for the agent.
@@ -470,4 +471,61 @@ func (a *Agent) decisionConfigSummary() string {
 		return "off"
 	}
 	return fmt.Sprintf("%s (%s)", a.deciderName(), a.decisionRouter.Decider().Model())
+}
+
+// renderExtractionWindow renders recent turns for the extraction gate. Role
+// and text only: the gate judges whether the conversation said anything
+// durable, and tool payloads are neither durable nor safe to ship.
+func renderExtractionWindow(messages []types.Message) string {
+	var b strings.Builder
+	for _, m := range messages {
+		if m.Role == "tool" || strings.TrimSpace(m.Content) == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Content)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// liveExtractGate asks the decider whether this window is worth extracting.
+// live is false when the band is shadow or the layer is off, in which case
+// the caller extracts as it always did; the request and outcome are still
+// returned when one was made so the caller can record it.
+func (a *Agent) liveExtractGate(ctx context.Context, sessionID, window string) (req *loomv1.DecisionRequest, out decision.Outcome, live bool) {
+	if a.decisionRouter == nil || window == "" {
+		return nil, decision.Outcome{}, false
+	}
+	if a.decisionRouter.Band(sites.SiteMemoryExtract).Shadow {
+		return nil, decision.Outcome{}, false
+	}
+	req, err := sites.ExtractRequest(window)
+	if err != nil {
+		zap.L().Debug("extraction gate: request", zap.Error(err))
+		return nil, decision.Outcome{}, false
+	}
+	budget := decision.Budget(a.decisionRouter.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
+	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
+	defer cancel()
+	out = a.decisionRouter.Decide(liveCtx, req)
+	return req, out, out.Act()
+}
+
+// recordExtractionGate writes the gate's row against what extraction
+// actually stored. On a shadow band it asks the decider now, in the
+// background, so the comparison costs the turn nothing.
+func (a *Agent) recordExtractionGate(ctx context.Context, sessionID, window string,
+	req *loomv1.DecisionRequest, out decision.Outcome, live bool, stored *int) {
+	if a.decisionRouter == nil || window == "" {
+		return
+	}
+	refs := sites.ExtractReference(*stored)
+	if live && req != nil {
+		a.recordDecisionAsync(ctx, sessionID, req, out, refs)
+		return
+	}
+	shadowReq, err := sites.ExtractRequest(window)
+	if err != nil {
+		return
+	}
+	a.runShadow(ctx, sessionID, shadowReq, refs)
 }
