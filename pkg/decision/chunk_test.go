@@ -292,3 +292,15 @@ func TestBudgetScalesWithWavesAndCaps(t *testing.T) {
 	// 400 questions = 25 chunks of 16, four at a time: seven rounds.
 	assert.Equal(t, 28*time.Second, decision.Budget(d, 400, perWave, 0), "no cap means no cap")
 }
+
+// Being throttled is not a size problem: splitting doubles the request count
+// against the budget that just refused one. The LongMemEval rerun hit this
+// when a rate cap turned every large rerank into a bisection storm.
+func TestChunkedDoesNotBisectOnRateLimit(t *testing.T) {
+	m := mock.New()
+	scriptAll(m, 8)
+	m.SetHook(func(*loomv1.DecisionRequest) error { return decision.ErrRateLimited })
+	_, err := decision.Chunk(m, decision.WithChunkSize(4)).Decide(context.Background(), fanOutRequest(t, 8))
+	require.ErrorIs(t, err, decision.ErrRateLimited)
+	assert.Equal(t, 2, m.CallCount(), "two chunks tried once each, no halving")
+}

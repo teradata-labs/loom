@@ -252,6 +252,10 @@ func chunkRetryable(ctx context.Context, err error) bool {
 	case errors.Is(err, ErrUnauthorized), errors.Is(err, ErrValidation),
 		errors.Is(err, ErrMalformedAnswer), errors.Is(err, ErrDisabled), errors.Is(err, ErrBudgetExhausted):
 		return false
+	case errors.Is(err, ErrRateLimited):
+		// Being throttled is not a size problem. Splitting doubles the
+		// request count against the very budget that just refused one.
+		return false
 	}
 	var ve *ValidationError
 	if errors.As(err, &ve) {
