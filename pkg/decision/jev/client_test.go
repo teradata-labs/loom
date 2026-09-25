@@ -372,7 +372,9 @@ func TestParseRetryAfterAndBackoff(t *testing.T) {
 
 func TestLimiterPacesAndHonoursContext(t *testing.T) {
 	t.Parallel()
-	// 120 rpm = 2 tokens/s, burst 2.
+	// 120 rpm = 2 tokens/s. The burst floors at one whole fan-out
+	// (decision.DefaultChunkConcurrency = 4), so the first four are free and
+	// the fifth waits half a second for the next token.
 	l := newLimiter(120)
 	now := time.Unix(1_000, 0)
 	var slept []time.Duration
@@ -384,9 +386,11 @@ func TestLimiterPacesAndHonoursContext(t *testing.T) {
 		return nil
 	}
 	ctx := context.Background()
+	for i := 0; i < decision.DefaultChunkConcurrency; i++ {
+		require.NoError(t, l.wait(ctx), "call %d is inside the burst", i+1)
+	}
+	require.Empty(t, slept, "one fan-out never queues against itself")
 	require.NoError(t, l.wait(ctx))
-	require.NoError(t, l.wait(ctx))
-	require.NoError(t, l.wait(ctx)) // third call must wait ~0.5 s
 	require.Len(t, slept, 1)
 	assert.InDelta(t, 0.5, slept[0].Seconds(), 1e-6)
 
@@ -528,4 +532,46 @@ func TestFitsBeforeDeadline(t *testing.T) {
 	assert.True(t, fitsBeforeDeadline(ctx, 500*time.Millisecond))
 	assert.False(t, fitsBeforeDeadline(ctx, 2*time.Second), "the wait alone would consume the budget")
 	assert.False(t, fitsBeforeDeadline(ctx, 1900*time.Millisecond), "no room left for the attempt after the wait")
+}
+
+// The burst must admit one whole chunked request however low the rate is.
+// Before this, a 64-candidate rerank at 80 rpm queued its own four chunks
+// behind a 1.33-token bucket and blew the caller's 4 s budget: 30% of live
+// recall visits were lost to "context deadline exceeded" that way.
+func TestLimiterBurstAdmitsAWholeFanOut(t *testing.T) {
+	t.Parallel()
+	for _, rpm := range []float64{1, 30, 80, 120} {
+		l := newLimiter(rpm)
+		assert.GreaterOrEqual(t, l.burst, float64(decision.DefaultChunkConcurrency),
+			"%v rpm must still admit one fan-out at once", rpm)
+	}
+	// Above the floor the burst is still one second's worth.
+	assert.InDelta(t, 10, newLimiter(600).burst, 1e-9)
+}
+
+// A live caller's deadline is not something to queue past: the wait would
+// consume the whole budget and then report a deadline error indistinguishable
+// from a hung provider.
+func TestLimiterFailsFastPastTheDeadline(t *testing.T) {
+	t.Parallel()
+	l := newLimiter(60) // 1 token/s, burst 4
+	now := time.Unix(2_000, 0)
+	l.now = func() time.Time { return now }
+	l.last = now
+	l.tokens = 0 // bucket empty: the next token is a second away
+	slept := 0
+	l.sleepFor = func(_ context.Context, d time.Duration) error { slept++; now = now.Add(d); return nil }
+
+	tight, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := l.wait(tight)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, decision.ErrRateLimited, "the caller learns it was throttled, not that time ran out")
+	assert.Equal(t, 0, slept, "returned without sleeping the budget away")
+
+	// A patient caller still waits it out.
+	patient, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	require.NoError(t, l.wait(patient))
+	assert.Equal(t, 1, slept)
 }
