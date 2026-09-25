@@ -28,6 +28,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -564,11 +565,30 @@ func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (
 	metadata.FtsRetrievalMs = time.Since(ftsStart).Milliseconds()
 	metadata.CandidatesRetrieved = types.SafeInt32(len(candidates))
 
-	// Stage 3: LLM re-ranking (for BALANCED and ACCURATE modes)
+	// Stage 3: re-ranking (for BALANCED and ACCURATE modes). With a live
+	// decision band the decider ranks first and the LLM is skipped when it
+	// clears the band; otherwise the LLM ranks and the decider's answer is
+	// recorded against it.
 	var results []*loomv1.ToolSearchResult
 	if (mode == loomv1.SearchMode_SEARCH_MODE_BALANCED || mode == loomv1.SearchMode_SEARCH_MODE_ACCURATE) && r.llm != nil && len(candidates) > 0 {
 		rerankStart := time.Now()
-		results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates)
+		if decided, acted, dreq, dout := r.liveRerank(ctx, req.Query, candidates); acted {
+			results = decided
+			span.SetAttribute("tool_search.rerank", "decision")
+			if router, recorder := r.decisionParts(); router != nil {
+				r.recordAsync(ctx, router, recorder, dreq, dout, sites.RerankSubjectsOnly(len(candidates), toolSubjects(candidates)))
+			}
+		} else if dreq != nil {
+			results = r.rerankWithLLMOnly(ctx, req.Query, req.TaskContext, candidates)
+			span.SetAttribute("tool_search.rerank", "llm_after_decision")
+			if router, recorder := r.decisionParts(); router != nil {
+				r.recordAsync(ctx, router, recorder, dreq, dout,
+					sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank, toolSubjects(candidates)))
+			}
+		} else {
+			results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates)
+			span.SetAttribute("tool_search.rerank", "llm")
+		}
 		metadata.LlmRerankingMs = time.Since(rerankStart).Milliseconds()
 	} else {
 		// FAST mode or no LLM - use FTS scores directly
@@ -802,8 +822,21 @@ Example output: ["send", "message", "notification", "alert", "webhook", "post"]`
 	return terms
 }
 
-// rerankWithLLM uses LLM to re-rank search candidates for better accuracy.
+// rerankWithLLM uses LLM to re-rank search candidates for better accuracy,
+// and shadow-records the decider's view of the same candidates when the
+// decision layer is wired.
 func (r *Registry) rerankWithLLM(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult) []*loomv1.ToolSearchResult {
+	results := r.rerankWithLLMOnly(ctx, query, taskContext, candidates)
+	// Decision layer shadow (plan Phase 1, site tool_search.rerank): the
+	// decider scores the same candidates in the background and the result is
+	// recorded against the indexes the LLM kept. Nothing branches on it here.
+	r.shadowRerank(ctx, query, candidates, results)
+	return results
+}
+
+// rerankWithLLMOnly is the generative rerank with no decision-layer side
+// effects; callers that already hold a decider outcome use it.
+func (r *Registry) rerankWithLLMOnly(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult) []*loomv1.ToolSearchResult {
 	if r.llm == nil || len(candidates) == 0 {
 		return candidates
 	}
@@ -866,11 +899,6 @@ Example output: [{"index": 2, "score": 0.95, "reason": "Exact match for slack no
 		})
 		reranked = append(reranked, result)
 	}
-
-	// Decision layer shadow (plan Phase 1, site tool_search.rerank): the
-	// decider scores the same candidates in the background and the result is
-	// recorded against the indexes the LLM kept. Nothing branches on it yet.
-	r.shadowRerank(ctx, query, candidates, reranked)
 
 	if len(reranked) == 0 {
 		return candidates

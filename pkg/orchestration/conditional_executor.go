@@ -14,6 +14,9 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -22,6 +25,19 @@ type ConditionalExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ConditionalPattern
 	workflowID   string
+
+	// conditionCost accumulates the condition agent's calls (first
+	// evaluation and retries), which are not branch results and were
+	// previously missing from the reported workflow cost.
+	conditionCost *loomv1.WorkflowCost
+}
+
+// addConditionUsage records one condition-agent call.
+func (e *ConditionalExecutor) addConditionUsage(u types.Usage) {
+	if e.conditionCost == nil {
+		e.conditionCost = &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)}
+	}
+	addUsageToCost(e.conditionCost, e.pattern.ConditionAgentId, u)
 }
 
 // NewConditionalExecutor creates a new conditional executor.
@@ -57,75 +73,62 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 		return nil, fmt.Errorf("condition agent not found: %s: %w", e.pattern.ConditionAgentId, err)
 	}
 
-	// Execute condition evaluation with span
-	ctx, evalSpan := e.orchestrator.tracer.StartSpan(ctx, "conditional.evaluate")
-	if evalSpan != nil {
-		evalSpan.SetAttribute("condition.agent_id", e.pattern.ConditionAgentId)
-	}
+	// Decision layer (site workflow.branch). With a live band on the
+	// condition agent the decider picks the branch first and the agent turn
+	// is skipped when it clears the band; otherwise the agent decides and the
+	// decider's answer is recorded against it.
+	sessionID := e.conditionSessionID()
+	dreq, dout, decidedKey, acted := e.liveBranch(ctx, conditionAgent, sessionID)
 
-	e.orchestrator.logger.Info("Evaluating condition",
-		zap.String("agent_id", e.pattern.ConditionAgentId))
-
-	conditionResult, model, err := e.evaluateConditionWithSpan(ctx, conditionAgent)
-
-	if evalSpan != nil {
-		evalSpan.SetAttribute("condition.result", conditionResult)
-		if model != "" {
-			evalSpan.SetAttribute("agent.model", model)
+	var (
+		conditionResult, model, branchKey string
+		selectedBranch                    *loomv1.WorkflowPattern
+		decidedBy                         = "agent"
+	)
+	if acted {
+		selectedBranch, branchKey = e.branchForDecision(decidedKey)
+		conditionResult = decidedKey
+		decidedBy = "decision"
+		if d := conditionAgent.DecisionRouter().Decider(); d != nil {
+			model = d.Model()
 		}
-	}
-	e.orchestrator.tracer.EndSpan(evalSpan)
-
-	if err != nil {
-		return nil, fmt.Errorf("condition evaluation failed: %w", err)
-	}
-
-	// Select branch based on condition result
-	selectedBranch, branchKey := e.selectBranch(conditionResult)
-
-	// If no match, try output coercion (cheap, no LLM call)
-	if selectedBranch == nil {
-		if coerced, ok := coerceBranchKey(conditionResult, e.getBranchKeys()); ok {
-			selectedBranch, branchKey = e.selectBranch(coerced)
-			if selectedBranch != nil {
-				e.orchestrator.logger.Info("Branch matched after output coercion",
-					zap.String("original", conditionResult),
-					zap.String("coerced", coerced))
+		e.orchestrator.logger.Info("Branch selected by decision layer",
+			zap.String("branch_key", branchKey),
+			zap.Float64("confidence", dout.Confidence),
+			zap.Duration("latency", dout.Latency))
+		// Acted: nothing to compare against, but the row records what ran.
+		conditionAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+	} else {
+		conditionResult, model, selectedBranch, branchKey, err = e.evaluateAndSelect(ctx, conditionAgent)
+		if err != nil {
+			return nil, err
+		}
+		refs := sites.BranchReference(e.referenceKey(selectedBranch, branchKey))
+		switch {
+		case dreq != nil:
+			// Live band, decider did not clear it: reuse the answer in hand.
+			conditionAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, refs)
+		case conditionAgent.DecisionRouter() != nil:
+			if req, rerr := sites.BranchRequest(e.pattern.ConditionPrompt, e.getBranchKeys()); rerr == nil {
+				conditionAgent.RunDecisionShadow(ctx, sessionID, req, refs)
+			} else {
+				e.orchestrator.logger.Debug("decision shadow: branch request", zap.Error(rerr))
 			}
 		}
 	}
 
-	// If still no match and retry policy configured, retry with feedback
-	if selectedBranch == nil && e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
-		var retryBranch *loomv1.WorkflowPattern
-		var retryKey, retryResult string
-		retryBranch, retryKey, retryResult = e.retryConditionEvaluation(ctx, conditionAgent, conditionResult)
-		if retryBranch != nil {
-			selectedBranch = retryBranch
-			branchKey = retryKey
-			conditionResult = retryResult
-		}
-	}
-
-	// Fall back to default branch after coercion and retry have been attempted
-	if selectedBranch == nil && e.pattern.DefaultBranch != nil {
-		selectedBranch = e.pattern.DefaultBranch
-		branchKey = "default"
-		e.orchestrator.logger.Info("Using default branch after all matching attempts",
-			zap.String("condition_result", conditionResult))
-	}
-
-	if selectedBranch == nil {
-		return nil, fmt.Errorf("no matching branch found for condition: %s", conditionResult)
-	}
-
 	e.orchestrator.logger.Info("Selected branch",
 		zap.String("condition_result", conditionResult),
-		zap.String("branch_key", branchKey))
+		zap.String("branch_key", branchKey),
+		zap.String("decided_by", decidedBy))
 
 	if workflowSpan != nil {
 		workflowSpan.SetAttribute("conditional.result", conditionResult)
 		workflowSpan.SetAttribute("conditional.selected_branch", branchKey)
+		workflowSpan.SetAttribute("conditional.decided_by", decidedBy)
+		if model != "" {
+			workflowSpan.SetAttribute("agent.model", model)
+		}
 	}
 
 	// Execute selected branch with branch span
@@ -158,8 +161,134 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 			"condition_agent":  e.pattern.ConditionAgentId,
 		},
 		DurationMs: duration.Milliseconds(),
-		Cost:       branchResult.Cost, // Inherit cost from branch execution
+		// Branch cost plus the condition agent's own calls; before this the
+		// classifier turn was missing from every conditional's reported cost.
+		Cost: mergeCost(branchResult.Cost, e.conditionCost),
 	}, nil
+}
+
+// evaluateAndSelect is the generative path: the condition agent answers the
+// condition prompt and the answer is matched to a branch through exact
+// match, coercion, the retry policy, and finally the default branch.
+func (e *ConditionalExecutor) evaluateAndSelect(ctx context.Context, conditionAgent *agent.Agent) (conditionResult, model string, selectedBranch *loomv1.WorkflowPattern, branchKey string, err error) {
+	// Execute condition evaluation with span
+	ctx, evalSpan := e.orchestrator.tracer.StartSpan(ctx, "conditional.evaluate")
+	if evalSpan != nil {
+		evalSpan.SetAttribute("condition.agent_id", e.pattern.ConditionAgentId)
+	}
+
+	e.orchestrator.logger.Info("Evaluating condition",
+		zap.String("agent_id", e.pattern.ConditionAgentId))
+
+	conditionResult, model, err = e.evaluateConditionWithSpan(ctx, conditionAgent)
+
+	if evalSpan != nil {
+		evalSpan.SetAttribute("condition.result", conditionResult)
+		if model != "" {
+			evalSpan.SetAttribute("agent.model", model)
+		}
+	}
+	e.orchestrator.tracer.EndSpan(evalSpan)
+
+	if err != nil {
+		return "", "", nil, "", fmt.Errorf("condition evaluation failed: %w", err)
+	}
+
+	// Select branch based on condition result
+	selectedBranch, branchKey = e.selectBranch(conditionResult)
+
+	// If no match, try output coercion (cheap, no LLM call)
+	if selectedBranch == nil {
+		if coerced, ok := coerceBranchKey(conditionResult, e.getBranchKeys()); ok {
+			selectedBranch, branchKey = e.selectBranch(coerced)
+			if selectedBranch != nil {
+				e.orchestrator.logger.Info("Branch matched after output coercion",
+					zap.String("original", conditionResult),
+					zap.String("coerced", coerced))
+			}
+		}
+	}
+
+	// If still no match and retry policy configured, retry with feedback
+	if selectedBranch == nil && e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
+		retryBranch, retryKey, retryResult := e.retryConditionEvaluation(ctx, conditionAgent, conditionResult)
+		if retryBranch != nil {
+			selectedBranch = retryBranch
+			branchKey = retryKey
+			conditionResult = retryResult
+		}
+	}
+
+	// Fall back to default branch after coercion and retry have been attempted
+	if selectedBranch == nil && e.pattern.DefaultBranch != nil {
+		selectedBranch = e.pattern.DefaultBranch
+		branchKey = "default"
+		e.orchestrator.logger.Info("Using default branch after all matching attempts",
+			zap.String("condition_result", conditionResult))
+	}
+
+	if selectedBranch == nil {
+		return "", "", nil, "", fmt.Errorf("no matching branch found for condition: %s", conditionResult)
+	}
+	return conditionResult, model, selectedBranch, branchKey, nil
+}
+
+// conditionSessionID is the deterministic session the condition agent runs
+// in; decision rows are keyed to it too.
+func (e *ConditionalExecutor) conditionSessionID() string {
+	return fmt.Sprintf("%s-condition-%s", e.workflowID, e.pattern.ConditionAgentId)
+}
+
+// liveBranch is the decision layer's live path. When the condition agent's
+// router has a live band for workflow.branch it asks the decider first.
+// acted is true when the band was cleared and the key is actionable: a
+// named branch, or none_of_these when a default branch exists. When the
+// decider answered but did not clear the band, req and out come back
+// non-nil so the caller can record them against the agent's answer.
+func (e *ConditionalExecutor) liveBranch(ctx context.Context, conditionAgent *agent.Agent, sessionID string) (req *loomv1.DecisionRequest, out decision.Outcome, key string, acted bool) {
+	router := conditionAgent.DecisionRouter()
+	if router == nil || len(e.pattern.Branches) == 0 || router.Band(sites.SiteWorkflowBranch).Shadow {
+		return nil, decision.Outcome{}, "", false
+	}
+	req, err := sites.BranchRequest(e.pattern.ConditionPrompt, e.getBranchKeys())
+	if err != nil {
+		e.orchestrator.logger.Debug("decision: branch request", zap.Error(err))
+		return nil, decision.Outcome{}, "", false
+	}
+	out = conditionAgent.LiveDecide(ctx, sessionID, req)
+	if !out.Act() {
+		return req, out, "", false
+	}
+	key, ok := sites.BranchChosen(out.Response)
+	if !ok {
+		return req, out, "", false
+	}
+	if key == sites.BranchNoneOfThese {
+		return req, out, key, e.pattern.DefaultBranch != nil
+	}
+	if _, exists := e.pattern.Branches[key]; !exists {
+		// The decider answered outside the option set; never act on that.
+		return req, out, "", false
+	}
+	return req, out, key, true
+}
+
+// branchForDecision maps an actionable decided key to its branch.
+func (e *ConditionalExecutor) branchForDecision(key string) (*loomv1.WorkflowPattern, string) {
+	if key == sites.BranchNoneOfThese {
+		return e.pattern.DefaultBranch, "default"
+	}
+	return e.pattern.Branches[key], key
+}
+
+// referenceKey is what the agent path's selection looks like as a decider
+// answer: the branch key, or none_of_these when the default branch was used
+// because nothing matched.
+func (e *ConditionalExecutor) referenceKey(selected *loomv1.WorkflowPattern, branchKey string) string {
+	if selected == e.pattern.DefaultBranch && e.pattern.Branches[branchKey] == nil {
+		return sites.BranchNoneOfThese
+	}
+	return branchKey
 }
 
 // evaluateConditionWithSpan runs the condition agent with comprehensive observability.
@@ -177,11 +306,11 @@ func (e *ConditionalExecutor) evaluateConditionWithSpan(ctx context.Context, con
 	}
 
 	// Execute condition agent with deterministic session ID
-	sessionID := fmt.Sprintf("%s-condition-%s", e.workflowID, e.pattern.ConditionAgentId)
-	response, err := conditionAgent.Chat(ctx, sessionID, e.pattern.ConditionPrompt)
+	response, err := conditionAgent.Chat(ctx, e.conditionSessionID(), e.pattern.ConditionPrompt)
 	if err != nil {
 		return "", "", fmt.Errorf("condition agent chat failed: %w", err)
 	}
+	e.addConditionUsage(response.Usage)
 
 	// Get model information
 	model := conditionAgent.GetLLMModel()
@@ -299,6 +428,7 @@ func (e *ConditionalExecutor) retryConditionEvaluation(
 				zap.Error(err))
 			continue
 		}
+		e.addConditionUsage(response.Usage)
 
 		result := strings.TrimSpace(strings.ToLower(response.Content))
 

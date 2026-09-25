@@ -4079,6 +4079,23 @@
         "provider": {
           "type": "string",
           "title": "Provider name (e.g., \"anthropic\", \"bedrock\", \"ollama\")"
+        },
+        "inputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LLM usage and cost of producing this position. Scalars rather than\nAgentExecutionCost because that message lives in orchestration.proto,\nwhich imports this file."
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double"
         }
       },
       "description": "AgentPosition represents an agent's argument in a debate."
@@ -5075,9 +5092,28 @@
         "shadow": {
           "type": "boolean",
           "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        },
+        "aggregate": {
+          "$ref": "#/definitions/v1DecisionBandAggregate",
+          "description": "How multi-question requests are judged against act_min."
+        },
+        "trueMin": {
+          "type": "number",
+          "format": "double",
+          "description": "Probability at or above which a Noul answer counts as true at this\nsite: the keep threshold at a rerank, \"valid\" at a stage gate,\n\"consensus reached\" at a debate. 0 means the site default (0.5).\n\nIt is not act_min. act_min asks how decisive an answer is (its distance\nfrom 0.5) before the site may act at all; true_min asks which side of\nthe line a decisive answer falls on. Lowering act_min makes the site\nact on more answers, including ones it will then call false; lowering\ntrue_min makes more answers count as true."
         }
       },
       "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandAggregate": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+        "DECISION_BAND_AGGREGATE_MIN",
+        "DECISION_BAND_AGGREGATE_PER_QUESTION"
+      ],
+      "default": "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+      "description": "DecisionBandAggregate says how a request with several questions is judged\nagainst act_min.\n\n - DECISION_BAND_AGGREGATE_MIN: The least confident answer must clear act_min (a request is as reliable\nas its weakest judgment). Right for requests whose answers are combined\ninto one decision.\n - DECISION_BAND_AGGREGATE_PER_QUESTION: The request acts when the Decider answered at all; the call site applies\nact_min to each answer separately. Right for fan-outs (one question per\ncandidate) where one uncertain candidate must not veto the rest."
     },
     "v1DecisionBandMode": {
       "type": "string",
@@ -5134,6 +5170,20 @@
         "llmRole": {
           "type": "string",
           "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        },
+        "requestsPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
+        },
+        "exposeTool": {
+          "type": "boolean",
+          "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
+        },
+        "maxQuestionsPerRequest": {
+          "type": "string",
+          "format": "int64",
+          "description": "Most questions one request may carry before the router splits it into\nconcurrent chunks (see DecisionRequest.fan_out_key). 0 means the\ndecider's own default (Jev: 16; a chunk that still fails with an\noverload or size error is bisected and retried). Providers that accept\nany size may set it high; it never changes answers, only how many\nround trips carry them."
         }
       },
       "description": "DecisionConfig configures the decision layer for an agent or server."

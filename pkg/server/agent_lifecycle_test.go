@@ -871,3 +871,37 @@ func TestAgentLifecycle_B4_ReloadWithNilNestedConfig(t *testing.T) {
 	require.NotNil(t, reloadResp)
 	assert.Equal(t, "b4-nil-nested-reload-v2", reloadResp.Name)
 }
+
+// TestAgentLifecycle_SetAgentConfigReportsStaticConfig: an agent the host
+// added itself (looms serve at startup) has no config on GetAgent until the
+// host records it; clients that clone agents (the LongMemEval runner's
+// isolate mode) fell back to a template because of that.
+func TestAgentLifecycle_SetAgentConfigReportsStaticConfig(t *testing.T) {
+	srv := newTestMultiAgentServer(t)
+	ctx := context.Background()
+	ag := srv.agents[srv.defaultAgentID]
+	require.NotNil(t, ag)
+
+	before, err := srv.GetAgent(ctx, &loomv1.GetAgentRequest{AgentId: srv.defaultAgentID})
+	require.NoError(t, err)
+	assert.Nil(t, before.GetConfig(), "a host-added agent starts with no recorded config")
+
+	cfg := &loomv1.AgentConfig{
+		Name:         "test-agent",
+		SystemPrompt: "Argue against the proposition.",
+		Decision:     &loomv1.DecisionConfig{Provider: "jev", Model: "typesafe-ai/jev", AllowAlias: true},
+	}
+	srv.SetAgentConfig(srv.defaultAgentID, cfg)
+
+	after, err := srv.GetAgent(ctx, &loomv1.GetAgentRequest{AgentId: srv.defaultAgentID})
+	require.NoError(t, err)
+	require.NotNil(t, after.GetConfig())
+	assert.Equal(t, "Argue against the proposition.", after.GetConfig().SystemPrompt)
+	assert.Equal(t, "jev", after.GetConfig().GetDecision().GetProvider())
+	assert.Equal(t, "running", after.Status)
+
+	srv.SetAgentConfig(srv.defaultAgentID, nil) // nil is a no-op
+	again, err := srv.GetAgent(ctx, &loomv1.GetAgentRequest{AgentId: srv.defaultAgentID})
+	require.NoError(t, err)
+	assert.NotNil(t, again.GetConfig())
+}

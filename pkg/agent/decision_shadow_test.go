@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,7 @@ import (
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -74,7 +76,10 @@ func TestInitDecisionRouterJev(t *testing.T) {
 	require.NotNil(t, ag.DecisionRouter(), "a gateway key enables the jev provider")
 	inst, ok := ag.DecisionRouter().Decider().(*decision.Instrumented)
 	require.True(t, ok)
-	client, ok := inst.Unwrap().(*jev.Client)
+	chunked, ok := inst.Unwrap().(*decision.Chunked)
+	require.True(t, ok, "chunking sits between instrumentation and the provider")
+	assert.Equal(t, jev.DefaultMaxQuestionsPerRequest, chunked.Size(), "the client's size hint is picked up")
+	client, ok := chunked.Unwrap().(*jev.Client)
 	require.True(t, ok)
 	assert.Equal(t, "jev", client.Name())
 	assert.Equal(t, jev.VercelGatewayModel, client.Model())
@@ -154,9 +159,9 @@ func TestRerankMemoriesShadowsAgainstLLMChoice(t *testing.T) {
 	require.NotNil(t, ag.decisionRecorder)
 
 	candidates := []*memory.Memory{
-		{ID: "m1", Content: "the user drives a blue car"},
+		{ID: "m1", Content: "the user drives a blue car", Source: "conversation", SourceID: "sess-1"},
 		{ID: "m2", Content: "quarterly revenue table"},
-		{ID: "m3", Content: "GPS malfunction after March service"},
+		{ID: "m3", Content: "GPS malfunction after March service", Source: memory.SourceAutoExtracted, SourceID: "sess-3"},
 	}
 	ctx := decision.WithSessionID(context.Background(), "sess-7")
 	kept := ag.rerankMemories(ctx, "what happened to my car's GPS?", candidates)
@@ -181,6 +186,9 @@ func TestRerankMemoriesShadowsAgainstLLMChoice(t *testing.T) {
 	assert.Equal(t, "true", byQ["c2"].ReferenceAnswer)
 	assert.Equal(t, "true", byQ["c1"].CandidateAnswer, "the one disagreement is recorded, not acted on")
 	assert.Equal(t, 1, dec.CallCount())
+	assert.Equal(t, "session:sess-1", byQ["c0"].Subject, "a conversation memory's subject is its source session")
+	assert.Equal(t, "memory:m2", byQ["c1"].Subject, "a memory without a source session is identified by id")
+	assert.Equal(t, "session:sess-3", byQ["c2"].Subject, "an auto-extracted memory points at the session it came from")
 }
 
 func TestRerankMemoriesWithoutRouterIsUnchanged(t *testing.T) {
@@ -267,4 +275,158 @@ func TestSessionIDFromContextHelper(t *testing.T) {
 	assert.Equal(t, "legacy", sessionIDFromContext(legacy))
 	both := decision.WithSessionID(legacy, "typed")
 	assert.Equal(t, "typed", sessionIDFromContext(both), "the typed key wins")
+}
+
+// countingRerankLLM is rerankReplyLLM that counts chats, so a test can prove the
+// generative rerank was skipped.
+type countingRerankLLM struct {
+	reply string
+	calls atomic.Int32
+}
+
+func (l *countingRerankLLM) Chat(context.Context, []types.Message, []shuttle.Tool) (*types.LLMResponse, error) {
+	l.calls.Add(1)
+	return &types.LLMResponse{Content: l.reply, StopReason: "end_turn"}, nil
+}
+func (*countingRerankLLM) Name() string  { return "mock" }
+func (*countingRerankLLM) Model() string { return "mock-model" }
+
+func liveRerankBand(actMin float64) decision.RouterOption {
+	return decision.WithBands([]*loomv1.DecisionBand{{
+		Site:      sites.SiteRecallRerank,
+		ActMin:    actMin,
+		Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+	}})
+}
+
+func TestRerankMemoriesLiveBandSkipsLLM(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "1,2,3"}
+	// c0 confident relevant, c1 confident irrelevant, c2 uncertain (kept).
+	dec := decisionmock.New().AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.55)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+
+	candidates := []*memory.Memory{
+		{ID: "m1", Content: "the user drives a blue car"},
+		{ID: "m2", Content: "quarterly revenue table"},
+		{ID: "m3", Content: "GPS malfunction after March service"},
+	}
+	ctx := decision.WithSessionID(context.Background(), "sess-live")
+	kept := ag.rerankMemories(ctx, "what happened to my car's GPS?", candidates)
+	require.Len(t, kept, 2)
+	assert.Equal(t, "m1", kept[0].ID)
+	assert.Equal(t, "m3", kept[1].ID, "uncertain candidate is kept, never dropped")
+	assert.Equal(t, int32(0), llm.calls.Load(), "the generative rerank was skipped")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	for _, r := range rows {
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, r.Path)
+		assert.Equal(t, "", r.ReferenceAnswer, "acted: nothing to compare against")
+	}
+}
+
+func TestRerankMemoriesLiveBandNotClearedFallsBackAndRecords(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "2"}
+	// Every answer is a coin flip: nothing clears the band.
+	dec := decisionmock.New().AnswerNoul("c0", 0.5).AnswerNoul("c1", 0.5)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+
+	candidates := []*memory.Memory{{ID: "a", Content: "a"}, {ID: "b", Content: "b"}}
+	ctx := decision.WithSessionID(context.Background(), "sess-fb")
+	kept := ag.rerankMemories(ctx, "q", candidates)
+	require.Len(t, kept, 1)
+	assert.Equal(t, "b", kept[0].ID, "the LLM decided")
+	assert.Equal(t, int32(1), llm.calls.Load())
+	assert.Equal(t, 1, dec.CallCount(), "the live answer is reused, not re-asked")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	byQ := map[string]*loomv1.DecisionShadowRecord{}
+	for _, r := range rows {
+		byQ[r.QuestionId] = r
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, r.Path)
+		assert.Equal(t, sites.ReferenceSourceLLMRerank, r.ReferenceSource)
+	}
+	assert.Equal(t, "false", byQ["c0"].ReferenceAnswer)
+	assert.Equal(t, "true", byQ["c1"].ReferenceAnswer)
+}
+
+func TestExportedDecisionHelpersNoRouter(t *testing.T) {
+	t.Parallel()
+	ag := NewAgent(nil, rerankReplyLLM{reply: "1"}, WithName("off"))
+	req, err := sites.BranchRequest("p", []string{"a", "b"})
+	require.NoError(t, err)
+	out := ag.LiveDecide(context.Background(), "s", req)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DISABLED, out.Path)
+	assert.False(t, out.Act())
+	ag.RecordDecisionAsync(context.Background(), "s", req, out, nil)
+	ag.RunDecisionShadow(context.Background(), "s", req, nil)
+	ag.WaitDecisionShadows()
+}
+
+// A shadow row's subject is the memory's source session whenever the memory
+// carries one, for both the extractor and the graph_memory tool, so a grader
+// that knows the evidence sessions can score each keep-or-drop decision.
+func TestMemorySubjectsUseSessionProvenance(t *testing.T) {
+	candidates := []*memory.Memory{
+		{ID: "m1", Source: memory.SourceAutoExtracted, SourceID: "sess-a"},
+		{ID: "m2", Source: memory.SourceAgent, SourceID: "sess-b"},
+		{ID: "m3", Source: "conversation", SourceID: "sess-c"},
+		{ID: "m4", Source: memory.SourceAutoExtracted}, // legacy row, no provenance
+		{ID: "m5", Source: "task", SourceID: "task-9"}, // SourceID is not a session
+		nil,
+	}
+	got := memorySubjects(candidates)
+	assert.Equal(t, []string{"session:sess-a", "session:sess-b", "session:sess-c", "memory:m4", "memory:m5", ""}, got)
+}
+
+// A live turn carries the agent session through pkg/session only. The recall
+// shadow rows must be keyed to it; the LongMemEval A/B recorded 66,000 rows
+// with an empty session id before this was checked.
+func TestRerankMemoriesShadowRowsCarryAgentSession(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul("c0", 0.9)
+	store := &memShadowStore{}
+	ag := NewAgent(nil, rerankReplyLLM{reply: "1"}, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec)),
+		WithDecisionShadowStore(store))
+	ctx := session.WithSessionID(context.Background(), "sess-agent-9")
+	_ = ag.rerankMemories(ctx, "q", []*memory.Memory{{ID: "m1", Content: "x"}})
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "sess-agent-9", rows[0].SessionId)
+}
+
+// The router's decider chain is Instrumented → Chunked → provider, with the
+// chunk size from decision.max_questions_per_request.
+func TestInitDecisionRouterChunksBySizeFromConfig(t *testing.T) {
+	ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: DecisionProviderMock, MaxQuestionsPerRequest: 8}, nil))
+	require.NotNil(t, ag.DecisionRouter())
+	inst, ok := ag.DecisionRouter().Decider().(*decision.Instrumented)
+	require.True(t, ok)
+	chunked, ok := inst.Unwrap().(*decision.Chunked)
+	require.True(t, ok, "every configured decider is wrapped for chunking")
+	assert.Equal(t, 8, chunked.Size())
+	assert.Equal(t, "mock", chunked.Name())
+
+	// No size and a decider without a hint: wrapped, no pre-split.
+	ag2 := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec2"),
+		WithDecisionConfig(&loomv1.DecisionConfig{Provider: DecisionProviderMock}, nil))
+	chunked2 := ag2.DecisionRouter().Decider().(*decision.Instrumented).Unwrap().(*decision.Chunked)
+	assert.Equal(t, 0, chunked2.Size())
 }

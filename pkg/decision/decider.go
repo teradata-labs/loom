@@ -36,6 +36,7 @@ import (
 	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/session"
 )
 
 // Decider answers typed questions about state.
@@ -140,12 +141,19 @@ func WithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, sessionKey{}, sessionID)
 }
 
-// SessionIDFromContext returns the session id set by WithSessionID, or "".
+// SessionIDFromContext returns the session id set by WithSessionID, falling
+// back to the agent session id the conversation loop puts on the context
+// (pkg/session). Without the fallback every recall rerank row recorded from
+// a live turn carried an empty session id, and nothing could be joined to
+// the session that asked.
 func SessionIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	if v, ok := ctx.Value(sessionKey{}).(string); ok {
+	if v, ok := ctx.Value(sessionKey{}).(string); ok && v != "" {
+		return v
+	}
+	if v := session.SessionIDFromContext(ctx); v != "" {
 		return v
 	}
 	return ""

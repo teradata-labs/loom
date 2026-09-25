@@ -14,11 +14,10 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 )
 
 // DebateOrchestrator manages multi-agent debates with round-by-round tracking.
@@ -115,7 +114,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			zap.Int32("round", roundNum),
 			zap.Int32("total_rounds", config.Rounds))
 
-		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory)
+		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator, result.Cost)
 
 		// End round span
 		if roundSpan != nil {
@@ -140,7 +139,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 		debateResult.Rounds = append(debateResult.Rounds, round)
 
 		// Add round to history for next round's context (using moderator for summarization)
-		debateHistory = append(debateHistory, d.formatRoundHistory(ctx, workflowID, round, internalModerator))
+		debateHistory = append(debateHistory, d.formatRoundHistory(ctx, workflowID, round, internalModerator, result.Cost))
 
 		// Accumulate agent results and costs
 		for _, position := range round.Positions {
@@ -148,6 +147,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 				AgentId:         position.AgentId,
 				Output:          position.Position,
 				ConfidenceScore: position.Confidence,
+				Cost:            positionCost(position),
 				Metadata: map[string]string{
 					"round":         fmt.Sprintf("%d", roundNum),
 					"num_arguments": fmt.Sprintf("%d", len(position.Arguments)),
@@ -181,7 +181,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			modSpan.SetAttribute("moderator.rounds_reviewed", fmt.Sprintf("%d", len(debateResult.Rounds)))
 		}
 
-		synthesis, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult)
+		synthesis, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult, result.Cost)
 
 		if modSpan != nil {
 			if err != nil {
@@ -238,7 +238,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 }
 
 // executeRound runs a single round of debate where all agents present positions.
-func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string) (*loomv1.DebateRound, error) {
+func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) (*loomv1.DebateRound, error) {
 	round := &loomv1.DebateRound{
 		RoundNumber:      roundNum,
 		Positions:        make([]*loomv1.AgentPosition, 0),
@@ -251,7 +251,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Collect positions from all agents
 	positions := make(map[string]*loomv1.AgentPosition)
 	for _, agentID := range config.AgentIds {
-		position, err := d.getAgentPosition(ctx, workflowID, agentID, contextPrompt, roundNum)
+		position, err := d.getAgentPosition(ctx, workflowID, agentID, contextPrompt, roundNum, cost)
 		if err != nil {
 			return nil, fmt.Errorf("agent %s failed: %w", agentID, err)
 		}
@@ -262,7 +262,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Let agents respond to each other's positions (second pass)
 	if roundNum > 1 {
 		for _, agentID := range config.AgentIds {
-			responses, err := d.getAgentResponses(ctx, workflowID, agentID, positions, contextPrompt, roundNum)
+			responses, err := d.getAgentResponses(ctx, workflowID, agentID, positions, contextPrompt, roundNum, cost)
 			if err != nil {
 				// Non-fatal: log and continue
 				continue
@@ -274,10 +274,74 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Synthesize round
 	round.Synthesis = d.synthesizeRound(round)
 
-	// Check for consensus (simple heuristic: all agents agree)
-	round.ConsensusReached = d.checkConsensus(round)
+	// Check for consensus: the heuristic decides unless the moderator's
+	// decision layer has a live band for the site.
+	round.ConsensusReached = d.decideConsensus(ctx, workflowID, roundNum, config.Topic, round, moderator)
 
 	return round, nil
+}
+
+// decideConsensus resolves a round's consensus flag (site debate.consensus).
+// The internal moderator's decision layer is borrowed: with a live band the
+// decider reads the positions and its verdict is used when the band is
+// cleared; otherwise the confidence-mean heuristic decides and the decider's
+// answer is recorded against it. Under a TIGHTEN_ONLY band the decider may
+// only withhold consensus (keep the debate going), never declare it.
+func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID string, roundNum int32, topic string, round *loomv1.DebateRound, moderator *agent.Agent) bool {
+	heuristic := d.checkConsensus(round)
+	if moderator == nil || moderator.DecisionRouter() == nil || len(round.Positions) < 2 {
+		return heuristic
+	}
+	sessionID := fmt.Sprintf("%s-round%d-consensus", workflowID, roundNum)
+	req, err := sites.ConsensusRequest(topic, consensusPositions(round.Positions))
+	if err != nil {
+		d.logger.Debug("decision: consensus request", zap.Error(err))
+		return heuristic
+	}
+	refs := sites.ConsensusReference(heuristic)
+
+	band := moderator.DecisionRouter().Band(sites.SiteDebateConsensus)
+	if band.Shadow {
+		moderator.RunDecisionShadow(ctx, sessionID, req, refs)
+		return heuristic
+	}
+
+	out := moderator.LiveDecide(ctx, sessionID, req)
+	if out.Act() {
+		if reached, ok := sites.ConsensusVerdict(out.Response, out.Band); ok {
+			tightenBlocked := reached && band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+			if !tightenBlocked {
+				d.logger.Info("Consensus judged by decision layer",
+					zap.Int32("round", roundNum),
+					zap.Bool("consensus", reached),
+					zap.Bool("heuristic", heuristic),
+					zap.Float64("confidence", out.Confidence),
+					zap.Duration("latency", out.Latency))
+				moderator.RecordDecisionAsync(ctx, sessionID, req, out, nil)
+				return reached
+			}
+			out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
+	}
+	moderator.RecordDecisionAsync(ctx, sessionID, req, out, refs)
+	return heuristic
+}
+
+// consensusPositions renders a round's positions for the decider.
+func consensusPositions(positions []*loomv1.AgentPosition) []sites.Position {
+	out := make([]sites.Position, 0, len(positions))
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		out = append(out, sites.Position{
+			AgentID:    p.AgentId,
+			Position:   p.Position,
+			Arguments:  p.Arguments,
+			Confidence: float64(p.Confidence),
+		})
+	}
+	return out
 }
 
 // getInternalModerator retrieves or uses first debating agent as internal moderator.
@@ -311,36 +375,17 @@ func (d *DebateOrchestrator) getInternalModerator(ctx context.Context, config *l
 	return nil, fmt.Errorf("no agents available for moderator role")
 }
 
-// generatePerspectiveGuidance creates agent-specific guidance to encourage diverse viewpoints.
-func (d *DebateOrchestrator) generatePerspectiveGuidance(agentID string) string {
-	// Extract perspective from agent ID (e.g., "td-expert-performance" -> "performance")
-	parts := strings.Split(agentID, "-")
-	perspective := parts[len(parts)-1]
-
-	// Define perspective-specific guidance
-	perspectives := map[string]string{
-		"performance":  "Focus on performance optimization, speed, throughput, and efficiency metrics. Consider scalability and resource utilization. Prioritize quantifiable performance gains.",
-		"analytics":    "Focus on data analysis, statistical validity, insights extraction, and analytical rigor. Consider data quality, sampling strategies, and analytical methodologies.",
-		"quality":      "Focus on correctness, reliability, testing strategies, and quality assurance. Consider edge cases, error handling, validation approaches, and test coverage.",
-		"architecture": "Focus on system design, modularity, maintainability, and architectural patterns. Consider long-term sustainability, technical debt, and design principles.",
-		"transcend":    "Focus on integration capabilities, cross-system compatibility, and interoperability. Consider API design, data exchange formats, and system boundaries.",
-		"security":     "Focus on security implications, threat modeling, access control, and vulnerability assessment. Consider attack surfaces and defense in depth.",
-		"cost":         "Focus on resource costs, efficiency, budget constraints, and cost-benefit analysis. Consider TCO (total cost of ownership) and ROI.",
-		"user":         "Focus on user experience, usability, accessibility, and end-user impact. Consider user workflows and adoption barriers.",
-		"ops":          "Focus on operational concerns, deployment, monitoring, and production readiness. Consider observability, debugging, and incident response.",
-	}
-
-	// Return specific guidance or general guidance
-	if guidance, ok := perspectives[perspective]; ok {
-		return fmt.Sprintf("Your perspective: %s\n%s", cases.Title(language.English).String(perspective), guidance)
-	}
-
-	// Default: encourage unique perspective based on agent name
-	return fmt.Sprintf("Your perspective: %s\nApproach this problem from your unique angle, considering aspects that other agents might overlook. Avoid generic responses.", agentID)
-}
+// standpointGuidance is the one instruction the debate adds about how to
+// argue. The standpoint itself comes from the agent's own configuration; the
+// orchestrator does not assign perspectives. An earlier version guessed a
+// perspective from the agent id's suffix and told unknown agents to "approach
+// this from your unique angle, considering aspects other agents might
+// overlook", and under that framing two agents configured to take opposite
+// sides argued the same side in 11 of 15 debates.
+const standpointGuidance = `Take the standpoint set out in your own instructions and hold it. Where your instructions assign you a side, argue that side, even if you would personally choose otherwise. Present the strongest honest case for it. Other participants may argue the opposite; do not move toward their conclusions to reduce disagreement.`
 
 // getAgentPosition gets an agent's position on the debate topic.
-func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, agentID, contextPrompt string, roundNum int32) (*loomv1.AgentPosition, error) {
+func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, agentID, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (*loomv1.AgentPosition, error) {
 	// Start agent-level span with hierarchical naming
 	ctx, agentSpan := d.tracer.StartSpan(ctx, fmt.Sprintf("debate.agent.%s.position", agentID))
 	defer d.tracer.EndSpan(agentSpan)
@@ -369,15 +414,13 @@ func (d *DebateOrchestrator) getAgentPosition(ctx context.Context, workflowID, a
 		agentSpan.SetAttribute("agent.provider", provider)
 	}
 
-	// Add agent-specific perspective to encourage diversity
-	perspectiveGuidance := d.generatePerspectiveGuidance(agentID)
-
-	// Construct debate prompt
+	// Construct debate prompt. The standpoint comes from the agent's own
+	// instructions; the orchestrator only asks the agent to hold it.
 	prompt := fmt.Sprintf(`%s
 
 %s
 
-Please provide your position on this topic. Structure your response as:
+State your position on this topic. Structure your response as:
 
 POSITION: [Your clear stance/conclusion]
 
@@ -388,13 +431,14 @@ ARGUMENTS:
 
 CONFIDENCE: [0-100]
 
-Be specific, evidence-based, and consider alternative perspectives.`, contextPrompt, perspectiveGuidance)
+Be specific and evidence-based. Anticipate the strongest objection to your position and answer it; do not soften or abandon your position to accommodate it.`, contextPrompt, standpointGuidance)
 
 	// Execute agent with session ID for database persistence
 	resp, err := a.Chat(ctx, sessionID, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
+	addDebateUsage(cost, agentID, resp.Usage)
 
 	// Extract tool usage from response
 	toolsUsed := make([]string, 0)
@@ -440,11 +484,15 @@ Be specific, evidence-based, and consider alternative perspectives.`, contextPro
 		ToolCallCount: toolCallCount,
 		Model:         model,
 		Provider:      provider,
+		InputTokens:   types.SafeInt32(resp.Usage.InputTokens),
+		OutputTokens:  types.SafeInt32(resp.Usage.OutputTokens),
+		TotalTokens:   types.SafeInt32(resp.Usage.TotalTokens),
+		CostUsd:       resp.Usage.CostUSD,
 	}, nil
 }
 
 // getAgentResponses gets agent responses to other agents' positions.
-func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, positions map[string]*loomv1.AgentPosition, contextPrompt string, roundNum int32) (map[string]string, error) {
+func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, positions map[string]*loomv1.AgentPosition, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (map[string]string, error) {
 	a, err := d.provider.GetAgent(ctx, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent not found: %s: %w", agentID, err)
@@ -477,7 +525,7 @@ func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, 
 Other agents have presented these positions:
 %s
 
-Provide brief responses to the key points raised by other agents. What do you agree with? What do you challenge? What new insights emerge?`,
+Respond briefly to the key points the other agents raised: which do you challenge, and why; which do you concede. Conceding a point is not adopting the other side's position. Hold the standpoint set out in your instructions unless those instructions tell you to change your mind on the evidence.`,
 		myPosition.Position,
 		strings.Join(otherPositions, "\n\n---\n\n"))
 
@@ -485,6 +533,7 @@ Provide brief responses to the key points raised by other agents. What do you ag
 	if err != nil {
 		return nil, err
 	}
+	addDebateUsage(cost, agentID, resp.Usage)
 
 	// For simplicity, use full response as general response
 	responses["all"] = resp.Content
@@ -548,12 +597,12 @@ func (d *DebateOrchestrator) buildDebateContext(topic string, roundNum int32, hi
 // formatRoundHistory formats a round for inclusion in next round's context.
 // It creates concise summaries instead of including full positions to keep context manageable.
 // Uses the moderator agent for LLM-guided summarization.
-func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID string, round *loomv1.DebateRound, moderator *agent.Agent) string {
+func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID string, round *loomv1.DebateRound, moderator *agent.Agent, cost *loomv1.WorkflowCost) string {
 	var sb strings.Builder
 
 	for _, pos := range round.Positions {
 		// Extract key points from position using moderator for LLM-guided summarization
-		summary := d.summarizePosition(ctx, workflowID, pos.AgentId, pos.Position, pos.Arguments, moderator)
+		summary := d.summarizePosition(ctx, workflowID, pos.AgentId, pos.Position, pos.Arguments, moderator, cost)
 		sb.WriteString(fmt.Sprintf("**Agent %s** (confidence: %.0f%%):\n%s\n\n",
 			pos.AgentId, pos.Confidence*100, summary))
 	}
@@ -567,7 +616,7 @@ func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID 
 
 // summarizePosition creates a concise summary of an agent's position using moderator-guided LLM summarization.
 // If the position is short enough, it returns it as-is. Otherwise, it uses the moderator to create an intelligent summary.
-func (d *DebateOrchestrator) summarizePosition(ctx context.Context, workflowID, agentID, position string, arguments []string, moderator *agent.Agent) string {
+func (d *DebateOrchestrator) summarizePosition(ctx context.Context, workflowID, agentID, position string, arguments []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) string {
 	// If position is already short, no need to summarize
 	if len(position) <= 250 && len(arguments) <= 2 {
 		summary := position
@@ -616,6 +665,7 @@ Provide only the summary, no preamble or commentary.`, agentID, position, d.form
 		}
 		return d.fallbackSummary(position, arguments)
 	}
+	addDebateUsage(cost, moderator.GetName(), resp.Usage)
 
 	// Use LLM-generated summary
 	summary := strings.TrimSpace(resp.Content)
@@ -745,7 +795,7 @@ func (d *DebateOrchestrator) checkConsensus(round *loomv1.DebateRound) bool {
 }
 
 // synthesizeWithModerator uses a moderator agent to synthesize final consensus.
-func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult) (string, error) {
+func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult, cost *loomv1.WorkflowCost) (string, error) {
 	moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
 	if err != nil {
 		return "", fmt.Errorf("moderator agent not found: %s: %w", config.ModeratorAgentId, err)
@@ -785,6 +835,7 @@ Provide a concise synthesis that captures the essence of the debate and identifi
 	if err != nil {
 		return "", fmt.Errorf("moderator synthesis failed: %w", err)
 	}
+	addDebateUsage(cost, config.ModeratorAgentId, resp.Usage)
 
 	return resp.Content, nil
 }

@@ -45,6 +45,15 @@ message DecisionRequest {
   // "recall.rerank"). It selects the confidence band and labels traces and
   // shadow records. Not sent to any vendor.
   string site = 4;
+
+  // Optional: the name of a top-level array in state whose items each carry
+  // an "id" equal to a question id (a fan-out request: one question per
+  // candidate). When a request is split into chunks to stay within a
+  // decider's size limits, each chunk keeps only the items for its own
+  // questions, so the state shrinks with the question set instead of being
+  // repeated whole. Empty means the state is shared by every question and
+  // is copied unchanged into every chunk.
+  string fan_out_key = 5;
 }
 
 // DecisionQuestion is one typed question. Instructions and criteria accept
@@ -171,6 +180,20 @@ enum DecisionBandMode {
   DECISION_BAND_MODE_TIGHTEN_ONLY = 2;
 }
 
+// DecisionBandAggregate says how a request with several questions is judged
+// against act_min.
+enum DecisionBandAggregate {
+  DECISION_BAND_AGGREGATE_UNSPECIFIED = 0;
+  // The least confident answer must clear act_min (a request is as reliable
+  // as its weakest judgment). Right for requests whose answers are combined
+  // into one decision.
+  DECISION_BAND_AGGREGATE_MIN = 1;
+  // The request acts when the Decider answered at all; the call site applies
+  // act_min to each answer separately. Right for fan-outs (one question per
+  // candidate) where one uncertain candidate must not veto the rest.
+  DECISION_BAND_AGGREGATE_PER_QUESTION = 2;
+}
+
 // DecisionBand is a call site's confidence routing rule.
 message DecisionBand {
   // Site name this band applies to (matches DecisionRequest.site).
@@ -182,6 +205,18 @@ message DecisionBand {
   // Shadow records the Decider's answer alongside the existing mechanism's
   // without branching on it. Overrides act_min: the path is always FALLBACK.
   bool shadow = 4;
+  // How multi-question requests are judged against act_min.
+  DecisionBandAggregate aggregate = 5;
+  // Probability at or above which a Noul answer counts as true at this
+  // site: the keep threshold at a rerank, "valid" at a stage gate,
+  // "consensus reached" at a debate. 0 means the site default (0.5).
+  //
+  // It is not act_min. act_min asks how decisive an answer is (its distance
+  // from 0.5) before the site may act at all; true_min asks which side of
+  // the line a decisive answer falls on. Lowering act_min makes the site
+  // act on more answers, including ones it will then call false; lowering
+  // true_min makes more answers count as true.
+  double true_min = 6;
 }
 
 // DecisionShadowRecord is one question's shadow comparison: what the decider
@@ -220,6 +255,15 @@ message DecisionShadowRecord {
   string provider = 16;
   // Router path for the request this record came from.
   DecisionPath path = 17;
+  // Decider error text for ERROR-path rows (bounded), empty otherwise. An
+  // ERROR row without its reason cannot be triaged; this is that reason.
+  string error = 18;
+  // Stable identifier of what the question was about, so a row can be
+  // graded against an external truth: for a recall candidate the source
+  // session of the memory ("session:<id>") or the memory id
+  // ("memory:<id>"), for a tool search candidate "tool:<name>". Never the
+  // content itself. Empty when the site has nothing to point at.
+  string subject = 19;
 }
 
 // DecisionConfig configures the decision layer for an agent or server.
@@ -244,4 +288,21 @@ message DecisionConfig {
   // LLM role the "llm" provider adapts (for example "classifier",
   // "compressor"). Empty means the agent's main LLM.
   string llm_role = 9;
+  // Requests per minute the process may send to the decider, set from the
+  // tier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct
+  // publishes 1,200). Agents with identical decider settings share one
+  // client and therefore one budget. 0 means the provider's default.
+  int64 requests_per_minute = 10;
+  // Register the "decide" builtin tool on the agent so it can put one typed
+  // question (yes/no, choice, scale) to the decider mid-turn and branch on
+  // the probabilities. Off by default: the layer's other uses (reranks,
+  // gates) do not depend on it. Calls are recorded at site tool.decide.
+  bool expose_tool = 11;
+  // Most questions one request may carry before the router splits it into
+  // concurrent chunks (see DecisionRequest.fan_out_key). 0 means the
+  // decider's own default (Jev: 16; a chunk that still fails with an
+  // overload or size error is bisected and retried). Providers that accept
+  // any size may set it high; it never changes answers, only how many
+  // round trips carry them.
+  int64 max_questions_per_request = 12;
 }

@@ -13,6 +13,9 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -22,6 +25,21 @@ type SwarmExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.SwarmPattern
 	workflowID   string
+
+	// auxCost accumulates the judge's calls (tie-break and retries), which
+	// are not votes and were missing from the reported cost.
+	auxMu   sync.Mutex
+	auxCost *loomv1.WorkflowCost
+}
+
+// addAuxUsage records one non-vote LLM call under agentID.
+func (e *SwarmExecutor) addAuxUsage(agentID string, u types.Usage) {
+	e.auxMu.Lock()
+	defer e.auxMu.Unlock()
+	if e.auxCost == nil {
+		e.auxCost = &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)}
+	}
+	addUsageToCost(e.auxCost, agentID, u)
 }
 
 // NewSwarmExecutor creates a new swarm executor.
@@ -356,8 +374,9 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 // buildCollaborativeVotingPrompt constructs a prompt with previous votes visible.
 func (e *SwarmExecutor) buildCollaborativeVotingPrompt(agentID string, voteNumber int, previousVotes []*loomv1.SwarmVote) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are participating in a collaborative swarm voting process (Vote #%d).\n\n", voteNumber))
+	sb.WriteString(fmt.Sprintf("Cast a vote (vote #%d) on the question below, with sight of the votes already cast.\n\n", voteNumber))
 	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
+	sb.WriteString(votingStandpoint)
 
 	// Include previous votes
 	if len(previousVotes) > 0 {
@@ -376,29 +395,37 @@ func (e *SwarmExecutor) buildCollaborativeVotingPrompt(agentID string, voteNumbe
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("Now provide your vote, considering the previous votes:\n\n")
+	sb.WriteString("Weigh the previous votes' reasoning, then reply in exactly this format:\n\n")
 	sb.WriteString("VOTE: <your choice>\n")
 	sb.WriteString("CONFIDENCE: <0.0-1.0>\n")
 	sb.WriteString("REASONING: <your reasoning>\n\n")
-	sb.WriteString("Your choice should be a single, clear answer to the question.\n")
-	sb.WriteString("Confidence should be a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
-	sb.WriteString("Provide detailed reasoning for your vote, taking into account the previous votes.\n")
+	sb.WriteString("The VOTE is a single, clear answer to the question, spelled as the question spells it.\n")
+	sb.WriteString("Confidence is a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
+	sb.WriteString("Give the reasoning behind your vote, including what in the previous votes you weighed.\n")
 
 	return sb.String()
 }
 
+// votingStandpoint is the one instruction every voting prompt carries about
+// how to vote. The standpoint comes from the agent's own instructions; the
+// swarm does not assign one. Without it, voters configured to take opposite
+// sides voted the same way in 34 of 40 swarms on the rig, because the prompt
+// read as "evaluate the question", which every voter did on the merits.
+const votingStandpoint = "Vote from the standpoint set out in your own instructions. Where those instructions assign you a side or a preference, vote for it and argue for it honestly, even if you would personally choose otherwise. Each voter answers independently; disagreeing with other voters is expected.\n\n"
+
 // buildVotingPrompt constructs the prompt for an agent to cast an independent vote.
 func (e *SwarmExecutor) buildVotingPrompt(agentID string, voteNumber int) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are participating in a swarm voting process (Vote #%d).\n\n", voteNumber))
+	sb.WriteString(fmt.Sprintf("Cast an independent vote (vote #%d) on the question below.\n\n", voteNumber))
 	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
-	sb.WriteString("Please evaluate this question and provide your vote in the following format:\n\n")
+	sb.WriteString(votingStandpoint)
+	sb.WriteString("Reply in exactly this format:\n\n")
 	sb.WriteString("VOTE: <your choice>\n")
 	sb.WriteString("CONFIDENCE: <0.0-1.0>\n")
 	sb.WriteString("REASONING: <your reasoning>\n\n")
-	sb.WriteString("Your choice should be a single, clear answer to the question.\n")
-	sb.WriteString("Confidence should be a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
-	sb.WriteString("Provide detailed reasoning for your vote.\n")
+	sb.WriteString("The VOTE is a single, clear answer to the question, spelled as the question spells it.\n")
+	sb.WriteString("Confidence is a number between 0.0 (no confidence) and 1.0 (complete confidence).\n")
+	sb.WriteString("Give the reasoning behind your vote.\n")
 
 	return sb.String()
 }
@@ -479,7 +506,7 @@ func (e *SwarmExecutor) aggregateVotes(ctx context.Context, votes []*loomv1.Swar
 		e.orchestrator.logger.Info("Tie detected, invoking judge agent",
 			zap.String("judge_agent_id", e.pattern.JudgeAgentId))
 
-		judgeDecision, err := e.invokeJudge(ctx, votes, voteDistribution)
+		judgeDecision, err := e.breakTie(ctx, votes, voteDistribution)
 		if err != nil {
 			e.orchestrator.logger.Warn("Judge invocation failed, using original decision",
 				zap.Error(err))
@@ -598,17 +625,110 @@ func (e *SwarmExecutor) hasTie(distribution map[string]int32) bool {
 	return maxCount > 1
 }
 
-// invokeJudge calls the judge agent to break a tie.
-func (e *SwarmExecutor) invokeJudge(ctx context.Context, votes []*loomv1.SwarmVote, distribution map[string]int32) (string, error) {
-	// Get judge agent
+// tiedChoices returns the choices sharing the highest vote count.
+func tiedChoices(distribution map[string]int32) map[string]int32 {
+	var maxVotes int32
+	for _, count := range distribution {
+		if count > maxVotes {
+			maxVotes = count
+		}
+	}
+	tied := make(map[string]int32)
+	for choice, count := range distribution {
+		if count == maxVotes {
+			tied[choice] = count
+		}
+	}
+	return tied
+}
+
+// breakTie resolves a tie (site swarm.tie_break). The judge agent's decision
+// layer is borrowed: with a live band the decider picks among the tied
+// choices first and the judge's turn is skipped when the band is cleared;
+// otherwise the judge decides and the decider's answer is recorded against
+// it. A decider answer of none_of_these is never acted on, since a tie-break
+// has to name a choice.
+func (e *SwarmExecutor) breakTie(ctx context.Context, votes []*loomv1.SwarmVote, distribution map[string]int32) (string, error) {
 	judge, err := e.orchestrator.GetAgent(ctx, e.pattern.JudgeAgentId)
 	if err != nil {
 		return "", fmt.Errorf("failed to get judge agent: %w", err)
 	}
+	sessionID := fmt.Sprintf("%s-judge", e.workflowID)
+	tied := tiedChoices(distribution)
 
+	dreq, dout, winner, acted := e.liveTieBreak(ctx, judge, sessionID, tied, votes)
+	if acted {
+		e.orchestrator.logger.Info("Tie broken by decision layer",
+			zap.String("winner", winner),
+			zap.Float64("confidence", dout.Confidence),
+			zap.Duration("latency", dout.Latency))
+		judge.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+		return winner, nil
+	}
+
+	decisionKey, judgeErr := e.invokeJudge(ctx, judge, sessionID, votes, distribution)
+	// A judge that produced no valid choice is recorded as none_of_these.
+	refs := sites.TieBreakReference(decisionKey)
+	switch {
+	case dreq != nil:
+		judge.RecordDecisionAsync(ctx, sessionID, dreq, dout, refs)
+	case judge.DecisionRouter() != nil:
+		if req, rerr := sites.TieBreakRequest(e.pattern.Question, tied, tieVotes(votes)); rerr == nil {
+			judge.RunDecisionShadow(ctx, sessionID, req, refs)
+		} else {
+			e.orchestrator.logger.Debug("decision shadow: tie-break request", zap.Error(rerr))
+		}
+	}
+	return decisionKey, judgeErr
+}
+
+// liveTieBreak is the decision layer's live path for swarm.tie_break. acted
+// is true when the judge agent's band is live, the decider cleared it, and
+// the pick is one of the tied choices. When the decider answered but did not
+// clear the band, req and out come back non-nil for recording.
+func (e *SwarmExecutor) liveTieBreak(ctx context.Context, judge *agent.Agent, sessionID string, tied map[string]int32, votes []*loomv1.SwarmVote) (req *loomv1.DecisionRequest, out decision.Outcome, winner string, acted bool) {
+	router := judge.DecisionRouter()
+	if router == nil || router.Band(sites.SiteSwarmTieBreak).Shadow {
+		return nil, decision.Outcome{}, "", false
+	}
+	req, err := sites.TieBreakRequest(e.pattern.Question, tied, tieVotes(votes))
+	if err != nil {
+		e.orchestrator.logger.Debug("decision: tie-break request", zap.Error(err))
+		return nil, decision.Outcome{}, "", false
+	}
+	out = judge.LiveDecide(ctx, sessionID, req)
+	if !out.Act() {
+		return req, out, "", false
+	}
+	key, ok := sites.TieBreakWinner(out.Response)
+	if !ok {
+		return req, out, "", false
+	}
+	if _, isTied := tied[key]; !isTied {
+		// none_of_these, or an answer outside the option set: never act.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		return req, out, "", false
+	}
+	return req, out, key, true
+}
+
+// tieVotes renders swarm votes for the decider.
+func tieVotes(votes []*loomv1.SwarmVote) []sites.TieVote {
+	out := make([]sites.TieVote, 0, len(votes))
+	for _, v := range votes {
+		if v == nil {
+			continue
+		}
+		out = append(out, sites.TieVote{Choice: v.Choice, Confidence: float64(v.Confidence), Reasoning: v.Reasoning})
+	}
+	return out
+}
+
+// invokeJudge calls the judge agent to break a tie.
+func (e *SwarmExecutor) invokeJudge(ctx context.Context, judge *agent.Agent, sessionID string, votes []*loomv1.SwarmVote, distribution map[string]int32) (string, error) {
 	// Build prompt for judge
 	var sb strings.Builder
-	sb.WriteString("You are acting as a judge to break a tie in a swarm voting process.\n\n")
+	sb.WriteString("Break the tie in this swarm vote.\n\n")
 	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
 	sb.WriteString("Vote distribution (tied):\n")
 
@@ -631,14 +751,14 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, votes []*loomv1.SwarmVo
 		}
 	}
 	sb.WriteString("\n")
-	sb.WriteString("As the judge, please make the final decision. Respond with only the choice you select, nothing else.\n")
+	sb.WriteString("Make the final decision. Respond with only the choice you select, nothing else.\n")
 
 	// Execute judge
-	sessionID := fmt.Sprintf("%s-judge", e.workflowID)
 	response, err := judge.Chat(ctx, sessionID, sb.String())
 	if err != nil {
 		return "", fmt.Errorf("judge chat failed: %w", err)
 	}
+	e.addAuxUsage(e.pattern.JudgeAgentId, response.Usage)
 
 	// Parse judge's decision (should be a simple choice)
 	decision := strings.TrimSpace(response.Content)
@@ -844,6 +964,7 @@ func (e *SwarmExecutor) retryJudge(
 			continue
 		}
 
+		e.addAuxUsage(e.pattern.JudgeAgentId, response.Usage)
 		decision := strings.TrimSpace(response.Content)
 
 		// Check exact match
@@ -898,10 +1019,19 @@ func (e *SwarmExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.Wor
 		}
 	}
 
-	return &loomv1.WorkflowCost{
+	votes := &loomv1.WorkflowCost{
 		TotalCostUsd:  totalCostUsd,
 		TotalTokens:   totalTokens,
-		AgentCostsUsd: make(map[string]float64), // Could populate if needed
+		AgentCostsUsd: make(map[string]float64),
 		LlmCalls:      types.SafeInt32(len(results)),
 	}
+	for _, result := range results {
+		if result.Cost != nil {
+			votes.AgentCostsUsd[result.AgentId] += result.Cost.CostUsd
+		}
+	}
+	// Plus the judge's calls, which are not votes.
+	e.auxMu.Lock()
+	defer e.auxMu.Unlock()
+	return mergeCost(votes, e.auxCost)
 }

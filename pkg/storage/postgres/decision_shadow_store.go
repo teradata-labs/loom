@@ -81,12 +81,12 @@ func (s *DecisionShadowStore) RecordShadow(ctx context.Context, records []*loomv
 					recorded_at, site, session_id, question_id, kind,
 					candidate_answer, candidate_confidence, candidate_probabilities_json,
 					reference_answer, reference_source,
-					latency_ms, input_tokens, cost_usd, model, provider, path, user_id
-				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+					latency_ms, input_tokens, cost_usd, model, provider, path, error, subject, user_id
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
 				recordedAt, r.Site, r.SessionId, r.QuestionId, r.Kind,
 				r.CandidateAnswer, r.CandidateConfidence, probs,
 				r.ReferenceAnswer, r.ReferenceSource,
-				r.LatencyMs, r.InputTokens, r.CostUsd, r.Model, r.Provider, r.Path.String(), userID,
+				r.LatencyMs, r.InputTokens, r.CostUsd, r.Model, r.Provider, r.Path.String(), r.Error, r.Subject, userID,
 			)
 		}
 		results := tx.SendBatch(ctx, batch)
@@ -137,7 +137,7 @@ func (s *DecisionShadowStore) QueryShadow(ctx context.Context, q decision.Shadow
 			SELECT id, recorded_at, site, session_id, question_id, kind,
 			       candidate_answer, candidate_confidence, candidate_probabilities_json,
 			       reference_answer, reference_source,
-			       latency_ms, input_tokens, cost_usd, model, provider, path
+			       latency_ms, input_tokens, cost_usd, model, provider, path, error, subject
 			FROM decision_shadow `+where+`
 			ORDER BY recorded_at DESC, id DESC
 			LIMIT `+limitArg, args...)
@@ -156,7 +156,7 @@ func (s *DecisionShadowStore) QueryShadow(ctx context.Context, q decision.Shadow
 			if err := rows.Scan(&id, &recordedAt, &r.Site, &r.SessionId, &r.QuestionId, &r.Kind,
 				&r.CandidateAnswer, &r.CandidateConfidence, &probsJSON,
 				&r.ReferenceAnswer, &r.ReferenceSource,
-				&r.LatencyMs, &r.InputTokens, &r.CostUsd, &r.Model, &r.Provider, &path); err != nil {
+				&r.LatencyMs, &r.InputTokens, &r.CostUsd, &r.Model, &r.Provider, &path, &r.Error, &r.Subject); err != nil {
 				return fmt.Errorf("decision_shadow: scan: %w", err)
 			}
 			r.Id = strconv.FormatInt(id, 10)

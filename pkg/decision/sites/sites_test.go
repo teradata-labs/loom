@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/decision/mock"
 )
@@ -136,6 +137,8 @@ func TestRerankRequestAndReference(t *testing.T) {
 	cands := []string{"alpha memory", "beta memory", strings.Repeat("x", maxRerankCandidateRunes+10)}
 	req, err := RerankRequest(SiteRecallRerank, strings.Repeat("q", maxRerankQueryRunes+10), cands)
 	require.NoError(t, err)
+	assert.Equal(t, RerankFanOutKey, req.FanOutKey, "candidates travel only with their own chunk")
+	require.NoError(t, err)
 	assert.Equal(t, SiteRecallRerank, req.Site)
 	assert.Len(t, req.Questions, 3)
 	for i := range cands {
@@ -171,6 +174,36 @@ func TestRerankCapsCandidates(t *testing.T) {
 	assert.Len(t, refs, MaxRerankCandidates, "references are capped with the request")
 }
 
+func TestRerankKeptWithBand(t *testing.T) {
+	t.Parallel()
+	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	// c0 relevant+confident, c1 irrelevant+confident, c2 uncertain (0.55 → decisiveness 0.1), c3 relevant but below band.
+	m := mock.New().AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.55).AnswerNoul("c3", 0.7)
+	out := decision.NewRouter(m).Decide(context.Background(), req)
+	require.NotNil(t, out.Response)
+
+	kept, uncertain := RerankKeptWithBand(out.Response, 4, decision.Band{ActMin: 0.8})
+	assert.Equal(t, []int{0, 2, 3}, kept, "confident-irrelevant dropped; uncertain kept")
+	assert.Equal(t, 2, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(out.Response, 4, decision.Band{ActMin: 0.0})
+	assert.Equal(t, []int{0, 2, 3}, kept, "with no threshold, p≥0.5 decides")
+	assert.Equal(t, 0, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(out.Response, 6, decision.Band{ActMin: 0.8})
+	assert.Equal(t, []int{0, 2, 3, 4, 5}, kept, "candidates without an answer are kept")
+	assert.Equal(t, 4, uncertain)
+
+	kept, uncertain = RerankKeptWithBand(nil, 4, decision.Band{})
+	assert.Nil(t, kept)
+	assert.Equal(t, 0, uncertain)
+
+	assert.True(t, RerankContributed(4, 2))
+	assert.False(t, RerankContributed(4, 4), "all uncertain: nothing to act on")
+	assert.False(t, RerankContributed(0, 0))
+}
+
 func TestRerankKept(t *testing.T) {
 	t.Parallel()
 	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c"})
@@ -181,4 +214,58 @@ func TestRerankKept(t *testing.T) {
 	assert.Equal(t, []int{0, 2}, RerankKept(out.Response, 3, 0.5))
 	assert.Equal(t, []int{0}, RerankKept(out.Response, 3, 0.8))
 	assert.Nil(t, RerankKept(nil, 3, 0.5))
+}
+
+func TestRerankReferenceSubjects(t *testing.T) {
+	t.Parallel()
+	refs := RerankReferenceSubjects(3, []int{1}, ReferenceSourceLLMRerank, []string{"session:a", "session:b"})
+	assert.Equal(t, "session:a", refs["c0"].Subject)
+	assert.Equal(t, "false", refs["c0"].Answer)
+	assert.Equal(t, "session:b", refs["c1"].Subject)
+	assert.Equal(t, "true", refs["c1"].Answer)
+	assert.Equal(t, "", refs["c2"].Subject, "shorter subject slice leaves the tail without one")
+	assert.Equal(t, "false", refs["c2"].Answer)
+
+	only := RerankSubjectsOnly(2, []string{"memory:x", "memory:y"})
+	assert.Equal(t, "memory:x", only["c0"].Subject)
+	assert.Equal(t, "", only["c0"].Answer, "acted rows carry no reference answer")
+	assert.Len(t, only, 2)
+}
+
+// true_min is the keep threshold; act_min is how decisive an answer must be
+// before the site acts at all. Confusing the two inverts the effect: the
+// LongMemEval rerun set act_min 0.3 meaning "keep more" and got "keep less",
+// because candidates at p 0.25-0.35 became decisive enough to drop.
+func TestRerankKeptHonoursTrueMin(t *testing.T) {
+	t.Parallel()
+	// Four candidates at 0.2, 0.35, 0.45 and 0.8.
+	m := mock.New().AnswerNoul(CandidateQuestionID(0), 0.2).AnswerNoul(CandidateQuestionID(1), 0.35).
+		AnswerNoul(CandidateQuestionID(2), 0.45).AnswerNoul(CandidateQuestionID(3), 0.8)
+	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	resp := decision.NewRouter(m).Decide(context.Background(), req)
+	require.NoError(t, resp.Err)
+
+	perQuestion := loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+
+	// Default: keep at p >= 0.5, and keep anything not decisive enough to
+	// judge. At act_min 0.5 only p<=0.25 and p>=0.75 are decisive, so 0.35
+	// and 0.45 survive as uncertain.
+	kept, uncertain := RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.5, Aggregate: perQuestion})
+	assert.Equal(t, []int{1, 2, 3}, kept)
+	assert.Equal(t, 2, uncertain)
+
+	// Lowering act_min alone drops more, not fewer: 0.35 is now decisive and
+	// still below the keep line.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.3, Aggregate: perQuestion})
+	assert.Equal(t, []int{2, 3}, kept, "act_min is not a keep threshold")
+
+	// true_min is the knob that keeps more: at 0.3 the 0.35 candidate counts
+	// as relevant on its own merits.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.3, TrueMin: 0.3, Aggregate: perQuestion})
+	assert.Equal(t, []int{1, 2, 3}, kept)
+
+	// And at 0.2 everything but the least relevant candidate is kept.
+	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.9, TrueMin: 0.2, Aggregate: perQuestion})
+	assert.Equal(t, []int{0, 1, 2, 3}, kept, "a high act_min keeps uncertain candidates regardless")
 }

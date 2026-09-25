@@ -16,8 +16,11 @@ package jev
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/teradata-labs/loom/pkg/decision"
 )
 
 // limiter is a token bucket sized to a per-minute request budget with a
@@ -37,9 +40,14 @@ type limiter struct {
 
 func newLimiter(requestsPerMinute float64) *limiter {
 	rate := requestsPerMinute / 60
+	// One second's worth of tokens is too small once a single logical
+	// decision fans out: decision.Chunked sends up to DefaultChunkConcurrency
+	// chunks at once, so a burst below that makes one Decide queue against
+	// itself and blow the deadline its own caller set. Admit at least one
+	// whole fan-out. The average rate is unchanged; only the smoothing is.
 	burst := rate
-	if burst < 1 {
-		burst = 1
+	if burst < decision.DefaultChunkConcurrency {
+		burst = decision.DefaultChunkConcurrency
 	}
 	return &limiter{rate: rate, burst: burst, tokens: burst, last: time.Now(), now: time.Now, sleepFor: sleepCtx}
 }
@@ -65,7 +73,15 @@ func (l *limiter) wait(ctx context.Context) error {
 		}
 		need := (1 - l.tokens) / l.rate
 		l.mu.Unlock()
-		if err := l.sleepFor(ctx, time.Duration(need*float64(time.Second))); err != nil {
+		wait := time.Duration(need * float64(time.Second))
+		// A live caller gave us a deadline it means to act on. Queueing past
+		// it wastes the whole budget and then reports a deadline error the
+		// caller cannot tell from a hung provider; returning now lets it fall
+		// back with time to spare. A patient caller still waits.
+		if !fitsBeforeDeadline(ctx, wait) {
+			return fmt.Errorf("%w: throttled, a token is %s away", decision.ErrRateLimited, wait.Round(time.Millisecond))
+		}
+		if err := l.sleepFor(ctx, wait); err != nil {
 			return err
 		}
 	}

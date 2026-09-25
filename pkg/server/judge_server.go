@@ -213,7 +213,7 @@ func (s *JudgeServer) evaluateSingle(ctx context.Context, judgeID string, evalCt
 		return nil, status.Error(codes.FailedPrecondition, "no LLM provider available for evaluation; call SetProviderPool first")
 	}
 
-	judge, err := judges.NewLLMJudge(provider, cfg, s.tracer)
+	judge, err := judges.NewJudgeFromConfig(provider, cfg, s.tracer)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create judge %q: %v", judgeID, err)
 	}

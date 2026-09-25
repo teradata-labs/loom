@@ -146,6 +146,63 @@ func (DecisionBandMode) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_decision_proto_rawDescGZIP(), []int{1}
 }
 
+// DecisionBandAggregate says how a request with several questions is judged
+// against act_min.
+type DecisionBandAggregate int32
+
+const (
+	DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED DecisionBandAggregate = 0
+	// The least confident answer must clear act_min (a request is as reliable
+	// as its weakest judgment). Right for requests whose answers are combined
+	// into one decision.
+	DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN DecisionBandAggregate = 1
+	// The request acts when the Decider answered at all; the call site applies
+	// act_min to each answer separately. Right for fan-outs (one question per
+	// candidate) where one uncertain candidate must not veto the rest.
+	DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION DecisionBandAggregate = 2
+)
+
+// Enum value maps for DecisionBandAggregate.
+var (
+	DecisionBandAggregate_name = map[int32]string{
+		0: "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+		1: "DECISION_BAND_AGGREGATE_MIN",
+		2: "DECISION_BAND_AGGREGATE_PER_QUESTION",
+	}
+	DecisionBandAggregate_value = map[string]int32{
+		"DECISION_BAND_AGGREGATE_UNSPECIFIED":  0,
+		"DECISION_BAND_AGGREGATE_MIN":          1,
+		"DECISION_BAND_AGGREGATE_PER_QUESTION": 2,
+	}
+)
+
+func (x DecisionBandAggregate) Enum() *DecisionBandAggregate {
+	p := new(DecisionBandAggregate)
+	*p = x
+	return p
+}
+
+func (x DecisionBandAggregate) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DecisionBandAggregate) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_decision_proto_enumTypes[2].Descriptor()
+}
+
+func (DecisionBandAggregate) Type() protoreflect.EnumType {
+	return &file_loom_v1_decision_proto_enumTypes[2]
+}
+
+func (x DecisionBandAggregate) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DecisionBandAggregate.Descriptor instead.
+func (DecisionBandAggregate) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_decision_proto_rawDescGZIP(), []int{2}
+}
+
 // DecisionRequest is one state plus a set of named typed questions.
 type DecisionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -162,7 +219,15 @@ type DecisionRequest struct {
 	// Site names the call site that issued the request (for example
 	// "recall.rerank"). It selects the confidence band and labels traces and
 	// shadow records. Not sent to any vendor.
-	Site          string `protobuf:"bytes,4,opt,name=site,proto3" json:"site,omitempty"`
+	Site string `protobuf:"bytes,4,opt,name=site,proto3" json:"site,omitempty"`
+	// Optional: the name of a top-level array in state whose items each carry
+	// an "id" equal to a question id (a fan-out request: one question per
+	// candidate). When a request is split into chunks to stay within a
+	// decider's size limits, each chunk keeps only the items for its own
+	// questions, so the state shrinks with the question set instead of being
+	// repeated whole. Empty means the state is shared by every question and
+	// is copied unchanged into every chunk.
+	FanOutKey     string `protobuf:"bytes,5,opt,name=fan_out_key,json=fanOutKey,proto3" json:"fan_out_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -221,6 +286,13 @@ func (x *DecisionRequest) GetModel() string {
 func (x *DecisionRequest) GetSite() string {
 	if x != nil {
 		return x.Site
+	}
+	return ""
+}
+
+func (x *DecisionRequest) GetFanOutKey() string {
+	if x != nil {
+		return x.FanOutKey
 	}
 	return ""
 }
@@ -908,7 +980,19 @@ type DecisionBand struct {
 	Mode DecisionBandMode `protobuf:"varint,3,opt,name=mode,proto3,enum=loom.v1.DecisionBandMode" json:"mode,omitempty"`
 	// Shadow records the Decider's answer alongside the existing mechanism's
 	// without branching on it. Overrides act_min: the path is always FALLBACK.
-	Shadow        bool `protobuf:"varint,4,opt,name=shadow,proto3" json:"shadow,omitempty"`
+	Shadow bool `protobuf:"varint,4,opt,name=shadow,proto3" json:"shadow,omitempty"`
+	// How multi-question requests are judged against act_min.
+	Aggregate DecisionBandAggregate `protobuf:"varint,5,opt,name=aggregate,proto3,enum=loom.v1.DecisionBandAggregate" json:"aggregate,omitempty"`
+	// Probability at or above which a Noul answer counts as true at this
+	// site: the keep threshold at a rerank, "valid" at a stage gate,
+	// "consensus reached" at a debate. 0 means the site default (0.5).
+	//
+	// It is not act_min. act_min asks how decisive an answer is (its distance
+	// from 0.5) before the site may act at all; true_min asks which side of
+	// the line a decisive answer falls on. Lowering act_min makes the site
+	// act on more answers, including ones it will then call false; lowering
+	// true_min makes more answers count as true.
+	TrueMin       float64 `protobuf:"fixed64,6,opt,name=true_min,json=trueMin,proto3" json:"true_min,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -971,6 +1055,20 @@ func (x *DecisionBand) GetShadow() bool {
 	return false
 }
 
+func (x *DecisionBand) GetAggregate() DecisionBandAggregate {
+	if x != nil {
+		return x.Aggregate
+	}
+	return DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED
+}
+
+func (x *DecisionBand) GetTrueMin() float64 {
+	if x != nil {
+		return x.TrueMin
+	}
+	return 0
+}
+
 // DecisionShadowRecord is one question's shadow comparison: what the decider
 // answered and what the call site's existing mechanism answered for the same
 // input. Rows accumulate in the decision_shadow table and feed the agreement,
@@ -1007,7 +1105,16 @@ type DecisionShadowRecord struct {
 	Model           string  `protobuf:"bytes,15,opt,name=model,proto3" json:"model,omitempty"`
 	Provider        string  `protobuf:"bytes,16,opt,name=provider,proto3" json:"provider,omitempty"`
 	// Router path for the request this record came from.
-	Path          DecisionPath `protobuf:"varint,17,opt,name=path,proto3,enum=loom.v1.DecisionPath" json:"path,omitempty"`
+	Path DecisionPath `protobuf:"varint,17,opt,name=path,proto3,enum=loom.v1.DecisionPath" json:"path,omitempty"`
+	// Decider error text for ERROR-path rows (bounded), empty otherwise. An
+	// ERROR row without its reason cannot be triaged; this is that reason.
+	Error string `protobuf:"bytes,18,opt,name=error,proto3" json:"error,omitempty"`
+	// Stable identifier of what the question was about, so a row can be
+	// graded against an external truth: for a recall candidate the source
+	// session of the memory ("session:<id>") or the memory id
+	// ("memory:<id>"), for a tool search candidate "tool:<name>". Never the
+	// content itself. Empty when the site has nothing to point at.
+	Subject       string `protobuf:"bytes,19,opt,name=subject,proto3" json:"subject,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1161,6 +1268,20 @@ func (x *DecisionShadowRecord) GetPath() DecisionPath {
 	return DecisionPath_DECISION_PATH_UNSPECIFIED
 }
 
+func (x *DecisionShadowRecord) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *DecisionShadowRecord) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
 // DecisionConfig configures the decision layer for an agent or server.
 type DecisionConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1183,9 +1304,26 @@ type DecisionConfig struct {
 	Bands []*DecisionBand `protobuf:"bytes,8,rep,name=bands,proto3" json:"bands,omitempty"`
 	// LLM role the "llm" provider adapts (for example "classifier",
 	// "compressor"). Empty means the agent's main LLM.
-	LlmRole       string `protobuf:"bytes,9,opt,name=llm_role,json=llmRole,proto3" json:"llm_role,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LlmRole string `protobuf:"bytes,9,opt,name=llm_role,json=llmRole,proto3" json:"llm_role,omitempty"`
+	// Requests per minute the process may send to the decider, set from the
+	// tier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct
+	// publishes 1,200). Agents with identical decider settings share one
+	// client and therefore one budget. 0 means the provider's default.
+	RequestsPerMinute int64 `protobuf:"varint,10,opt,name=requests_per_minute,json=requestsPerMinute,proto3" json:"requests_per_minute,omitempty"`
+	// Register the "decide" builtin tool on the agent so it can put one typed
+	// question (yes/no, choice, scale) to the decider mid-turn and branch on
+	// the probabilities. Off by default: the layer's other uses (reranks,
+	// gates) do not depend on it. Calls are recorded at site tool.decide.
+	ExposeTool bool `protobuf:"varint,11,opt,name=expose_tool,json=exposeTool,proto3" json:"expose_tool,omitempty"`
+	// Most questions one request may carry before the router splits it into
+	// concurrent chunks (see DecisionRequest.fan_out_key). 0 means the
+	// decider's own default (Jev: 16; a chunk that still fails with an
+	// overload or size error is bisected and retried). Providers that accept
+	// any size may set it high; it never changes answers, only how many
+	// round trips carry them.
+	MaxQuestionsPerRequest int64 `protobuf:"varint,12,opt,name=max_questions_per_request,json=maxQuestionsPerRequest,proto3" json:"max_questions_per_request,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DecisionConfig) Reset() {
@@ -1281,16 +1419,38 @@ func (x *DecisionConfig) GetLlmRole() string {
 	return ""
 }
 
+func (x *DecisionConfig) GetRequestsPerMinute() int64 {
+	if x != nil {
+		return x.RequestsPerMinute
+	}
+	return 0
+}
+
+func (x *DecisionConfig) GetExposeTool() bool {
+	if x != nil {
+		return x.ExposeTool
+	}
+	return false
+}
+
+func (x *DecisionConfig) GetMaxQuestionsPerRequest() int64 {
+	if x != nil {
+		return x.MaxQuestionsPerRequest
+	}
+	return 0
+}
+
 var File_loom_v1_decision_proto protoreflect.FileDescriptor
 
 const file_loom_v1_decision_proto_rawDesc = "" +
 	"\n" +
-	"\x16loom/v1/decision.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x89\x02\n" +
+	"\x16loom/v1/decision.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa9\x02\n" +
 	"\x0fDecisionRequest\x12,\n" +
 	"\x05state\x18\x01 \x01(\v2\x16.google.protobuf.ValueR\x05state\x12E\n" +
 	"\tquestions\x18\x02 \x03(\v2'.loom.v1.DecisionRequest.QuestionsEntryR\tquestions\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12\x12\n" +
-	"\x04site\x18\x04 \x01(\tR\x04site\x1aW\n" +
+	"\x04site\x18\x04 \x01(\tR\x04site\x12\x1e\n" +
+	"\vfan_out_key\x18\x05 \x01(\tR\tfanOutKey\x1aW\n" +
 	"\x0eQuestionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
 	"\x05value\x18\x02 \x01(\v2\x19.loom.v1.DecisionQuestionR\x05value:\x028\x01\"\xe6\x01\n" +
@@ -1350,12 +1510,14 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\rDecisionUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\x02 \x01(\x03R\foutputTokens\x12\x19\n" +
-	"\bcost_usd\x18\x03 \x01(\x01R\acostUsd\"\x82\x01\n" +
+	"\bcost_usd\x18\x03 \x01(\x01R\acostUsd\"\xdb\x01\n" +
 	"\fDecisionBand\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x17\n" +
 	"\aact_min\x18\x02 \x01(\x01R\x06actMin\x12-\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x19.loom.v1.DecisionBandModeR\x04mode\x12\x16\n" +
-	"\x06shadow\x18\x04 \x01(\bR\x06shadow\"\xf8\x05\n" +
+	"\x06shadow\x18\x04 \x01(\bR\x06shadow\x12<\n" +
+	"\taggregate\x18\x05 \x01(\x0e2\x1e.loom.v1.DecisionBandAggregateR\taggregate\x12\x19\n" +
+	"\btrue_min\x18\x06 \x01(\x01R\atrueMin\"\xa8\x06\n" +
 	"\x14DecisionShadowRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\vrecorded_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -1378,10 +1540,12 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\bcost_usd\x18\x0e \x01(\x01R\acostUsd\x12\x14\n" +
 	"\x05model\x18\x0f \x01(\tR\x05model\x12\x1a\n" +
 	"\bprovider\x18\x10 \x01(\tR\bprovider\x12)\n" +
-	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x1aI\n" +
+	"\x04path\x18\x11 \x01(\x0e2\x15.loom.v1.DecisionPathR\x04path\x12\x14\n" +
+	"\x05error\x18\x12 \x01(\tR\x05error\x12\x18\n" +
+	"\asubject\x18\x13 \x01(\tR\asubject\x1aI\n" +
 	"\x1bCandidateProbabilitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xc5\x02\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xd1\x03\n" +
 	"\x0eDecisionConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1f\n" +
@@ -1393,7 +1557,12 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x0fmax_per_session\x18\x06 \x01(\x03R\rmaxPerSession\x126\n" +
 	"\x18max_cost_usd_per_session\x18\a \x01(\x01R\x14maxCostUsdPerSession\x12+\n" +
 	"\x05bands\x18\b \x03(\v2\x15.loom.v1.DecisionBandR\x05bands\x12\x19\n" +
-	"\bllm_role\x18\t \x01(\tR\allmRole*\xb3\x01\n" +
+	"\bllm_role\x18\t \x01(\tR\allmRole\x12.\n" +
+	"\x13requests_per_minute\x18\n" +
+	" \x01(\x03R\x11requestsPerMinute\x12\x1f\n" +
+	"\vexpose_tool\x18\v \x01(\bR\n" +
+	"exposeTool\x129\n" +
+	"\x19max_questions_per_request\x18\f \x01(\x03R\x16maxQuestionsPerRequest*\xb3\x01\n" +
 	"\fDecisionPath\x12\x1d\n" +
 	"\x19DECISION_PATH_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15DECISION_PATH_DECIDER\x10\x01\x12\x1a\n" +
@@ -1404,7 +1573,11 @@ const file_loom_v1_decision_proto_rawDesc = "" +
 	"\x10DecisionBandMode\x12\"\n" +
 	"\x1eDECISION_BAND_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aDECISION_BAND_MODE_REPLACE\x10\x01\x12#\n" +
-	"\x1fDECISION_BAND_MODE_TIGHTEN_ONLY\x10\x02B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\x1fDECISION_BAND_MODE_TIGHTEN_ONLY\x10\x02*\x8b\x01\n" +
+	"\x15DecisionBandAggregate\x12'\n" +
+	"#DECISION_BAND_AGGREGATE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bDECISION_BAND_AGGREGATE_MIN\x10\x01\x12(\n" +
+	"$DECISION_BAND_AGGREGATE_PER_QUESTION\x10\x02B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_decision_proto_rawDescOnce sync.Once
@@ -1418,67 +1591,69 @@ func file_loom_v1_decision_proto_rawDescGZIP() []byte {
 	return file_loom_v1_decision_proto_rawDescData
 }
 
-var file_loom_v1_decision_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_loom_v1_decision_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_loom_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_loom_v1_decision_proto_goTypes = []any{
 	(DecisionPath)(0),             // 0: loom.v1.DecisionPath
 	(DecisionBandMode)(0),         // 1: loom.v1.DecisionBandMode
-	(*DecisionRequest)(nil),       // 2: loom.v1.DecisionRequest
-	(*DecisionQuestion)(nil),      // 3: loom.v1.DecisionQuestion
-	(*NoulQuestion)(nil),          // 4: loom.v1.NoulQuestion
-	(*ChoiceQuestion)(nil),        // 5: loom.v1.ChoiceQuestion
-	(*ScoreQuestion)(nil),         // 6: loom.v1.ScoreQuestion
-	(*DecisionResponse)(nil),      // 7: loom.v1.DecisionResponse
-	(*DecisionAnswer)(nil),        // 8: loom.v1.DecisionAnswer
-	(*NoulAnswer)(nil),            // 9: loom.v1.NoulAnswer
-	(*ChoiceAnswer)(nil),          // 10: loom.v1.ChoiceAnswer
-	(*ScoreAnswer)(nil),           // 11: loom.v1.ScoreAnswer
-	(*DecisionUsage)(nil),         // 12: loom.v1.DecisionUsage
-	(*DecisionBand)(nil),          // 13: loom.v1.DecisionBand
-	(*DecisionShadowRecord)(nil),  // 14: loom.v1.DecisionShadowRecord
-	(*DecisionConfig)(nil),        // 15: loom.v1.DecisionConfig
-	nil,                           // 16: loom.v1.DecisionRequest.QuestionsEntry
-	nil,                           // 17: loom.v1.ChoiceQuestion.OptionsEntry
-	nil,                           // 18: loom.v1.DecisionResponse.AnswersEntry
-	nil,                           // 19: loom.v1.ChoiceAnswer.ProbabilitiesEntry
-	nil,                           // 20: loom.v1.ScoreAnswer.ProbabilitiesEntry
-	nil,                           // 21: loom.v1.ScoreAnswer.LegendEntry
-	nil,                           // 22: loom.v1.DecisionShadowRecord.CandidateProbabilitiesEntry
-	(*structpb.Value)(nil),        // 23: google.protobuf.Value
-	(*timestamppb.Timestamp)(nil), // 24: google.protobuf.Timestamp
+	(DecisionBandAggregate)(0),    // 2: loom.v1.DecisionBandAggregate
+	(*DecisionRequest)(nil),       // 3: loom.v1.DecisionRequest
+	(*DecisionQuestion)(nil),      // 4: loom.v1.DecisionQuestion
+	(*NoulQuestion)(nil),          // 5: loom.v1.NoulQuestion
+	(*ChoiceQuestion)(nil),        // 6: loom.v1.ChoiceQuestion
+	(*ScoreQuestion)(nil),         // 7: loom.v1.ScoreQuestion
+	(*DecisionResponse)(nil),      // 8: loom.v1.DecisionResponse
+	(*DecisionAnswer)(nil),        // 9: loom.v1.DecisionAnswer
+	(*NoulAnswer)(nil),            // 10: loom.v1.NoulAnswer
+	(*ChoiceAnswer)(nil),          // 11: loom.v1.ChoiceAnswer
+	(*ScoreAnswer)(nil),           // 12: loom.v1.ScoreAnswer
+	(*DecisionUsage)(nil),         // 13: loom.v1.DecisionUsage
+	(*DecisionBand)(nil),          // 14: loom.v1.DecisionBand
+	(*DecisionShadowRecord)(nil),  // 15: loom.v1.DecisionShadowRecord
+	(*DecisionConfig)(nil),        // 16: loom.v1.DecisionConfig
+	nil,                           // 17: loom.v1.DecisionRequest.QuestionsEntry
+	nil,                           // 18: loom.v1.ChoiceQuestion.OptionsEntry
+	nil,                           // 19: loom.v1.DecisionResponse.AnswersEntry
+	nil,                           // 20: loom.v1.ChoiceAnswer.ProbabilitiesEntry
+	nil,                           // 21: loom.v1.ScoreAnswer.ProbabilitiesEntry
+	nil,                           // 22: loom.v1.ScoreAnswer.LegendEntry
+	nil,                           // 23: loom.v1.DecisionShadowRecord.CandidateProbabilitiesEntry
+	(*structpb.Value)(nil),        // 24: google.protobuf.Value
+	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
 }
 var file_loom_v1_decision_proto_depIdxs = []int32{
-	23, // 0: loom.v1.DecisionRequest.state:type_name -> google.protobuf.Value
-	16, // 1: loom.v1.DecisionRequest.questions:type_name -> loom.v1.DecisionRequest.QuestionsEntry
-	23, // 2: loom.v1.DecisionQuestion.instructions:type_name -> google.protobuf.Value
-	4,  // 3: loom.v1.DecisionQuestion.noul:type_name -> loom.v1.NoulQuestion
-	5,  // 4: loom.v1.DecisionQuestion.choice:type_name -> loom.v1.ChoiceQuestion
-	6,  // 5: loom.v1.DecisionQuestion.score:type_name -> loom.v1.ScoreQuestion
-	23, // 6: loom.v1.NoulQuestion.criteria_true:type_name -> google.protobuf.Value
-	23, // 7: loom.v1.NoulQuestion.criteria_false:type_name -> google.protobuf.Value
-	17, // 8: loom.v1.ChoiceQuestion.options:type_name -> loom.v1.ChoiceQuestion.OptionsEntry
-	23, // 9: loom.v1.ScoreQuestion.levels:type_name -> google.protobuf.Value
-	18, // 10: loom.v1.DecisionResponse.answers:type_name -> loom.v1.DecisionResponse.AnswersEntry
-	12, // 11: loom.v1.DecisionResponse.usage:type_name -> loom.v1.DecisionUsage
-	9,  // 12: loom.v1.DecisionAnswer.noul:type_name -> loom.v1.NoulAnswer
-	10, // 13: loom.v1.DecisionAnswer.choice:type_name -> loom.v1.ChoiceAnswer
-	11, // 14: loom.v1.DecisionAnswer.score:type_name -> loom.v1.ScoreAnswer
-	19, // 15: loom.v1.ChoiceAnswer.probabilities:type_name -> loom.v1.ChoiceAnswer.ProbabilitiesEntry
-	20, // 16: loom.v1.ScoreAnswer.probabilities:type_name -> loom.v1.ScoreAnswer.ProbabilitiesEntry
-	21, // 17: loom.v1.ScoreAnswer.legend:type_name -> loom.v1.ScoreAnswer.LegendEntry
+	24, // 0: loom.v1.DecisionRequest.state:type_name -> google.protobuf.Value
+	17, // 1: loom.v1.DecisionRequest.questions:type_name -> loom.v1.DecisionRequest.QuestionsEntry
+	24, // 2: loom.v1.DecisionQuestion.instructions:type_name -> google.protobuf.Value
+	5,  // 3: loom.v1.DecisionQuestion.noul:type_name -> loom.v1.NoulQuestion
+	6,  // 4: loom.v1.DecisionQuestion.choice:type_name -> loom.v1.ChoiceQuestion
+	7,  // 5: loom.v1.DecisionQuestion.score:type_name -> loom.v1.ScoreQuestion
+	24, // 6: loom.v1.NoulQuestion.criteria_true:type_name -> google.protobuf.Value
+	24, // 7: loom.v1.NoulQuestion.criteria_false:type_name -> google.protobuf.Value
+	18, // 8: loom.v1.ChoiceQuestion.options:type_name -> loom.v1.ChoiceQuestion.OptionsEntry
+	24, // 9: loom.v1.ScoreQuestion.levels:type_name -> google.protobuf.Value
+	19, // 10: loom.v1.DecisionResponse.answers:type_name -> loom.v1.DecisionResponse.AnswersEntry
+	13, // 11: loom.v1.DecisionResponse.usage:type_name -> loom.v1.DecisionUsage
+	10, // 12: loom.v1.DecisionAnswer.noul:type_name -> loom.v1.NoulAnswer
+	11, // 13: loom.v1.DecisionAnswer.choice:type_name -> loom.v1.ChoiceAnswer
+	12, // 14: loom.v1.DecisionAnswer.score:type_name -> loom.v1.ScoreAnswer
+	20, // 15: loom.v1.ChoiceAnswer.probabilities:type_name -> loom.v1.ChoiceAnswer.ProbabilitiesEntry
+	21, // 16: loom.v1.ScoreAnswer.probabilities:type_name -> loom.v1.ScoreAnswer.ProbabilitiesEntry
+	22, // 17: loom.v1.ScoreAnswer.legend:type_name -> loom.v1.ScoreAnswer.LegendEntry
 	1,  // 18: loom.v1.DecisionBand.mode:type_name -> loom.v1.DecisionBandMode
-	24, // 19: loom.v1.DecisionShadowRecord.recorded_at:type_name -> google.protobuf.Timestamp
-	22, // 20: loom.v1.DecisionShadowRecord.candidate_probabilities:type_name -> loom.v1.DecisionShadowRecord.CandidateProbabilitiesEntry
-	0,  // 21: loom.v1.DecisionShadowRecord.path:type_name -> loom.v1.DecisionPath
-	13, // 22: loom.v1.DecisionConfig.bands:type_name -> loom.v1.DecisionBand
-	3,  // 23: loom.v1.DecisionRequest.QuestionsEntry.value:type_name -> loom.v1.DecisionQuestion
-	23, // 24: loom.v1.ChoiceQuestion.OptionsEntry.value:type_name -> google.protobuf.Value
-	8,  // 25: loom.v1.DecisionResponse.AnswersEntry.value:type_name -> loom.v1.DecisionAnswer
-	26, // [26:26] is the sub-list for method output_type
-	26, // [26:26] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	2,  // 19: loom.v1.DecisionBand.aggregate:type_name -> loom.v1.DecisionBandAggregate
+	25, // 20: loom.v1.DecisionShadowRecord.recorded_at:type_name -> google.protobuf.Timestamp
+	23, // 21: loom.v1.DecisionShadowRecord.candidate_probabilities:type_name -> loom.v1.DecisionShadowRecord.CandidateProbabilitiesEntry
+	0,  // 22: loom.v1.DecisionShadowRecord.path:type_name -> loom.v1.DecisionPath
+	14, // 23: loom.v1.DecisionConfig.bands:type_name -> loom.v1.DecisionBand
+	4,  // 24: loom.v1.DecisionRequest.QuestionsEntry.value:type_name -> loom.v1.DecisionQuestion
+	24, // 25: loom.v1.ChoiceQuestion.OptionsEntry.value:type_name -> google.protobuf.Value
+	9,  // 26: loom.v1.DecisionResponse.AnswersEntry.value:type_name -> loom.v1.DecisionAnswer
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_decision_proto_init() }
@@ -1501,7 +1676,7 @@ func file_loom_v1_decision_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_decision_proto_rawDesc), len(file_loom_v1_decision_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,

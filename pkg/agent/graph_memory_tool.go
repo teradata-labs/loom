@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -184,7 +185,8 @@ func (t *GraphMemoryTool) executeRemember(ctx context.Context, input map[string]
 		Content:        content,
 		Summary:        getStr(input, "summary"),
 		MemoryType:     getStr(input, "memory_type"),
-		Source:         "agent",
+		Source:         memory.SourceAgent,
+		SourceID:       session.SessionIDFromContext(ctx),
 		MemoryAgentID:  t.agentID,
 		Tags:           getStrSlice(input, "tags"),
 		Salience:       getFloat(input, "salience"),
@@ -279,7 +281,8 @@ func (t *GraphMemoryTool) executeSupersede(ctx context.Context, input map[string
 		Content:        content,
 		Summary:        getStr(input, "summary"),
 		MemoryType:     memory.MemoryTypeFact,
-		Source:         "agent",
+		Source:         memory.SourceAgent,
+		SourceID:       session.SessionIDFromContext(ctx),
 		MemoryAgentID:  t.agentID,
 		Tags:           getStrSlice(input, "tags"),
 		PropertiesJSON: getStr(input, "properties_json"),
@@ -315,7 +318,8 @@ func (t *GraphMemoryTool) executeConsolidate(ctx context.Context, input map[stri
 		Summary:       getStr(input, "summary"),
 		Tags:          getStrSlice(input, "tags"),
 		Salience:      getFloat(input, "salience"),
-		Source:        "agent",
+		Source:        memory.SourceAgent,
+		SourceID:      session.SessionIDFromContext(ctx),
 		MemoryAgentID: t.agentID,
 	}
 

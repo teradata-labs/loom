@@ -305,7 +305,11 @@ func TestDecideHonoursContextDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
-	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got %v", err)
+	// A 30 s Retry-After cannot fit in a 100 ms budget, so the client hands
+	// back the provider's own error instead of starting the sleep; if the
+	// first attempt itself outran the deadline, a deadline error is the
+	// honest answer. Either way it must not wait out the Retry-After.
+	assert.True(t, errors.Is(err, decision.ErrRateLimited) || errors.Is(err, context.DeadlineExceeded), "got %v", err)
 	assert.Less(t, time.Since(start), 5*time.Second, "did not sleep the full Retry-After")
 }
 
@@ -360,15 +364,17 @@ func TestParseRetryAfterAndBackoff(t *testing.T) {
 
 	for attempt := 1; attempt <= 6; attempt++ {
 		d := backoff(attempt, 0)
-		assert.GreaterOrEqual(t, d, 100*time.Millisecond)
-		assert.LessOrEqual(t, d, 2*time.Second)
+		assert.GreaterOrEqual(t, d, 250*time.Millisecond)
+		assert.LessOrEqual(t, d, 4*time.Second)
 	}
 	assert.Equal(t, 5*time.Second, backoff(1, 5*time.Second), "Retry-After wins")
 }
 
 func TestLimiterPacesAndHonoursContext(t *testing.T) {
 	t.Parallel()
-	// 120 rpm = 2 tokens/s, burst 2.
+	// 120 rpm = 2 tokens/s. The burst floors at one whole fan-out
+	// (decision.DefaultChunkConcurrency = 4), so the first four are free and
+	// the fifth waits half a second for the next token.
 	l := newLimiter(120)
 	now := time.Unix(1_000, 0)
 	var slept []time.Duration
@@ -380,9 +386,11 @@ func TestLimiterPacesAndHonoursContext(t *testing.T) {
 		return nil
 	}
 	ctx := context.Background()
+	for i := 0; i < decision.DefaultChunkConcurrency; i++ {
+		require.NoError(t, l.wait(ctx), "call %d is inside the burst", i+1)
+	}
+	require.Empty(t, slept, "one fan-out never queues against itself")
 	require.NoError(t, l.wait(ctx))
-	require.NoError(t, l.wait(ctx))
-	require.NoError(t, l.wait(ctx)) // third call must wait ~0.5 s
 	require.Len(t, slept, 1)
 	assert.InDelta(t, 0.5, slept[0].Seconds(), 1e-6)
 
@@ -449,3 +457,121 @@ func TestFromDecisionConfig(t *testing.T) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// The client tells decision.Chunked how many questions one request should
+// carry: the config's value, else the measured default.
+func TestClientSizeHint(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	c, err := fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev"}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
+	require.NoError(t, err)
+	assert.Equal(t, 0, c.MaxQuestionsPerRequest, "config leaves the default to the client")
+	cl, err := New(c)
+	require.NoError(t, err)
+	var hinter decision.SizeHinter = cl
+	assert.Equal(t, DefaultMaxQuestionsPerRequest, hinter.MaxQuestionsPerRequest())
+
+	c, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev", MaxQuestionsPerRequest: 24}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
+	require.NoError(t, err)
+	cl, err = New(c)
+	require.NoError(t, err)
+	assert.Equal(t, 24, cl.MaxQuestionsPerRequest())
+}
+
+// A live caller gives the client a deadline it intends to act on: when the
+// backoff would outlast it, the client returns the provider's error now so
+// the caller can fall back, instead of sleeping the budget away and handing
+// back a deadline error it cannot tell apart from a hung provider.
+func TestDecideStopsRetryingBeforeTheDeadline(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"busy"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, decision.ErrOverloaded), "the provider's error survives, not a deadline error: %v", err)
+	assert.Equal(t, int32(1), calls.Load(), "a 5 s Retry-After does not fit in a 900 ms budget")
+	assert.Less(t, elapsed, 800*time.Millisecond, "returned early instead of sleeping out the budget")
+}
+
+// A patient caller (the shadow path) still gets the full retry ladder.
+func TestDecideStillRetriesWithRoomToSpare(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"busy"}`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := newClient(t, srv, nil).Decide(ctx, fullRequest(t))
+	require.Error(t, err)
+	assert.Equal(t, int32(3), calls.Load(), "every attempt is used when the deadline allows")
+}
+
+func TestFitsBeforeDeadline(t *testing.T) {
+	t.Parallel()
+	assert.True(t, fitsBeforeDeadline(context.Background(), time.Hour), "no deadline, no limit")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	assert.True(t, fitsBeforeDeadline(ctx, 500*time.Millisecond))
+	assert.False(t, fitsBeforeDeadline(ctx, 2*time.Second), "the wait alone would consume the budget")
+	assert.False(t, fitsBeforeDeadline(ctx, 1900*time.Millisecond), "no room left for the attempt after the wait")
+}
+
+// The burst must admit one whole chunked request however low the rate is.
+// Before this, a 64-candidate rerank at 80 rpm queued its own four chunks
+// behind a 1.33-token bucket and blew the caller's 4 s budget: 30% of live
+// recall visits were lost to "context deadline exceeded" that way.
+func TestLimiterBurstAdmitsAWholeFanOut(t *testing.T) {
+	t.Parallel()
+	for _, rpm := range []float64{1, 30, 80, 120} {
+		l := newLimiter(rpm)
+		assert.GreaterOrEqual(t, l.burst, float64(decision.DefaultChunkConcurrency),
+			"%v rpm must still admit one fan-out at once", rpm)
+	}
+	// Above the floor the burst is still one second's worth.
+	assert.InDelta(t, 10, newLimiter(600).burst, 1e-9)
+}
+
+// A live caller's deadline is not something to queue past: the wait would
+// consume the whole budget and then report a deadline error indistinguishable
+// from a hung provider.
+func TestLimiterFailsFastPastTheDeadline(t *testing.T) {
+	t.Parallel()
+	l := newLimiter(60) // 1 token/s, burst 4
+	now := time.Unix(2_000, 0)
+	l.now = func() time.Time { return now }
+	l.last = now
+	l.tokens = 0 // bucket empty: the next token is a second away
+	slept := 0
+	l.sleepFor = func(_ context.Context, d time.Duration) error { slept++; now = now.Add(d); return nil }
+
+	tight, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := l.wait(tight)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, decision.ErrRateLimited, "the caller learns it was throttled, not that time ran out")
+	assert.Equal(t, 0, slept, "returned without sleeping the budget away")
+
+	// A patient caller still waits it out.
+	patient, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	require.NoError(t, l.wait(patient))
+	assert.Equal(t, 1, slept)
+}

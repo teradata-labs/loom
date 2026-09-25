@@ -65,6 +65,12 @@ const (
 	DefaultMaxAttempts = 3
 	// DefaultRequestsPerMinute stays under the published 1,200 rpm.
 	DefaultRequestsPerMinute = 1000
+	// DefaultMaxQuestionsPerRequest is the chunk size decision.Chunked uses
+	// for this client when the config does not set one. Measured on the
+	// LongMemEval A/B through the Vercel gateway (2,215 rerank requests):
+	// requests of 1–10 questions failed 0%, 11–20 1%, 21–40 9%, 41–50 27%,
+	// 51–64 39%, all with the upstream's 503 "temporarily unavailable".
+	DefaultMaxQuestionsPerRequest = 16
 	// DefaultPricePerMillionInputTokens is TypeSafe's list price; output is
 	// free. Configurable so a price change is one line of config.
 	DefaultPricePerMillionInputTokens = 0.042
@@ -93,6 +99,9 @@ type Config struct {
 	// limiter.
 	RequestsPerMinute          float64
 	PricePerMillionInputTokens float64
+	// MaxQuestionsPerRequest is the size hint decision.Chunked reads
+	// (decision.SizeHinter); <= 0 means DefaultMaxQuestionsPerRequest.
+	MaxQuestionsPerRequest int
 	// HTTPClient overrides the transport; its Timeout is ignored in favour of
 	// per-attempt contexts.
 	HTTPClient *http.Client
@@ -131,6 +140,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
+	if cfg.MaxQuestionsPerRequest <= 0 {
+		cfg.MaxQuestionsPerRequest = DefaultMaxQuestionsPerRequest
+	}
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = DefaultMaxAttempts
 	}
@@ -159,6 +171,10 @@ func (c *Client) Name() string { return Name }
 
 // Model implements decision.Decider.
 func (c *Client) Model() string { return c.cfg.Model }
+
+// MaxQuestionsPerRequest implements decision.SizeHinter: the chunk size
+// decision.Chunked uses for requests sent through this client.
+func (c *Client) MaxQuestionsPerRequest() int { return c.cfg.MaxQuestionsPerRequest }
 
 // URL is the resolved endpoint, for logs.
 func (c *Client) URL() string { return c.url }
@@ -192,7 +208,15 @@ func (c *Client) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loom
 		if !isRetryable(err) || attempt == c.cfg.MaxAttempts {
 			break
 		}
-		if err := sleepCtx(ctx, backoff(attempt, retryAfter)); err != nil {
+		wait := backoff(attempt, retryAfter)
+		if !fitsBeforeDeadline(ctx, wait) {
+			// The caller's deadline expires inside this backoff. Returning
+			// now lets it fall back with time to spare, instead of sleeping
+			// the budget away and handing back a deadline error. A patient
+			// caller (the shadow path) has the room and still retries.
+			break
+		}
+		if err := sleepCtx(ctx, wait); err != nil {
 			return nil, err
 		}
 	}
@@ -293,17 +317,34 @@ func isRetryable(err error) bool {
 }
 
 // backoff is the wait before attempt+1: Retry-After when the server said,
-// else 200 ms doubling with jitter, capped at 2 s.
+// else 500 ms doubling with jitter, capped at 4 s. The gateway's transient
+// 503 ("try again shortly") clears in about a second; the first campaign's
+// 200 ms base burned all three attempts inside that window.
 func backoff(attempt int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
 		return retryAfter
 	}
-	base := 200 * time.Millisecond << (attempt - 1)
-	if base > 2*time.Second {
-		base = 2 * time.Second
+	base := 500 * time.Millisecond << (attempt - 1)
+	if base > 4*time.Second {
+		base = 4 * time.Second
 	}
 	jitter := time.Duration(rand.Int64N(int64(base) / 2)) // #nosec G404 -- backoff jitter, not a security boundary
 	return base/2 + jitter
+}
+
+// retryRoundTripFloor is the least time another attempt needs to be worth
+// starting: about the measured median round trip (215-440 ms across 3,700
+// chunked requests through the gateway).
+const retryRoundTripFloor = 250 * time.Millisecond
+
+// fitsBeforeDeadline reports whether ctx leaves room to wait out a backoff
+// and still make an attempt that could finish. Without a deadline, yes.
+func fitsBeforeDeadline(ctx context.Context, wait time.Duration) bool {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(dl) > wait+retryRoundTripFloor
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

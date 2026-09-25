@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -59,12 +62,17 @@ const (
 
 // RunConfig holds configuration for a benchmark run.
 type RunConfig struct {
-	Mode        RunMode
-	ServerAddr  string
-	AgentID     string // target agent in multi-agent server (empty = default)
-	Concurrency int
-	Verbose     bool
-	Isolate     bool // create a fresh agent per entry for graph memory isolation
+	Mode       RunMode
+	ServerAddr string
+	AgentID    string // target agent in multi-agent server (empty = default)
+	// AgentConfigPath, when set, is an agent YAML whose config is the temp
+	// agent template in isolate mode. It takes precedence over fetching the
+	// named agent's config from the server, which is not available for
+	// agents the server loaded statically at startup.
+	AgentConfigPath string
+	Concurrency     int
+	Verbose         bool
+	Isolate         bool // create a fresh agent per entry for graph memory isolation
 
 	// UseOccurredAt sends each haystack session's date (and the question date)
 	// as WeaveRequest.occurred_at. Without it, the server anchors temporal
@@ -87,10 +95,35 @@ type EntryResult struct {
 	Sessions     int           `json:"sessions_ingested"`
 	Error        string        `json:"error,omitempty"`
 
+	// QuestionSessionID and HaystackSessions let a decision shadow row (keyed
+	// by the agent session it was recorded in, carrying a memory's source
+	// session as its subject) be graded against the dataset's evidence
+	// sessions: a memory kept from an evidence session is a true positive.
+	QuestionSessionID string               `json:"question_session_id,omitempty"`
+	HaystackSessions  []HaystackSessionRef `json:"haystack_sessions,omitempty"`
+
 	// grpcCode carries the gRPC status code of a failed Weave call so the
 	// runner can decide whether to abort the whole run. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
+}
+
+// HaystackSessionRef maps one ingested haystack session to the Loom session
+// it ran in and says whether the dataset marks it as evidence.
+type HaystackSessionRef struct {
+	LoomSessionID    string `json:"loom_session_id"`
+	DatasetSessionID string `json:"dataset_session_id"`
+	Evidence         bool   `json:"evidence"`
+}
+
+// isEvidence reports whether the dataset lists sid among the answer sessions.
+func isEvidence(entry Entry, sid string) bool {
+	for _, a := range entry.AnswerSessionIDs {
+		if a == sid {
+			return true
+		}
+	}
+	return false
 }
 
 // Runner orchestrates the benchmark execution against a running Loom server.
@@ -100,6 +133,11 @@ type Runner struct {
 	client    loomv1.LoomServiceClient
 	conn      *grpc.ClientConn
 	baseAgent *loomv1.AgentConfig // cached config for isolation mode
+	// runNonce makes every temp agent name unique to this run. Graph memory
+	// is scoped by agent name and DeleteAgent does not purge it, so a name
+	// built from the question id alone would let a rerun of the same
+	// question recall memories ingested by earlier runs.
+	runNonce string
 }
 
 // NewRunner creates a new benchmark runner that connects to a Loom gRPC server.
@@ -125,41 +163,108 @@ func NewRunner(cfg RunConfig, logger *zap.Logger) (*Runner, error) {
 	logger.Info("connected to Loom server", zap.String("addr", cfg.ServerAddr))
 
 	r := &Runner{
-		config: cfg,
-		logger: logger,
-		client: client,
-		conn:   conn,
+		config:   cfg,
+		logger:   logger,
+		client:   client,
+		conn:     conn,
+		runNonce: newRunNonce(),
 	}
 
 	// In isolate mode, build a base agent config for creating temp agents.
-	// Each temp agent gets its own graph memory scope — no cross-entry contamination.
+	// Each temp agent gets its own graph memory scope — no cross-entry
+	// contamination. When --agent names a registered agent, the temp agents
+	// are clones of it (system prompt, LLM, tools, decision layer), with the
+	// benchmark's extraction settings applied on top; before this the named
+	// agent was ignored in isolate mode and every temp agent ran a hand-built
+	// config, so nothing configured on the agent reached the benchmark.
 	if cfg.Isolate {
-		r.baseAgent = &loomv1.AgentConfig{
-			SystemPrompt: "You are a helpful assistant with excellent memory. " +
-				"Pay close attention to dates, events, preferences, and factual details " +
-				"mentioned in conversations. When asked about past conversations, " +
-				"use your memory tools to recall relevant information.",
-			Memory: &loomv1.MemoryConfig{
-				GraphMemory: &loomv1.GraphMemoryConfig{
-					Enabled:                       true,
-					EnableExtraction:              true,
-					ExtractionCadence:             1,
-					ConversationExtractionCadence: 1,
-					MaxEntitiesPerExtraction:      15,
-					ContextBudgetPercent:          30,
-					ExtractionTimeoutSeconds:      60,
-					ExtractionWindowMessages:      30,
-				},
-			},
-			Behavior: &loomv1.BehaviorConfig{
-				MaxTurns:          50,
-				MaxToolExecutions: 100,
-			},
+		r.baseAgent = defaultIsolatedBase()
+		switch {
+		case cfg.AgentConfigPath != "":
+			base, err := agent.LoadAgentConfig(cfg.AgentConfigPath)
+			if err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("isolate mode: load --agent-config %s: %w", cfg.AgentConfigPath, err)
+			}
+			r.baseAgent = isolatedBaseFrom(base)
+			logger.Info("isolate mode: temp agents cloned from agent config file",
+				zap.String("path", cfg.AgentConfigPath),
+				zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+		case cfg.AgentID != "":
+			gctx, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			info, err := client.GetAgent(gctx, &loomv1.GetAgentRequest{AgentId: cfg.AgentID})
+			gcancel()
+			switch {
+			case err != nil:
+				logger.Warn("isolate mode: could not fetch base agent; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID), zap.Error(err))
+			case info.GetConfig() == nil:
+				logger.Warn("isolate mode: base agent has no config; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID))
+			default:
+				r.baseAgent = isolatedBaseFrom(info.GetConfig())
+				logger.Info("isolate mode: temp agents cloned from agent",
+					zap.String("agent", cfg.AgentID),
+					zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+			}
 		}
 		logger.Info("isolate mode: will create fresh agents per entry")
 	}
 
 	return r, nil
+}
+
+// benchmarkGraphMemory is what every isolated temp agent runs with: memory
+// on, extraction on every turn, a wide extraction window. Applied on top of
+// whatever the base agent configures.
+func benchmarkGraphMemory(gm *loomv1.GraphMemoryConfig) *loomv1.GraphMemoryConfig {
+	if gm == nil {
+		gm = &loomv1.GraphMemoryConfig{}
+	}
+	gm.Enabled = true
+	gm.EnableExtraction = true
+	gm.ExtractionCadence = 1
+	gm.ConversationExtractionCadence = 1
+	if gm.MaxEntitiesPerExtraction < 15 {
+		gm.MaxEntitiesPerExtraction = 15
+	}
+	if gm.ContextBudgetPercent == 0 {
+		gm.ContextBudgetPercent = 30
+	}
+	if gm.ExtractionTimeoutSeconds < 60 {
+		gm.ExtractionTimeoutSeconds = 60
+	}
+	if gm.ExtractionWindowMessages < 30 {
+		gm.ExtractionWindowMessages = 30
+	}
+	return gm
+}
+
+// defaultIsolatedBase is the temp-agent config when no base agent is named.
+func defaultIsolatedBase() *loomv1.AgentConfig {
+	return &loomv1.AgentConfig{
+		SystemPrompt: "Help the user with whatever they need. Remember dates, events, " +
+			"preferences and factual details from earlier conversations, and when asked " +
+			"about them, recall the relevant memories before answering.",
+		Memory:   &loomv1.MemoryConfig{GraphMemory: benchmarkGraphMemory(nil)},
+		Behavior: &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100},
+	}
+}
+
+// isolatedBaseFrom clones a registered agent's config for use as the temp
+// agent template. Everything the agent configures is kept (system prompt,
+// LLM, tools, decision layer, behavior); graph memory gets the benchmark's
+// extraction settings; the name and description are set per entry later.
+func isolatedBaseFrom(src *loomv1.AgentConfig) *loomv1.AgentConfig {
+	cfg := proto.Clone(src).(*loomv1.AgentConfig)
+	if cfg.Memory == nil {
+		cfg.Memory = &loomv1.MemoryConfig{}
+	}
+	cfg.Memory.GraphMemory = benchmarkGraphMemory(cfg.Memory.GraphMemory)
+	if cfg.Behavior == nil {
+		cfg.Behavior = &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100}
+	}
+	return cfg
 }
 
 // Close closes the gRPC connection.
@@ -311,13 +416,28 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 	return result
 }
 
+// newRunNonce returns 8 hex characters of randomness for tempAgentName.
+func newRunNonce() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to the clock; uniqueness across runs is what matters.
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// tempAgentName is the graph-memory scope of one entry in one run.
+func tempAgentName(runNonce, questionID string) string {
+	return fmt.Sprintf("lme-tmp-%s-%s", runNonce, questionID)
+}
+
 // createTempAgent creates an ephemeral agent cloned from the base config.
 // The agent gets its own graph memory store, ensuring full isolation.
 func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string, error) {
 	// Clone via proto marshal/unmarshal to avoid copying the embedded
 	// MessageState / sync.Mutex by value (govet copylocks).
 	cfg := proto.Clone(r.baseAgent).(*loomv1.AgentConfig)
-	cfg.Name = fmt.Sprintf("lme-tmp-%s", questionID)
+	cfg.Name = tempAgentName(r.runNonce, questionID)
 	cfg.Description = fmt.Sprintf("LongMemEval temp agent for %s", questionID)
 
 	info, err := r.client.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{
@@ -330,7 +450,8 @@ func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string
 	return info.Id, nil
 }
 
-// deleteTempAgent removes an ephemeral agent and its graph memory.
+// deleteTempAgent removes an ephemeral agent. Its graph memory stays in the
+// store under the agent's run-unique name, where no later agent reads it.
 func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 	_, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{
 		AgentId: agentID,
@@ -470,6 +591,9 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 			result.Error = fmt.Sprintf("create session %d: %v", i, err)
 			return result
 		}
+		result.HaystackSessions = append(result.HaystackSessions, HaystackSessionRef{
+			LoomSessionID: sessionID, DatasetSessionID: sess.SessionID, Evidence: isEvidence(entry, sess.SessionID),
+		})
 
 		// Feed the session content through Weave.
 		ingestMsg := fmt.Sprintf(
@@ -495,6 +619,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		result.Error = fmt.Sprintf("create question session: %v", err)
 		return result
 	}
+	result.QuestionSessionID = questionSessionID
 
 	questionMsg := fmt.Sprintf(
 		"Current date: %s\n\n"+

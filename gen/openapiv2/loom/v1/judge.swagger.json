@@ -138,6 +138,121 @@
       },
       "title": "CircuitBreakerConfig defines circuit breaker behavior (Phase 7)"
     },
+    "v1DecisionBand": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "description": "Site name this band applies to (matches DecisionRequest.site)."
+        },
+        "actMin": {
+          "type": "number",
+          "format": "double",
+          "description": "At or above this confidence the Decider's answer is used."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1DecisionBandMode",
+          "description": "How the site may use the answer."
+        },
+        "shadow": {
+          "type": "boolean",
+          "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        },
+        "aggregate": {
+          "$ref": "#/definitions/v1DecisionBandAggregate",
+          "description": "How multi-question requests are judged against act_min."
+        },
+        "trueMin": {
+          "type": "number",
+          "format": "double",
+          "description": "Probability at or above which a Noul answer counts as true at this\nsite: the keep threshold at a rerank, \"valid\" at a stage gate,\n\"consensus reached\" at a debate. 0 means the site default (0.5).\n\nIt is not act_min. act_min asks how decisive an answer is (its distance\nfrom 0.5) before the site may act at all; true_min asks which side of\nthe line a decisive answer falls on. Lowering act_min makes the site\nact on more answers, including ones it will then call false; lowering\ntrue_min makes more answers count as true."
+        }
+      },
+      "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandAggregate": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+        "DECISION_BAND_AGGREGATE_MIN",
+        "DECISION_BAND_AGGREGATE_PER_QUESTION"
+      ],
+      "default": "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+      "description": "DecisionBandAggregate says how a request with several questions is judged\nagainst act_min.\n\n - DECISION_BAND_AGGREGATE_MIN: The least confident answer must clear act_min (a request is as reliable\nas its weakest judgment). Right for requests whose answers are combined\ninto one decision.\n - DECISION_BAND_AGGREGATE_PER_QUESTION: The request acts when the Decider answered at all; the call site applies\nact_min to each answer separately. Right for fan-outs (one question per\ncandidate) where one uncertain candidate must not veto the rest."
+    },
+    "v1DecisionBandMode": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_MODE_UNSPECIFIED",
+        "DECISION_BAND_MODE_REPLACE",
+        "DECISION_BAND_MODE_TIGHTEN_ONLY"
+      ],
+      "default": "DECISION_BAND_MODE_UNSPECIFIED",
+      "description": "DecisionBandMode says how a call site may use a decider answer.\n\n - DECISION_BAND_MODE_REPLACE: The answer may replace the site's existing mechanism when confident.\n - DECISION_BAND_MODE_TIGHTEN_ONLY: The answer may only make an outcome more restrictive: add a failure\ncount, raise NoDecision to Ask. It never clears, allows, or bypasses."
+    },
+    "v1DecisionConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider: \"off\", \"llm\" (adapter over a configured LLM role), \"jev\", \"mock\"."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model for the provider (for Jev, a pinned version; aliases are rejected\nunless allow_alias is set)."
+        },
+        "allowAlias": {
+          "type": "boolean",
+          "description": "Allow a floating alias such as \"jev-latest\". Off by default."
+        },
+        "timeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Per-request timeout in milliseconds."
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Base URL override, for gateways (for example the Vercel AI Gateway path)."
+        },
+        "maxPerSession": {
+          "type": "string",
+          "format": "int64",
+          "description": "Maximum decision requests per session before the router falls back."
+        },
+        "maxCostUsdPerSession": {
+          "type": "number",
+          "format": "double",
+          "description": "Maximum decision spend per session in USD before the router falls back."
+        },
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DecisionBand"
+          },
+          "description": "Bands per call site. Sites without a band are treated as shadow."
+        },
+        "llmRole": {
+          "type": "string",
+          "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        },
+        "requestsPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
+        },
+        "exposeTool": {
+          "type": "boolean",
+          "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
+        },
+        "maxQuestionsPerRequest": {
+          "type": "string",
+          "format": "int64",
+          "description": "Most questions one request may carry before the router splits it into\nconcurrent chunks (see DecisionRequest.fan_out_key). 0 means the\ndecider's own default (Jev: 16; a chunk that still fails with an\noverload or size error is bisected and retried). Providers that accept\nany size may set it high; it never changes answers, only how many\nround trips carry them."
+        }
+      },
+      "description": "DecisionConfig configures the decision layer for an agent or server."
+    },
     "v1EvaluateProgress": {
       "type": "object",
       "properties": {
@@ -501,6 +616,10 @@
         "llmConfig": {
           "$ref": "#/definitions/v1LLMConfig",
           "description": "Full LLM configuration for this judge (overrides string model field 8)\nAllows specifying provider, temperature, max_tokens etc. for judge evaluation.\nWhen set, this takes precedence over the simple `model` string field."
+        },
+        "decision": {
+          "$ref": "#/definitions/v1DecisionConfig",
+          "description": "Decider settings for JUDGE_TYPE_DECISION (provider jev|llm, model,\ntimeout, requests_per_minute). Bands are ignored: a judge always acts on\nthe decider's answer and reports its confidence."
         }
       },
       "title": "JudgeConfig defines a single judge"
@@ -657,10 +776,11 @@
         "JUDGE_TYPE_UNSPECIFIED",
         "JUDGE_TYPE_HAWK",
         "JUDGE_TYPE_AGENT",
-        "JUDGE_TYPE_CUSTOM"
+        "JUDGE_TYPE_CUSTOM",
+        "JUDGE_TYPE_DECISION"
       ],
       "default": "JUDGE_TYPE_UNSPECIFIED",
-      "description": "- JUDGE_TYPE_HAWK: Uses Hawk's embedded judge library\n - JUDGE_TYPE_AGENT: Uses Loom agent as judge\n - JUDGE_TYPE_CUSTOM: Custom judge implementation",
+      "description": "- JUDGE_TYPE_HAWK: Uses Hawk's embedded judge library\n - JUDGE_TYPE_AGENT: Uses Loom agent as judge\n - JUDGE_TYPE_CUSTOM: Custom judge implementation\n - JUDGE_TYPE_DECISION: Typed decision model (pkg/decision, for example Jev): one Noul per\ncriterion and a Score for overall quality, no generative call. Needs\nJudgeConfig.decision.",
       "title": "JudgeType defines the implementation type"
     },
     "v1LLMConfig": {

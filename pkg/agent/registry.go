@@ -708,7 +708,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:                   config.Name, // Preserve name from config
+			Name: config.Name, // Preserve name from config
+			// Carried explicitly as well as by WithConfig's merge: this
+			// Config replaces the one WithSystemPrompt wrote into, and every
+			// registry-built agent lost its system prompt here (found when
+			// workflow agents ignored their configured stance).
+			Description:            config.Description,
+			SystemPrompt:           config.SystemPrompt,
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
@@ -2269,6 +2275,25 @@ func (r *Registry) loadAgentsFromDB() error {
 // Close closes the registry and cleans up resources
 func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
+}
+
+// WaitDecisionShadows blocks until every registered agent's in-flight
+// decision shadow evaluations have been recorded. Shadows run in background
+// goroutines detached from the turn that produced them, so a short-lived
+// process (looms workflow run) calls this before exit or it loses the rows
+// its last turn produced. A long-lived server never needs to.
+func (r *Registry) WaitDecisionShadows() {
+	r.mu.RLock()
+	agents := make([]*Agent, 0, len(r.agents))
+	for _, a := range r.agents {
+		if a != nil {
+			agents = append(agents, a)
+		}
+	}
+	r.mu.RUnlock()
+	for _, a := range agents {
+		a.WaitDecisionShadows()
+	}
 }
 
 // DB returns the registry's underlying SQLite handle. Exported so peer

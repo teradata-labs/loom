@@ -40,6 +40,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -507,12 +508,18 @@ func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGa
 // CLI workflow execution, plus the teardown for those dependencies.
 type workflowRuntime struct {
 	orchestrator *orchestration.Orchestrator
+	registry     *agent.Registry
 	logger       *zap.Logger
 	closers      []func()
 }
 
-// Close tears down runtime dependencies in reverse construction order.
+// Close waits for the agents' background decision shadows, then tears down
+// runtime dependencies in reverse construction order. The wait comes first
+// because the shadow store is one of the closers.
 func (rt *workflowRuntime) Close() {
+	if rt.registry != nil {
+		rt.registry.WaitDecisionShadows()
+	}
 	for i := len(rt.closers) - 1; i >= 0; i-- {
 		rt.closers[i]()
 	}
@@ -695,6 +702,25 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent registry: %w", err)
+	}
+	rt.registry = registry
+
+	// Decision-layer shadow store: the same storage backend `looms serve`
+	// uses, so shadow rows from workflow runs land where `loom decision
+	// report` reads. Without this an agent's decision layer would evaluate
+	// and trace its comparisons but persist none of them.
+	if storageBackend, sbErr := backend.NewStorageBackend(context.Background(), config.BuildProtoStorageConfig(), tracer); sbErr != nil {
+		logger.Warn("Storage backend unavailable; decision shadow rows will not be persisted", zap.Error(sbErr))
+	} else {
+		rt.closers = append(rt.closers, func() { _ = storageBackend.Close() })
+		// Migrate as `looms serve` does: a schema behind this binary makes
+		// every shadow insert fail, and the recorder only counts that.
+		if mErr := storageBackend.Migrate(context.Background()); mErr != nil {
+			logger.Warn("Storage migration failed; decision shadow rows may not be persisted", zap.Error(mErr))
+		}
+		if dsp, ok := storageBackend.(backend.DecisionShadowProvider); ok {
+			registry.SetDecisionShadowStore(dsp.DecisionShadowStore())
+		}
 	}
 
 	// Initialize MessageBus and SharedMemory for workflow communication

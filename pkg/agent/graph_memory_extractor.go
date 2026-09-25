@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -315,6 +316,28 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		currentDate = time.Now().UTC().Format("2006-01-02")
 	}
 
+	// Typed-decision gate: extraction is a generative call fired on a
+	// counter, whether or not this window holds anything durable. On a live
+	// band the decider may skip it; it may never force one. A shadow band
+	// records its answer against what extraction actually stored, which is
+	// observed truth rather than another model's opinion.
+	window := renderExtractionWindow(recentMessages)
+	gateReq, gateOut, gateLive := a.liveExtractGate(extractCtx, sessionID, window)
+	if gateLive {
+		if skip, ok := sites.ExtractVerdict(gateOut.Response, gateOut.Band); ok && skip {
+			zap.L().Debug("graph memory extraction: skipped, no durable facts in window",
+				zap.String("session", sessionID), zap.Int("messages", len(recentMessages)))
+			a.recordDecisionAsync(extractCtx, sessionID, gateReq, gateOut, nil)
+			return
+		}
+	}
+	storedRef := 0
+	defer func() {
+		// Whatever path ran, record the decider against what extraction
+		// actually yielded.
+		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, gateLive, &storedRef)
+	}()
+
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.
 	llmProvider := a.llm
 	if a.compressorLLM != nil {
@@ -461,7 +484,8 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			Content:             m.Content,
 			Summary:             m.Summary,
 			MemoryType:          memoryType,
-			Source:              "auto_extracted",
+			Source:              memory.SourceAutoExtracted,
+			SourceID:            sessionID, // provenance: the session this was extracted from
 			MemoryAgentID:       agentID,
 			Tags:                m.Tags,
 			Salience:            salience,
@@ -477,6 +501,9 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		}
 
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
+		if err == nil {
+			storedRef++
+		}
 		if err != nil {
 			zap.L().Debug("graph memory extraction: failed to store memory",
 				zap.String("content_preview", truncate(m.Content, 80)),
