@@ -241,7 +241,7 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 
 ### Phase 4 — Tier 2 gaps
 - [ ] P0 prerequisite: breaker counts `Result.Success==false` (from tool-calling assessment)
-- [x] 4.4 skill selection — `skill.route` site + live/shadow paths in `skills/index.Router`, both generative calls in the walk (per-node `askDecision` and the fat-leaf pick). Corpus test: 32 skills over 8 domains, 34 labelled messages (literal / paraphrase / distractor), a decider that reads only what the request carries. Found and fixed en route: `Route` collected selected skills in a map and then capped, so identical input could return different skills.
+- [x] 4.4 skill selection — `skill.route` site + live/shadow paths in `skills/index.Router`, both generative calls in the walk (per-node `askDecision` and the fat-leaf pick). Corpus test: 32 skills over 8 domains, 34 labelled messages (literal / paraphrase / distractor), a decider that reads only what the request carries. Found and fixed en route: `Route` collected selected skills in a map and then capped, so identical input could return different skills. **Measured against real Jev and the answer is no: best of ten band settings is 16/73 (22%) end to end, 33 wrong-domain loads, 42/73 empty; per decision, precision 50.9% at recall 96.7% over 350 labelled judgements. Stays in shadow.**
 - [ ] 4.1 failure kind, brake-only · [ ] 4.2 risk hook, raise-only + adversarial fixtures · [ ] 4.3 TypedJudge canary · [ ] 4.4 two-stage skill selection · [ ] 4.5 hygiene/done-ness advisory
 - [ ] security review
 

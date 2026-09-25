@@ -20,14 +20,18 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -247,10 +251,76 @@ func routeCases() []routeCase {
 		{"project next year's spend given current usage and our committed discount", "budget-forecast", "paraphrase"},
 		{"the invoice says more than our metered usage does, explain the gap", "invoice-recon", "paraphrase"},
 
+		// Second and third phrasings for the same skills: the corpus has to
+		// be wider than one sentence per skill or a single unlucky wording
+		// decides the score.
+		{"the optimizer is picking a nested loop join and it's killing us", "sql-optimization", "paraphrase"},
+		{"add an index or rewrite the predicate, whichever is faster here", "sql-optimization", "paraphrase"},
+		{"is QUALIFY supported here or do I need a subquery", "sql-syntax-help", "paraphrase"},
+		{"rank each row inside its group and keep the top three", "sql-window-functions", "paraphrase"},
+		{"we need to backfill the new column without locking the table", "sql-migration", "paraphrase"},
+		{"declare a cursor and loop over it inside a procedure", "sql-stored-procs", "literal"},
+		{"write the transaction block so a failure rolls everything back", "sql-stored-procs", "paraphrase"},
+
+		{"bucket ages into ranges and fill the blanks with the median", "feature-engineering", "paraphrase"},
+		{"give me min, max and the top ten values for every column", "data-profiling", "paraphrase"},
+		{"the header row repeats halfway through the file", "csv-import", "paraphrase"},
+		{"merge records that are the same person spelled differently", "dedupe", "paraphrase"},
+		{"mask the email addresses before we share this extract", "pii-redaction", "paraphrase"},
+
+		{"tune the learning rate and depth, then tell me what you picked", "model-training", "paraphrase"},
+		{"plot the ROC and tell me if the probabilities are trustworthy", "model-eval", "paraphrase"},
+		{"group these into five buckets and describe what each one is", "clustering", "paraphrase"},
+		{"we need next quarter's demand with an uncertainty range", "forecasting", "paraphrase"},
+
+		{"nothing is scheduling, the nodes say insufficient memory", "kubernetes-debug", "paraphrase"},
+		{"this apply wants to replace the database, is that expected", "terraform-plan", "paraphrase"},
+		{"every build reinstalls the same packages from scratch", "docker-build", "paraphrase"},
+		{"write the postmortem for last night with a timeline", "incident-response", "paraphrase"},
+
+		{"check this change for races before it goes in", "code-review", "paraphrase"},
+		{"pull the duplicated logic out into something shared", "refactoring", "paraphrase"},
+		{"these tests pass but they'd pass if the code were deleted", "test-authoring", "paraphrase"},
+		{"anything in go.mod with a published advisory", "dependency-audit", "paraphrase"},
+
+		{"describe the request body and every status code we return", "api-docs", "paraphrase"},
+		{"steps to fail over the primary, assume the reader is tired", "runbook", "paraphrase"},
+		{"what changed since the last tag, in plain language", "release-notes", "paraphrase"},
+
+		{"where could an attacker get in if they had a stolen token", "threat-model", "paraphrase"},
+		{"scan the history for anything that looks like a password", "secret-scanning", "paraphrase"},
+		{"list everyone with write access to this bucket and why", "access-review", "paraphrase"},
+
+		{"which service accounts for the spike in last week's spend", "cost-attribution", "paraphrase"},
+		{"if usage keeps growing at this rate, what do we pay in June", "budget-forecast", "paraphrase"},
+		{"reconcile these line items against what we actually used", "invoice-recon", "paraphrase"},
+
 		// Distractors: the vocabulary points one way, the need points another.
 		{"the SQL is fine, I need tests around the function that builds it", "test-authoring", "distractor"},
 		{"the model is trained; document how to call the scoring endpoint", "api-docs", "distractor"},
 		{"a query is slow because the pod it runs in is being throttled", "kubernetes-debug", "distractor"},
+		{"the training job costs more than the model is worth, where is the spend going", "cost-attribution", "distractor"},
+		{"the runbook says rotate the key but does not say which key", "secret-scanning", "distractor"},
+		{"our dependency scan output needs to go in the release notes", "release-notes", "distractor"},
+		{"the migration script has no tests", "test-authoring", "distractor"},
+		{"encode the categorical column before the clustering step", "feature-engineering", "distractor"},
+		{"document the threat model for the new endpoint", "threat-model", "distractor"},
+	}
+}
+
+// outOfScopeMessages have no right answer in this corpus. A router that
+// surfaces a skill for them is loading prompt budget for nothing, so they
+// measure the opposite failure from a miss.
+func outOfScopeMessages() []string {
+	return []string{
+		"what time is the standup tomorrow",
+		"can you book me a flight to Dublin on the 14th",
+		"remind me what the office wifi password is",
+		"translate this paragraph into German",
+		"what is the capital of Portugal",
+		"my laptop fan is loud, should I be worried",
+		"write a haiku about the weather",
+		"who won the match last night",
 	}
 }
 
@@ -502,4 +572,188 @@ func TestRouteIsDeterministicWhenMoreSkillsQualifyThanTheCap(t *testing.T) {
 		}
 		assert.Equal(t, first, names, "run %d returned a different set for identical input", i)
 	}
+}
+
+// countingErrLLM stands in for the tree-walk LLM so that anything the router
+// gets right is attributable to the decider and nothing else, while still
+// reporting how often the walk had to reach for it.
+type countingErrLLM struct{ calls atomic.Int32 }
+
+func (e *countingErrLLM) Chat(context.Context, []types.Message, []shuttle.Tool) (*types.LLMResponse, error) {
+	e.calls.Add(1)
+	return nil, fmt.Errorf("no LLM in this evaluation")
+}
+func (e *countingErrLLM) Name() string  { return "none" }
+func (e *countingErrLLM) Model() string { return "none" }
+
+// TestRouteCorpusAgainstJev measures the real decider against the labelled
+// corpus across a grid of band settings.
+//
+// Two measurements, because they answer different questions:
+//
+//   - End to end: did the right skill surface, did an unrelated one, and did
+//     an out-of-scope message wrongly load something. This is what a user
+//     feels, but 73 messages is a small sample for it.
+//   - Per decision: every option the decider was asked about is a labelled
+//     yes/no — a subtree is a yes when it contains the wanted skill, a skill
+//     option when it is the wanted skill. That is roughly a thousand
+//     labelled judgements per configuration, which is enough to separate
+//     configurations that end-to-end numbers cannot.
+//
+// Skipped without credentials, so it never runs in CI. To run it:
+//
+//	AI_GATEWAY_API_KEY=... go test -tags fts5 -run TestRouteCorpusAgainstJev -v -timeout 60m ./pkg/skills/index/
+func TestRouteCorpusAgainstJev(t *testing.T) {
+	cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{
+		Model: jev.VercelGatewayModel, AllowAlias: true, RequestsPerMinute: 120,
+	})
+	if err != nil {
+		t.Skipf("no Jev credentials: %v", err)
+	}
+	client, err := jev.New(cfg)
+	require.NoError(t, err)
+	chunked := decision.Chunk(client)
+
+	tree, res, skillDomain := corpusTree()
+	cases := routeCases()
+	oos := outOfScopeMessages()
+
+	// Ground truth per option, derived from the label: a subtree is a yes
+	// when the wanted skill lives under it, a skill option when it is the
+	// wanted skill.
+	nodeDomain := map[string]string{}
+	for domain := range domainTitles {
+		nodeDomain[NodeID("ent/"+domain)] = domain
+	}
+	optionTruth := func(want, subject string) (truth, known bool) {
+		switch {
+		case strings.HasPrefix(subject, "subtree:"):
+			d, ok := nodeDomain[strings.TrimPrefix(subject, "subtree:")]
+			return ok && d == skillDomain[want], ok
+		case strings.HasPrefix(subject, "skill:"):
+			return strings.TrimPrefix(subject, "skill:") == want, true
+		}
+		return false, false
+	}
+
+	type result struct {
+		actMin, trueMin float64
+		hits, wrong     int
+		empty, oosLoad  int
+		llmCalls        int
+		tp, fp, fn, tn  int
+		byShape         map[string][2]int
+		elapsed         time.Duration
+	}
+	var grid []result
+
+	for _, actMin := range []float64{0.1, 0.5} {
+		for _, trueMin := range []float64{0.05, 0.1, 0.2, 0.3, 0.5} {
+			band := []*loomv1.DecisionBand{{
+				Site: sites.SiteSkillRoute, ActMin: actMin, TrueMin: trueMin,
+				Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+				Mode:      loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE,
+			}}
+			llm := &countingErrLLM{}
+			store := &memShadowStore{}
+			r := NewRouter(res, WithRouterLLM(llm),
+				WithRouterDecision(decision.NewRouter(chunked, decision.WithBands(band)), store))
+			r.SetTree(tree)
+
+			out := result{actMin: actMin, trueMin: trueMin, byShape: map[string][2]int{}}
+			start := time.Now()
+			wantBySession := map[string]string{}
+			for i, c := range cases {
+				session := fmt.Sprintf("case-%d", i)
+				wantBySession[session] = c.want
+				got, err := r.Route(context.Background(), session, c.message, nil, "h")
+				require.NoError(t, err, c.message)
+				hit := false
+				for _, sk := range got {
+					switch {
+					case sk.Name == c.want:
+						hit = true
+					case skillDomain[sk.Name] != skillDomain[c.want]:
+						out.wrong++
+					}
+				}
+				if len(got) == 0 {
+					out.empty++
+				}
+				if hit {
+					out.hits++
+				}
+				v := out.byShape[c.shape]
+				out.byShape[c.shape] = [2]int{v[0] + boolToInt(hit), v[1] + 1}
+			}
+			for i, m := range oos {
+				got, err := r.Route(context.Background(), fmt.Sprintf("oos-%d", i), m, nil, "h")
+				require.NoError(t, err, m)
+				out.oosLoad += len(got)
+			}
+			out.elapsed = time.Since(start)
+			out.llmCalls = int(llm.calls.Load())
+
+			r.WaitDecisionShadows()
+			rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+			require.NoError(t, err)
+			for _, row := range rows {
+				want, ok := wantBySession[row.SessionId]
+				if !ok || row.Path == loomv1.DecisionPath_DECISION_PATH_ERROR {
+					continue
+				}
+				truth, known := optionTruth(want, row.Subject)
+				if !known {
+					continue
+				}
+				said := row.CandidateAnswer == "true"
+				switch {
+				case said && truth:
+					out.tp++
+				case said && !truth:
+					out.fp++
+				case !said && truth:
+					out.fn++
+				default:
+					out.tn++
+				}
+			}
+			grid = append(grid, out)
+			t.Logf("act %.2f true %.2f | end-to-end %2d/%d correct, %2d wrong, %2d empty, %2d oos-loads | %s/msg",
+				actMin, trueMin, out.hits, len(cases), out.wrong, out.empty, out.oosLoad,
+				(out.elapsed / time.Duration(len(cases)+len(oos))).Round(time.Millisecond))
+		}
+	}
+
+	t.Logf("")
+	t.Logf("Per-decision judgement quality (band-independent: the raw yes/no at 0.5)")
+	g := grid[0]
+	prec, rec := ratio(g.tp, g.tp+g.fp), ratio(g.tp, g.tp+g.fn)
+	t.Logf("  %d labelled option decisions: precision %.1f%%, recall %.1f%% (tp %d fp %d fn %d tn %d)",
+		g.tp+g.fp+g.fn+g.tn, 100*prec, 100*rec, g.tp, g.fp, g.fn, g.tn)
+
+	best := grid[0]
+	for _, x := range grid {
+		if x.hits > best.hits {
+			best = x
+		}
+	}
+	t.Logf("")
+	t.Logf("best end-to-end: act_min %.2f true_min %.2f -> %d/%d (%.0f%%), %d wrong-domain, %d out-of-scope loads",
+		best.actMin, best.trueMin, best.hits, len(cases),
+		100*float64(best.hits)/float64(len(cases)), best.wrong, best.oosLoad)
+	for _, shape := range []string{"literal", "paraphrase", "distractor"} {
+		v := best.byShape[shape]
+		t.Logf("  %-11s %d/%d", shape, v[0], v[1])
+	}
+
+	assert.Greater(t, best.hits, len(cases)/4,
+		"the decider should route better than chance on a labelled corpus")
+}
+
+func ratio(a, b int) float64 {
+	if b == 0 {
+		return 0
+	}
+	return float64(a) / float64(b)
 }
