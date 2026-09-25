@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -53,6 +54,11 @@ type Router struct {
 	maxBranching  int
 	maxCandidates int
 	maxRetries    int
+
+	// decisionFields carries the typed-decision layer; see
+	// decision_shadow.go. Zero value means the layer is off and the walk
+	// behaves exactly as it did before.
+	decisionFields
 }
 
 // RouterOption configures a Router during construction.
@@ -205,7 +211,10 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 	// to descend AND zero or more skills to select directly.
 	visited := map[string]bool{}
 	frontier := []*skills.SkillIndexNode{tree.RootNode()}
-	selectedNames := map[string]bool{}
+	// Ordered set: which skills were picked, in the order they were picked.
+	// The order matters because the cap below truncates, and iterating a map
+	// would make the surviving skills differ between identical runs.
+	selected := newSelection()
 
 	for depth := 0; depth < r.maxDepth && len(frontier) > 0; depth++ {
 		nextFrontier := nextFrontier{}
@@ -235,10 +244,24 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 			if len(children) == 0 {
 				if len(directSkills) <= r.maxCandidates {
 					for _, s := range directSkills {
-						selectedNames[s.Name] = true
+						selected.add(s.Name)
 					}
 					continue
 				}
+				// Same decision, fewer kinds: at a fat leaf every option
+				// is a skill, so the walk asks the decider which of them
+				// bear on the message before falling back to the LLM pick.
+				leafOptions := routeOptions(nil, directSkills)
+				leafSel, leafActed, leafReq, leafOut := r.liveRoute(ctx, sessionID, message, node, leafOptions)
+				if leafActed {
+					r.recordAsync(ctx, sessionID, leafReq, leafOut, sites.SkillRouteReference(
+						leafOptions, leafSel.Skills, "", sites.SkillRouteSubjects(leafOptions)))
+					for _, name := range leafSel.Skills {
+						selected.add(name)
+					}
+					continue
+				}
+
 				picked, err := r.pickFromFatLeaf(ctx, message, node, directSkills)
 				if err != nil {
 					r.logger.Debug("router fat-leaf pick failed; surfacing alphabetical-first slice",
@@ -251,12 +274,42 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 						if i >= r.maxCandidates {
 							break
 						}
-						selectedNames[s.Name] = true
+						selected.add(s.Name)
 					}
 					continue
 				}
+				if r.decisionRouter != nil {
+					if leafReq != nil {
+						// Below the band, or every answer uncertain: record
+						// the outcome already in hand rather than asking twice.
+						r.recordAsync(ctx, sessionID, leafReq, leafOut, sites.SkillRouteReference(
+							leafOptions, picked, sites.ReferenceSourceRouterLeafLLM, sites.SkillRouteSubjects(leafOptions)))
+					} else {
+						r.shadowRoute(ctx, sessionID, message, node, leafOptions, picked, sites.ReferenceSourceRouterLeafLLM)
+					}
+				}
 				for _, name := range picked {
-					selectedNames[name] = true
+					selected.add(name)
+				}
+				continue
+			}
+
+			// Typed-decision layer: on a live band the decider answers
+			// this node and no generative call happens; otherwise the LLM
+			// decides and the decider's answer is recorded against it.
+			options := routeOptions(children, directSkills)
+			sel, acted, dreq, dout := r.liveRoute(ctx, sessionID, message, node, options)
+			if acted {
+				r.recordAsync(ctx, sessionID, dreq, dout, sites.SkillRouteReference(
+					options, append(append([]string{}, sel.Descend...), sel.Skills...),
+					"", sites.SkillRouteSubjects(options)))
+				for _, name := range sel.Skills {
+					selected.add(name)
+				}
+				for _, childID := range sel.Descend {
+					if c := tree.Get(childID); c != nil {
+						nextFrontier.add(c)
+					}
 				}
 				continue
 			}
@@ -268,6 +321,17 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 					zap.Error(err))
 				return nil, nil
 			}
+			if r.decisionRouter != nil {
+				chosen := append(append([]string{}, decision.Descend...), decision.Skills...)
+				if dreq != nil {
+					// Below the band, or every answer uncertain: record the
+					// outcome already in hand rather than asking twice.
+					r.recordAsync(ctx, sessionID, dreq, dout, sites.SkillRouteReference(
+						options, chosen, sites.ReferenceSourceRouterLLM, sites.SkillRouteSubjects(options)))
+				} else {
+					r.shadowRoute(ctx, sessionID, message, node, options, chosen, sites.ReferenceSourceRouterLLM)
+				}
+			}
 			r.logger.Debug("router askDecision result",
 				zap.String("node_title", node.Title),
 				zap.Strings("descend", decision.Descend),
@@ -276,7 +340,7 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 			)
 
 			for _, name := range decision.Skills {
-				selectedNames[name] = true
+				selected.add(name)
 			}
 			for _, childID := range decision.Descend {
 				if c := tree.Get(childID); c != nil {
@@ -288,8 +352,8 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 	}
 
 	// Resolve names to full Skill records.
-	out := make([]*skills.Skill, 0, len(selectedNames))
-	for name := range selectedNames {
+	out := make([]*skills.Skill, 0, selected.len())
+	for _, name := range selected.names {
 		s, err := r.resolver.Load(name)
 		if err != nil || s == nil {
 			continue
@@ -298,7 +362,7 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 	}
 	r.logger.Debug("router walk complete",
 		zap.String("session", sessionID),
-		zap.Int("selected_names", len(selectedNames)),
+		zap.Int("selected_names", selected.len()),
 		zap.Int("resolved", len(out)),
 		zap.Int("eligible_size", len(eligible)),
 	)
@@ -582,6 +646,27 @@ func filterEligible(in []*skills.Skill, eligible map[string]bool, n int) []*skil
 	}
 	return out
 }
+
+// selection is an insertion-ordered set of skill names. Route caps its
+// result, so the order decides which skills survive; a map would make that
+// vary run to run for identical input. The decider path adds in relevance
+// order and the LLM path in the order the walk visited nodes.
+type selection struct {
+	seen  map[string]bool
+	names []string
+}
+
+func newSelection() *selection { return &selection{seen: map[string]bool{}} }
+
+func (s *selection) add(name string) {
+	if name == "" || s.seen[name] {
+		return
+	}
+	s.seen[name] = true
+	s.names = append(s.names, name)
+}
+
+func (s *selection) len() int { return len(s.names) }
 
 // nextFrontier dedupes nodes within a single BFS step to avoid expanding
 // the same subtree twice when two parents share a child id.
