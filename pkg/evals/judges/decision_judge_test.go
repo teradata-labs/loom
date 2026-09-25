@@ -17,12 +17,14 @@ package judges
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/decision"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -245,12 +247,24 @@ func TestNewJudgeFromConfig_Dispatch(t *testing.T) {
 	_, ok := j.(*LLMJudge)
 	assert.True(t, ok, "non-decision types build an LLMJudge")
 
+	// With an LLM behind it, a decision judge is wrapped so anything it is
+	// not decisive about escalates rather than being guessed.
 	dCfg := decisionJudgeConfig("ok")
 	dCfg.Decision = &loomv1.DecisionConfig{Provider: "llm"}
 	j, err = NewJudgeFromConfig(llm, dCfg, nil)
 	require.NoError(t, err)
+	screened, ok := j.(*ScreenedJudge)
+	require.True(t, ok, "JUDGE_TYPE_DECISION with a provider builds a screening judge")
+	assert.Equal(t, "dj-1", screened.ID())
+	assert.Equal(t, []string{"ok"}, screened.Criteria())
+	assert.NotNil(t, screened.Typed())
+
+	// Without one there is nothing to escalate to, so it is the typed judge
+	// alone.
+	j, err = NewJudgeFromConfig(nil, decisionJudgeConfigWithMock(), nil)
+	require.NoError(t, err)
 	_, ok = j.(*DecisionJudge)
-	assert.True(t, ok, "JUDGE_TYPE_DECISION builds a DecisionJudge")
+	assert.True(t, ok, "no provider: the typed judge stands alone")
 }
 
 // stubLLM satisfies types.LLMProvider for constructor tests; it is never
@@ -262,3 +276,136 @@ func (stubLLM) Chat(context.Context, []types.Message, []shuttle.Tool) (*types.LL
 }
 func (stubLLM) Name() string  { return "stub" }
 func (stubLLM) Model() string { return "stub-model" }
+
+func decisionJudgeConfigWithMock() *loomv1.JudgeConfig {
+	cfg := decisionJudgeConfig("ok")
+	cfg.Decision = &loomv1.DecisionConfig{Provider: "mock"}
+	return cfg
+}
+
+// The band decides what counts as decisive. Under it, the judge reports a
+// partial result and says it is uncertain rather than guessing.
+func TestDecisionJudgeReportsUncertaintyUnderTheBand(t *testing.T) {
+	m := decisionmock.New()
+	scriptAll(m, []float64{0.55}, "2") // decisiveness 0.1, well under the band
+	cfg := decisionJudgeConfig("is it right")
+	cfg.Decision = &loomv1.DecisionConfig{Provider: "mock", Bands: []*loomv1.DecisionBand{{
+		Site: "judge.dj-1", ActMin: 0.5, TrueMin: 0.2,
+	}}}
+	j, err := NewDecisionJudge(m, cfg, nil)
+	require.NoError(t, err)
+
+	res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUncertain)
+	require.NotNil(t, res, "the partial result still carries the decider's reasoning")
+	assert.Equal(t, "PARTIAL", res.Verdict)
+	assert.InDelta(t, 55, res.OverallScore, 0.01)
+
+	// A decisive answer under the same band is answered normally.
+	m2 := decisionmock.New()
+	scriptAll(m2, []float64{0.95}, "4")
+	j2, err := NewDecisionJudge(m2, cfg, nil)
+	require.NoError(t, err)
+	res, err = j2.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", res.Verdict)
+}
+
+// With no band configured nothing is uncertain, so the default behaviour is
+// exactly what it was before bands were honoured here.
+func TestDecisionJudgeWithoutABandNeverReportsUncertainty(t *testing.T) {
+	m := decisionmock.New()
+	scriptAll(m, []float64{0.55}, "2")
+	j, err := NewDecisionJudge(m, decisionJudgeConfig("is it right"), nil)
+	require.NoError(t, err)
+	res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+	require.NoError(t, err)
+	assert.Equal(t, "PARTIAL", res.Verdict)
+}
+
+// The screening judge takes confident typed answers and escalates the rest.
+func TestScreenedJudgeEscalatesUncertainAndFailed(t *testing.T) {
+	band := []*loomv1.DecisionBand{{Site: "judge.dj-1", ActMin: 0.5, TrueMin: 0.2}}
+
+	t.Run("confident: answered by the typed judge, no LLM call", func(t *testing.T) {
+		m := decisionmock.New().SetModel("typed")
+		scriptAll(m, []float64{0.97}, "4")
+		llm := &countingLLM{response: `{"factual_accuracy":10,"completeness":10,"query_quality":10,"overall_score":10,"verdict":"PASS","reasoning":"llm"}`}
+		j := screenedFor(t, m, llm, band)
+		res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+		require.NoError(t, err)
+		assert.Equal(t, "PASS", res.Verdict)
+		assert.Equal(t, "typed", res.JudgeModel)
+		assert.Equal(t, 0, llm.calls(), "a decisive typed answer costs no generative call")
+	})
+
+	t.Run("uncertain: escalated", func(t *testing.T) {
+		m := decisionmock.New().SetModel("typed")
+		scriptAll(m, []float64{0.55}, "2")
+		llm := &countingLLM{response: `{"factual_accuracy":9,"completeness":9,"query_quality":9,"overall_score":9,"verdict":"PASS","reasoning":"llm decided"}`}
+		j := screenedFor(t, m, llm, band)
+		res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+		require.NoError(t, err)
+		assert.Equal(t, 1, llm.calls(), "the uncertain case reached the LLM")
+		assert.Contains(t, res.Reasoning, "escalated from the typed judge")
+	})
+
+	t.Run("decider failure: escalated, not recorded as FAIL", func(t *testing.T) {
+		m := decisionmock.New().SetError(errors.New("gateway 503"))
+		llm := &countingLLM{response: `{"factual_accuracy":9,"completeness":9,"query_quality":9,"overall_score":9,"verdict":"PASS","reasoning":"llm decided"}`}
+		j := screenedFor(t, m, llm, band)
+		res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+		require.NoError(t, err)
+		assert.Equal(t, "PASS", res.Verdict,
+			"a gateway error must not silently mark a good answer bad")
+		assert.Equal(t, 1, llm.calls())
+	})
+
+	t.Run("both fail: the typed error is the one reported", func(t *testing.T) {
+		m := decisionmock.New().SetError(errors.New("gateway 503"))
+		llm := &countingLLM{err: errors.New("llm down")}
+		j := screenedFor(t, m, llm, band)
+		_, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: "q", Response: "a"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "503")
+	})
+}
+
+func screenedFor(t *testing.T, dec decision.Decider, llm types.LLMProvider, band []*loomv1.DecisionBand) *ScreenedJudge {
+	t.Helper()
+	cfg := decisionJudgeConfig("is it right")
+	cfg.Decision = &loomv1.DecisionConfig{Provider: "mock", Bands: band}
+	typed, err := NewDecisionJudge(dec, cfg, nil)
+	require.NoError(t, err)
+	backing := decisionJudgeConfig("is it right")
+	backing.Type = loomv1.JudgeType_JUDGE_TYPE_HAWK
+	fallback, err := NewLLMJudge(llm, backing, nil)
+	require.NoError(t, err)
+	return &ScreenedJudge{typed: typed, fallback: fallback}
+}
+
+// countingLLM answers with a fixed body and counts calls.
+type countingLLM struct {
+	mu       sync.Mutex
+	n        int
+	response string
+	err      error
+}
+
+func (c *countingLLM) Chat(context.Context, []types.Message, []shuttle.Tool) (*types.LLMResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &types.LLMResponse{Content: c.response}, nil
+}
+func (c *countingLLM) Name() string  { return "counting" }
+func (c *countingLLM) Model() string { return "counting-1" }
+func (c *countingLLM) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}

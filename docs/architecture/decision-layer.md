@@ -142,6 +142,21 @@ How it evaluates, in one decider request at site `judge.<judge id>`:
 - **Verdict**: `overall = 100 × mean p(met)`; `PASS` when every criterion has p ≥ 0.5 and overall ≥ `min_passing_score` (default 80); `FAIL` when no criterion is met or overall < 50; else `PARTIAL`. `issues` lists the criteria with p < 0.5 and any the decider left unanswered. `dimension_scores` carries `correctness` (= overall), `completeness` (share of criteria met) and `quality` (expected quality level on 0–100); a `JUDGE_DIMENSION_CUSTOM` name gets overall/100 like the LLM judge. `reasoning` is the per-criterion probabilities and the decider's minimum confidence, not prose.
 - **Bands are ignored**: a judge always acts on the decider's answer and reports its confidence. `judge_model` is the decider's model; `cost_usd` comes from the decider's usage. A decider error returns `{verdict: FAIL, error}` plus the error, as `LLMJudge` does, so aggregation records the failure.
 
+**Measured against labels, and it works.** On 307 judgements from finished LongMemEval cells — real questions, real model replies, labelled by the benchmark's own official judge, balanced 161 correct to 146 incorrect — the typed judge agreed 97.7% of the time at its best operating point. Guessing the majority class gets 52%.
+
+| Cut | Agreement | Precision | Recall |
+|---|---|---|---|
+| 10 | 95.8% | 93.5% | 98.8% |
+| 20 | 97.7% | 97.5% | 98.1% |
+| 30 | 95.4% | 98.7% | 92.5% |
+| 50 | 94.5% | 100% | 89.4% |
+
+Two things follow. The best cut is 20, not 50, which is the same under-confidence measured at `recall.rerank`: the scale runs low and the threshold has to follow. And precision is 100% from 50 upward, so a confident pass is never wrong on this set — the shape a pre-screen wants. The score distribution is strongly bimodal (p25 ≤ 2, p75 ≥ 96), so it is discriminating rather than answering the same way every time.
+
+Not faster, though: 3.4 s per judgement against 1.0 s for the gpt-5.2 judge doing the same work, timed on the same rows. The request carries a whole question, gold answer and reply, which is far more text than a rerank candidate. The case here is cost and calibration, not latency.
+
+**Screening.** `NewJudgeFromConfig` combines the two whenever a decision judge has a band and an LLM provider is available (`ScreenedJudge`): the typed judge answers where it is decisive, and two things escalate to the generative judge — an answer under the band's `act_min`, and a decider failure. That second trigger is not hypothetical: 20 of 327 judgements failed on the gateway during the measurement, and without escalation each would have landed as a FAIL verdict, silently marking a good answer bad.
+
 What it buys: a second opinion per criterion in one typed call (no generative tokens, calibrated probabilities), which fits weighted multi-judge aggregation next to LLM judges. What it is not: a replacement for a judge that must explain itself in prose or that needs tool use (`JUDGE_TYPE_AGENT`).
 
 ## Direct use: the `decide` tool and `loom decision ask` ✅
