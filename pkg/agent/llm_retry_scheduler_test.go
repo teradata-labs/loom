@@ -168,7 +168,10 @@ func TestChatWithRetryChargesMeteredTokensToScheduler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			u := cached
 			u.RateLimitTokens = tt.rateLimitTokens
-			llm := &usageStubLLM{name: fmt.Sprintf("metered-stub-%d", i), usage: u}
+			// Unique scope per run: schedulers live in the process-wide
+			// registry, so a repeated run (-count>1) must not inherit the
+			// 17,519 tokens the cached case leaves in the window.
+			llm := &usageStubLLM{name: fmt.Sprintf("metered-stub-%d-%d", i, time.Now().UnixNano()), usage: u}
 			a := &Agent{id: "metered-test", llm: llm, config: &Config{}}
 
 			s := scheduler.Default().For(a.schedulerScope(), scheduler.Config{})
