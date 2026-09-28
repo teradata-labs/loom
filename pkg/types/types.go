@@ -166,13 +166,17 @@ type Message struct {
 
 // Usage tracks LLM token usage and costs.
 //
-// Token buckets are disjoint on every provider: InputTokens counts only prompt
-// tokens that were neither read from nor written to the prompt cache, and the
-// cache buckets are reported separately, so the full prompt is
-// InputTokens + CacheReadInputTokens + CacheCreationInputTokens. This is the
-// Anthropic/Bedrock convention; OpenAI-compatible and Gemini clients subtract
-// the cache buckets out of their cache-inclusive prompt counts to match.
+// Token buckets are disjoint wherever loom parses the provider's cache fields:
+// InputTokens then counts only prompt tokens that were neither read from nor
+// written to the prompt cache, and the cache buckets are reported separately,
+// so the full prompt is InputTokens + CacheReadInputTokens +
+// CacheCreationInputTokens. This is the Anthropic/Bedrock convention; the
+// OpenAI-compatible (litellm, Mistral, HuggingFace) and Gemini clients subtract
+// the cache buckets out of their cache-inclusive prompt counts to match. Azure
+// OpenAI and Ollama parse no cache fields and report the provider's prompt count.
 // TotalTokens = InputTokens + OutputTokens (cache excluded).
+//
+// Throughput limits are a separate question: see RateLimitTokens.
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
@@ -183,6 +187,24 @@ type Usage struct {
 	CacheReadInputTokens int
 	// CacheCreationInputTokens: tokens written to prompt cache (billed at 1.25x for Anthropic).
 	CacheCreationInputTokens int
+	// RateLimitTokens is what the provider meters against its tokens-per-minute
+	// limit for this call, when that differs from TotalTokens. OpenAI (and the
+	// OpenAI-compatible gateways) and Gemini count cached prompt tokens toward
+	// TPM, so their clients set it to the raw cache-inclusive prompt plus
+	// output. Zero means TotalTokens is the metered figure. Read it through
+	// ThroughputTokens.
+	RateLimitTokens int
+}
+
+// ThroughputTokens returns the tokens the provider metered against its
+// throughput limit for this usage: RateLimitTokens when set, else TotalTokens.
+// Capacity accounting (the slot scheduler's TPM window) must use this, never
+// TotalTokens directly.
+func (u Usage) ThroughputTokens() int {
+	if u.RateLimitTokens > 0 {
+		return u.RateLimitTokens
+	}
+	return u.TotalTokens
 }
 
 // LLMResponse represents a response from the LLM.

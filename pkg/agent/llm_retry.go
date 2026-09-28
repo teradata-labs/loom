@@ -101,7 +101,11 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 		defer func() {
 			var actual int64
 			if resp != nil {
-				actual = int64(resp.Usage.TotalTokens)
+				// Provider-metered usage, which for OpenAI-compatible and
+				// Gemini scopes includes cached prompt tokens (see
+				// types.Usage.RateLimitTokens) — not the cache-exclusive
+				// TotalTokens.
+				actual = int64(resp.Usage.ThroughputTokens())
 			}
 			grant.Release(actual)
 		}()

@@ -113,7 +113,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Recalculate cost using HuggingFace pricing
 	// Note: HuggingFace pricing varies significantly by provider (Together, Cohere, Groq, etc.)
 	// We use generic estimates here. For accurate pricing, consult specific provider docs.
-	resp.Usage.CostUSD = c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	resp.Usage.CostUSD = c.calculateCost(fullPromptTokens(resp.Usage), resp.Usage.OutputTokens)
 
 	// Update metadata to reflect HuggingFace provider
 	if resp.Metadata == nil {
@@ -122,6 +122,14 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	resp.Metadata["provider"] = "huggingface"
 
 	return resp, nil
+}
+
+// fullPromptTokens is the whole prompt the call sent. The wrapped OpenAI
+// client reports InputTokens with the cache buckets subtracted out (loom's
+// disjoint-bucket convention); this provider's calculateCost has no cache
+// rates, so it prices the full prompt at the input rate, as it always has.
+func fullPromptTokens(u llmtypes.Usage) int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // calculateCost estimates the cost in USD based on token usage.

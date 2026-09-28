@@ -2238,6 +2238,13 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 
 // addUsage folds one LLM call's usage into a running turn total.
 func addUsage(dst *Usage, u Usage) {
+	// RateLimitTokens stays zero until some call sets it (so a turn of calls
+	// that never set it still equals their plain sum); once any call does, it
+	// carries every call's metered figure, falling back to TotalTokens for the
+	// calls that did not. Computed before dst's TotalTokens is advanced.
+	if dst.RateLimitTokens > 0 || u.RateLimitTokens > 0 {
+		dst.RateLimitTokens = dst.ThroughputTokens() + u.ThroughputTokens()
+	}
 	dst.InputTokens += u.InputTokens
 	dst.OutputTokens += u.OutputTokens
 	dst.TotalTokens += u.TotalTokens

@@ -116,6 +116,15 @@ func (u UsageMetadata) UncachedPromptTokens() int {
 	return max(0, u.PromptTokenCount-u.CachedContentTokenCount)
 }
 
+// MeteredTokens is the raw totalTokenCount: Gemini counts cached tokens
+// against its rate limits. Carried as Usage.RateLimitTokens.
+func (u UsageMetadata) MeteredTokens() int {
+	if u.TotalTokenCount > 0 {
+		return u.TotalTokenCount
+	}
+	return u.PromptTokenCount + u.CandidatesTokenCount
+}
+
 // UncachedTotalTokens is totalTokenCount with the same cached tokens removed.
 func (u UsageMetadata) UncachedTotalTokens() int {
 	return max(0, u.TotalTokenCount-(u.PromptTokenCount-u.UncachedPromptTokens()))

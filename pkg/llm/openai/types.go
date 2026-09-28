@@ -141,6 +141,16 @@ func (u ChatCompletionUsage) UncachedTotalTokens() int {
 	return max(0, u.TotalTokens-(u.PromptTokens-u.UncachedPromptTokens()))
 }
 
+// MeteredTokens is what OpenAI-style TPM limits count for the call: the raw,
+// cache-inclusive total_tokens (prompt_tokens + completion_tokens when a
+// gateway omits total_tokens). Carried as Usage.RateLimitTokens.
+func (u ChatCompletionUsage) MeteredTokens() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
+}
+
 // OpenAIError represents an error from the OpenAI API.
 type OpenAIError struct {
 	Message string      `json:"message"`

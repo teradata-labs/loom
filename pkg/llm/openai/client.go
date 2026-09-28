@@ -668,6 +668,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 			TotalTokens:              resp.Usage.UncachedTotalTokens(),
 			CacheReadInputTokens:     resp.Usage.CacheRead(),
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			RateLimitTokens:          resp.Usage.MeteredTokens(),
 			CostUSD: costOrEstimate(providerCostUSD, func() float64 {
 				return c.calculateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens,
 					resp.Usage.CacheRead(), resp.Usage.CacheCreationInputTokens)
@@ -1095,6 +1096,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.TotalTokens = chunk.Usage.UncachedTotalTokens()
 			usage.CacheReadInputTokens = chunk.Usage.CacheRead()
 			usage.CacheCreationInputTokens = chunk.Usage.CacheCreationInputTokens
+			usage.RateLimitTokens = chunk.Usage.MeteredTokens()
 		}
 
 		// Check context cancellation

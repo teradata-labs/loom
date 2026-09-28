@@ -75,6 +75,8 @@ func TestConvertResponse_InputTokensExcludeCache(t *testing.T) {
 	assert.Equal(t, 341, got.TotalTokens)
 	assert.Equal(t, 16817, got.CacheReadInputTokens)
 	assert.Equal(t, 361, got.CacheCreationInputTokens)
+	// OpenAI-style TPM counts cached tokens: the scheduler charges the raw total.
+	assert.Equal(t, 17519, got.RateLimitTokens)
 	// Full prompt is recoverable from the disjoint buckets.
 	assert.Equal(t, 17183, got.InputTokens+got.CacheReadInputTokens+got.CacheCreationInputTokens)
 	// Cost is priced from the raw prompt_tokens, unchanged by the convention.
@@ -100,5 +102,6 @@ func TestChatStream_CostUsesRawPromptTokens(t *testing.T) {
 
 	assert.Equal(t, 1000, resp.Usage.InputTokens)
 	assert.Equal(t, 1400, resp.Usage.TotalTokens)
+	assert.Equal(t, 18400, resp.Usage.RateLimitTokens)
 	assert.InDelta(t, c.calculateCost(18000, 400, 15000, 2000), resp.Usage.CostUSD, 1e-12)
 }

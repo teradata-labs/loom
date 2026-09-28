@@ -127,3 +127,71 @@ func TestFunnelObservesThrottleAndSuccessProviderAgnostic(t *testing.T) {
 	assert.Greater(t, sched.State().EffectiveTokensPerMinute, before/2,
 		"a clean completion must grow the ceiling back (AIMD increase)")
 }
+
+// usageStubLLM returns a fixed Usage so the scheduler's charge can be observed.
+type usageStubLLM struct {
+	name  string
+	usage llmtypes.Usage
+}
+
+func (s *usageStubLLM) Chat(_ context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
+	return &LLMResponse{Content: "ok", Usage: s.usage}, nil
+}
+func (s *usageStubLLM) Name() string  { return s.name }
+func (s *usageStubLLM) Model() string { return "m" }
+
+// The funnel must release a grant with the provider-METERED usage. OpenAI and
+// Gemini count cached prompt tokens toward TPM, so a cached call is charged
+// its raw total (Usage.RateLimitTokens), not the cache-exclusive TotalTokens;
+// charging 341 for a 17,519-token call would over-admit until 429s arrive.
+// A provider that sets no RateLimitTokens is still charged TotalTokens.
+func TestChatWithRetryChargesMeteredTokensToScheduler(t *testing.T) {
+	scheduler.SetEnabled(true)
+	defer scheduler.SetEnabled(false)
+
+	// litellm-shaped cached call: prompt_tokens 17183 = 5 uncached + 16817
+	// read + 361 write, 336 completion.
+	cached := llmtypes.Usage{InputTokens: 5, OutputTokens: 336, TotalTokens: 341,
+		CacheReadInputTokens: 16817, CacheCreationInputTokens: 361}
+
+	tests := []struct {
+		name            string
+		rateLimitTokens int
+		wantNextAdmits  bool
+	}{
+		// 17,519 charged + a 5,000 reservation exceeds the 20,000 budget.
+		{name: "cached call is charged the raw total", rateLimitTokens: 17519, wantNextAdmits: false},
+		// 341 charged + 5,000 fits.
+		{name: "no RateLimitTokens is charged TotalTokens", rateLimitTokens: 0, wantNextAdmits: true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := cached
+			u.RateLimitTokens = tt.rateLimitTokens
+			llm := &usageStubLLM{name: fmt.Sprintf("metered-stub-%d", i), usage: u}
+			a := &Agent{id: "metered-test", llm: llm, config: &Config{}}
+
+			s := scheduler.Default().For(a.schedulerScope(), scheduler.Config{})
+			// Pinned ceiling, full utilization, no batch headroom: budget = 20,000.
+			s.SetConfig(20000, 1.0, 0, -1)
+
+			base := session.WithSessionID(context.Background(), "sess-metered")
+			stamped := scheduler.WithSlotInfo(base, loomv1.SlotOrigin_SLOT_ORIGIN_BATCH, 0)
+			ctx := &agentContext{Context: stamped, tracer: observability.NewNoOpTracer()}
+			_, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+			require.NoError(t, err)
+			require.Equal(t, int64(0), s.State().ReservedTokensOutstanding)
+
+			actx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			g, err := s.Acquire(actx, scheduler.Request{ReservationTokens: 5000})
+			if tt.wantNextAdmits {
+				require.NoError(t, err)
+				g.Release(1)
+				return
+			}
+			require.Error(t, err, "the window must already hold the cached call's metered 17,519 tokens")
+			assert.ErrorIs(t, err, context.DeadlineExceeded)
+		})
+	}
+}
