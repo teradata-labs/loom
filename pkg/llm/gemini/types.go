@@ -109,6 +109,18 @@ type UsageMetadata struct {
 	CachedContentTokenCount int `json:"cachedContentTokenCount"`
 }
 
+// UncachedPromptTokens is promptTokenCount minus the implicit-cache hits it
+// includes. loom's Usage.InputTokens excludes cached tokens, matching
+// Anthropic and Bedrock, so this is what InputTokens must carry.
+func (u UsageMetadata) UncachedPromptTokens() int {
+	return max(0, u.PromptTokenCount-u.CachedContentTokenCount)
+}
+
+// UncachedTotalTokens is totalTokenCount with the same cached tokens removed.
+func (u UsageMetadata) UncachedTotalTokens() int {
+	return max(0, u.TotalTokenCount-(u.PromptTokenCount-u.UncachedPromptTokens()))
+}
+
 // APIError represents an error from the Gemini API.
 type APIError struct {
 	Code    int    `json:"code"`

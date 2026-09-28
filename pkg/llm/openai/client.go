@@ -663,9 +663,9 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 	}
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
-			InputTokens:              resp.Usage.PromptTokens,
+			InputTokens:              resp.Usage.UncachedPromptTokens(),
 			OutputTokens:             resp.Usage.CompletionTokens,
-			TotalTokens:              resp.Usage.TotalTokens,
+			TotalTokens:              resp.Usage.UncachedTotalTokens(),
 			CacheReadInputTokens:     resp.Usage.CacheRead(),
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 			CostUSD: costOrEstimate(providerCostUSD, func() float64 {
@@ -682,7 +682,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 	// Prompt-cache measurement: one line per call so a run's hit rate is legible
 	// in the logs (cache_read>0 means the provider served a cached prefix).
 	zap.L().Info("prompt cache usage",
-		zap.Int("input_tokens", resp.Usage.PromptTokens),
+		zap.Int("prompt_tokens", resp.Usage.PromptTokens),
 		zap.Int("cache_read", resp.Usage.CacheRead()),
 		zap.Int("cache_creation", resp.Usage.CacheCreationInputTokens))
 
@@ -998,6 +998,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 3. Process Server-Sent Events (SSE) stream
 	var contentBuffer strings.Builder
 	usage := llmtypes.Usage{}
+	// Raw prompt_tokens / total_tokens (cache-inclusive) from the final usage chunk.
+	var promptTokens, rawTotalTokens int
 	var finishReason string
 	tokenCount := 0
 	var toolCalls []llmtypes.ToolCall
@@ -1086,9 +1088,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		// Extract usage (only in final chunk, if provided)
 		if chunk.Usage != nil {
-			usage.InputTokens = chunk.Usage.PromptTokens
+			promptTokens = chunk.Usage.PromptTokens
+			rawTotalTokens = chunk.Usage.TotalTokens
+			usage.InputTokens = chunk.Usage.UncachedPromptTokens()
 			usage.OutputTokens = chunk.Usage.CompletionTokens
-			usage.TotalTokens = chunk.Usage.TotalTokens
+			usage.TotalTokens = chunk.Usage.UncachedTotalTokens()
 			usage.CacheReadInputTokens = chunk.Usage.CacheRead()
 			usage.CacheCreationInputTokens = chunk.Usage.CacheCreationInputTokens
 		}
@@ -1133,22 +1137,25 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// 5. Build final response
-	if usage.TotalTokens == 0 {
+	if rawTotalTokens == 0 {
 		usage.OutputTokens = tokenCount
 		usage.TotalTokens = tokenCount // Input tokens not available in stream
 	}
+	// calculateCost and the rate limiter take the raw, cache-inclusive
+	// prompt_tokens: cost splits the cache tiers itself, and OpenAI-style TPM
+	// limits count cached tokens.
 	usage.CostUSD = costOrEstimate(parseProviderCost(httpResp.Header), func() float64 {
-		return c.calculateCost(usage.InputTokens, usage.OutputTokens,
+		return c.calculateCost(promptTokens, usage.OutputTokens,
 			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 	})
 	zap.L().Info("prompt cache usage (stream)",
-		zap.Int("input_tokens", usage.InputTokens),
+		zap.Int("prompt_tokens", promptTokens),
 		zap.Int("cache_read", usage.CacheReadInputTokens),
 		zap.Int("cache_creation", usage.CacheCreationInputTokens))
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
-		totalTokens := int64(usage.InputTokens + usage.OutputTokens)
+		totalTokens := int64(promptTokens + usage.OutputTokens)
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 

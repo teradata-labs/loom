@@ -165,6 +165,14 @@ type Message struct {
 }
 
 // Usage tracks LLM token usage and costs.
+//
+// Token buckets are disjoint on every provider: InputTokens counts only prompt
+// tokens that were neither read from nor written to the prompt cache, and the
+// cache buckets are reported separately, so the full prompt is
+// InputTokens + CacheReadInputTokens + CacheCreationInputTokens. This is the
+// Anthropic/Bedrock convention; OpenAI-compatible and Gemini clients subtract
+// the cache buckets out of their cache-inclusive prompt counts to match.
+// TotalTokens = InputTokens + OutputTokens (cache excluded).
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
