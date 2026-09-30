@@ -25,7 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
@@ -112,9 +112,14 @@ func TestCreateLLMProviderOllamaCarriesSeed(t *testing.T) {
 			srv := newOllamaCaptureServer(t, capture)
 			t.Setenv("OLLAMA_ENDPOINT", srv.URL)
 
+			// Not zaptest: the client's rate limiter is a process-wide singleton
+			// (llm.SharedRateLimiter, keyed by this test server's URL) that keeps
+			// the creator's logger and logs metrics every 30s for the life of the
+			// binary. A test-scoped logger there panics ("Log in goroutine after
+			// ... has completed") whenever that tick lands after the tests finish.
 			reg, err := NewRegistry(RegistryConfig{
 				ConfigDir: t.TempDir(),
-				Logger:    zaptest.NewLogger(t),
+				Logger:    zap.NewNop(),
 			})
 			require.NoError(t, err)
 
