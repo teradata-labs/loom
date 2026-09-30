@@ -97,6 +97,7 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 	emit := func(m *Message) {
 		out = append(out, sm.renderLocked(m, t, callName))
 		if m.Turn == t && ((m.Role == "tool" && !m.Evicted && len(m.Content) > sm.threshold) ||
+			(m.Role == "tool" && sm.pressureOffloadedLocked(m, t)) ||
 			(m.Role == "assistant" && hasQueryToolResultCall(m))) {
 			frozen = true
 		}
@@ -161,13 +162,15 @@ func hasQueryToolResultCall(m *Message) bool {
 	return false
 }
 
-// renderLocked applies §5.2 step 6's five render cases — first matching case
-// wins. Conversation is never stubbed; offload is a pure render condition of
-// the current turn; evicted and legacy-oversize rows render the evicted stub.
+// renderLocked applies §5.2 step 6's render cases — first matching case wins.
+// Conversation is never stubbed; offload is a pure render condition of the
+// current turn; evicted and legacy-oversize rows render the evicted stub.
 // The offload case carves out the exempt set (SetOffloadExemptTools): an
 // exempt tool's current-turn result renders whole — exemption never reaches
 // the evicted cases, so relief and prior turns behave identically for every
-// tool.
+// tool. The one exception is relief's last-resort pressure offload
+// (offloadCurrentTurnLocked), which stubs a current-turn result whatever its
+// size or exemption, because the alternative is a turn that cannot be sent.
 func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
 	// User turns carry their arrival time into the compiled view ONLY, so the
 	// model keeps per-turn temporal grounding ("today", "this month") while the
@@ -199,6 +202,13 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 	case m.Evicted:
 		r := *m
 		r.Content = sm.evictedStub(m, callName)
+		return r
+	case sm.pressureOffloadedLocked(m, t):
+		// Relief's last-resort rung: a current-turn result offloaded under
+		// pressure regardless of size or exemption — the turn would otherwise
+		// end on a provider refusal. The payload stays queryable this turn.
+		r := *m
+		r.Content = sm.offloadStub(m, callName)
 		return r
 	case len(m.Content) > sm.threshold && m.Turn == t:
 		if sm.offloadExempt[callName[m.ToolUseID]] {
@@ -486,9 +496,19 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), sm.releaseMarkLocked(penalty)
 	}
 
-	if sm.estimateLocked() < sm.startMarkLocked(penalty) {
+	startEstimate := sm.estimateLocked()
+	if startEstimate < sm.startMarkLocked(penalty) {
 		return false, 0, 0 // under the start mark — no pressure to release
 	}
+	// The per-op lines log only post-op estimates; without the starting point
+	// two consecutive passes read as one op inflating the estimate.
+	zap.L().Info("releasePressure: start",
+		zap.String("session_id", sm.sessionID),
+		zap.Int64("turn", sm.currentTurnLocked()),
+		zap.Int("estimate_tokens", startEstimate),
+		zap.Int("start_tokens", sm.startMarkLocked(penalty)),
+		zap.Int("target_tokens", sm.releaseMarkLocked(penalty)),
+		zap.Int("penalty", penalty))
 
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
@@ -527,6 +547,23 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	for _, b := range rungs {
 		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
 	}
+	// Last resort: the current turn. Every rung above stops at T−1, so a turn
+	// whose OWN tool results exceed the window (hundreds of parallel calls,
+	// each under the threshold and so rendered whole) used to leave the pass
+	// with nothing to shed, and the turn ended on the provider's refusal.
+	// Offload them to stubs — oldest first, on the same halving ladder, keeping
+	// the newest n/2, n/4 … 0 whole — only after every prior-turn operation
+	// has failed to reach target. Lossless within the turn: each stub carries
+	// its query_tool_result door.
+	n := len(sm.currentTurnOffloadCandidatesLocked(t))
+	for keep := n / 2; n > 0; keep /= 2 {
+		ops = append(ops, reliefOp{"offload_current_turn", t, func(context.Context, int64) bool {
+			return sm.offloadCurrentTurnLocked(t, keep)
+		}})
+		if keep == 0 {
+			break
+		}
+	}
 	for _, op := range ops {
 		if !op.run(ctx, op.boundary) {
 			// An operation that changed nothing (its rows were already flagged
@@ -552,6 +589,77 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), target
 	}
 	return true, estimate, target
+}
+
+// pressureOffloadedLocked reports whether m is a current-turn tool result that
+// relief's last-resort rung has offloaded. Must hold lock.
+func (sm *SegmentedMemory) pressureOffloadedLocked(m *Message, t int64) bool {
+	return m.Role == "tool" && m.Turn == t && m.ToolUseID != "" &&
+		sm.pressureOffloadTurn == t && sm.pressureOffload[m.ToolUseID]
+}
+
+// currentTurnOffloadCandidatesLocked returns, in seq order, the indices of the
+// turn-T tool rows the last-resort rung may offload: not evicted, keyed by a
+// ToolUseID, not already rendered as an offload stub by the size rule, and
+// at least 2× their offload stub (the same floor evictLocked applies — below
+// it, stubbing saves nothing). Rows the rung already offloaded stay in the
+// list, so its length is stable across the ladder. Must hold lock.
+func (sm *SegmentedMemory) currentTurnOffloadCandidatesLocked(t int64) []int {
+	callName := make(map[string]string)
+	for i := range sm.contextMessages {
+		for _, c := range sm.contextMessages[i].ToolCalls {
+			if c.ID != "" {
+				callName[c.ID] = c.Name
+			}
+		}
+	}
+	var out []int
+	for i := range sm.contextMessages {
+		m := &sm.contextMessages[i]
+		if m.Role != "tool" || m.Turn != t || m.Evicted || m.ToolUseID == "" {
+			continue
+		}
+		if len(m.Content) > sm.threshold && !sm.offloadExempt[callName[m.ToolUseID]] {
+			continue // the size rule already stubs it
+		}
+		if len(m.Content) < 2*len(sm.offloadStub(m, callName)) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// offloadCurrentTurnLocked offloads every last-resort candidate except the
+// newest keep, oldest first. Returns whether any row newly moved to a stub.
+// Must hold lock.
+func (sm *SegmentedMemory) offloadCurrentTurnLocked(t int64, keep int) bool {
+	cands := sm.currentTurnOffloadCandidatesLocked(t)
+	if keep >= len(cands) {
+		return false
+	}
+	if sm.pressureOffloadTurn != t || sm.pressureOffload == nil {
+		sm.pressureOffload = make(map[string]bool)
+		sm.pressureOffloadTurn = t
+	}
+	added := 0
+	for _, i := range cands[:len(cands)-keep] {
+		id := sm.contextMessages[i].ToolUseID
+		if !sm.pressureOffload[id] {
+			sm.pressureOffload[id] = true
+			added++
+		}
+	}
+	if added == 0 {
+		return false
+	}
+	zap.L().Warn("releasePressure: offload current turn",
+		zap.String("session_id", sm.sessionID),
+		zap.Int64("turn", t),
+		zap.Int("rows_offloaded", added),
+		zap.Int("offloaded_total", len(sm.pressureOffload)),
+		zap.Int("kept_newest", keep))
+	return true
 }
 
 // evictLocked marks evicted=true on every tool row with turn ≤ b whose stored
