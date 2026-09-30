@@ -345,7 +345,15 @@ const cheapBytesPerToken = 2.7
 //
 // Must hold lock.
 func (sm *SegmentedMemory) estimateLocked() int {
-	compiled := sm.compileLocked()
+	return sm.estimateCompiledLocked(sm.compileLocked())
+}
+
+// estimateCompiledLocked is estimateLocked over an already-compiled message
+// list (the whole context, or a subset such as the current-turn floor). Both
+// tiers are scaled by the provider calibration factor, so the cheap tier's
+// early exit compares like with like. Must hold lock.
+func (sm *SegmentedMemory) estimateCompiledLocked(compiled []Message) int {
+	f := sm.calibrationLocked()
 
 	// Cheap tier — byte bound, no tokenization.
 	bytes := sm.kernelBytes
@@ -357,12 +365,18 @@ func (sm *SegmentedMemory) estimateLocked() int {
 			}
 		}
 	}
-	cheap := int(float64(bytes) / cheapBytesPerToken)
+	cheap := int(float64(bytes) / cheapBytesPerToken * f)
 	if limit := sm.startMarkLocked(0); limit <= 0 || cheap < limit {
 		return cheap
 	}
 
 	// Accurate tier — near the limit, tokenize (cached per rendered message).
+	return int(float64(sm.accurateTokensLocked(compiled)) * f)
+}
+
+// accurateTokensLocked is the uncalibrated tiktoken count of KERNEL plus the
+// compiled messages. Must hold lock.
+func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
 	tc := sm.tokenCounter
 	if tc == nil {
 		tc = GetTokenCounter()
@@ -372,6 +386,65 @@ func (sm *SegmentedMemory) estimateLocked() int {
 		tokens += sm.msgTokensLocked(tc, &compiled[i])
 	}
 	return tokens
+}
+
+// Provider calibration. The estimate tokenizes with tiktoken, which counts
+// Claude prompts ~25% low (production: 1.17M estimated, 1.46M billed), so
+// relief fired late and its recovery pass under-shed. After each successful
+// call the provider's own prompt count is compared with loom's count of the
+// same compiled context, and the running ratio scales every estimate.
+const (
+	// calibrationMin: never scale below tiktoken — a provider that counts
+	// fewer tokens must not make relief fire later than it did uncalibrated.
+	calibrationMin = 1.0
+	// calibrationMax bounds a skewed sample (e.g. image blocks the estimate
+	// does not count) to relief firing earlier, never to a runaway factor.
+	calibrationMax = 2.0
+	// calibrationAlpha is the EWMA weight of each new sample.
+	calibrationAlpha = 0.5
+	// calibrationMinSampleTokens skips small prompts, where fixed provider
+	// overhead (tool-use system text, framing) dominates the ratio.
+	calibrationMinSampleTokens = 2000
+)
+
+// calibrationLocked returns the current estimate scale factor. Must hold lock.
+func (sm *SegmentedMemory) calibrationLocked() float64 {
+	if sm.estimateCalibration < calibrationMin {
+		return calibrationMin
+	}
+	return sm.estimateCalibration
+}
+
+// EstimateCalibration returns the factor the estimate is currently scaled by.
+func (sm *SegmentedMemory) EstimateCalibration() float64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.calibrationLocked()
+}
+
+// ObservePromptTokens feeds one provider-reported prompt size (input + cache
+// read + cache write — the whole prompt, see types.Usage) into the calibration.
+// Call it right after a successful send, before anything is appended, so the
+// compiled context is the one that was sent.
+func (sm *SegmentedMemory) ObservePromptTokens(actual int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if actual <= 0 {
+		return
+	}
+	counted := sm.accurateTokensLocked(sm.compileLocked())
+	if counted < calibrationMinSampleTokens {
+		return
+	}
+	ratio := min(max(float64(actual)/float64(counted), calibrationMin), calibrationMax)
+	f := sm.calibrationLocked()
+	sm.estimateCalibration = min(max(f+calibrationAlpha*(ratio-f), calibrationMin), calibrationMax)
+	zap.L().Debug("relief: estimate calibration",
+		zap.String("session_id", sm.sessionID),
+		zap.Int("provider_prompt_tokens", actual),
+		zap.Int("counted_tokens", counted),
+		zap.Float64("sample_ratio", ratio),
+		zap.Float64("factor", sm.estimateCalibration))
 }
 
 // msgTokensLocked returns one compiled message's token count, memoising the
@@ -475,10 +548,13 @@ func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 // ReleasePressure is the relief pass, called at compile before every send. It
 // SELF-GATES on loom's own accounting: if the estimate is under the start mark
 // (HWM, §5.1) there is no pressure and it is a no-op. Otherwise it sheds to the
-// release mark (LWM) via the escalating evict-then-fold ladder below —
-// recompiling and re-estimating after each op, returning the instant the
-// estimate reaches the mark. Returns whether it shed and the post-pass
-// {estimate, target}.
+// release mark (LWM) via the escalating ladder below — prior-turn evict, then
+// prior-turn fold, then current-turn offload; when the current turn alone is
+// over target, the current-turn offload moves ahead of every fold and a fold
+// that still cannot reach target is skipped — recompiling and re-estimating
+// after each op, returning the instant the estimate reaches the mark. The
+// estimate is scaled by the provider calibration (ObservePromptTokens).
+// Returns whether it shed and the post-pass {estimate, target}.
 //
 // penalty (percentage points) lowers both marks. It is 0 for the normal compile
 // pass; on the one recovery pass after a provider refusal it is
@@ -540,46 +616,76 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			rungs = append(rungs, b)
 		}
 	}
-	ops := make([]reliefOp, 0, 2*len(rungs))
+	evictOps := make([]reliefOp, 0, len(rungs))
+	foldOps := make([]reliefOp, 0, len(rungs))
 	for _, b := range rungs {
-		ops = append(ops, reliefOp{"evict", b, sm.evictLocked})
+		evictOps = append(evictOps, reliefOp{"evict", b, sm.evictLocked})
+		foldOps = append(foldOps, reliefOp{"fold", b, sm.foldLocked})
 	}
-	for _, b := range rungs {
-		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
-	}
-	// Last resort: the current turn. Every rung above stops at T−1, so a turn
-	// whose OWN tool results exceed the window (hundreds of parallel calls,
-	// each under the threshold and so rendered whole) used to leave the pass
-	// with nothing to shed, and the turn ended on the provider's refusal.
-	// Offload them to stubs — oldest first, on the same halving ladder, keeping
-	// the newest n/2, n/4 … 0 whole — only after every prior-turn operation
-	// has failed to reach target. Lossless within the turn: each stub carries
+	// The current turn. Every rung above stops at T−1, so a turn whose OWN tool
+	// results exceed the window (hundreds of parallel calls, each under the
+	// threshold and so rendered whole) used to leave the pass with nothing to
+	// shed, and the turn ended on the provider's refusal. These rungs offload
+	// them to stubs — oldest first, on the same halving ladder, keeping the
+	// newest n/2, n/4 … 0 whole. Lossless within the turn: each stub carries
 	// its query_tool_result door.
+	var offloadOps []reliefOp
 	n := len(sm.currentTurnOffloadCandidatesLocked(t))
 	for keep := n / 2; n > 0; keep /= 2 {
-		ops = append(ops, reliefOp{"offload_current_turn", t, func(context.Context, int64) bool {
+		offloadOps = append(offloadOps, reliefOp{"offload_current_turn", t, func(context.Context, int64) bool {
 			return sm.offloadCurrentTurnLocked(t, keep)
 		}})
 		if keep == 0 {
 			break
 		}
 	}
-	for _, op := range ops {
-		if !op.run(ctx, op.boundary) {
-			// An operation that changed nothing (its rows were already flagged
-			// by an earlier pressure event) passes to the next.
-			continue
+
+	// runOps runs ops in order and reports whether the estimate reached target.
+	runOps := func(ops []reliefOp) bool {
+		for _, op := range ops {
+			if !op.run(ctx, op.boundary) {
+				// An operation that changed nothing (its rows were already
+				// flagged by an earlier pressure event) passes to the next.
+				continue
+			}
+			estimate = sm.estimateLocked()
+			zap.L().Info("releasePressure: operation complete",
+				zap.String("session_id", sm.sessionID),
+				zap.String("operation", op.name),
+				zap.Int64("boundary_turn", op.boundary),
+				zap.Int("estimate_tokens", estimate),
+				zap.Int("target_tokens", target))
+			if estimate <= target {
+				return true
+			}
 		}
-		estimate = sm.estimateLocked()
-		zap.L().Info("releasePressure: operation complete",
-			zap.String("session_id", sm.sessionID),
-			zap.String("operation", op.name),
-			zap.Int64("boundary_turn", op.boundary),
-			zap.Int("estimate_tokens", estimate),
-			zap.Int("target_tokens", target))
-		if estimate <= target {
+		return false
+	}
+
+	// Phase order: prior-turn eviction (re-runnable) first. Then, when the
+	// current turn ALONE is over target, no prior-turn fold can reach it — so
+	// the lossless current-turn offload goes before any lossy fold, and a fold
+	// runs only if it can now reach target or the estimate is still at or over
+	// the start mark (every token counts near the provider's hard limit).
+	// Otherwise folds go first and the current turn stays the last resort.
+	if runOps(evictOps) {
+		return true, estimate, target
+	}
+	if sm.currentTurnFloorLocked(t) > target {
+		if runOps(offloadOps) {
 			return true, estimate, target
 		}
+		if floor := sm.currentTurnFloorLocked(t); floor > target && sm.estimateLocked() < sm.startMarkLocked(penalty) {
+			zap.L().Info("releasePressure: fold skipped — the current turn alone exceeds target",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("turn", t),
+				zap.Int("current_turn_floor_tokens", floor),
+				zap.Int("target_tokens", target))
+			return estimate >= 0, sm.estimateLocked(), target
+		}
+	}
+	if runOps(foldOps) || runOps(offloadOps) {
+		return true, estimate, target
 	}
 
 	if estimate < 0 {
@@ -589,6 +695,21 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), target
 	}
 	return true, estimate, target
+}
+
+// currentTurnFloorLocked estimates the context with every prior turn gone —
+// ROM, the summary and turn T as currently rendered. No prior-turn operation
+// can bring the estimate below it, so when it is over target a fold would be a
+// lossy compressor call that cannot succeed. Must hold lock.
+func (sm *SegmentedMemory) currentTurnFloorLocked(t int64) int {
+	compiled := sm.compileLocked()
+	kept := make([]Message, 0, len(compiled))
+	for i := range compiled {
+		if compiled[i].Role == "system" || compiled[i].Turn == t {
+			kept = append(kept, compiled[i])
+		}
+	}
+	return sm.estimateCompiledLocked(kept)
 }
 
 // pressureOffloadedLocked reports whether m is a current-turn tool result that

@@ -2253,6 +2253,18 @@ func addUsage(dst *Usage, u Usage) {
 	dst.CostUSD += u.CostUSD
 }
 
+// observePromptUsage feeds a successful call's provider-reported prompt size
+// into the session's relief calibration. The whole prompt is input + cache
+// read + cache write (types.Usage). Call before appending the response, so the
+// compiled context still matches what was sent.
+func (a *Agent) observePromptUsage(session *Session, u Usage) {
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil {
+		return
+	}
+	segMem.ObservePromptTokens(u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens)
+}
+
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
 // persists its durable row once (write rules §4; the store's RETURNING-derived
 // seq and turn override the stamp), and appends the message to the session in
@@ -2674,6 +2686,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
+		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
 		llmEvent := map[string]interface{}{
@@ -3337,8 +3350,33 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		Timestamp: time.Now(),
 	}, false)
 
-	// Make final LLM call WITHOUT tools to force synthesis
+	// Make final LLM call WITHOUT tools to force synthesis. It reaches here
+	// exactly when the loop ran out of budget — the turn is at its largest —
+	// so it gets the same relief as a loop send: advertise no tool bytes (this
+	// call carries none), shed before the send, and on a provider refusal shed
+	// deeper and resend once.
+	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
+	if segMem != nil {
+		segMem.SetAdvertisedToolsBytes(0)
+		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
+			zap.L().Info("relief: shed before synthesis",
+				zap.String("session_id", session.ID),
+				zap.Int("estimate_tokens", estimate),
+				zap.Int("target_tokens", target))
+		}
+	}
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
+	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
+		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
+		zap.L().Info("context too long at synthesis: relief pass complete, resending once",
+			zap.String("session_id", session.ID),
+			zap.Int("estimate_tokens", estimate),
+			zap.Int("target_tokens", target))
+		finalResp, err = a.chatWithRetry(ctx, session.GetMessages(), nil)
+	}
+	if err == nil {
+		a.observePromptUsage(session, finalResp.Usage)
+	}
 	if err != nil {
 		// Only fall back to guidance message if synthesis fails
 		maxTurnsMessage := a.getGuidanceMessage(ctx, "max_turns_reached", nil)

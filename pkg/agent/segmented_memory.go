@@ -136,6 +136,10 @@ type SegmentedMemory struct {
 	pressureOffload     map[string]bool
 	pressureOffloadTurn int64
 
+	// estimateCalibration scales relief's tiktoken estimate toward the
+	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
+	estimateCalibration float64
+
 	// skillDeactivation is the skills orchestrator's deactivation path, called
 	// when fold flags a region containing a manage_skills load pair.
 	skillDeactivation func(sessionID, skillName string)
