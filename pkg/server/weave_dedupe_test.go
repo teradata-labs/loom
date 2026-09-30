@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
 	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/grpc/codes"
@@ -234,5 +235,6 @@ func TestDedupeReleasesLaunderedCancellation(t *testing.T) {
 func TestWrapAgentErrorPreservesCancellationCodes(t *testing.T) {
 	assert.Equal(t, codes.Canceled, status.Code(wrapAgentError(fmt.Errorf("chat: %w", context.Canceled))))
 	assert.Equal(t, codes.DeadlineExceeded, status.Code(wrapAgentError(fmt.Errorf("chat: %w", context.DeadlineExceeded))))
+	assert.Equal(t, codes.Unavailable, status.Code(wrapAgentError(fmt.Errorf("chat: %w", llm.ErrStreamTimeout))))
 	assert.Equal(t, codes.Internal, status.Code(wrapAgentError(fmt.Errorf("llm rejected the request"))))
 }
