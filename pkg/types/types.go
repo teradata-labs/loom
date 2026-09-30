@@ -174,7 +174,17 @@ type Message struct {
 // OpenAI-compatible (litellm, Mistral, HuggingFace) and Gemini clients subtract
 // the cache buckets out of their cache-inclusive prompt counts to match. Azure
 // OpenAI and Ollama parse no cache fields and report the provider's prompt count.
-// TotalTokens = InputTokens + OutputTokens (cache excluded).
+//
+// TotalTokens is InputTokens + OutputTokens where that sum is exact: the
+// Anthropic, Bedrock InvokeModel/SDK and Ollama clients add the two, and the
+// OpenAI-compatible clients take the provider's total minus the cache buckets,
+// which reduces to the same sum. Gemini computes total minus cache the same
+// way, but its total can exceed InputTokens + OutputTokens by tokens loom does
+// not break out (thinking tokens on thinking models, tool-use prompt tokens).
+// Two clients pass the provider's total through unchanged: Azure OpenAI
+// (cache-inclusive, consistent with its InputTokens) and Bedrock Converse,
+// whose AWS totalTokens is not documented as including or excluding the cache
+// buckets.
 //
 // Throughput limits are a separate question: see RateLimitTokens.
 type Usage struct {
@@ -187,11 +197,14 @@ type Usage struct {
 	CacheReadInputTokens int
 	// CacheCreationInputTokens: tokens written to prompt cache (billed at 1.25x for Anthropic).
 	CacheCreationInputTokens int
-	// RateLimitTokens is what the provider meters against its tokens-per-minute
-	// limit for this call, when that differs from TotalTokens. OpenAI (and the
-	// OpenAI-compatible gateways) and Gemini count cached prompt tokens toward
-	// TPM, so their clients set it to the raw cache-inclusive prompt plus
-	// output. Zero means TotalTokens is the metered figure. Read it through
+	// RateLimitTokens is the figure capacity accounting charges for this call
+	// when it differs from TotalTokens. The OpenAI-compatible and Gemini clients
+	// set it to the provider's raw, cache-inclusive total. OpenAI and Gemini
+	// count cached prompt tokens toward TPM; behind a gateway it depends on the
+	// upstream (Bedrock, for one, does not deduct cache hits from its limits),
+	// so the raw total is the conservative choice, and it is what capacity
+	// accounting charged before cache tokens were split out of InputTokens.
+	// Zero means TotalTokens is the charged figure. Read it through
 	// ThroughputTokens.
 	RateLimitTokens int
 }
