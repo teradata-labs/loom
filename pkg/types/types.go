@@ -175,14 +175,16 @@ type Message struct {
 // the cache buckets out of their cache-inclusive prompt counts to match. Azure
 // OpenAI and Ollama parse no cache fields and report the provider's prompt count.
 //
-// TotalTokens is InputTokens + OutputTokens where loom computes it: the
+// TotalTokens is InputTokens + OutputTokens where that sum is exact: the
 // Anthropic, Bedrock InvokeModel/SDK and Ollama clients add the two, and the
-// OpenAI-compatible and Gemini clients take the provider's own total minus the
-// cache buckets (so on Gemini it also covers tokens loom does not break out,
-// such as thinking tokens). Two clients pass the provider's total through
-// unchanged: Azure OpenAI (cache-inclusive, consistent with its InputTokens)
-// and Bedrock Converse, whose AWS totalTokens is not documented as including
-// or excluding the cache buckets.
+// OpenAI-compatible clients take the provider's total minus the cache buckets,
+// which reduces to the same sum. Gemini computes total minus cache the same
+// way, but its total can exceed InputTokens + OutputTokens by tokens loom does
+// not break out (thinking tokens on thinking models, tool-use prompt tokens).
+// Two clients pass the provider's total through unchanged: Azure OpenAI
+// (cache-inclusive, consistent with its InputTokens) and Bedrock Converse,
+// whose AWS totalTokens is not documented as including or excluding the cache
+// buckets.
 //
 // Throughput limits are a separate question: see RateLimitTokens.
 type Usage struct {
