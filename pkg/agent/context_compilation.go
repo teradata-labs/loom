@@ -754,7 +754,23 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// model sees which capability went out with the folded conversation and can
 	// reload it if still in use. Tracking it as state (not just this fold's text)
 	// keeps the note alive when a later fold's compressor paraphrases the summary.
-	newlyFolded := foldedSkillLoads(region)
+	//
+	// A skill whose load pair ALSO appears after the region was reloaded and its
+	// newer load is still in live context: that activation is current, so it is
+	// neither deactivated nor noted, and a note left by an earlier fold is
+	// dropped. Deactivation is by name, so without this a fold of an old load
+	// pair kills a reload from the very turn that asked for it.
+	stillLoaded := make(map[string]bool)
+	for _, name := range foldedSkillLoads(sm.contextMessages[count:]) {
+		stillLoaded[name] = true
+		delete(sm.foldedSkills, name)
+	}
+	var newlyFolded []string
+	for _, name := range foldedSkillLoads(region) {
+		if !stillLoaded[name] {
+			newlyFolded = append(newlyFolded, name)
+		}
+	}
 	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
 		sm.foldedSkills = make(map[string]bool)
 	}
