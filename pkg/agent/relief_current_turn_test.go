@@ -174,6 +174,36 @@ func TestPressureOffload_InertOnceTurnAdvances(t *testing.T) {
 		"a stale pressure set is inert once the turn advances")
 }
 
+// The model's own query_tool_result read-back is never a last-resort
+// candidate. Shape from the PR #420 review (F1): once the stubs alone keep the
+// estimate over the start mark, the next pass runs the ladder to keep=0 — and
+// before the fix it stubbed the read itself, rendering a stub whose door
+// pointed at the read (message_id=5000). The model could never see the data.
+func TestReleasePressure_CurrentTurnRungNeverStubsQueryToolResultReads(t *testing.T) {
+	readBack := denseResult(0) + denseResult(1) // ~6 KB, one page, under threshold
+	for _, n := range []int{40, 120, 200, 300} {
+		t.Run(fmt.Sprintf("fanout=%d", n), func(t *testing.T) {
+			ctx := context.Background()
+			// usable 19000 → start 17100, target 11400.
+			sm := parallelBatchMemory(t, 20000, 1000, n, "run_query")
+			_, _, _ = sm.ReleasePressure(ctx, 0)
+			require.Contains(t, toolRenders(sm)["c0"], "held in memory this turn",
+				"pass 1 offloads the oldest results")
+
+			// The model reads one offloaded result back through its door.
+			sm.AddMessage(ctx, Message{Role: "assistant", Turn: 2, ToolCalls: []ToolCall{{
+				ID: "read0", Name: "query_tool_result", Input: map[string]interface{}{"message_id": 1000},
+			}}})
+			sm.AddMessage(ctx, Message{Role: "tool", ID: "5000", ToolUseID: "read0", Content: readBack, Turn: 2})
+
+			_, _, _ = sm.ReleasePressure(ctx, 0)
+			r := toolRenders(sm)["read0"]
+			assert.Equal(t, readBack, r, "the read-back renders whole on every later pass")
+			assert.NotContains(t, r, "message_id=5000", "a stub must never point the model at its own read")
+		})
+	}
+}
+
 func TestReleasePressure_CurrentTurnRungOverridesOffloadExemption(t *testing.T) {
 	sm := parallelBatchMemory(t, 12000, 1000, 40, "get_syntax_help")
 	sm.SetOffloadExemptTools([]string{"get_syntax_help"})

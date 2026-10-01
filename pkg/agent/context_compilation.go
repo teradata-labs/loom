@@ -721,10 +721,17 @@ func (sm *SegmentedMemory) pressureOffloadedLocked(m *Message, t int64) bool {
 
 // currentTurnOffloadCandidatesLocked returns, in seq order, the indices of the
 // turn-T tool rows the last-resort rung may offload: not evicted, keyed by a
-// ToolUseID, not already rendered as an offload stub by the size rule, and
-// at least 2× their offload stub (the same floor evictLocked applies — below
-// it, stubbing saves nothing). Rows the rung already offloaded stay in the
-// list, so its length is stable across the ladder. Must hold lock.
+// ToolUseID, not produced by query_tool_result, not already rendered as an
+// offload stub by the size rule, and at least 2× their offload stub (the same
+// floor evictLocked applies — below it, stubbing saves nothing). Rows the rung
+// already offloaded stay in the list, so its length is stable across the
+// ladder. Must hold lock.
+//
+// A query_tool_result row is the model reading an offloaded payload back
+// through the stub's door. Stubbing it would render a stub whose door points
+// at the read itself — the model can never see the data, loops to MaxTurns and
+// answers from previews. The read is already bounded at one page (threshold),
+// so it is never a candidate.
 func (sm *SegmentedMemory) currentTurnOffloadCandidatesLocked(t int64) []int {
 	callName := make(map[string]string)
 	for i := range sm.contextMessages {
@@ -739,6 +746,9 @@ func (sm *SegmentedMemory) currentTurnOffloadCandidatesLocked(t int64) []int {
 		m := &sm.contextMessages[i]
 		if m.Role != "tool" || m.Turn != t || m.Evicted || m.ToolUseID == "" {
 			continue
+		}
+		if callName[m.ToolUseID] == "query_tool_result" {
+			continue // the model's read-back of an offloaded payload
 		}
 		if len(m.Content) > sm.threshold && !sm.offloadExempt[callName[m.ToolUseID]] {
 			continue // the size rule already stubs it
