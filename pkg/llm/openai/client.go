@@ -777,20 +777,11 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 }
 
 // anthropicFallbackPricing returns published Anthropic rates for a model id
-// proxied through an OpenAI-compatible endpoint. Mirrors the bedrock client's
-// substring matching so a gateway-proxied Claude is never priced as a GPT.
+// proxied through an OpenAI-compatible endpoint, so a gateway-proxied Claude is
+// never priced as a GPT. It delegates to catalog.ClaudeFamilyPricing, the
+// matcher shared with the anthropic and bedrock clients.
 func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, matched bool) {
-	switch {
-	case strings.Contains(modelID, "claude-opus-4-1"):
-		return 15.0, 75.0, true
-	case strings.Contains(modelID, "claude-opus"):
-		return 5.0, 25.0, true
-	case strings.Contains(modelID, "claude-haiku"):
-		return 1.0, 5.0, true
-	case strings.Contains(modelID, "claude-sonnet"), strings.Contains(modelID, "claude-3-5-sonnet"):
-		return 3.0, 15.0, true
-	}
-	return 0, 0, false
+	return catalog.ClaudeFamilyPricing(modelID)
 }
 
 // providerCostHeader is litellm's own computed cost for the call. It is
