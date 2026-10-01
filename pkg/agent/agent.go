@@ -2630,6 +2630,37 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = recovery.activeTools(tools)
 				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 			}
+			// Relief has nothing left to shed and the turn's own stubs still
+			// hold the context over the start mark: every further send is a
+			// near-limit loop toward MaxTurns and a preview-backed synthesis.
+			// End the turn with an error the user can act on instead.
+			if o, over := segMem.CurrentTurnOverflow(); over {
+				cause := fmt.Errorf("turn produced too many tool results to fit the context window: "+
+					"%d of %d results are already offloaded to stubs and the turn alone is still %d tokens "+
+					"against a relief start mark of %d; split the work into smaller batches across turns",
+					o.StubbedResults, o.ToolResults, o.FloorTokens, o.StartTokens)
+				zap.L().Error("current turn overflow: turn ends",
+					zap.String("session_id", session.ID),
+					zap.Int("turn", turnCount),
+					zap.Int("floor_tokens", o.FloorTokens),
+					zap.Int("start_tokens", o.StartTokens),
+					zap.Int("stubbed_results", o.StubbedResults),
+					zap.Int("tool_results", o.ToolResults))
+				span.AddEvent("turn.current_turn_overflow", map[string]interface{}{
+					"turn":            turnCount,
+					"floor_tokens":    o.FloorTokens,
+					"start_tokens":    o.StartTokens,
+					"stubbed_results": o.StubbedResults,
+					"tool_results":    o.ToolResults,
+				})
+				return nil, recovery.buildRecoverableError("current_turn_overflow", cause, "",
+					map[string]any{
+						"floor_tokens":    o.FloorTokens,
+						"start_tokens":    o.StartTokens,
+						"stubbed_results": o.StubbedResults,
+						"tool_results":    o.ToolResults,
+					})
+			}
 		}
 
 		// withReminder appends the turn's soft reminder as a trailing system

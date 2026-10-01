@@ -712,6 +712,79 @@ func (sm *SegmentedMemory) currentTurnFloorLocked(t int64) int {
 	return sm.estimateCompiledLocked(kept)
 }
 
+// CurrentTurnOverflow describes a current turn relief cannot bring under its
+// start mark: every result it may offload is already a stub, and the turn alone
+// (ROM, the summary and turn T as rendered, every prior turn gone) is still at
+// or over the start mark.
+type CurrentTurnOverflow struct {
+	// FloorTokens is the calibrated estimate of the turn alone.
+	FloorTokens int
+	// StartTokens is the relief start mark (no penalty).
+	StartTokens int
+	// StubbedResults counts the turn's tool results rendered as stubs.
+	StubbedResults int
+	// ToolResults counts the turn's tool results.
+	ToolResults int
+}
+
+// CurrentTurnOverflow reports whether the current turn has outgrown the window
+// in a way no relief operation can fix — the irreducible cost of its stubs and
+// read-backs alone keeps the context at or over the start mark. Sending anyway
+// buys an uncached near-limit loop whose every pass sheds nothing; the caller
+// ends the turn instead. Called after ReleasePressure: it does not shed, it
+// only reads. False when any candidate still renders whole (the ladder has
+// room) or the turn has no stubbed tool result (the pressure is not the
+// turn's results — a ROM that alone fills the window is a config problem).
+func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	t := sm.currentTurnLocked()
+	// Cheap gate, no compile: it runs before every send, and an overflow needs
+	// at least one turn-T row the pressure rung or the size rule stubs.
+	maybeStubbed := sm.pressureOffloadTurn == t && len(sm.pressureOffload) > 0
+	for i := range sm.contextMessages {
+		if maybeStubbed {
+			break
+		}
+		m := &sm.contextMessages[i]
+		maybeStubbed = m.Role == "tool" && m.Turn == t && (m.Evicted || len(m.Content) > sm.threshold)
+	}
+	if !maybeStubbed {
+		return CurrentTurnOverflow{}, false
+	}
+	for _, i := range sm.currentTurnOffloadCandidatesLocked(t) {
+		if !sm.pressureOffloadedLocked(&sm.contextMessages[i], t) {
+			return CurrentTurnOverflow{}, false
+		}
+	}
+	stored := make(map[string]string)
+	for i := range sm.contextMessages {
+		if m := &sm.contextMessages[i]; m.Role == "tool" && m.Turn == t && m.ToolUseID != "" {
+			stored[m.ToolUseID] = m.Content
+		}
+	}
+	var o CurrentTurnOverflow
+	for _, m := range sm.compileLocked() {
+		if m.Role != "tool" || m.Turn != t {
+			continue
+		}
+		o.ToolResults++
+		if content, ok := stored[m.ToolUseID]; ok && content != m.Content {
+			o.StubbedResults++
+		}
+	}
+	if o.StubbedResults == 0 {
+		return CurrentTurnOverflow{}, false
+	}
+	o.StartTokens = sm.startMarkLocked(0)
+	o.FloorTokens = sm.currentTurnFloorLocked(t)
+	if o.StartTokens <= 0 || o.FloorTokens < o.StartTokens {
+		return CurrentTurnOverflow{}, false
+	}
+	return o, true
+}
+
 // pressureOffloadedLocked reports whether m is a current-turn tool result that
 // relief's last-resort rung has offloaded. Must hold lock.
 func (sm *SegmentedMemory) pressureOffloadedLocked(m *Message, t int64) bool {

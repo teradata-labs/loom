@@ -204,6 +204,79 @@ func TestReleasePressure_CurrentTurnRungNeverStubsQueryToolResultReads(t *testin
 	}
 }
 
+func TestCurrentTurnOverflow(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		build  func(t *testing.T) *SegmentedMemory
+		relief bool
+		want   bool
+	}{
+		{
+			// 300 stubs alone (~136 tokens each) exceed start 17,100.
+			name:   "stubs alone over start after keep=0",
+			build:  func(t *testing.T) *SegmentedMemory { return parallelBatchMemory(t, 20000, 1000, 300, "run_query") },
+			relief: true,
+			want:   true,
+		},
+		{
+			name:   "relief reached target",
+			build:  func(t *testing.T) *SegmentedMemory { return parallelBatchMemory(t, 20000, 1000, 40, "run_query") },
+			relief: true,
+			want:   false,
+		},
+		{
+			// Candidates still render whole: the ladder has room, so this is
+			// relief's job, not an overflow.
+			name:   "before relief runs",
+			build:  func(t *testing.T) *SegmentedMemory { return parallelBatchMemory(t, 20000, 1000, 300, "run_query") },
+			relief: false,
+			want:   false,
+		},
+		{
+			// Every result is over the threshold, so the size rule stubs them
+			// all and the last-resort rung has no candidate: still irreducible.
+			name: "size-rule stubs only",
+			build: func(t *testing.T) *SegmentedMemory {
+				sm := parallelBatchMemory(t, 20000, 1000, 300, "run_query")
+				sm.SetThreshold(1024)
+				return sm
+			},
+			relief: true,
+			want:   true,
+		},
+		{
+			// A ROM that alone fills the window is a config problem, not the
+			// turn's results.
+			name: "no stubbed tool result",
+			build: func(t *testing.T) *SegmentedMemory {
+				sm := NewSegmentedMemory(denseText("rom", 400), 20000, 1000)
+				sm.AddMessage(ctx, Message{Role: "user", Content: "hi", Turn: 1})
+				return sm
+			},
+			relief: true,
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := tt.build(t)
+			if tt.relief {
+				_, _, _ = sm.ReleasePressure(ctx, 0)
+			}
+			o, over := sm.CurrentTurnOverflow()
+			require.Equal(t, tt.want, over)
+			if !tt.want {
+				assert.Equal(t, CurrentTurnOverflow{}, o)
+				return
+			}
+			assert.GreaterOrEqual(t, o.FloorTokens, o.StartTokens)
+			assert.Equal(t, 300, o.ToolResults)
+			assert.Equal(t, 300, o.StubbedResults, "every result is a stub at keep=0")
+		})
+	}
+}
+
 func TestReleasePressure_CurrentTurnRungOverridesOffloadExemption(t *testing.T) {
 	sm := parallelBatchMemory(t, 12000, 1000, 40, "get_syntax_help")
 	sm.SetOffloadExemptTools([]string{"get_syntax_help"})
