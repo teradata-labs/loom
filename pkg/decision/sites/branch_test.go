@@ -59,9 +59,9 @@ func TestBranchReferenceAndChosen(t *testing.T) {
 	req, err := BranchRequest("Classify: the app crashes on start", []string{"bug", "feature"})
 	require.NoError(t, err)
 	m := mock.New().AnswerChoice(QBranch, map[string]float64{"bug": 0.9, "feature": 0.05, BranchNoneOfThese: 0.05})
-	out := decision.NewRouter(m).Decide(context.Background(), req)
+	out := decision.NewRouter(m, decision.WithBand(SiteWorkflowBranch, decision.Band{ActMin: 0.5})).Decide(context.Background(), req)
 	require.NoError(t, out.Err)
-	key, ok := BranchChosen(out.Response)
+	key, ok := BranchChosen(out.Response, out.Band)
 	assert.True(t, ok)
 	assert.Equal(t, "bug", key)
 	assert.InDelta(t, 0.85, out.Confidence, 1e-9, "(3·0.9−1)/2")
@@ -70,6 +70,6 @@ func TestBranchReferenceAndChosen(t *testing.T) {
 	require.Len(t, records, 1)
 	assert.Equal(t, records[0].CandidateAnswer, records[0].ReferenceAnswer)
 
-	_, ok = BranchChosen(nil)
+	_, ok = BranchChosen(nil, decision.ShadowBand)
 	assert.False(t, ok)
 }

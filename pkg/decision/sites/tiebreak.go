@@ -106,12 +106,18 @@ func TieBreakReference(judgeDecision string) map[string]decision.Reference {
 // TieBreakWinner returns the decider's pick. ok is false when the response
 // carries no usable Choice answer. The key may be decision.NoneOption, which
 // no caller should act on: a tie-break has to name a choice.
-func TieBreakWinner(resp *loomv1.DecisionResponse) (key string, ok bool) {
+//
+// ok is also false when the answer is less decisive than the band's act_min
+// (under per_question the router leaves that check to the site).
+func TieBreakWinner(resp *loomv1.DecisionResponse, band decision.Band) (key string, ok bool) {
 	if resp == nil {
 		return "", false
 	}
 	a, err := decision.ChoiceOf(resp, QTieWinner)
 	if err != nil || a == nil || a.Choice == "" {
+		return "", false
+	}
+	if !band.Confident(resp.Answers[QTieWinner]) {
 		return "", false
 	}
 	return a.Choice, true

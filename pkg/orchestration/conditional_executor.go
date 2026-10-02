@@ -259,15 +259,23 @@ func (e *ConditionalExecutor) liveBranch(ctx context.Context, conditionAgent *ag
 	if !out.Act() {
 		return req, out, "", false
 	}
-	key, ok := sites.BranchChosen(out.Response)
+	// From here on the router said DECIDER, so every way of not acting is
+	// recorded as a FALLBACK row: the condition agent decides.
+	key, ok := sites.BranchChosen(out.Response, out.Band)
 	if !ok {
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return req, out, "", false
 	}
 	if key == sites.BranchNoneOfThese {
-		return req, out, key, e.pattern.DefaultBranch != nil
+		if e.pattern.DefaultBranch == nil {
+			out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+			return req, out, key, false
+		}
+		return req, out, key, true
 	}
 	if _, exists := e.pattern.Branches[key]; !exists {
 		// The decider answered outside the option set; never act on that.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return req, out, "", false
 	}
 	return req, out, key, true

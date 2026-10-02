@@ -954,6 +954,8 @@ func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent
 	}
 	valid, ok := sites.ValidationVerdict(out.Response, out.Band)
 	if !ok {
+		// No usable or decisive answer: the LLM validator decides.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return req, out, false, false
 	}
 	if valid && out.Band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY {

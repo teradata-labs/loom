@@ -169,6 +169,7 @@ func TestConditionalDecision_NoneOfTheseTakesDefaultOnlyWhenPresent(t *testing.T
 		assert.Equal(t, sites.BranchNoneOfThese, rows[0].CandidateAnswer)
 		assert.Equal(t, "bug", rows[0].ReferenceAnswer)
 		assert.Equal(t, sites.ReferenceSourceSelectBranch, rows[0].ReferenceSource)
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path, "the agent decided, so the row is a fallback")
 	})
 }
 

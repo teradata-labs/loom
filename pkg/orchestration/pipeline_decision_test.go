@@ -174,3 +174,27 @@ func TestStageValidationDecision_DeciderErrorFallsBack(t *testing.T) {
 	assert.Equal(t, 1, validator.count(), "a decider error never costs the workflow anything")
 	ag.WaitDecisionShadows()
 }
+
+// Review #410 minor: under aggregate per_question with act_min 0.9, a p=0.55
+// verdict (decisiveness 0.1) passed the stage without the validator LLM.
+// It must fall back to the LLM, and the row must say FALLBACK.
+func TestStageValidationDecision_PerQuestionHonoursActMin(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55)
+	store := &memShadowStore{}
+	_, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
+		decision.WithBands([]*loomv1.DecisionBand{{
+			Site:      sites.SiteStageValidation,
+			ActMin:    0.9,
+			Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+		}}))
+	require.NoError(t, err)
+	assert.Equal(t, 1, validator.count(), "an indecisive verdict must not pass a stage on its own")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "true", rows[0].ReferenceAnswer, "recorded against the LLM's verdict")
+}

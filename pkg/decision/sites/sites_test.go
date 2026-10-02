@@ -298,3 +298,48 @@ func TestRerankKeptHonoursTrueMin(t *testing.T) {
 	kept, _ = RerankKeptWithBand(resp.Response, 4, decision.Band{ActMin: 0.9, TrueMin: 0.2, Aggregate: perQuestion})
 	assert.Equal(t, []int{0, 1, 2, 3}, kept, "a high act_min keeps uncertain candidates regardless")
 }
+
+// Review #410 minor: under aggregate per_question the router returns DECIDER
+// whatever the confidence and leaves act_min to the site. The four
+// single-question sites must apply it: an indecisive answer is not acted on
+// under per_question, exactly as the router would refuse it under MIN.
+func TestSingleQuestionSitesApplyActMinPerAnswer(t *testing.T) {
+	t.Parallel()
+	perQ := func(actMin float64) decision.Band {
+		return decision.Band{ActMin: actMin, Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION}
+	}
+	noul := func(id string, p float64) *loomv1.DecisionResponse {
+		return &loomv1.DecisionResponse{Answers: map[string]*loomv1.DecisionAnswer{
+			id: {Kind: &loomv1.DecisionAnswer_Noul{Noul: &loomv1.NoulAnswer{Probability: p}}},
+		}}
+	}
+	choice := func(id, pick string, conf float64) *loomv1.DecisionResponse {
+		return &loomv1.DecisionResponse{Answers: map[string]*loomv1.DecisionAnswer{
+			id: {Kind: &loomv1.DecisionAnswer_Choice{Choice: &loomv1.ChoiceAnswer{Choice: pick, Confidence: conf}}},
+		}}
+	}
+
+	// p=0.55 has decisiveness 0.1: under act_min 0.9 no site may act.
+	_, ok := ValidationVerdict(noul(QOutputValid, 0.55), perQ(0.9))
+	assert.False(t, ok, "validation acted on a 0.1-decisive answer")
+	_, ok = ConsensusVerdict(noul(QConsensus, 0.55), perQ(0.9))
+	assert.False(t, ok, "consensus acted on a 0.1-decisive answer")
+	_, ok = BranchChosen(choice(QBranch, "bug", 0.04), perQ(0.9))
+	assert.False(t, ok, "branch acted on a 0.04-confident answer")
+	_, ok = TieBreakWinner(choice(QTieWinner, "a", 0.04), perQ(0.9))
+	assert.False(t, ok, "tie-break acted on a 0.04-confident answer")
+
+	// Decisive answers still act.
+	valid, ok := ValidationVerdict(noul(QOutputValid, 0.99), perQ(0.9))
+	assert.True(t, ok)
+	assert.True(t, valid)
+	reached, ok := ConsensusVerdict(noul(QConsensus, 0.01), perQ(0.9))
+	assert.True(t, ok)
+	assert.False(t, reached)
+	key, ok := BranchChosen(choice(QBranch, "bug", 0.95), perQ(0.9))
+	assert.True(t, ok)
+	assert.Equal(t, "bug", key)
+	key, ok = TieBreakWinner(choice(QTieWinner, "a", 0.95), perQ(0.9))
+	assert.True(t, ok)
+	assert.Equal(t, "a", key)
+}

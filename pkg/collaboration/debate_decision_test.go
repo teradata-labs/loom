@@ -206,3 +206,27 @@ func TestDebateWithoutDecisionLayerIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "true", res.Metadata["consensus_achieved"])
 }
+
+// Review #410 minor: with aggregate per_question the router returns DECIDER
+// for any answer; an indecisive "no consensus" (p=0.45, decisiveness 0.1)
+// under act_min 0.9 must not override the heuristic, and the row must say
+// FALLBACK.
+func TestDebateConsensusDecision_PerQuestionHonoursActMin(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QConsensus, 0.45)
+	store := &memShadowStore{}
+	res, moderator, err := runDisagreeingDebate(t, dec, store, decision.WithBands([]*loomv1.DecisionBand{{
+		Site:      sites.SiteDebateConsensus,
+		ActMin:    0.9,
+		Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+	}}))
+	require.NoError(t, err)
+	assert.Equal(t, "true", res.Metadata["consensus_achieved"], "the heuristic decides")
+	moderator.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	for _, r := range rows {
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, r.Path)
+	}
+}

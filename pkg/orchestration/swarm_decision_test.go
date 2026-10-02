@@ -153,3 +153,27 @@ func TestTiedChoices(t *testing.T) {
 	assert.Len(t, tiedChoices(map[string]int32{"a": 2}), 1)
 	assert.Empty(t, tiedChoices(nil))
 }
+
+// Review #410 minor: under aggregate per_question with act_min 0.9 a tie-break
+// pick with confidence ~0.04 was acted on. The judge must decide instead, and
+// the row must say FALLBACK.
+func TestSwarmTieBreakDecision_PerQuestionHonoursActMin(t *testing.T) {
+	t.Parallel()
+	judgeLLM := newMockLLMProvider("PostgreSQL")
+	dec := decisionmock.New().AnswerChoice(sites.QTieWinner, map[string]float64{"MongoDB": 0.36, "PostgreSQL": 0.34, decision.NoneOption: 0.30})
+	store := &memShadowStore{}
+	judge := newDecisionAgent(t, "judge", judgeLLM, dec, store, decision.WithBands([]*loomv1.DecisionBand{{
+		Site:      sites.SiteSwarmTieBreak,
+		ActMin:    0.9,
+		Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+	}}))
+	res, err := runTiedSwarm(t, judge)
+	require.NoError(t, err)
+	assert.Equal(t, "PostgreSQL", res.MergedOutput, "the judge decided")
+	assert.Equal(t, 1, judgeLLM.calls())
+	judge.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+}

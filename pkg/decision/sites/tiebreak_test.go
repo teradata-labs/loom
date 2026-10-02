@@ -62,12 +62,12 @@ func TestTieBreakReferenceAndWinner(t *testing.T) {
 	req, err := TieBreakRequest("q", map[string]int32{"a": 1, "b": 1}, nil)
 	require.NoError(t, err)
 	m := mock.New().AnswerChoice(QTieWinner, map[string]float64{"a": 0.9, "b": 0.05, decision.NoneOption: 0.05})
-	out := decision.NewRouter(m).Decide(context.Background(), req)
+	out := decision.NewRouter(m, decision.WithBand(SiteSwarmTieBreak, decision.Band{ActMin: 0.5})).Decide(context.Background(), req)
 	require.NoError(t, out.Err)
-	key, ok := TieBreakWinner(out.Response)
+	key, ok := TieBreakWinner(out.Response, out.Band)
 	assert.True(t, ok)
 	assert.Equal(t, "a", key)
 
-	_, ok = TieBreakWinner(nil)
+	_, ok = TieBreakWinner(nil, decision.ShadowBand)
 	assert.False(t, ok)
 }

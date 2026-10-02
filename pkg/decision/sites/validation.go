@@ -82,14 +82,19 @@ func ValidationReference(valid bool) map[string]decision.Reference {
 }
 
 // ValidationVerdict returns the decider's verdict: valid when the Noul
-// probability is at least 0.5. ok is false when the response carries no
-// usable answer.
+// probability is at least the band's true_min (default 0.5). ok is false
+// when the response carries no usable answer or the answer is less decisive
+// than the band's act_min (under aggregate per_question the router leaves
+// that check to the site).
 func ValidationVerdict(resp *loomv1.DecisionResponse, band decision.Band) (valid bool, ok bool) {
 	if resp == nil {
 		return false, false
 	}
 	a, err := decision.NoulOf(resp, QOutputValid)
 	if err != nil || a == nil {
+		return false, false
+	}
+	if !band.Confident(resp.Answers[QOutputValid]) {
 		return false, false
 	}
 	return band.IsTrue(a.Probability), true

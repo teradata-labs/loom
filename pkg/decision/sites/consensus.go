@@ -97,13 +97,18 @@ func ConsensusReference(reached bool) map[string]decision.Reference {
 }
 
 // ConsensusVerdict returns the decider's verdict: consensus when the Noul
-// probability is at least 0.5. ok is false when there is no usable answer.
+// probability is at least the band's true_min (default 0.5). ok is false
+// when there is no usable answer or the answer is less decisive than the
+// band's act_min (under per_question the router leaves that to the site).
 func ConsensusVerdict(resp *loomv1.DecisionResponse, band decision.Band) (reached bool, ok bool) {
 	if resp == nil {
 		return false, false
 	}
 	a, err := decision.NoulOf(resp, QConsensus)
 	if err != nil || a == nil {
+		return false, false
+	}
+	if !band.Confident(resp.Answers[QConsensus]) {
 		return false, false
 	}
 	return band.IsTrue(a.Probability), true

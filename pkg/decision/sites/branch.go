@@ -85,15 +85,19 @@ func BranchReference(selectedKey string) map[string]decision.Reference {
 }
 
 // BranchChosen returns the decider's branch key. ok is false when the
-// response carries no usable Choice answer. The key may be
-// BranchNoneOfThese; the caller decides whether a default branch makes that
-// actionable.
-func BranchChosen(resp *loomv1.DecisionResponse) (key string, ok bool) {
+// response carries no usable Choice answer, or the answer is less decisive
+// than the band's act_min (under per_question the router leaves that to the
+// site). The key may be BranchNoneOfThese; the caller decides whether a
+// default branch makes that actionable.
+func BranchChosen(resp *loomv1.DecisionResponse, band decision.Band) (key string, ok bool) {
 	if resp == nil {
 		return "", false
 	}
 	a, err := decision.ChoiceOf(resp, QBranch)
 	if err != nil || a == nil || a.Choice == "" {
+		return "", false
+	}
+	if !band.Confident(resp.Answers[QBranch]) {
 		return "", false
 	}
 	return a.Choice, true

@@ -700,8 +700,9 @@ func (e *SwarmExecutor) liveTieBreak(ctx context.Context, judge *agent.Agent, se
 	if !out.Act() {
 		return req, out, "", false
 	}
-	key, ok := sites.TieBreakWinner(out.Response)
+	key, ok := sites.TieBreakWinner(out.Response, out.Band)
 	if !ok {
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return req, out, "", false
 	}
 	if _, isTied := tied[key]; !isTied {
