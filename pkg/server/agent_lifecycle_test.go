@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -198,6 +199,35 @@ func TestAgentLifecycle_GetAgent(t *testing.T) {
 			assert.Equal(t, "running", resp.Status)
 		})
 	}
+}
+
+func TestAgentLifecycle_GetAgentIncludesRegistryConfig(t *testing.T) {
+	srv := newTestMultiAgentServer(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    filepath.Join(t.TempDir(), "registry.db"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, registry.Close()) })
+
+	config := &loomv1.AgentConfig{
+		Name:         "test-agent",
+		Description:  "Experiment subject",
+		SystemPrompt: "Follow the experiment protocol.",
+	}
+	registry.RegisterConfig(config)
+	srv.SetAgentRegistry(registry)
+	agentIDs := srv.GetAgentIDs()
+	require.Len(t, agentIDs, 1)
+
+	response, err := srv.GetAgent(
+		context.Background(),
+		&loomv1.GetAgentRequest{AgentId: agentIDs[0]},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, response.Config)
+	assert.Equal(t, config.Name, response.Config.Name)
+	assert.Equal(t, config.SystemPrompt, response.Config.SystemPrompt)
 }
 
 // --- StartAgent / StopAgent state transitions ---
