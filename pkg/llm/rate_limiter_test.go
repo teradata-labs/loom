@@ -81,15 +81,15 @@ func TestRateLimiter_Do_Success(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return "success", nil
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, "success", result)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(1), metrics.TotalRequests)
@@ -107,10 +107,9 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
-		if callCount < 3 {
+		if callCount.Add(1) < 3 {
 			return nil, errors.New("ThrottlingException: Too many tokens")
 		}
 		return "success", nil
@@ -118,7 +117,7 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "success", result)
-	assert.Equal(t, 3, callCount) // Called 3 times (2 failures + 1 success)
+	assert.Equal(t, int32(3), callCount.Load()) // Called 3 times (2 failures + 1 success)
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(3), metrics.TotalRequests)
@@ -136,16 +135,16 @@ func TestRateLimiter_Do_ThrottlingExhausted(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return nil, errors.New("HTTP 429: rate limit exceeded")
 	})
 
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "failed after 3 retries")
-	assert.Equal(t, 3, callCount) // MaxRetries=2 means 3 total attempts
+	assert.Equal(t, int32(3), callCount.Load()) // MaxRetries=2 means 3 total attempts
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(3), metrics.TotalRequests)
@@ -165,10 +164,9 @@ func TestRateLimiter_Do_TransientRetry(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
-		if callCount < 3 {
+		if callCount.Add(1) < 3 {
 			return nil, NewTransientError(errors.New("API error (status 500): The server had an error while processing your request"), 500, 0)
 		}
 		return "success", nil
@@ -176,7 +174,7 @@ func TestRateLimiter_Do_TransientRetry(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "success", result)
-	assert.Equal(t, 3, callCount)
+	assert.Equal(t, int32(3), callCount.Load())
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(3), metrics.TotalRequests)
@@ -198,9 +196,9 @@ func TestRateLimiter_Do_TransientExhausted(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return nil, NewTransientError(errors.New("API error (status 503): unavailable"), 503, 0)
 	})
 
@@ -208,7 +206,7 @@ func TestRateLimiter_Do_TransientExhausted(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "failed after 3 retries due to a transient server error")
 	assert.True(t, IsTransient(err), "the typed cause survives the wrap")
-	assert.Equal(t, 3, callCount)
+	assert.Equal(t, int32(3), callCount.Load())
 	assert.Equal(t, int64(3), rl.GetMetrics().TransientRequests)
 }
 
@@ -235,13 +233,13 @@ func TestRateLimiter_Do_NonTransientErrorsNotRetried(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rl := NewRateLimiter(config)
 			defer func() { _ = rl.Close() }()
-			callCount := 0
+			var callCount atomic.Int32
 			_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-				callCount++
+				callCount.Add(1)
 				return nil, tc.err
 			})
 			require.Error(t, err)
-			assert.Equal(t, 1, callCount, "must not be retried")
+			assert.Equal(t, int32(1), callCount.Load(), "must not be retried")
 			assert.Equal(t, int64(0), rl.GetMetrics().TransientRequests)
 		})
 	}
@@ -288,13 +286,13 @@ func TestRateLimiter_TypedTransientWinsOverThrottleSniffing(t *testing.T) {
 	defer func() { _ = rl.Close() }()
 
 	body := errors.New(`API error (status 529): {"error":{"type":"overloaded_error","request_id":"req_011CV6xt429Kk"}}`)
-	callCount := 0
+	var callCount atomic.Int32
 	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return nil, NewTransientError(body, 529, 0)
 	})
 	require.Error(t, err)
-	assert.Equal(t, 2, callCount)
+	assert.Equal(t, int32(2), callCount.Load())
 	m := rl.GetMetrics()
 	assert.Equal(t, int64(2), m.TransientRequests)
 	assert.Equal(t, int64(0), m.ThrottledRequests)
@@ -362,16 +360,16 @@ func TestRateLimiter_TransientRetryRespectsContext(t *testing.T) {
 	defer func() { _ = rl.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	callCount := 0
+	var callCount atomic.Int32
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	start := time.Now()
 	_, err := rl.Do(ctx, func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return nil, NewTransientError(errors.New("API error (status 502): bad gateway"), 502, 0)
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
 
@@ -383,15 +381,15 @@ func TestRateLimiter_Do_Disabled(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return "direct", nil
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, "direct", result)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 
 	// Metrics should not be updated when disabled
 	metrics := rl.GetMetrics()
@@ -678,10 +676,9 @@ func TestRateLimiter_Metrics(t *testing.T) {
 	require.NoError(t, err)
 
 	// Execute throttled request (retries twice, succeeds on 3rd)
-	callCount := 0
+	var callCount atomic.Int32
 	_, err = rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
-		if callCount < 3 {
+		if callCount.Add(1) < 3 {
 			return nil, errors.New("429 throttled")
 		}
 		return "ok", nil
@@ -717,11 +714,10 @@ func TestRateLimiter_ConcurrentThrottling(t *testing.T) {
 			defer wg.Done()
 
 			// Simulate occasional throttling
-			callCount := 0
+			var callCount atomic.Int32
 			result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-				callCount++
 				// 30% chance of throttling on first attempt
-				if callCount == 1 && id%3 == 0 {
+				if callCount.Add(1) == 1 && id%3 == 0 {
 					return nil, errors.New("429 rate limit")
 				}
 				return fmt.Sprintf("request-%d", id), nil
