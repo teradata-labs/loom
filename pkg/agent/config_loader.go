@@ -200,14 +200,6 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 	if provider == "" {
 		provider = DecisionProviderOff
 	}
-	for i, b := range y.Bands {
-		if b.TrueMin < 0 || b.TrueMin > 1 {
-			return nil, fmt.Errorf("decision.bands[%d].true_min must be within [0,1], got %v", i, b.TrueMin)
-		}
-	}
-	if y.MaxQuestionsPerRequest < 0 {
-		return nil, fmt.Errorf("decision.max_questions_per_request must be >= 0, got %d", y.MaxQuestionsPerRequest)
-	}
 	cfg := &loomv1.DecisionConfig{
 		Provider:               provider,
 		Model:                  y.Model,
