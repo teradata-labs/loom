@@ -1089,7 +1089,6 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 	}
 	if toolRegistry != nil {
 		a.executor.SetToolRegistry(toolRegistry)
-		a.propagateDecisionRouter(toolRegistry)
 	}
 	if mcpManager != nil {
 		a.executor.SetMCPManager(mcpManager)

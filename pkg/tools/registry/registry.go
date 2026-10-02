@@ -27,7 +27,6 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
-	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -42,12 +41,6 @@ type Registry struct {
 	mu             sync.RWMutex
 	indexers       []Indexer
 	liveMCPServers func() []string
-
-	// Decision layer (pkg/decision): shadow-evaluates the LLM rerank. Set by
-	// SetDecisionRouter; nil means off. See decision_shadow.go.
-	decisionRouter   *decision.Router
-	decisionRecorder *decision.ShadowRecorder
-	decisionWG       sync.WaitGroup
 }
 
 // Indexer is an interface for tool source indexers.
@@ -528,6 +521,12 @@ func (r *Registry) updateSourceInfo(ctx context.Context, name string, source loo
 
 // Search performs LLM-assisted tool search.
 func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error) {
+	return r.search(ctx, req, nil)
+}
+
+// search is Search with the calling agent's decision layer, when the call
+// came from that agent's SearchTool. The registry itself holds no router.
+func (r *Registry) search(ctx context.Context, req *loomv1.SearchToolsRequest, dl *searchDecision) (*loomv1.SearchToolsResponse, error) {
 	ctx, span := r.tracer.StartSpan(ctx, "tools.registry.search")
 	defer r.tracer.EndSpan(span)
 
@@ -568,7 +567,7 @@ func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (
 	var results []*loomv1.ToolSearchResult
 	if (mode == loomv1.SearchMode_SEARCH_MODE_BALANCED || mode == loomv1.SearchMode_SEARCH_MODE_ACCURATE) && r.llm != nil && len(candidates) > 0 {
 		rerankStart := time.Now()
-		results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates)
+		results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates, dl)
 		metadata.LlmRerankingMs = time.Since(rerankStart).Milliseconds()
 	} else {
 		// FAST mode or no LLM - use FTS scores directly
@@ -803,7 +802,9 @@ Example output: ["send", "message", "notification", "alert", "webhook", "post"]`
 }
 
 // rerankWithLLM uses LLM to re-rank search candidates for better accuracy.
-func (r *Registry) rerankWithLLM(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult) []*loomv1.ToolSearchResult {
+// dl is the calling agent's decision layer (nil: none); it shadows the
+// rerank in the background and never changes the result here.
+func (r *Registry) rerankWithLLM(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult, dl *searchDecision) []*loomv1.ToolSearchResult {
 	if r.llm == nil || len(candidates) == 0 {
 		return candidates
 	}
@@ -870,7 +871,7 @@ Example output: [{"index": 2, "score": 0.95, "reason": "Exact match for slack no
 	// Decision layer shadow (plan Phase 1, site tool_search.rerank): the
 	// decider scores the same candidates in the background and the result is
 	// recorded against the indexes the LLM kept. Nothing branches on it yet.
-	r.shadowRerank(ctx, query, candidates, reranked)
+	dl.shadowRerank(ctx, r.logger, query, candidates, reranked)
 
 	if len(reranked) == 0 {
 		return candidates

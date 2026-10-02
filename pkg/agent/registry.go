@@ -1013,7 +1013,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
-			st := toolregistry.NewSearchTool(r.toolRegistry)
+			// The agent's own decision layer (if any) travels with its
+			// SearchTool; the shared tool registry holds no router.
+			st := toolregistry.NewSearchTool(r.toolRegistry, agent.SearchToolOptions()...)
 			// Hide tools the agent's permission policy would refuse, so the model
 			// never discovers (and then calls) a disabled tool via tool_search.
 			// Read lazily so it reflects the checker regardless of wiring order.

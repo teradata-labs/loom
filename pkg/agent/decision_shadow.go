@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 )
 
 // Decision-layer wiring for the agent.
@@ -295,18 +296,30 @@ func (a *Agent) shadowFailureKind(ctx context.Context, sessionID, toolName strin
 	a.runShadow(ctx, sessionID, req, sites.FailureKindReference(success, errorCode, errorText))
 }
 
-// propagateDecisionRouter hands the router to a tool registry that can use
-// it (tool_search's rerank). The registry is reached through the shuttle
-// interface, so this is an optional capability check, not a hard type.
-func (a *Agent) propagateDecisionRouter(reg shuttle.ToolRegistry) {
-	if a.decisionRouter == nil || reg == nil {
-		return
+// SearchToolOptions returns the options that give this agent's tool_search
+// its own decision layer. Pass them to toolregistry.NewSearchTool when the
+// agent's SearchTool is built. An agent with no decision layer gets none,
+// so its tool_search never consults any decider. The tool registry itself
+// is shared by every agent and holds no router.
+func (a *Agent) SearchToolOptions() []toolregistry.SearchToolOption {
+	if a.decisionRouter == nil {
+		return nil
 	}
-	if sink, ok := reg.(interface {
-		SetDecisionRouter(*decision.Router, decision.ShadowStore)
-	}); ok {
-		sink.SetDecisionRouter(a.decisionRouter, a.decisionShadowStore)
-	}
+	return []toolregistry.SearchToolOption{toolregistry.WithDecision(toolregistry.DecisionBinding{
+		Router:   a.decisionRouter,
+		Recorder: a.decisionRecorder,
+		Track:    a.goDecisionShadow,
+	})}
+}
+
+// goDecisionShadow runs fn in the background on the agent's shadow
+// WaitGroup, so WaitDecisionShadows covers it.
+func (a *Agent) goDecisionShadow(fn func()) {
+	a.decisionWG.Add(1)
+	go func() {
+		defer a.decisionWG.Done()
+		fn()
+	}()
 }
 
 // decisionConfigSummary is a one-line description for logs and status.

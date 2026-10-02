@@ -28,27 +28,58 @@ import (
 // shadowTimeout bounds one background shadow evaluation.
 const shadowTimeout = 30 * time.Second
 
-// SetDecisionRouter wires the decision layer into tool_search's rerank. The
-// agent calls it when it hands the registry to its executor; a nil router
-// disables the shadow. The store may be nil (shadows traced, not persisted).
-func (r *Registry) SetDecisionRouter(router *decision.Router, store decision.ShadowStore) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.decisionRouter = router
-	r.decisionRecorder = decision.NewShadowRecorder(store, r.tracer)
+// DecisionBinding is one agent's decision layer as its tool_search sees it.
+// It travels with that agent's SearchTool, never with the shared Registry:
+// the registry is one per server and serves every agent, so a router stored
+// on it would let one agent's decider and bands govern every agent's search.
+type DecisionBinding struct {
+	// Router is the agent's decision router. Nil means no decision layer.
+	Router *decision.Router
+	// Recorder persists shadow rows; nil traces nothing and stores nothing.
+	Recorder *decision.ShadowRecorder
+	// Track runs a background shadow evaluation on the owner's books so the
+	// owner (the agent) can wait for it at shutdown. Nil runs it on the
+	// SearchTool's own WaitGroup (SearchTool.WaitDecisionShadows).
+	Track func(fn func())
 }
 
-// WaitDecisionShadows blocks until in-flight shadow evaluations finish. Tests
-// call it before asserting on the store.
-func (r *Registry) WaitDecisionShadows() { r.decisionWG.Wait() }
+// SearchToolOption configures a SearchTool at construction.
+type SearchToolOption func(*SearchTool)
+
+// WithDecision gives this SearchTool (one agent's tool_search) the agent's
+// decision layer. A binding with a nil Router is ignored: an agent with no
+// decision layer gets no router.
+func WithDecision(b DecisionBinding) SearchToolOption {
+	return func(t *SearchTool) {
+		if b.Router == nil {
+			return
+		}
+		sd := &searchDecision{router: b.Router, recorder: b.Recorder, track: b.Track}
+		if sd.track == nil {
+			sd.track = func(fn func()) {
+				t.decisionWG.Add(1)
+				go func() {
+					defer t.decisionWG.Done()
+					fn()
+				}()
+			}
+		}
+		t.decision = sd
+	}
+}
+
+// searchDecision is the per-call decision context Registry.search receives
+// from the SearchTool that made the call. Nil means no decision layer.
+type searchDecision struct {
+	router   *decision.Router
+	recorder *decision.ShadowRecorder
+	track    func(fn func())
+}
 
 // shadowRerank evaluates the decider's relevance judgment for every candidate
 // in the background and records it against the candidates the LLM kept.
-func (r *Registry) shadowRerank(ctx context.Context, query string, candidates, kept []*loomv1.ToolSearchResult) {
-	r.mu.RLock()
-	router, recorder := r.decisionRouter, r.decisionRecorder
-	r.mu.RUnlock()
-	if router == nil || len(candidates) == 0 {
+func (d *searchDecision) shadowRerank(ctx context.Context, logger *zap.Logger, query string, candidates, kept []*loomv1.ToolSearchResult) {
+	if d == nil || d.router == nil || len(candidates) == 0 {
 		return
 	}
 
@@ -62,7 +93,7 @@ func (r *Registry) shadowRerank(ctx context.Context, query string, candidates, k
 	}
 	req, err := sites.RerankRequest(sites.SiteToolSearchRerank, query, texts)
 	if err != nil {
-		r.logger.Debug("decision shadow: tool_search rerank request", zap.Error(err))
+		logger.Debug("decision shadow: tool_search rerank request", zap.Error(err))
 		return
 	}
 	keptSet := make(map[*loomv1.ToolSearchResult]struct{}, len(kept))
@@ -78,20 +109,19 @@ func (r *Registry) shadowRerank(ctx context.Context, query string, candidates, k
 	refs := sites.RerankReference(len(candidates), keptIdx, sites.ReferenceSourceLLMRerank)
 
 	provider := ""
-	if router.Decider() != nil {
-		provider = router.Decider().Name()
+	if d.router.Decider() != nil {
+		provider = d.router.Decider().Name()
 	}
 	sessionID := decision.SessionIDFromContext(ctx)
 	bg := decision.WithSessionID(context.WithoutCancel(ctx), sessionID)
-	r.decisionWG.Add(1)
-	go func() {
-		defer r.decisionWG.Done()
+	router, recorder := d.router, d.recorder
+	d.track(func() {
 		shadowCtx, cancel := context.WithTimeout(bg, shadowTimeout)
 		defer cancel()
 		out := router.Decide(shadowCtx, req)
 		records := decision.BuildShadowRecords(req, out, provider, sessionID, refs)
 		if err := recorder.Record(shadowCtx, records); err != nil {
-			r.logger.Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
+			logger.Debug("decision shadow: record failed", zap.String("site", req.Site), zap.Error(err))
 		}
-	}()
+	})
 }

@@ -2218,7 +2218,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Register tool_search and enable dynamic tool registration if tool registry available.
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
-					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Per-agent: the agent's decision layer (if any) travels
+					// with its own SearchTool, never with the shared registry.
+					searchTool := toolregistry.NewSearchTool(toolRegistry, ag.SearchToolOptions()...)
 					// Hide tools the permission policy would refuse, so the model
 					// never discovers (then calls) a disabled tool via tool_search.
 					if permissionChecker != nil {
@@ -3484,7 +3486,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Register tool_search and enable dynamic tool registration if tool registry available.
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
-				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				// Per-agent decision layer, as at startup.
+				searchTool := toolregistry.NewSearchTool(toolRegistry, newAgent.SearchToolOptions()...)
 				if permissionChecker != nil {
 					searchTool.SetToolFilter(permissionChecker.Advertisable)
 				}
