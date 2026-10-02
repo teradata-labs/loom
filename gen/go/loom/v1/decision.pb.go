@@ -1173,7 +1173,11 @@ type DecisionConfig struct {
 	AllowAlias bool `protobuf:"varint,3,opt,name=allow_alias,json=allowAlias,proto3" json:"allow_alias,omitempty"`
 	// Per-request timeout in milliseconds.
 	TimeoutMs int64 `protobuf:"varint,4,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	// Base URL override, for gateways (for example the Vercel AI Gateway path).
+	// Not accepted. The decider endpoint decides where the server's decider
+	// credential is sent, so it is server-level only: looms.yaml
+	// decision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any
+	// non-empty value here fails validation (agent YAML, ValidateAgentConfig,
+	// judge registration) and is refused again when the decider is built.
 	BaseUrl string `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
 	// Maximum decision requests per session before the router falls back.
 	MaxPerSession int64 `protobuf:"varint,6,opt,name=max_per_session,json=maxPerSession,proto3" json:"max_per_session,omitempty"`

@@ -73,6 +73,7 @@ var (
 	decisionConcurrency int
 	decisionSample      string
 	decisionBaseURL     string
+	decisionInsecure    bool
 	decisionSeed        int64
 	decisionRPM         float64
 )
@@ -94,7 +95,8 @@ func init() {
 
 	decisionReplayCmd.Flags().IntVar(&decisionLimit, "limit", 1000, "Maximum tool executions to replay, newest first")
 	decisionReplayCmd.Flags().StringVar(&decisionDecider, "decider", "llm", "Decider to shadow: jev | llm | mock (jev reads TYPESAFE_API_KEY or AI_GATEWAY_API_KEY)")
-	decisionReplayCmd.Flags().StringVar(&decisionBaseURL, "base-url", "", "Endpoint base URL for --decider jev (default: TypeSafe direct, or the Vercel AI Gateway when only AI_GATEWAY_API_KEY is set)")
+	decisionReplayCmd.Flags().StringVar(&decisionBaseURL, "base-url", "", "Endpoint base URL for --decider jev, https only (default: $TYPESAFE_BASE_URL, else TypeSafe direct, or the Vercel AI Gateway when only AI_GATEWAY_API_KEY is set)")
+	decisionReplayCmd.Flags().BoolVar(&decisionInsecure, "allow-insecure-http", false, "With --decider jev: allow an http:// --base-url on a loopback host (local proxy or mock decider)")
 	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm: anthropic | bedrock | azure-openai | openai | gemini | mistral | ollama | litellm (default: $LOOM_LLM_PROVIDER or anthropic; credentials from the usual env vars)")
 	decisionReplayCmd.Flags().StringVar(&decisionModel, "model", "", "LLM model for --decider llm (default: provider default)")
 	decisionReplayCmd.Flags().BoolVar(&decisionErrors, "errors-only", false, "Replay only executions that recorded an error")
@@ -375,7 +377,12 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 	switch strings.ToLower(decisionDecider) {
 	case "jev":
-		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{BaseUrl: decisionBaseURL, Model: decisionModel})
+		// The CLI runs as the operator, so its flags are server-level
+		// settings for this process, not a DecisionConfig endpoint.
+		if err := jev.SetServerEndpoint(jev.ServerEndpoint{BaseURL: decisionBaseURL, AllowInsecureHTTP: decisionInsecure}); err != nil {
+			return nil, err
+		}
+		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{Model: decisionModel})
 		if err != nil {
 			return nil, err
 		}

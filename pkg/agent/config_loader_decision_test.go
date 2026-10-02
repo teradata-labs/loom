@@ -41,7 +41,6 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
     timeout_ms: 2000
     max_per_session: 200
     max_cost_usd_per_session: 0.05
-    base_url: https://gateway.example/typesafe
     bands:
       - site: recall.rerank
         act_min: 0.9
@@ -59,7 +58,7 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
 	assert.Equal(t, int64(2000), d.TimeoutMs)
 	assert.Equal(t, int64(200), d.MaxPerSession)
 	assert.InDelta(t, 0.05, d.MaxCostUsdPerSession, 1e-12)
-	assert.Equal(t, "https://gateway.example/typesafe", d.BaseUrl)
+	assert.Empty(t, d.BaseUrl)
 	require.Len(t, d.Bands, 2)
 	assert.Equal(t, "recall.rerank", d.Bands[0].Site)
 	assert.InDelta(t, 0.9, d.Bands[0].ActMin, 1e-9)

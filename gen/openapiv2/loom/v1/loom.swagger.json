@@ -5111,7 +5111,7 @@
         },
         "baseUrl": {
           "type": "string",
-          "description": "Base URL override, for gateways (for example the Vercel AI Gateway path)."
+          "description": "Not accepted. The decider endpoint decides where the server's decider\ncredential is sent, so it is server-level only: looms.yaml\ndecision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any\nnon-empty value here fails validation (agent YAML, ValidateAgentConfig,\njudge registration) and is refused again when the decider is built."
         },
         "maxPerSession": {
           "type": "string",

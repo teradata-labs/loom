@@ -233,7 +233,11 @@ message DecisionConfig {
   bool allow_alias = 3;
   // Per-request timeout in milliseconds.
   int64 timeout_ms = 4;
-  // Base URL override, for gateways (for example the Vercel AI Gateway path).
+  // Not accepted. The decider endpoint decides where the server's decider
+  // credential is sent, so it is server-level only: looms.yaml
+  // decision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any
+  // non-empty value here fails validation (agent YAML, ValidateAgentConfig,
+  // judge registration) and is refused again when the decider is built.
   string base_url = 5;
   // Maximum decision requests per session before the router falls back.
   int64 max_per_session = 6;

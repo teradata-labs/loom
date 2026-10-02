@@ -603,6 +603,14 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
+	// Decision layer config is validated here as well as in
+	// ValidateAgentConfig: RegisterConfig accepts a config without
+	// validating it, and an agent-chosen decider endpoint must fail the
+	// build rather than be dropped quietly.
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return nil, fmt.Errorf("agent %q: %w", config.GetName(), err)
+	}
+
 	// Create LLM provider from config.
 	//
 	// AgentConfig.ActiveProvider is the named-pool selector for the primary

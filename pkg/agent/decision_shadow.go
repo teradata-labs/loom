@@ -47,11 +47,12 @@ import (
 const shadowTimeout = 30 * time.Second
 
 // Decision-layer provider names accepted in DecisionConfig.provider.
+// They are pkg/decision's names, re-exported for agent callers.
 const (
-	DecisionProviderOff  = "off"
-	DecisionProviderLLM  = "llm"
-	DecisionProviderMock = "mock"
-	DecisionProviderJev  = "jev"
+	DecisionProviderOff  = decision.ProviderOff
+	DecisionProviderLLM  = decision.ProviderLLM
+	DecisionProviderMock = decision.ProviderMock
+	DecisionProviderJev  = decision.ProviderJev
 )
 
 // WithDecisionConfig wires the decision layer from configuration. A nil
@@ -101,6 +102,12 @@ func (a *Agent) initDecisionRouter() {
 	if cfg == nil || cfg.Provider == "" || cfg.Provider == DecisionProviderOff {
 		return
 	}
+	// Config loaders and ValidateAgentConfig already ran this; an agent
+	// built directly with WithDecisionConfig must not skip it.
+	if err := decision.ValidateConfig(cfg); err != nil {
+		zap.L().Warn("decision layer: invalid config; layer disabled", zap.Error(err))
+		return
+	}
 
 	var decider decision.Decider
 	switch cfg.Provider {
@@ -123,7 +130,9 @@ func (a *Agent) initDecisionRouter() {
 		decider = decisionmock.New()
 	case DecisionProviderJev:
 		// Credentials come from the environment only (TYPESAFE_API_KEY or a
-		// Vercel AI Gateway key), never from agent YAML.
+		// Vercel AI Gateway key) and the endpoint from server-level settings
+		// only (jev.SetServerEndpoint, TYPESAFE_BASE_URL), never from agent
+		// config.
 		jcfg, err := jev.FromDecisionConfig(cfg)
 		if err != nil {
 			zap.L().Warn("decision layer: provider \"jev\" configured but unusable; layer disabled", zap.Error(err))

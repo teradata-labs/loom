@@ -434,11 +434,10 @@ func TestFromDecisionConfig(t *testing.T) {
 	assert.True(t, IsGatewayURL(c.BaseURL))
 	assert.False(t, IsGatewayURL(DefaultBaseURL))
 
-	c, err = fromDecisionConfig(&loomv1.DecisionConfig{BaseUrl: "https://proxy.example/typesafe", Model: "jev-1.12.0", TimeoutMs: 1500},
+	c, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "jev-1.12.0", TimeoutMs: 1500},
 		env(map[string]string{EnvTypeSafeAPIKey: "ts", EnvAIGatewayAPIKey: "gw"}))
 	require.NoError(t, err)
 	assert.Equal(t, "ts", c.APIKey, "TypeSafe key wins when both are set")
-	assert.Equal(t, "https://proxy.example/typesafe", c.BaseURL, "config base URL wins")
 	assert.Equal(t, "jev-1.12.0", c.Model)
 	assert.Equal(t, 1500*time.Millisecond, c.Timeout)
 
@@ -446,6 +445,89 @@ func TestFromDecisionConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "j", c.APIKey)
 	assert.Equal(t, "https://env.example", c.BaseURL)
+}
+
+// An agent's or judge's DecisionConfig never chooses the endpoint: a
+// non-empty base_url is refused before any credential is read.
+func TestResolveConfigRejectsConfigEndpoint(t *testing.T) {
+	t.Parallel()
+	getenv := func(k string) string {
+		if k == EnvTypeSafeAPIKey {
+			return "ts_fake_not_a_key"
+		}
+		return ""
+	}
+	for _, u := range []string{"https://proxy.example/typesafe", "http://127.0.0.1:9", " https://x "} {
+		_, err := resolveConfig(&loomv1.DecisionConfig{BaseUrl: u}, ServerEndpoint{}, getenv)
+		assert.ErrorIs(t, err, decision.ErrEndpointNotServerLevel, u)
+		_, err = resolveConfig(&loomv1.DecisionConfig{BaseUrl: u}, ServerEndpoint{BaseURL: "https://server.example", AllowInsecureHTTP: true}, getenv)
+		assert.ErrorIs(t, err, decision.ErrEndpointNotServerLevel, "a server endpoint does not make an agent endpoint acceptable: %s", u)
+	}
+}
+
+func TestResolveConfigServerEndpoint(t *testing.T) {
+	t.Parallel()
+	getenv := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	keys := map[string]string{EnvTypeSafeAPIKey: "ts_fake_not_a_key", EnvBaseURL: "https://env.example"}
+
+	c, err := resolveConfig(nil, ServerEndpoint{BaseURL: "https://server.example/typesafe"}, getenv(keys))
+	require.NoError(t, err)
+	assert.Equal(t, "https://server.example/typesafe", c.BaseURL, "server setting wins over TYPESAFE_BASE_URL")
+
+	c, err = resolveConfig(nil, ServerEndpoint{}, getenv(keys))
+	require.NoError(t, err)
+	assert.Equal(t, "https://env.example", c.BaseURL)
+
+	tests := []struct {
+		name    string
+		ep      ServerEndpoint
+		env     string
+		wantErr bool
+	}{
+		{name: "https server", ep: ServerEndpoint{BaseURL: "https://s.example"}},
+		{name: "http server refused", ep: ServerEndpoint{BaseURL: "http://s.example"}, wantErr: true},
+		{name: "http env refused", env: "http://env.example", wantErr: true},
+		{name: "http loopback refused without override", ep: ServerEndpoint{BaseURL: "http://127.0.0.1:8080"}, wantErr: true},
+		{name: "http loopback with override", ep: ServerEndpoint{BaseURL: "http://127.0.0.1:8080", AllowInsecureHTTP: true}},
+		{name: "http localhost with override", ep: ServerEndpoint{BaseURL: "http://localhost:8080", AllowInsecureHTTP: true}},
+		{name: "http ::1 with override", ep: ServerEndpoint{BaseURL: "http://[::1]:8080", AllowInsecureHTTP: true}},
+		{name: "env loopback with override", ep: ServerEndpoint{AllowInsecureHTTP: true}, env: "http://127.0.0.1:1"},
+		{name: "http non-loopback refused even with override", ep: ServerEndpoint{BaseURL: "http://10.0.0.5", AllowInsecureHTTP: true}, wantErr: true},
+		{name: "no host", ep: ServerEndpoint{BaseURL: "https:///v1"}, wantErr: true},
+		{name: "relative", ep: ServerEndpoint{BaseURL: "api.typesafe.ai"}, wantErr: true},
+		{name: "embedded credentials", ep: ServerEndpoint{BaseURL: "https://u:p@s.example"}, wantErr: true},
+		{name: "other scheme", ep: ServerEndpoint{BaseURL: "ftp://s.example"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolveConfig(nil, tt.ep, getenv(map[string]string{EnvTypeSafeAPIKey: "k", EnvBaseURL: tt.env}))
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrInsecureEndpoint)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// SetServerEndpoint validates before installing, and FromDecisionConfig
+// reads what it installed. Not parallel: it changes process state.
+func TestSetServerEndpoint(t *testing.T) {
+	prev := CurrentServerEndpoint()
+	t.Cleanup(func() { require.NoError(t, SetServerEndpoint(prev)) })
+
+	require.NoError(t, SetServerEndpoint(ServerEndpoint{BaseURL: " https://server.example "}))
+	assert.Equal(t, "https://server.example", CurrentServerEndpoint().BaseURL)
+
+	err := SetServerEndpoint(ServerEndpoint{BaseURL: "http://evil.example"})
+	assert.ErrorIs(t, err, ErrInsecureEndpoint)
+	assert.Equal(t, "https://server.example", CurrentServerEndpoint().BaseURL, "a refused setting leaves the previous one")
+
+	t.Setenv(EnvTypeSafeAPIKey, "ts_fake_not_a_key")
+	c, err := FromDecisionConfig(&loomv1.DecisionConfig{Model: "jev-1.13.0"})
+	require.NoError(t, err)
+	assert.Equal(t, "https://server.example", c.BaseURL)
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }

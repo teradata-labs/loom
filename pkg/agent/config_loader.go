@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -137,7 +138,8 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 //	  llm_role: classifier   # which role LLM the "llm" provider adapts
 //	  model: jev-1.13.0      # pinned; aliases rejected unless allow_alias
 //	                         # (jev via the Vercel AI Gateway: typesafe-ai/jev + allow_alias: true;
-//	                         #  credentials from TYPESAFE_API_KEY / AI_GATEWAY_API_KEY, never YAML)
+//	                         #  credentials from TYPESAFE_API_KEY / AI_GATEWAY_API_KEY, never YAML;
+//	                         #  the endpoint from looms.yaml decision.base_url, never agent YAML)
 //	  timeout_ms: 2000
 //	  max_per_session: 200
 //	  max_cost_usd_per_session: 0.05
@@ -147,10 +149,12 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 //	      mode: replace        # replace | tighten_only
 //	      shadow: true         # record only, never act
 type DecisionConfigYAML struct {
-	Provider             string  `yaml:"provider"`
-	Model                string  `yaml:"model"`
-	AllowAlias           bool    `yaml:"allow_alias"`
-	TimeoutMs            int64   `yaml:"timeout_ms"`
+	Provider   string `yaml:"provider"`
+	Model      string `yaml:"model"`
+	AllowAlias bool   `yaml:"allow_alias"`
+	TimeoutMs  int64  `yaml:"timeout_ms"`
+	// BaseURL is parsed only so that setting it fails loudly: the decider
+	// endpoint is server-level (decision.ValidateConfig rejects it here).
 	BaseURL              string  `yaml:"base_url"`
 	MaxPerSession        int64   `yaml:"max_per_session"`
 	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
@@ -170,41 +174,17 @@ type DecisionBandConfigYAML struct {
 	Shadow bool    `yaml:"shadow"`
 }
 
-// decisionProviders are the values DecisionConfigYAML.provider accepts.
-var decisionProviders = map[string]bool{"off": true, "llm": true, "mock": true, "jev": true}
-
-// decisionAliases are floating model names a pinned production config
-// rejects unless allow_alias is set. The response carries the resolved
-// version either way; the point is that a config names what it runs.
-var decisionAliases = map[string]bool{"jev-latest": true, "jev-preview": true, "latest": true, "typesafe-ai/jev": true}
-
-// convertDecisionConfigYAMLToProto validates and converts the decision block.
-// A nil block converts to nil (layer off).
+// convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
+// case, mode aliases) and converts the decision block; the rules themselves
+// are decision.ValidateConfig, which every other config path runs too. A nil
+// block converts to nil (layer off).
 func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionConfig, error) {
 	if y == nil {
 		return nil, nil
 	}
 	provider := strings.ToLower(strings.TrimSpace(y.Provider))
 	if provider == "" {
-		provider = "off"
-	}
-	if !decisionProviders[provider] {
-		return nil, fmt.Errorf("decision.provider %q: must be one of off, llm, mock, jev", y.Provider)
-	}
-	if decisionAliases[strings.ToLower(y.Model)] && !y.AllowAlias {
-		return nil, fmt.Errorf("decision.model %q is a floating alias; pin a version or set allow_alias: true", y.Model)
-	}
-	if y.TimeoutMs < 0 {
-		return nil, fmt.Errorf("decision.timeout_ms must be >= 0, got %d", y.TimeoutMs)
-	}
-	if y.MaxPerSession < 0 {
-		return nil, fmt.Errorf("decision.max_per_session must be >= 0, got %d", y.MaxPerSession)
-	}
-	if y.MaxCostUSDPerSession < 0 {
-		return nil, fmt.Errorf("decision.max_cost_usd_per_session must be >= 0, got %v", y.MaxCostUSDPerSession)
-	}
-	if y.RequestsPerMinute < 0 {
-		return nil, fmt.Errorf("decision.requests_per_minute must be >= 0, got %d", y.RequestsPerMinute)
+		provider = DecisionProviderOff
 	}
 	cfg := &loomv1.DecisionConfig{
 		Provider:             provider,
@@ -217,18 +197,7 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		LlmRole:              y.LLMRole,
 		RequestsPerMinute:    y.RequestsPerMinute,
 	}
-	seen := make(map[string]bool, len(y.Bands))
 	for i, b := range y.Bands {
-		if strings.TrimSpace(b.Site) == "" {
-			return nil, fmt.Errorf("decision.bands[%d]: site is required", i)
-		}
-		if seen[b.Site] {
-			return nil, fmt.Errorf("decision.bands[%d]: duplicate site %q", i, b.Site)
-		}
-		seen[b.Site] = true
-		if b.ActMin < 0 || b.ActMin > 1 {
-			return nil, fmt.Errorf("decision.bands[%d] (%s): act_min must be in [0, 1], got %v", i, b.Site, b.ActMin)
-		}
 		var mode loomv1.DecisionBandMode
 		switch strings.ToLower(strings.TrimSpace(b.Mode)) {
 		case "", "replace":
@@ -244,6 +213,9 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 			Mode:   mode,
 			Shadow: b.Shadow,
 		})
+	}
+	if err := decision.ValidateConfig(cfg); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
@@ -1426,6 +1398,14 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 		if !validMemoryTypes[config.Memory.Type] {
 			return fmt.Errorf("unsupported memory type: %s (must be one of: memory, sqlite, postgres)", config.Memory.Type)
 		}
+	}
+
+	// Decision layer: the same rules as the YAML loader, so an inline
+	// AgentConfig (CreateAgentFromConfig, loom-mcp create_agent) cannot
+	// carry what a YAML file could not (an agent-chosen endpoint, an
+	// unacknowledged alias, an out-of-range band).
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return err
 	}
 
 	return nil

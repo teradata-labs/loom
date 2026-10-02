@@ -136,4 +136,10 @@ func initConfig() {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+	// A refused endpoint is left unset (deciders then fall back to
+	// TYPESAFE_BASE_URL or the provider default, both https-checked);
+	// Config.Validate turns the same error fatal for looms serve.
+	if err := applyDecisionServerConfig(config); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
 }
