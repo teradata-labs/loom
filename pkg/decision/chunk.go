@@ -171,8 +171,8 @@ func (c *Chunked) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loo
 			return resp, err
 		}
 		// The whole request failed with something a smaller request may
-		// clear: bisect from here.
-		return c.decideIDs(ctx, req, sortedQuestionIDs(req), 1)
+		// clear: bisect from here, keeping what the failed attempt cost.
+		return withFailedUsage(c.decideIDs(ctx, req, sortedQuestionIDs(req), 1))(UsageFromError(err))
 	}
 	return c.decideIDs(ctx, req, sortedQuestionIDs(req), 0)
 }
@@ -221,10 +221,40 @@ func (c *Chunked) decideIDs(ctx context.Context, req *loomv1.DecisionRequest, id
 	wg.Wait()
 	for _, err := range errs {
 		if err != nil {
-			return nil, err
+			// The chunks that answered, and any failed chunk that still
+			// consumed tokens, were billed: keep that usage on the error so
+			// the router's budget and the metrics count it.
+			spent := &loomv1.DecisionUsage{}
+			for i := range parts {
+				if results[i] != nil {
+					addUsage(spent, results[i].Usage)
+				}
+				addUsage(spent, UsageFromError(errs[i]))
+			}
+			return nil, WithUsage(errors.Unwrap(asUsageError(err)), spent)
 		}
 	}
 	return mergeResponses(results), nil
+}
+
+// asUsageError returns err as a *UsageError, wrapping a plain error so
+// errors.Unwrap yields the original either way.
+func asUsageError(err error) error {
+	var ue *UsageError
+	if errors.As(err, &ue) {
+		return ue
+	}
+	return &UsageError{Err: err}
+}
+
+// addUsage adds src into dst; a nil src adds nothing.
+func addUsage(dst, src *loomv1.DecisionUsage) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CostUsd += src.CostUsd
 }
 
 // decideOne sends one chunk; on a retryable failure with more than one
@@ -239,7 +269,29 @@ func (c *Chunked) decideOne(ctx context.Context, req *loomv1.DecisionRequest, id
 	if !c.bisect || len(ids) < 2 || !chunkRetryable(ctx, err) {
 		return nil, err
 	}
-	return c.decideIDs(ctx, req, ids, depth+1)
+	return withFailedUsage(c.decideIDs(ctx, req, ids, depth+1))(UsageFromError(err))
+}
+
+// withFailedUsage folds the usage of a failed attempt into what the retry
+// that replaced it returns, so a bisect does not hide what the failed
+// attempt cost.
+func withFailedUsage(resp *loomv1.DecisionResponse, err error) func(*loomv1.DecisionUsage) (*loomv1.DecisionResponse, error) {
+	return func(failed *loomv1.DecisionUsage) (*loomv1.DecisionResponse, error) {
+		if failed == nil {
+			return resp, err
+		}
+		if err != nil {
+			spent := &loomv1.DecisionUsage{}
+			addUsage(spent, UsageFromError(err))
+			addUsage(spent, failed)
+			return nil, WithUsage(errors.Unwrap(asUsageError(err)), spent)
+		}
+		if resp.Usage == nil {
+			resp.Usage = &loomv1.DecisionUsage{}
+		}
+		addUsage(resp.Usage, failed)
+		return resp, nil
+	}
 }
 
 // chunkRetryable says whether a smaller request might succeed where this

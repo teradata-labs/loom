@@ -304,3 +304,82 @@ func TestChunkedDoesNotBisectOnRateLimit(t *testing.T) {
 	require.ErrorIs(t, err, decision.ErrRateLimited)
 	assert.Equal(t, 2, m.CallCount(), "two chunks tried once each, no halving")
 }
+
+// usageDecider answers every question at 0.9 with fixed usage per call,
+// except that any request containing failID fails: with an overload (which
+// a smaller request may clear) carrying failUsage when overload is set, or
+// a malformed answer otherwise.
+type usageDecider struct {
+	failID    string
+	overload  bool
+	calls     atomic.Int32
+	failUsage *loomv1.DecisionUsage
+}
+
+func (d *usageDecider) Name() string  { return "usage" }
+func (d *usageDecider) Model() string { return "usage-1" }
+func (d *usageDecider) Decide(_ context.Context, req *loomv1.DecisionRequest) (*loomv1.DecisionResponse, error) {
+	d.calls.Add(1)
+	if _, bad := req.Questions[d.failID]; bad {
+		if d.overload && len(req.Questions) > 1 {
+			return nil, decision.WithUsage(decision.ErrOverloaded, d.failUsage)
+		}
+		return nil, decision.WithUsage(decision.ErrMalformedAnswer, d.failUsage)
+	}
+	out := &loomv1.DecisionResponse{Answers: map[string]*loomv1.DecisionAnswer{}, Usage: &loomv1.DecisionUsage{InputTokens: 10, CostUsd: 0.01}}
+	for id := range req.Questions {
+		out.Answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Noul{Noul: &loomv1.NoulAnswer{Probability: 0.9}}}
+	}
+	return out, nil
+}
+
+// Review #409 F8 carried through chunking: when one chunk fails, the chunks
+// that answered were billed, and so was the failed one when it carried
+// usage. The error keeps all of it so the router's budget counts it.
+func TestChunkedFailureKeepsBilledUsage(t *testing.T) {
+	t.Parallel()
+	d := &usageDecider{failID: "c5", failUsage: &loomv1.DecisionUsage{InputTokens: 7, CostUsd: 0.007}}
+	_, err := decision.Chunk(d, decision.WithChunkSize(4), decision.WithoutBisect()).Decide(context.Background(), fanOutRequest(t, 12))
+	require.ErrorIs(t, err, decision.ErrMalformedAnswer)
+	u := decision.UsageFromError(err)
+	require.NotNil(t, u)
+	assert.Equal(t, int64(27), u.InputTokens, "two answered chunks (10 each) plus the failed one (7)")
+	assert.InDelta(t, 0.027, u.CostUsd, 1e-12)
+}
+
+// A bisect that recovers still reports what the failed attempt cost.
+func TestChunkedBisectKeepsFailedAttemptUsage(t *testing.T) {
+	t.Parallel()
+	d := &usageDecider{failID: "c1", overload: true, failUsage: &loomv1.DecisionUsage{InputTokens: 3, CostUsd: 0.003}}
+	// Two questions, no pre-split: the pair fails with an overload, then
+	// each half is asked alone; "c1" alone fails as malformed (not
+	// retryable), so the whole Decide fails with every attempt's usage.
+	_, err := decision.Chunk(d).Decide(context.Background(), fanOutRequest(t, 2))
+	require.Error(t, err)
+	u := decision.UsageFromError(err)
+	require.NotNil(t, u)
+	assert.Equal(t, int64(3+10+3), u.InputTokens, "pair (3) + c0 alone (10) + c1 alone (3)")
+
+	// Recovered bisect: the failure only happens for the full pair.
+	ok := &recoverDecider{}
+	resp, err := decision.Chunk(ok).Decide(context.Background(), fanOutRequest(t, 2))
+	require.NoError(t, err)
+	assert.Equal(t, int64(3+10+10), resp.Usage.InputTokens, "the failed pair's usage is folded into the answer's")
+}
+
+// recoverDecider fails any request of more than one question with an
+// overload carrying usage, and answers single questions.
+type recoverDecider struct{}
+
+func (recoverDecider) Name() string  { return "recover" }
+func (recoverDecider) Model() string { return "recover-1" }
+func (recoverDecider) Decide(_ context.Context, req *loomv1.DecisionRequest) (*loomv1.DecisionResponse, error) {
+	if len(req.Questions) > 1 {
+		return nil, decision.WithUsage(decision.ErrOverloaded, &loomv1.DecisionUsage{InputTokens: 3})
+	}
+	out := &loomv1.DecisionResponse{Answers: map[string]*loomv1.DecisionAnswer{}, Usage: &loomv1.DecisionUsage{InputTokens: 10}}
+	for id := range req.Questions {
+		out.Answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Noul{Noul: &loomv1.NoulAnswer{Probability: 0.9}}}
+	}
+	return out, nil
+}
