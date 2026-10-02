@@ -1,6 +1,6 @@
 # Implementation Plan: Typed Decision Layer (Jev-backed)
 
-**Status**: 📋 Planned. Nothing implemented.
+**Status**: 🚧 In Development. Phases 0–2 are implemented on `feat/decision-layer` (checklist §6); Phase 3 onward is planned.
 **Date**: 2026-09-22
 **Baseline**: `fix/hitl-hold-heartbeat` @ `bf64528d` (= main + heartbeat fix), v1.4.0
 **Research**: `docs/research/jev-system-one-assessment.md` (what Jev is, evidence, 24-point inventory, 15 ranked placements)
@@ -124,12 +124,12 @@ Acceptance: `loom decision report --site failure_kind` renders agreement, ECE, c
 
 ### Phase 2 — Jev client
 
-**Goal**: a production-grade client, no unofficial SDK dependency. **Blocked on D1.**
+**Goal**: a client with typed errors, bounded retries, a request limiter and contract tests, and no unofficial SDK dependency. **Blocked on D1** (resolved: gateway access, 2026-09-22).
 
 | Path | Content |
 |---|---|
-| `pkg/decision/jev/client.go` | stdlib `net/http`; `POST {base_url}/v1/systemone`; bearer auth from `TYPESAFE_API_KEY` or config; JSON marshal from proto; maps 401/422/429/529 to typed errors; honours `Retry-After`; exponential backoff on 429/529 with jitter, capped attempts; per-request timeout (default 2 s, since p95 independent measurements are <1 s). |
-| `pkg/decision/jev/limiter.go` | Process-wide token bucket at configured rpm (default 1,000 of the 1,200 published) and tokens/s; shared across agents in one `looms`; does **not** use the LLM slot scheduler (different resource, different SLO). |
+| `pkg/decision/jev/client.go` | stdlib `net/http`; `POST {base_url}/v1/systemone`; bearer auth from the environment only (`TYPESAFE_API_KEY` and fallbacks); endpoint from server-level settings only (`looms.yaml` `decision.base_url` or `TYPESAFE_BASE_URL`), never agent config; JSON marshal from proto; maps 401/422/429/529 to typed errors; honours `Retry-After`; exponential backoff on 429/529 with jitter, capped attempts; per-request timeout (default 2 s, since p95 independent measurements are <1 s). |
+| `pkg/decision/jev/limiter.go` | Token bucket at configured rpm (default 1,000 of the 1,200 published), one per process through `jev.Shared`, one token per HTTP attempt (retries included); does **not** use the LLM slot scheduler (different resource, different SLO). |
 | `pkg/decision/jev/testdata/` | Recorded fixtures (request/response pairs) with **fake keys** (`jv_test_…`, never real-looking tokens). |
 | `pkg/decision/jev/client_test.go` | httptest server: happy path per primitive, each error code, alias rejection, size guard, limiter behaviour under `-race` with 100 goroutines. |
 | `pkg/agent/config_loader.go` | `decision:` YAML block → `DecisionConfig`; validation (model pinned unless `allow_alias`); wiring into agent options `WithDecider`. |
@@ -215,11 +215,23 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] baseline capture on the gauntlet rig — from the 2026-09-22 TPC-H run: 1,494 grants / **987 starvation promotions (66%)**, sessions of 3 LLM calls taking p50 611 s; same doc §1. Gaps recorded: no per-request queue-wait metric (follow-up), recall starvation needs a graph-memory-on rerun paired with Phase 3.1.
 
 ### Phase 2 — Jev client — ✅ client landed 2026-09-23
-- [x] `pkg/decision/jev`: client (TypeSafe direct or Vercel AI Gateway; configurable base URL, path, auth header), typed status mapping, retries with Retry-After, per-process 1,000 rpm limiter, cost from list price or the gateway's own figure, contract tests with fake keys
-- [x] `jev.FromDecisionConfig`: credentials from env only (`TYPESAFE_API_KEY` → `AI_GATEWAY_API_KEY` → `JEV_API_KEY`); gateway implies `typesafe-ai/jev`, which config treats as a floating alias (`allow_alias: true` required); a pinned id against the gateway is refused
+- [x] `pkg/decision/jev`: client (TypeSafe direct or Vercel AI Gateway; configurable base URL, path, auth header), typed status mapping, retries with Retry-After, per-process 1,000 rpm limiter (one token per attempt), cost from list price or the gateway's own figure, contract tests with fake keys
+- [x] `jev.FromDecisionConfig`: credentials from env only (`TYPESAFE_API_KEY` → `AI_GATEWAY_API_KEY` → `JEV_API_KEY`); endpoint server-level only (`looms.yaml` `decision.base_url`, else `TYPESAFE_BASE_URL`), https required (loopback http only with the server-level `allow_insecure_http`), and a `base_url` in agent or judge config is a validation error; gateway implies `typesafe-ai/jev`, which config treats as a floating alias (`allow_alias: true` required); a pinned id against the gateway is refused
 - [x] `provider: jev` wired in the agent and in `loom decision replay --decider jev [--base-url]`
 - [x] `fabric.InferErrorType` extended with the five classes the Phase 1 report surfaced; `sites.FailureKindReference` maps them
 - [x] **live smoke + first Jev shadow report** — 2026-09-23 through the Vercel AI Gateway after card verification. Gateway free tier caps Jev at **30 rpm** (429 + `Retry-After: 60`); paced at 28 rpm, one worker. Paired with gpt-4o on identical seeded rows (`--seed 42`): failed-executions slice **Jev 94.0% vs gpt-4o 79.9%** and mixed slice **Jev 98.2% vs gpt-4o 94.5%** under the refined reference (77.2/93.6% vs 96.9/99.3% under the original), the difference being the foreign-key rows Jev reads as `not_found`; combined 1,200 executions: Jev 96.1%, gpt-4o 87.2%; latency 170–450 ms vs 1.5 s; cost $0.04 list vs $3.37. Details: `docs/research/decision-layer-phase1-report.md` §2.4. Follow-ups: human-label the FK/overflow classes; Noul-specific band threshold (probability, not decisiveness); direct TypeSafe endpoint for fleet rates. Command, on the rig: `AI_GATEWAY_API_KEY=… ./loom decision replay --db loom-slim-jev.db --decider jev --limit 1500 --errors-only --sample random --concurrency 8` then `report`; compare with §2.3 of the Phase 1 report
+
+### Review #409 fixes — ✅ 2026-10-01
+- [x] decider endpoint server-level only; agent-supplied `base_url` refused on every config path (`decision.ValidateConfig`, `jev.FromDecisionConfig`)
+- [x] `tool_search` decision layer travels with each agent's `SearchTool`; the shared tool registry holds no router
+- [x] `looms serve` passes `decision:` on startup and hot-reload paths
+- [x] shadow rows and budgets read the agent session (`session.SessionIDFromContext` fallback)
+- [x] `Router.ForgetSession` called from `Agent.DeleteSession` / `ClearAllSessions`
+- [x] budgets count every decider call, failed or malformed (usage kept); reservation is atomic
+- [x] Jev limiter: one client per process, one token per attempt, `requests_per_minute` configurable
+- [x] `InferErrorType`: original classes are never reclassified; 429 matched as a whole number
+- [x] replay builds the live request (`sites.ToolOutcome`)
+- [x] decision fuzz targets in the CI fuzz job
 
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
 - [ ] 3.1 recall rerank · [ ] 3.2 conversation rerank · [ ] 3.3 tool_search rerank

@@ -5,7 +5,7 @@
 **Plan**: `docs/plans/jev-decision-layer-plan.md` §3 Phase 1, the two operator steps
 **Companion**: `docs/research/tool-calling-assessment.md` (the local-telemetry measurements this extends)
 
-This report closes Phase 1 with the two measurements the plan required before any call site gets a live confidence band: a **baseline** of what the generative provider is doing under fleet load today, and a **first shadow report** comparing an LLM-adapter decider against Loom's existing failure classification over recorded tool executions. Both are measurements, not claims. No Jev call has been made yet (Phase 2); the decider here is the LLM adapter, which is the comparator the plan specifies for exactly this step.
+This report closes Phase 1 with the two measurements the plan required before any call site gets a live confidence band: a **baseline** of what the generative provider is doing under fleet load today, and a **first shadow report** comparing an LLM-adapter decider against Loom's existing failure classification over recorded tool executions. Both are measurements, not claims. Sections 1–2.3 were written before any Jev call (Phase 2); the decider in them is the LLM adapter, which is the comparator the plan specifies for exactly this step. Section 2.4, added 2026-09-23, reports the first Jev calls, paired with gpt-4o on identical rows.
 
 ---
 
