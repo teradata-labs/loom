@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsTransientStatus(t *testing.T) {
@@ -51,4 +52,9 @@ func TestTransientError(t *testing.T) {
 	assert.False(t, IsTransient(errors.New("API error (status 500): plain text")),
 		"an untyped 5xx message is NOT transient: only a provider that classified the status opts in")
 	assert.Equal(t, "transient server error (HTTP 502)", (&TransientError{StatusCode: 502}).Error())
+
+	var sc interface{ HTTPStatusCode() int }
+	require.True(t, errors.As(fmt.Errorf("LLM call failed: %w", te), &sc),
+		"status-based classifiers find the status through the wrap chain")
+	assert.Equal(t, http.StatusServiceUnavailable, sc.HTTPStatusCode())
 }

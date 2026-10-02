@@ -52,6 +52,12 @@ func (e *TransientError) Error() string {
 // Unwrap exposes the underlying error for errors.Is/As chains.
 func (e *TransientError) Unwrap() error { return e.Err }
 
+// HTTPStatusCode reports the provider's HTTP status. It matches the method
+// the AWS SDK's response errors expose, so code that classifies a failure by
+// status through the error chain (the server's gRPC status mapping) sees a
+// typed provider 5xx the same way it sees an SDK one.
+func (e *TransientError) HTTPStatusCode() int { return e.StatusCode }
+
 // NewTransientError wraps err as a TransientError for statusCode carrying
 // retryAfter.
 func NewTransientError(err error, statusCode int, retryAfter time.Duration) *TransientError {
