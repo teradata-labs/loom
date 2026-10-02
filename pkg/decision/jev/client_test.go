@@ -21,7 +21,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -578,4 +580,38 @@ func TestDecideMalformedReplyKeepsUsage(t *testing.T) {
 	require.NotNil(t, u)
 	assert.Equal(t, int64(1_000_000), u.InputTokens)
 	assert.InDelta(t, DefaultPricePerMillionInputTokens, u.CostUsd, 1e-12)
+}
+
+// FuzzCheckEndpoint: whatever URL an operator configures, an accepted
+// endpoint is https with a host and no embedded credentials, or plain http
+// to a loopback host with the server-level override set.
+func FuzzCheckEndpoint(f *testing.F) {
+	for _, s := range []string{
+		"https://api.typesafe.ai", "http://127.0.0.1:8080", "http://localhost", "http://[::1]:1",
+		"http://evil.example", "https://u:p@h", "HTTPS://H.EXAMPLE/x", "javascript:alert(1)", "//h", "",
+	} {
+		f.Add(s, false)
+		f.Add(s, true)
+	}
+	f.Fuzz(func(t *testing.T, raw string, allowInsecure bool) {
+		if checkEndpoint(raw, allowInsecure) != nil {
+			return
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("accepted unparseable %q", raw)
+		}
+		if u.Host == "" || u.User != nil {
+			t.Fatalf("accepted %q without a host or with credentials", raw)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+		case "http":
+			if !allowInsecure || !isLoopback(u.Hostname()) {
+				t.Fatalf("accepted insecure %q (allowInsecure=%v)", raw, allowInsecure)
+			}
+		default:
+			t.Fatalf("accepted scheme %q in %q", u.Scheme, raw)
+		}
+	})
 }
