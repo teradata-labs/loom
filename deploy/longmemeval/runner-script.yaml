@@ -44,11 +44,15 @@ data:
     #   any other nonzero     the harness could not run (or aborted).
     #                         Infrastructure — budget untouched.
     # Infrastructure retries are bounded by the Job's backoffLimit instead.
-    # Not covered: a Bedrock throttle or outage that outlasts looms' own LLM
-    # retries reaches the harness as Internal ("agent execution failed"),
-    # which no status distinguishes from a deterministic agent failure, so it
-    # IS charged. A sustained provider outage can therefore still quarantine
-    # chunks; remove their .failed/.attempts markers to retry them.
+    # A Bedrock throttle or outage that outlasts looms' own LLM retries is
+    # infrastructure too: looms returns ResourceExhausted for a throttle and
+    # Unavailable for a temporary provider server fault (HTTP 500/502/503/
+    # 504/529, InternalServerException, ServiceUnavailableException,
+    # ModelNotReadyException), so the harness exits HARNESS_RC_TRANSIENT and
+    # the budget is untouched. A sustained outage therefore spends the Job's
+    # backoffLimit instead of quarantining chunks. A deterministic provider
+    # refusal (ValidationException, AccessDenied, any other 4xx) is still
+    # Internal and IS charged.
     #
     # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and both the
     # stored manifest and the dataset's own statistics must match before

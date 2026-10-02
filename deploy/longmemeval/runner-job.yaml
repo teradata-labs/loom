@@ -14,9 +14,10 @@ spec:
   # Infrastructure failures (harness could not run, or every failed entry
   # carried a retryable gRPC status: Unavailable/DeadlineExceeded/
   # ResourceExhausted, harness exit 75) never touch that budget and are
-  # bounded by this backoffLimit alone. A Bedrock throttle/outage that
-  # outlasts looms' LLM retries surfaces as Internal and IS charged — see
-  # runner-script.yaml.
+  # bounded by this backoffLimit alone. That includes a Bedrock throttle
+  # (ResourceExhausted) or temporary provider server fault (Unavailable)
+  # that outlasts looms' LLM retries, so a sustained Bedrock outage spends
+  # this limit — see runner-script.yaml.
   backoffLimit: 30
   template:
     metadata:

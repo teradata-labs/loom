@@ -155,8 +155,22 @@ far as running entries):
 | 75 | Run finished and at least one entry failed, but **every** failure carries a retryable gRPC status (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Retry the same range. |
 
 A provider throttle or outage that outlasts the server's own LLM retries comes
-back as `Internal` and is reported as an ordinary entry failure (exit 0), not
-as 75.
+back with a retryable status, so it counts toward 75: a throttle is
+`ResourceExhausted`; a temporary provider server fault (HTTP 500, 502, 503,
+504 or 529, Bedrock `InternalServerException`/`ServiceUnavailableException`/
+`ModelNotReadyException`, or an `overloaded_error` from the Anthropic SDK that
+the Bedrock client uses for Claude) is `Unavailable`. A
+deterministic provider refusal (a validation error or any other 4xx) is
+`Internal` and is an ordinary entry failure (exit 0).
+
+Limitation: the server only recognises a 5xx that the provider client typed.
+Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status).
+The direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini, Ollama)
+currently report a 5xx as a plain `API error (status 503)` message, which the
+server does not parse, so against those providers a 5xx outage still comes
+back as `Internal` (exit 0). Throttling is recognised for every provider:
+the HTTP clients type a 429, and the SDK clients' throttling errors carry the
+status or a recognisable message.
 
 ### Score Results
 

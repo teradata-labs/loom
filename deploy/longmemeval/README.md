@@ -120,13 +120,17 @@ dataset refused on resume.
   an aborted run), and a chunk whose failed entries *all* carry a retryable
   gRPC status — `Unavailable` (server restart, transport drop),
   `DeadlineExceeded` (per-call deadline) or `ResourceExhausted` (load
-  shedding) — which the harness reports with exit status 75. **Limitation:** a
-  Bedrock throttle or outage that outlasts looms' own LLM retries reaches the
-  harness as `Internal` ("agent execution failed"), which no status separates
-  from a deterministic agent failure, so it *is* charged; a sustained provider
-  outage can still quarantine chunks (retry them by removing their `.failed`
-  and `.attempts` markers). Conversely, an entry that times out on every
-  attempt is retried until `backoffLimit`, never quarantined. Past the budget the chunk is quarantined with a `.failed` marker
+  shedding) — which the harness reports with exit status 75. A Bedrock
+  throttle or outage that outlasts looms' own LLM retries is in the second
+  case: looms returns `ResourceExhausted` for a throttle and `Unavailable` for
+  a temporary provider server fault (HTTP 500/502/503/504/529, or Bedrock's
+  `InternalServerException`, `ServiceUnavailableException`,
+  `ModelNotReadyException`), so it is not charged. A deterministic provider
+  refusal (`ValidationException`, `AccessDeniedException`, any other 4xx)
+  stays `Internal` and is charged. Because outages and timeouts are never
+  charged, a sustained Bedrock outage, or an entry that times out on every
+  attempt, is retried until `backoffLimit` and then fails the Job; it never
+  quarantines a chunk. Past the budget the chunk is quarantined with a `.failed` marker
   naming the failing entries and how to retry it (`rm` the marker), and later
   passes skip it so the remaining chunks can finish. A quarantined chunk never
   turns a partial run into a passing one: the run exits nonzero and writes
