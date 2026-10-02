@@ -116,6 +116,13 @@ min_passing_score: 75
 criticality: JUDGE_CRITICALITY_NON_CRITICAL
 ```
 
+A judge may use a typed decision model instead of a generative LLM by setting
+`type: JUDGE_TYPE_DECISION` and a `decision` block (`provider: jev` or `llm`).
+It asks one yes/no question per criterion line plus an overall quality score
+in a single call, derives PASS/PARTIAL/FAIL from the probabilities, and takes
+part in aggregation like any other judge. Details, verdict rules and limits:
+`docs/architecture/decision-layer.md`, "Decision judge".
+
 ### Aggregation Strategies
 
 | Strategy | Description | Use Case |

@@ -51,6 +51,10 @@ const maxRerankQueryRunes = 500
 // maxRerankCandidateRunes bounds each candidate's text in state.
 const maxRerankCandidateRunes = 1000
 
+// RerankFanOutKey is the state array whose items pair with the candidate
+// questions (DecisionRequest.fan_out_key).
+const RerankFanOutKey = "candidates"
+
 // CandidateQuestionID is the question id for candidate index i.
 func CandidateQuestionID(i int) string { return "c" + strconv.Itoa(i) }
 
@@ -81,7 +85,15 @@ func RerankRequest(site, query string, candidates []string) (*loomv1.DecisionReq
 		"query":      truncateRunes(query, maxRerankQueryRunes),
 		"candidates": items,
 	}
-	return decision.NewRequest(site, state, questions)
+	req, err := decision.NewRequest(site, state, questions)
+	if err != nil {
+		return nil, err
+	}
+	// One question per candidate: a chunked request keeps only its own
+	// candidates in state (decision.Chunked), so the provider never sees
+	// more text than the questions it is asked.
+	req.FanOutKey = RerankFanOutKey
+	return req, nil
 }
 
 // RerankReference renders which candidate indexes the existing mechanism
@@ -101,6 +113,75 @@ func RerankReference(n int, kept []int, source string) map[string]decision.Refer
 		refs[CandidateQuestionID(i)] = decision.Reference{Answer: strconv.FormatBool(k), Source: source}
 	}
 	return refs
+}
+
+// RerankReferenceSubjects is RerankReference with a subject per candidate
+// (see DecisionShadowRecord.subject), so each row can be graded against an
+// external truth later. subjects is index-aligned with the candidates; a
+// shorter slice leaves the tail without a subject.
+func RerankReferenceSubjects(n int, kept []int, source string, subjects []string) map[string]decision.Reference {
+	refs := RerankReference(n, kept, source)
+	for i := 0; i < n && i < len(subjects) && i < MaxRerankCandidates; i++ {
+		ref := refs[CandidateQuestionID(i)]
+		ref.Subject = subjects[i]
+		refs[CandidateQuestionID(i)] = ref
+	}
+	return refs
+}
+
+// RerankSubjectsOnly carries subjects with no reference answer, for rows
+// recorded when the site acted on the decider and ran no other mechanism.
+func RerankSubjectsOnly(n int, subjects []string) map[string]decision.Reference {
+	if n > MaxRerankCandidates {
+		n = MaxRerankCandidates
+	}
+	refs := make(map[string]decision.Reference, n)
+	for i := 0; i < n && i < len(subjects); i++ {
+		refs[CandidateQuestionID(i)] = decision.Reference{Subject: subjects[i]}
+	}
+	return refs
+}
+
+// RerankKeepProbability is the Noul probability at or above which a candidate
+// counts as relevant in live mode.
+const RerankKeepProbability = 0.5
+
+// RerankContributed reports whether a live rerank outcome is worth acting on:
+// at least one of n answers cleared the band. When every answer is uncertain
+// the decider has said nothing, and the site is better off running its
+// generative rerank than keeping every candidate.
+func RerankContributed(n, uncertain int) bool { return n > 0 && uncertain < n }
+
+// RerankKeptWithBand is the live-mode selection for a fan-out band judged
+// PER_QUESTION: a candidate is kept when its Noul says relevant, or when the
+// answer does not clear the band (uncertain candidates are kept, because
+// dropping a relevant memory costs an answer while keeping an irrelevant one
+// costs tokens). It returns the kept indexes in index order and how many were
+// kept only because they were uncertain.
+func RerankKeptWithBand(resp *loomv1.DecisionResponse, n int, band decision.Band) (kept []int, uncertain int) {
+	if resp == nil {
+		return nil, 0
+	}
+	if n > MaxRerankCandidates {
+		n = MaxRerankCandidates
+	}
+	for i := 0; i < n; i++ {
+		id := CandidateQuestionID(i)
+		a, err := decision.NoulOf(resp, id)
+		if err != nil {
+			kept = append(kept, i) // no answer: keep, never drop silently
+			uncertain++
+			continue
+		}
+		switch {
+		case !band.Confident(resp.Answers[id]):
+			kept = append(kept, i)
+			uncertain++
+		case band.IsTrue(a.Probability):
+			kept = append(kept, i)
+		}
+	}
+	return kept, uncertain
 }
 
 // RerankKept returns the candidate indexes whose Noul probability is at or

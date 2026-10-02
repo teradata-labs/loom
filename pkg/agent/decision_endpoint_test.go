@@ -181,6 +181,9 @@ func TestValidateAgentConfigDecisionRules(t *testing.T) {
 		{name: "non-canonical provider", cfg: &loomv1.DecisionConfig{Provider: "JEV"}, wantErr: "decision.provider"},
 		{name: "negative rpm", cfg: &loomv1.DecisionConfig{Provider: "jev", RequestsPerMinute: -1}, wantErr: "requests_per_minute"},
 		{name: "base_url", cfg: &loomv1.DecisionConfig{Provider: "mock", BaseUrl: "https://x.example"}, wantErr: "server-level only"},
+		{name: "true_min out of range", cfg: &loomv1.DecisionConfig{Provider: "llm", Bands: []*loomv1.DecisionBand{{Site: "a", TrueMin: 1.5}}}, wantErr: "true_min"},
+		{name: "bad aggregate", cfg: &loomv1.DecisionConfig{Provider: "llm", Bands: []*loomv1.DecisionBand{{Site: "a", Aggregate: 9}}}, wantErr: "aggregate"},
+		{name: "negative chunk size", cfg: &loomv1.DecisionConfig{Provider: "jev", MaxQuestionsPerRequest: -1}, wantErr: "max_questions_per_request"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

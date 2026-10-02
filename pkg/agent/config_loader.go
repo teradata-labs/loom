@@ -162,8 +162,14 @@ type DecisionConfigYAML struct {
 	// RequestsPerMinute is the process-wide decider budget, from the tier in
 	// use (gateway free tier: 30). Agents with identical decider settings
 	// share one client, so this is a fleet figure, not a per-agent one.
-	RequestsPerMinute int64                    `yaml:"requests_per_minute"`
-	Bands             []DecisionBandConfigYAML `yaml:"bands"`
+	RequestsPerMinute int64 `yaml:"requests_per_minute"`
+	// ExposeTool registers the "decide" builtin so the agent can ask the
+	// decider directly. Off by default.
+	ExposeTool bool `yaml:"expose_tool"`
+	// MaxQuestionsPerRequest splits larger requests into concurrent chunks
+	// (0 = the decider's default; Jev 16).
+	MaxQuestionsPerRequest int64                    `yaml:"max_questions_per_request"`
+	Bands                  []DecisionBandConfigYAML `yaml:"bands"`
 }
 
 // DecisionBandConfigYAML mirrors proto DecisionBand.
@@ -172,6 +178,14 @@ type DecisionBandConfigYAML struct {
 	ActMin float64 `yaml:"act_min"`
 	Mode   string  `yaml:"mode"`
 	Shadow bool    `yaml:"shadow"`
+	// Aggregate: min (default) | per_question. Fan-out sites such as the
+	// reranks use per_question so one uncertain candidate cannot veto the rest.
+	Aggregate string `yaml:"aggregate"`
+	// TrueMin is the probability at or above which a yes/no answer counts as
+	// true at this site: the keep threshold at a rerank, "valid" at a stage
+	// gate. 0 means the site default (0.5). It is not act_min, which asks
+	// how decisive an answer must be before the site acts at all.
+	TrueMin float64 `yaml:"true_min"`
 }
 
 // convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
@@ -187,15 +201,17 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		provider = DecisionProviderOff
 	}
 	cfg := &loomv1.DecisionConfig{
-		Provider:             provider,
-		Model:                y.Model,
-		AllowAlias:           y.AllowAlias,
-		TimeoutMs:            y.TimeoutMs,
-		BaseUrl:              y.BaseURL,
-		MaxPerSession:        y.MaxPerSession,
-		MaxCostUsdPerSession: y.MaxCostUSDPerSession,
-		LlmRole:              y.LLMRole,
-		RequestsPerMinute:    y.RequestsPerMinute,
+		Provider:               provider,
+		Model:                  y.Model,
+		AllowAlias:             y.AllowAlias,
+		TimeoutMs:              y.TimeoutMs,
+		BaseUrl:                y.BaseURL,
+		MaxPerSession:          y.MaxPerSession,
+		MaxCostUsdPerSession:   y.MaxCostUSDPerSession,
+		LlmRole:                y.LLMRole,
+		RequestsPerMinute:      y.RequestsPerMinute,
+		ExposeTool:             y.ExposeTool,
+		MaxQuestionsPerRequest: y.MaxQuestionsPerRequest,
 	}
 	for i, b := range y.Bands {
 		var mode loomv1.DecisionBandMode
@@ -207,11 +223,22 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 		default:
 			return nil, fmt.Errorf("decision.bands[%d] (%s): mode %q must be replace or tighten_only", i, b.Site, b.Mode)
 		}
+		var agg loomv1.DecisionBandAggregate
+		switch strings.ToLower(strings.TrimSpace(b.Aggregate)) {
+		case "", "min":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
+		case "per_question", "per-question", "each":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): aggregate %q must be min or per_question", i, b.Site, b.Aggregate)
+		}
 		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
-			Site:   b.Site,
-			ActMin: b.ActMin,
-			Mode:   mode,
-			Shadow: b.Shadow,
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
 		})
 	}
 	if err := decision.ValidateConfig(cfg); err != nil {

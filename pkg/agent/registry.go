@@ -716,7 +716,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:                   config.Name, // Preserve name from config
+			Name: config.Name, // Preserve name from config
+			// Carried explicitly as well as by WithConfig's merge: this
+			// Config replaces the one WithSystemPrompt wrote into, and every
+			// registry-built agent lost its system prompt here (found when
+			// workflow agents ignored their configured stance).
+			Description:            config.Description,
+			SystemPrompt:           config.SystemPrompt,
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
@@ -2620,6 +2626,11 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 			skilldiscovery.WithRouter(skillRouter),
 			skilldiscovery.WithCache(skillCache),
 		)
+		// skill.route: this router belongs to this agent. The agent's
+		// decision router does not exist yet (NewAgent builds it after the
+		// options run), so hand the skill router to the agent and let it
+		// attach its own decision layer then (Agent.attachSkillRouteDecision).
+		out = append(out, withSkillRouteDecision(skillRouter))
 
 		// context.Background is intentional inside warm: the index build
 		// outlives the caller. A cancelled boot must not abandon a

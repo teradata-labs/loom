@@ -198,6 +198,15 @@ const (
 	LineageConsolidates = "CONSOLIDATES"
 )
 
+// Memory sources. For SourceAutoExtracted and SourceAgent, SourceID is the
+// agent session the memory came from (its provenance) when one was known.
+const (
+	// SourceAutoExtracted: written by the background extractor.
+	SourceAutoExtracted = "auto_extracted"
+	// SourceAgent: written by the agent through the graph_memory tool.
+	SourceAgent = "agent"
+)
+
 // Valid memory entity roles.
 const (
 	RoleAbout    = "about"

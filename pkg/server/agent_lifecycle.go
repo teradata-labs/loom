@@ -573,3 +573,36 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 
 	return s.buildAgentInfo(ag, resolvedID, &snap), nil
 }
+
+// SetAgentConfig records the proto configuration an agent was built from,
+// so GetAgent and ListAgents can return it. Agents created through
+// CreateAgentFromConfig and ReloadAgent record theirs on the way in; agents
+// the host loads itself (looms serve at startup and on hot-reload) call this
+// after AddAgent, or GetAgent returns them with no config, which is what
+// left the LongMemEval runner cloning a template instead of the named agent.
+func (s *MultiAgentServer) SetAgentConfig(agentID string, cfg *loomv1.AgentConfig) {
+	if cfg == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	states := s.getOrInitAgentStates()
+	now := time.Now()
+	if st, ok := states[agentID]; ok {
+		st.Config = cfg
+		st.UpdatedAt = now
+		return
+	}
+	name := cfg.GetName()
+	if ag, ok := s.agents[agentID]; ok && ag != nil {
+		name = ag.GetName()
+	}
+	states[agentID] = &agentState{
+		ID:        agentID,
+		Name:      name,
+		Status:    "running",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Config:    cfg,
+	}
+}
