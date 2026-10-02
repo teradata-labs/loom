@@ -117,6 +117,12 @@ Judge-Scored Results:
 
 Files are downloaded to `./data/longmemeval/` by default and are in `.gitignore`.
 
+`download` skips a dataset file that already exists. Each file is written to
+`<name>.tmp` and renamed into place only after the whole body arrived, so an
+interrupted download leaves nothing behind and the next `download` fetches it
+again. (A truncated file written by a build older than this change is not
+detected — delete it by hand.)
+
 ### Run the Benchmark
 
 Run every question in the oracle set (500 total):

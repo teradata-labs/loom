@@ -514,8 +514,14 @@ func resolveDatasetPath(args []string) string {
 	return ""
 }
 
-// downloadFile downloads a URL to a local path.
-func downloadFile(url, destPath string) error {
+// downloadFile downloads a URL to destPath atomically: the body streams to
+// destPath+".tmp", which is renamed onto destPath only after the whole body
+// arrived and the file was flushed and closed. On any error the .tmp is
+// removed and destPath is left untouched. The download command skips a
+// destPath that already exists, so a truncated file written in place (e.g.
+// by a connection reset mid-stream) would otherwise be cached forever and
+// fail every later load.
+func downloadFile(url, destPath string) (err error) {
 	resp, err := http.Get(url) // #nosec G107 -- URL is constructed from hardcoded base + known dataset names
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
@@ -526,15 +532,30 @@ func downloadFile(url, destPath string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	f, err := os.Create(destPath)
+	tmpPath := destPath + ".tmp"
+	f, err := os.Create(tmpPath) // truncates a .tmp left by a killed earlier attempt
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err != nil {
+			_ = f.Close() // no-op error if already closed
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	written, err := io.Copy(f, resp.Body)
 	if err != nil {
 		return fmt.Errorf("write file: %w", err)
+	}
+	if err = f.Sync(); err != nil {
+		return fmt.Errorf("sync file: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("close file: %w", err)
+	}
+	if err = os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpPath, destPath, err)
 	}
 
 	fmt.Printf("  Downloaded %d bytes\n", written)
