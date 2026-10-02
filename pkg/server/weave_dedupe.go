@@ -112,10 +112,21 @@ func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, en
 }
 
 // wrapAgentError maps an agent execution failure to its gRPC status.
-// Cancellation and deadline keep their own codes, while a provider stream
-// timeout is Unavailable. The dedupe release classifies these statuses as
-// transient so a retry does not join a cached transport failure. Everything
-// else is Internal.
+//
+//   - Cancellation and deadline keep their own codes.
+//   - A provider stream timeout is Unavailable.
+//   - An LLM provider capacity failure that outlasted the provider stack's
+//     own retries (llm.ClassifyProviderFailure) is retryable: a throttle is
+//     ResourceExhausted (HTTP 429 through the gateway), a temporary provider
+//     server fault (5xx, overloaded) is Unavailable (HTTP 503).
+//   - Everything else is Internal.
+//
+// The order matters: a canceled or expired request is reported as such even
+// when the provider error it interrupted was a throttle. The dedupe release
+// (isTransientOutcome) treats every non-Internal code here as transient, so a
+// same-key retry re-executes instead of joining a cached capacity failure,
+// and clients can tell "retry later" from a deterministic agent failure by
+// status alone.
 func wrapAgentError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Errorf(codes.Canceled, "agent execution canceled: %v", err)
@@ -126,15 +137,23 @@ func wrapAgentError(err error) error {
 	if errors.Is(err, llm.ErrStreamTimeout) {
 		return status.Errorf(codes.Unavailable, "LLM provider stream timed out: %v", err)
 	}
+	switch llm.ClassifyProviderFailure(err) {
+	case llm.ProviderFailureThrottled:
+		return status.Errorf(codes.ResourceExhausted, "LLM provider throttled the request: %v", err)
+	case llm.ProviderFailureUnavailable:
+		return status.Errorf(codes.Unavailable, "LLM provider temporarily unavailable: %v", err)
+	}
 	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
 }
 
 // isTransientOutcome reports whether err reflects an interrupted run
 // (caller disconnect, deadline) or a capacity rejection rather than a
-// deterministic result. RESOURCE_EXHAUSTED — the door-full backpressure code
-// — means "retry later" by definition: caching it for the dedupe TTL would
-// keep serving the stale rejection to a same-key retry long after the door
-// queue drained, so it must be released, never cached.
+// deterministic result. RESOURCE_EXHAUSTED — the door-full backpressure code,
+// and wrapAgentError's code for a provider throttle — and UNAVAILABLE — a
+// provider stream timeout or temporary provider server fault — mean "retry
+// later" by definition: caching them for the dedupe TTL would keep serving
+// the stale rejection to a same-key retry long after the door queue drained
+// or the provider recovered, so they must be released, never cached.
 func isTransientOutcome(err error) bool {
 	if err == nil {
 		return false

@@ -48,14 +48,16 @@ const (
 
 // retryableCodes are the gRPC statuses that describe the infrastructure
 // rather than the entry: the server or its transport is down or restarting
-// (Unavailable, which looms also uses for an LLM provider stream timeout),
-// the per-call deadline elapsed (DeadlineExceeded), or the server shed load
-// (ResourceExhausted, the conversation-door backpressure code).
+// (Unavailable), the per-call deadline elapsed (DeadlineExceeded), or the
+// server shed load (ResourceExhausted, the conversation-door backpressure
+// code).
 //
-// A provider throttle or outage that exhausts looms' own LLM retries is NOT
-// in this set today: looms maps it to Internal ("agent execution failed:
-// LLM call failed: ..."), which is indistinguishable by status from a
-// deterministic agent failure, so it is reported as one.
+// The LLM provider's capacity failures land here too. When a turn fails
+// because the provider throttled it or had a temporary server fault past
+// looms' own retries, looms returns ResourceExhausted (throttle) or
+// Unavailable (5xx/overloaded, or a provider stream timeout) instead of
+// Internal (wrapAgentError in pkg/server). A deterministic provider refusal
+// stays Internal and is reported as an ordinary failure.
 var retryableCodes = map[codes.Code]bool{
 	codes.Unavailable:       true,
 	codes.DeadlineExceeded:  true,
