@@ -81,15 +81,15 @@ func TestRateLimiter_Do_Success(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return "success", nil
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, "success", result)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(1), metrics.TotalRequests)
@@ -107,10 +107,9 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
-		if callCount < 3 {
+		if callCount.Add(1) < 3 {
 			return nil, errors.New("ThrottlingException: Too many tokens")
 		}
 		return "success", nil
@@ -118,7 +117,7 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "success", result)
-	assert.Equal(t, 3, callCount) // Called 3 times (2 failures + 1 success)
+	assert.Equal(t, int32(3), callCount.Load()) // Called 3 times (2 failures + 1 success)
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(3), metrics.TotalRequests)
@@ -136,20 +135,242 @@ func TestRateLimiter_Do_ThrottlingExhausted(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return nil, errors.New("HTTP 429: rate limit exceeded")
 	})
 
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "failed after 3 retries")
-	assert.Equal(t, 3, callCount) // MaxRetries=2 means 3 total attempts
+	assert.Equal(t, int32(3), callCount.Load()) // MaxRetries=2 means 3 total attempts
 
 	metrics := rl.GetMetrics()
 	assert.Equal(t, int64(3), metrics.TotalRequests)
 	assert.Equal(t, int64(3), metrics.ThrottledRequests)
+}
+
+// A provider-typed transient 5xx is retried under the same budget and backoff
+// as throttling, and succeeds when the server recovers.
+func TestRateLimiter_Do_TransientRetry(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 3
+	config.RetryBackoff = 10 * time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	var callCount atomic.Int32
+	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		if callCount.Add(1) < 3 {
+			return nil, NewTransientError(errors.New("API error (status 500): The server had an error while processing your request"), 500, 0)
+		}
+		return "success", nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "success", result)
+	assert.Equal(t, int32(3), callCount.Load())
+
+	metrics := rl.GetMetrics()
+	assert.Equal(t, int64(3), metrics.TotalRequests)
+	assert.Equal(t, int64(2), metrics.TransientRequests)
+	assert.Equal(t, int64(0), metrics.ThrottledRequests, "transient retries are counted apart from throttling")
+	assert.True(t, metrics.LastThrottleTime.IsZero(), "a 5xx is not a throttle signal")
+}
+
+// The transient budget is the throttle budget: MaxRetries+1 attempts, then the
+// typed error surfaces, naming the cause.
+func TestRateLimiter_Do_TransientExhausted(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 2
+	config.RetryBackoff = 10 * time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	var callCount atomic.Int32
+	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		callCount.Add(1)
+		return nil, NewTransientError(errors.New("API error (status 503): unavailable"), 503, 0)
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed after 3 retries due to a transient server error")
+	assert.True(t, IsTransient(err), "the typed cause survives the wrap")
+	assert.Equal(t, int32(3), callCount.Load())
+	assert.Equal(t, int64(3), rl.GetMetrics().TransientRequests)
+}
+
+// Only a provider-typed TransientError is retried: an untyped 5xx message, a
+// 4xx, or any other error is delivered on the first attempt exactly as before.
+func TestRateLimiter_Do_NonTransientErrorsNotRetried(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 3
+	config.RetryBackoff = 10 * time.Millisecond
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"untyped 500 message", errors.New("API error (status 500): server error")},
+		{"400 bad request", errors.New("API error (status 400): invalid request")},
+		{"401", errors.New("API error (status 401): unauthorized")},
+		{"context too long", fmt.Errorf("API error (status 400): %w", ErrContextTooLong)},
+		{"generic", errors.New("dial tcp: connection refused")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := NewRateLimiter(config)
+			defer func() { _ = rl.Close() }()
+			var callCount atomic.Int32
+			_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+				callCount.Add(1)
+				return nil, tc.err
+			})
+			require.Error(t, err)
+			assert.Equal(t, int32(1), callCount.Load(), "must not be retried")
+			assert.Equal(t, int64(0), rl.GetMetrics().TransientRequests)
+		})
+	}
+}
+
+// A transient error that carries Retry-After floors the retry wait the same
+// way a throttle does.
+func TestRateLimiter_TransientRetryAfterHonored(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 1
+	config.RetryBackoff = time.Millisecond // tiny: the wait must come from Retry-After
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	var arrivals []time.Time
+	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		arrivals = append(arrivals, time.Now())
+		if len(arrivals) == 1 {
+			return nil, NewTransientError(errors.New("API error (status 503): unavailable"), 503, 300*time.Millisecond)
+		}
+		return "ok", nil
+	})
+	require.NoError(t, err)
+	require.Len(t, arrivals, 2)
+	assert.GreaterOrEqual(t, arrivals[1].Sub(arrivals[0]), 300*time.Millisecond)
+}
+
+// The typed class wins over message sniffing: a 5xx whose body happens to
+// contain "429" (request ids, upstream prose) is a transient failure, not a
+// throttle — it must not touch the throttle metrics or the throttle signal.
+func TestRateLimiter_TypedTransientWinsOverThrottleSniffing(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 1
+	config.RetryBackoff = time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	body := errors.New(`API error (status 529): {"error":{"type":"overloaded_error","request_id":"req_011CV6xt429Kk"}}`)
+	var callCount atomic.Int32
+	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		callCount.Add(1)
+		return nil, NewTransientError(body, 529, 0)
+	})
+	require.Error(t, err)
+	assert.Equal(t, int32(2), callCount.Load())
+	m := rl.GetMetrics()
+	assert.Equal(t, int64(2), m.TransientRequests)
+	assert.Equal(t, int64(0), m.ThrottledRequests)
+	assert.True(t, m.LastThrottleTime.IsZero())
+	assert.False(t, IsThrottle(err), "must not feed the scheduler's throttle signal")
+	assert.Contains(t, err.Error(), "due to a transient server error")
+}
+
+// Exhaustion is typed so an outer retry loop can recognise a budget already
+// spent, and the original cause stays reachable through the wrap.
+func TestRateLimiter_ExhaustionIsTyped(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 1
+	config.RetryBackoff = time.Millisecond
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		return nil, errors.New("HTTP 429: rate limit exceeded")
+	})
+	require.Error(t, err)
+	var re *RetriesExhaustedError
+	require.True(t, errors.As(err, &re))
+	assert.Equal(t, 2, re.Attempts)
+	assert.Equal(t, "throttling", re.Cause)
+	assert.True(t, IsRetriesExhausted(err))
+	assert.True(t, IsThrottle(err), "the throttle cause is still visible through the wrap")
+	assert.Contains(t, err.Error(), "LLM request failed after 2 retries due to throttling")
+}
+
+// A server-specified Retry-After is honoured only up to maxRetryDelay: a
+// maintenance-window 503 with Retry-After: 3600 must not pin the caller (and
+// its scheduler grant) for an hour.
+func TestRateLimiter_RetryAfterFloorIsCapped(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RetryBackoff = time.Millisecond
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	err := NewTransientError(errors.New("API error (status 503): maintenance"), 503, time.Hour)
+	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, err))
+
+	throttle := NewThrottleError(errors.New("API error (status 429)"), 2*time.Hour)
+	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, throttle), "same cap for a throttle's Retry-After")
+
+	short := NewTransientError(errors.New("API error (status 503)"), 503, 300*time.Millisecond)
+	assert.Equal(t, 300*time.Millisecond, rl.retryDelay(0, short), "a modest Retry-After still floors the wait")
+}
+
+// A cancelled context ends a transient retry wait immediately with ctx.Err().
+func TestRateLimiter_TransientRetryRespectsContext(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+	config.Logger = zaptest.NewLogger(t)
+	config.RequestsPerSecond = 100
+	config.MinDelay = time.Millisecond
+	config.MaxRetries = 5
+	config.RetryBackoff = 10 * time.Second // would wait a long time without cancellation
+
+	rl := NewRateLimiter(config)
+	defer func() { _ = rl.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var callCount atomic.Int32
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	start := time.Now()
+	_, err := rl.Do(ctx, func(ctx context.Context) (interface{}, error) {
+		callCount.Add(1)
+		return nil, NewTransientError(errors.New("API error (status 502): bad gateway"), 502, 0)
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(1), callCount.Load())
+	assert.Less(t, time.Since(start), 5*time.Second)
 }
 
 func TestRateLimiter_Do_Disabled(t *testing.T) {
@@ -160,15 +381,15 @@ func TestRateLimiter_Do_Disabled(t *testing.T) {
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	callCount := 0
+	var callCount atomic.Int32
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
+		callCount.Add(1)
 		return "direct", nil
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, "direct", result)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 
 	// Metrics should not be updated when disabled
 	metrics := rl.GetMetrics()
@@ -455,10 +676,9 @@ func TestRateLimiter_Metrics(t *testing.T) {
 	require.NoError(t, err)
 
 	// Execute throttled request (retries twice, succeeds on 3rd)
-	callCount := 0
+	var callCount atomic.Int32
 	_, err = rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-		callCount++
-		if callCount < 3 {
+		if callCount.Add(1) < 3 {
 			return nil, errors.New("429 throttled")
 		}
 		return "ok", nil
@@ -494,11 +714,10 @@ func TestRateLimiter_ConcurrentThrottling(t *testing.T) {
 			defer wg.Done()
 
 			// Simulate occasional throttling
-			callCount := 0
+			var callCount atomic.Int32
 			result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
-				callCount++
 				// 30% chance of throttling on first attempt
-				if callCount == 1 && id%3 == 0 {
+				if callCount.Add(1) == 1 && id%3 == 0 {
 					return nil, errors.New("429 rate limit")
 				}
 				return fmt.Sprintf("request-%d", id), nil
