@@ -17,6 +17,7 @@ package index
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -41,23 +42,44 @@ const (
 // WithRouterDecision attaches a decision router and the store its shadow
 // rows are written to. Without it the walk behaves exactly as before.
 func WithRouterDecision(dr *decision.Router, store decision.ShadowStore) RouterOption {
-	return func(r *Router) {
-		r.decisionRouter = dr
-		r.decisionStore = store
-	}
+	return func(r *Router) { r.SetDecision(dr, store) }
 }
+
+// SetDecision attaches (or, with a nil router, detaches) the owning agent's
+// decision layer. A skill Router belongs to one agent (BuildSkillsOptions
+// builds one per agent), and the agent calls this once its own decision
+// router exists, which is after the options that built this Router ran.
+// Safe for concurrent use with Route.
+func (r *Router) SetDecision(dr *decision.Router, store decision.ShadowStore) {
+	if dr == nil {
+		r.skillDecision.Store(nil)
+		return
+	}
+	r.skillDecision.Store(&skillDecision{router: dr, store: store})
+}
+
+// DecisionRouter returns the attached decision router, or nil.
+func (r *Router) DecisionRouter() *decision.Router {
+	if d := r.dec(); d != nil {
+		return d.router
+	}
+	return nil
+}
+
+// dec returns the attached decision layer, or nil.
+func (r *Router) dec() *skillDecision { return r.skillDecision.Load() }
 
 // WaitDecisionShadows blocks until every background comparison has
 // finished. Tests call it before asserting on the store.
 func (r *Router) WaitDecisionShadows() { r.decisionWG.Wait() }
 
-// decisionRecorderOnce builds the recorder on first use so a Router
-// constructed without a store still works.
-func (r *Router) recorder() *decision.ShadowRecorder {
-	r.recorderOnce.Do(func() {
-		r.decisionRecorder = decision.NewShadowRecorder(r.decisionStore, r.tracer)
+// recorderFor builds d's recorder on first use, with the Router's tracer
+// (set by an option that may run after WithRouterDecision).
+func (r *Router) recorderFor(d *skillDecision) *decision.ShadowRecorder {
+	d.recorderOnce.Do(func() {
+		d.recorder = decision.NewShadowRecorder(d.store, r.tracer)
 	})
-	return r.decisionRecorder
+	return d.recorder
 }
 
 // routeOptions renders a node's children and directly-attached skills as the
@@ -101,7 +123,8 @@ func routeOptions(children []*skills.SkillIndexNode, directSkills []*skills.Skil
 // against the LLM's answer without asking twice.
 func (r *Router) liveRoute(ctx context.Context, sessionID, message string, node *skills.SkillIndexNode,
 	options []sites.RouteOption) (sel sites.RouteSelection, acted bool, req *loomv1.DecisionRequest, out decision.Outcome) {
-	if r.decisionRouter == nil || len(options) == 0 || r.decisionRouter.Band(sites.SiteSkillRoute).Shadow {
+	d := r.dec()
+	if d == nil || len(options) == 0 || d.router.Band(sites.SiteSkillRoute).Shadow {
 		return sel, false, nil, decision.Outcome{}
 	}
 	req, err := sites.SkillRouteRequest(message, node.Title, node.Summary, options)
@@ -109,10 +132,10 @@ func (r *Router) liveRoute(ctx context.Context, sessionID, message string, node 
 		r.logger.Debug("skill route: request", zap.String("node", node.ID), zap.Error(err))
 		return sel, false, nil, decision.Outcome{}
 	}
-	budget := decision.Budget(r.decisionRouter.Decider(), len(req.Questions), routeLivePerWave, routeMaxLiveBudget)
+	budget := decision.Budget(d.router.Decider(), len(req.Questions), routeLivePerWave, routeMaxLiveBudget)
 	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
 	defer cancel()
-	out = r.decisionRouter.Decide(liveCtx, req)
+	out = d.router.Decide(liveCtx, req)
 	if !out.Act() {
 		return sel, false, req, out
 	}
@@ -135,7 +158,7 @@ func (r *Router) liveRoute(ctx context.Context, sessionID, message string, node 
 // background. It never blocks the walk and never surfaces an error.
 func (r *Router) shadowRoute(ctx context.Context, sessionID, message string, node *skills.SkillIndexNode,
 	options []sites.RouteOption, chosen []string, source string) {
-	if r.decisionRouter == nil || len(options) == 0 {
+	if r.dec() == nil || len(options) == 0 {
 		return
 	}
 	req, err := sites.SkillRouteRequest(message, node.Title, node.Summary, options)
@@ -151,25 +174,30 @@ func (r *Router) shadowRoute(ctx context.Context, sessionID, message string, nod
 func (r *Router) runShadow(ctx context.Context, sessionID string, req *loomv1.DecisionRequest, refs map[string]decision.Reference) {
 	// Detach from the caller: the turn that produced this comparison may end
 	// before the shadow finishes, and that is fine.
+	d := r.dec()
+	if d == nil {
+		return
+	}
 	bg := decision.WithSessionID(context.WithoutCancel(ctx), sessionID)
 	r.decisionWG.Add(1)
 	go func() {
 		defer r.decisionWG.Done()
 		shadowCtx, cancel := context.WithTimeout(bg, routeShadowTimeout)
 		defer cancel()
-		out := r.decisionRouter.Decide(shadowCtx, req)
+		out := d.router.Decide(shadowCtx, req)
 		if out.Path == loomv1.DecisionPath_DECISION_PATH_ERROR {
 			r.logger.Warn("skill route shadow: decider error",
 				zap.String("site", req.Site), zap.Int("questions", len(req.Questions)), zap.Error(out.Err))
 		}
-		r.record(shadowCtx, sessionID, req, out, refs)
+		r.record(shadowCtx, d, sessionID, req, out, refs)
 	}()
 }
 
 // recordAsync records an outcome the caller already holds, off the walk.
 func (r *Router) recordAsync(ctx context.Context, sessionID string, req *loomv1.DecisionRequest,
 	out decision.Outcome, refs map[string]decision.Reference) {
-	if r.decisionRouter == nil || req == nil {
+	d := r.dec()
+	if d == nil || req == nil {
 		return
 	}
 	bg := decision.WithSessionID(context.WithoutCancel(ctx), sessionID)
@@ -178,18 +206,18 @@ func (r *Router) recordAsync(ctx context.Context, sessionID string, req *loomv1.
 		defer r.decisionWG.Done()
 		recCtx, cancel := context.WithTimeout(bg, routeShadowTimeout)
 		defer cancel()
-		r.record(recCtx, sessionID, req, out, refs)
+		r.record(recCtx, d, sessionID, req, out, refs)
 	}()
 }
 
-func (r *Router) record(ctx context.Context, sessionID string, req *loomv1.DecisionRequest,
+func (r *Router) record(ctx context.Context, d *skillDecision, sessionID string, req *loomv1.DecisionRequest,
 	out decision.Outcome, refs map[string]decision.Reference) {
 	provider := ""
-	if d := r.decisionRouter.Decider(); d != nil {
-		provider = d.Name()
+	if dd := d.router.Decider(); dd != nil {
+		provider = dd.Name()
 	}
 	records := decision.BuildShadowRecords(req, out, provider, sessionID, refs)
-	if err := r.recorder().Record(ctx, records); err != nil {
+	if err := r.recorderFor(d).Record(ctx, records); err != nil {
 		r.logger.Warn("skill route shadow: record failed",
 			zap.String("site", req.Site), zap.Int("rows", len(records)), zap.Error(err))
 	}
@@ -198,9 +226,14 @@ func (r *Router) record(ctx context.Context, sessionID string, req *loomv1.Decis
 // decisionFields are the Router's decision-layer state, kept here so the
 // walk's own file stays about the walk.
 type decisionFields struct {
-	decisionRouter   *decision.Router
-	decisionStore    decision.ShadowStore
-	decisionRecorder *decision.ShadowRecorder
-	recorderOnce     sync.Once
-	decisionWG       sync.WaitGroup
+	skillDecision atomic.Pointer[skillDecision]
+	decisionWG    sync.WaitGroup
+}
+
+// skillDecision is one agent's decision layer as its skill Router sees it.
+type skillDecision struct {
+	router       *decision.Router
+	store        decision.ShadowStore
+	recorder     *decision.ShadowRecorder
+	recorderOnce sync.Once
 }

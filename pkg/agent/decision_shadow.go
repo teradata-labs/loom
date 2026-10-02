@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -551,4 +552,27 @@ func (a *Agent) recordExtractionGate(ctx context.Context, sessionID, window stri
 		return
 	}
 	a.runShadow(ctx, sessionID, shadowReq, refs)
+}
+
+// withSkillRouteDecision records a skill Router that BuildSkillsOptions
+// built for this agent, so the agent can attach its decision layer to it
+// once that layer exists.
+func withSkillRouteDecision(r *skillindex.Router) Option {
+	return func(a *Agent) {
+		if r != nil {
+			a.skillRouteRouters = append(a.skillRouteRouters, r)
+		}
+	}
+}
+
+// attachSkillRouteDecision gives this agent's skill routers this agent's
+// decision router and shadow store (site skill.route). An agent with no
+// decision layer attaches nothing, and the walk is unchanged.
+func (a *Agent) attachSkillRouteDecision() {
+	if a.decisionRouter == nil {
+		return
+	}
+	for _, r := range a.skillRouteRouters {
+		r.SetDecision(a.decisionRouter, a.decisionShadowStore)
+	}
 }

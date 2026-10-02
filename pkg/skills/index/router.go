@@ -278,7 +278,7 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 					}
 					continue
 				}
-				if r.decisionRouter != nil {
+				if r.dec() != nil {
 					if leafReq != nil {
 						// Below the band, or every answer uncertain: record
 						// the outcome already in hand rather than asking twice.
@@ -321,7 +321,7 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 					zap.Error(err))
 				return nil, nil
 			}
-			if r.decisionRouter != nil {
+			if r.dec() != nil {
 				chosen := append(append([]string{}, decision.Descend...), decision.Skills...)
 				if dreq != nil {
 					// Below the band, or every answer uncertain: record the

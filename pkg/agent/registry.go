@@ -2626,6 +2626,11 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 			skilldiscovery.WithRouter(skillRouter),
 			skilldiscovery.WithCache(skillCache),
 		)
+		// skill.route: this router belongs to this agent. The agent's
+		// decision router does not exist yet (NewAgent builds it after the
+		// options run), so hand the skill router to the agent and let it
+		// attach its own decision layer then (Agent.attachSkillRouteDecision).
+		out = append(out, withSkillRouteDecision(skillRouter))
 
 		// context.Background is intentional inside warm: the index build
 		// outlives the caller. A cancelled boot must not abandon a

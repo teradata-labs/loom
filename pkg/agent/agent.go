@@ -122,6 +122,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Decision layer: resolve the configured decider against the LLMs the
 	// options just installed. Off unless configured.
 	a.initDecisionRouter()
+	a.attachSkillRouteDecision()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
