@@ -179,8 +179,12 @@ func (r *Router) Decide(ctx context.Context, req *loomv1.DecisionRequest) Outcom
 		return out
 	}
 
+	// The budget counts every call the decider is asked to make, answered
+	// or not: a failing or malformed decider costs a call (and possibly
+	// money) each time, and must not be called without limit. The slot is
+	// reserved before the call so concurrent requests cannot overshoot.
 	sessionID := SessionIDFromContext(ctx)
-	if r.budget != nil && !r.budget.allow(sessionID) {
+	if r.budget != nil && !r.budget.reserve(sessionID) {
 		out.Path = loomv1.DecisionPath_DECISION_PATH_BUDGET
 		out.Err = ErrBudgetExhausted
 		r.recordFallback(site, out.Path)
@@ -190,6 +194,9 @@ func (r *Router) Decide(ctx context.Context, req *loomv1.DecisionRequest) Outcom
 	start := time.Now()
 	resp, err := r.decider.Decide(ctx, req)
 	out.Latency = time.Since(start)
+	if r.budget != nil {
+		r.budget.charge(sessionID, callCost(resp, err))
+	}
 	if err != nil {
 		out.Err = err
 		if errors.Is(err, ErrDisabled) {
@@ -207,14 +214,6 @@ func (r *Router) Decide(ctx context.Context, req *loomv1.DecisionRequest) Outcom
 		return out
 	}
 
-	if r.budget != nil {
-		cost := 0.0
-		if resp.Usage != nil {
-			cost = resp.Usage.CostUsd
-		}
-		r.budget.record(sessionID, cost)
-	}
-
 	out.Response = resp
 	out.Confidence = MinConfidence(resp)
 	if !band.Shadow && out.Confidence >= band.ActMin {
@@ -225,11 +224,20 @@ func (r *Router) Decide(ctx context.Context, req *loomv1.DecisionRequest) Outcom
 	return out
 }
 
-// ForgetSession releases a session's budget accounting. Hosts call it when
-// they retire a session so the table is bounded by live sessions.
+// ForgetSession releases a session's budget accounting. The agent calls it
+// from DeleteSession so the table is bounded by live sessions. Safe on a nil
+// Router (an agent with no decision layer).
 func (r *Router) ForgetSession(sessionID string) {
-	if r.budget != nil {
+	if r != nil && r.budget != nil {
 		r.budget.forget(sessionID)
+	}
+}
+
+// ForgetAllSessions releases every session's budget accounting (the agent's
+// ClearAllSessions). Safe on a nil Router.
+func (r *Router) ForgetAllSessions() {
+	if r != nil && r.budget != nil {
+		r.budget.reset()
 	}
 }
 
@@ -258,23 +266,9 @@ func newBudget(maxCalls int64, maxCost float64) *budget {
 	return &budget{maxCalls: maxCalls, maxCost: maxCost, sessions: make(map[string]*spend)}
 }
 
-func (b *budget) allow(sessionID string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	s := b.sessions[sessionID]
-	if s == nil {
-		return true
-	}
-	if b.maxCalls > 0 && s.calls >= b.maxCalls {
-		return false
-	}
-	if b.maxCost > 0 && s.cost >= b.maxCost {
-		return false
-	}
-	return true
-}
-
-func (b *budget) record(sessionID string, cost float64) {
+// reserve takes one call from the session's budget, atomically with the
+// check, and reports whether the call may go ahead.
+func (b *budget) reserve(sessionID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s := b.sessions[sessionID]
@@ -282,12 +276,51 @@ func (b *budget) record(sessionID string, cost float64) {
 		s = &spend{}
 		b.sessions[sessionID] = s
 	}
+	if b.maxCalls > 0 && s.calls >= b.maxCalls {
+		return false
+	}
+	if b.maxCost > 0 && s.cost >= b.maxCost {
+		return false
+	}
 	s.calls++
+	return true
+}
+
+// charge adds a finished call's cost to the session.
+func (b *budget) charge(sessionID string, cost float64) {
+	if cost <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[sessionID]
+	if s == nil {
+		s = &spend{}
+		b.sessions[sessionID] = s
+	}
 	s.cost += cost
+}
+
+// callCost is what one decider call cost: the response's usage, or the
+// usage a failed call carried (WithUsage), or 0.
+func callCost(resp *loomv1.DecisionResponse, err error) float64 {
+	if resp != nil && resp.Usage != nil {
+		return resp.Usage.CostUsd
+	}
+	if u := UsageFromError(err); u != nil {
+		return u.CostUsd
+	}
+	return 0
 }
 
 func (b *budget) forget(sessionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.sessions, sessionID)
+}
+
+func (b *budget) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sessions = make(map[string]*spend)
 }

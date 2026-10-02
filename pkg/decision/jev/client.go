@@ -172,14 +172,16 @@ func (c *Client) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loom
 	if err != nil {
 		return nil, err
 	}
-	if c.limiter != nil {
-		if err := c.limiter.wait(ctx); err != nil {
-			return nil, err
-		}
-	}
-
 	var lastErr error
 	for attempt := 1; attempt <= c.cfg.MaxAttempts; attempt++ {
+		// Every HTTP request draws a limiter token, retries included: the
+		// tier counts requests, not decisions, and a retry against a 429
+		// is exactly when the budget matters.
+		if c.limiter != nil {
+			if err := c.limiter.wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		resp, retryAfter, err := c.attempt(ctx, body)
 		if err == nil {
 			out, err := decodeResponse(req, resp, c.cfg.PricePerMillionInputTokens)
@@ -469,6 +471,21 @@ func decodeResponse(req *loomv1.DecisionRequest, body []byte, pricePerMillion fl
 			CostUsd:      cost,
 		},
 	}
+	answers, err := decodeAnswers(req, w)
+	if err == nil {
+		out.Answers = answers
+		err = decision.CheckAnswers(req, out)
+	}
+	if err != nil {
+		// The call was answered and billed; keep its usage on the error.
+		return nil, decision.WithUsage(err, out.Usage)
+	}
+	return out, nil
+}
+
+// decodeAnswers maps the wire answers onto the request's questions.
+func decodeAnswers(req *loomv1.DecisionRequest, w wireResponse) (map[string]*loomv1.DecisionAnswer, error) {
+	answers := make(map[string]*loomv1.DecisionAnswer, len(w.Answers))
 	for id, a := range w.Answers {
 		q, ok := req.Questions[id]
 		if !ok {
@@ -479,7 +496,7 @@ func decodeResponse(req *loomv1.DecisionRequest, body []byte, pricePerMillion fl
 			if a.Noul == nil {
 				return nil, fmt.Errorf("%w: %q missing noul", decision.ErrMalformedAnswer, id)
 			}
-			out.Answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Noul{Noul: &loomv1.NoulAnswer{Probability: *a.Noul}}}
+			answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Noul{Noul: &loomv1.NoulAnswer{Probability: *a.Noul}}}
 		case *loomv1.DecisionQuestion_Choice:
 			if a.Choice == "" || len(a.Probabilities) == 0 {
 				return nil, fmt.Errorf("%w: %q missing choice or probabilities", decision.ErrMalformedAnswer, id)
@@ -488,7 +505,7 @@ func decodeResponse(req *loomv1.DecisionRequest, body []byte, pricePerMillion fl
 			if a.Confidence != nil {
 				conf = *a.Confidence
 			}
-			out.Answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Choice{Choice: &loomv1.ChoiceAnswer{
+			answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Choice{Choice: &loomv1.ChoiceAnswer{
 				Choice: a.Choice, Probabilities: a.Probabilities, Confidence: conf,
 			}}}
 		case *loomv1.DecisionQuestion_Score:
@@ -503,15 +520,12 @@ func decodeResponse(req *loomv1.DecisionRequest, body []byte, pricePerMillion fl
 			if len(legend) == 0 {
 				legend = decision.LegendOf(q.GetScore())
 			}
-			out.Answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Score{Score: &loomv1.ScoreAnswer{
+			answers[id] = &loomv1.DecisionAnswer{Kind: &loomv1.DecisionAnswer_Score{Score: &loomv1.ScoreAnswer{
 				Score: *a.Score, Probabilities: a.Probabilities, Legend: legend, Confidence: conf,
 			}}}
 		}
 	}
-	if err := decision.CheckAnswers(req, out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return answers, nil
 }
 
 // valueJSON renders a protobuf Value as JSON; nil is JSON null.

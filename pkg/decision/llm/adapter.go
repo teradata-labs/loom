@@ -142,21 +142,25 @@ func (a *Adapter) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loo
 		return nil, fmt.Errorf("%w: nil provider response", decision.ErrMalformedAnswer)
 	}
 
+	// The provider answered and billed for it whether or not the reply
+	// parses; a malformed reply carries that usage on its error so the
+	// router's budget and the metrics still count it.
+	usage := &loomv1.DecisionUsage{
+		InputTokens:  int64(resp.Usage.InputTokens),
+		OutputTokens: int64(resp.Usage.OutputTokens),
+		CostUsd:      resp.Usage.CostUSD,
+	}
 	answers, err := ParseAnswers(req, resp.Content)
 	if err != nil {
-		return nil, err
+		return nil, decision.WithUsage(err, usage)
 	}
 	out := &loomv1.DecisionResponse{
 		Model:   a.provider.Model(),
 		Answers: answers,
-		Usage: &loomv1.DecisionUsage{
-			InputTokens:  int64(resp.Usage.InputTokens),
-			OutputTokens: int64(resp.Usage.OutputTokens),
-			CostUsd:      resp.Usage.CostUSD,
-		},
+		Usage:   usage,
 	}
 	if err := decision.CheckAnswers(req, out); err != nil {
-		return nil, err
+		return nil, decision.WithUsage(err, usage)
 	}
 	return out, nil
 }

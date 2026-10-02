@@ -531,3 +531,51 @@ func TestSetServerEndpoint(t *testing.T) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// Review #409 F6: one Decide against a 429 server sent 3 requests on 1
+// limiter token. Every attempt now draws its own token.
+func TestDecideRetriesDrawLimiterTokens(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	c := newClient(t, srv, nil)
+
+	// A bucket holding exactly one token that never refills: the second
+	// attempt must wait for a token, and the wait is where we count.
+	l := newLimiter(60) // 1 per second, burst 1
+	frozen := time.Now()
+	l.now = func() time.Time { return frozen }
+	var waits atomic.Int32
+	l.sleepFor = func(_ context.Context, _ time.Duration) error {
+		waits.Add(1)
+		frozen = frozen.Add(time.Second) // grant exactly one more token
+		return nil
+	}
+	c.limiter = l
+
+	_, err := c.Decide(context.Background(), fullRequest(t))
+	require.ErrorIs(t, err, decision.ErrRateLimited)
+	assert.Equal(t, int32(3), calls.Load(), "three attempts")
+	assert.Equal(t, int32(2), waits.Load(), "attempts 2 and 3 each waited for their own token")
+}
+
+// Review #409 F8: a malformed reply was answered (and billed); its usage is
+// kept on the error.
+func TestDecideMalformedReplyKeepsUsage(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"answers":{"zzz":{"type":"noul","noul":0.1}},"usage":{"input_tokens":1000000,"output_tokens":0}}`))
+	}))
+	t.Cleanup(srv.Close)
+	_, err := newClient(t, srv, nil).Decide(context.Background(), fullRequest(t))
+	require.ErrorIs(t, err, decision.ErrMalformedAnswer)
+	u := decision.UsageFromError(err)
+	require.NotNil(t, u)
+	assert.Equal(t, int64(1_000_000), u.InputTokens)
+	assert.InDelta(t, DefaultPricePerMillionInputTokens, u.CostUsd, 1e-12)
+}

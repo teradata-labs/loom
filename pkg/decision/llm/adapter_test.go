@@ -177,8 +177,16 @@ func TestAdapterRejectsMalformedReplies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := New(&scriptedProvider{reply: tt.reply}).Decide(context.Background(), fullRequest(t))
+			usage := types.Usage{InputTokens: 321, OutputTokens: 9, CostUSD: 0.0007}
+			_, err := New(&scriptedProvider{reply: tt.reply, usage: usage}).Decide(context.Background(), fullRequest(t))
 			assert.True(t, errors.Is(err, decision.ErrMalformedAnswer), "got %v", err)
+			// Review #409 F8: the provider answered and billed; the usage
+			// must survive on the error.
+			u := decision.UsageFromError(err)
+			require.NotNil(t, u, "malformed reply dropped its usage")
+			assert.Equal(t, int64(321), u.InputTokens)
+			assert.Equal(t, int64(9), u.OutputTokens)
+			assert.InDelta(t, 0.0007, u.CostUsd, 1e-12)
 		})
 	}
 }

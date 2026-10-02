@@ -117,6 +117,15 @@ func (i *Instrumented) Decide(ctx context.Context, req *loomv1.DecisionRequest) 
 			observability.AttrErrorType: fmt.Sprintf("%T", err),
 		}
 		i.tracer.RecordMetric(observability.MetricDecisionErrors, 1, errLabels)
+		// A failed call that still consumed tokens (WithUsage) is counted
+		// like an answered one, so dashboards see what failures cost.
+		if u := UsageFromError(err); u != nil {
+			span.SetAttribute(AttrDecisionInputTokens, u.InputTokens)
+			span.SetAttribute(AttrDecisionOutputTokens, u.OutputTokens)
+			span.SetAttribute(AttrDecisionCostUSD, u.CostUsd)
+			i.tracer.RecordMetric(observability.MetricDecisionTokens, float64(u.InputTokens), labels)
+			i.tracer.RecordMetric(observability.MetricDecisionCost, u.CostUsd, labels)
+		}
 		return nil, err
 	}
 

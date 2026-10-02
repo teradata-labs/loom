@@ -285,3 +285,79 @@ func TestRouterConcurrent(t *testing.T) {
 	assert.Equal(t, sessions*perSession, total, "every call under budget and above band acts")
 	assert.Equal(t, sessions*perSession, m.CallCount())
 }
+
+// Review #409 F8: with max_per_session 1, five failing requests all reached
+// the decider. Every call the decider is asked to make counts, failed or not.
+func TestRouterBudgetCountsFailedCalls(t *testing.T) {
+	t.Parallel()
+	const site = "budget.fail"
+	ctx := decision.WithSessionID(context.Background(), "S")
+	req := noulRequest(t, site)
+
+	failing := mock.New().SetError(errors.New("decider down"))
+	r := decision.NewRouter(failing, decision.WithBudget(1, 0))
+	first := r.Decide(ctx, req)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_ERROR, first.Path)
+	for i := 0; i < 4; i++ {
+		out := r.Decide(ctx, req)
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, out.Path, "call %d", i+2)
+	}
+	assert.Equal(t, 1, failing.CallCount(), "only the budgeted call reached the decider")
+
+	// A malformed reply's usage is charged to the cost budget.
+	malformed := mock.New().SetError(decision.WithUsage(decision.ErrMalformedAnswer, &loomv1.DecisionUsage{CostUsd: 0.6}))
+	rc := decision.NewRouter(malformed, decision.WithBudget(0, 1.0))
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_ERROR, rc.Decide(ctx, req).Path)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_ERROR, rc.Decide(ctx, req).Path, "0.6 spent, under 1.0")
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, rc.Decide(ctx, req).Path, "1.2 spent on failures")
+	assert.Equal(t, 2, malformed.CallCount())
+
+	// An answer that fails CheckAnswers also counts.
+	wrong := mock.New().AnswerNoul("other", 0.9)
+	rw := decision.NewRouter(wrong, decision.WithBudget(1, 0))
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_ERROR, rw.Decide(ctx, req).Path)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, rw.Decide(ctx, req).Path)
+}
+
+// The budget check and the count are one step: concurrent requests in one
+// session cannot overshoot max_per_session.
+func TestRouterBudgetReservationIsAtomic(t *testing.T) {
+	t.Parallel()
+	const site = "budget.race"
+	m := mock.New().AnswerNoul("q", 0.9)
+	r := decision.NewRouter(m, decision.WithBudget(10, 0))
+	ctx := decision.WithSessionID(context.Background(), "S")
+	req := noulRequest(t, site)
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = r.Decide(ctx, req)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 10, m.CallCount())
+}
+
+func TestRouterForgetAllSessionsAndNilSafety(t *testing.T) {
+	t.Parallel()
+	const site = "budget.forget"
+	m := mock.New().AnswerNoul("q", 0.9)
+	r := decision.NewRouter(m, decision.WithBudget(1, 0))
+	req := noulRequest(t, site)
+	ctxA := decision.WithSessionID(context.Background(), "A")
+	ctxB := decision.WithSessionID(context.Background(), "B")
+	_ = r.Decide(ctxA, req)
+	_ = r.Decide(ctxB, req)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, r.Decide(ctxA, req).Path)
+	r.ForgetAllSessions()
+	assert.NotEqual(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, r.Decide(ctxA, req).Path)
+	assert.NotEqual(t, loomv1.DecisionPath_DECISION_PATH_BUDGET, r.Decide(ctxB, req).Path)
+
+	var nilRouter *decision.Router
+	assert.NotPanics(t, func() {
+		nilRouter.ForgetSession("x")
+		nilRouter.ForgetAllSessions()
+	})
+}

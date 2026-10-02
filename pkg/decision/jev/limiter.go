@@ -23,8 +23,10 @@ import (
 // limiter is a token bucket sized to a per-minute request budget with a
 // burst of one second's worth. It is deliberately separate from the LLM slot
 // scheduler: that meters generative tokens against a provider quota; this
-// meters requests against Jev's published 1,200 rpm. A Client owns one, so a
-// process that builds several Clients (one per agent) should share a Client.
+// meters requests against Jev's published 1,200 rpm. A Client owns one and
+// draws a token for every HTTP attempt, retries included. Agents get their
+// Client from Shared, so every agent with the same decider settings draws
+// on one limiter per process.
 type limiter struct {
 	mu       sync.Mutex
 	rate     float64 // tokens per second

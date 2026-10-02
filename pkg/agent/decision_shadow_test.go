@@ -288,3 +288,30 @@ func TestRerankMemoriesShadowRowsCarryAgentSession(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "sess-agent-9", rows[0].SessionId)
 }
+
+// Review #409 F5: Router.ForgetSession had no caller. DeleteSession and
+// ClearAllSessions now release the session's decision budget.
+func TestDeleteSessionReleasesDecisionBudget(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul("c0", 0.9)
+	ag := NewAgent(nil, rerankReplyLLM{reply: "1"}, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, decision.WithBudget(1, 0))))
+	ctx := session.WithSessionID(context.Background(), "sess-del")
+	cands := []*memory.Memory{{ID: "m1", Content: "x"}}
+
+	_ = ag.rerankMemories(ctx, "q", cands)
+	ag.WaitDecisionShadows()
+	_ = ag.rerankMemories(ctx, "q", cands)
+	ag.WaitDecisionShadows()
+	require.Equal(t, 1, dec.CallCount(), "the second call is over budget")
+
+	ag.DeleteSession("sess-del")
+	_ = ag.rerankMemories(ctx, "q", cands)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, 2, dec.CallCount(), "DeleteSession released the budget")
+
+	ag.ClearAllSessions()
+	_ = ag.rerankMemories(ctx, "q", cands)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, 3, dec.CallCount(), "ClearAllSessions released it too")
+}

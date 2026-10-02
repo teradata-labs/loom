@@ -158,3 +158,36 @@ func SessionIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// UsageError is a decider failure that still consumed a call: the provider
+// answered (and may have billed for it), but the answer was unusable. The
+// router charges its usage to the session budget and Instrumented records
+// it, so a decider that keeps returning malformed replies is not free.
+type UsageError struct {
+	Err   error
+	Usage *loomv1.DecisionUsage
+}
+
+// Error returns the wrapped error's text.
+func (e *UsageError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the wrapped error, so errors.Is sees the sentinel.
+func (e *UsageError) Unwrap() error { return e.Err }
+
+// WithUsage attaches the usage of the call that failed to err. A nil err or
+// nil usage returns err unchanged.
+func WithUsage(err error, usage *loomv1.DecisionUsage) error {
+	if err == nil || usage == nil {
+		return err
+	}
+	return &UsageError{Err: err, Usage: usage}
+}
+
+// UsageFromError returns the usage WithUsage attached, or nil.
+func UsageFromError(err error) *loomv1.DecisionUsage {
+	var ue *UsageError
+	if errors.As(err, &ue) {
+		return ue.Usage
+	}
+	return nil
+}
