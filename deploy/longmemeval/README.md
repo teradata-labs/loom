@@ -81,9 +81,10 @@ dataset refused on resume.
   silently reusing chunks. To knowingly continue a run after e.g. an image
   rebuild: `LME_RUN_ID=<id> LME_ALLOW_MANIFEST_DRIFT=1` (drift is logged to the
   run's `manifest-drift.log`; nothing is ever deleted). The runner also pins the
-  dataset's own statistics (entry count and per-type counts) in
-  `dataset-stats.json`, so a dataset revised underneath a resume is refused
-  rather than mixed with chunks that answered different questions.
+  dataset itself in `dataset-stats.json` — its SHA-256 plus entry count and
+  per-type counts — so a dataset revised underneath a resume (even one with
+  identical counts but changed questions or answers) is refused rather than
+  mixed with chunks that answered different questions.
 - **Build identity:** workloads are pinned to the tag the build pushes, never
   `:latest`. `az acr build` uploads the working tree rather than the commit, so
   a dirty tree is tagged `<commit>-dirty-<fingerprint>` and gets its own run id
