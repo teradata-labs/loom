@@ -18,7 +18,8 @@ import (
 )
 
 // recordingClient is a LoomServiceClient stub that records Weave requests and
-// hands back a fixed response. Embedding the interface satisfies every method
+// answers like a replay-capable server: a replay turn echoes the scripted
+// assistant text verbatim, any other turn gets a fixed "ok". Embedding the interface satisfies every method
 // (unused ones would panic if called) while we override only what
 // runConversationWith touches: CreateSession and Weave.
 type recordingClient struct {
@@ -32,6 +33,9 @@ func (c *recordingClient) CreateSession(_ context.Context, _ *loomv1.CreateSessi
 
 func (c *recordingClient) Weave(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
 	c.weaves = append(c.weaves, in)
+	if msg := in.GetReplayAssistantMessage(); msg != "" {
+		return &loomv1.WeaveResponse{Text: msg}, nil
+	}
 	return &loomv1.WeaveResponse{Text: "ok"}, nil
 }
 
@@ -120,4 +124,39 @@ func TestRunConversationWith_HandlesTurnAnomalies(t *testing.T) {
 	// Question turn.
 	assert.Empty(t, client.weaves[2].ReplayAssistantMessage)
 	assert.Contains(t, client.weaves[2].Query, "q?")
+}
+
+// TestRunConversationWith_BlankAssistantReplyGenerates verifies that a user
+// turn answered by a blank assistant turn (the S set has a few) is sent as a
+// normal generating turn and the blank reply is consumed with it. A server
+// cannot replay blank text — an empty override is indistinguishable from none
+// and a whitespace-only one is rejected — so replaying it would either fail
+// the entry or, via the echo check, falsely abort the run.
+func TestRunConversationWith_BlankAssistantReplyGenerates(t *testing.T) {
+	client := &recordingClient{}
+	r := &Runner{
+		config: RunConfig{Mode: ModeConversation},
+		logger: zap.NewNop(),
+		client: client,
+	}
+	entry := Entry{QuestionID: "q3", Question: "q?", QuestionDate: "2023/05/01 (Mon) 10:00"}
+	sessions := []SessionWithDate{{
+		Turns: []Turn{
+			{Role: "user", Content: "u1"},
+			{Role: "assistant", Content: "  \n"}, // blank reply → generated
+			{Role: "user", Content: "u2"},
+			{Role: "assistant", Content: "a2"}, // paired → replayed
+		},
+	}}
+
+	res := r.runConversationWith(context.Background(), entry, sessions, EntryResult{}, "", time.Time{})
+	require.Empty(t, res.Error)
+	assert.False(t, res.replayIgnored)
+
+	require.Len(t, client.weaves, 3, "one generated turn + one replayed pair + one question")
+	assert.Equal(t, "u1", client.weaves[0].Query)
+	assert.Empty(t, client.weaves[0].ReplayAssistantMessage, "a blank reply must not be sent as a replay")
+	assert.Equal(t, "u2", client.weaves[1].Query, "the blank assistant turn is consumed, not treated as a new turn")
+	assert.Equal(t, "a2", client.weaves[1].ReplayAssistantMessage)
+	assert.Empty(t, client.weaves[2].ReplayAssistantMessage)
 }

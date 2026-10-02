@@ -104,7 +104,22 @@ type EntryResult struct {
 	// runner can decide whether to abort the whole run. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
+
+	// replayIgnored records that a successful replay Weave answered with text
+	// other than the scripted assistant turn: the server ignored
+	// replay_assistant_message and generated instead. Like a refused
+	// override, it invalidates the whole run, so Runner.Run aborts on it.
+	// Unexported — never serialized to results.
+	replayIgnored bool
 }
+
+// errReplayIgnored reports that a server accepted a replay turn but did not
+// honor replay_assistant_message. A server that predates the field (e.g. a
+// released v1.4.0 looms) decodes it as an unknown proto3 field, drops it, and
+// generates a fresh assistant turn — so the Weave succeeds and only the
+// response text reveals that the dataset's assistant turn was replaced.
+var errReplayIgnored = errors.New("server ignored replay_assistant_message " +
+	"(it predates generation-free replay); upgrade looms or use another --mode")
 
 // Runner orchestrates the benchmark execution against a running Loom server.
 type Runner struct {
@@ -251,6 +266,15 @@ loop:
 // file of error rows and exits zero — handing automation something that
 // looks like a result.
 func overrideRejection(result EntryResult) (string, bool) {
+	// A server that silently ignored the replay override is as fatal as one
+	// that refused it: every remaining replay turn would be generated, and
+	// the run would exit zero with a generative-replay result labelled as
+	// --mode conversation.
+	if result.replayIgnored {
+		return errReplayIgnored.Error() + "; aborting the run — it answered a replay turn " +
+			"with generated text instead of the scripted assistant turn", true
+	}
+
 	precondition := result.grpcCode == codes.FailedPrecondition
 
 	if (precondition && strings.Contains(result.Error, "replay_assistant_message")) ||
@@ -446,6 +470,16 @@ func (r *Runner) replayTurn(ctx context.Context, sessionID, userContent, assista
 		result.OutputTokens += int(resp.Cost.LlmCost.OutputTokens)
 	}
 
+	// A server that honors replay_assistant_message answers with the scripted
+	// text verbatim (the conversation loop substitutes it for the provider
+	// call). Anything else means the field was ignored — a server that
+	// predates it decodes it as an unknown field and generates — so a
+	// successful Weave alone is not proof the turn was replayed.
+	if resp.GetText() != assistantContent {
+		result.replayIgnored = true
+		return errReplayIgnored
+	}
+
 	return nil
 }
 
@@ -633,7 +667,8 @@ func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions 
 				continue
 			}
 			user := turns[i]
-			if i+1 < len(turns) && turns[i+1].Role == "assistant" {
+			hasReply := i+1 < len(turns) && turns[i+1].Role == "assistant"
+			if hasReply && strings.TrimSpace(turns[i+1].Content) != "" {
 				// The common case: a (user, assistant) pair replayed verbatim.
 				if err := r.replayTurn(ctx, sessionID, user.Content, turns[i+1].Content, agentID, occurredAt, &result); err != nil {
 					result.Error = fmt.Sprintf("replay session %d turn %d: %v", si, i, err)
@@ -642,14 +677,21 @@ func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions 
 				i += 2
 				continue
 			}
-			// A trailing user turn with no assistant reply (rare). There is no
-			// ground-truth assistant content to preserve, so let the agent
-			// generate one — the user content still enters memory.
+			// A user turn with no assistant reply (rare): trailing, or answered
+			// by a blank assistant turn (the S set has a few). There is no
+			// ground-truth assistant content to preserve — and a server cannot
+			// replay blank text (an empty override is indistinguishable from
+			// none) — so let the agent generate one; the user content still
+			// enters memory. A blank reply is consumed with its user turn.
 			if _, err := r.weave(ctx, sessionID, user.Content, agentID, occurredAt, &result); err != nil {
-				result.Error = fmt.Sprintf("replay session %d trailing user turn %d: %v", si, i, err)
+				result.Error = fmt.Sprintf("replay session %d unanswered user turn %d: %v", si, i, err)
 				return result
 			}
-			i++
+			if hasReply {
+				i += 2
+			} else {
+				i++
+			}
 		}
 	}
 

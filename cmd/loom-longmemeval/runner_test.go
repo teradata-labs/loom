@@ -196,6 +196,12 @@ type fakeLoomClient struct {
 	weaveReqs          []*loomv1.WeaveRequest
 	weaveErr           error
 	deleteAgentCtxErrs []error
+
+	// ignoreReplay simulates a server that predates replay_assistant_message
+	// (e.g. released v1.4.0): it drops the unknown field and generates, so a
+	// replay request succeeds with generated text instead of the scripted
+	// turn.
+	ignoreReplay bool
 }
 
 func (f *fakeLoomClient) CreateSession(_ context.Context, _ *loomv1.CreateSessionRequest, _ ...grpc.CallOption) (*loomv1.Session, error) {
@@ -223,6 +229,10 @@ func (f *fakeLoomClient) Weave(_ context.Context, in *loomv1.WeaveRequest, _ ...
 	f.weaveReqs = append(f.weaveReqs, in)
 	if f.weaveErr != nil {
 		return nil, f.weaveErr
+	}
+	// A replay-capable server answers a replay turn with the scripted text.
+	if msg := in.GetReplayAssistantMessage(); msg != "" && !f.ignoreReplay {
+		return &loomv1.WeaveResponse{Text: msg}, nil
 	}
 	return &loomv1.WeaveResponse{Text: "answer"}, nil
 }
@@ -362,10 +372,89 @@ func TestReplayTurn_SuccessLeavesNoRejection(t *testing.T) {
 	assert.False(t, rejected)
 }
 
+// weaveOKClient succeeds every Weave the way a replay-capable server does:
+// a replay turn is answered with the scripted assistant text verbatim.
 type weaveOKClient struct {
 	loomv1.LoomServiceClient
 }
 
-func (c *weaveOKClient) Weave(_ context.Context, _ *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
-	return &loomv1.WeaveResponse{}, nil
+func (c *weaveOKClient) Weave(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+	return &loomv1.WeaveResponse{Text: in.GetReplayAssistantMessage()}, nil
+}
+
+// A server that predates replay_assistant_message (released v1.4.0) does not
+// reject it: proto3 drops the unknown field and the turn generates. The Weave
+// succeeds, so only the response text shows the dataset's assistant turn was
+// replaced. replayTurn must flag that, and the fail-fast check must treat it
+// like a refused override.
+func TestReplayTurn_IgnoredReplayAbortsTheRun(t *testing.T) {
+	r := &Runner{client: &fakeLoomClient{ignoreReplay: true}}
+
+	var result EntryResult
+	err := r.replayTurn(context.Background(), "sess-1", "user text", "assistant text", "", time.Time{}, &result)
+	require.ErrorIs(t, err, errReplayIgnored)
+	assert.True(t, result.replayIgnored)
+	assert.Equal(t, codes.OK, result.grpcCode, "the Weave itself succeeded")
+
+	// What runConversationWith stores before Run consults the fail-fast check.
+	result.Error = "replay session 0 turn 0: " + err.Error()
+	msg, rejected := overrideRejection(result)
+	assert.True(t, rejected, "an ignored replay override must abort the run, not exit zero with generated turns")
+	assert.Contains(t, msg, "replay_assistant_message")
+	assert.Contains(t, msg, "upgrade looms")
+}
+
+// End to end through Runner.Run: --mode conversation against a server that
+// ignores replay_assistant_message must abort with a non-nil error after the
+// first replay turn, instead of exiting zero with a generative-replay result.
+func TestRunAbortsWhenServerIgnoresReplay(t *testing.T) {
+	fake := &fakeLoomClient{ignoreReplay: true}
+	r := &Runner{
+		config: RunConfig{Mode: ModeConversation, Concurrency: 1},
+		logger: zap.NewNop(),
+		client: fake,
+	}
+
+	entry := testEntry("q1")
+	entry.HaystackSessions = [][]Turn{{
+		{Role: "user", Content: "I went on a trip today."},
+		{Role: "assistant", Content: "That sounds fun."},
+		{Role: "user", Content: "It was to Lisbon."},
+		{Role: "assistant", Content: "Lisbon is lovely."},
+	}}
+	entries := []Entry{entry, testEntry("q2"), testEntry("q3")}
+	entries[1].HaystackSessions = entry.HaystackSessions
+	entries[2].HaystackSessions = entry.HaystackSessions
+	resultCh := make(chan EntryResult, len(entries))
+
+	err := r.Run(context.Background(), entries, resultCh)
+	require.Error(t, err, "a run whose replay turns were generated must not exit zero")
+	assert.Contains(t, err.Error(), "ignored replay_assistant_message")
+
+	// Fail fast: the first entry stops at its first replay turn (no second
+	// replay, no question turn), and the abort keeps later entries from
+	// starting. Concurrency 1 makes the count deterministic.
+	assert.Len(t, fake.snapshotWeaveReqs(), 1)
+}
+
+// The same run against a replay-capable server completes cleanly — the echo
+// check passes when the scripted text comes back verbatim.
+func TestRunConversationSucceedsWhenServerHonorsReplay(t *testing.T) {
+	fake := &fakeLoomClient{}
+	r := &Runner{
+		config: RunConfig{Mode: ModeConversation, Concurrency: 1},
+		logger: zap.NewNop(),
+		client: fake,
+	}
+	entry := testEntry("q1")
+	entry.HaystackSessions = [][]Turn{{
+		{Role: "user", Content: "I went on a trip today."},
+		{Role: "assistant", Content: "That sounds fun."},
+	}}
+	resultCh := make(chan EntryResult, 1)
+
+	require.NoError(t, r.Run(context.Background(), []Entry{entry}, resultCh))
+	res := <-resultCh
+	assert.Empty(t, res.Error)
+	assert.Equal(t, "answer", res.Hypothesis)
 }
