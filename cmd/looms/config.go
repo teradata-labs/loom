@@ -1179,6 +1179,23 @@ func setDefaults() {
 	viper.SetDefault("llm.timeout_seconds", 0)
 	viper.SetDefault("llm.concurrency_limit", 2)
 
+	// LLM credentials (env/keyring/CLI only). Registered empty so AutomaticEnv
+	// binds e.g. LOOM_LLM_BEDROCK_BEARER_TOKEN on Unmarshal; without a known key
+	// viper silently drops the env var. An empty default is indistinguishable
+	// from "unset" after Unmarshal, so the keyring fallback still applies.
+	viper.SetDefault("llm.anthropic_api_key", "")
+	viper.SetDefault("llm.bedrock_access_key_id", "")
+	viper.SetDefault("llm.bedrock_secret_access_key", "")
+	viper.SetDefault("llm.bedrock_session_token", "")
+	viper.SetDefault("llm.bedrock_bearer_token", "")
+	viper.SetDefault("llm.openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_entra_token", "")
+	viper.SetDefault("llm.mistral_api_key", "")
+	viper.SetDefault("llm.gemini_api_key", "")
+	viper.SetDefault("llm.huggingface_token", "")
+	viper.SetDefault("llm.litellm_api_key", "")
+
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
 	viper.SetDefault("database.path", defaultDBPath)

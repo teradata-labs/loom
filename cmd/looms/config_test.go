@@ -748,6 +748,54 @@ storage:
 		"LOOM_STORAGE_POSTGRES_DSN should work even without dsn key in YAML")
 }
 
+// TestEnvVar_LLMSecrets_NoYAMLKey pins that every env-only LLM credential
+// reaches LLMConfig when the YAML has no entry for it. viper's AutomaticEnv
+// does not register keys, so Unmarshal silently drops an env var whose key has
+// no config entry, default, or bound flag. The LongMemEval AKS rig depends on
+// LOOM_LLM_BEDROCK_BEARER_TOKEN arriving this way.
+func TestEnvVar_LLMSecrets_NoYAMLKey(t *testing.T) {
+	tests := []struct {
+		env string
+		get func(*Config) string
+	}{
+		{"LOOM_LLM_BEDROCK_BEARER_TOKEN", func(c *Config) string { return c.LLM.BedrockBearerToken }},
+		{"LOOM_LLM_BEDROCK_ACCESS_KEY_ID", func(c *Config) string { return c.LLM.BedrockAccessKeyID }},
+		{"LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY", func(c *Config) string { return c.LLM.BedrockSecretAccessKey }},
+		{"LOOM_LLM_BEDROCK_SESSION_TOKEN", func(c *Config) string { return c.LLM.BedrockSessionToken }},
+		{"LOOM_LLM_ANTHROPIC_API_KEY", func(c *Config) string { return c.LLM.AnthropicAPIKey }},
+		{"LOOM_LLM_OPENAI_API_KEY", func(c *Config) string { return c.LLM.OpenAIAPIKey }},
+		{"LOOM_LLM_AZURE_OPENAI_API_KEY", func(c *Config) string { return c.LLM.AzureOpenAIAPIKey }},
+		{"LOOM_LLM_AZURE_OPENAI_ENTRA_TOKEN", func(c *Config) string { return c.LLM.AzureOpenAIEntraToken }},
+		{"LOOM_LLM_MISTRAL_API_KEY", func(c *Config) string { return c.LLM.MistralAPIKey }},
+		{"LOOM_LLM_GEMINI_API_KEY", func(c *Config) string { return c.LLM.GeminiAPIKey }},
+		{"LOOM_LLM_HUGGINGFACE_TOKEN", func(c *Config) string { return c.LLM.HuggingFaceToken }},
+		{"LOOM_LLM_LITELLM_API_KEY", func(c *Config) string { return c.LLM.LiteLLMAPIKey }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.env, func(t *testing.T) {
+			viper.Reset()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "looms.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  port: 60051
+llm:
+  provider: bedrock
+  bedrock_region: us-east-1
+`), 0o644))
+
+			// Fake value: not a real credential shape, so secret scanning stays quiet.
+			const fake = "fake-test-credential-not-a-secret"
+			t.Setenv(tt.env, fake)
+
+			cfg, err := LoadConfig(cfgPath)
+			require.NoError(t, err)
+			assert.Equal(t, fake, tt.get(cfg),
+				"%s must populate the config with no YAML key", tt.env)
+		})
+	}
+}
+
 func TestEnvVar_PatternsDir_NoYAMLKey(t *testing.T) {
 	viper.Reset()
 

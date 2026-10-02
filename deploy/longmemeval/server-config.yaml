@@ -10,7 +10,11 @@ data:
       provider: bedrock
       bedrock_model_id: ${LME_MODEL}
       bedrock_region: us-west-2
-      # bedrock_bearer_token comes from LOOM_LLM_BEDROCK_BEARER_TOKEN (Secret lme-bedrock)
+      # bedrock_bearer_token is deliberately absent: looms reads it from the
+      # LOOM_LLM_BEDROCK_BEARER_TOKEN env var (Secret lme-bedrock). The env var
+      # binds because setDefaults registers llm.bedrock_bearer_token
+      # (cmd/looms/config.go; pinned by TestEnvVar_LLMSecrets_NoYAMLKey). Do not
+      # put a ${...} placeholder here: looms passes the token through unexpanded.
     server:
       host: 0.0.0.0
       port: ${LME_GRPC_PORT}
