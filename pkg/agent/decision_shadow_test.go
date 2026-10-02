@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -456,4 +457,33 @@ func TestInitDecisionRouterChunksBySizeFromConfig(t *testing.T) {
 		WithDecisionConfig(&loomv1.DecisionConfig{Provider: DecisionProviderMock}, nil))
 	chunked2 := ag2.DecisionRouter().Decider().(*decision.Instrumented).Unwrap().(*decision.Chunked)
 	assert.Equal(t, 0, chunked2.Size())
+}
+
+// Review #410 blocking 3: with 70 candidates the request carries the first
+// 64; the live path kept only judged indexes, so candidates 65-70 vanished
+// unjudged. Every candidate past the request is now kept.
+func TestRerankMemoriesLiveBandKeepsCandidatesPastTheRequest(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "1"}
+	dec := decisionmock.New()
+	for i := 0; i < sites.MaxRerankCandidates; i++ {
+		dec.AnswerNoul(sites.CandidateQuestionID(i), 0.95)
+	}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(&memShadowStore{}))
+
+	candidates := make([]*memory.Memory, 70)
+	for i := range candidates {
+		candidates[i] = &memory.Memory{ID: fmt.Sprintf("m%02d", i), Content: fmt.Sprintf("memory %d", i)}
+	}
+	kept := ag.rerankMemories(decision.WithSessionID(context.Background(), "sess-70"), "q", candidates)
+	ag.WaitDecisionShadows()
+	require.Len(t, kept, 70, "all judged relevant, and the six past the request are kept")
+	for i := range candidates {
+		assert.Equal(t, candidates[i].ID, kept[i].ID)
+	}
+	assert.Equal(t, int32(0), llm.calls.Load(), "the live band acted; no LLM rerank")
+	require.Equal(t, 1, dec.CallCount())
+	assert.Len(t, dec.Calls()[0].Questions, sites.MaxRerankCandidates)
 }

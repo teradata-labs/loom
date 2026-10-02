@@ -421,11 +421,17 @@ func (a *Agent) liveRerank(ctx context.Context, sessionID, site, userMessage str
 		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return nil, false, req, out
 	}
-	kept = make([]*memory.Memory, 0, len(idx))
+	kept = make([]*memory.Memory, 0, len(candidates))
 	for _, i := range idx {
 		if i < len(candidates) {
 			kept = append(kept, candidates[i])
 		}
+	}
+	// The request carried at most MaxRerankCandidates; the tail was never
+	// judged, and an unjudged memory is kept, never dropped (the LLM rerank
+	// this replaces sees every candidate).
+	if len(candidates) > sites.MaxRerankCandidates {
+		kept = append(kept, candidates[sites.MaxRerankCandidates:]...)
 	}
 	zap.L().Debug("decision: rerank acted",
 		zap.String("site", site), zap.Int("candidates", len(candidates)),

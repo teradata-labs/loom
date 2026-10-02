@@ -16,6 +16,7 @@ package registry
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -346,4 +347,22 @@ func TestToolSearchLiveBandIsPerAgent(t *testing.T) {
 	assert.False(t, hasDecisionSignal(t, resC), "C is shadow-only: the LLM ranks")
 	assert.Equal(t, 1, decC.CallCount(), "C's shadow asked C's decider")
 	assert.Equal(t, int32(2), llm.calls.Load())
+}
+
+// The tool_search live path keeps candidates past MaxRerankCandidates too
+// (stage 2 retrieves 20 today, so this guards the rule, not a live case).
+func TestLiveRerankKeepsCandidatesPastTheRequest(t *testing.T) {
+	m := mock.New()
+	for i := 0; i < sites.MaxRerankCandidates; i++ {
+		m.AnswerNoul(sites.CandidateQuestionID(i), 0.9)
+	}
+	st, reg := bindingWith(t, decision.NewRouter(m, liveToolSearchBand(0.5)), &memShadowStore{})
+	many := make([]*loomv1.ToolSearchResult, 70)
+	for i := range many {
+		many[i] = &loomv1.ToolSearchResult{Tool: &loomv1.IndexedTool{Name: fmt.Sprintf("t%02d", i), Description: "d"}}
+	}
+	results, acted, _, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
+	require.True(t, acted)
+	assert.Len(t, results, 70)
+	assert.Equal(t, "t69", results[69].Tool.Name, "the unjudged tail follows the ranked candidates")
 }

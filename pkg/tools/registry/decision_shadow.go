@@ -240,6 +240,11 @@ func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, que
 		results = append(results, c)
 	}
 	sort.SliceStable(results, func(i, j int) bool { return results[i].Confidence > results[j].Confidence })
+	// Candidates past MaxRerankCandidates were never in the request; keep
+	// them, unranked, after the judged ones rather than drop them unjudged.
+	if len(candidates) > sites.MaxRerankCandidates {
+		results = append(results, candidates[sites.MaxRerankCandidates:]...)
+	}
 	logger.Debug("decision: tool_search rerank acted",
 		zap.Int("candidates", len(candidates)), zap.Int("kept", len(results)),
 		zap.Int("uncertain_kept", uncertain), zap.Duration("latency", out.Latency))
