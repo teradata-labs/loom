@@ -14,12 +14,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -1077,7 +1080,7 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Note: Viper lowercases all keys, including map keys. This is fixed later
 	// by fixMCPEnvCase() which restores original case from YAML for MCP env vars.
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := viper.Unmarshal(&config, withStringToStringMapHook); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -1118,6 +1121,52 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// withStringToStringMapHook adds stringToStringMapHook to viper's default
+// decode hooks (duration and string-slice parsing), keeping them intact.
+func withStringToStringMapHook(c *mapstructure.DecoderConfig) {
+	c.DecodeHook = mapstructure.ComposeDecodeHookFunc(c.DecodeHook, stringToStringMapHook)
+}
+
+// stringToStringMapHook decodes a string into a map[string]string field. The
+// only way a string reaches such a field is an environment variable (e.g.
+// LOOM_LLM_LITELLM_EXTRA_HEADERS) overriding a map key, and without this hook
+// mapstructure either fails the whole load or silently decodes it to nil.
+//
+// Accepted forms:
+//   - a JSON object: {"X-Team":"a","X-Trace":"b"} (use this when a value
+//     contains a comma)
+//   - comma-separated key=value pairs: X-Team=a,X-Trace=b (split on the first
+//     '=', so values may contain '=', e.g. base64 padding)
+//
+// An empty or all-whitespace string decodes to an empty map. Any other
+// string is an error, so a malformed value fails loudly instead of being
+// dropped.
+func stringToStringMapHook(from, to reflect.Type, data any) (any, error) {
+	if from.Kind() != reflect.String || to != reflect.TypeOf(map[string]string(nil)) {
+		return data, nil
+	}
+	raw := strings.TrimSpace(data.(string))
+	out := map[string]string{}
+	if raw == "" {
+		return out, nil
+	}
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			return nil, fmt.Errorf("parse %q as a JSON object of strings: %w", raw, err)
+		}
+		return out, nil
+	}
+	for _, pair := range strings.Split(raw, ",") {
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, fmt.Errorf("parse map entry %q: want key=value (or a JSON object)", strings.TrimSpace(pair))
+		}
+		out[k] = strings.TrimSpace(v)
+	}
+	return out, nil
 }
 
 // setDefaults sets default configuration values.
@@ -1195,6 +1244,16 @@ func setDefaults() {
 	viper.SetDefault("llm.gemini_api_key", "")
 	viper.SetDefault("llm.huggingface_token", "")
 	viper.SetDefault("llm.litellm_api_key", "")
+
+	// Non-secret LLM keys with no built-in value, registered for the same
+	// reason: without a known key, LOOM_LLM_BEDROCK_PROFILE etc. are dropped.
+	// Every consumer tests these with == "" / len() == 0, so an empty default
+	// behaves exactly like an absent key. The headers env var is a string;
+	// withStringToStringMapHook decodes it.
+	viper.SetDefault("llm.bedrock_profile", "")
+	viper.SetDefault("llm.litellm_endpoint", "")
+	viper.SetDefault("llm.litellm_model", "")
+	viper.SetDefault("llm.litellm_extra_headers", map[string]string{})
 
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
@@ -1282,6 +1341,12 @@ func setDefaults() {
 	viper.SetDefault("tools.web_search.endpoints.tavily", "https://api.tavily.com/search")
 	viper.SetDefault("tools.web_search.endpoints.serpapi", "https://serpapi.com/search")
 	viper.SetDefault("tools.web_search.endpoints.duckduckgo", "https://api.duckduckgo.com/")
+	// Web search credentials (env/keyring only), registered so AutomaticEnv
+	// binds LOOM_TOOLS_WEB_SEARCH_*_KEY on Unmarshal. The keyring fallback
+	// tests != "", so an empty default leaves it unchanged.
+	viper.SetDefault("tools.web_search.brave_api_key", "")
+	viper.SetDefault("tools.web_search.tavily_api_key", "")
+	viper.SetDefault("tools.web_search.serpapi_key", "")
 
 	// Tool executor defaults
 	viper.SetDefault("tools.executor.timeout_seconds", 30)
