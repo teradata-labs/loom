@@ -1237,9 +1237,13 @@ type JudgeConfig struct {
 	// Allows specifying provider, temperature, max_tokens etc. for judge evaluation.
 	// When set, this takes precedence over the simple `model` string field.
 	LlmConfig *LLMConfig `protobuf:"bytes,31,opt,name=llm_config,json=llmConfig,proto3" json:"llm_config,omitempty"`
-	// Decider settings for JUDGE_TYPE_DECISION (provider jev|llm, model,
-	// timeout, requests_per_minute). Bands are ignored: a judge always acts on
-	// the decider's answer and reports its confidence.
+	// Decider settings for JUDGE_TYPE_DECISION (provider jev|llm|mock, model,
+	// timeout, requests_per_minute, bands). With no band for site
+	// "judge.<id>" the judge acts on whatever the decider says. A band for that
+	// site sets act_min per criterion: an answer under it makes the typed judge
+	// return PARTIAL with ErrUncertain, and a screened judge (an LLM provider is
+	// available) escalates to the generative judge. base_url is not accepted:
+	// the decider endpoint is server-level only.
 	Decision      *DecisionConfig `protobuf:"bytes,32,opt,name=decision,proto3" json:"decision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

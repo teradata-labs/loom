@@ -212,7 +212,7 @@
         },
         "baseUrl": {
           "type": "string",
-          "description": "Base URL override, for gateways (for example the Vercel AI Gateway path)."
+          "description": "Not accepted. The decider endpoint decides where the server's decider\ncredential is sent, so it is server-level only: looms.yaml\ndecision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any\nnon-empty value here fails validation (agent YAML, ValidateAgentConfig,\njudge registration) and is refused again when the decider is built."
         },
         "maxPerSession": {
           "type": "string",
@@ -619,7 +619,7 @@
         },
         "decision": {
           "$ref": "#/definitions/v1DecisionConfig",
-          "description": "Decider settings for JUDGE_TYPE_DECISION (provider jev|llm, model,\ntimeout, requests_per_minute). Bands are ignored: a judge always acts on\nthe decider's answer and reports its confidence."
+          "description": "Decider settings for JUDGE_TYPE_DECISION (provider jev|llm|mock, model,\ntimeout, requests_per_minute, bands). With no band for site\n\"judge.\u003cid\u003e\" the judge acts on whatever the decider says. A band for that\nsite sets act_min per criterion: an answer under it makes the typed judge\nreturn PARTIAL with ErrUncertain, and a screened judge (an LLM provider is\navailable) escalates to the generative judge. base_url is not accepted:\nthe decider endpoint is server-level only."
         }
       },
       "title": "JudgeConfig defines a single judge"

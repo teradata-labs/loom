@@ -1,6 +1,6 @@
 # Implementation Plan: Typed Decision Layer (Jev-backed)
 
-**Status**: 🚧 In Development. Phases 0–2 are implemented on `feat/decision-layer` (checklist §6); Phase 3 onward is planned.
+**Status**: 🚧 In Development. Phases 0–2 are implemented on `feat/decision-layer` (PR #409). Phase 3 live paths, the decision judge, skill routing, the extraction gate and direct use are implemented on `feat/decision-layer-phase3` (PR #410), with no live band recommended yet. The checklist in §6 is the per-item status; unchecked items are planned.
 **Date**: 2026-09-22
 **Baseline**: `fix/hitl-hold-heartbeat` @ `bf64528d` (= main + heartbeat fix), v1.4.0
 **Research**: `docs/research/jev-system-one-assessment.md` (what Jev is, evidence, 24-point inventory, 15 ranked placements)
@@ -238,6 +238,16 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - [x] `InferErrorType`: original classes are never reclassified; 429 matched as a whole number
 - [x] replay builds the live request (`sites.ToolOutcome`)
 - [x] decision fuzz targets in the CI fuzz job
+
+### Review #410 fixes — ✅ 2026-10-01
+- [x] judge path: `RegisterJudge` and `NewDecisionJudgeFromConfig` run `decision.ValidateConfig`; a judge-named endpoint is refused
+- [x] live `tool_search` band applies only to its own agent (per-agent `SearchTool`, from #409)
+- [x] live `recall.rerank` keeps candidates past the 64 the request carries
+- [x] `aggregate: per_question` honours `act_min` at validation, consensus, branch and tie-break; fallbacks after `Act()` record `FALLBACK`
+- [x] `memory.extract` asks once per extraction
+- [x] `skill.route` wired: the agent attaches its decision router to the skill router `BuildSkillsOptions` built for it (signature unchanged)
+- [x] `true_min`, `aggregate`, `max_questions_per_request` validated on every config path
+- [x] chunked requests keep billed usage on failure and through bisects
 
 ### Phase 3 — Tier 1 sites (each: shadow → report → band → live)
 - [x] `DecisionBand.aggregate` (MIN | PER_QUESTION) in proto, router, YAML (`bands[].aggregate`) — 2026-09-23 on `feat/decision-layer-phase3`. Fan-out reranks need it: under MIN one uncertain candidate disables the whole answer.
