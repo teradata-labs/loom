@@ -328,7 +328,8 @@ data:
           [ -f "$tmp_det" ] && mv -f "$tmp_det" "${reject_dir}/${name}-detailed.json"
           if [ "${harness_rc}" -eq "${HARNESS_RC_TRANSIENT}" ]; then
             # The chunk ran, but every failed entry carries a retryable gRPC
-            # status: the server or its transport failed mid-chunk. That is
+            # status: the server or its transport failed mid-chunk, or Bedrock
+            # throttled or failed past looms' own retries. That is
             # infrastructure, not a verdict on these entries.
             echo "CHUNK FAILED (transient entry failures, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
             errored_entries "${reject_dir}/${name}-detailed.json"
