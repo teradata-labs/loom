@@ -86,6 +86,9 @@ func (s *MultiAgentServer) buildAgentInfo(ag *agent.Agent, agentID string, state
 		info.CreatedAt = time.Now().Unix()
 		info.UpdatedAt = time.Now().Unix()
 	}
+	if info.Config == nil && s.registry != nil {
+		info.Config = s.registry.GetConfig(ag.GetName())
+	}
 
 	return info
 }
