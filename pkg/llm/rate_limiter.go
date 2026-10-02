@@ -49,7 +49,12 @@ type RateLimiterConfig struct {
 	// Default: 200ms
 	MinDelay time.Duration
 
-	// MaxRetries is the maximum number of retries for 429 throttling errors.
+	// MaxRetries is the maximum number of retries for a retryable error:
+	// throttling (429 and SDK-level equivalents) and a provider-typed
+	// transient server failure (TransientError: 500/502/503/504/529 on a
+	// response whose status was known before any content streamed). Both
+	// classes share this one budget and one backoff; once it is spent the
+	// error is returned as a RetriesExhaustedError.
 	// Default: 5
 	MaxRetries int
 
@@ -222,7 +227,12 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 	return rl
 }
 
-// Do executes a function call with rate limiting and automatic retry on throttling.
+// Do executes a function call with rate limiting and automatic retry of
+// retryable errors: throttling (429 and SDK-level equivalents) and transient
+// server failures (TransientError: 500/502/503/504/529). Both are retried
+// under the one MaxRetries budget with jittered exponential backoff, floored
+// by any server Retry-After and capped at 5 minutes per wait; an exhausted
+// budget returns a RetriesExhaustedError. Any other error is returned as-is.
 func (rl *RateLimiter) Do(ctx context.Context, call func(context.Context) (interface{}, error)) (interface{}, error) {
 	if !rl.config.Enabled {
 		// Rate limiting disabled - call directly

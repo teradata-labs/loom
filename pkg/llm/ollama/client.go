@@ -503,9 +503,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
-		// 500/502/503/504 (a model loading or being evicted on a shared
-		// server): retried by the rate limiter under the throttle budget, as
-		// for every other HTTP provider; status known before any content.
+		// 500/502/503/504/529 (llm.IsTransientStatus; on Ollama typically a
+		// model loading or being evicted on a shared server, or a fronting
+		// gateway's 502/503/504): retried by the rate limiter under the
+		// throttle budget, as for every other HTTP provider; status known
+		// before any content.
 		if llm.IsTransientStatus(resp.StatusCode) {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
 			_ = resp.Body.Close()
