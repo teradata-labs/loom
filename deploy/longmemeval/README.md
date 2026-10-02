@@ -112,10 +112,20 @@ dataset refused on resume.
   every one of the Job's restarts and still never complete. Each chunk gets
   `LME_MAX_CHUNK_ATTEMPTS` tries (default 3), counted on the PVC so the budget
   spans pod restarts. Only *deterministic* failures count — a chunk that ran
-  and produced output failing validation. A harness that could not run at all
-  (provider outage, server restart, transport error) says nothing about the
-  chunk's entries, so it leaves the budget untouched and is bounded by the
-  Job's `backoffLimit` instead. Past that the chunk is quarantined with a `.failed` marker
+  and produced output failing validation with at least one non-retryable entry
+  error. Two cases leave the budget untouched and are bounded by the Job's
+  `backoffLimit` instead, because they say nothing about the chunk's entries:
+  a harness that could not run at all (nonzero exit before any entry ran, or
+  an aborted run), and a chunk whose failed entries *all* carry a retryable
+  gRPC status — `Unavailable` (server restart, transport drop),
+  `DeadlineExceeded` (per-call deadline) or `ResourceExhausted` (load
+  shedding) — which the harness reports with exit status 75. **Limitation:** a
+  Bedrock throttle or outage that outlasts looms' own LLM retries reaches the
+  harness as `Internal` ("agent execution failed"), which no status separates
+  from a deterministic agent failure, so it *is* charged; a sustained provider
+  outage can still quarantine chunks (retry them by removing their `.failed`
+  and `.attempts` markers). Conversely, an entry that times out on every
+  attempt is retried until `backoffLimit`, never quarantined. Past the budget the chunk is quarantined with a `.failed` marker
   naming the failing entries and how to retry it (`rm` the marker), and later
   passes skip it so the remaining chunks can finish. A quarantined chunk never
   turns a partial run into a passing one: the run exits nonzero and writes

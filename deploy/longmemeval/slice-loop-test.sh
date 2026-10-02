@@ -16,6 +16,9 @@
 #      and the remaining chunks still complete
 #   4. a rejected attempt's output is preserved outside the scorer's glob
 #   5. a dataset swapped underneath a resume is refused
+#   6. a mid-chunk transient outage (every entry failing with a retryable
+#      gRPC status, harness exit HARNESS_RC_TRANSIENT) never consumes the
+#      deterministic budget, however many passes it lasts
 #
 # No cluster or Bedrock access needed. Usage:
 #   bash deploy/longmemeval/slice-loop-test.sh
@@ -86,10 +89,24 @@ for t, n in (("alpha-type", 5), ("beta-type", 3)):
 json.dump(entries, open(sys.argv[1], "w"))
 PY
 
+# The transient exit status comes from the script under test, never a copy:
+# TestRunnerScriptTransientExitCode pins it to the harness's ExitTransient, so
+# the stub speaks exactly the protocol the real binary does.
+HARNESS_RC_TRANSIENT="$(sed -n 's/^ *HARNESS_RC_TRANSIENT=\([0-9][0-9]*\) *$/\1/p' "${TMP_DIR}/run-slices.sh")"
+[[ -n "${HARNESS_RC_TRANSIENT}" ]] \
+    || { echo "FAIL: run-slices.sh does not define HARNESS_RC_TRANSIENT"; exit 1; }
+export HARNESS_RC_TRANSIENT
+
 # The stub answers `info` from the real binary and synthesizes `run` output.
 # POISON_IDS (space separated) are recorded as per-entry errors, exactly as
 # the harness does: omitted from the .jsonl, present with an "error" in the
 # detailed JSON. Every invocation is logged so re-billing is observable.
+#
+# TRANSIENT_IDS (space separated) simulate an outage: for the first
+# TRANSIENT_PASSES invocations of a chunk holding one of them, EVERY entry in
+# the chunk fails with a retryable gRPC status and the stub exits
+# HARNESS_RC_TRANSIENT, as the real harness does; after that the chunk
+# succeeds.
 cat > "${TMP_DIR}/harness-stub.sh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -116,6 +133,29 @@ echo "${types} ${offset} ${limit}" >> "${TMP_DIR}/invocations.log"
 
 ids="$(jq -r --arg t "${types}" --argjson o "${offset}" --argjson l "${limit}" \
     '[.[] | select(.question_type == $t) | .question_id][$o:($o+$l)][]' "${dataset}")"
+
+outage=0
+for id in ${ids}; do
+    for tid in ${TRANSIENT_IDS:-}; do [[ "${id}" == "${tid}" ]] && outage=1; done
+done
+if [[ ${outage} -eq 1 ]]; then
+    count_file="${TMP_DIR}/transient-${types}-${offset}.count"
+    seen=$(( $(cat "${count_file}" 2>/dev/null || echo 0) + 1 ))
+    echo "${seen}" > "${count_file}"
+    if [[ ${seen} -le ${TRANSIENT_PASSES:-0} ]]; then
+        : > "${out}"
+        printf '[' > "${det}"
+        first=1
+        for id in ${ids}; do
+            [[ ${first} -eq 1 ]] || printf ',' >> "${det}"
+            first=0
+            printf '{"question_id":"%s","error":"ingest session 0: rpc error: code = Unavailable desc = connection refused"}' "${id}" >> "${det}"
+        done
+        printf ']' >> "${det}"
+        exit "${HARNESS_RC_TRANSIENT}"
+    fi
+fi
+
 : > "${out}"
 printf '[' > "${det}"
 first=1
@@ -139,6 +179,7 @@ chmod +x "${TMP_DIR}/harness-stub.sh"
 # run_loop <results-dir> — one pass of the slice loop (one pod lifetime).
 run_loop() {
     TMP_DIR="${TMP_DIR}" POISON_IDS="${POISON_IDS:-}" \
+    TRANSIENT_IDS="${TRANSIENT_IDS:-}" TRANSIENT_PASSES="${TRANSIENT_PASSES:-0}" \
     HARNESS_BIN="${TMP_DIR}/harness-stub.sh" \
     SERVER="stub:1" DATASET_FILE="${TMP_DIR}/dataset.json" MODE="ingest" \
     CONCURRENCY="1" CHUNK="2" OCCURRED_AT="false" RESULTS_DIR="$1" \
@@ -268,8 +309,53 @@ rc=$?
     && ok "stale sentinel removed — a complete run is not reported as missing entries" \
     || fail "RUN-INCOMPLETE.txt survived a fully-completed run"
 
-# ── 7. Dataset swapped underneath a resume is refused ───────────────────────
-echo "=== 7. dataset drift is refused on resume ==="
+# ── 7. A transient outage never consumes the deterministic budget ───────────
+echo "=== 7. transient mid-chunk failures leave the budget untouched ==="
+R4="${TMP_DIR}/r4"; mkdir -p "${R4}"
+run_dir4="${R4}/runs/${LME_RUN_ID}"
+: > "${TMP_DIR}/invocations.log"
+# Every entry of chunk beta offset 0 fails with Unavailable for
+# MAX_CHUNK_ATTEMPTS passes — enough to quarantine it if the outage were
+# charged — and then the outage ends.
+outage_passes="${LME_MAX_CHUNK_ATTEMPTS}"
+for pass in $(seq 1 "${outage_passes}"); do
+    POISON_IDS="" TRANSIENT_IDS="beta-type-0" TRANSIENT_PASSES="${outage_passes}" run_loop "${R4}"
+    rc=$?
+    [[ ${rc} -ne 0 ]] \
+        || fail "outage pass ${pass} exited 0 while a chunk was still failing"
+    [[ ! -f "${run_dir4}/s500-beta-type-o000.failed" ]] \
+        || fail "outage pass ${pass} quarantined a chunk whose failures were all transient"
+    [[ ! -f "${run_dir4}/s500-beta-type-o000.attempts" ]] \
+        || fail "outage pass ${pass} charged the deterministic budget ($(cat "${run_dir4}/s500-beta-type-o000.attempts"))"
+done
+grep -q 'transient entry failures, budget untouched' "${TMP_DIR}/loop.log" \
+    && ok "outage reported as transient, budget untouched" \
+    || fail "no transient-failure diagnostic in the log"
+POISON_IDS="" TRANSIENT_IDS="beta-type-0" TRANSIENT_PASSES="${outage_passes}" run_loop "${R4}"
+rc=$?
+[[ ${rc} -eq 0 ]] \
+    && ok "the pass after the outage ends completes the run" \
+    || fail "post-outage pass exited ${rc} (log: $(tail -3 "${TMP_DIR}/loop.log"))"
+[[ ! -f "${run_dir4}/s500-beta-type-o000.failed" ]] \
+    && ok "no .failed marker after ${outage_passes} transient passes (MAX_CHUNK_ATTEMPTS=${LME_MAX_CHUNK_ATTEMPTS})" \
+    || fail "transient chunk was quarantined"
+[[ -f "${run_dir4}/s500-beta-type-o000.done" ]] \
+    && ok "the outage chunk completed once the outage ended" \
+    || fail "the outage chunk never completed"
+done4="$(find "${run_dir4}" -name '*.done' | wc -l | tr -d ' ')"
+[[ "${done4}" == "5" ]] \
+    && ok "all 5 chunks completed" \
+    || fail "expected 5 completed chunks after the outage, got ${done4}"
+[[ ! -f "${run_dir4}/RUN-INCOMPLETE.txt" ]] \
+    && ok "no RUN-INCOMPLETE.txt for a run that recovered from an outage" \
+    || fail "RUN-INCOMPLETE.txt written for a recovered run"
+outage_attempts="$(grep -c '^beta-type 0 ' "${TMP_DIR}/invocations.log")"
+[[ "${outage_attempts}" == "$((outage_passes + 1))" ]] \
+    && ok "outage chunk retried on every pass (${outage_attempts} invocations)" \
+    || fail "outage chunk invoked ${outage_attempts} times, expected $((outage_passes + 1))"
+
+# ── 8. Dataset swapped underneath a resume is refused ───────────────────────
+echo "=== 8. dataset drift is refused on resume ==="
 python3 - "${TMP_DIR}/dataset.json" <<'PY'
 import json, sys
 entries = json.load(open(sys.argv[1]))

@@ -139,6 +139,19 @@ Run a specific question range (offset + limit):
   --detailed /tmp/range.json
 ```
 
+Exit status of `run` (results files are written in every case that gets as
+far as running entries):
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Run finished. Entries may still have failed — check the `error` fields in `--detailed`. A user interrupt (Ctrl-C) also exits 0 unless rule 75 applies. |
+| 1 | Could not start (bad flags, dataset missing, server health check failed) or aborted (the server rejects `occurred_at`). |
+| 75 | Run finished and at least one entry failed, but **every** failure carries a retryable gRPC status (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Retry the same range. |
+
+A provider throttle or outage that outlasts the server's own LLM retries comes
+back as `Internal` and is reported as an ordinary entry failure (exit 0), not
+as 75.
+
 ### Score Results
 
 ```bash

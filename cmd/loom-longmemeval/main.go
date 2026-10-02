@@ -86,7 +86,7 @@ temporal reasoning, knowledge updates, and abstention.`,
 	rootCmd.AddCommand(infoCmd())
 
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }
 
@@ -478,13 +478,25 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 
 	// An aborted run (e.g. the server rejects occurred_at) must exit
 	// non-zero so callers don't mistake a results file full of failed rows
-	// for a completed run. A user interrupt (SIGINT/SIGTERM) still exits
-	// cleanly with whatever finished.
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		return fmt.Errorf("benchmark run aborted: %w", runErr)
+	// for a completed run. A run whose only failures are transient (server
+	// unavailable, deadline, load shedding) exits ExitTransient so the AKS
+	// slice loop retries it without charging its deterministic-failure
+	// budget. A user interrupt (SIGINT/SIGTERM) still exits cleanly with
+	// whatever finished.
+	outcome := classifyOutcome(results, runErr)
+	var transient *TransientFailureError
+	if errors.As(outcome, &transient) {
+		logger.Warn("run finished with only transient entry failures",
+			zap.Int("failed", transient.Failed),
+			zap.Int("results", transient.Total),
+			zap.Int("exit_code", ExitTransient))
 	}
-
-	return nil
+	if outcome != nil {
+		// The results are already written and the cause logged; cobra's
+		// usage dump would only bury it.
+		cmd.SilenceUsage = true
+	}
+	return outcome
 }
 
 // resolveDatasetPath finds a dataset file, trying args first, then data-dir.

@@ -16,7 +16,7 @@ data:
     #   2. the chunk is validated: exact entry count, every line parses as
     #      JSON with a unique non-empty question_id, and the detailed output
     #      shows zero missing/errored entries (the harness skips errored
-    #      entries in the .jsonl and exits 0 even after a partial/cancelled
+    #      entries in the .jsonl and can exit 0 after a partial/cancelled
     #      run, so a nonempty file alone proves nothing)
     #   3. only then is the output promoted via atomic rename and a .done
     #      marker written; the marker — never file nonemptiness — is the
@@ -32,6 +32,23 @@ data:
     # passes skip it, leaving the remaining chunks free to finish. The run
     # still exits nonzero and writes RUN-INCOMPLETE.txt — a quarantined chunk
     # means the published number would be missing entries.
+    #
+    # What the budget is charged for is decided by the harness exit status:
+    #   0                     ran; validation decides (a rejected chunk is a
+    #                         deterministic failure and consumes the budget)
+    #   HARNESS_RC_TRANSIENT  ran, and EVERY failed entry carries a retryable
+    #                         gRPC status (Unavailable, DeadlineExceeded,
+    #                         ResourceExhausted): a server restart, transport
+    #                         drop, call deadline or load shedding mid-chunk.
+    #                         Infrastructure — budget untouched.
+    #   any other nonzero     the harness could not run (or aborted).
+    #                         Infrastructure — budget untouched.
+    # Infrastructure retries are bounded by the Job's backoffLimit instead.
+    # Not covered: a Bedrock throttle or outage that outlasts looms' own LLM
+    # retries reaches the harness as Internal ("agent execution failed"),
+    # which no status distinguishes from a deterministic agent failure, so it
+    # IS charged. A sustained provider outage can therefore still quarantine
+    # chunks; remove their .failed/.attempts markers to retry them.
     #
     # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and both the
     # stored manifest and the dataset's own statistics must match before
@@ -53,6 +70,11 @@ data:
     # seam exists so slice-loop-test.sh can drive this exact script offline,
     # with a stub standing in for the paid Bedrock calls.
     HARNESS="${HARNESS_BIN:-/loom-longmemeval}"
+
+    # Exit status `loom-longmemeval run` uses for a run whose only failures
+    # were transient (ExitTransient in cmd/loom-longmemeval/outcome.go;
+    # TestRunnerScriptTransientExitCode pins that the two agree).
+    HARNESS_RC_TRANSIENT=75
 
     run_dir="${RESULTS_DIR}/runs/${RUN_ID}"
     reject_dir="${run_dir}/rejected"
@@ -244,9 +266,11 @@ data:
         fi
 
         # The quarantine budget counts DETERMINISTIC failures only — a chunk
-        # that ran and produced output which failed validation. A harness
-        # that could not run at all (provider outage, server restart,
-        # transport error) says nothing about the chunk's entries, and
+        # that ran and produced output which failed validation with at least
+        # one non-retryable entry error. A harness that could not run at all,
+        # or whose failed entries all carry a retryable status (server
+        # restart, transport drop, deadline, load shedding — exit
+        # HARNESS_RC_TRANSIENT), says nothing about the chunk's entries, and
         # burning the budget on it would quarantine ~9 healthy entries over
         # three unlucky minutes. Infrastructure retries are bounded by the
         # Job's backoffLimit instead.
@@ -298,6 +322,15 @@ data:
           mkdir -p "${reject_dir}"
           [ -f "$tmp_out" ] && mv -f "$tmp_out" "${reject_dir}/${name}.jsonl"
           [ -f "$tmp_det" ] && mv -f "$tmp_det" "${reject_dir}/${name}-detailed.json"
+          if [ "${harness_rc}" -eq "${HARNESS_RC_TRANSIENT}" ]; then
+            # The chunk ran, but every failed entry carries a retryable gRPC
+            # status: the server or its transport failed mid-chunk. That is
+            # infrastructure, not a verdict on these entries.
+            echo "CHUNK FAILED (transient entry failures, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
+            errored_entries "${reject_dir}/${name}-detailed.json"
+            offset=$((offset + CHUNK))
+            continue
+          fi
           if [ "${harness_rc}" -ne 0 ]; then
             # The harness could not run. That is infrastructure, not a
             # verdict on these entries, so the deterministic budget is

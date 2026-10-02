@@ -8,9 +8,15 @@ metadata:
 spec:
   # Multi-day run: pod restarts are the resume mechanism (chunks with a .done
   # marker on the results PVC are skipped), so allow generous retries. A chunk
-  # that keeps failing does not consume them all: after LME_MAX_CHUNK_ATTEMPTS
-  # it is quarantined and later passes skip it, so restarts always make
-  # progress on the chunks that can still complete.
+  # that keeps failing deterministically does not consume them all: after
+  # LME_MAX_CHUNK_ATTEMPTS it is quarantined and later passes skip it, so
+  # restarts always make progress on the chunks that can still complete.
+  # Infrastructure failures (harness could not run, or every failed entry
+  # carried a retryable gRPC status: Unavailable/DeadlineExceeded/
+  # ResourceExhausted, harness exit 75) never touch that budget and are
+  # bounded by this backoffLimit alone. A Bedrock throttle/outage that
+  # outlasts looms' LLM retries surfaces as Internal and IS charged — see
+  # runner-script.yaml.
   backoffLimit: 30
   template:
     metadata:
