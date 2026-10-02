@@ -15,19 +15,17 @@
 package jev
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // sharedClients is the process-wide client registry behind Shared.
 var sharedClients = struct {
 	mu      sync.Mutex
-	clients map[string]*Client
-}{clients: make(map[string]*Client)}
+	clients map[sharedClientKey]*Client
+}{clients: make(map[sharedClientKey]*Client)}
 
 // Shared returns the process-wide Client for cfg, building it on first use.
 // Two configurations that would send the same request to the same place
@@ -56,24 +54,43 @@ func Shared(cfg Config) (*Client, error) {
 func ResetShared() {
 	sharedClients.mu.Lock()
 	defer sharedClients.mu.Unlock()
-	sharedClients.clients = make(map[string]*Client)
+	sharedClients.clients = make(map[sharedClientKey]*Client)
 }
 
-// sharedKey identifies a Config for Shared. The API key is hashed into it
-// rather than kept, so the map holds no credential in the clear. The HTTP
-// client is deliberately excluded: an injected transport does not change
-// what is sent or how much.
-func sharedKey(cfg Config) string {
+// sharedClientKey identifies a Config for Shared: every field that changes
+// what is sent, where, or under which budget. The HTTP client is
+// deliberately excluded: an injected transport does not change what is sent
+// or how much. The key is compared in memory only and lives no longer than
+// the Client it indexes, which holds the same API key itself, so it is kept
+// as-is rather than hashed.
+type sharedClientKey struct {
+	baseURL, path, model     string
+	authHeader, authScheme   string
+	apiKey                   string
+	extraHeaders             string
+	timeout                  time.Duration
+	maxAttempts              int
+	requestsPerMinute        float64
+	pricePerMillionInputToks float64
+}
+
+func sharedKey(cfg Config) sharedClientKey {
 	extras := make([]string, 0, len(cfg.ExtraHeaders))
 	for k, v := range cfg.ExtraHeaders {
-		extras = append(extras, k+"="+v)
+		extras = append(extras, k+"\x00"+v)
 	}
 	sort.Strings(extras)
-	h := sha256.New()
-	// hash.Hash never returns an error from Write.
-	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%g\x00%g",
-		cfg.BaseURL, cfg.Path, cfg.Model, cfg.AuthHeader, cfg.AuthScheme, cfg.APIKey,
-		strings.Join(extras, "\x01"), cfg.Timeout, cfg.MaxAttempts, cfg.RequestsPerMinute,
-		cfg.PricePerMillionInputTokens)
-	return hex.EncodeToString(h.Sum(nil))
+	return sharedClientKey{
+		baseURL:                  cfg.BaseURL,
+		path:                     cfg.Path,
+		model:                    cfg.Model,
+		authHeader:               cfg.AuthHeader,
+		authScheme:               cfg.AuthScheme,
+		apiKey:                   cfg.APIKey,
+		extraHeaders:             strings.Join(extras, "\x01"),
+		timeout:                  cfg.Timeout,
+		maxAttempts:              cfg.MaxAttempts,
+		requestsPerMinute:        cfg.RequestsPerMinute,
+		pricePerMillionInputToks: cfg.PricePerMillionInputTokens,
+	}
 }
