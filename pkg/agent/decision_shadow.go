@@ -277,17 +277,9 @@ func (a *Agent) shadowFailureKind(ctx context.Context, sessionID, toolName strin
 	if a.decisionRouter == nil {
 		return
 	}
-	success := execErr == nil && (result == nil || result.Success)
-	errorCode, errorText := "", ""
-	switch {
-	case execErr != nil:
-		errorText = execErr.Error()
-	case result != nil && result.Error != nil:
-		errorCode = result.Error.Code
-		errorText = result.Error.Message
-	case result != nil && !result.Success:
-		errorText = "tool reported failure without error details"
-	}
+	// sites.ToolOutcome is shared with `loom decision replay`, so a replayed
+	// execution builds this exact request.
+	success, errorCode, errorText := sites.ToolOutcomeOf(execErr, result).Fields()
 	req, err := sites.FailureKindRequest(toolName, errorCode, errorText, input)
 	if err != nil {
 		zap.L().Debug("decision shadow: failure request", zap.String("tool", toolName), zap.Error(err))

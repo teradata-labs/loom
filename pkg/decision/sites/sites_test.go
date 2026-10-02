@@ -16,6 +16,7 @@ package sites
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/decision/mock"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 func TestFailureKindRequestStateIsFiltered(t *testing.T) {
@@ -181,4 +183,31 @@ func TestRerankKept(t *testing.T) {
 	assert.Equal(t, []int{0, 2}, RerankKept(out.Response, 3, 0.5))
 	assert.Equal(t, []int{0}, RerankKept(out.Response, 3, 0.8))
 	assert.Nil(t, RerankKept(nil, 3, 0.5))
+}
+
+func TestToolOutcomeFields(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		execErr     error
+		result      *shuttle.Result
+		wantSuccess bool
+		wantCode    string
+		wantText    string
+	}{
+		{name: "nil result, no error", wantSuccess: true},
+		{name: "success", result: &shuttle.Result{Success: true}, wantSuccess: true},
+		{name: "exec error wins", execErr: errors.New("boom"), result: &shuttle.Result{Error: &shuttle.Error{Code: "C", Message: "m"}}, wantText: "boom"},
+		{name: "result error", result: &shuttle.Result{Error: &shuttle.Error{Code: "C", Message: "m"}}, wantCode: "C", wantText: "m"},
+		{name: "failed without details", result: &shuttle.Result{}, wantText: NoErrorDetailsText},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, c, x := ToolOutcomeOf(tt.execErr, tt.result).Fields()
+			assert.Equal(t, tt.wantSuccess, s)
+			assert.Equal(t, tt.wantCode, c)
+			assert.Equal(t, tt.wantText, x)
+		})
+	}
 }

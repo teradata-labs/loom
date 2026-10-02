@@ -28,6 +28,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // SiteFailureKind is the tool-result failure classifier. It feeds the tool
@@ -68,6 +69,69 @@ var failureKindOptions = map[string]any{
 	KindBadInput:        "The input was malformed or invalid for the tool: syntax error, wrong type, missing required argument. Only a changed input can succeed.",
 	KindNotFound:        "A referenced object does not exist: table, column, file, resource, id. Only a changed input can succeed.",
 	KindOther:           "A failure that fits none of the above.",
+}
+
+// NoErrorDetailsText is the error text a failed result without error
+// details is classified on.
+const NoErrorDetailsText = "tool reported failure without error details"
+
+// ToolOutcome is one tool execution as the failure-kind site sees it. The
+// live agent fills it from the executor's error and result; `loom decision
+// replay` fills it from a tool_executions row (the error column plus the
+// persisted result_json). Both derive the request's fields through Fields,
+// so a replayed execution produces the request the live agent produced.
+type ToolOutcome struct {
+	// ExecFailed is true when the executor returned a Go error; ExecError
+	// is its text.
+	ExecFailed bool
+	ExecError  string
+	// ResultPresent is true when the tool returned a result.
+	ResultPresent bool
+	// ResultSuccess is the result's Success flag.
+	ResultSuccess bool
+	// ResultErrorPresent is true when the result carried an Error, with
+	// ResultErrorCode and ResultErrorMessage its fields.
+	ResultErrorPresent bool
+	ResultErrorCode    string
+	ResultErrorMessage string
+}
+
+// ToolOutcomeOf is the live agent's view of one execution: the executor's
+// error and the tool's result.
+func ToolOutcomeOf(execErr error, result *shuttle.Result) ToolOutcome {
+	var o ToolOutcome
+	if execErr != nil {
+		o.ExecFailed = true
+		o.ExecError = execErr.Error()
+	}
+	if result != nil {
+		o.ResultPresent = true
+		o.ResultSuccess = result.Success
+		if result.Error != nil {
+			o.ResultErrorPresent = true
+			o.ResultErrorCode = result.Error.Code
+			o.ResultErrorMessage = result.Error.Message
+		}
+	}
+	return o
+}
+
+// Fields returns the success flag, error code and error text the request
+// and reference are built from. An executor error wins over a result
+// error; a failed result with no error details is classified on
+// NoErrorDetailsText.
+func (o ToolOutcome) Fields() (success bool, errorCode, errorText string) {
+	success = !o.ExecFailed && (!o.ResultPresent || o.ResultSuccess)
+	switch {
+	case o.ExecFailed:
+		errorText = o.ExecError
+	case o.ResultPresent && o.ResultErrorPresent:
+		errorCode = o.ResultErrorCode
+		errorText = o.ResultErrorMessage
+	case o.ResultPresent && !o.ResultSuccess:
+		errorText = NoErrorDetailsText
+	}
+	return success, errorCode, errorText
 }
 
 // FailureKindRequest builds the request for one tool result. State carries

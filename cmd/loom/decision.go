@@ -118,11 +118,12 @@ func init() {
 // payloads are deliberately not read: the classifier's state carries only
 // the error text and an input digest.
 type toolExecutionRow struct {
-	sessionID string
-	toolName  string
-	inputJSON sql.NullString
-	errorText sql.NullString
-	timestamp int64
+	sessionID  string
+	toolName   string
+	inputJSON  sql.NullString
+	resultJSON sql.NullString
+	errorText  sql.NullString
+	timestamp  int64
 }
 
 func openDecisionDB() (*sql.DB, string, error) {
@@ -283,6 +284,52 @@ type replayResult struct {
 	errMsg  string
 }
 
+// persistedResult is the part of a persisted shuttle.Result the failure-kind
+// site reads. SessionStore.SaveToolExecution writes the whole result with
+// encoding/json, so the field names are the Go names.
+type persistedResult struct {
+	Success bool
+	Error   *struct {
+		Code    string
+		Message string
+	}
+}
+
+// replayOutcome reconstructs the live site's sites.ToolOutcome from a
+// tool_executions row. The error column holds either the executor error's
+// text or, for a failed result with error details, "Code: Message"
+// (SaveToolExecution); result_json holds the result itself. The column is
+// read as the executor error unless it is exactly the result's
+// "Code: Message", so a replayed row sends the error code and message the
+// live agent sent, and a failed result without error details is a failure
+// here as it was there.
+func replayOutcome(row toolExecutionRow) sites.ToolOutcome {
+	var o sites.ToolOutcome
+	if row.resultJSON.Valid && row.resultJSON.String != "" && row.resultJSON.String != "null" {
+		var r persistedResult
+		if err := json.Unmarshal([]byte(row.resultJSON.String), &r); err == nil {
+			o.ResultPresent = true
+			o.ResultSuccess = r.Success
+			if r.Error != nil {
+				o.ResultErrorPresent = true
+				o.ResultErrorCode = r.Error.Code
+				o.ResultErrorMessage = r.Error.Message
+			}
+		}
+	}
+	errCol := ""
+	if row.errorText.Valid {
+		errCol = row.errorText.String
+	}
+	fromResult := o.ResultPresent && !o.ResultSuccess && o.ResultErrorPresent &&
+		errCol == o.ResultErrorCode+": "+o.ResultErrorMessage
+	if errCol != "" && !fromResult {
+		o.ExecFailed = true
+		o.ExecError = errCol
+	}
+	return o
+}
+
 // replayOne builds the failure-kind request and reference for one recorded
 // execution and, unless dry-running, asks the router. It never returns an
 // error: a decider failure becomes ERROR-path rows, a malformed row is
@@ -292,17 +339,13 @@ func replayOne(ctx context.Context, router *decision.Router, deciderName string,
 	if row.inputJSON.Valid && row.inputJSON.String != "" {
 		_ = json.Unmarshal([]byte(row.inputJSON.String), &input)
 	}
-	errText := ""
-	if row.errorText.Valid {
-		errText = row.errorText.String
-	}
-	success := errText == ""
-	req, err := sites.FailureKindRequest(row.toolName, "", errText, input)
+	success, errCode, errText := replayOutcome(row).Fields()
+	req, err := sites.FailureKindRequest(row.toolName, errCode, errText, input)
 	if err != nil {
 		res.skipped = true
 		return res
 	}
-	refs := sites.FailureKindReference(success, "", errText)
+	refs := sites.FailureKindReference(success, errCode, errText)
 	if dryRun {
 		// Nothing is written on a dry run; the count stands in for rows.
 		res.records = make([]*loomv1.DecisionShadowRecord, len(refs))
@@ -329,7 +372,13 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	}
 	where := ""
 	if errorsOnly {
-		where = "WHERE error IS NOT NULL AND error <> ''"
+		// A failure is an error text or a result whose Success flag is
+		// false (a failed result without error details has no error text).
+		// SaveToolExecution writes the result with encoding/json, which
+		// emits shuttle.Result's first field, Success, first; the prefix
+		// match needs no JSON1 extension (TestReplayBuildsTheLiveRequest
+		// guards the shape).
+		where = `WHERE (error IS NOT NULL AND error <> '') OR result_json LIKE '{"Success":false%'`
 	}
 	// Newest-first reads the tail of whatever campaign ran last, which can be
 	// one failure mode repeated thousands of times. Random reaches across the
@@ -352,7 +401,7 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	}
 	args = append(args, limit)
 	rows, err := db.QueryContext(ctx, `
-		SELECT session_id, tool_name, input_json, error, timestamp
+		SELECT session_id, tool_name, input_json, result_json, error, timestamp
 		FROM tool_executions `+where+`
 		`+order+`
 		LIMIT ?`, args...)
@@ -363,7 +412,7 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	var out []toolExecutionRow
 	for rows.Next() {
 		var r toolExecutionRow
-		if err := rows.Scan(&r.sessionID, &r.toolName, &r.inputJSON, &r.errorText, &r.timestamp); err != nil {
+		if err := rows.Scan(&r.sessionID, &r.toolName, &r.inputJSON, &r.resultJSON, &r.errorText, &r.timestamp); err != nil {
 			return nil, fmt.Errorf("scan tool_executions: %w", err)
 		}
 		out = append(out, r)
