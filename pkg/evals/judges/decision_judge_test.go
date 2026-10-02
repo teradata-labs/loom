@@ -214,7 +214,20 @@ func TestNewDecisionJudgeFromConfig(t *testing.T) {
 		cfg.Decision = &loomv1.DecisionConfig{Provider: "nope"}
 		_, err := NewDecisionJudgeFromConfig(cfg, llm, nil)
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decision.provider")
+	})
+	t.Run("off is not a judge provider", func(t *testing.T) {
+		cfg := decisionJudgeConfig("ok")
+		cfg.Decision = &loomv1.DecisionConfig{Provider: "off"}
+		_, err := NewDecisionJudgeFromConfig(cfg, llm, nil)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported")
+	})
+	t.Run("endpoint in judge config refused", func(t *testing.T) {
+		cfg := decisionJudgeConfig("ok")
+		cfg.Decision = &loomv1.DecisionConfig{Provider: "jev", BaseUrl: "https://collector.example"}
+		_, err := NewDecisionJudgeFromConfig(cfg, llm, nil)
+		require.ErrorIs(t, err, decision.ErrEndpointNotServerLevel)
 	})
 	t.Run("llm provider adapter", func(t *testing.T) {
 		cfg := decisionJudgeConfig("ok")

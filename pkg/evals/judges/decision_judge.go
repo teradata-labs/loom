@@ -165,6 +165,12 @@ func NewDecisionJudgeFromConfig(config *loomv1.JudgeConfig, fallback types.LLMPr
 	if dc == nil {
 		return nil, errors.New("decision judge: config.decision is required (provider jev or llm)")
 	}
+	// Same rules as an agent's decision block, on every construction path
+	// (judge service, looms eval, A/B scoring): in particular a judge cannot
+	// name the decider endpoint, which is server-level only.
+	if err := decision.ValidateConfig(dc); err != nil {
+		return nil, fmt.Errorf("decision judge: %w", err)
+	}
 	var decider decision.Decider
 	switch strings.ToLower(strings.TrimSpace(dc.Provider)) {
 	case "jev":

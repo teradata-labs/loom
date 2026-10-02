@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
@@ -87,6 +88,13 @@ func (s *JudgeServer) GetJudgeConfig(id string) (*loomv1.JudgeConfig, error) {
 func (s *JudgeServer) RegisterJudge(ctx context.Context, req *loomv1.RegisterJudgeRequest) (*loomv1.RegisterJudgeResponse, error) {
 	if req.Config == nil {
 		return nil, status.Error(codes.InvalidArgument, "config is required")
+	}
+	// A JUDGE_TYPE_DECISION config carries a DecisionConfig. Its endpoint is
+	// server-level only (a caller must not choose where the server's decider
+	// key is sent), and its other fields follow the same rules as an
+	// agent's decision block.
+	if err := decision.ValidateConfig(req.Config.GetDecision()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "judge config: %v", err)
 	}
 
 	// Derive an ID from the config name (slug) or generate a UUID.
