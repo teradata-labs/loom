@@ -313,8 +313,8 @@ func chunkRetryable(ctx context.Context, err error) bool {
 	if errors.As(err, &ve) {
 		return false
 	}
-	// Overload, rate limit, state too large, transport failures, a chunk's
-	// own deadline: all may clear with less work per request.
+	// Overload, state too large, transport failures, a chunk's own
+	// deadline: all may clear with less work per request.
 	return true
 }
 
