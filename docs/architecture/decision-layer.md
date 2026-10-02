@@ -192,7 +192,7 @@ Costs: a chunked request is several round trips against the same per-minute budg
 - 📋 A Noul-specific band threshold. Jev answers easy "false" Nouls at probabilities of 0.1–0.4, which the decisiveness mapping treats as low confidence; a band keyed on probability for Noul questions would remove that artefact from ECE.
 - 📋 Fleet-rate access. The gateway free tier is 30 requests per minute; fleets need the direct TypeSafe endpoint or a paid tier, with `RequestsPerMinute` set from the tier. Chunking multiplies requests per visit (a 64-candidate rerank is 4), so the budget matters more with it on.
 - 📋 The Phase 4–5 sites. Plan 3.2 and 3.5 are skipped as unreachable (see above).
-- 📋 Shadow reports for the six Phase 3 sites against a real decider (the replay CLI covers `tool.failure_kind` only; these sites need live agent traffic with `provider: jev` in shadow, then `loom decision report --site recall.rerank` and friends).
+- 📋 Human-labelled samples for the Phase 3 sites. The first shadow campaign against Jev (2026-09-23, 5,727 rows; `docs/research/decision-layer-phase3-report.md`) measures agreement with today's mechanisms, which is not accuracy; `swarm.tie_break` (6 rows) and `tool_search.rerank` (rerun needed under the corrected reference) are still short of a usable report.
 - 📋 Baseline capture of scheduler queue wait and recall starvation rate on the gauntlet rig (an operations task; see the plan).
 
 ## Tests
