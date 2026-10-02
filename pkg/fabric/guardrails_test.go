@@ -15,6 +15,7 @@ package fabric
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -373,6 +374,94 @@ func TestInferErrorType(t *testing.T) {
 			errorMessage: "Some unknown error occurred",
 			wantType:     "unknown",
 		},
+		// Classes added after the 2026-09-22 decision-layer shadow run.
+		{
+			name:         "saturated: session budget",
+			errorCode:    "MCP_CALL_FAILED",
+			errorMessage: `tool error: {"code":"session_handle_budget_full","message":"too many live handles"}`,
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			// The original ladder said timeout ("exceeded") before the
+			// refined classes existed; the original six are not reclassified.
+			name:         "rate limit with timeout wording keeps the original class",
+			errorMessage: "Rate limit exceeded, retry later",
+			wantType:     ErrorTypeTimeout,
+		},
+		{
+			name:         "saturated: rate limit without original-ladder words",
+			errorMessage: "Rate limit hit, retry later",
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "saturated: 429 status in message",
+			errorMessage: "upstream returned HTTP 429",
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "not saturated: 4291 is a session number, not a status",
+			errorMessage: "[Session 4291] request failed",
+			wantType:     ErrorTypeUnknown,
+		},
+		// Ed's review examples (#409): each was reclassified as
+		// server_saturated; the original ladder's answer must stand.
+		{
+			name:         "review: session 4291 syntax error stays syntax",
+			errorMessage: "[Session 4291] [Error 3706] Syntax error: expected something",
+			wantType:     ErrorTypeSyntax,
+		},
+		{
+			name:         "review: column named rate_limit stays column_not_found",
+			errorMessage: "Column rate_limit does not exist",
+			wantType:     ErrorTypeColumnNotFound,
+		},
+		{
+			name:         "review: query timeout with too many connections stays timeout",
+			errorMessage: "Query timeout: too many connections",
+			wantType:     ErrorTypeTimeout,
+		},
+		{
+			name:         "saturated: 429 code",
+			errorCode:    "429",
+			errorMessage: "Too Many Requests",
+			wantType:     ErrorTypeSaturated,
+		},
+		{
+			name:         "numeric overflow",
+			errorMessage: "[Teradata Database] [Error 2616] Numeric overflow occurred during computation.",
+			wantType:     ErrorTypeOverflow,
+		},
+		{
+			name:         "fk constraint is a missing referenced row",
+			errorMessage: "STORE_ERROR: link entity user: FOREIGN KEY constraint failed",
+			wantType:     ErrorTypeNotFound,
+		},
+		{
+			name:         "unique constraint",
+			errorMessage: "UNIQUE constraint failed: entities.name",
+			wantType:     ErrorTypeConstraint,
+		},
+		{
+			name:         "invalid input builtin",
+			errorMessage: "invalid_input: Data type 'text' requires specific query method",
+			wantType:     ErrorTypeInvalidInput,
+		},
+		{
+			name:         "invalid params by code",
+			errorCode:    "INVALID_PARAMS",
+			errorMessage: "config parameter is required for create_agent action",
+			wantType:     ErrorTypeInvalidInput,
+		},
+		{
+			name:         "not found: no rows",
+			errorMessage: "STORE_ERROR: get old memory: sql: no rows in result set",
+			wantType:     ErrorTypeNotFound,
+		},
+		{
+			name:         "not found: session handle",
+			errorMessage: `{"code":"unknown_session_handle","message":"handle expired"}`,
+			wantType:     ErrorTypeNotFound,
+		},
 	}
 
 	for _, tt := range tests {
@@ -485,4 +574,53 @@ func TestConcurrentPreflightCheck(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// preDecisionInferErrorType is InferErrorType exactly as it was before the
+// decision layer added classes (main @ 25d0248b). It is frozen here so the
+// fuzz target below can prove the refinement never reclassifies a message
+// the original ladder had already classified.
+func preDecisionInferErrorType(_, errorMessage string) string {
+	messageLower := strings.ToLower(errorMessage)
+	if strings.Contains(messageLower, "syntax") {
+		return "syntax_error"
+	}
+	if strings.Contains(messageLower, "permission") || strings.Contains(messageLower, "access denied") || strings.Contains(messageLower, "does not have") {
+		return "permission_denied"
+	}
+	if strings.Contains(messageLower, "column") && (strings.Contains(messageLower, "not found") || strings.Contains(messageLower, "does not exist")) {
+		return "column_not_found"
+	}
+	if (strings.Contains(messageLower, "table") || strings.Contains(messageLower, "object")) && (strings.Contains(messageLower, "not found") || strings.Contains(messageLower, "does not exist")) {
+		return "table_not_found"
+	}
+	if strings.Contains(messageLower, "timeout") || strings.Contains(messageLower, "exceeded") {
+		return "timeout"
+	}
+	return "unknown"
+}
+
+// FuzzInferErrorTypeKeepsOriginalClasses: whenever the pre-decision ladder
+// returned one of its five concrete classes, InferErrorType returns the same
+// class. Only "unknown" may be refined.
+func FuzzInferErrorTypeKeepsOriginalClasses(f *testing.F) {
+	seeds := [][2]string{
+		{"", "[Session 4291] [Error 3706] Syntax error: expected something"},
+		{"", "Column rate_limit does not exist"},
+		{"", "Query timeout: too many connections"},
+		{"429", "Rate limit exceeded"},
+		{"MCP_CALL_FAILED", `{"code":"session_handle_budget_full"}`},
+		{"", "FOREIGN KEY constraint failed"},
+		{"INVALID_PARAMS", "table parameter is required"},
+	}
+	for _, s := range seeds {
+		f.Add(s[0], s[1])
+	}
+	f.Fuzz(func(t *testing.T, code, msg string) {
+		before := preDecisionInferErrorType(code, msg)
+		got := InferErrorType(code, msg)
+		if before != ErrorTypeUnknown && got != before {
+			t.Fatalf("InferErrorType(%q, %q) = %q; the original ladder said %q", code, msg, got, before)
+		}
+	})
 }

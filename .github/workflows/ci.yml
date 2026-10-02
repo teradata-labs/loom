@@ -335,6 +335,18 @@ jobs:
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (decision layer)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzToValueRoundTrip$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzValidateState$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzParseAnswers$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzExtractObject$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzCheckEndpoint$' -fuzztime=30s ./pkg/decision/jev
+          go test -run=^$ -fuzz='^FuzzInferErrorTypeKeepsOriginalClasses$' -fuzztime=30s ./pkg/fabric
+
+          echo "✅ Decision layer fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail
