@@ -775,10 +775,30 @@ When execution fails, a `FAILED` stage event is emitted:
 
 ### gRPC Error
 
-After FAILED event, stream terminates with gRPC error:
+After the FAILED event, the stream terminates with a gRPC error. The code says
+whether a retry can succeed. The same mapping applies to unary `Weave`, and the
+HTTP gateway translates it for `POST /v1/weave`:
 
-**Error code**: `Internal` (13)
-**Error message**: Same as FAILED event message
+| Code | HTTP (`/v1/weave`) | When | Retry? |
+|------|--------------------|------|--------|
+| `Canceled` (1) | 499 | The caller canceled the request | Caller's choice |
+| `DeadlineExceeded` (4) | 504 | The request deadline elapsed | Yes |
+| `ResourceExhausted` (8) | 429 | The LLM provider throttled the call and looms' own retries (rate limiter, agent retry loop) did not get through; also a full admission-door queue | Yes, with backoff |
+| `Unavailable` (14) | 503 | The LLM provider had a temporary server fault (HTTP 500/502/503/504/529, Bedrock `InternalServerException`/`ServiceUnavailableException`/`ModelNotReadyException`, an `overloaded_error` from the Anthropic SDK) past looms' retries, or its response stream stalled | Yes, with backoff |
+| `Internal` (13) | 500 | Any other agent failure, including a deterministic provider refusal (validation error, auth failure, other 4xx) | Not without changing the request |
+
+A provider 5xx maps to `Unavailable` only when the provider client typed the
+status: both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the
+status). The direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini,
+Ollama) report a 5xx as a plain `API error (status N)` message, which still
+maps to `Internal`. A throttle maps to `ResourceExhausted` for every provider.
+
+**Error message**: the FAILED event's error, prefixed by the classification
+(`LLM provider throttled the request: ...`, `LLM provider temporarily
+unavailable: ...`, `agent execution failed: ...`).
+
+In v1.4.0 and earlier, every one of these except `Canceled`, `DeadlineExceeded` and
+a stream stall returned `Internal`.
 
 ### HTTP/SSE Error
 
@@ -791,7 +811,7 @@ After FAILED event, SSE stream closes:
 
 | Error Message | Cause | Resolution |
 |---------------|-------|------------|
-| `LLM call failed: API rate limit exceeded` | Provider rate limit hit | Retry with exponential backoff |
+| `LLM call failed: API rate limit exceeded` | Provider rate limit hit (status `ResourceExhausted`) | Retry with exponential backoff |
 | `Tool execution failed: connection refused` | Backend service down | Check backend service status |
 | `Guardrails exceeded: max turns reached` | Conversation too long | Increase `guardrails.max_turns` |
 | `Session not found` | Invalid session_id | Verify session_id or create new session |
