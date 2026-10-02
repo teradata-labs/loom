@@ -531,15 +531,18 @@ func (a *Agent) liveExtractGate(ctx context.Context, sessionID, window string) (
 }
 
 // recordExtractionGate writes the gate's row against what extraction
-// actually stored. On a shadow band it asks the decider now, in the
-// background, so the comparison costs the turn nothing.
+// actually stored. When the live gate already asked (req != nil, whatever
+// the outcome: acted, below the band, decider error, budget), that answer is
+// recorded; the decider is never asked twice for one extraction. Only on a
+// shadow band, where nothing was asked, does it ask now, in the background,
+// so the comparison costs the turn nothing.
 func (a *Agent) recordExtractionGate(ctx context.Context, sessionID, window string,
-	req *loomv1.DecisionRequest, out decision.Outcome, live bool, stored *int) {
+	req *loomv1.DecisionRequest, out decision.Outcome, stored *int) {
 	if a.decisionRouter == nil || window == "" {
 		return
 	}
 	refs := sites.ExtractReference(*stored)
-	if live && req != nil {
+	if req != nil {
 		a.recordDecisionAsync(ctx, sessionID, req, out, refs)
 		return
 	}

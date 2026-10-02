@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -324,18 +325,23 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	window := renderExtractionWindow(recentMessages)
 	gateReq, gateOut, gateLive := a.liveExtractGate(extractCtx, sessionID, window)
 	if gateLive {
-		if skip, ok := sites.ExtractVerdict(gateOut.Response, gateOut.Band); ok && skip {
+		skip, ok := sites.ExtractVerdict(gateOut.Response, gateOut.Band)
+		if ok && skip {
 			zap.L().Debug("graph memory extraction: skipped, no durable facts in window",
 				zap.String("session", sessionID), zap.Int("messages", len(recentMessages)))
 			a.recordDecisionAsync(extractCtx, sessionID, gateReq, gateOut, nil)
 			return
+		}
+		if !ok {
+			// No usable or decisive answer: extraction runs as before.
+			gateOut.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		}
 	}
 	storedRef := 0
 	defer func() {
 		// Whatever path ran, record the decider against what extraction
 		// actually yielded.
-		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, gateLive, &storedRef)
+		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, &storedRef)
 	}()
 
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.

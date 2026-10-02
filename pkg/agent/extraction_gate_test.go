@@ -109,16 +109,22 @@ func TestExtractionGateSkipsOnConfidentNo(t *testing.T) {
 // The safety: anything other than a confident no still extracts.
 func TestExtractionGateExtractsUnlessConfidentlyTold(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		p    float64
+		name     string
+		p        float64
+		err      error
+		wantPath loomv1.DecisionPath
 	}{
-		{"confident yes", 0.97},
-		{"uncertain", 0.45},
-		{"uncertain the other way", 0.55},
+		{name: "confident yes", p: 0.97, wantPath: loomv1.DecisionPath_DECISION_PATH_DECIDER},
+		{name: "uncertain", p: 0.45, wantPath: loomv1.DecisionPath_DECISION_PATH_FALLBACK},
+		{name: "uncertain the other way", p: 0.55, wantPath: loomv1.DecisionPath_DECISION_PATH_FALLBACK},
+		{name: "decider error", err: decision.ErrOverloaded, wantPath: loomv1.DecisionPath_DECISION_PATH_ERROR},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestGraphMemoryStore(t)
 			dec := decisionmock.New().AnswerNoul(sites.QExtractDurable, tt.p)
+			if tt.err != nil {
+				dec.SetError(tt.err)
+			}
 			shadow := &memShadowStore{}
 			a, llm := gateAgent(t, store, extractLiveBand(), dec, shadow)
 
@@ -126,9 +132,13 @@ func TestExtractionGateExtractsUnlessConfidentlyTold(t *testing.T) {
 			assert.Equal(t, 1, llm.getCalls(), "extraction ran as it always did")
 
 			a.WaitDecisionShadows()
+			// Review #410: a fallback used to send a second request for the
+			// shadow row. The live answer in hand is what gets recorded.
+			assert.Equal(t, 1, dec.CallCount(), "the decider is asked once per extraction")
 			rows, err := shadow.QueryShadow(context.Background(), decision.ShadowQuery{Site: sites.SiteMemoryExtract})
 			require.NoError(t, err)
 			require.Len(t, rows, 1)
+			assert.Equal(t, tt.wantPath, rows[0].Path)
 			assert.Equal(t, "true", rows[0].ReferenceAnswer,
 				"the reference is what extraction actually stored, and it stored one")
 			assert.Equal(t, sites.ReferenceSourceExtractionYield, rows[0].ReferenceSource)
