@@ -14,8 +14,6 @@
 package openai
 
 import (
-	"go.uber.org/zap"
-
 	"bufio"
 	"bytes"
 	"context"
@@ -23,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -35,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 // Client implements the LLMProvider interface for OpenAI's API.
@@ -48,6 +48,7 @@ type Client struct {
 	streamIdleTimeout      time.Duration
 	maxTokens              int
 	temperature            float64
+	thinkingLevel          string // "", "none": off; any other value requests adaptive thinking on Claude models
 	rateLimiter            *llm.RateLimiter
 	toolNameMap            map[string]string // sanitized name → original name
 	extraHeaders           map[string]string // additional headers sent with every request
@@ -74,7 +75,12 @@ type Config struct {
 	StreamIdleTimeout      time.Duration
 	MaxTokens              int     // Default: 4096
 	Temperature            float64 // Default: 1.0
-	RateLimiterConfig      llm.RateLimiterConfig
+	// ThinkingLevel requests extended thinking ("", "none" = off; "low",
+	// "medium", "high", "auto" = on). On this wire every non-off level maps
+	// to Anthropic adaptive thinking, and only for Claude-family models —
+	// other models' requests are byte-identical to a client without it.
+	ThinkingLevel     string
+	RateLimiterConfig llm.RateLimiterConfig
 	// ExtraHeaders are additional HTTP headers sent with every request.
 	// Useful for proxy-specific metadata (e.g. LiteLLM user tracking tags).
 	//
@@ -189,6 +195,7 @@ func NewClient(config Config) *Client {
 		streamIdleTimeout:      config.StreamIdleTimeout,
 		maxTokens:              config.MaxTokens,
 		temperature:            config.Temperature,
+		thinkingLevel:          config.ThinkingLevel,
 		rateLimiter:            rateLimiter,
 		extraHeaders:           copyHeaders(config.ExtraHeaders),
 		catalogProvider:        config.CatalogProvider,
@@ -376,6 +383,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Model:       c.model,
 		Messages:    apiMessages,
 		Temperature: c.temperature,
+		Thinking:    c.thinkingParam(),
 	}
 	if c.usesMaxCompletionTokens() {
 		req.MaxCompletionTokens = c.maxTokens
@@ -516,6 +524,23 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 				}
 			}
 
+			// In-turn thinking replay: blocks ride back verbatim so the
+			// provider's signatures survive the round-trip. Settled turns
+			// arrive here already stripped by the compile. A block that is
+			// still text-empty (capture should have completed it) is dropped
+			// rather than replayed: Anthropic 400s on a thinking block with
+			// no thinking field, while a missing block is tolerated (probed).
+			if len(msg.ThinkingBlocks) > 0 {
+				wire := make([]WireThinkingBlock, 0, len(msg.ThinkingBlocks))
+				for _, b := range msg.ThinkingBlocks {
+					if b.Thinking == "" && b.Type != "redacted_thinking" {
+						continue
+					}
+					wire = append(wire, WireThinkingBlock{Type: b.Type, Thinking: b.Thinking, Signature: b.Signature})
+				}
+				apiMsg.ThinkingBlocks = wire
+			}
+
 			if apiMsg.Content == nil && len(apiMsg.ToolCalls) == 0 {
 				continue
 			}
@@ -561,6 +586,42 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 // to a claude model benefit from the marker, and only those get it.
 func (c *Client) emitsCacheControl() bool {
 	return strings.Contains(strings.ToLower(c.model), "claude")
+}
+
+// completeThinkingBlocks pairs relocated thinking text back into blocks that
+// arrived signature-only — the gateway's split shape puts the text in
+// reasoning_content and ships a block skeleton carrying only the signature.
+// Anthropic requires the thinking field on replay (400 without it), and the
+// signature verifies against exactly this text, so reattaching it re-forms
+// the original signed block. A block that carried its own text keeps it; the
+// fill applies only when no non-redacted block carried any.
+func completeThinkingBlocks(blocks []llmtypes.ThinkingBlock, text string) {
+	if text == "" {
+		return
+	}
+	for i := range blocks {
+		if blocks[i].Type != "redacted_thinking" && blocks[i].Thinking != "" {
+			return
+		}
+	}
+	for i := range blocks {
+		if blocks[i].Type != "redacted_thinking" {
+			blocks[i].Thinking = text
+			return
+		}
+	}
+}
+
+// thinkingParam returns the request's thinking field, or nil (omitted on the
+// wire) when thinking is off or the model is not Claude-family — the same
+// gate as cache_control, kept one predicate on purpose. Every non-off level
+// maps to adaptive: budget_tokens is rejected by Claude 4.6+/5, and adaptive
+// carries no effort knob on this wire.
+func (c *Client) thinkingParam() map[string]interface{} {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" || !c.emitsCacheControl() {
+		return nil
+	}
+	return map[string]interface{}{"type": "adaptive"}
 }
 
 // withCacheControl rewrites a message's content into the block form carrying a
@@ -738,10 +799,23 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 			}
 		}
 
-		// Reasoning models surface their trace in reasoning_content; map it to
-		// Thinking (never Content) so it is observable without polluting the
-		// user-facing answer or the replayed conversation.
-		llmResp.Thinking = choice.Message.ReasoningContent
+		// Extract thinking. Both observed shapes handled: text in
+		// reasoning_content with signature-only blocks, and text inside the
+		// blocks with empty reasoning_content.
+		if len(choice.Message.ThinkingBlocks) > 0 {
+			for _, b := range choice.Message.ThinkingBlocks {
+				llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+					Type: b.Type, Thinking: b.Thinking, Signature: b.Signature,
+				})
+				if b.Type != "redacted_thinking" {
+					llmResp.Thinking += b.Thinking
+				}
+			}
+		}
+		if llmResp.Thinking == "" {
+			llmResp.Thinking = choice.Message.ReasoningContent
+		}
+		completeThinkingBlocks(llmResp.ThinkingBlocks, llmResp.Thinking)
 
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
@@ -819,7 +893,9 @@ func parseProviderCost(h http.Header) float64 {
 		return 0
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < 0 {
+	// ParseFloat accepts "Inf" and "NaN"; +Inf also passes a plain `< 0` check,
+	// so a garbage header would otherwise poison CostUSD with +Inf downstream.
+	if err != nil || f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
 		return 0
 	}
 	return f
@@ -974,6 +1050,12 @@ func (c *Client) usesMaxCompletionTokens() bool {
 func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
 
+	// Latency split stamps, surfaced via response Metadata: prep (conversion +
+	// marshal), then wait-to-first-SSE-chunk of ANY delta type. The token
+	// callback fires only on text deltas, so tool-call turns are invisible to
+	// callback-based TTFT — these stamps are the client's own ground truth.
+	prepStart := time.Now()
+
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
 	c.toolNameMap = make(map[string]string)
@@ -983,6 +1065,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Model:         c.model,
 		Messages:      apiMessages,
 		Temperature:   c.temperature,
+		Thinking:      c.thinkingParam(),
 		Stream:        true,                               // Enable streaming
 		StreamOptions: &StreamOptions{IncludeUsage: true}, // final usage chunk (tokens + cache)
 	}
@@ -1006,6 +1089,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 2. Send request with rate limiting if enabled.
 	// Retry once on transient transport errors (stale keep-alive connection
 	// recycled by the LLM proxy, manifesting as EOF).
+	// Latency split: prep → first byte → generation. sendStart closes the prep
+	// window; firstChunkAt is stamped on the first parsed SSE chunk below.
+	sendStart := time.Now()
+	var firstChunkAt time.Time
+	sseChunks := 0
 	httpResp, err := c.sendStreamingRequest(ctx, body)
 	if err != nil {
 		return nil, err
@@ -1033,7 +1121,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolCalls []llmtypes.ToolCall
 	toolCallMap := make(map[int]*llmtypes.ToolCall) // Track tool calls by index
 
+	// Streaming thinking assembly (observed litellm contract): text arrives
+	// as reasoning_content deltas and/or inside thinking_blocks fragments;
+	// the signature arrives in a block fragment. Fragments merge by index.
+	var reasoningBuffer strings.Builder
+	thinkBlockMap := make(map[int]*llmtypes.ThinkingBlock)
+	var thinkBlockOrder []int
+
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -1056,6 +1155,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// Skip malformed chunks but continue processing
 			continue
 		}
+		if firstChunkAt.IsZero() {
+			firstChunkAt = time.Now()
+		}
+		sseChunks++
 
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]
@@ -1071,6 +1174,31 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					if tokenCallback != nil {
 						tokenCallback(token)
 					}
+				}
+			}
+
+			// Extract thinking deltas — accumulated only, never forwarded to
+			// the token callback (thinking is not user-visible output).
+			if choice.Delta.ReasoningContent != "" {
+				reasoningBuffer.WriteString(choice.Delta.ReasoningContent)
+			}
+			for _, tb := range choice.Delta.ThinkingBlocks {
+				idx := 0
+				if tb.Index != nil {
+					idx = *tb.Index
+				}
+				blk, exists := thinkBlockMap[idx]
+				if !exists {
+					blk = &llmtypes.ThinkingBlock{}
+					thinkBlockMap[idx] = blk
+					thinkBlockOrder = append(thinkBlockOrder, idx)
+				}
+				if tb.Type != "" {
+					blk.Type = tb.Type
+				}
+				blk.Thinking += tb.Thinking
+				if tb.Signature != "" {
+					blk.Signature = tb.Signature
 				}
 			}
 
@@ -1135,6 +1263,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
@@ -1207,16 +1338,45 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		stopReason = finishReason
 	}
 
+	// Assemble thinking: blocks in arrival order; plain text from the blocks
+	// when they carried it, else from the reasoning_content deltas.
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkBlockOrder {
+		blk := thinkBlockMap[idx]
+		if blk.Type == "" {
+			blk.Type = "thinking"
+		}
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+	if thinkingText == "" {
+		thinkingText = reasoningBuffer.String()
+	}
+	completeThinkingBlocks(thinkingBlocks, thinkingText)
+
+	md := map[string]interface{}{
+		"model":         c.model,
+		"finish_reason": finishReason,
+		"streaming":     true,
+		"prep_ms":       sendStart.Sub(prepStart).Milliseconds(),
+		"sse_chunks":    sseChunks,
+	}
+	if !firstChunkAt.IsZero() {
+		md["ttft_ms"] = firstChunkAt.Sub(sendStart).Milliseconds()
+		md["gen_ms"] = time.Since(firstChunkAt).Milliseconds()
+	}
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
-		Metadata: map[string]interface{}{
-			"model":         c.model,
-			"finish_reason": finishReason,
-			"streaming":     true,
-		},
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
+		Metadata:       md,
 	}, nil
 }
 

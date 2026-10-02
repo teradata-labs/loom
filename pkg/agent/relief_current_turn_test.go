@@ -321,7 +321,10 @@ func TestCompile_PressureOffloadedRowsSitBehindCacheBreakpoint(t *testing.T) {
 		if firstStub == -1 && m.Role == "tool" && strings.Contains(m.Content, "held in memory this turn") {
 			firstStub = i
 		}
-		if i >= 1 && m.CacheBreakpoint && m.Role != "system" {
+		// The stable marker is the first non-system breakpoint; the later
+		// till-NOW marker closes the current turn and sits after the stubs
+		// by design (it is what re-renders each turn).
+		if bp == -1 && i >= 1 && m.CacheBreakpoint && m.Role != "system" {
 			bp = i
 		}
 	}

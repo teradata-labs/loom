@@ -393,7 +393,9 @@ func TestClient_ConvertResponse(t *testing.T) {
 }
 
 func TestClient_CalculateCost(t *testing.T) {
-	client := &Client{}
+	// Pricing arithmetic is exercised against a catalogued model; an empty
+	// modelID now reports zero by design (see the uncatalogued-model case).
+	client := &Client{modelID: "us.anthropic.claude-sonnet-5"}
 
 	tests := []struct {
 		name         string
@@ -497,13 +499,13 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			outputTokens: tokens,
 			wantCost:     18.0, // $3 + $15
 		},
-		// --- Unknown model falls back to Sonnet ---
+		// --- Uncatalogued model reports no cost rather than a guessed one ---
 		{
-			name:         "unknown model defaults to sonnet pricing",
+			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     0,
 		},
 	}
 
@@ -597,13 +599,13 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// cache read:  500K * $5 * 0.10 / 1M = $0.25
 			wantCost: 31.50,
 		},
-		// --- Unknown model defaults to Sonnet ---
+		// --- Uncatalogued model reports no cost rather than a guessed one ---
 		{
-			name:         "unknown model defaults to sonnet",
+			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0,
+			wantCost:     0,
 		},
 	}
 

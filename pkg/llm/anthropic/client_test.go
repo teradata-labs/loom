@@ -807,3 +807,26 @@ func TestClient_Chat_CacheTokensInResponse(t *testing.T) {
 		t.Errorf("expected cost $%.8f, got $%.8f", expectedCost, resp.Usage.CostUSD)
 	}
 }
+
+// Effort rides output_config on adaptive-thinking models and only there.
+func TestOutputConfigEffort(t *testing.T) {
+	cases := []struct {
+		model, level, want string
+	}{
+		{"claude-opus-5", "xhigh", "xhigh"},
+		{"claude-sonnet-5", "medium", "medium"},
+		{"claude-opus-5", "auto", ""},
+		{"claude-sonnet-4-5", "high", ""},
+	}
+	for _, tc := range cases {
+		c := &Client{model: tc.model, thinkingLevel: tc.level}
+		oc := c.outputConfigParam()
+		got := ""
+		if oc != nil {
+			got, _ = oc["effort"].(string)
+		}
+		if got != tc.want {
+			t.Errorf("%s/%s: effort=%q want %q", tc.model, tc.level, got, tc.want)
+		}
+	}
+}

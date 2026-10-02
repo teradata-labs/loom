@@ -8,10 +8,13 @@ prompts:
       Execute shell commands to interact with the filesystem, run programs, and perform system operations.
       Provides full access to the command line with streaming output and error handling.
 
+      Prefer file_read for reading and searching files, file_write/edit_files
+      for changing them, and sql_query for data probes; use shell for
+      everything else.
+
       Use this tool to:
-      - Run CLI commands (ls, grep, find, cat, etc.)
       - Execute scripts and programs
-      - Interact with git, npm, docker, and other tools
+      - Interact with git, dbt, npm, docker, and other tools
       - Process files with standard Unix utilities
       - Chain commands with pipes and redirects
 

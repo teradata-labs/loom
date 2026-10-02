@@ -29,6 +29,9 @@ type mockLLMProvider struct {
 	mu        sync.Mutex
 	responses []string
 	callCount int
+	// delay stretches each Chat call; stages otherwise complete inside a
+	// millisecond and duration fields truncate to zero.
+	delay time.Duration
 }
 
 func newMockLLMProvider(responses ...string) *mockLLMProvider {
@@ -40,6 +43,9 @@ func newMockLLMProvider(responses ...string) *mockLLMProvider {
 func (m *mockLLMProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
 
 	var response string
 	if m.callCount < len(m.responses) {

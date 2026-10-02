@@ -42,9 +42,10 @@ func newTestGraphStore(t *testing.T) memory.GraphMemoryStore {
 }
 
 // TestWithoutBuiltinTool_GraphMemory verifies the core invariant of the
-// tool-surface refactor: WithGraphMemoryStore wires the subsystem (extractor
-// state, store reference) regardless of WithoutBuiltinTool. WithoutBuiltinTool
-// only hides the tool definition from the LLM's tool list.
+// tool-surface refactor: WithGraphMemoryStore wires the subsystem (store
+// reference) regardless of WithoutBuiltinTool, which only hides the tool
+// definition from the LLM's tool list. Automatic extraction is gone: graph
+// memory is written solely through the explicit graph_memory tool.
 func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 	store := newTestGraphStore(t)
 	gmCfg := DefaultGraphMemoryConfig()
@@ -57,7 +58,7 @@ func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 		)
 		assert.NotNil(t, ag.graphMemoryStore, "subsystem store should be wired")
 		assert.True(t, ag.graphMemoryConfig.Enabled, "config should pass through")
-		assert.True(t, ag.enableGraphMemoryExtraction, "extractor should be enabled")
+		assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
 		assert.True(t, ag.tools.IsRegistered("graph_memory"), "tool should surface to the LLM")
 	})
 
@@ -68,7 +69,7 @@ func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 		)
 		assert.NotNil(t, ag.graphMemoryStore, "subsystem store should still be wired")
 		assert.True(t, ag.graphMemoryConfig.Enabled, "config should still pass through")
-		assert.True(t, ag.enableGraphMemoryExtraction, "extractor should still be enabled")
+		assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
 		assert.False(t, ag.tools.IsRegistered("graph_memory"), "tool should NOT surface")
 		assert.True(t, ag.isBuiltinToolSuppressed("graph_memory"), "suppression flag should be set")
 	})
@@ -153,7 +154,7 @@ func TestWithoutBuiltinTool_GraphMemoryExtractorStillRoutesToCompressor(t *testi
 	assert.NotNil(t, ag.graphMemoryStore, "subsystem still wired")
 	assert.Same(t, compressor, ag.compressorLLM, "compressor wiring preserved")
 	assert.False(t, ag.tools.IsRegistered("graph_memory"), "tool suppressed")
-	assert.True(t, ag.enableGraphMemoryExtraction, "extractor enabled")
+	assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
 	// The actual LLM resolution lives in extractGraphMemoryAsync (uses
 	// a.compressorLLM ?? a.llm). Documented here so a future refactor that
 	// moves that logic breaks this test instead of silently regressing.

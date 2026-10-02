@@ -51,5 +51,11 @@ func NewClientForModel(cfg Config) (llmtypes.LLMProvider, error) {
 	if IsAnthropicModel(model) {
 		return NewSDKClient(cfg)
 	}
-	return NewClient(cfg)
+	client, err := NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// Every non-Anthropic family is served through Converse.
+	client.useConverse = true
+	return client, nil
 }

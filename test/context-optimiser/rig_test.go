@@ -82,7 +82,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + skillBodyMarker + `
@@ -102,7 +102,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + auditBodyMarker + `
@@ -421,12 +421,13 @@ type dumpTool struct {
 // dumpMessage mirrors types.Message as it lands on disk. That type carries no
 // json tags, so it marshals under its Go field names — these must match exactly.
 type dumpMessage struct {
-	Role       string
-	Content    string
-	ToolUseID  string
-	ToolCalls  []types.ToolCall
-	ToolResult *json.RawMessage
-	AgentID    string
+	Role            string
+	Content         string
+	ToolUseID       string
+	ToolCalls       []types.ToolCall
+	ToolResult      *json.RawMessage
+	AgentID         string
+	CacheBreakpoint bool
 }
 
 // stage is one provider call: the exact context dispatched at that moment.
