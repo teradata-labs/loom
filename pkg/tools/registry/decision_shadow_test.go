@@ -17,7 +17,9 @@ package registry
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -265,4 +267,83 @@ func TestLiveRerankBelowBandReturnsOutcomeForRecording(t *testing.T) {
 		assert.Equal(t, "sess-fb", r.SessionId)
 	}
 	assert.Equal(t, 1, m.CallCount(), "one decider call for the whole search")
+}
+
+// countingRerankLLM is rerankLLM that counts calls, so a test can tell a
+// decider-ranked search from an LLM-ranked one.
+type countingRerankLLM struct{ calls atomic.Int32 }
+
+func (l *countingRerankLLM) Chat(ctx context.Context, m []types.Message, t []shuttle.Tool) (*types.LLMResponse, error) {
+	l.calls.Add(1)
+	return rerankLLM{}.Chat(ctx, m, t)
+}
+func (*countingRerankLLM) Name() string  { return "rerank-fake" }
+func (*countingRerankLLM) Model() string { return "fake-1" }
+
+func hasDecisionSignal(t *testing.T, res *shuttle.Result) bool {
+	t.Helper()
+	data, ok := res.Data.(map[string]interface{})
+	require.True(t, ok)
+	tools, ok := data["results"].([]map[string]interface{})
+	require.True(t, ok, "tools list in result data")
+	for _, tool := range tools {
+		if r, _ := tool["match_reason"].(string); strings.HasPrefix(r, "decision:") {
+			return true
+		}
+	}
+	return false
+}
+
+// Review #410 blocking 2, both directions Ed reproduced: agent B has a live
+// tool_search.rerank band and agent A has no decision layer, on one shared
+// registry. A's search must be ranked by the LLM, never by B's decider; and
+// a later agent C with a shadow-only decision block must not take B's live
+// band away from B.
+func TestToolSearchLiveBandIsPerAgent(t *testing.T) {
+	llm := &countingRerankLLM{}
+	reg, err := New(Config{DBPath: filepath.Join(t.TempDir(), "tools.db"), LLM: llm})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reg.Close() })
+	for _, c := range candidates() {
+		tool := c.Tool
+		tool.Id = "custom:" + tool.Name
+		tool.Source = loomv1.ToolSource_TOOL_SOURCE_CUSTOM
+		require.NoError(t, reg.RegisterTool(context.Background(), tool))
+	}
+	run := func(st *SearchTool) *shuttle.Result {
+		res, err := st.Execute(context.Background(), map[string]interface{}{"query": "send", "mode": "balanced"})
+		require.NoError(t, err)
+		require.True(t, res.Success)
+		st.WaitDecisionShadows()
+		return res
+	}
+
+	decB := mock.New().AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.9).AnswerNoul("c2", 0.05)
+	stB := NewSearchTool(reg, WithDecision(DecisionBinding{Router: decision.NewRouter(decB, liveToolSearchBand(0.5))}))
+	stA := NewSearchTool(reg)
+
+	resA := run(stA)
+	assert.False(t, hasDecisionSignal(t, resA), "A's results were ranked by B's decider")
+	assert.Equal(t, int32(1), llm.calls.Load(), "A's search used the LLM rerank")
+	assert.Equal(t, 0, decB.CallCount(), "A's search reached B's decider")
+
+	resB := run(stB)
+	assert.True(t, hasDecisionSignal(t, resB), "B's live band ranks B's search")
+	assert.Equal(t, 1, decB.CallCount())
+	assert.Equal(t, int32(1), llm.calls.Load(), "B's live band skipped the LLM rerank")
+
+	// Agent C arrives with a shadow-only decision block.
+	decC := mock.New().AnswerNoul("c0", 0.1).AnswerNoul("c1", 0.1).AnswerNoul("c2", 0.1)
+	stC := NewSearchTool(reg, WithDecision(DecisionBinding{Router: decision.NewRouter(decC)}))
+
+	resB = run(stB)
+	assert.True(t, hasDecisionSignal(t, resB), "C took B's live band away")
+	assert.Equal(t, 2, decB.CallCount())
+	assert.Equal(t, 0, decC.CallCount(), "B's search reached C's decider")
+	assert.Equal(t, int32(1), llm.calls.Load())
+
+	resC := run(stC)
+	assert.False(t, hasDecisionSignal(t, resC), "C is shadow-only: the LLM ranks")
+	assert.Equal(t, 1, decC.CallCount(), "C's shadow asked C's decider")
+	assert.Equal(t, int32(2), llm.calls.Load())
 }
