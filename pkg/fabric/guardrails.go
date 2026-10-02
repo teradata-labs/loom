@@ -16,6 +16,7 @@ package fabric
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -211,8 +212,10 @@ func (g *GuardrailEngine) ClearErrorRecord(sessionID string) {
 }
 
 // Error types InferErrorType returns. The first six predate the decision
-// layer; the last five were added after the 2026-09-22 shadow run showed
-// that 57% of a random sample of failures fell through to "unknown"
+// layer, and every message the original ladder classified as one of them
+// still classifies the same way. The last five refine "unknown" only; they
+// were added after the 2026-09-22 shadow run showed that 57% of a random
+// sample of failures fell through to "unknown"
 // (docs/research/decision-layer-phase1-report.md §2.3).
 const (
 	ErrorTypeSyntax         = "syntax_error"
@@ -239,43 +242,69 @@ const (
 )
 
 // saturationMarkers are the substrings that mark a server refusing load.
+// A bare HTTP status is matched separately (status429), as a whole number:
+// a substring " 429" also matched "[Session 4291]".
 var saturationMarkers = []string{
 	"budget_full", "rate limit", "rate_limit", "too many requests", "too many connections",
-	"overloaded", "server_busy", "backpressure", "quota exceeded", "throttl", " 429",
+	"overloaded", "server_busy", "backpressure", "quota exceeded", "throttl",
 }
+
+// status429 matches 429 as a standalone number (an HTTP status in a message
+// or code), never as part of a longer number such as a session id.
+var status429 = regexp.MustCompile(`(^|[^0-9])429([^0-9]|$)`)
 
 // InferErrorType attempts to classify error from code/message.
 // Backend-specific implementations can override this.
+//
+// The original ladder (syntax, permission, column, table, timeout) runs
+// first and its answer is final: a message it classified before the
+// decision layer's classes were added classifies the same way now. The
+// newer classes (saturation, overflow, constraint, invalid input, not
+// found) only refine what the original ladder called "unknown".
 func InferErrorType(errorCode, errorMessage string) string {
 	messageLower := strings.ToLower(errorMessage)
-	codeLower := strings.ToLower(errorCode)
-
-	// Saturation first: its messages often also contain words the later
-	// rules would match ("exceeded"), and the right reaction is the opposite
-	// of a retry.
-	for _, m := range saturationMarkers {
-		if strings.Contains(messageLower, m) || strings.Contains(codeLower, m) {
-			return ErrorTypeSaturated
-		}
+	if t := inferOriginalErrorType(messageLower); t != ErrorTypeUnknown {
+		return t
 	}
-	if codeLower == "429" {
-		return ErrorTypeSaturated
-	}
+	return inferRefinedErrorType(strings.ToLower(errorCode), messageLower)
+}
 
+// inferOriginalErrorType is the ladder InferErrorType had before the
+// decision layer's classes. Its order and markers are unchanged.
+func inferOriginalErrorType(messageLower string) string {
 	if strings.Contains(messageLower, "syntax") {
 		return ErrorTypeSyntax
 	}
 	// Check for permission errors first
 	if strings.Contains(messageLower, "permission") || strings.Contains(messageLower, "access denied") || strings.Contains(messageLower, "does not have") {
-		return "permission_denied"
+		return ErrorTypePermission
 	}
 	// Check for column errors before table errors (more specific first)
 	if strings.Contains(messageLower, "column") && (strings.Contains(messageLower, "not found") || strings.Contains(messageLower, "does not exist")) {
-		return "column_not_found"
+		return ErrorTypeColumnNotFound
 	}
 	// Check for table/object errors
 	if (strings.Contains(messageLower, "table") || strings.Contains(messageLower, "object")) && (strings.Contains(messageLower, "not found") || strings.Contains(messageLower, "does not exist")) {
-		return "table_not_found"
+		return ErrorTypeTableNotFound
+	}
+	if strings.Contains(messageLower, "timeout") || strings.Contains(messageLower, "exceeded") {
+		return ErrorTypeTimeout
+	}
+	return ErrorTypeUnknown
+}
+
+// inferRefinedErrorType splits what the original ladder left as "unknown"
+// into the classes the 2026-09-22 shadow run showed were missing.
+func inferRefinedErrorType(codeLower, messageLower string) string {
+	// Saturation first among the refinements: the right reaction is the
+	// opposite of a retry.
+	for _, m := range saturationMarkers {
+		if strings.Contains(messageLower, m) || strings.Contains(codeLower, m) {
+			return ErrorTypeSaturated
+		}
+	}
+	if status429.MatchString(codeLower) || status429.MatchString(messageLower) {
+		return ErrorTypeSaturated
 	}
 	// Engine arithmetic failures (Teradata 2616/2617 and friends).
 	if strings.Contains(messageLower, "numeric overflow") || strings.Contains(messageLower, "overflow occurred") {
@@ -305,15 +334,11 @@ func InferErrorType(errorCode, errorMessage string) string {
 		strings.Contains(messageLower, "invalid argument") || strings.Contains(messageLower, "missing required") {
 		return ErrorTypeInvalidInput
 	}
-	if strings.Contains(messageLower, "timeout") || strings.Contains(messageLower, "exceeded") {
-		return ErrorTypeTimeout
-	}
 	// Missing objects that are not tables or columns.
 	if strings.Contains(messageLower, "no rows in result set") || strings.Contains(messageLower, "unknown_session_handle") ||
 		strings.Contains(messageLower, "no such file") || strings.Contains(messageLower, "not found") ||
 		strings.Contains(messageLower, "does not exist") || strings.HasPrefix(codeLower, "not_found") {
 		return ErrorTypeNotFound
 	}
-
 	return ErrorTypeUnknown
 }
