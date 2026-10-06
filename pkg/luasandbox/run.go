@@ -59,8 +59,10 @@ type run struct {
 //
 // Run executes on the caller's goroutine and returns when the script
 // finishes, a limit fires, or ctx ends. It never panics and never returns
-// nil. Cancellation of ctx is observed at the script's next host call or
-// pcall return, and the CPU and wall budgets bound everything else.
+// nil. When ctx ends, the interpreter's interrupt flag is set and the script
+// stops at its next interpreter step, even when it only computes. One step
+// can run long: a single string pattern match receives the remaining CPU
+// budget up front and is not interrupted part way.
 func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	start := time.Now()
 	lim = lim.Normalize()
