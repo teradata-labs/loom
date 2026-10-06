@@ -187,3 +187,19 @@ func TestLuaTools_EnvSwitch(t *testing.T) {
 	require.NoError(t, viper.Unmarshal(&cfg))
 	assert.True(t, cfg.Tools.Lua.Enabled)
 }
+
+// With the default lists, scripts cannot call loom's own shell.
+func TestLuaTools_DefaultPolicyHidesTheShell(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	setDefaults()
+	var cfg Config
+	require.NoError(t, viper.Unmarshal(&cfg))
+	cfg.Tools.Lua.Enabled = true
+	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30)
+	require.NoError(t, err)
+	pol, err := rt.options.Policy(context.Background())
+	require.NoError(t, err)
+	visible := pol.Visible([]string{"shell_execute", "file_read", "shell_execute_sandbox"}, luasandbox.TrustOwn)
+	assert.Equal(t, []string{"file_read"}, visible)
+}

@@ -72,8 +72,12 @@ type LuaToolListsConfig struct {
 
 // Default lists, from the design (01 §6): tools that are slow, hold locks,
 // manage agents or skills, or (for shared scripts) can send data out.
+// shell_execute is loom's own unsandboxed shell: a script calling it in a loop
+// would run commands nobody sees one by one, and under the default YOLO
+// permissions nothing checks them. It stays denied until a command-policy
+// hook governs it; an operator who binds one can remove it from the list.
 var (
-	defaultLuaDeny          = []string{"shell_execute_sandbox", "agent_management", "project_manager", "git_contribute", "propose_skill_edit"}
+	defaultLuaDeny          = []string{"shell_execute", "shell_execute_sandbox", "agent_management", "project_manager", "git_contribute", "propose_skill_edit"}
 	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace"}
 )
 
