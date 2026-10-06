@@ -1,9 +1,10 @@
-// Modified for loom, 2026: tableStorage snapshots for allocation accounting (golua PR #135).
+// Modified for loom, 2026: tableStorage snapshots for allocation accounting (golua PR #135); integer keys are classified only while i-1 fits in an int (golua PR #136).
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
 
 import (
+	"math"
 	"math/bits"
 	"unsafe"
 )
@@ -471,7 +472,10 @@ func (t *hashTable) classifyIndices(idxCountByBucket *[uintptrLen]uintptr, arrSi
 		if it.value.IsNil() {
 			continue
 		}
-		if i, ok := it.key.TryInt(); ok && i > 0 && i <= maxArrayIndex {
+		// The i-1 <= math.MaxInt bound only matters where int is 32 bits:
+		// there maxArrayIndex does not fit in a uint, and the bit length of a
+		// truncated i-1 could equal uintptrLen, one past the last bucket.
+		if i, ok := it.key.TryInt(); ok && i > 0 && i <= maxArrayIndex && i-1 <= math.MaxInt {
 			var bucket int
 			if arrSize == 0 {
 				bucket = bits.Len(uint(i - 1))

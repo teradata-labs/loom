@@ -1,3 +1,6 @@
+// Modified for loom, 2026: init positions saturate and gsub formats integers in 64 bits (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package stringlib
 
 import (
@@ -34,7 +37,7 @@ func find(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	si := luastrings.StringNormPos(s, int(init)) - 1
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
 	if si < 0 {
 		si = 0
 	}
@@ -89,7 +92,7 @@ func match(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	si := luastrings.StringNormPos(s, int(init)) - 1
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
 	if si < 0 {
 		si = 0
 	}
@@ -156,7 +159,7 @@ func gmatch(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if ptnErr != nil {
 		return nil, ptnErr
 	}
-	si := luastrings.StringNormPos(s, int(init)) - 1
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
 	if si < 0 {
 		si = 0
 	}
@@ -237,7 +240,7 @@ func gsub(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 				case rt.StringType:
 					cStrings[i] = v.AsString()
 				case rt.IntType:
-					cStrings[i] = strconv.Itoa(int(v.AsInt()))
+					cStrings[i] = strconv.FormatInt(v.AsInt(), 10)
 				}
 			}
 			if len(captures) == 1 {

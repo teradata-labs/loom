@@ -1,3 +1,6 @@
+// Modified for loom, 2026: select compares its position in int64 (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package base
 
 import (
@@ -27,7 +30,7 @@ func selectF(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, errors.New("#1 out of range")
 	}
 	next := c.Next()
-	if int(n) <= len(etc) {
+	if n <= int64(len(etc)) {
 		t.Push(next, etc[n-1:]...)
 	}
 	return next, nil

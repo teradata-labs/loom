@@ -1,3 +1,6 @@
+// Modified for loom, 2026: positions and string.rep counts saturate instead of wrapping where int is 32 bits (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package stringlib
 
 import (
@@ -90,7 +93,7 @@ func bytef(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		if err != nil {
 			return nil, err
 		}
-		i = luastrings.StringNormPos(s, int(ii))
+		i = luastrings.StringNormPos(s, rt.ClampToInt(ii))
 		j = i
 	}
 	if c.NArgs() >= 3 {
@@ -98,7 +101,7 @@ func bytef(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		if err != nil {
 			return nil, err
 		}
-		j = luastrings.StringNormPos(s, int(jj))
+		j = luastrings.StringNormPos(s, rt.ClampToInt(jj))
 	}
 	next := c.Next()
 	i = maxpos(1, i)
@@ -176,7 +179,7 @@ func rep(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := int(ln)
+	n := rt.ClampToInt(ln)
 	if n < 0 {
 		return nil, errors.New("#2 out of range")
 	}
@@ -253,14 +256,14 @@ func sub(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	i := luastrings.StringNormPos(s, int(ii))
+	i := luastrings.StringNormPos(s, rt.ClampToInt(ii))
 	j := len(s)
 	if c.NArgs() >= 3 {
 		jj, err := c.IntArg(2)
 		if err != nil {
 			return nil, err
 		}
-		j = luastrings.StringNormPos(s, int(jj))
+		j = luastrings.StringNormPos(s, rt.ClampToInt(jj))
 	}
 	var slice string
 	i = maxpos(1, i)

@@ -1,3 +1,6 @@
+// Modified for loom, 2026: table.sort refuses a length longer than an int (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package tablelib
 
 import (
@@ -379,14 +382,17 @@ func sortf(t *rt.Thread, c *rt.GoCont) (next rt.Cont, resErr error) {
 	if err != nil {
 		return nil, err
 	}
-	if l >= maxSortSize {
+	// The second bound only matters where int is 32 bits: a length from a
+	// __len metamethod can exceed it, and a plain int(l) would wrap it.
+	if l >= maxSortSize || l > math.MaxInt {
 		return nil, errors.New("too big to sort")
 	}
 	if l <= 0 {
 		return c.Next(), nil
 	}
+	size := int(l)
 	len := func() int {
-		return int(l)
+		return size
 	}
 	var less func(i, j int) bool
 	if c.NArgs() >= 2 && !c.Arg(1).IsNil() {

@@ -1,3 +1,6 @@
+// Modified for loom, 2026: adds ClampToInt (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package runtime
 
 import (
@@ -80,6 +83,22 @@ func ToInt(v Value) (int64, bool) {
 		return n, tp == IsInt
 	}
 	return 0, false
+}
+
+// ClampToInt converts a Lua integer to an int, saturating at the bounds of int
+// instead of wrapping. Where int is 32 bits, a plain int(n) turns a large
+// position, count or level into an unrelated small one: string.sub(s, 2^32+1)
+// would start at position 1. A saturated value stays out of range, which is
+// what callers already check for. Where int is 64 bits this is a plain
+// conversion.
+func ClampToInt(n int64) int {
+	if n > math.MaxInt {
+		return math.MaxInt
+	}
+	if n < math.MinInt {
+		return math.MinInt
+	}
+	return int(n)
 }
 
 // ToIntNoString returns v as an Int and true if v is actually a valid integer.

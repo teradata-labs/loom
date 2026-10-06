@@ -1,7 +1,7 @@
 # Lua Script API Reference
 
 **Status**: ✅ implemented in `pkg/luasandbox` (engine and Lua-facing API). 📋 Planned:
-a builtin tool that exposes it to models (name not final). Design and rationale:
+the builtin `run_lua` tool that exposes it to models. Design and rationale:
 [architecture/lua-script-engine.md](../architecture/lua-script-engine.md).
 
 **Interpreter**: `github.com/arnodel/golua` v0.3.0, Lua 5.4.

@@ -1,3 +1,6 @@
+// Modified for loom, 2026: \xXX escapes are parsed with bitSize 8 (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 import (
@@ -82,7 +85,9 @@ func replaceEscapeSeq(e []byte) []byte {
 	case 'z':
 		return []byte{}
 	case 'x', 'X':
-		b, err := strconv.ParseInt(string(e[2:]), 16, 64)
+		// The scanner accepts exactly two hex digits, so the value fits in
+		// a byte.
+		b, err := strconv.ParseUint(string(e[2:]), 16, 8)
 		if err != nil {
 			panic(err)
 		}

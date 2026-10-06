@@ -1,3 +1,6 @@
+// Modified for loom, 2026: the error level saturates instead of wrapping where int is 32 bits (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package base
 
 import (
@@ -29,7 +32,7 @@ func errorF(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	}
 	err = rt.NewError(errObj)
 	if level != 1 {
-		err = err.AddContext(c.Next(), int(level))
+		err = err.AddContext(c.Next(), rt.ClampToInt(level))
 	}
 	return nil, err
 }
