@@ -17,6 +17,7 @@ package luasandbox
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -65,13 +66,17 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	lim = lim.Normalize()
 	defer func() {
 		if rec := recover(); rec != nil {
+			// A Go panic inside the interpreter or a library function the
+			// script called (golua's string.format "%p" without an argument
+			// is one). The process survives; the run does not.
 			res = &RunResult{
-				Outcome: OutcomeHostError,
-				Error:   "internal error in the script engine",
+				Outcome: OutcomeEngineError,
+				Error:   "the script triggered an internal error in the Lua interpreter",
 				Detail:  fmt.Sprintf("luasandbox: panic: %v\n%s", rec, debug.Stack()),
 			}
 		}
-		res.Used.WallMillis = uint64(time.Since(start).Milliseconds())
+		res.Error = boundError(res.Error)
+		res.Used.WallMillis = time.Since(start).Milliseconds()
 	}()
 
 	chunk := p.Name
@@ -80,7 +85,7 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	}
 	switch {
 	case h == nil:
-		return &RunResult{Outcome: OutcomeHostError, Error: "internal error in the script engine", Detail: "luasandbox: nil Host"}
+		return &RunResult{Outcome: OutcomeEngineError, Error: "internal error in the script engine", Detail: "luasandbox: nil Host"}
 	case ctx.Err() != nil:
 		return &RunResult{Outcome: OutcomeCancelled, Error: "run cancelled before it started: " + ctx.Err().Error()}
 	case len(p.Source) > lim.MaxSourceBytes:
@@ -181,4 +186,20 @@ func cleanError(err error) string {
 		return ""
 	}
 	return strings.TrimPrefix(err.Error(), "error: ")
+}
+
+// maxErrorBytes bounds RunResult.Error. A script controls its error text
+// (error(string.rep("x", 5e7)) is 50 MB) and hosts hand it to models and logs.
+const maxErrorBytes = 2 << 10
+
+// heapAddress matches the addresses golua prints for reference values.
+var heapAddress = regexp.MustCompile(`\b(table|function|userdata|thread): 0x[0-9a-fA-F]+`)
+
+// boundError removes heap addresses and caps the length.
+func boundError(s string) string {
+	s = heapAddress.ReplaceAllString(s, "$1")
+	if len(s) <= maxErrorBytes {
+		return s
+	}
+	return string(trimToRuneEnd([]byte(s[:maxErrorBytes]))) + fmt.Sprintf(" [... %d bytes elided]", len(s)-maxErrorBytes)
 }

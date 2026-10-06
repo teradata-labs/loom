@@ -41,8 +41,10 @@ func (s *run) register(tbl *rt.Table, name string, nArgs int, hasEtc bool, impl 
 //
 //   - a cancelled or expired run ends before the function does any work;
 //   - golua's own termination panics pass through untouched;
-//   - any other panic ends the run with OutcomeHostError instead of crashing
-//     the process, and its value and stack go to RunResult.Detail.
+//   - any other panic ends the run with OutcomeEngineError instead of
+//     crashing the process, and its value and stack go to RunResult.Detail.
+//     (Panics inside Host methods are caught closer, by callHost, and end the
+//     run with OutcomeHostError.)
 func (s *run) wrap(name string, impl hostImpl) rt.GoFunctionFunc {
 	return func(t *rt.Thread, c *rt.GoCont) (next rt.Cont, err error) {
 		if err := s.checkCancel(t); err != nil {
@@ -57,7 +59,7 @@ func (s *run) wrap(name string, impl hostImpl) rt.GoFunctionFunc {
 				panic(rec)
 			}
 			s.noteDetail(fmt.Sprintf("%s panicked: %v\n%s", name, rec, debug.Stack()))
-			next, err = nil, s.terminate(t, OutcomeHostError, "", name+": internal error")
+			next, err = nil, s.terminate(t, OutcomeEngineError, "", name+": internal error")
 		}()
 		return impl(t, c)
 	}
@@ -96,11 +98,21 @@ func (s *run) cancelMessage() string {
 	return "run cancelled: the caller's deadline passed"
 }
 
+// maxDetailBytes bounds RunResult.Detail, which a misbehaving host could
+// otherwise grow without limit (a Progress that panics on every event).
+const maxDetailBytes = 64 << 10
+
 func (s *run) noteDetail(msg string) {
+	if len(s.detail) >= maxDetailBytes {
+		return
+	}
 	if s.detail != "" {
 		s.detail += "\n"
 	}
 	s.detail += msg
+	if len(s.detail) > maxDetailBytes {
+		s.detail = string(trimToRuneEnd([]byte(s.detail[:maxDetailBytes]))) + "\n[... further diagnostics dropped]"
+	}
 }
 
 // progress forwards an event to the host. A panicking Progress is recorded

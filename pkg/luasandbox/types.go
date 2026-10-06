@@ -120,9 +120,15 @@ const (
 	OutcomeBudgetExceeded Outcome = "budget_exceeded"
 	// OutcomeCancelled means the caller's context was cancelled or expired.
 	OutcomeCancelled Outcome = "cancelled"
-	// OutcomeHostError means the host failed or this package hit an internal
-	// error. RunResult.Detail carries diagnostics for logs.
+	// OutcomeHostError means a Host method failed: it returned an error,
+	// panicked, or returned a nil result. RunResult.Detail carries
+	// diagnostics for logs.
 	OutcomeHostError Outcome = "host_error"
+	// OutcomeEngineError means the interpreter or this package failed
+	// internally (for example a Go panic inside a Lua library function the
+	// script called). It is not the host's fault. RunResult.Detail carries
+	// diagnostics for logs.
+	OutcomeEngineError Outcome = "engine_error"
 )
 
 // Budget names reported in RunResult.Limit.
@@ -157,7 +163,7 @@ type CallRecord struct {
 type Usage struct {
 	CPUTicks    uint64
 	MemoryBytes uint64
-	WallMillis  uint64
+	WallMillis  int64
 }
 
 // Truncation reports which parts of a run's output were cut to fit limits.
@@ -176,7 +182,8 @@ type RunResult struct {
 	// Output is captured print/log output.
 	Output string
 	// Error is a message suitable for the model: "<chunk>:<line>: message"
-	// for script errors, the limit for budget errors.
+	// for script errors, the limit for budget errors. It is at most
+	// maxErrorBytes long, and heap addresses ("table: 0x...") are removed.
 	Error string
 	// Limit names the budget that fired when Outcome is
 	// OutcomeBudgetExceeded.

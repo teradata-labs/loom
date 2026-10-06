@@ -43,7 +43,7 @@ func (h chaosHost) CallTool(ctx context.Context, name string, args map[string]an
 
 var validOutcomes = map[Outcome]bool{
 	OutcomeOK: true, OutcomeScriptError: true, OutcomeBudgetExceeded: true,
-	OutcomeCancelled: true, OutcomeHostError: true,
+	OutcomeCancelled: true, OutcomeHostError: true, OutcomeEngineError: true,
 }
 
 // FuzzRun feeds arbitrary source to the engine. Whatever the input, Run must
@@ -69,6 +69,15 @@ func FuzzRun(f *testing.F) {
 		`return tools.list(), tools.schema("a")`,
 		`time.sleep(1) return time.now()`,
 		`return xpcall(error, function(e) return e end, "z")`,
+		// Metamethod recursion overflowed the Go stack before setmetatable
+		// was restricted; keep the class in the corpus.
+		`local t = setmetatable({}, {}) getmetatable(t).__index = function(t, k) return t[k] end return t.x`,
+		`local mt = {} local t = setmetatable({}, mt) mt.__index = function(t, k) return t[k] end return t.x`,
+		`local mt = {__lt = function(a, b) return a < b end} local a = setmetatable({}, mt) return a < a`,
+		`local mt = {} mt.__close = function() local x <close> = setmetatable({}, mt) end do local y <close> = setmetatable({}, mt) end`,
+		`getmetatable("").__index = function(s, k) return s[k] end return ("x").y`,
+		`return string.format("%p")`,
+		`local t = {} for i = 1, 1e6 do t["k" .. i] = i end return json.encode(t)`,
 	}
 	for _, s := range seeds {
 		f.Add(s)

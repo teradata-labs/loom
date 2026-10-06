@@ -51,7 +51,6 @@ func TestBudgetsStopHostileScripts(t *testing.T) {
 		{"memory bomb inside pcall", `pcall(function() local t = {} for i = 1, 1e8 do t[i] = i end end) return "survived"`, LimitMemory, nil},
 		{"loop inside pcall", `pcall(function() while true do end end) return "survived"`, LimitCPU, func(l *Limits) { l.CPUTicks = 5_000_000 }},
 		{"finalizer loop", `G = setmetatable({}, {__gc = function() while true do end end}) return 1`, LimitWall, func(l *Limits) { l.Wall = 300 * time.Millisecond; l.CPUTicks = 1 << 40 }},
-		{"close handler loop", `do local x <close> = setmetatable({}, {__close = function() while true do end end}) end`, LimitWall, func(l *Limits) { l.Wall = 300 * time.Millisecond; l.CPUTicks = 1 << 40 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

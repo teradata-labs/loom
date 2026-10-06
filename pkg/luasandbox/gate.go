@@ -17,6 +17,7 @@ package luasandbox
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -80,11 +81,14 @@ func (g *Gate) Stats() (inUse, maxTotal, maxPerKey int) {
 
 // Capacity derivation constants.
 const (
-	// PeakMemoryOverhead is the measured ratio of peak process memory to a
-	// run's memory budget: a budget-killed run reached 116 MB of resident
-	// memory against a 50 MB budget, because growing buffers briefly hold
-	// both the old and the new copy. GOMEMLIMIT does not lower it.
-	PeakMemoryOverhead = 2.5
+	// PeakMemoryOverhead is the worst measured ratio of a budget-killed run's
+	// peak resident memory to its memory budget, rounded up. golua charges a
+	// table entry 16 bytes and an empty table nothing, while Go spends about
+	// 56 bytes per hash slot plus doubling growth; a script building tables
+	// of tables reached 10.5x (675 MB resident for a 64 MiB budget). Values
+	// this package creates are charged their real cost (1.4x to 2.1x
+	// measured). GOMEMLIMIT does not lower any of it.
+	PeakMemoryOverhead = 12.0
 	// ScriptMemoryShare is the fraction of process memory concurrent runs may
 	// use in the worst case.
 	ScriptMemoryShare = 0.4
@@ -132,7 +136,8 @@ var cgroupMemoryFiles = []string{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/me
 // or more mean "unlimited".
 func cgroupMemoryLimit(files []string) (uint64, bool) {
 	for _, p := range files {
-		b, err := os.ReadFile(p)
+		// #nosec G304 -- p comes from cgroupMemoryFiles, two fixed cgroup paths; tests substitute temp files
+		b, err := os.ReadFile(filepath.Clean(p))
 		if err != nil {
 			continue
 		}

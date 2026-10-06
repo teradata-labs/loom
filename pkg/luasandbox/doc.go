@@ -38,12 +38,16 @@
 //   - Cancellation is observed at the next host call or pcall return. A script
 //     that only computes is stopped by its CPU or wall budget instead, so the
 //     worst-case cancellation latency for pure computation is the remaining
-//     CPU budget (about ten seconds at the defaults).
-//   - The memory budget counts total allocation. Garbage collection does not
-//     credit it back, so a loop that creates many short-lived tables spends
-//     budget even when live memory stays small.
-//   - Measured peak process memory reaches about 2.3 times the memory budget
-//     for one run (buffers grow by doubling). DeriveCapacity accounts for it.
+//     CPU budget (10 to 40 seconds at the defaults, depending on the code).
+//   - The memory budget counts what golua charges, which is total allocation
+//     (garbage collection does not credit it back) and undercounts small
+//     tables: measured peak process memory reached 10.5 times the budget for
+//     a script building tables of tables. DeriveCapacity plans for 12 times.
+//   - Metamethods the VM calls directly (__index and __newindex functions,
+//     operators, comparisons, __len, __concat, __close) are not available:
+//     golua recurses on the Go stack for them with no depth limit, and a Go
+//     stack overflow aborts the process. __index and __newindex may be
+//     tables.
 //
 // The interpreter is github.com/arnodel/golua. Its types never appear in this
 // package's exported API, so the interpreter can be replaced here without

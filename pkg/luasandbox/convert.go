@@ -29,9 +29,15 @@ import (
 // a table that contains itself.
 const maxValueDepth = 32
 
-// tableOverheadBytes is charged for every table this package creates; golua
-// does not charge tables built from Go.
-const tableOverheadBytes = 80
+// Charges for values this package creates. golua charges a table entry 16
+// bytes and a string its length; a Go map slot costs about 56 bytes and a
+// string carries a 16-byte header, so values handed to a script are charged
+// what they really cost.
+const (
+	tableOverheadBytes = 80
+	entryExtraBytes    = 48
+	stringHeaderBytes  = 16
+)
 
 // maxSafeInt is the largest integer a float64 holds exactly.
 const maxSafeInt = 1 << 53
@@ -52,11 +58,31 @@ type goConv struct {
 	cut       bool
 	nonFinite int
 	null      *rt.UserData
+	// t, when set, is charged one CPU tick per table entry visited, so a
+	// script cannot spend unbudgeted Go CPU by converting huge tables.
+	t *rt.Thread
 }
 
 func newGoConv(limit int, truncate bool, null *rt.UserData) *goConv {
 	return &goConv{budget: limit, limit: limit, truncate: truncate, null: null}
 }
+
+// charged returns c charging CPU to t.
+func (c *goConv) charged(t *rt.Thread) *goConv {
+	c.t = t
+	return c
+}
+
+// visit charges one entry of CPU.
+func (c *goConv) visit() {
+	if c.t != nil {
+		c.t.RequireCPU(1)
+	}
+}
+
+// minEntryBytes is the least JSON an entry can take ("1," in an array), so a
+// table with more than budget/minEntryBytes entries cannot fit.
+const minEntryBytes = 2
 
 func (c *goConv) tooLarge() error {
 	return fmt.Errorf("value is larger than %d bytes", c.limit)
@@ -146,21 +172,42 @@ func (c *goConv) table(t *rt.Table, depth int) (any, bool, error) {
 		}
 		return nil, false, c.tooLarge()
 	}
+	// Classify the keys, stopping as soon as the table is known not to fit:
+	// nothing below allocates more than the entries that can fit.
+	maxEntries := max(c.budget, 0)/minEntryBytes + 1
 	count, maxIndex, sequence := 0, int64(0), true
 	for k, _, ok := t.Next(rt.NilValue); ok && !k.IsNil(); k, _, ok = t.Next(k) {
+		c.visit()
 		count++
 		if i, isInt := k.TryInt(); isInt && i >= 1 {
 			maxIndex = max(maxIndex, i)
 		} else {
 			sequence = false
 		}
+		if count > maxEntries {
+			if !c.truncate {
+				return nil, false, c.tooLarge()
+			}
+			break
+		}
 	}
 	if count == 0 {
 		return map[string]any{}, true, nil
 	}
+	if count > maxEntries {
+		// Too large to keep whole. Keep a prefix: the array part when there
+		// is one, else the first entries in table order.
+		c.cut = true
+		if n := t.Len(); n > 0 {
+			sequence, maxIndex, count = true, min(n, int64(maxEntries)), int(min(n, int64(maxEntries)))
+		} else {
+			sequence = false
+		}
+	}
 	if sequence && int64(count) == maxIndex {
-		arr := make([]any, 0, count)
+		arr := make([]any, 0, min(count, maxEntries))
 		for i := int64(1); i <= maxIndex; i++ {
+			c.visit()
 			x, keep, err := c.value(t.Get(rt.IntValue(i)), depth)
 			if err != nil {
 				return nil, false, err
@@ -177,8 +224,9 @@ func (c *goConv) table(t *rt.Table, depth int) (any, bool, error) {
 		key string
 		val rt.Value
 	}
-	entries := make([]entry, 0, count)
-	for k, v, ok := t.Next(rt.NilValue); ok && !k.IsNil(); k, v, ok = t.Next(k) {
+	entries := make([]entry, 0, min(count, maxEntries))
+	for k, v, ok := t.Next(rt.NilValue); ok && !k.IsNil() && len(entries) < maxEntries; k, v, ok = t.Next(k) {
+		c.visit()
 		ks, err := keyString(k)
 		if err != nil {
 			return nil, false, err
@@ -247,7 +295,7 @@ type luaConv struct {
 }
 
 func (c *luaConv) str(s string) rt.Value {
-	c.t.RequireBytes(len(s))
+	c.t.RequireBytes(len(s) + stringHeaderBytes)
 	c.t.RequireCPU(uint64(len(s)/64) + 1)
 	return rt.StringValue(s)
 }
@@ -257,8 +305,14 @@ func (c *luaConv) newTable() *rt.Table {
 	return rt.NewTable()
 }
 
+// setRaw stores one entry, charging its real cost.
+func (c *luaConv) setRaw(t *rt.Table, k, v rt.Value) {
+	c.t.RequireBytes(entryExtraBytes)
+	c.t.SetTable(t, k, v)
+}
+
 func (c *luaConv) set(t *rt.Table, k string, v rt.Value) {
-	c.t.SetTable(t, c.str(k), v)
+	c.setRaw(t, c.str(k), v)
 }
 
 func number(f float64) rt.Value {
@@ -362,7 +416,7 @@ func (c *luaConv) elem(e any, depth int) rt.Value {
 }
 
 func (c *luaConv) setIndex(t *rt.Table, i int, v rt.Value) {
-	c.t.SetTable(t, rt.IntValue(int64(i+1)), v)
+	c.setRaw(t, rt.IntValue(int64(i+1)), v)
 }
 
 func uintValue(u uint64) rt.Value {

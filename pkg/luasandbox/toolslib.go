@@ -91,7 +91,7 @@ func (s *run) invokeTool(t *rt.Thread, c *rt.GoCont, fn string) (rt.Value, *Call
 		if !ok {
 			return rt.NilValue, nil, fmt.Errorf("%s: bad argument #2 (expected a table of named arguments, got %s)", fn, c.Arg(1).TypeName())
 		}
-		conv := newGoConv(s.lim.MaxCallResultBytes, false, s.null)
+		conv := newGoConv(s.lim.MaxCallResultBytes, false, s.null).charged(t)
 		x, err := conv.convert(rt.TableValue(tbl))
 		if err != nil {
 			return rt.NilValue, nil, fmt.Errorf("%s: arguments for %s: %v", fn, name, err)
@@ -183,8 +183,8 @@ func (s *run) hostCall(t *rt.Thread, tool string, call func(context.Context) (*C
 func (s *run) resultTable(t *rt.Thread, res *CallResult, ms int64) rt.Value {
 	conv := &luaConv{t: t, null: rt.UserDataValue(s.null)}
 	tbl := conv.newTable()
-	t.SetTable(tbl, conv.str("ok"), rt.BoolValue(res.OK))
-	t.SetTable(tbl, conv.str("ms"), rt.IntValue(ms))
+	conv.set(tbl, "ok", rt.BoolValue(res.OK))
+	conv.set(tbl, "ms", rt.IntValue(ms))
 
 	data, text, size, cut := s.prepareData(res.Data)
 	if data != nil {
@@ -195,8 +195,8 @@ func (s *run) resultTable(t *rt.Thread, res *CallResult, ms int64) rt.Value {
 	}
 	if cut || conv.cut {
 		s.trunc.CallResults = true
-		t.SetTable(tbl, conv.str("truncated"), rt.BoolValue(true))
-		t.SetTable(tbl, conv.str("bytes"), rt.IntValue(int64(size)))
+		conv.set(tbl, "truncated", rt.BoolValue(true))
+		conv.set(tbl, "bytes", rt.IntValue(int64(size)))
 	}
 	if !res.OK {
 		code, msg := errorParts(res)
@@ -207,7 +207,7 @@ func (s *run) resultTable(t *rt.Thread, res *CallResult, ms int64) rt.Value {
 			if res.Error.Suggestion != "" {
 				conv.set(e, "suggestion", conv.str(res.Error.Suggestion))
 			}
-			t.SetTable(e, conv.str("retryable"), rt.BoolValue(res.Error.Retryable))
+			conv.set(e, "retryable", rt.BoolValue(res.Error.Retryable))
 		}
 		conv.set(tbl, "error", rt.TableValue(e))
 	}

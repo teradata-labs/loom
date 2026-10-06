@@ -30,29 +30,49 @@ import (
 const (
 	// maxSyntaxDepth bounds brackets plus blocks open at once.
 	maxSyntaxDepth = 200
-	// maxExpressionTokens bounds tokens in one expression run (operator
-	// chains such as a..b..c or - - - x, and index/call chains a.b.c or
-	// f()()), which nest in the parse tree even without brackets.
+	// maxExpressionTokens bounds tokens in unfinished expressions across all
+	// open levels (operator chains such as a..b..c or - - - x, and
+	// index/call chains a.b.c or f()()), which nest in the parse tree even
+	// without brackets.
 	maxExpressionTokens = 2000
 )
 
 // checkSourceShape rejects sources whose nesting would make the parser or
-// compiler recurse beyond maxSyntaxDepth levels. It tokenizes iteratively and
-// never recurses. Lexical errors are left for the parser to report.
+// compiler recurse too deeply. It tokenizes iteratively and never recurses.
+// Lexical errors are left for the parser to report.
+//
+// Recursion depth grows with open brackets and blocks and with the length of
+// each unfinished expression in every open level, so the guard bounds the
+// number of open levels and the total of unfinished-expression tokens across
+// all of them (bounding each level separately would let the limits multiply).
 func checkSourceShape(chunk, src string) error {
 	sc := scanner.New(chunk, []byte(src))
-	// runs[i] counts tokens since the last expression boundary at depth i.
+	// runs[i] counts tokens since the last expression boundary at depth i;
+	// open is their sum, the work the parser holds on its stack.
 	runs := make([]int, 1, 16)
+	open := 0
 	prevEndsOperand := false
+	bump := func() {
+		runs[len(runs)-1]++
+		open++
+	}
+	reset := func() {
+		open -= runs[len(runs)-1]
+		runs[len(runs)-1] = 0
+	}
 	for {
 		tok := sc.Scan()
 		if tok == nil || tok.Type == token.EOF || tok.Type == token.INVALID || tok.Type == token.UNFINISHED {
 			return nil
 		}
-		top := len(runs) - 1
 		switch {
 		case opensFrame(tok.Type):
-			runs[top]++
+			// if/do/repeat always start a statement, and so does function
+			// right after a complete one; they end the run before them.
+			if startsStatement(tok.Type) || (tok.Type == token.KwFunction && prevEndsOperand) {
+				reset()
+			}
+			bump()
 			if len(runs) > maxSyntaxDepth {
 				return fmt.Errorf("%s:%d: too many syntax levels (more than %d nested brackets or blocks); flatten the code", chunk, tok.Line, maxSyntaxDepth)
 			}
@@ -60,13 +80,13 @@ func checkSourceShape(chunk, src string) error {
 			prevEndsOperand = false
 		case closesFrame(tok.Type):
 			if len(runs) > 1 {
-				runs = runs[:top]
+				reset()
+				runs = runs[:len(runs)-1]
 			}
-			top = len(runs) - 1
-			runs[top]++
+			bump()
 			prevEndsOperand = tok.Type != token.KwUntil
 		case resetsRun(tok.Type):
-			runs[top] = 0
+			reset()
 			prevEndsOperand = false
 			continue
 		default:
@@ -74,17 +94,26 @@ func checkSourceShape(chunk, src string) error {
 			// statement ("f(x) g(y)", "a = 1 b = 2"); Lua has no other way
 			// for two operands to be adjacent.
 			if tok.Type == token.IDENT && prevEndsOperand {
-				runs[top] = 0
+				reset()
 			}
-			runs[top]++
+			bump()
 			prevEndsOperand = endsOperand(tok.Type)
 		}
 		// Brackets count too: f()()() and a[1][2][3] nest without opening
 		// a level that stays open.
-		if runs[len(runs)-1] > maxExpressionTokens {
-			return fmt.Errorf("%s:%d: expression too long (more than %d tokens without a break); split it into several statements or use table.concat", chunk, tok.Line, maxExpressionTokens)
+		if open > maxExpressionTokens {
+			return fmt.Errorf("%s:%d: expression nesting too deep (more than %d unfinished tokens); split it into several statements or use table.concat", chunk, tok.Line, maxExpressionTokens)
 		}
 	}
+}
+
+// startsStatement reports keywords that can only begin a statement.
+func startsStatement(tp token.Type) bool {
+	switch tp {
+	case token.KwIf, token.KwDo, token.KwRepeat:
+		return true
+	}
+	return false
 }
 
 func opensFrame(tp token.Type) bool {

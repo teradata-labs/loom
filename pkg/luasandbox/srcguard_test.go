@@ -69,7 +69,7 @@ func TestSourceGuardRejectsDeepNesting(t *testing.T) {
 			src := nestedSource(kind, 2500)
 			err := checkSourceShape("inline", src)
 			require.Error(t, err)
-			assert.Regexp(t, `too many syntax levels|expression too long`, err.Error())
+			assert.Regexp(t, `too many syntax levels|expression nesting too deep`, err.Error())
 
 			lim := MaxLimits()
 			big := nestedSource(kind, 300000)

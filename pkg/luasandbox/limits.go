@@ -54,9 +54,12 @@ type Limits struct {
 // DefaultLimits returns the limits used for any field a host leaves at zero.
 func DefaultLimits() Limits {
 	return Limits{
-		Wall:               120 * time.Second,
-		CPUTicks:           2_000_000_000,
-		MemoryBytes:        256 << 20,
+		Wall:     120 * time.Second,
+		CPUTicks: 2_000_000_000,
+		// golua undercharges small tables up to about 10x (see
+		// PeakMemoryOverhead), so 64 MiB of budget can mean ~700 MB of
+		// real memory for a hostile script.
+		MemoryBytes:        64 << 20,
 		MaxToolCalls:       100,
 		ToolCallTimeout:    60 * time.Second,
 		MaxCallResultBytes: 1 << 20,
@@ -73,7 +76,7 @@ func MaxLimits() Limits {
 	return Limits{
 		Wall:               600 * time.Second,
 		CPUTicks:           10_000_000_000,
-		MemoryBytes:        1 << 30,
+		MemoryBytes:        256 << 20,
 		MaxToolCalls:       1000,
 		ToolCallTimeout:    300 * time.Second,
 		MaxCallResultBytes: 8 << 20,

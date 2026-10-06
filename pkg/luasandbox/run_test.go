@@ -97,7 +97,7 @@ func TestRunScriptErrors(t *testing.T) {
 func TestRunRefusesBadInputs(t *testing.T) {
 	t.Run("nil host", func(t *testing.T) {
 		res := Run(context.Background(), Program{Source: "return 1"}, small(), nil)
-		assert.Equal(t, OutcomeHostError, res.Outcome)
+		assert.Equal(t, OutcomeEngineError, res.Outcome)
 		assert.NotEmpty(t, res.Detail)
 	})
 	t.Run("cancelled before start", func(t *testing.T) {
@@ -159,7 +159,7 @@ func TestRunUsageAndWall(t *testing.T) {
 	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
 	assert.Equal(t, int64(5000050000), res.Value)
 	assert.Greater(t, res.Used.CPUTicks, uint64(100000))
-	assert.Less(t, res.Used.WallMillis, uint64(slack(time.Second).Milliseconds()))
+	assert.Less(t, res.Used.WallMillis, slack(time.Second).Milliseconds())
 }
 
 func TestRunIsolatesRuns(t *testing.T) {
