@@ -1762,7 +1762,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// run_lua wiring (tools.lua, off by default): one policy and one run gate
 	// for the whole server, sized from the process memory limit. A malformed
 	// tool pattern aborts startup, like a malformed hook binding.
-	luaRT, err := newLuaRuntime(config.Tools.Lua, luasandbox.ProcessMemoryLimit())
+	luaRT, err := newLuaRuntime(config.Tools.Lua, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir())
 	if err != nil {
 		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
 	}
@@ -1770,7 +1770,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Lua scripts enabled (run_lua)",
 			zap.Int("run_slots", luaRT.slots),
 			zap.Int("runs_per_agent", luaRT.perKey),
-			zap.Uint64("memory_bytes_per_run", luaRT.runMem))
+			zap.Uint64("memory_bytes_per_run", luaRT.runMem),
+			zap.Bool("save_enabled", luaRT.scripts.SaveEnabled),
+			zap.Bool("publish_as_tool_enabled", luaRT.scripts.PublishEnabled))
+		for _, loadErr := range luaRT.store.LoadErrors() {
+			logger.Warn("Skipped a saved Lua script that could not be loaded", zap.Error(loadErr))
+		}
 	}
 
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
@@ -1807,6 +1812,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		RunLuaTool:        luaRT.registryOptions(),
+		LuaScripts:        luaRT.scriptsRegistryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 	})
 	if err != nil {
@@ -2683,6 +2689,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	if uiRegistry.Count() > 0 {
 		loomService.SetAppProvider(uiRegistry)
 		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Saved Lua scripts over RPC (ListLuaScripts/GetLuaScript/SaveLuaScript/
+	// DeleteLuaScript); left unset, they return FailedPrecondition.
+	if luaRT != nil {
+		loomService.SetLuaScriptStore(luaRT.store)
 	}
 
 	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)

@@ -2004,6 +2004,10 @@ tools:
   #     allow: []                   # empty = every tool the model can see
   #     deny: [shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
   #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
+  #   scripts_dir: ""               # default <LOOM_DATA_DIR>/lua_scripts
+  #   scripts:
+  #     save_enabled: true          # agents listing manage_lua_scripts may save scripts
+  #     publish_as_tool_enabled: false  # allow publishing a script as a lua_<name> tool
 
 logging:
   level: info  # debug, info, warn, error
