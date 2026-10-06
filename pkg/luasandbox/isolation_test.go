@@ -108,12 +108,12 @@ func TestConcurrentRunsShareNothing(t *testing.T) {
 func TestForbiddenAPIs(t *testing.T) {
 	forbiddenCalls := []string{"SetStopLevel", "KillContext"}
 	forbiddenImports := []string{
-		"github.com/arnodel/golua/lib/coroutine",
-		"github.com/arnodel/golua/lib/iolib",
-		"github.com/arnodel/golua/lib/oslib",
-		"github.com/arnodel/golua/lib/debuglib",
-		"github.com/arnodel/golua/lib/golib",
-		"github.com/arnodel/golua/lib/runtimelib",
+		"github.com/teradata-labs/loom/third_party/golua/lib/coroutine",
+		"github.com/teradata-labs/loom/third_party/golua/lib/iolib",
+		"github.com/teradata-labs/loom/third_party/golua/lib/oslib",
+		"github.com/teradata-labs/loom/third_party/golua/lib/debuglib",
+		"github.com/teradata-labs/loom/third_party/golua/lib/golib",
+		"github.com/teradata-labs/loom/third_party/golua/lib/runtimelib",
 	}
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestForbiddenAPIs(t *testing.T) {
 		for _, imp := range file.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
 			assert.NotContains(t, forbiddenImports, path, "%s imports %s", f, path)
-			if path == "github.com/arnodel/golua/lib" {
+			if path == "github.com/teradata-labs/loom/third_party/golua/lib" {
 				// LoadAll would pull in every library.
 				assert.NotContains(t, string(src), "lib.LoadAll", "%s calls lib.LoadAll", f)
 			}

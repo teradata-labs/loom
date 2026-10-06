@@ -119,14 +119,15 @@ func TestDeriveCapacity(t *testing.T) {
 		slots    int
 		runBytes uint64
 	}{
-		{"4 GiB pod, 16 MiB runs", 4 * gib, 16 * mib, 8, 16 * mib},
-		{"4 GiB pod, 32 MiB runs", 4 * gib, 32 * mib, 4, 32 * mib},
-		{"4 GiB pod, 64 MiB runs", 4 * gib, 64 * mib, 2, 64 * mib},
-		{"4 GiB pod lowers a 256 MiB budget", 4 * gib, 256 * mib, 2, 68 * mib},
-		{"1 GiB pod lowers the per-run budget", gib, 64 * mib, 2, 17 * mib},
-		{"huge pod is capped", 256 * gib, 16 * mib, MaxSlots, 16 * mib},
+		{"4 GiB pod, 32 MiB runs", 4 * gib, 32 * mib, MaxSlots, 32 * mib},
+		{"4 GiB pod, 64 MiB runs", 4 * gib, 64 * mib, 8, 64 * mib},
+		{"4 GiB pod, 128 MiB runs", 4 * gib, 128 * mib, 4, 128 * mib},
+		{"4 GiB pod, 256 MiB runs", 4 * gib, 256 * mib, 2, 256 * mib},
+		{"1 GiB pod, 64 MiB runs", gib, 64 * mib, 2, 64 * mib},
+		{"1 GiB pod lowers a 128 MiB budget", gib, 128 * mib, 2, 68 * mib},
+		{"huge pod is capped", 256 * gib, 64 * mib, MaxSlots, 64 * mib},
 		{"tiny pod keeps a floor", 64 * mib, 256 * mib, 2, minDerivedMemory},
-		{"zero per-run uses the default", 4 * gib, 0, 2, DefaultLimits().MemoryBytes},
+		{"zero per-run uses the default", 4 * gib, 0, 4, DefaultLimits().MemoryBytes},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

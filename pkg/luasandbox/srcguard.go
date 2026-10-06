@@ -17,8 +17,8 @@ package luasandbox
 import (
 	"fmt"
 
-	"github.com/arnodel/golua/scanner"
-	"github.com/arnodel/golua/token"
+	"github.com/teradata-labs/loom/third_party/golua/scanner"
+	"github.com/teradata-labs/loom/third_party/golua/token"
 )
 
 // The interpreter's parser and compiler recurse once per nesting level with no

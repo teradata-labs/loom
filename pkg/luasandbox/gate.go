@@ -82,13 +82,12 @@ func (g *Gate) Stats() (inUse, maxTotal, maxPerKey int) {
 // Capacity derivation constants.
 const (
 	// PeakMemoryOverhead is the worst measured ratio of a budget-killed run's
-	// peak resident memory to its memory budget, rounded up. golua charges a
-	// table entry 16 bytes and an empty table nothing, while Go spends about
-	// 56 bytes per hash slot plus doubling growth; a script building tables
-	// of tables reached 10.5x (675 MB resident for a 64 MiB budget). Values
-	// this package creates are charged their real cost (1.4x to 2.1x
-	// measured). GOMEMLIMIT does not lower any of it.
-	PeakMemoryOverhead = 12.0
+	// peak resident memory to its memory budget, rounded up. With the
+	// vendored golua charging tables what they allocate, tables measure 0.8x
+	// to 1.25x; the remaining gap is strings (headers are not charged, 2.3x)
+	// and closures (2.7x), plus growth by doubling in string buffers.
+	// GOMEMLIMIT does not lower any of it.
+	PeakMemoryOverhead = 3.0
 	// ScriptMemoryShare is the fraction of process memory concurrent runs may
 	// use in the worst case.
 	ScriptMemoryShare = 0.4

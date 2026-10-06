@@ -109,15 +109,32 @@ func TestCallerDeadlineIsCancellation(t *testing.T) {
 	assert.Equal(t, OutcomeCancelled, res.Outcome, res.Error)
 }
 
-func TestPureComputeCancellationIsBoundedByCPU(t *testing.T) {
-	// Documented limit: a script that never calls the host notices
-	// cancellation only through its CPU or wall budget.
+func TestPureComputeCancellationIsImmediate(t *testing.T) {
+	// A script that never calls the host is stopped by the interpreter's
+	// interrupt as soon as the caller cancels, not by its CPU budget.
 	ctx, cancel := context.WithCancel(context.Background())
 	lim := small()
-	lim.CPUTicks = 20_000_000
-	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
-	res := Run(ctx, Program{Source: `while true do end`}, lim, newFakeHost())
-	assert.Contains(t, []Outcome{OutcomeBudgetExceeded, OutcomeCancelled}, res.Outcome)
+	lim.CPUTicks, lim.Wall = 1<<40, 20*time.Second
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res := Run(ctx, Program{Source: `
+		local function spin() while true do end end
+		pcall(function() pcall(spin) print("level 2 returned") spin() end)
+		print("level 1 returned")
+		spin()`}, lim, newFakeHost())
+	assert.Equal(t, OutcomeCancelled, res.Outcome, res.Error)
+	assert.Empty(t, res.Output, "no enclosing level runs after the interrupt")
+	assert.Less(t, time.Since(start), slack(200*time.Millisecond))
+}
+
+func TestPureComputeWallBudgetIsExact(t *testing.T) {
+	lim := small()
+	lim.CPUTicks, lim.Wall = 1<<40, 150*time.Millisecond
+	start := time.Now()
+	res := Run(context.Background(), Program{Source: `while true do end`}, lim, newFakeHost())
+	assert.Equal(t, OutcomeBudgetExceeded, res.Outcome, res.Error)
+	assert.Equal(t, LimitWall, res.Limit)
+	assert.Less(t, time.Since(start), slack(400*time.Millisecond))
 }
 
 func TestPcallStillCatchesOrdinaryErrors(t *testing.T) {

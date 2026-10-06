@@ -60,7 +60,7 @@ func TestPureLibrariesWorkUnderLimits(t *testing.T) {
 		math.randomseed(1) out[#out+1] = math.random(1, 1)
 		out[#out+1] = utf8.len("héllo") .. utf8.char(72, 105)
 		out[#out+1] = tostring(rawequal(t, t)) .. rawlen(t) .. type(next({}))
-		local mt = setmetatable({}, {__index = {hey = "hey!"}})
+		local mt = setmetatable({}, {__index = function(_, k) return k .. "!" end})
 		out[#out+1] = mt.hey .. tostring(getmetatable(mt) ~= nil)
 		out[#out+1] = tonumber("0x10") + tonumber("7")
 		return table.concat(out, " ")`, nil)

@@ -24,8 +24,12 @@
 //
 //   - Run never panics and never runs without limits. Zero limit fields take the
 //     package defaults and every field is capped at MaxLimits.
-//   - Run executes on the caller's goroutine. The package starts no goroutine
-//     that touches the interpreter, so nothing outlives Run.
+//   - Run executes on the caller's goroutine. The only other goroutine is a
+//     context.AfterFunc that sets the interpreter's interrupt flag when the
+//     run's context ends; it never touches the interpreter, and Run stops it
+//     before returning.
+//   - Cancellation stops the script at its next interpreter step, even when
+//     it only computes.
 //   - A script cannot catch the end of its own run. Budget kills, cancellation
 //     and host failures pass through every pcall/xpcall level.
 //   - Every value a host function creates is charged to the run's memory
@@ -35,21 +39,13 @@
 //
 // # Known limits
 //
-//   - Cancellation is observed at the next host call or pcall return. A script
-//     that only computes is stopped by its CPU or wall budget instead, so the
-//     worst-case cancellation latency for pure computation is the remaining
-//     CPU budget (10 to 40 seconds at the defaults, depending on the code).
-//   - The memory budget counts what golua charges, which is total allocation
-//     (garbage collection does not credit it back) and undercounts small
-//     tables: measured peak process memory reached 10.5 times the budget for
-//     a script building tables of tables. DeriveCapacity plans for 12 times.
-//   - Metamethods the VM calls directly (__index and __newindex functions,
-//     operators, comparisons, __len, __concat, __close) are not available:
-//     golua recurses on the Go stack for them with no depth limit, and a Go
-//     stack overflow aborts the process. __index and __newindex may be
-//     tables.
+//   - The memory budget counts total allocation (garbage collection does not
+//     credit it back). Measured peak process memory reaches up to 2.7 times
+//     the budget for scripts holding many small strings or closures, whose
+//     headers golua does not charge; DeriveCapacity plans for 3 times.
 //
-// The interpreter is github.com/arnodel/golua. Its types never appear in this
-// package's exported API, so the interpreter can be replaced here without
-// touching any host.
+// The interpreter is github.com/arnodel/golua v0.3.0 with six fixes, vendored
+// in third_party/golua (see its README; each fix is proposed upstream). Its
+// types never appear in this package's exported API, so the interpreter can
+// be replaced here without touching any host.
 package luasandbox

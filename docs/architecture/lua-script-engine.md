@@ -1,6 +1,7 @@
 # Lua Script Engine (`pkg/luasandbox`)
 
-**Status**: ✅ engine implemented with tests (`pkg/luasandbox`). 📋 Planned: the agent
+**Status**: ✅ engine implemented with tests (`pkg/luasandbox`), on a vendored, patched
+golua (`third_party/golua`). 📋 Planned: the agent
 bridge and a builtin tool that runs scripts (next PR; tool name not final), saved scripts
 and script-backed tools (the PR after). Everything is off by default and nothing registers a tool yet.
 
@@ -15,7 +16,8 @@ several) with control flow added.
 
 The engine is a thin, defensive layer over the pure-Go interpreter
 [`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.4,
-Apache-2.0). Its job is to make an untrusted script safe to run in a shared process:
+Apache-2.0), vendored in `third_party/golua` with six fixes that are proposed upstream
+(see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
 bounded in time, CPU, memory and tool calls, unable to crash or block the host, and
 unable to escape through the Lua standard library.
 
@@ -147,19 +149,16 @@ offers a hard per-run memory limit. Its quota API is labelled alpha, so the engi
 pins the version, keeps golua imports inside this package, and turns every measured
 behaviour it relies on into a regression test.
 
-### Cancellation without Go-context support
+### Cancellation
 
 golua has no `context.Context` integration, and its stop API (`SetStopLevel`,
-`KillContext`) panicked and wedged a probe when called from a host function. The engine
-uses two mechanisms only:
-
-1. golua hard limits bound pure computation (`Millis` = time until the run deadline,
-   `Cpu`, `Memory`).
-2. Every host function checks `ctx.Err()` on entry and after any blocking work, and calls
-   `TerminateContext` on the VM goroutine. The re-raising `pcall` carries it to the root.
-
-There is no watcher goroutine. Cancellation is seen at the next host call or `pcall`
-return; a script that only computes is stopped by its CPU or wall budget instead.
+`KillContext`) is unusable from another goroutine. The vendored golua adds an
+`Interrupt` (upstream PR #133): a flag any goroutine may set, checked on every CPU
+charge of the context it is installed in. The engine installs one in the run's root
+context and arms it with `context.AfterFunc(runCtx, ...)`, whose goroutine only sets the
+flag. A script is therefore stopped at its next interpreter step when the caller cancels,
+even if it only computes. Host functions also check `ctx.Err()` on entry and after any
+blocking work, so a cancelled run never starts another tool call.
 
 ### Source shape guard
 
@@ -177,42 +176,37 @@ scanner before parsing and rejects:
 
 ### Race-free runtime setup
 
-golua's `base.Load` marks package-level function values (`next`, the `ipairs` iterator)
-every time a runtime is created. Two runs starting at once, or one starting while another
-iterates a table, is a data race (found by `TestConcurrentRunsShareNothing` under
-`-race`). The engine loads the base library once into a template runtime and copies an
-allowlist of its function values into each run; the values receive their runtime as an
-argument, so sharing them is safe once nothing writes to them. The `package` library is
-not loaded at all; `string`, `table`, `math` and `utf8` are loaded per runtime because
-their loaders create fresh function values and keep their state in the runtime.
+Upstream golua's `base.Load` marked package-level function values (`next`, the `ipairs`
+iterator) every time a runtime was created: a data race whenever two runs start at once,
+or one starts while another iterates a table (found by `TestConcurrentRunsShareNothing`
+under `-race`). The vendored golua declares them once at init (upstream PR #131), so the
+engine loads the base library per run. The `package` library is not loaded; `string`,
+`table`, `math` and `utf8` are loaded per run.
 
-### Metamethods the VM calls directly are not available
+### Vendored interpreter
 
-golua calls some metamethods straight from the VM (`__index` and `__newindex` when they are
-functions, arithmetic and bitwise operators, `__concat`, `__len`, `__eq`, `__lt`, `__le`,
-`__close`). Each such call runs a nested interpreter loop on the Go stack, and none of
-golua's depth limits count it: its 1000-level guard counts only Go library functions. A
-metamethod that triggers its own event recurses until the Go stack passes 1 GiB, and Go
-aborts the whole process. Measured: ten one-line scripts, one per event, each crashed the
-process within a second under the default 256 MiB budget, because memory charges grew
-slower than the stack.
+Building and attacking the engine (an independent adversarial review, every finding
+reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
+cannot fix safely from outside. They are fixed in `third_party/golua` and proposed
+upstream; when upstream releases them, the directory can be replaced by the module again.
 
-The engine therefore replaces `setmetatable` and `getmetatable`. Those events may not be
-functions (`__index` and `__newindex` may be tables, whose chains golua bounds at 100
-links). The installed metatable is a copy, and `getmetatable` returns a copy, so a script
-cannot add a forbidden metamethod after the check. Metamethods reached through a Go
-library function (`__tostring` via `tostring`, `__pairs` via `pairs`, `__call`, `__gc`)
-pass golua's guard and stay available. Prototype objects (`Class.__index = Class`) work
-unchanged.
+| Defect in v0.3.0 (measured) | Fix | Upstream PR |
+|---|---|---|
+| A metamethod the VM calls directly (`__index`/`__newindex` functions, operators, comparisons, `__len`, `__concat`, `__close`) runs in a nested interpreter loop that no depth limit counted; ten one-line self-triggering scripts each aborted the process at 1 GB of Go stack | nested loops limited to 1000, a catchable "stack overflow" (under 8 MiB of stack at the limit) | [#132](https://github.com/arnodel/golua/pull/132) |
+| Tables charged 8% to 29% of what they allocate; real memory reached 10.5 times the budget | tables charged what they allocate (91% to 100% of Go's own count) | [#135](https://github.com/arnodel/golua/pull/135) |
+| No way to stop a running script from another goroutine | `Interrupt`; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133) |
+| `base.Load` data race between concurrent runtimes | compliance declared once, at init | [#131](https://github.com/arnodel/golua/pull/131) |
+| Parser and compiler recursion unbounded | 400 syntax levels, matching the reference suite's limits test | [#134](https://github.com/arnodel/golua/pull/134) |
+| `string.format("%p")` without an argument panicked | returns an error | [#130](https://github.com/arnodel/golua/pull/130) |
 
-A patched interpreter that counts nested VM loops would lift this restriction.
+Before the fixes were in place the engine carried workarounds: function-valued
+VM metamethods were refused, capacity planning assumed 12 times the budget, and
+cancellation of pure computation waited for the CPU budget. All three are gone.
 
 ### Memory accounting at the boundary
 
-golua charges values the VM creates, but not values Go code creates, and it undercharges
-small tables: 16 bytes per entry and nothing for an empty table, where Go spends about 56
-bytes per hash slot plus doubling growth. Every string and table the engine hands to a
-script (`args`, tool results, decoded JSON, schemas, metatable copies) is charged its
+golua charges values the VM creates, but not values Go code creates. Every string and
+table the engine hands to a script (`args`, tool results, decoded JSON, schemas, metatable copies) is charged its
 real cost first (string length plus header, table overhead, per-entry cost). A nested
 call's result above `MaxCallResultBytes` is truncated before conversion (text keeps head
 and tail; structured data becomes a summary with a JSON preview). Converting Lua values to
@@ -238,57 +232,50 @@ Go stops at the first entry that cannot fit and charges CPU per entry visited, s
 | Forbidden golua APIs and libraries never used | `TestForbiddenAPIs` |
 | golua limit messages the classifier depends on | `TestGoluaLimitMessagesArePinned` |
 | Arbitrary source never panics, hangs or yields an unknown outcome | `FuzzRun` (2.7 million executions in 60 s, no failure; the corpus includes the metamethod-recursion class) |
-| Metamethod recursion cannot overflow the Go stack | `TestMetamethodRecursionCannotCrashTheProcess` (each script crashed the process before the restriction) |
-| Allowed metatable patterns (prototypes, table chains, `__tostring`, `__call`, `__pairs`) work; metatables cannot be changed after the check | `TestAllowedMetatablePatterns`, `TestMetatablesAreCopied`, `TestMetamethodRules` |
-| Interpreter panics end the run as `engine_error`, not `host_error` | `TestInterpreterPanicsAreEngineErrors` |
+| Metamethod recursion is a catchable error, not a process crash | `TestMetamethodRecursionIsACatchableError` (each script aborted the process on upstream v0.3.0) |
+| Metamethods of every kind work | `TestMetamethodsWork` |
+| Cancellation stops pure computation immediately, through nested `pcall` | `TestPureComputeCancellationIsImmediate` |
+| Internal panics end the run as `engine_error`, not `host_error` | `TestInternalPanicsAreEngineErrors`, `TestFormatPWithoutArgumentIsAnError` |
 | Error text is bounded and carries no heap addresses | `TestErrorTextIsBounded` |
 | Converting a huge table fails fast | `TestConversionIsBoundedBeforeAllocating` |
 | Nesting limits cannot multiply across levels; long flat scripts pass | `TestSourceGuardBoundsTotalNesting`, `TestSourceGuardAllowsLongFlatScripts` |
 
 ## Measured Behaviour
 
-Apple M-series, `CGO_ENABLED=0`, golua v0.3.0 (probes on Go 1.25.3, tests on Go 1.26.5):
+Apple M-series, `CGO_ENABLED=0`, vendored golua (probes on Go 1.25.3, tests on Go 1.26.5):
 
 | Measurement | Value |
 |---|---|
 | Runtime creation | about 45 µs |
-| CPU ticks per second of plain Lua | about 2×10⁸ |
-| Peak process memory of a budget-killed run, values the engine creates | 1.4× to 2.1× the budget |
-| Peak process memory of a budget-killed run, values the VM creates | 3× (arrays) to 10.5× (tables of tables) the budget; growth by doubling and golua's per-entry undercharge; `GOMEMLIMIT` does not lower it |
-| Go-function nesting (pcall, `gsub` and `sort` callbacks) | capped by golua at 1000 levels ("stack overflow" Lua error) |
-| CPU budget as time | about 10 s for arithmetic loops, about 36 s for call-heavy loops, at the default 2×10⁹ ticks |
+| CPU ticks per second of plain Lua | about 2×10⁸ (call-heavy code about 6×10⁷) |
+| Peak process memory of a budget-killed run, tables | 0.8× to 1.25× the budget |
+| Peak process memory of a budget-killed run, small strings and closures | 2.0× to 2.7× the budget (golua does not charge string headers or the full closure size) |
+| Go-function and nested-loop nesting | capped at 1000 levels ("stack overflow" Lua error) |
 
-`DeriveCapacity` plans for 12× (the worst measured ratio, rounded up): concurrent runs at
+`DeriveCapacity` plans for 3× (the worst measured ratio, rounded up): concurrent runs at
 their worst-case peak may use at most 40% of the process memory limit. The default
-per-run budget is 64 MiB (about 770 MB worst case).
+per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 
 ## Known Limitations
 
-- **Cancellation of pure computation** waits for the CPU or wall budget (10 to 40 seconds
-  of CPU at the defaults). Fixing this needs an interrupt hook in golua.
-- **Memory is total allocation, and golua undercounts tables.** Garbage collection does
-  not credit the budget, and a script building many small tables holds up to about 10×
-  its budget in real memory. Capacity planning uses 12×.
-- **No function-valued VM metamethods** (see above).
+- **Memory is total allocation.** Garbage collection does not credit the budget, and
+  small strings and closures hold up to about 2.7× their charge in real memory. Capacity
+  planning uses 3×.
 - **No coroutines.** golua runs each coroutine on its own goroutine and suspended ones
-  survive `Runtime.Close`, so the library is not loaded.
+  survive `Runtime.Close`, so the library is not loaded. (Upstream golua's coroutine
+  tests also report data races under `-race`; the engine never reaches that code.)
 - **Lua 5.4 only, golua dialect.** `error` inside `pcall` prefixes a position where
   reference Lua does not; numbers are not coerced to strings for tool names.
 - **JSON nulls.** Object fields that are null are dropped; null array elements become
   `json.null` so positions survive. An empty table encodes as `{}`.
 
-## Upstream Issues Worth Reporting to golua
+## Upstream Status
 
-1. `base.Load` writes package-level `GoFunction` safety flags on every runtime: a data
-   race for any program that creates runtimes concurrently.
-2. The parser and compiler recurse without a depth limit; deeply nested source can
-   exhaust the Go stack.
-3. There is no way to interrupt a running VM from another goroutine.
-4. Metamethods called from the VM run nested interpreter loops that no depth limit
-   counts; self-triggering metamethods abort the process.
-5. Table memory is undercharged (16 bytes per entry, nothing per table), so the memory
-   limit admits about 10× its value in real memory.
-6. `string.format("%p")` without an argument panics (index out of range).
+The six fixes above are open as upstream PRs #130 to #135 from the `ilsiepotamus/golua`
+fork. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
+immediately, raising the termination from the current context, so a `pcall` swallows it
+and the stopped context is left killed and current. The engine does not use
+`SetStopLevel`. Upstream's coroutine data races (above) are also not addressed.
 
 ## Related Work
 

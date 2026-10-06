@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	rt "github.com/arnodel/golua/runtime"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
 type hostImpl func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error)
@@ -85,10 +85,24 @@ func (s *run) checkCancel(t *rt.Thread) error {
 	if s.ctx.Err() == nil {
 		return nil
 	}
+	outcome, limit, msg := s.endReason()
+	return s.terminate(t, outcome, limit, msg)
+}
+
+// endReason classifies a run whose context has ended: cancelled when the
+// caller cancelled it or its deadline came first, else the wall budget.
+func (s *run) endReason() (Outcome, string, string) {
 	if s.parent.Err() != nil || s.parentDeadlineBinds {
-		return s.terminate(t, OutcomeCancelled, "", s.cancelMessage())
+		return OutcomeCancelled, "", s.cancelMessage()
 	}
-	return s.terminate(t, OutcomeBudgetExceeded, LimitWall, fmt.Sprintf("wall time limit of %v exceeded", s.lim.Wall))
+	return OutcomeBudgetExceeded, LimitWall, fmt.Sprintf("wall time limit of %v exceeded", s.lim.Wall)
+}
+
+// cancelReason is the interrupt message. It runs on the AfterFunc goroutine
+// and reads only the contexts, which are safe for concurrent use.
+func (s *run) cancelReason() string {
+	_, _, msg := s.endReason()
+	return msg
 }
 
 func (s *run) cancelMessage() string {

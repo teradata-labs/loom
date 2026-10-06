@@ -21,56 +21,24 @@ import (
 	"io"
 	"math"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/arnodel/golua/lib/base"
-	"github.com/arnodel/golua/lib/mathlib"
-	"github.com/arnodel/golua/lib/packagelib"
-	"github.com/arnodel/golua/lib/stringlib"
-	"github.com/arnodel/golua/lib/tablelib"
-	"github.com/arnodel/golua/lib/utf8lib"
-	rt "github.com/arnodel/golua/runtime"
+	"github.com/teradata-labs/loom/third_party/golua/lib/base"
+	"github.com/teradata-labs/loom/third_party/golua/lib/mathlib"
+	"github.com/teradata-labs/loom/third_party/golua/lib/packagelib"
+	"github.com/teradata-labs/loom/third_party/golua/lib/stringlib"
+	"github.com/teradata-labs/loom/third_party/golua/lib/tablelib"
+	"github.com/teradata-labs/loom/third_party/golua/lib/utf8lib"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
-// baseGlobals are the base-library functions a script gets. pcall and xpcall
-// are replaced (pcall.go), and so are setmetatable and getmetatable (below). Left out on purpose: load, dofile, loadfile
-// (loading code and files), collectgarbage (steering the collector) and warn.
-var baseGlobals = []string{
-	"_VERSION", "assert", "error", "ipairs", "next", "pairs",
-	"print", "rawequal", "rawget", "rawlen", "rawset", "select",
-	"tonumber", "tostring", "type",
-}
+// removedGlobals are loaded with golua's base library but give a script ways
+// to load code, read files or steer the collector.
+var removedGlobals = []string{"collectgarbage", "dofile", "load", "loadfile", "loadstring", "warn"}
 
 // libraries are loaded fresh into every runtime: their loaders create new
 // function values each time and keep their state in the runtime.
 var libraries = []packagelib.Loader{stringlib.LibLoader, tablelib.LibLoader, mathlib.LibLoader, utf8lib.LibLoader}
-
-var (
-	baseOnce   sync.Once
-	baseValues map[string]rt.Value
-)
-
-// sharedBase loads golua's base library once and returns its functions.
-//
-// base.Load marks package-level function values shared by every runtime
-// (next, the ipairs iterator) each time it runs. Loading it per runtime is a
-// data race whenever two runs start at once, or one starts while another
-// iterates a table. Loading it once, then copying the function values into
-// each runtime, writes those flags exactly once. The values are safe to share:
-// each receives its thread, and so its runtime, as an argument.
-func sharedBase() map[string]rt.Value {
-	baseOnce.Do(func() {
-		tmpl := rt.New(io.Discard)
-		_, _ = base.Load(tmpl)
-		env := tmpl.GlobalEnv()
-		baseValues = make(map[string]rt.Value, len(baseGlobals))
-		for _, name := range baseGlobals {
-			baseValues[name] = env.Get(rt.StringValue(name))
-		}
-	})
-	return baseValues
-}
 
 // newRuntime builds a fresh interpreter for one run. Only pure libraries are
 // present: base, string, table, math and utf8. coroutine is never loaded
@@ -81,10 +49,12 @@ func (s *run) newRuntime() (*rt.Runtime, func()) {
 	r := rt.New(s.out)
 	r.SetWarner(warner{s.out})
 	env := r.GlobalEnv()
-	for name, v := range sharedBase() {
-		r.SetEnv(env, name, v)
+	// Safe to load per runtime: the vendored golua declares the shared
+	// iterator functions' compliance once, at init (upstream PR #131).
+	_, _ = base.Load(r)
+	for _, name := range removedGlobals {
+		r.SetEnv(env, name, rt.NilValue)
 	}
-	r.SetEnv(env, "_G", rt.TableValue(env))
 	var cleanups []func()
 	for _, l := range libraries {
 		pkg, cleanup := l.Load(r)
@@ -112,8 +82,6 @@ func (s *run) installGlobals() {
 
 	s.register(env, "pcall", 1, true, s.pcall)
 	s.register(env, "xpcall", 2, true, s.xpcall)
-	s.register(env, "setmetatable", 2, false, s.setmetatable)
-	s.register(env, "getmetatable", 1, false, s.getmetatable)
 	r.SetEnv(env, "log", env.Get(rt.StringValue("print")))
 
 	s.installTools(env)
@@ -137,84 +105,6 @@ func (s *run) installGlobals() {
 	s.register(timeTbl, "unix", 0, false, s.timeUnix)
 	s.register(timeTbl, "sleep", 1, false, s.timeSleep)
 	r.SetEnv(env, "time", rt.TableValue(timeTbl))
-}
-
-// golua calls these metamethods straight from the VM on a nested Go-stack
-// loop that none of its depth limits count. A function-valued one that
-// triggers its own event (an __index function reading the same missing key,
-// an __eq function comparing its arguments) recurses until the Go stack
-// overflows, which aborts the whole process (measured: 1 GB of stack, fatal,
-// for each event below). Scripts may set __index and __newindex only to
-// tables (golua bounds table chains at 100 links) and may not set the others
-// at all. Metamethods reached through a Go library function (__tostring via
-// tostring, __pairs via pairs, __call, __gc) pass golua's 1000-level
-// Go-function guard and stay allowed.
-var (
-	tableOnlyMeta = map[string]bool{"__index": true, "__newindex": true}
-	forbiddenMeta = map[string]bool{
-		"__add": true, "__sub": true, "__mul": true, "__div": true, "__mod": true,
-		"__pow": true, "__unm": true, "__idiv": true, "__band": true, "__bor": true,
-		"__bxor": true, "__shl": true, "__shr": true, "__bnot": true,
-		"__concat": true, "__len": true, "__eq": true, "__lt": true, "__le": true,
-		"__close": true,
-	}
-)
-
-// setmetatable(t, mt) checks mt against the rules above and installs a copy
-// of it, so changing mt afterwards cannot add a forbidden metamethod.
-func (s *run) setmetatable(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-	if err := c.CheckNArgs(2); err != nil {
-		return nil, err
-	}
-	tbl, err := c.TableArg(0)
-	if err != nil {
-		return nil, errors.New("setmetatable: bad argument #1 (table expected)")
-	}
-	if !rt.RawGet(tbl.Metatable(), rt.StringValue("__metatable")).IsNil() {
-		return nil, errors.New("setmetatable: cannot change a protected metatable")
-	}
-	if c.Arg(1).IsNil() {
-		tbl.SetMetatable(nil)
-		return c.PushingNext1(t.Runtime, c.Arg(0)), nil
-	}
-	meta, ok := c.Arg(1).TryTable()
-	if !ok {
-		return nil, errors.New("setmetatable: bad argument #2 (nil or table expected)")
-	}
-	conv := &luaConv{t: t}
-	frozen := conv.newTable()
-	for k, v, ok := meta.Next(rt.NilValue); ok && !k.IsNil(); k, v, ok = meta.Next(k) {
-		if name, isStr := k.TryString(); isStr {
-			if forbiddenMeta[name] {
-				return nil, fmt.Errorf("setmetatable: %s is not available in scripts (it can overflow the interpreter's stack)", name)
-			}
-			if _, isTbl := v.TryTable(); tableOnlyMeta[name] && !isTbl {
-				return nil, fmt.Errorf("setmetatable: %s must be a table in scripts, not a %s (use t[k] or a default instead of an %s function)", name, v.TypeName(), name)
-			}
-		}
-		conv.setRaw(frozen, k, v)
-	}
-	t.SetRawMetatable(c.Arg(0), frozen)
-	return c.PushingNext1(t.Runtime, c.Arg(0)), nil
-}
-
-// getmetatable(v) returns a copy of v's metatable (or its __metatable
-// field), so a script never holds a live metatable it could change.
-func (s *run) getmetatable(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-	if err := c.Check1Arg(); err != nil {
-		return nil, err
-	}
-	m := t.Metatable(c.Arg(0))
-	meta, ok := m.TryTable()
-	if !ok {
-		return c.PushingNext1(t.Runtime, m), nil
-	}
-	conv := &luaConv{t: t}
-	cp := conv.newTable()
-	for k, v, ok := meta.Next(rt.NilValue); ok && !k.IsNil(); k, v, ok = meta.Next(k) {
-		conv.setRaw(cp, k, v)
-	}
-	return c.PushingNext1(t.Runtime, rt.TableValue(cp)), nil
 }
 
 // installProgram sets the globals that carry the program's inputs. It must run

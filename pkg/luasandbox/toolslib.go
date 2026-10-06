@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	rt "github.com/arnodel/golua/runtime"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
 // previewBytes is how much of an oversized structured result is kept as

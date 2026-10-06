@@ -22,111 +22,76 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Each of these scripts, with golua's own setmetatable, overflowed the Go
-// stack (1 GB, fatal to the whole process) within a second. With the
-// restriction they must end as an ordinary script error. If the restriction
-// regresses, this test crashes the test binary, which is the right alarm.
-func TestMetamethodRecursionCannotCrashTheProcess(t *testing.T) {
+// Each of these scripts aborted the whole process with a fatal Go stack
+// overflow on upstream golua v0.3.0: the VM ran the metamethod in a nested
+// loop that no depth limit counted. The vendored golua limits nested loops
+// (third_party/golua/README.md, upstream PR #132), so each is now an ordinary
+// script error. A regression crashes the test binary, which is the right
+// alarm.
+func TestMetamethodRecursionIsACatchableError(t *testing.T) {
 	scripts := map[string]string{
-		"__index function":        `local t = setmetatable({}, {}) getmetatable(t).__index = function(t, k) return t[k] end return t.x`,
-		"__index set late":        `local mt = {} local t = setmetatable({}, mt) mt.__index = function(t, k) return t[k] end return t.x`,
-		"__newindex function":     `setmetatable({}, {__newindex = function(t, k, v) t[k] = v end}).x = 1`,
-		"__eq":                    `local mt = {__eq = function(a, b) return a == b end} return setmetatable({}, mt) == setmetatable({}, mt)`,
-		"__lt":                    `local mt = {__lt = function(a, b) return a < b end} local a = setmetatable({}, mt) return a < a`,
-		"__le":                    `local mt = {__le = function(a, b) return a <= b end} local a = setmetatable({}, mt) return a <= a`,
-		"__add":                   `local mt = {__add = function(a, b) return a + b end} return setmetatable({}, mt) + 1`,
-		"__unm":                   `return -setmetatable({}, {__unm = function(a) return -a end})`,
-		"__len":                   `return #setmetatable({}, {__len = function(a) return #a end})`,
-		"__concat":                `return setmetatable({}, {__concat = function(a, b) return a .. b end}) .. "x"`,
-		"__close":                 `local mt = {} mt.__close = function() local x <close> = setmetatable({}, mt) end do local y <close> = setmetatable({}, mt) end`,
-		"callable table as __add": `return setmetatable({}, {__add = setmetatable({}, {__call = function() return 1 end})}) + 1`,
-		"string metatable":        `getmetatable("").__index = function(s, k) return s[k] end return ("x").y`,
+		"__index":          `local mt = {} mt.__index = function(t, k) return t[k] end return setmetatable({}, mt).x`,
+		"__newindex":       `setmetatable({}, {__newindex = function(t, k, v) t[k] = v end}).x = 1`,
+		"__eq":             `local mt = {__eq = function(a, b) return a == b end} return setmetatable({}, mt) == setmetatable({}, mt)`,
+		"__lt":             `local mt = {__lt = function(a, b) return a < b end} local a = setmetatable({}, mt) return a < a`,
+		"__le":             `local mt = {__le = function(a, b) return a <= b end} local a = setmetatable({}, mt) return a <= a`,
+		"__add":            `local mt = {__add = function(a, b) return a + b end} return setmetatable({}, mt) + 1`,
+		"__unm":            `return -setmetatable({}, {__unm = function(a) return -a end})`,
+		"__len":            `return #setmetatable({}, {__len = function(a) return #a end})`,
+		"__concat":         `return setmetatable({}, {__concat = function(a, b) return a .. b end}) .. "x"`,
+		"__close":          `local mt = {} mt.__close = function() local x <close> = setmetatable({}, mt) end do local y <close> = setmetatable({}, mt) end`,
+		"string metatable": `getmetatable("").__index = function(s, k) return s[k] end return ("x").y`,
 	}
-	lim := DefaultLimits() // the full 256 MiB budget: memory alone would not stop these in time
+	lim := DefaultLimits() // the full budget: memory alone would not stop these in time
 	for name, src := range scripts {
 		t.Run(name, func(t *testing.T) {
 			res := Run(context.Background(), Program{Source: src}, lim, newFakeHost())
-			assert.NotEqual(t, OutcomeEngineError, res.Outcome, res.Detail)
-			assert.Contains(t, []Outcome{OutcomeScriptError, OutcomeOK}, res.Outcome, res.Error)
+			require.Equal(t, OutcomeScriptError, res.Outcome, "error %q detail %q", res.Error, res.Detail)
+			assert.Contains(t, res.Error, "stack overflow")
 		})
 	}
+	t.Run("caught by pcall", func(t *testing.T) {
+		res := runSrc(t, `local mt = {} mt.__index = function(t, k) return t[k] end
+			local ok, err = pcall(function() return setmetatable({}, mt).x end)
+			return {ok = ok, overflow = tostring(err):find("stack overflow") ~= nil}`, nil)
+		require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+		assert.Equal(t, map[string]any{"ok": false, "overflow": true}, res.Value)
+	})
 }
 
-func TestMetamethodRules(t *testing.T) {
-	forbidden := []string{"__add", "__sub", "__mul", "__div", "__mod", "__pow", "__unm", "__idiv",
-		"__band", "__bor", "__bxor", "__shl", "__shr", "__bnot", "__concat", "__len", "__eq", "__lt", "__le", "__close"}
-	for _, ev := range forbidden {
-		res := runSrc(t, `setmetatable({}, {`+ev+` = function() end})`, nil)
-		assert.Equal(t, OutcomeScriptError, res.Outcome, ev)
-		assert.Contains(t, res.Error, ev+" is not available in scripts", ev)
-	}
-	for _, ev := range []string{"__index", "__newindex"} {
-		res := runSrc(t, `setmetatable({}, {`+ev+` = function() end})`, nil)
-		assert.Equal(t, OutcomeScriptError, res.Outcome, ev)
-		assert.Contains(t, res.Error, ev+" must be a table", ev)
-	}
-}
-
-func TestAllowedMetatablePatterns(t *testing.T) {
+func TestMetamethodsWork(t *testing.T) {
 	res := runSrc(t, `
-		-- Prototype objects: __index as a table.
 		local Account = {} Account.__index = Account
 		function Account.new(b) return setmetatable({balance = b}, Account) end
 		function Account:deposit(v) self.balance = self.balance + v end
 		local a = Account.new(10) a:deposit(5)
 
-		-- Defaults through a table chain.
-		local defaults = setmetatable({}, {__index = {color = "blue"}})
-
-		-- __newindex as a table redirects writes.
-		local store = {}
-		local proxy = setmetatable({}, {__newindex = store})
-		proxy.k = "v"
-
-		-- Metamethods reached through library functions stay available.
-		local named = setmetatable({}, {__tostring = function() return "named" end})
-		local callable = setmetatable({}, {__call = function(self, x) return x * 2 end})
-		local counted = setmetatable({}, {__pairs = function(t) return next, {1, 2}, nil end})
-		local n = 0 for _ in pairs(counted) do n = n + 1 end
-
-		return {balance = a.balance, color = defaults.color, stored = store.k, raw = rawget(proxy, "k"),
-		        named = tostring(named), doubled = callable(21), pairs = n}`, nil)
+		local defaults = setmetatable({}, {__index = function(_, k) return "default " .. k end})
+		local Vec = {}
+		Vec.__index = Vec
+		Vec.__add = function(p, q) return setmetatable({x = p.x + q.x}, Vec) end
+		Vec.__eq = function(p, q) return p.x == q.x end
+		Vec.__lt = function(p, q) return p.x < q.x end
+		Vec.__len = function(p) return p.x end
+		Vec.__concat = function(p, q) return tostring(p.x) .. "|" .. tostring(q.x) end
+		Vec.__tostring = function(p) return "vec(" .. p.x .. ")" end
+		local function vec(x) return setmetatable({x = x}, Vec) end
+		local sum = vec(1) + vec(2)
+		local log = {}
+		local logged = setmetatable({}, {__newindex = function(t, k, v) log[#log + 1] = k rawset(t, k, v) end})
+		logged.a = 1
+		local closed = false
+		do local c <close> = setmetatable({}, {__close = function() closed = true end}) end
+		return {balance = a.balance, color = defaults.color, sum = sum.x, eq = vec(3) == sum,
+		        lt = vec(1) < sum, len = #sum, cat = vec(1) .. vec(2), str = tostring(sum),
+		        log = log[1], closed = closed, same = getmetatable(a) == Account}`, nil)
 	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
-	assert.Equal(t, map[string]any{"balance": int64(15), "color": "blue", "stored": "v",
-		"named": "named", "doubled": int64(42), "pairs": int64(2)}, res.Value)
-}
-
-func TestMetatablesAreCopied(t *testing.T) {
-	res := runSrc(t, `
-		local mt = {__index = {a = 1}}
-		local t = setmetatable({}, mt)
-		mt.__index = {a = 2}           -- changing the original has no effect
-		local seen = getmetatable(t)
-		seen.__index = {a = 3}         -- nor does changing the copy getmetatable returns
-		local same = getmetatable(t) == mt
-		local str = getmetatable("")
-		str.__index = nil              -- strings keep their methods
-		return {a = t.a, same = same, upper = ("x"):upper()}`, nil)
-	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
-	assert.Equal(t, map[string]any{"a": int64(1), "same": false, "upper": "X"}, res.Value)
-
-	res = runSrc(t, `local t = setmetatable({}, {__metatable = "locked"}) return {getmetatable(t), pcall(setmetatable, t, {})}`, nil)
-	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
-	v := res.Value.([]any)
-	assert.Equal(t, "locked", v[0])
-	assert.Equal(t, false, v[1])
-	assert.Contains(t, v[2], "protected metatable")
-
-	for _, bad := range []string{`setmetatable(1, {})`, `setmetatable({}, 1)`, `setmetatable({})`} {
-		assert.Equal(t, OutcomeScriptError, runSrc(t, bad, nil).Outcome, bad)
-	}
-	res = runSrc(t, `local t = setmetatable({}, {__index = {a = 1}}) setmetatable(t, nil) return {t.a == nil, getmetatable(t) == nil, getmetatable(1) == nil}`, nil)
-	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
-	assert.Equal(t, []any{true, true, true}, res.Value)
+	assert.Equal(t, map[string]any{"balance": int64(15), "color": "default color", "sum": int64(3), "eq": true,
+		"lt": true, "len": int64(3), "cat": "1|2", "str": "vec(3)", "log": "a", "closed": true, "same": true}, res.Value)
 }
 
 func TestGcMetamethodStillRuns(t *testing.T) {
-	// __gc stays allowed; a finalizer that errors is reported as a warning.
+	// A finalizer that errors is reported as a warning, not a crash.
 	res := runSrc(t, `setmetatable({}, {__gc = function() error("in finalizer") end}) return 1`, nil)
 	assert.Contains(t, []Outcome{OutcomeOK, OutcomeScriptError}, res.Outcome, res.Error)
 }

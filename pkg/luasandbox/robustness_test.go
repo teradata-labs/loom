@@ -24,16 +24,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInterpreterPanicsAreEngineErrors(t *testing.T) {
-	// golua's string.format("%p") indexes past its arguments and panics.
-	// That is the interpreter's fault, not the host's, and it ends the run
-	// whether or not the script wraps it in pcall.
-	for _, src := range []string{`return string.format("%p")`, `return pcall(string.format, "%p")`} {
-		res := runSrc(t, src, nil)
-		assert.Equal(t, OutcomeEngineError, res.Outcome, src)
-		assert.NotEmpty(t, res.Detail)
-		assert.NotContains(t, res.Error, "index out of range", "Go internals stay out of model-facing text")
-	}
+// panicJSON panics when encoded, standing in for any Go panic inside the
+// interpreter or this package.
+type panicJSON struct{}
+
+func (panicJSON) MarshalJSON() ([]byte, error) { panic("encoder exploded") }
+
+func TestInternalPanicsAreEngineErrors(t *testing.T) {
+	// A Go panic raised while the script runs (here: converting an argument
+	// the host passed in) is the engine's failure, not the host's or the
+	// script's. It ends the run and stays out of model-facing text.
+	res := Run(context.Background(), Program{Source: `return args.x`, Args: map[string]any{"x": panicJSON{}}}, small(), newFakeHost())
+	assert.Equal(t, OutcomeEngineError, res.Outcome)
+	assert.Contains(t, res.Detail, "encoder exploded")
+	assert.NotContains(t, res.Error, "exploded")
+}
+
+func TestFormatPWithoutArgumentIsAnError(t *testing.T) {
+	// golua v0.3.0 panicked here; the vendored copy raises an error
+	// (upstream PR #130).
+	res := runSrc(t, `return string.format("%p")`, nil)
+	assert.Equal(t, OutcomeScriptError, res.Outcome)
+	assert.Contains(t, res.Error, "not enough values")
+	res = runSrc(t, `return pcall(string.format, "%p")`, nil)
+	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+	assert.Equal(t, false, res.Value)
 }
 
 func TestErrorTextIsBounded(t *testing.T) {
@@ -53,14 +68,15 @@ func TestErrorTextIsBounded(t *testing.T) {
 func TestConversionIsBoundedBeforeAllocating(t *testing.T) {
 	// Before the fix one json.encode of a 2.5M-entry table built ~170 MiB of
 	// uncharged Go temporaries and spent seconds of Go CPU charged as ~400
-	// ticks. Now it stops at the first entry that cannot fit.
+	// ticks. Now it stops at the first entry that cannot fit. (1M entries:
+	// with tables charged what they allocate, 2.5M no longer fit the budget.)
 	lim := small()
 	lim.MemoryBytes = 256 << 20
 	lim.Wall = 30 * time.Second
 	stop := sampleHeapPeak()
 	start := time.Now()
 	res := Run(context.Background(), Program{Source: `
-		local t = {} for i = 1, 2.5e6 do t["k" .. i] = i end
+		local t = {} for i = 1, 1e6 do t["k" .. i] = i end
 		local ok, err = pcall(json.encode, t)
 		local ok2, err2 = pcall(tools.call, "x", t)
 		return {ok = ok, err = err, ok2 = ok2, err2 = err2}`}, lim, newFakeHost())

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	rt "github.com/arnodel/golua/runtime"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
 // termReason records why the package itself ended a run.
@@ -122,13 +122,23 @@ func (s *run) execute(p Program) *RunResult {
 	// wall budget; golua enforces the same instant from inside the VM.
 	deadline, _ := s.ctx.Deadline()
 	wallMillis := uint64(max(time.Until(deadline).Milliseconds(), 1))
+	// The interrupt stops the script as soon as the run context ends, even
+	// while it only computes: golua checks it on every CPU charge. The
+	// AfterFunc goroutine only sets the interrupt's atomic flag; it never
+	// touches the interpreter.
+	intr := rt.NewInterrupt()
+	stopWatch := context.AfterFunc(s.ctx, func() { intr.Trigger(s.cancelReason()) })
+	defer stopWatch()
 	thread := r.MainThread()
 	var ret rt.Value
-	ctx, err := thread.CallContext(rt.RuntimeContextDef{HardLimits: rt.RuntimeResources{
-		Cpu:    s.lim.CPUTicks,
-		Memory: s.lim.MemoryBytes,
-		Millis: wallMillis,
-	}}, func() error {
+	ctx, err := thread.CallContext(rt.RuntimeContextDef{
+		HardLimits: rt.RuntimeResources{
+			Cpu:    s.lim.CPUTicks,
+			Memory: s.lim.MemoryBytes,
+			Millis: wallMillis,
+		},
+		Interrupt: intr,
+	}, func() error {
 		s.installProgram(thread, p)
 		v, err := rt.Call1(thread, rt.FunctionValue(chunk))
 		ret = v
@@ -159,6 +169,10 @@ func (s *run) execute(p Program) *RunResult {
 		if conv.nonFinite > 0 {
 			_, _ = fmt.Fprintf(s.out, "warning: %d NaN or infinite numbers in the return value became null\n", conv.nonFinite)
 		}
+	case ctx != nil && ctx.Status() == rt.StatusKilled && s.ctx.Err() != nil:
+		// Stopped by the interrupt, or by golua's own clock at the same
+		// deadline: cancelled when the caller ended it, else the wall budget.
+		res.Outcome, res.Limit, res.Error = s.endReason()
 	case ctx != nil && ctx.Status() == rt.StatusKilled:
 		res.Outcome, res.Error = OutcomeBudgetExceeded, cleanError(err)
 		res.Limit = limitFromMessage(res.Error)

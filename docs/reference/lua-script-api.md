@@ -38,7 +38,7 @@ Zero or negative fields take the default; larger values are lowered to the ceili
 |---|---|---|---|
 | `Wall` | 120 s | 600 s | the whole run, including tool calls and sleeps |
 | `CPUTicks` | 2,000,000,000 | 10,000,000,000 | interpreter steps (about 2×10⁸ per second) |
-| `MemoryBytes` | 64 MiB | 256 MiB | allocation as golua counts it, including values the host hands in (real memory can reach about 10× for scripts building many small tables) |
+| `MemoryBytes` | 128 MiB | 512 MiB | allocation, including values the host hands in (real memory can reach about 2.7× for scripts holding many small strings or closures) |
 | `MaxToolCalls` | 100 | 1000 | `tools.call` + `tools.must` + `turn.result` |
 | `ToolCallTimeout` | 60 s | 300 s | one nested call |
 | `MaxCallResultBytes` | 1 MiB | 8 MiB | one nested call's result (truncated above) and arguments (error above) |
@@ -97,16 +97,16 @@ func ProcessMemoryLimit() uint64 // cgroup limit, else GOMEMLIMIT, else 1 GiB
 ```
 
 `DeriveCapacity` returns as many slots (2 to 16) as fit when every run sits at its
-worst-case peak, `PeakMemoryOverhead` (12) times its budget, within 40% of `memLimit`.
+worst-case peak, `PeakMemoryOverhead` (3) times its budget, within 40% of `memLimit`.
 When two slots do not fit, it lowers the per-run budget instead (floor 16 MiB).
 
 | Process memory | Per-run budget asked | Slots | Per-run budget returned |
 |---|---|---|---|
-| 4 GiB | 16 MiB | 8 | 16 MiB |
-| 4 GiB | 32 MiB | 4 | 32 MiB |
-| 4 GiB | 64 MiB | 2 | 64 MiB |
-| 4 GiB | 256 MiB | 2 | about 68 MiB |
-| 1 GiB | 64 MiB | 2 | about 17 MiB |
+| 4 GiB | 64 MiB | 8 | 64 MiB |
+| 4 GiB | 128 MiB | 4 | 128 MiB |
+| 4 GiB | 256 MiB | 2 | 256 MiB |
+| 1 GiB | 64 MiB | 2 | 64 MiB |
+| 1 GiB | 128 MiB | 2 | about 68 MiB |
 
 ### `Policy`
 
@@ -150,18 +150,9 @@ Absent (`nil`): `require`, `package`, `load`, `loadstring`, `dofile`, `loadfile`
 `pcall` and `xpcall` catch Lua errors only. A budget kill, cancellation or host failure
 inside them ends the whole run.
 
-`setmetatable` and `getmetatable` are restricted:
-
-| Metamethod | Allowed values |
-|---|---|
-| `__index`, `__newindex` | a table (not a function) |
-| `__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`, `__unm`, `__idiv`, `__band`, `__bor`, `__bxor`, `__shl`, `__shr`, `__bnot`, `__concat`, `__len`, `__eq`, `__lt`, `__le`, `__close` | none: setting one is an error |
-| `__call`, `__tostring`, `__name`, `__pairs`, `__gc`, `__mode`, `__metatable` | any |
-
-`setmetatable` installs a copy of the metatable, and `getmetatable` returns a copy (or
-the `__metatable` field), so changing a metatable after `setmetatable` has no effect.
-`getmetatable(obj) == Class` is therefore false; prototype objects
-(`Class.__index = Class; setmetatable(obj, Class)`) work as usual.
+Metamethods of every kind are available. A metamethod that triggers its own event (an
+`__index` function reading the missing key again) ends with a catchable `stack overflow`
+error after 1000 levels.
 
 ### `tools`
 

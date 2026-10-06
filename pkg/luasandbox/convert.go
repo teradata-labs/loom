@@ -22,7 +22,7 @@ import (
 	"slices"
 	"strconv"
 
-	rt "github.com/arnodel/golua/runtime"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
 // maxValueDepth bounds nesting in both conversion directions. It also stops

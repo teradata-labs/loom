@@ -17,7 +17,7 @@ package luasandbox
 import (
 	"strings"
 
-	rt "github.com/arnodel/golua/runtime"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
 // golua runs each pcall in a child resource context. A termination raised
@@ -74,6 +74,9 @@ func (s *run) protected(t *rt.Thread, c *rt.GoCont, f rt.Value, args []rt.Value,
 func (s *run) afterProtected(t *rt.Thread, child rt.RuntimeContext, err error) error {
 	if s.term.outcome != "" {
 		return s.terminate(t, s.term.outcome, s.term.limit, s.term.msg)
+	}
+	if child != nil && child.Status() == rt.StatusKilled && s.ctx.Err() != nil {
+		return s.checkCancel(t)
 	}
 	if child != nil && child.Status() == rt.StatusKilled {
 		msg := "killed"
