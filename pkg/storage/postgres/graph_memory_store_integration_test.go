@@ -122,3 +122,74 @@ func TestGraphMemory_RememberAutoCreatesReferencedEntities(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, got2.EntityIDs, existing.ID, "link should resolve to the existing entity's id")
 }
+
+// Outcome credit must work on Postgres, not just SQLite.
+//
+// AdjustSalience is an optional capability discovered by type assertion in
+// pkg/agent, so a store that lacks it does not fail to build or run — credit
+// is simply skipped. That made this silent: a Postgres-backed deployment
+// would read "outcome credit demotes bad lessons" and never demote one.
+//
+// The clamp is the part that cannot be copied from SQLite: MIN/MAX are
+// aggregates in postgres, so this asserts both bounds actually bind.
+func TestGraphMemory_AdjustSalience(t *testing.T) {
+	pool := testPool(t)
+	store := NewGraphMemoryStore(pool, nil, nil)
+	ctx := ContextWithUserID(context.Background(), uniqueID("salience-user"))
+	agentID := uniqueID("salience-agent")
+
+	// The store must satisfy the capability pkg/agent asserts for, or credit
+	// is skipped at runtime with no error anywhere.
+	var _ interface {
+		AdjustSalience(ctx context.Context, memoryID string, delta float64) error
+	} = store
+
+	newLesson := func(salience float64) string {
+		t.Helper()
+		saved, err := store.Remember(ctx, &memory.Memory{
+			AgentID:    agentID,
+			Content:    "always run buf generate after editing the proto",
+			MemoryType: "lesson",
+			Salience:   salience,
+		})
+		require.NoError(t, err)
+		return saved.ID
+	}
+	salienceOf := func(id string) float64 {
+		t.Helper()
+		got, err := store.GetMemory(ctx, agentID, id)
+		require.NoError(t, err)
+		return got.Salience
+	}
+
+	t.Run("loss lowers salience", func(t *testing.T) {
+		id := newLesson(0.7)
+		require.NoError(t, store.AdjustSalience(ctx, id, -0.2))
+		assert.InDelta(t, 0.5, salienceOf(id), 1e-6)
+	})
+
+	t.Run("win raises salience", func(t *testing.T) {
+		id := newLesson(0.5)
+		require.NoError(t, store.AdjustSalience(ctx, id, 0.15))
+		assert.InDelta(t, 0.65, salienceOf(id), 1e-6)
+	})
+
+	t.Run("floor clamps at 0.05 so demotion is reversible", func(t *testing.T) {
+		id := newLesson(0.1)
+		require.NoError(t, store.AdjustSalience(ctx, id, -5))
+		assert.InDelta(t, 0.05, salienceOf(id), 1e-6,
+			"a demoted lesson must sink to the floor, not to zero — outcome credit "+
+				"has to be able to bring it back on a later win")
+	})
+
+	t.Run("ceiling clamps at 1.0", func(t *testing.T) {
+		id := newLesson(0.9)
+		require.NoError(t, store.AdjustSalience(ctx, id, 5))
+		assert.InDelta(t, 1.0, salienceOf(id), 1e-6)
+	})
+
+	t.Run("unknown id is a no-op, not an error", func(t *testing.T) {
+		assert.NoError(t, store.AdjustSalience(ctx, uniqueID("no-such-memory"), -0.1),
+			"credit iterates lessons that may have been forgotten mid-conversation")
+	})
+}
