@@ -18,7 +18,7 @@
 // A script reaches the outside world only through a Host: the host decides
 // which tools exist, executes them, and reports progress. The package itself
 // knows nothing about agents, sessions or storage, so the same engine serves
-// every host (the loom agent bridge, Tera, tests).
+// every host (the loom agent bridge, applications embedding loom, tests).
 //
 // # Guarantees
 //

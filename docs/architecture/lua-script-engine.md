@@ -1,8 +1,8 @@
 # Lua Script Engine (`pkg/luasandbox`)
 
 **Status**: ✅ engine implemented with tests (`pkg/luasandbox`). 📋 Planned: the agent
-bridge and the `run_lua` builtin tool (next PR), saved scripts and script-backed tools
-(the PR after). Everything is off by default and nothing registers a tool yet.
+bridge and a builtin tool that runs scripts (next PR; tool name not final), saved scripts
+and script-backed tools (the PR after). Everything is off by default and nothing registers a tool yet.
 
 ## Overview
 
@@ -43,7 +43,7 @@ unable to escape through the Lua standard library.
 │                         Server process                               │
 │                                                                      │
 │  [Model] ─ tool call ─▶ ┌────────────────┐                           │
-│                         │  Host tool     │  (run_lua, planned)       │
+│                         │  Host tool     │  (script tool, planned)   │
 │                         │  (agent side)  │                           │
 │                         └───────┬────────┘                           │
 │                                 │ luasandbox.Run(ctx, prog, lim, host)│
