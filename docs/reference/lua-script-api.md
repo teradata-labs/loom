@@ -36,9 +36,13 @@ tools:
       max_concurrent_runs_per_key: 2
     tools:
       allow: []                   # empty = every tool the model can see
-      deny: [shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+      deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
       deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
 ```
+
+`shell_execute` is denied to scripts by default. It runs real programs with the server's
+permissions, and a script could run many of them without the model or a person seeing each
+one. Remove it from `deny` only when an admission hook governs `shell_execute`.
 
 A malformed tool pattern in `tools.lua.tools` aborts `looms serve`. Hosts embedding loom
 call `Agent.RegisterRunLuaTool(agent.RunLuaToolOptions{...})` themselves, or suppress

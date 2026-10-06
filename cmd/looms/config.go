@@ -2002,7 +2002,7 @@ tools:
   #     max_concurrent_runs_per_key: 2
   #   tools:
   #     allow: []                   # empty = every tool the model can see
-  #     deny: [shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+  #     deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
   #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
   #   scripts_dir: ""               # default <LOOM_DATA_DIR>/lua_scripts
   #   scripts:
