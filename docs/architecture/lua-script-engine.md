@@ -1,9 +1,10 @@
 # Lua Script Engine (`pkg/luasandbox`)
 
 **Status**: ✅ engine implemented with tests (`pkg/luasandbox`), on a vendored, patched
-golua (`third_party/golua`). 📋 Planned: the agent
-bridge and the builtin `run_lua` tool that runs scripts (next PR), saved scripts
-and script-backed tools (the PR after). Everything is off by default and nothing registers a tool yet.
+golua (`third_party/golua`). ✅ the agent bridge (`Agent.NewLuaHost`) and the builtin
+`run_lua` tool (`pkg/agent`), registered only when `tools.lua.enabled` is true (default
+false). 📋 Planned: saved scripts and script-backed tools (`manage_lua_scripts`,
+`lua_<name>`).
 
 ## Overview
 
@@ -47,8 +48,8 @@ unable to escape through the Lua standard library.
 │                         Server process                               │
 │                                                                      │
 │  [Model] ─ tool call ─▶ ┌────────────────┐                           │
-│                         │  Host tool     │  (script tool, planned)   │
-│                         │  (agent side)  │                           │
+│                         │  run_lua       │  pkg/agent/lua_tool.go    │
+│                         │  + bridge      │  pkg/agent/lua_host.go    │
 │                         └───────┬────────┘                           │
 │                                 │ luasandbox.Run(ctx, prog, lim, host)│
 │                                 ▼                                    │
@@ -64,8 +65,8 @@ unable to escape through the Lua standard library.
 ```
 
 The engine never sees the executor. The host decides which tools exist and runs them
-through the same guarded path as a direct model call (planned bridge: exact-name match
-against the advertised set, `Preflight`, then `Executor.ExecuteWithTool`).
+through the same guarded path as a direct model call: exact-name match against the
+advertised set, `Preflight`, then `Executor.ExecuteWithTool` (see "Agent bridge" below).
 
 ### Components
 
@@ -75,7 +76,7 @@ against the advertised set, `Preflight`, then `Executor.ExecuteWithTool`).
 │                                                                       │
 │  run.go ── Run() ─┬─▶ srcguard.go   nesting scan before parsing       │
 │                   ├─▶ stdlib.go     fresh runtime, pure libs only,    │
-│                   │                 shared base functions, globals    │
+│                   │                 base loaded per runtime, globals  │
 │                   ├─▶ hostfn.go     wrapper for every Go function:    │
 │                   │                 cancel check, panic recovery,     │
 │                   │                 terminate()                       │
@@ -215,6 +216,47 @@ and tail; structured data becomes a summary with a JSON preview). Converting Lua
 Go stops at the first entry that cannot fit and charges CPU per entry visited, so
 `json.encode` of a huge table fails fast instead of building uncharged temporaries.
 
+### Agent bridge (`pkg/agent`)
+
+`Agent.NewLuaHost(ctx, LuaHostOptions)` builds the `Host` for one run, and `RunLuaTool`
+(`run_lua`) calls it. Every rule below fails closed.
+
+- **Visible set.** The bridge uses the exact tools the model was shown for the provider
+  call that requested the run. `dispatchOneCall` records that projection on each tool
+  call's context: `advertisedTools(session)` after `recovery.activeTools`, so
+  circuit-broken, permission-disabled and not-yet-activated tools are excluded. The
+  bridge never re-derives the set, which could widen it, and refuses to start when the
+  context carries none.
+- **Filtering.** `Policy.Visible(projection, trust)` then applies the engine's hard-deny
+  list, the reserved names (`run_lua`, `manage_lua_scripts`, `lua_*`, added by the bridge
+  whatever the host configured), `Deny`, `DenyForShared` for scripts the runner did not
+  write, and `Allow`. A saved script's `requires` narrows the set further.
+- **Admission.** A nested call must match the visible set by exact name; an unknown name
+  never reaches `Executor.Execute`, whose dynamic registration could pull in a tool the
+  model never saw. `Preflight` runs first with any approval grant hidden
+  (`shuttle.ContextWithoutAskGrant`): `Ask` returns `approval_required` and `Deny`
+  returns `permission_denied`, so a script neither inherits an approval nor waits for a
+  human. The call then runs through `ExecuteWithTool` under a deny grant, so a hook that
+  answers `Ask` only at execution time (state changed since `Preflight`) is resolved at
+  once from the grant instead of reaching the blocking resolver.
+- **Guards.** `NewLuaHost` and `RegisterRunLuaTool` refuse when the executor has neither
+  an admission chain nor a permission checker (`Executor.HasAdmissionGuards`), and when
+  the call has no session.
+- **Not done by the bridge:** tool rows, deduplication, the circuit breaker and the
+  per-turn tool budget. Those belong to model calls, and the script is one model call.
+  Each nested call gets a `lua.tool_call` span, and the run a `lua.run` span.
+
+`run_lua` takes a fail-fast gate slot (returned on every path), resolves saved scripts
+through a `ScriptResolver` function supplied by the host (nil until saved scripts
+exist), clamps `timeout_seconds` to the policy, and maps each outcome to an error code.
+`Result.Metadata["lua.run"]` carries the run record for audit.
+
+On `looms serve`, the `tools.lua` block (`cmd/looms/lua_tools.go`) builds one policy and
+one gate for the server. The gate is sized by `DeriveCapacity` from the process memory
+limit, and `max_concurrent_runs` can only lower it. `run_lua` registers on agents that
+list it in `tools.builtin`, through serve's own agent loops and through
+`RegistryConfig.RunLuaTool` for registry-built agents.
+
 ## Guarantees and their tests
 
 | Guarantee | Test |
@@ -270,6 +312,10 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
   reference Lua does not; numbers are not coerced to strings for tool names.
 - **JSON nulls.** Object fields that are null are dropped; null array elements become
   `json.null` so positions survive. An empty table encodes as `{}`.
+- **YOLO counts as a guard.** loom defaults to `tools.permissions.yolo: true`, which
+  installs a permission checker that admits every call. `run_lua` then registers, and
+  its scripts are exactly as guarded as direct calls: not at all. Configure
+  `tools.hooks` (or turn YOLO off) before enabling `tools.lua` on a shared server.
 
 ## Upstream Status
 
@@ -283,8 +329,8 @@ and the stopped context is left killed and current. The engine does not use
 
 - Batch-first builtin tools: `execute_query`, `edit_files`, batched `file_read` /
   `file_write` (loom PR #329).
-- Admission chain and `AskGrant`: `pkg/shuttle/admission_*.go`, `ask_grant.go`. The engine's
-  planned bridge strips any grant with `shuttle.ContextWithoutAskGrant`, so an approval
+- Admission chain and `AskGrant`: `pkg/shuttle/admission_*.go`, `ask_grant.go`. The bridge
+  strips any grant with `shuttle.ContextWithoutAskGrant` for `Preflight`, so an approval
   granted for one call never covers the calls a script makes.
 - HITL park and resume: `docs/architecture/hitl-park-and-resume.md`. Scripts do not park;
   a tool that needs approval returns `approval_required` to the script.

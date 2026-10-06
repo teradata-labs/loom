@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,4 +171,19 @@ func TestRegisterYAMLBuiltinTools_SkipsLuaTools(t *testing.T) {
 	registerYAMLBuiltinTools(ag, newCfg("run_lua", "manage_lua_scripts"), nil, zap.New(core), "  ", "agent_management")
 	assert.Empty(t, logs.FilterMessage("  Unknown builtin tool").All())
 	assert.False(t, hasTool(ag, agent.RunLuaToolName))
+}
+
+// The switch is reachable from the environment, as the config docs say.
+func TestLuaTools_EnvSwitch(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetEnvPrefix("LOOM")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+	setDefaults()
+	t.Setenv("LOOM_TOOLS_LUA_ENABLED", "true")
+
+	var cfg Config
+	require.NoError(t, viper.Unmarshal(&cfg))
+	assert.True(t, cfg.Tools.Lua.Enabled)
 }
