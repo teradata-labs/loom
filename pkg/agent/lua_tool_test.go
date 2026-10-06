@@ -26,6 +26,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/luasandbox"
@@ -387,4 +390,36 @@ return {a.echo, b.echo, h.error.code}`
 	assert.Len(t, calls, 3)
 	assert.EqualValues(t, 2, read.runs.Load())
 	assert.EqualValues(t, 0, hidden.runs.Load())
+}
+
+// Registry-built agents get run_lua through RegistryConfig.RunLuaTool, with
+// the same refusals as the serve path.
+func TestRegistry_RegisterRunLua(t *testing.T) {
+	opts := &RunLuaToolOptions{Policy: staticLuaPolicy(luasandbox.Policy{}), Gate: luasandbox.NewGate(2, 1)}
+	for _, tc := range []struct {
+		name      string
+		opts      *RunLuaToolOptions
+		agent     func() *Agent
+		want      bool
+		wantLevel zapcore.Level
+	}{
+		{"disabled", nil, func() *Agent {
+			return newLuaTestAgent(t, shuttle.NewChain([]shuttle.Hook{&luaRecordingHook{}}, nil, nil))
+		}, false, zapcore.InfoLevel},
+		{"enabled", opts, func() *Agent {
+			return newLuaTestAgent(t, shuttle.NewChain([]shuttle.Hook{&luaRecordingHook{}}, nil, nil))
+		}, true, zapcore.InfoLevel},
+		{"no guard", opts, func() *Agent { return newLuaTestAgent(t, nil) }, false, zapcore.WarnLevel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core, logs := observer.New(zapcore.InfoLevel)
+			r := &Registry{logger: zap.New(core), runLuaTool: tc.opts}
+			ag := tc.agent()
+			r.registerRunLua(ag, "a")
+			assert.Equal(t, tc.want, ag.tools.IsRegistered(RunLuaToolName))
+			entries := logs.All()
+			require.Len(t, entries, 1)
+			assert.Equal(t, tc.wantLevel, entries[0].Level, entries[0].Message)
+		})
+	}
 }

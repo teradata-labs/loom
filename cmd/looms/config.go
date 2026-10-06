@@ -754,6 +754,10 @@ type ToolsConfig struct {
 
 	// ShellExecute holds shell_execute tool configuration
 	ShellExecute ShellExecuteConfig `mapstructure:"shell_execute"`
+
+	// Lua holds the run_lua tool configuration (off by default). See
+	// lua_tools.go and docs/architecture/lua-script-engine.md.
+	Lua LuaToolsConfig `mapstructure:"lua"`
 }
 
 // ToolExecutorConfig holds tool executor settings.
@@ -1245,6 +1249,7 @@ func setDefaults() {
 	// Default both false to preserve existing behavior.
 	viper.SetDefault("tools.minimal", false)
 	viper.SetDefault("tools.none", false)
+	setLuaDefaults()
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
@@ -1981,6 +1986,24 @@ tools:
     # Note: Tavily provides AI-optimized results (1000 searches/month FREE)
     # Brave Search also excellent (2000 searches/month FREE)
     # DuckDuckGo works without API key (factual queries only, limited results)
+
+  # run_lua: lets the model run a short Lua script that calls its own tools
+  # through the same admission hooks as direct calls. Off by default; an agent
+  # must also list run_lua in tools.builtin, and must have tools.hooks or
+  # tools.permissions configured (scripts never run unguarded).
+  # lua:
+  #   enabled: false
+  #   limits:                       # zero = engine default; capped at the engine ceilings
+  #     wall_seconds: 120
+  #     cpu_ticks: 2000000000
+  #     memory_bytes: 134217728     # 128 MiB per run (total allocation); ceiling 512 MiB
+  #     max_tool_calls: 100
+  #     max_concurrent_runs: 0      # 0 = derived from the process memory limit
+  #     max_concurrent_runs_per_key: 2
+  #   tools:
+  #     allow: []                   # empty = every tool the model can see
+  #     deny: [shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+  #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
 
 logging:
   level: info  # debug, info, warn, error
