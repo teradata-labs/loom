@@ -24,7 +24,9 @@ unable to escape through the Lua standard library.
 1. **Bounded.** Every run ends within its wall budget (plus at most one in-flight tool
    call's timeout). CPU, memory and tool-call budgets are hard limits.
 2. **Uncatchable limits.** A script cannot `pcall` its way past a budget kill,
-   cancellation or a host failure.
+   cancellation or a host failure. Run outcomes say whose fault an ending was:
+   `script_error`, `budget_exceeded`, `cancelled`, `host_error` (a `Host` method failed)
+   or `engine_error` (the interpreter or this package failed).
 3. **No new goroutines, no shared state.** A run executes on the caller's goroutine. Runs
    share nothing mutable, so concurrent runs are race-free.
 4. **Never crash the process.** No input, script or host misbehaviour panics the caller or
@@ -184,13 +186,38 @@ argument, so sharing them is safe once nothing writes to them. The `package` lib
 not loaded at all; `string`, `table`, `math` and `utf8` are loaded per runtime because
 their loaders create fresh function values and keep their state in the runtime.
 
+### Metamethods the VM calls directly are not available
+
+golua calls some metamethods straight from the VM (`__index` and `__newindex` when they are
+functions, arithmetic and bitwise operators, `__concat`, `__len`, `__eq`, `__lt`, `__le`,
+`__close`). Each such call runs a nested interpreter loop on the Go stack, and none of
+golua's depth limits count it: its 1000-level guard counts only Go library functions. A
+metamethod that triggers its own event recurses until the Go stack passes 1 GiB, and Go
+aborts the whole process. Measured: ten one-line scripts, one per event, each crashed the
+process within a second under the default 256 MiB budget, because memory charges grew
+slower than the stack.
+
+The engine therefore replaces `setmetatable` and `getmetatable`. Those events may not be
+functions (`__index` and `__newindex` may be tables, whose chains golua bounds at 100
+links). The installed metatable is a copy, and `getmetatable` returns a copy, so a script
+cannot add a forbidden metamethod after the check. Metamethods reached through a Go
+library function (`__tostring` via `tostring`, `__pairs` via `pairs`, `__call`, `__gc`)
+pass golua's guard and stay available. Prototype objects (`Class.__index = Class`) work
+unchanged.
+
+A patched interpreter that counts nested VM loops would lift this restriction.
+
 ### Memory accounting at the boundary
 
-golua charges values the VM creates, but not values Go code creates. Every string and
-table the engine hands to a script (`args`, tool results, decoded JSON, schemas) is
-charged with `RequireBytes` first, and table entries go through `Runtime.SetTable`, which
-charges. A nested call's result above `MaxCallResultBytes` is truncated before conversion
-(text keeps head and tail; structured data becomes a summary with a JSON preview).
+golua charges values the VM creates, but not values Go code creates, and it undercharges
+small tables: 16 bytes per entry and nothing for an empty table, where Go spends about 56
+bytes per hash slot plus doubling growth. Every string and table the engine hands to a
+script (`args`, tool results, decoded JSON, schemas, metatable copies) is charged its
+real cost first (string length plus header, table overhead, per-entry cost). A nested
+call's result above `MaxCallResultBytes` is truncated before conversion (text keeps head
+and tail; structured data becomes a summary with a JSON preview). Converting Lua values to
+Go stops at the first entry that cannot fit and charges CPU per entry visited, so
+`json.encode` of a huge table fails fast instead of building uncharged temporaries.
 
 ## Guarantees and their tests
 
@@ -210,7 +237,13 @@ charges. A nested call's result above `MaxCallResultBytes` is truncated before c
 | Concurrent runs share nothing (run with `-race`) | `TestConcurrentRunsShareNothing` |
 | Forbidden golua APIs and libraries never used | `TestForbiddenAPIs` |
 | golua limit messages the classifier depends on | `TestGoluaLimitMessagesArePinned` |
-| Arbitrary source never panics, hangs or yields an unknown outcome | `FuzzRun` (2.7 million executions in 60 s, no failure) |
+| Arbitrary source never panics, hangs or yields an unknown outcome | `FuzzRun` (2.7 million executions in 60 s, no failure; the corpus includes the metamethod-recursion class) |
+| Metamethod recursion cannot overflow the Go stack | `TestMetamethodRecursionCannotCrashTheProcess` (each script crashed the process before the restriction) |
+| Allowed metatable patterns (prototypes, table chains, `__tostring`, `__call`, `__pairs`) work; metatables cannot be changed after the check | `TestAllowedMetatablePatterns`, `TestMetatablesAreCopied`, `TestMetamethodRules` |
+| Interpreter panics end the run as `engine_error`, not `host_error` | `TestInterpreterPanicsAreEngineErrors` |
+| Error text is bounded and carries no heap addresses | `TestErrorTextIsBounded` |
+| Converting a huge table fails fast | `TestConversionIsBoundedBeforeAllocating` |
+| Nesting limits cannot multiply across levels; long flat scripts pass | `TestSourceGuardBoundsTotalNesting`, `TestSourceGuardAllowsLongFlatScripts` |
 
 ## Measured Behaviour
 
@@ -220,19 +253,23 @@ Apple M-series, `CGO_ENABLED=0`, golua v0.3.0 (probes on Go 1.25.3, tests on Go 
 |---|---|
 | Runtime creation | about 45 µs |
 | CPU ticks per second of plain Lua | about 2×10⁸ |
-| Peak process memory of a budget-killed run | up to about 2.3× the memory budget (116 MB resident for a 50 MB budget; growing buffers briefly hold old and new copies; `GOMEMLIMIT` does not lower it) |
+| Peak process memory of a budget-killed run, values the engine creates | 1.4× to 2.1× the budget |
+| Peak process memory of a budget-killed run, values the VM creates | 3× (arrays) to 10.5× (tables of tables) the budget; growth by doubling and golua's per-entry undercharge; `GOMEMLIMIT` does not lower it |
 | Go-function nesting (pcall, `gsub` and `sort` callbacks) | capped by golua at 1000 levels ("stack overflow" Lua error) |
+| CPU budget as time | about 10 s for arithmetic loops, about 36 s for call-heavy loops, at the default 2×10⁹ ticks |
 
-`DeriveCapacity` uses the 2.3× figure (rounded to 2.5) to size the concurrency gate:
-concurrent runs at their worst-case peak may use at most 40% of the process memory limit.
+`DeriveCapacity` plans for 12× (the worst measured ratio, rounded up): concurrent runs at
+their worst-case peak may use at most 40% of the process memory limit. The default
+per-run budget is 64 MiB (about 770 MB worst case).
 
 ## Known Limitations
 
-- **Cancellation of pure computation** waits for the CPU or wall budget (about ten
-  seconds of CPU at the defaults). Fixing this needs an interrupt hook in golua.
-- **Memory is total allocation.** Garbage collection does not credit the budget, so
-  scripts that churn through short-lived tables spend budget faster than live memory
-  grows.
+- **Cancellation of pure computation** waits for the CPU or wall budget (10 to 40 seconds
+  of CPU at the defaults). Fixing this needs an interrupt hook in golua.
+- **Memory is total allocation, and golua undercounts tables.** Garbage collection does
+  not credit the budget, and a script building many small tables holds up to about 10×
+  its budget in real memory. Capacity planning uses 12×.
+- **No function-valued VM metamethods** (see above).
 - **No coroutines.** golua runs each coroutine on its own goroutine and suspended ones
   survive `Runtime.Close`, so the library is not loaded.
 - **Lua 5.4 only, golua dialect.** `error` inside `pcall` prefixes a position where
@@ -247,6 +284,11 @@ concurrent runs at their worst-case peak may use at most 40% of the process memo
 2. The parser and compiler recurse without a depth limit; deeply nested source can
    exhaust the Go stack.
 3. There is no way to interrupt a running VM from another goroutine.
+4. Metamethods called from the VM run nested interpreter loops that no depth limit
+   counts; self-triggering metamethods abort the process.
+5. Table memory is undercharged (16 bytes per entry, nothing per table), so the memory
+   limit admits about 10× its value in real memory.
+6. `string.format("%p")` without an argument panics (index out of range).
 
 ## Related Work
 

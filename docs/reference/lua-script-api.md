@@ -38,7 +38,7 @@ Zero or negative fields take the default; larger values are lowered to the ceili
 |---|---|---|---|
 | `Wall` | 120 s | 600 s | the whole run, including tool calls and sleeps |
 | `CPUTicks` | 2,000,000,000 | 10,000,000,000 | interpreter steps (about 2×10⁸ per second) |
-| `MemoryBytes` | 256 MiB | 1 GiB | total allocation, including values the host hands in |
+| `MemoryBytes` | 64 MiB | 256 MiB | allocation as golua counts it, including values the host hands in (real memory can reach about 10× for scripts building many small tables) |
 | `MaxToolCalls` | 100 | 1000 | `tools.call` + `tools.must` + `turn.result` |
 | `ToolCallTimeout` | 60 s | 300 s | one nested call |
 | `MaxCallResultBytes` | 1 MiB | 8 MiB | one nested call's result (truncated above) and arguments (error above) |
@@ -63,7 +63,8 @@ All methods run on the goroutine that called `Run`. A Go error, a panic, or a ni
 `*CallResult` from `CallTool` / `TurnResult`, and any error other than
 `ErrToolNotVisible` from `ListTools` / `ToolSchema`, ends the run with
 `OutcomeHostError`. A panic in `Progress` is recorded in `RunResult.Detail` and
-otherwise ignored.
+otherwise ignored. A Go panic inside the interpreter or this package ends the run with
+`OutcomeEngineError`.
 
 `CallResult{OK: false, Error: ...}` is an ordinary tool failure that the script sees.
 `CallResult.Decision` is copied into the call ledger.
@@ -72,13 +73,13 @@ otherwise ignored.
 
 | Field | Meaning |
 |---|---|
-| `Outcome` | `ok`, `script_error`, `budget_exceeded`, `cancelled`, `host_error` |
+| `Outcome` | `ok`, `script_error`, `budget_exceeded`, `cancelled`, `host_error` (a Host method failed), `engine_error` (the interpreter or this package failed) |
 | `Value` | first return value as JSON-compatible Go values (`nil`, `bool`, `int64`, `float64`, `string`, `[]any`, `map[string]any`) |
 | `Output` | captured `print`/`log` output |
-| `Error` | model-facing message: `chunk:line: text` for script errors, the limit for budget errors |
+| `Error` | model-facing message: `chunk:line: text` for script errors, the limit for budget errors. At most 2 KiB; heap addresses (`table: 0x...`) removed |
 | `Limit` | `cpu`, `memory`, `wall` or `tool_calls` when `Outcome` is `budget_exceeded` |
-| `Detail` | diagnostics for server logs only (panic values, stacks). Never show it to a model or user. |
-| `Used` | `CPUTicks`, `MemoryBytes` (from the interpreter), `WallMillis` |
+| `Detail` | diagnostics for server logs only (panic values, stacks), at most 64 KiB. Never show it to a model or user. |
+| `Used` | `CPUTicks`, `MemoryBytes` (from the interpreter), `WallMillis` (`int64`) |
 | `Calls` | one `CallRecord{Tool, OK, Code, Millis, Decision}` per nested call |
 | `Truncated` | `Output`, `Value`, `CallResults` flags |
 
@@ -96,15 +97,16 @@ func ProcessMemoryLimit() uint64 // cgroup limit, else GOMEMLIMIT, else 1 GiB
 ```
 
 `DeriveCapacity` returns as many slots (2 to 16) as fit when every run sits at its
-worst-case peak, 2.5 times its budget, within 40% of `memLimit`. When two slots do not
-fit, it lowers the per-run budget instead (floor 16 MiB).
+worst-case peak, `PeakMemoryOverhead` (12) times its budget, within 40% of `memLimit`.
+When two slots do not fit, it lowers the per-run budget instead (floor 16 MiB).
 
 | Process memory | Per-run budget asked | Slots | Per-run budget returned |
 |---|---|---|---|
-| 4 GiB | 256 MiB | 2 | 256 MiB |
-| 4 GiB | 128 MiB | 5 | 128 MiB |
-| 4 GiB | 64 MiB | 10 | 64 MiB |
-| 1 GiB | 256 MiB | 2 | about 82 MiB |
+| 4 GiB | 16 MiB | 8 | 16 MiB |
+| 4 GiB | 32 MiB | 4 | 32 MiB |
+| 4 GiB | 64 MiB | 2 | 64 MiB |
+| 4 GiB | 256 MiB | 2 | about 68 MiB |
+| 1 GiB | 64 MiB | 2 | about 17 MiB |
 
 ### `Policy`
 
@@ -147,6 +149,19 @@ Absent (`nil`): `require`, `package`, `load`, `loadstring`, `dofile`, `loadfile`
 
 `pcall` and `xpcall` catch Lua errors only. A budget kill, cancellation or host failure
 inside them ends the whole run.
+
+`setmetatable` and `getmetatable` are restricted:
+
+| Metamethod | Allowed values |
+|---|---|
+| `__index`, `__newindex` | a table (not a function) |
+| `__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`, `__unm`, `__idiv`, `__band`, `__bor`, `__bxor`, `__shl`, `__shr`, `__bnot`, `__concat`, `__len`, `__eq`, `__lt`, `__le`, `__close` | none: setting one is an error |
+| `__call`, `__tostring`, `__name`, `__pairs`, `__gc`, `__mode`, `__metatable` | any |
+
+`setmetatable` installs a copy of the metatable, and `getmetatable` returns a copy (or
+the `__metatable` field), so changing a metatable after `setmetatable` has no effect.
+`getmetatable(obj) == Class` is therefore false; prototype objects
+(`Class.__index = Class; setmetatable(obj, Class)`) work as usual.
 
 ### `tools`
 
@@ -221,10 +236,11 @@ object keys in sorted order.
 |---|---|---|
 | Source size | `MaxSourceBytes` | `the script is N bytes; the limit is M` |
 | Brackets plus blocks open at once | 200 | `chunk:line: too many syntax levels ...` |
-| Tokens in one expression run | 2000 | `chunk:line: expression too long ...` |
+| Unfinished expression tokens across all open levels | 2000 | `chunk:line: expression nesting too deep ...` |
 
-An identifier directly after a complete operand starts a new expression run, so scripts
-made of many short statements are unaffected.
+A new statement ends the expression before it (an identifier right after a complete
+operand, `if`, `do`, `repeat`, or `function` after a complete statement), so scripts made
+of many short statements or blocks are unaffected.
 
 ---
 
