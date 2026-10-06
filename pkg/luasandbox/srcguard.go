@@ -33,7 +33,7 @@ const (
 	// maxExpressionTokens bounds tokens in one expression run (operator
 	// chains such as a..b..c or - - - x, and index/call chains a.b.c or
 	// f()()), which nest in the parse tree even without brackets.
-	maxExpressionTokens = 1000
+	maxExpressionTokens = 2000
 )
 
 // checkSourceShape rejects sources whose nesting would make the parser or
@@ -62,11 +62,13 @@ func checkSourceShape(chunk, src string) error {
 			if len(runs) > 1 {
 				runs = runs[:top]
 			}
-			runs[len(runs)-1]++
+			top = len(runs) - 1
+			runs[top]++
 			prevEndsOperand = tok.Type != token.KwUntil
 		case resetsRun(tok.Type):
 			runs[top] = 0
 			prevEndsOperand = false
+			continue
 		default:
 			// An identifier directly after a complete operand starts a new
 			// statement ("f(x) g(y)", "a = 1 b = 2"); Lua has no other way
@@ -75,10 +77,12 @@ func checkSourceShape(chunk, src string) error {
 				runs[top] = 0
 			}
 			runs[top]++
-			if runs[top] > maxExpressionTokens {
-				return fmt.Errorf("%s:%d: expression too long (more than %d tokens without a break); split it into several statements or use table.concat", chunk, tok.Line, maxExpressionTokens)
-			}
 			prevEndsOperand = endsOperand(tok.Type)
+		}
+		// Brackets count too: f()()() and a[1][2][3] nest without opening
+		// a level that stays open.
+		if runs[len(runs)-1] > maxExpressionTokens {
+			return fmt.Errorf("%s:%d: expression too long (more than %d tokens without a break); split it into several statements or use table.concat", chunk, tok.Line, maxExpressionTokens)
 		}
 	}
 }

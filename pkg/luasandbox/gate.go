@@ -115,7 +115,7 @@ func DeriveCapacity(memLimit, perRunBytes uint64) (slots int, runBytes uint64) {
 // ProcessMemoryLimit returns the memory the process may use: the cgroup limit
 // when the process runs in a container, else GOMEMLIMIT when set, else 1 GiB.
 func ProcessMemoryLimit() uint64 {
-	if v, ok := cgroupMemoryLimit(); ok {
+	if v, ok := cgroupMemoryLimit(cgroupMemoryFiles); ok {
 		return v
 	}
 	if l := debug.SetMemoryLimit(-1); l > 0 && l < math.MaxInt64 {
@@ -124,10 +124,13 @@ func ProcessMemoryLimit() uint64 {
 	return 1 << 30
 }
 
-// cgroupMemoryLimit reads cgroup v2 memory.max, then cgroup v1. Values of
-// 2^60 or more mean "unlimited".
-func cgroupMemoryLimit() (uint64, bool) {
-	for _, p := range []string{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"} {
+// cgroupMemoryFiles are cgroup v2 memory.max, then cgroup v1's limit file.
+var cgroupMemoryFiles = []string{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"}
+
+// cgroupMemoryLimit reads the first readable file. "max" and values of 2^60
+// or more mean "unlimited".
+func cgroupMemoryLimit(files []string) (uint64, bool) {
+	for _, p := range files {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue

@@ -21,9 +21,9 @@ import (
 	"io"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/arnodel/golua/lib"
 	"github.com/arnodel/golua/lib/base"
 	"github.com/arnodel/golua/lib/mathlib"
 	"github.com/arnodel/golua/lib/packagelib"
@@ -33,32 +33,74 @@ import (
 	rt "github.com/arnodel/golua/runtime"
 )
 
-// removedGlobals are loaded with golua's base and package libraries but give a
-// script ways to load code, reach files, or steer the collector.
-var removedGlobals = []string{
-	"collectgarbage", "dofile", "load", "loadfile", "loadstring",
-	"package", "require", "warn",
+// baseGlobals are the base-library functions a script gets. pcall and xpcall
+// are replaced (pcall.go). Left out on purpose: load, dofile, loadfile
+// (loading code and files), collectgarbage (steering the collector) and warn.
+var baseGlobals = []string{
+	"_VERSION", "assert", "error", "getmetatable", "ipairs", "next", "pairs",
+	"print", "rawequal", "rawget", "rawlen", "rawset", "select",
+	"setmetatable", "tonumber", "tostring", "type",
+}
+
+// libraries are loaded fresh into every runtime: their loaders create new
+// function values each time and keep their state in the runtime.
+var libraries = []packagelib.Loader{stringlib.LibLoader, tablelib.LibLoader, mathlib.LibLoader, utf8lib.LibLoader}
+
+var (
+	baseOnce   sync.Once
+	baseValues map[string]rt.Value
+)
+
+// sharedBase loads golua's base library once and returns its functions.
+//
+// base.Load marks package-level function values shared by every runtime
+// (next, the ipairs iterator) each time it runs. Loading it per runtime is a
+// data race whenever two runs start at once, or one starts while another
+// iterates a table. Loading it once, then copying the function values into
+// each runtime, writes those flags exactly once. The values are safe to share:
+// each receives its thread, and so its runtime, as an argument.
+func sharedBase() map[string]rt.Value {
+	baseOnce.Do(func() {
+		tmpl := rt.New(io.Discard)
+		_, _ = base.Load(tmpl)
+		env := tmpl.GlobalEnv()
+		baseValues = make(map[string]rt.Value, len(baseGlobals))
+		for _, name := range baseGlobals {
+			baseValues[name] = env.Get(rt.StringValue(name))
+		}
+	})
+	return baseValues
 }
 
 // newRuntime builds a fresh interpreter for one run. Only pure libraries are
-// loaded: base, string, table, math and utf8. coroutine is never loaded
+// present: base, string, table, math and utf8. coroutine is never loaded
 // (golua runs each coroutine on its own goroutine, and suspended ones survive
-// Runtime.Close), nor are io, os, debug, the Go bridge or runtime control.
+// Runtime.Close), nor are package/require, io, os, debug, the Go bridge or
+// runtime control.
 func (s *run) newRuntime() (*rt.Runtime, func()) {
 	r := rt.New(s.out)
 	r.SetWarner(warner{s.out})
-	// packagelib must load first: the other loaders register through it.
-	cleanup := lib.LoadLibs(r,
-		packagelib.LibLoader, base.LibLoader, stringlib.LibLoader,
-		tablelib.LibLoader, mathlib.LibLoader, utf8lib.LibLoader)
 	env := r.GlobalEnv()
-	for _, name := range removedGlobals {
-		r.SetEnv(env, name, rt.NilValue)
+	for name, v := range sharedBase() {
+		r.SetEnv(env, name, v)
+	}
+	r.SetEnv(env, "_G", rt.TableValue(env))
+	var cleanups []func()
+	for _, l := range libraries {
+		pkg, cleanup := l.Load(r)
+		r.SetEnv(env, l.Name, pkg)
+		if cleanup != nil {
+			cleanups = append(cleanups, cleanup)
+		}
 	}
 	if str, ok := env.Get(rt.StringValue("string")).TryTable(); ok {
 		r.SetEnv(str, "dump", rt.NilValue) // bytecode is useless without load
 	}
-	return r, cleanup
+	return r, func() {
+		for _, c := range cleanups {
+			c()
+		}
+	}
 }
 
 // installGlobals adds the host-provided API. It runs before the run's

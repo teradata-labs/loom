@@ -389,6 +389,33 @@ func normalizeJSON(v any) any {
 	return out
 }
 
+// sanitize replaces the leaves of v that encoding/json rejects (channels,
+// functions, cyclic values) with their %v text, keeping the rest of the
+// structure, so one bad field does not turn a whole result into text.
+func sanitize(v any, depth int) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = sanitize(e, depth+1)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = sanitize(e, depth+1)
+		}
+		return out
+	}
+	if depth > maxValueDepth {
+		return fmt.Sprintf("[nested more than %d levels deep]", maxValueDepth)
+	}
+	if _, err := json.Marshal(v); err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return v
+}
+
 // jsonSize returns the encoded size of a Go value, or -1 when it cannot be
 // encoded.
 func jsonSize(v any) (int, []byte) {

@@ -73,7 +73,7 @@ func (s *run) terminate(t *rt.Thread, outcome Outcome, limit, msg string) error 
 	if s.term.outcome == "" {
 		s.term = termReason{outcome: outcome, limit: limit, msg: msg}
 	}
-	t.Runtime.TerminateContext("%s", msg)
+	t.TerminateContext("%s", msg)
 	return errors.New(msg)
 }
 

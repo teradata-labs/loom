@@ -238,8 +238,13 @@ func (s *run) prepareData(d any) (data any, text *string, size int, cut bool) {
 	}
 	size, encoded := jsonSize(d)
 	if size < 0 {
-		str := fmt.Sprintf("%v", d)
-		return s.prepareData(str)
+		d = sanitize(d, 0)
+		if str, ok := d.(string); ok {
+			return s.prepareData(str)
+		}
+		if size, encoded = jsonSize(d); size < 0 {
+			return s.prepareData(fmt.Sprintf("%v", d))
+		}
 	}
 	if size > limit {
 		preview := encoded[:min(previewBytes, len(encoded))]

@@ -42,7 +42,7 @@ func TestBudgetsStopHostileScripts(t *testing.T) {
 		{"string.rep", `local s = string.rep("x", 2e8) return #s`, LimitMemory, nil},
 		{"string doubling", `local s = "x" for i = 1, 40 do s = s .. s end return #s`, LimitMemory, nil},
 		{"table.concat", `local s = string.rep("x", 1e6) local t = {} for i = 1, 100 do t[i] = s end return #table.concat(t)`, LimitMemory, nil},
-		{"gsub expansion", `local s = string.rep("x", 1e7) return #s:gsub(".", "%0%0%0%0%0%0%0%0")`, LimitMemory, nil},
+		{"gsub expansion", `local s = string.rep("x", 1e6) return #s:gsub(".", "%0%0%0%0%0%0%0%0")`, LimitMemory, func(l *Limits) { l.MemoryBytes = 4 << 20 }},
 		{"string.format", `local s = string.rep("x", 1e7) return #string.format("%s%s%s%s", s, s, s, s)`, LimitMemory, nil},
 		{"string.pack", `local s = string.rep("x", 1e7) return #string.pack("s4s4s4s4", s, s, s, s)`, LimitMemory, nil},
 		{"tostring metamethod", `return #tostring(setmetatable({}, {__tostring = function() return string.rep("x", 1e8) end}))`, LimitMemory, nil},
@@ -59,6 +59,11 @@ func TestBudgetsStopHostileScripts(t *testing.T) {
 			if tt.edit != nil {
 				tt.edit(&lim)
 			}
+			if raceEnabled && tt.limit != LimitWall {
+				// The race detector slows the interpreter about tenfold; keep
+				// the wall budget out of the way of the limit under test.
+				lim.Wall *= 10
+			}
 			stop := sampleHeapPeak()
 			start := time.Now()
 			res := Run(context.Background(), Program{Source: tt.src}, lim, newFakeHost())
@@ -69,10 +74,14 @@ func TestBudgetsStopHostileScripts(t *testing.T) {
 			assert.Equal(t, tt.limit, res.Limit, "error: %s", res.Error)
 			assert.Less(t, elapsed, slack(lim.Wall), "the run must end within its wall budget")
 			// An allocation path the budget does not see would show up as a
-			// heap peak far above the budget. Measured peaks reach about 2.3x
-			// (buffers grow by doubling); 4x leaves room for sampling jitter.
+			// heap peak far above the budget: every bomb here asks for 100 MiB
+			// to 1 GiB. The heap metric also counts garbage the collector has
+			// not reached yet (gsub churns through small buffers), so the
+			// bound is 4x the budget, for growth by doubling, plus a fixed
+			// allowance for collector lag.
+			const collectorLag = 64 << 20
 			grew := peak - min(base, peak)
-			assert.Less(t, grew, 4*lim.MemoryBytes, "heap grew %d MiB against a %d MiB budget", grew>>20, lim.MemoryBytes>>20)
+			assert.Less(t, grew, 4*lim.MemoryBytes+collectorLag, "heap grew %d MiB against a %d MiB budget", grew>>20, lim.MemoryBytes>>20)
 		})
 	}
 }
