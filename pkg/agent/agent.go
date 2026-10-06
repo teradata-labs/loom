@@ -3180,8 +3180,14 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
 
-	// Execute with self-correction (circuit breaker + SQL correction)
-	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	// Execute with self-correction (circuit breaker + SQL correction). The
+	// call's context records the tools this provider call advertised (after
+	// recovery filtering), so a script engine never re-derives a wider set.
+	var advertised []shuttle.Tool
+	if st.tools != nil {
+		advertised = *st.tools
+	}
+	result, err := a.executeToolWithSelfCorrection(withAdvertisedProjection(ctx, advertised), toolCall.Name, toolCall.Input, session.ID)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {

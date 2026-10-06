@@ -126,6 +126,15 @@ func (e *Executor) SetAdmissionChain(chain *Chain) {
 	e.admissionChain = chain
 }
 
+// HasAdmissionGuards reports whether calls through this executor pass any
+// guard at all: an admission chain or a permission checker. With neither,
+// Preflight and Execute admit every call. Code that makes tool calls on a
+// model's behalf without the model seeing each one (a script engine) uses this
+// to fail closed. Like the setters above, it is meant for configuration time.
+func (e *Executor) HasAdmissionGuards() bool {
+	return e.admissionChain != nil || e.permissionChecker != nil
+}
+
 // SetApprovedSet configures the approved-set accessor threaded to admission
 // hooks as AdmissionRequest.State. A nil accessor leaves a gated-allowlist with
 // no store to read, so it fails closed.
